@@ -1,0 +1,47 @@
+ALUMAVEL CRM — versión real, conectada a Firebase
+====================================================
+
+Esta carpeta ya está compilada y lista para subir. La carpeta "dist" es la
+que hay que publicar — dentro está la aplicación entera ya construida.
+
+--------------------------------------------------
+OPCIÓN A — Subir a Firebase Hosting (recomendado, mismo proyecto que la base de datos)
+--------------------------------------------------
+1. Abre una terminal en esta carpeta.
+2. Instala las herramientas de Firebase (solo la primera vez):
+     npm install -g firebase-tools
+3. Inicia sesión con tu cuenta de Google:
+     firebase login
+4. Publica:
+     firebase deploy --only hosting
+5. Al terminar, te dará una dirección tipo:
+     https://crmalumavel.web.app
+   Esa es la que compartes con tu equipo.
+
+--------------------------------------------------
+OPCIÓN B — Subir a Netlify (ya sabes hacerlo, como con tu otro CRM)
+--------------------------------------------------
+1. Entra en netlify.com y arrastra la carpeta "dist" (no toda esta carpeta,
+   solo "dist") al panel de subida manual.
+2. Netlify te da una dirección — esa es la que compartes con tu equipo.
+
+--------------------------------------------------
+IMPORTANTE — Reglas de seguridad de la base de datos
+--------------------------------------------------
+Para que funcionara ya mismo, la base de datos está configurada para que
+cualquiera con la dirección pueda leer y escribir. Esto es suficiente para
+empezar a trabajar mañana, pero NO es lo ideal a largo plazo — cualquiera
+que conociera la dirección de tu base de datos podría, en teoría, acceder
+a los datos directamente sin pasar por el CRM.
+
+Cuando tengas un rato, dile a Claude que quieres reforzar las reglas de
+Firebase (requiere añadir un inicio de sesión de verdad con Firebase
+Authentication, no es inmediato pero sí importante para más adelante).
+
+--------------------------------------------------
+SI QUIERES VOLVER A ENVIARME CAMBIOS EN EL FUTURO
+--------------------------------------------------
+La lógica del CRM está en: src/App.jsx
+Los datos ahora viven en Firebase, separados del código — así que cualquier
+actualización que te dé Claude, la reconstruyes (npm run build) y la vuelves
+a subir, sin que eso borre nada de lo que ya tengáis metido.

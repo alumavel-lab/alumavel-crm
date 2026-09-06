@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.font-display { font-family: "Georgia", serif; }
+.font-mono-num { font-family: "Consolas", "SF Mono", monospace; font-variant-numeric: tabular-nums; }
