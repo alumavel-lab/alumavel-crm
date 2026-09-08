@@ -4288,15 +4288,32 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 1500,
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const items = JSON.parse(limpio);
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
+      let items;
+      try {
+        items = JSON.parse(jsonCandidato);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
       const lineas = items.map((it) => ({
         id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
         ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
@@ -4309,7 +4326,8 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
       }
       onCrearDesdeFoto(lineas, `Pedido creado a partir de una foto/PDF subida (${file.name}). Revisa las líneas antes de guardar.`);
     } catch (err) {
-      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo foto de pedido:", err);
+      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoFoto(false);
     }
@@ -4751,15 +4769,32 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 1500,
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const lineasAlbaran = JSON.parse(limpio);
+      const inicioA = limpio.indexOf("[");
+      const finA = limpio.lastIndexOf("]");
+      const jsonCandidatoA = inicioA !== -1 && finA !== -1 ? limpio.slice(inicioA, finA + 1) : limpio;
+      let lineasAlbaran;
+      try {
+        lineasAlbaran = JSON.parse(jsonCandidatoA);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON del albarán. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
 
       const comparacion = pedido.lineas.map((l) => {
         const nombre = nombreLinea(l);
@@ -4783,7 +4818,8 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
 
       setResultadoAlbaran({ comparacion, sobrantesAlbaran, fecha: new Date().toISOString(), archivo: file.name });
     } catch (err) {
-      setErrorAlbaran("No se pudo leer el albarán. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo albarán:", err);
+      setErrorAlbaran("No se pudo leer el albarán. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoAlbaran(false);
     }
@@ -5349,15 +5385,32 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 2000,
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = texto.replace(/```json|```/g, "").trim();
-      const items = JSON.parse(limpio);
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
+      let items;
+      try {
+        items = JSON.parse(jsonCandidato);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
       if (!Array.isArray(items) || items.length === 0) {
         setErrorPacking("No he podido leer ningún caballete claro en el documento. Prueba con una foto más nítida.");
         setLeyendoPacking(false);
@@ -5369,7 +5422,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         cantidad: it.cantidad || 1,
       }));
     } catch (e) {
-      setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF.");
+      console.error("Error leyendo packing list:", e);
+      setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF. (" + e.message + ")");
     } finally {
       setLeyendoPacking(false);
     }
@@ -8316,15 +8370,32 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 1200,
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const info = JSON.parse(limpio);
+      const inicioP = limpio.indexOf("{");
+      const finP = limpio.lastIndexOf("}");
+      const jsonCandidatoP = inicioP !== -1 && finP !== -1 ? limpio.slice(inicioP, finP + 1) : limpio;
+      let info;
+      try {
+        info = JSON.parse(jsonCandidatoP);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON del presupuesto. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
 
       const medidas = Array.isArray(info.medidas) ? info.medidas.filter((m) => m && (m.ancho || m.alto)) : [];
       const textoMedidas = medidas.length > 0
@@ -8347,7 +8418,8 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       setEditId(null);
       setView("form");
     } catch (err) {
-      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo foto de presupuesto:", err);
+      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoFoto(false);
     }
