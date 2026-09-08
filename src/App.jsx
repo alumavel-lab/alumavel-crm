@@ -63,6 +63,15 @@ const MODULOS_DISPONIBLES = [
   { id: "fichajes", label: "Fichajes" },
 ];
 
+// Configuración física del almacén de cristales dentro de Fábrica. La ubicación se
+// asigna a nivel de CABALLETE (rack), no por cristal individual — cada hueco guarda
+// un caballete entero. Arriba son los caballetes de Uxcar, abajo los de ALUMAVEL.
+const ZONAS_CRISTALES = {
+  arriba: { label: "Arriba (Uxcar)", filas: 13, huecos: 2 },
+  abajo: { label: "Abajo (ALUMAVEL)", filas: 8, huecos: 2 },
+};
+const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
+
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 // Firebase Realtime Database a veces devuelve un objeto en vez de un array (por huecos
 // en los índices, o listas vacías) — esto lo normaliza siempre a un array de verdad.
@@ -242,6 +251,7 @@ export default function App() {
   const [solicitudesPedido, setSolicitudesPedido] = useState([]);
   const [instalaciones, setInstalaciones] = useState([]);
   const [vehiculos, setVehiculos] = useState([]);
+  const [cristales, setCristales] = useState([]);
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionUsuarioId, setSesionUsuarioId] = useState(null);
@@ -320,7 +330,7 @@ export default function App() {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
-          "vehiculos", "fichajes", "usuarios"];
+          "vehiculos", "fichajes", "usuarios", "cristales"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -354,6 +364,7 @@ export default function App() {
         }
         if (resultados.fichajes) setFichajes(toArray(resultados.fichajes));
         if (resultados.usuarios) setUsuarios(toArray(resultados.usuarios));
+        if (resultados.cristales) setCristales(toArray(resultados.cristales));
 
         // Estas son locales de este navegador/dispositivo, no compartidas — cada persona
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
@@ -436,11 +447,11 @@ export default function App() {
 
       const prompt = `Crea una tarjeta nueva en Trello usando la herramienta trelloWriteCard con action="create", listId="${TRELLO_LIST_PRESUPUESTO}", name="#${proyecto.numero} — ${proyecto.nombre || "Sin nombre"} (${clienteNombre || "sin cliente"})", y desc="${desc.replace(/"/g, "'")}". No hagas nada más, no busques el tablero ni la lista, usa exactamente el listId indicado. Al terminar, responde ÚNICAMENTE con el id de la tarjeta creada (el campo "id" que devuelve la herramienta), sin ningún otro texto.`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1000,
           messages: [{ role: "user", content: prompt }],
           mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
@@ -474,11 +485,11 @@ export default function App() {
     if (!cardId) return;
     try {
       const prompt = `Mueve la tarjeta de Trello con id="${cardId}" a la lista con listId="${listId}" usando la herramienta trelloWriteCard con action="move". No hagas nada más ni busques nada, usa exactamente esos identificadores.`;
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 500,
           messages: [{ role: "user", content: prompt }],
           mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
@@ -503,11 +514,11 @@ export default function App() {
       const nombreTarjeta = `${presupuesto.numero} — ${presupuesto.clienteNombre || "Sin cliente"}`;
       const prompt = `Crea una tarjeta nueva en Trello usando la herramienta trelloWriteCard con action="create", listId="${TRELLO_LIST_PRESUPUESTO}", name="${nombreTarjeta.replace(/"/g, "'")}", y desc="${desc.replace(/"/g, "'")}". No hagas nada más, no busques el tablero ni la lista, usa exactamente el listId indicado. Al terminar, responde ÚNICAMENTE con el id de la tarjeta creada (el campo "id" que devuelve la herramienta), sin ningún otro texto.`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1000,
           messages: [{ role: "user", content: prompt }],
           mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
@@ -991,6 +1002,41 @@ export default function App() {
       };
     });
     savePedidos(next);
+  };
+
+  // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
+  const saveCristales = (next) => { setCristales(next); persist("cristales", next); };
+
+  const addCristal = (data) => {
+    const nuevo = { id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: new Date().toISOString().slice(0, 10), ...data };
+    saveCristales([nuevo, ...cristales]);
+    return nuevo.id;
+  };
+
+  const updateCristal = (id, patch) => {
+    saveCristales(cristales.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  };
+
+  const deleteCristal = (id) => {
+    saveCristales(cristales.filter((c) => c.id !== id));
+  };
+
+  // Asigna una ubicación concreta (zona/fila/hueco) a un caballete, comprobando que
+  // no esté ya ocupada por otro.
+  const ubicarCristal = (id, ubicacion) => {
+    const ocupado = cristales.some((c) => c.id !== id && c.ubicacion &&
+      c.ubicacion.zona === ubicacion.zona && c.ubicacion.fila === ubicacion.fila && c.ubicacion.hueco === ubicacion.hueco);
+    if (ocupado) {
+      showToast("Ese hueco ya está ocupado por otro caballete", "error");
+      return false;
+    }
+    updateCristal(id, { ubicacion, estado: "Colocado", fechaColocado: new Date().toISOString().slice(0, 10) });
+    showToast("Caballete ubicado en el almacén");
+    return true;
+  };
+
+  const liberarCristal = (id) => {
+    updateCristal(id, { ubicacion: null, estado: "Pendiente", fechaColocado: "" });
   };
 
   const saveIncidencias = (next) => { setIncidencias(next); persist("incidencias", next); };
@@ -2034,11 +2080,18 @@ export default function App() {
             pedidos={pedidos}
             proveedores={proveedores}
             materiales={materiales}
+            clientes={clientes}
             onConfirmarLinea={confirmarLineaFabrica}
             onIniciarFabricacion={(proyectoId) => {
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
               showToast("Proyecto marcado como en fabricación");
             }}
+            cristales={cristales}
+            onAddCristal={addCristal}
+            onUpdateCristal={updateCristal}
+            onDeleteCristal={deleteCristal}
+            onUbicarCristal={ubicarCristal}
+            onLiberarCristal={liberarCristal}
           />
         )}
         {modulo === "instalaciones" && (
@@ -4230,11 +4283,11 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
 
       const prompt = 'Esto es una lista de materiales o un pedido escrito/impreso (puede ser una foto de notas a mano, una lista de un proveedor, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: [{"referencia":"nombre o descripción tal cual aparece","ancho":"","alto":"","cantidad":numero}]. Si hay medidas (ancho x alto) inclúyelas, si no, deja esos campos vacíos.';
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1500,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -4693,11 +4746,11 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
 
       const prompt = 'Esto es un albarán de entrega de un proveedor. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) con este formato exacto: [{"material":"nombre o referencia tal cual aparece en el albarán","cantidad":numero}]. Una línea por cada material o referencia distinta que aparezca.';
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1500,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -5229,7 +5282,425 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
 
 /* ================= FÁBRICA (control independiente de almacén) ================= */
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, onConfirmarLinea, onIniciarFabricacion }) {
+/* ================= CRISTALES (almacén de vidrio, dentro de Fábrica) ================= */
+
+function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onUpdate, onDelete, onUbicar, onLiberar }) {
+  const [subTab, setSubTab] = useState("pendientes");
+  const [q, setQ] = useState("");
+  const [asignando, setAsignando] = useState(null); // cristal object being located right now
+  const [verDetalle, setVerDetalle] = useState(null); // ubicación { zona, fila, hueco } to show contents of
+  const [leyendoPacking, setLeyendoPacking] = useState(false);
+  const [errorPacking, setErrorPacking] = useState("");
+  const [mostrarNuevo, setMostrarNuevo] = useState(false);
+  const inputPackingRef = useRef(null);
+
+  const normalizar = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
+  const filtered = useMemo(() => {
+    if (!q) return cristales;
+    const nq = normalizar(q);
+    return cristales.filter((c) => normalizar(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida}`).includes(nq));
+  }, [cristales, q]);
+
+  const pendientes = filtered.filter((c) => c.estado === "Pendiente");
+  const colocados = cristales.filter((c) => c.estado === "Colocado");
+
+  // Sugiere una ubicación: prioriza un hueco libre en la misma fila que otro caballete
+  // del mismo expediente ya colocado, para mantenerlos juntos; si no, el primer hueco
+  // libre de la zona que corresponda según el proveedor.
+  const sugerirUbicacion = (cristal) => {
+    const zonaSugerida = (cristal.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+    const ocupado = (zona, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+
+    if (cristal.expediente) {
+      const mismos = cristales.filter((c) => c.id !== cristal.id && c.expediente === cristal.expediente && c.ubicacion);
+      for (const m of mismos) {
+        const { zona, fila } = m.ubicacion;
+        for (let h = 1; h <= ZONAS_CRISTALES[zona].huecos; h++) {
+          if (!ocupado(zona, fila, h)) return { zona, fila, hueco: h };
+        }
+      }
+    }
+    const cfg = ZONAS_CRISTALES[zonaSugerida];
+    for (let f = 1; f <= cfg.filas; f++) {
+      for (let h = 1; h <= cfg.huecos; h++) {
+        if (!ocupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
+      }
+    }
+    return null;
+  };
+
+  const leerPackingList = async (file) => {
+    setLeyendoPacking(true);
+    setErrorPacking("");
+    try {
+      const base64Data = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result.split(",")[1]);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const esPdf = file.type === "application/pdf";
+      const contentBlock = esPdf
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta. Deja en blanco lo que no encuentres.';
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-5",
+          max_tokens: 2000,
+          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida");
+      const data = await response.json();
+      const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = texto.replace(/```json|```/g, "").trim();
+      const items = JSON.parse(limpio);
+      if (!Array.isArray(items) || items.length === 0) {
+        setErrorPacking("No he podido leer ningún caballete claro en el documento. Prueba con una foto más nítida.");
+        setLeyendoPacking(false);
+        return;
+      }
+      items.forEach((it) => onAdd({
+        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
+        proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
+        cantidad: it.cantidad || 1,
+      }));
+    } catch (e) {
+      setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF.");
+    } finally {
+      setLeyendoPacking(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-4">
+        La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (13 filas), abajo los de ALUMAVEL (8 filas), 2 huecos por fila.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por lote, secuencia, cliente, medida..." className={inputCls + " pl-9"} />
+        </div>
+        <button type="button" onClick={() => inputPackingRef.current?.click()} disabled={leyendoPacking}
+          style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+          className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-3.5 py-2 rounded-md">
+          <ImageIcon size={14} /> {leyendoPacking ? "Leyendo..." : "Importar packing list (foto/PDF)"}
+        </button>
+        <input ref={inputPackingRef} type="file" accept="image/*,application/pdf" className="hidden"
+          onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
+        <button type="button" onClick={() => setMostrarNuevo(true)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
+          <Plus size={14} /> Añadir a mano
+        </button>
+      </div>
+      {errorPacking && <p className="text-xs text-rose-600 font-semibold mb-4">⚠ {errorPacking}</p>}
+
+      {mostrarNuevo && (
+        <NuevoCristalForm onCancel={() => setMostrarNuevo(false)} onSave={(data) => { onAdd(data); setMostrarNuevo(false); }} />
+      )}
+
+      <div className="flex gap-1 mb-4 border-b border-slate-200">
+        <button onClick={() => setSubTab("pendientes")}
+          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${subTab === "pendientes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Pendientes de ubicar {pendientes.length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{pendientes.length}</Badge>}
+        </button>
+        <button onClick={() => setSubTab("mapa")}
+          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition ${subTab === "mapa" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Mapa del almacén
+        </button>
+        <button onClick={() => setSubTab("estadisticas")}
+          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition ${subTab === "estadisticas" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Estadísticas
+        </button>
+      </div>
+
+      {subTab === "pendientes" && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-2.5 font-semibold">Lote / Secuencia</th>
+                <th className="px-4 py-2.5 font-semibold">Cliente</th>
+                <th className="px-4 py-2.5 font-semibold">Proveedor</th>
+                <th className="px-4 py-2.5 font-semibold">Medida</th>
+                <th className="px-4 py-2.5 font-semibold">Llegada</th>
+                <th className="px-4 py-2.5 font-semibold text-right">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendientes.map((c) => (
+                <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} {c.secuencia && `/ ${c.secuencia}`}</td>
+                  <td className="px-4 py-2.5 text-slate-600">{c.cliente || "—"}</td>
+                  <td className="px-4 py-2.5 text-slate-600">{c.proveedor || "—"}</td>
+                  <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button onClick={() => setAsignando(c)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md">
+                      Asignar ubicación
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {pendientes.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">No hay caballetes pendientes de ubicar.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {subTab === "mapa" && (
+        <MapaAlmacenCristales cristales={cristales} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
+      )}
+
+      {subTab === "estadisticas" && (
+        <EstadisticasCristales cristales={cristales} />
+      )}
+
+      {asignando && (
+        <UbicacionPicker
+          cristal={asignando}
+          cristales={cristales}
+          sugerencia={sugerirUbicacion(asignando)}
+          onClose={() => setAsignando(null)}
+          onConfirmar={(ubicacion) => { const ok = onUbicar(asignando.id, ubicacion); if (ok) setAsignando(null); }}
+        />
+      )}
+
+      {verDetalle && (
+        <DetalleHuecoModal
+          ubicacion={verDetalle}
+          cristal={cristales.find((c) => c.ubicacion && c.ubicacion.zona === verDetalle.zona && c.ubicacion.fila === verDetalle.fila && c.ubicacion.hueco === verDetalle.hueco)}
+          onClose={() => setVerDetalle(null)}
+          onLiberar={(id) => { onLiberar(id); setVerDetalle(null); }}
+          onEliminar={(id) => { onDelete(id); setVerDetalle(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NuevoCristalForm({ onCancel, onSave }) {
+  const [f, setF] = useState({ lote: "", secuencia: "", cliente: "", proveedor: "", expediente: "", medida: "", cantidad: 1, fechaLlegada: new Date().toISOString().slice(0, 10) });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+      <h3 className="font-display font-bold text-slate-800 mb-3">Nuevo caballete</h3>
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <Field label="Lote"><TextInput value={f.lote} onChange={set("lote")} /></Field>
+        <Field label="Secuencia"><TextInput value={f.secuencia} onChange={set("secuencia")} /></Field>
+        <Field label="Expediente"><TextInput value={f.expediente} onChange={set("expediente")} /></Field>
+        <Field label="Cliente"><TextInput value={f.cliente} onChange={set("cliente")} /></Field>
+        <Field label="Proveedor"><TextInput value={f.proveedor} onChange={set("proveedor")} placeholder="Ej: Uxcar" /></Field>
+        <Field label="Medida"><TextInput value={f.medida} onChange={set("medida")} placeholder="Ej: 1200x1500" /></Field>
+      </div>
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+        <button onClick={() => onSave(f)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2 rounded-md">Guardar</button>
+      </div>
+    </div>
+  );
+}
+
+function MapaAlmacenCristales({ cristales, onVerHueco, onAsignarDesdeMapa }) {
+  const ocupante = (zona, fila, hueco) => cristales.find((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+  return (
+    <div className="space-y-6">
+      {Object.entries(ZONAS_CRISTALES).map(([zonaId, cfg]) => (
+        <div key={zonaId} className="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 className="font-display font-bold text-slate-800 mb-3">{cfg.label}</h3>
+          <div className="space-y-1.5">
+            {Array.from({ length: cfg.filas }, (_, i) => i + 1).map((fila) => (
+              <div key={fila} className="flex items-center gap-2">
+                <span className="text-xs text-slate-400 w-14 shrink-0">Fila {fila}</span>
+                <div className="flex gap-1.5 flex-1">
+                  {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
+                    const c = ocupante(zonaId, fila, hueco);
+                    return (
+                      <button
+                        key={hueco}
+                        onClick={() => c && onVerHueco({ zona: zonaId, fila, hueco })}
+                        title={c ? `${c.lote || ""} ${c.secuencia || ""} — ${c.cliente || ""}` : "Libre"}
+                        className={`flex-1 h-10 rounded-md text-[11px] font-semibold flex items-center justify-center px-1 truncate ${c ? "bg-[#2E8B57] text-white cursor-pointer hover:opacity-80" : "bg-slate-100 text-slate-300"}`}
+                      >
+                        {c ? (c.lote || c.secuencia || "•") : "—"}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar }) {
+  const [zona, setZona] = useState(sugerencia?.zona || "arriba");
+  const ocupado = (z, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === z && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+  const cfg = ZONAS_CRISTALES[zona];
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg p-5 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-800 mb-1">Ubicar: {cristal.lote || cristal.secuencia || "Caballete"}</h3>
+        <p className="text-xs text-slate-500 mb-3">{cristal.cliente} · {cristal.proveedor}</p>
+        {sugerencia && (
+          <button
+            onClick={() => onConfirmar(sugerencia)}
+            className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 px-4 py-2.5 rounded-md mb-3"
+          >
+            ✨ Usar sugerencia: {ubicacionTexto(sugerencia)}
+          </button>
+        )}
+        <div className="flex gap-2 mb-3">
+          {Object.entries(ZONAS_CRISTALES).map(([id, c]) => (
+            <button key={id} onClick={() => setZona(id)} className={`flex-1 px-3 py-2 rounded-md text-sm font-semibold border ${zona === id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "border-slate-300 text-slate-600"}`}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <div className="space-y-1.5 mb-4">
+          {Array.from({ length: cfg.filas }, (_, i) => i + 1).map((fila) => (
+            <div key={fila} className="flex items-center gap-2">
+              <span className="text-xs text-slate-400 w-12 shrink-0">F{fila}</span>
+              <div className="flex gap-1.5 flex-1">
+                {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
+                  const libre = !ocupado(zona, fila, hueco);
+                  return (
+                    <button
+                      key={hueco}
+                      disabled={!libre}
+                      onClick={() => onConfirmar({ zona, fila, hueco })}
+                      className={`flex-1 h-9 rounded-md text-xs font-semibold ${libre ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer" : "bg-slate-100 text-slate-300 cursor-not-allowed"}`}
+                    >
+                      {libre ? "Libre" : "Ocupado"}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        <button onClick={onClose} className="w-full text-sm font-semibold text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function DetalleHuecoModal({ ubicacion, cristal, onClose, onLiberar, onEliminar }) {
+  if (!cristal) return null;
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg p-5 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-800 mb-1">{ubicacionTexto(ubicacion)}</h3>
+        <div className="text-sm text-slate-600 space-y-1 my-3">
+          <p><b>Lote:</b> {cristal.lote || "—"}</p>
+          <p><b>Secuencia:</b> {cristal.secuencia || "—"}</p>
+          <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
+          <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
+          <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
+          <p><b>Medida:</b> {cristal.medida || "—"}</p>
+          <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
+        </div>
+        <div className="flex flex-col gap-2">
+          <button onClick={() => onLiberar(cristal.id)} className="text-sm font-semibold text-amber-700 border border-amber-300 px-4 py-2 rounded-md hover:bg-amber-50">Liberar hueco (vuelve a pendiente)</button>
+          <button onClick={() => onEliminar(cristal.id)} className="text-sm font-semibold text-rose-600 border border-rose-200 px-4 py-2 rounded-md hover:bg-rose-50">Eliminar caballete</button>
+          <button onClick={onClose} className="text-sm font-semibold text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EstadisticasCristales({ cristales }) {
+  const porDia = useMemo(() => {
+    const map = {};
+    cristales.forEach((c) => {
+      if (c.fechaLlegada) map[c.fechaLlegada] = { ...(map[c.fechaLlegada] || { fecha: c.fechaLlegada, llegados: 0, colocados: 0 }), llegados: (map[c.fechaLlegada]?.llegados || 0) + 1 };
+      if (c.fechaColocado) map[c.fechaColocado] = { ...(map[c.fechaColocado] || { fecha: c.fechaColocado, llegados: 0, colocados: 0 }), colocados: (map[c.fechaColocado]?.colocados || 0) + 1 };
+    });
+    return Object.values(map).sort((a, b) => a.fecha.localeCompare(b.fecha)).slice(-30);
+  }, [cristales]);
+
+  const porProveedor = useMemo(() => {
+    const map = {};
+    cristales.forEach((c) => { const k = c.proveedor || "Sin proveedor"; map[k] = (map[k] || 0) + 1; });
+    return Object.entries(map).map(([proveedor, n]) => ({ proveedor, n }));
+  }, [cristales]);
+
+  const porCliente = useMemo(() => {
+    const map = {};
+    cristales.forEach((c) => { const k = c.cliente || "Sin cliente"; map[k] = (map[k] || 0) + 1; });
+    return Object.entries(map).map(([cliente, n]) => ({ cliente, n })).sort((a, b) => b.n - a.n).slice(0, 10);
+  }, [cristales]);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-3 gap-3">
+        <Kpi label="Total caballetes" value={String(cristales.length)} />
+        <Kpi label="Colocados" value={String(cristales.filter((c) => c.estado === "Colocado").length)} />
+        <Kpi label="Pendientes" value={String(cristales.filter((c) => c.estado === "Pendiente").length)} />
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <h3 className="font-display font-bold text-slate-800 mb-3">Llegadas vs. colocados por día</h3>
+        {porDia.length > 0 ? (
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={porDia}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="fecha" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="llegados" name="Llegados" stroke="#2E8B57" strokeWidth={2} />
+              <Line type="monotone" dataKey="colocados" name="Colocados" stroke="#D97706" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : <p className="text-sm text-slate-400 text-center py-8">Todavía no hay datos suficientes.</p>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 className="font-display font-bold text-slate-800 mb-3">Por proveedor</h3>
+          {porProveedor.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={porProveedor}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="proveedor" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                <Tooltip />
+                <Bar dataKey="n" fill="#2E8B57" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <p className="text-sm text-slate-400 text-center py-8">Sin datos.</p>}
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 className="font-display font-bold text-slate-800 mb-3">Top 10 clientes</h3>
+          {porCliente.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={porCliente} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+                <YAxis dataKey="cliente" type="category" tick={{ fontSize: 10 }} width={90} />
+                <Tooltip />
+                <Bar dataKey="n" fill="#D97706" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <p className="text-sm text-slate-400 text-center py-8">Sin datos.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal }) {
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
@@ -5337,9 +5808,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, onConfirma
           className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === "enfab" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           En fabricación
         </button>
+        <button onClick={() => setTab("cristales")}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "cristales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Cristales
+          {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
+        </button>
+        {tab !== "cristales" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
+        )}
       </div>
 
       {tab === "listo" && (
@@ -5458,6 +5936,20 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, onConfirma
             )}
           </div>
         </>
+      )}
+
+      {tab === "cristales" && (
+        <CristalesModulo
+          cristales={cristales}
+          proyectos={proyectos}
+          proveedores={proveedores}
+          clientes={clientes}
+          onAdd={onAddCristal}
+          onUpdate={onUpdateCristal}
+          onDelete={onDeleteCristal}
+          onUbicar={onUbicarCristal}
+          onLiberar={onLiberarCristal}
+        />
       )}
     </div>
   );
@@ -7819,11 +8311,11 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
 
       const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 1200,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -9416,11 +9908,11 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
       const cuerpo = `Aviso diario de presupuestos ALUMAVEL\n\nPresupuestos para llamar hoy (mas de 7 dias sin respuesta):\n${lineasLlamar}\n\nPresupuestos en espera con seguimiento vencido:\n${lineasContactar}`;
       const prompt = `Envía un correo usando la herramienta Gmail:send_message con to="${email.trim()}", subject="Aviso diario de presupuestos ALUMAVEL", y body="${cuerpo.replace(/"/g, "'")}". No hagas nada más ni preguntes nada. Al terminar responde únicamente "OK".`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 500,
           messages: [{ role: "user", content: prompt }],
           mcp_servers: [{ type: "url", url: "https://gmailmcp.googleapis.com/mcp/v1", name: "gmail-mcp" }],
