@@ -1,44 +1,53 @@
-// Función de servidor (Netlify Function) que hace de intermediaria segura entre el
-// CRM y la API de Anthropic. La clave de API vive SOLO aquí, como variable de entorno
-// en Netlify — nunca en el código del navegador, donde cualquiera podría verla.
-//
-// El frontend llama a /.netlify/functions/anthropic-proxy en vez de llamar
-// directamente a api.anthropic.com.
-
-exports.handler = async (event) => {
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method not allowed" };
-  }
-
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+export const handler = async (event) => {
+  // Solo permitimos peticiones POST
+  if (event.httpMethod !== 'POST') {
     return {
-      statusCode: 500,
-      body: JSON.stringify({ error: "Falta configurar ANTHROPIC_API_KEY en las variables de entorno de Netlify." }),
+      statusCode: 405,
+      body: JSON.stringify({ error: 'Method not allowed' }),
     };
   }
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!apiKey) {
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: 'ANTHROPIC_API_KEY no configurada en Netlify' }),
+      };
+    }
+
+    const requestBody = JSON.parse(event.body);
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
-      body: event.body,
+      body: JSON.stringify(requestBody),
     });
 
-    const data = await response.text();
+    const data = await response.json();
+
     return {
       statusCode: response.status,
-      headers: { "Content-Type": "application/json" },
-      body: data,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: JSON.stringify(data),
     };
-  } catch (err) {
+  } catch (error) {
+    console.error('Error en anthropic-proxy:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: "Error al conectar con la IA: " + err.message }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: JSON.stringify({ error: error.message }),
     };
   }
 };
