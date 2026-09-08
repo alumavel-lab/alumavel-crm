@@ -1,5 +1,4 @@
 export const handler = async (event) => {
-  // Solo permitimos peticiones POST
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -11,6 +10,7 @@ export const handler = async (event) => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
     if (!apiKey) {
+      console.error('FALTA ANTHROPIC_API_KEY');
       return {
         statusCode: 500,
         body: JSON.stringify({ error: 'ANTHROPIC_API_KEY no configurada en Netlify' }),
@@ -18,6 +18,8 @@ export const handler = async (event) => {
     }
 
     const requestBody = JSON.parse(event.body);
+    console.log('Modelo solicitado:', requestBody.model);
+    console.log('Tamano del body recibido (KB):', Math.round(event.body.length / 1024));
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -31,6 +33,13 @@ export const handler = async (event) => {
 
     const data = await response.json();
 
+    if (!response.ok) {
+      console.error('Anthropic API devolvio error. Status:', response.status);
+      console.error('Detalle del error:', JSON.stringify(data));
+    } else {
+      console.log('Respuesta OK de Anthropic. Status:', response.status);
+    }
+
     return {
       statusCode: response.status,
       headers: {
@@ -40,7 +49,8 @@ export const handler = async (event) => {
       body: JSON.stringify(data),
     };
   } catch (error) {
-    console.error('Error en anthropic-proxy:', error);
+    console.error('Excepcion en anthropic-proxy:', error.message);
+    console.error('Stack:', error.stack);
     return {
       statusCode: 500,
       headers: {
