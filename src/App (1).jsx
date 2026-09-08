@@ -4287,7 +4287,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -4768,7 +4768,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -5384,7 +5384,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
@@ -8369,7 +8369,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
