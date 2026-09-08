@@ -67,9 +67,12 @@ const MODULOS_DISPONIBLES = [
 // asigna a nivel de CABALLETE (rack), no por cristal individual — cada hueco guarda
 // un caballete entero. Arriba son los caballetes de Uxcar, abajo los de ALUMAVEL.
 const ZONAS_CRISTALES = {
-  arriba: { label: "Arriba (Uxcar)", filas: 13, huecos: 2 },
-  abajo: { label: "Abajo (ALUMAVEL)", filas: 8, huecos: 2 },
+  arriba: { label: "Arriba (Uxcar)", filas: 3, huecos: 15 },
+  abajo: { label: "Abajo (ALUMAVEL)", filas: 2, huecos: 15 },
 };
+// Fila que se deja siempre libre como "colchón": solo se usa cuando el resto de
+// filas de esa zona ya están completamente llenas.
+const FILA_RESERVA = { arriba: 3 };
 const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -4281,7 +4284,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es una lista de materiales o un pedido escrito/impreso (puede ser una foto de notas a mano, una lista de un proveedor, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: [{"referencia":"nombre o descripción tal cual aparece","ancho":"","alto":"","cantidad":numero}]. Si hay medidas (ancho x alto) inclúyelas, si no, deja esos campos vacíos.';
+      const prompt = 'Esto es una lista de materiales o un pedido escrito/impreso (puede ser una foto de notas a mano, una lista de un proveedor, etc). Puede tener varias líneas. Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: [{"referencia":"nombre o descripción tal cual aparece","ancho":"","alto":"","cantidad":numero}]. Si hay medidas (ancho x alto) inclúyelas, si no, deja esos campos vacíos. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
@@ -4762,7 +4765,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es un albarán de entrega de un proveedor. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) con este formato exacto: [{"material":"nombre o referencia tal cual aparece en el albarán","cantidad":numero}]. Una línea por cada material o referencia distinta que aparezca.';
+      const prompt = 'Esto es un albarán de entrega de un proveedor. Puede tener varias líneas. Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) con este formato exacto: [{"material":"nombre o referencia tal cual aparece en el albarán","cantidad":numero}]. Una línea por cada material o referencia distinta que aparezca. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
@@ -5342,7 +5345,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
   // Sugiere una ubicación: prioriza un hueco libre en la misma fila que otro caballete
   // del mismo expediente ya colocado, para mantenerlos juntos; si no, el primer hueco
-  // libre de la zona que corresponda según el proveedor.
+  // libre de la zona que corresponda según el proveedor (dejando la fila reservada, si
+  // la hay, para el final, como colchón cuando el resto esté lleno).
   const sugerirUbicacion = (cristal) => {
     const zonaSugerida = (cristal.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
     const ocupado = (zona, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
@@ -5357,9 +5361,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       }
     }
     const cfg = ZONAS_CRISTALES[zonaSugerida];
-    for (let f = 1; f <= cfg.filas; f++) {
+    const filaReservada = FILA_RESERVA[zonaSugerida];
+    const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
+    for (const f of filasNormales) {
       for (let h = 1; h <= cfg.huecos; h++) {
         if (!ocupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
+      }
+    }
+    if (filaReservada) {
+      for (let h = 1; h <= cfg.huecos; h++) {
+        if (!ocupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
       }
     }
     return null;
@@ -5379,7 +5390,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta. Deja en blanco lo que no encuentres.';
+      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -5416,11 +5427,62 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         setLeyendoPacking(false);
         return;
       }
-      items.forEach((it) => onAdd({
-        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
-        proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
-        cantidad: it.cantidad || 1,
-      }));
+      // Simulamos la colocación de cada caballete nuevo uno a uno, usando la misma lógica
+      // de sugerencia (agrupar por expediente en la misma fila, si no el primer hueco libre
+      // de la zona). Trabajamos sobre una copia local para que los caballetes del mismo
+      // packing list también se tengan en cuenta entre sí según se van "colocando".
+      const ocupadosSimulado = cristales
+        .filter((c) => c.ubicacion)
+        .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente }));
+
+      const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
+
+      const calcularUbicacion = (item) => {
+        const zonaSugerida = (item.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+        if (item.expediente) {
+          const mismos = ocupadosSimulado.filter((o) => o.expediente === item.expediente);
+          for (const m of mismos) {
+            for (let h = 1; h <= ZONAS_CRISTALES[m.zona].huecos; h++) {
+              if (!estaOcupado(m.zona, m.fila, h)) return { zona: m.zona, fila: m.fila, hueco: h };
+            }
+          }
+        }
+        const cfg = ZONAS_CRISTALES[zonaSugerida];
+        const filaReservada = FILA_RESERVA[zonaSugerida];
+        const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
+        for (const f of filasNormales) {
+          for (let h = 1; h <= cfg.huecos; h++) {
+            if (!estaOcupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
+          }
+        }
+        if (filaReservada) {
+          for (let h = 1; h <= cfg.huecos; h++) {
+            if (!estaOcupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
+          }
+        }
+        return null;
+      };
+
+      let sinHueco = 0;
+      const hoy = new Date().toISOString().slice(0, 10);
+      items.forEach((it) => {
+        const datosBase = {
+          lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
+          proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
+          cantidad: it.cantidad || 1,
+        };
+        const ubicacion = calcularUbicacion(datosBase);
+        if (ubicacion) {
+          ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente });
+          onAdd({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
+        } else {
+          sinHueco++;
+          onAdd(datosBase);
+        }
+      });
+      if (sinHueco > 0) {
+        setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
+      }
     } catch (e) {
       console.error("Error leyendo packing list:", e);
       setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF. (" + e.message + ")");
@@ -5432,7 +5494,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   return (
     <div>
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-4">
-        La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (13 filas), abajo los de ALUMAVEL (8 filas), 2 huecos por fila.
+        La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (3 filas), abajo los de ALUMAVEL (2 filas), 15 huecos por fila.
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -8363,7 +8425,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
+      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
