@@ -56,6 +56,7 @@ const MODULOS_DISPONIBLES = [
   { id: "articulos", label: "Artículos" },
   { id: "facturas", label: "Facturas" },
   { id: "presupuestos", label: "Presupuestos" },
+  { id: "mediciones", label: "Mediciones" },
   { id: "ingresos", label: "Entrada de dinero" },
   { id: "informes", label: "Informes" },
   { id: "fabrica", label: "Fábrica" },
@@ -253,10 +254,12 @@ export default function App() {
   const [ingresos, setIngresos] = useState([]);
   const [solicitudesPedido, setSolicitudesPedido] = useState([]);
   const [instalaciones, setInstalaciones] = useState([]);
+  const [mediciones, setMediciones] = useState([]);
   const [vehiculos, setVehiculos] = useState([]);
   const [cristales, setCristales] = useState([]);
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
+  const [sesionesUsuario, setSesionesUsuario] = useState({});
   const [sesionUsuarioId, setSesionUsuarioId] = useState(null);
   const [sesionClienteId, setSesionClienteId] = useState(null);
   const [modulo, setModulo] = useState("proyectos"); // clientes | proyectos | proveedores | stock | pedidos | incidencias | calendario | articulos | facturas | presupuestos | fichajes | administracion
@@ -325,6 +328,12 @@ export default function App() {
   const [instalacionView, setInstalacionView] = useState("list");
   const [instalacionDetailId, setInstalacionDetailId] = useState(null);
 
+  // mediciones view state
+  const [medicionView, setMedicionView] = useState("list");
+  const [medicionEditId, setMedicionEditId] = useState(null);
+  const [medicionDetailId, setMedicionDetailId] = useState(null);
+  const [presupuestoPrefill, setPresupuestoPrefill] = useState(null);
+
   // fichajes
   const [empleadoActual, setEmpleadoActual] = useState("");
 
@@ -333,7 +342,7 @@ export default function App() {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
-          "vehiculos", "fichajes", "usuarios", "cristales"];
+          "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -368,6 +377,8 @@ export default function App() {
         if (resultados.fichajes) setFichajes(toArray(resultados.fichajes));
         if (resultados.usuarios) setUsuarios(toArray(resultados.usuarios));
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
+        if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
+        if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
 
         // Estas son locales de este navegador/dispositivo, no compartidas — cada persona
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
@@ -593,6 +604,39 @@ export default function App() {
   };
 
   const saveInstalaciones = (next) => { setInstalaciones(next); persist("instalaciones", next); };
+
+  const saveMediciones = (next) => { setMediciones(next); persist("mediciones", next); };
+
+  const upsertMedicion = (data) => {
+    if (data.id && mediciones.some((m) => m.id === data.id)) {
+      saveMediciones(mediciones.map((m) => (m.id === data.id ? { ...m, ...data } : m)));
+      showToast("Medición actualizada");
+    } else {
+      const nueva = { ...data, id: data.id || uid() };
+      saveMediciones([nueva, ...mediciones]);
+      showToast("Medición creada");
+    }
+  };
+
+  const deleteMedicion = (id) => {
+    saveMediciones(mediciones.filter((m) => m.id !== id));
+    showToast("Medición borrada");
+  };
+
+  // Al pulsar "Pasar a presupuesto" dentro de una medición: se abre el
+  // formulario de Presupuestos ya con el cliente y una descripción con el
+  // resumen de todo lo medido, para que solo falte poner el número y el importe.
+  const pasarMedicionAPresupuesto = (medicion, resumenGlobal) => {
+    saveMediciones(mediciones.map((m) => (m.id === medicion.id ? { ...m, presupuestoCreado: true } : m)));
+    setPresupuestoPrefill({
+      clienteNombre: medicion.clienteNombre,
+      direccionEnvio: medicion.direccion || "",
+      descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || "(Todavía no se han registrado elementos medidos en esta medición.)"}`,
+    });
+    setModulo("presupuestos");
+    setPresupuestoEditId(null);
+    setPresupuestoView("form");
+  };
 
   const crearInstalacionParaProyecto = (proyecto) => {
     const nueva = {
@@ -1520,6 +1564,38 @@ export default function App() {
   };
 
   const currentUser = usuarios.find((u) => u.id === sesionUsuarioId) || null;
+
+  // Seguimiento de tiempo conectado por usuario: mientras haya un usuario con
+  // sesión iniciada (currentUser), guardamos una "sesión" en Firebase con hora
+  // de inicio y hora de fin. La hora de fin se va actualizando cada 2 minutos
+  // (y al cerrar la pestaña/sesión) para que, aunque cierren el navegador sin
+  // avisar, quede un fin aproximado y no una sesión "infinita".
+  const sesionActivaIdRef = useRef(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    const sessionId = uid();
+    sesionActivaIdRef.current = sessionId;
+    const path = `sesionesUsuario/${currentUser.id}/${sessionId}`;
+    const inicio = Date.now();
+    fbSet(ref(fbDb, path), { inicio, fin: inicio }).catch(() => {});
+
+    const actualizarFin = () => {
+      fbSet(ref(fbDb, `${path}/fin`), Date.now()).catch(() => {});
+    };
+    const intervalo = setInterval(actualizarFin, 120000);
+    const onVisibilidad = () => { if (document.visibilityState === "hidden") actualizarFin(); };
+    window.addEventListener("beforeunload", actualizarFin);
+    document.addEventListener("visibilitychange", onVisibilidad);
+
+    return () => {
+      clearInterval(intervalo);
+      actualizarFin();
+      window.removeEventListener("beforeunload", actualizarFin);
+      document.removeEventListener("visibilitychange", onVisibilidad);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
   const isAdmin = currentUser?.rol === "Administrador";
   const modulosPermitidos = isAdmin
     ? MODULOS_DISPONIBLES.map((m) => m.id)
@@ -1701,6 +1777,16 @@ export default function App() {
             }`}
           >
             <FileSpreadsheet size={16} /> Presupuestos
+          </button>
+          )}
+          {tieneAcceso("mediciones") && (
+          <button
+            onClick={() => setModulo("mediciones")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "mediciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Ruler size={16} /> Mediciones
           </button>
           )}
           {tieneAcceso("ingresos") && (
@@ -2044,6 +2130,24 @@ export default function App() {
               setPresupuestoView("form");
             }}
             isAdmin={isAdmin}
+            prefill={presupuestoPrefill}
+            onClearPrefill={() => setPresupuestoPrefill(null)}
+          />
+        )}
+        {modulo === "mediciones" && (
+          <MedicionesModulo
+            mediciones={mediciones}
+            view={medicionView}
+            setView={setMedicionView}
+            editId={medicionEditId}
+            setEditId={setMedicionEditId}
+            detailId={medicionDetailId}
+            setDetailId={setMedicionDetailId}
+            onUpsert={upsertMedicion}
+            onDelete={deleteMedicion}
+            incidencias={incidencias}
+            onUpsertIncidencia={upsertIncidencia}
+            onPasarAPresupuesto={pasarMedicionAPresupuesto}
           />
         )}
         {modulo === "ingresos" && (
@@ -2075,6 +2179,9 @@ export default function App() {
             clientes={clientes}
             materiales={materiales}
             instalaciones={instalaciones}
+            usuarios={usuarios}
+            sesionesUsuario={sesionesUsuario}
+            isAdmin={isAdmin}
           />
         )}
         {modulo === "fabrica" && (
@@ -2207,6 +2314,7 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
       <Header
         icon={<Users size={20} className="text-[#2E8B57]" />}
         title="Clientes"
+        manualKey="clientes"
         subtitle={`${clientes.length} cliente${clientes.length === 1 ? "" : "s"} registrado${clientes.length === 1 ? "" : "s"}`}
       />
 
@@ -2303,17 +2411,202 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
   );
 }
 
-function Header({ icon, title, subtitle, action }) {
+// Texto de ayuda para cada pestaña. Se muestra al pulsar el botón "?" que
+// aparece junto al título de cada sección (ver componente Header más abajo).
+const MANUALES = {
+  clientes: {
+    puntos: [
+      "Aquí tienes el listado de todos tus clientes. Usa el buscador para filtrar por nombre, CIF, email o teléfono.",
+      "Pulsa \"NUEVO CLIENTE\" para dar de alta uno.",
+      "Haz clic en una fila para abrir el detalle: sus proyectos, sus pagos y sus datos de contacto.",
+      "Desde el detalle puedes editar sus datos o borrarlo.",
+      "La columna \"Riesgo\" muestra qué porcentaje de su límite de crédito tiene pendiente de pagar. Si sale en rojo, ese cliente ya ha superado el límite que le pusiste.",
+    ],
+  },
+  proyectos: {
+    puntos: [
+      "Aquí ves todos los proyectos/obras, con su cliente, importe y estado.",
+      "Un proyecto normalmente nace de un presupuesto aceptado (desde la pestaña Presupuestos), pero también puedes crear uno directamente con el botón de nuevo proyecto.",
+      "Dentro de cada proyecto puedes registrar los pagos que te van llegando, los materiales/artículos usados, y ver los pedidos e instalaciones relacionados con esa obra.",
+      "Desde aquí también puedes generar el pedido de materiales de un proyecto directamente hacia Pedidos.",
+    ],
+  },
+  proveedores: {
+    puntos: [
+      "Listado de tus proveedores de materiales.",
+      "Pulsa para añadir uno nuevo con sus datos de contacto.",
+      "Al entrar en el detalle de un proveedor puedes ver qué materiales le compras y editar sus datos.",
+    ],
+  },
+  stock: {
+    puntos: [
+      "Catálogo de todos los materiales (perfiles, herrajes, cristal, etc.) que manejas, con su stock actual.",
+      "Puedes registrar entradas (cuando llega material) y salidas (cuando se usa) de cada material, y el historial de movimientos queda guardado.",
+      "Si un material se queda corto, puedes enviarlo directamente a un pedido a proveedor desde aquí.",
+    ],
+  },
+  pedidos: {
+    puntos: [
+      "Aquí gestionas los pedidos que haces a tus proveedores.",
+      "Puedes crear un pedido a mano, o generarlo automáticamente desde una foto de un albarán/presupuesto de proveedor.",
+      "Cuando el proveedor confirma o envía el pedido, marca esos estados aquí para llevar el seguimiento.",
+      "Cuando llega el material, usa \"Recibir\" para meterlo en el stock automáticamente.",
+      "La pestaña \"Solicitudes\" (si la ves) es donde tus empleados piden materiales y tú, como administrador, las apruebas o rechazas.",
+    ],
+  },
+  solicitudesPedido: {
+    puntos: [
+      "Aquí los empleados solicitan materiales que necesitan para una obra.",
+      "Como administrador, puedes aprobar la solicitud (y se convierte en pedido a proveedor) o rechazarla explicando el motivo.",
+      "El empleado puede ver el estado de sus propias solicitudes.",
+    ],
+  },
+  fabrica: {
+    puntos: [
+      "Este módulo controla lo que pasa en el almacén/taller, independientemente de la parte de oficina.",
+      "\"Listo para fabricar\": líneas de pedido ya recibidas y listas para empezar a fabricar.",
+      "\"Materiales pendientes\": lo que aún falta para poder fabricar.",
+      "\"En fabricación\": lo que ya se está fabricando.",
+      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre.",
+    ],
+  },
+  instalaciones: {
+    puntos: [
+      "Aquí ves las instalaciones (obras) que están en marcha o completadas, con las horas y gastos de cada una.",
+      "Puedes añadir horas trabajadas, gastos, y materiales cargados en la furgoneta para cada instalación.",
+      "El \"Control de montaje por vivienda\" (dentro del detalle de una instalación con varios bloques/viviendas) te permite marcar qué elementos están instalados en cada vivienda, subir fotos, y generar incidencias directamente si algo falla.",
+      "Desde aquí también se accede a \"Vehículos\" (la flota) y \"Furgoneta\" (qué material va en cada furgoneta).",
+    ],
+  },
+  vehiculos: {
+    puntos: [
+      "Listado de la flota de vehículos (furgonetas, camiones) disponibles para asignar a instalaciones.",
+      "Aquí das de alta o borras vehículos.",
+    ],
+  },
+  furgoneta: {
+    puntos: [
+      "Vista de qué material falta cargar, qué va ya en la furgoneta, y qué está en la obra, para todas las instalaciones activas a la vez.",
+      "Te ayuda a preparar la furgoneta antes de salir a una obra sin olvidar nada.",
+    ],
+  },
+  incidencias: {
+    puntos: [
+      "Aquí registras cualquier problema o incidencia (una rotura, un fallo de medida, una reclamación, etc.).",
+      "Puedes vincular la incidencia a un proyecto y, si hace falta material para resolverla, pedirlo directamente a proveedor desde la propia incidencia.",
+      "El estado de la incidencia (abierta, en curso, resuelta) se actualiza desde el detalle.",
+    ],
+  },
+  calendario: {
+    puntos: [
+      "Vista mensual que junta automáticamente fechas de proyectos, pedidos e incidencias, para que veas todo en un solo calendario.",
+      "Puedes arrastrar un elemento a otro día para cambiarle la fecha directamente desde aquí.",
+      "Haz clic en un elemento para ir directamente a su detalle (proyecto, pedido o incidencia).",
+    ],
+  },
+  articulos: {
+    puntos: [
+      "Catálogo de artículos que fabricas (por ejemplo, un tipo de ventana concreto), compuestos a partir de los materiales de Stock.",
+      "Cuando usas un artículo en un proyecto, se descuentan automáticamente los materiales que lo componen.",
+    ],
+  },
+  facturas: {
+    puntos: [
+      "Aquí gestionas las facturas que emites a tus clientes.",
+      "Puedes registrar los pagos que vas recibiendo de cada factura y ver cuánto queda pendiente.",
+    ],
+  },
+  presupuestos: {
+    puntos: [
+      "Aquí creas y gestionas los presupuestos que envías a clientes (nuevos o ya existentes).",
+      "Puedes registrar las llamadas de seguimiento que haces a un cliente sobre su presupuesto.",
+      "Cuando el cliente lo acepta, pulsa \"Crear proyecto\" para convertir ese presupuesto en un proyecto/obra real.",
+      "También puedes duplicar un presupuesto para no escribirlo todo de nuevo si es parecido a otro.",
+      "Si vienes de la pestaña Mediciones y pulsaste \"Pasar a presupuesto\", el formulario se abre aquí ya con el cliente y una descripción con el resumen de las medidas — solo te falta poner el número y el importe.",
+    ],
+  },
+  mediciones: {
+    puntos: [
+      "Aquí registras las medidas que tomas en una visita, antes incluso de tener un presupuesto o, a veces, antes de tener el cliente dado de alta en el CRM.",
+      "Cada medición puede tener varios bloques/viviendas (igual que Control de montaje): puedes importar un Excel/ODS con la plantilla, o ir añadiéndolas a mano.",
+      "En cada puerta/ventana marcas qué componentes lleva (marco, hojas, persiana, tapajuntas, silicona...) y puedes añadir foto y documentos (planos, etc.) clasificados por categoría.",
+      "Cuando termines de medir, pulsa \"Pasar a presupuesto\" dentro de la medición: se abre un presupuesto nuevo con el cliente puesto y una descripción con el resumen de todo lo medido, para que solo tengas que poner el número y el importe.",
+    ],
+  },
+  ingresos: {
+    puntos: [
+      "Aquí ves el dinero que ha entrado (pagos de clientes), aunque no venga directamente de una factura.",
+      "Puedes vincular una entrada de dinero a un proyecto concreto para que se reste de lo pendiente de ese proyecto.",
+    ],
+  },
+  informes: {
+    puntos: [
+      "Vista general con gráficos: proyectos, presupuestos, dinero cobrado y pendiente, incidencias, y productividad de instalación.",
+      "Al final (solo para administradores) verás el tiempo que cada usuario ha tenido el CRM abierto: hoy, últimos 7 días y total acumulado.",
+      "Te sirve para hacerte una idea rápida de cómo va el negocio sin entrar pestaña por pestaña.",
+    ],
+  },
+  fichajes: {
+    puntos: [
+      "Control horario de los empleados: fichar entrada, salida, y pausas.",
+      "Como administrador puedes ver y corregir los fichajes de todos los empleados.",
+    ],
+  },
+  administracion: {
+    puntos: [
+      "Aquí gestionas quién tiene acceso al CRM y con qué permisos (administrador o empleado normal).",
+      "Puedes dar de alta nuevos usuarios o quitarle el acceso a alguien.",
+    ],
+  },
+};
+
+function Header({ icon, title, subtitle, action, manualKey }) {
+  const [ayudaAbierta, setAyudaAbierta] = useState(false);
+  const manual = manualKey ? MANUALES[manualKey] : null;
   return (
     <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
       <div>
         <div className="flex items-center gap-2">
           {icon}
           <h1 className="font-display text-2xl font-extrabold text-slate-900">{title}</h1>
+          {manual && (
+            <button
+              type="button"
+              onClick={() => setAyudaAbierta(true)}
+              title="Cómo funciona esta pestaña"
+              className="w-6 h-6 flex items-center justify-center rounded-full border border-slate-300 text-slate-500 hover:bg-slate-100 hover:text-slate-700 text-xs font-bold shrink-0"
+            >
+              ?
+            </button>
+          )}
         </div>
         {subtitle && <p className="text-sm text-slate-500 mt-1">{subtitle}</p>}
       </div>
       {action}
+      {manual && ayudaAbierta && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+          onClick={() => setAyudaAbierta(false)}
+        >
+          <div
+            className="bg-white rounded-lg max-w-lg w-full max-h-[80vh] overflow-y-auto p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                {icon}
+                <h2 className="font-display text-lg font-bold text-slate-900">Cómo funciona: {title}</h2>
+              </div>
+              <button onClick={() => setAyudaAbierta(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+            <ul className="space-y-2.5 text-sm text-slate-700 list-disc pl-5">
+              {manual.puntos.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2694,9 +2987,15 @@ function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, 
       <Header
         icon={<Briefcase size={20} className="text-[#2E8B57]" />}
         title="Proyectos / Obras"
+        manualKey="proyectos"
         subtitle={`${proyectos.length} proyecto${proyectos.length === 1 ? "" : "s"} registrado${proyectos.length === 1 ? "" : "s"}`}
       />
 
+      {clientes.length === 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
+          ⚠ No puedes crear un proyecto todavía: primero da de alta al menos un cliente en la pestaña Clientes.
+        </div>
+      )}
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         disabled={clientes.length === 0}
@@ -3591,6 +3890,7 @@ function ProveedoresModulo({ proveedores, materiales, view, setView, editId, set
       <Header
         icon={<Truck size={20} className="text-[#2E8B57]" />}
         title="Proveedores"
+        manualKey="proveedores"
         subtitle={`${proveedores.length} proveedor${proveedores.length === 1 ? "" : "es"} registrado${proveedores.length === 1 ? "" : "s"}`}
       />
 
@@ -3921,9 +4221,15 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       <Header
         icon={<Boxes size={20} className="text-[#2E8B57]" />}
         title="Gestión de Stock"
+        manualKey="stock"
         subtitle={`${materiales.length} material${materiales.length === 1 ? "" : "es"} en catálogo`}
       />
 
+      {proveedores.length === 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
+          ⚠ No puedes crear un material todavía: primero da de alta al menos un proveedor en la pestaña Proveedores.
+        </div>
+      )}
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         disabled={proveedores.length === 0}
@@ -4423,6 +4729,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
       <Header
         icon={<ClipboardList size={20} className="text-[#2E8B57]" />}
         title="Pedidos"
+        manualKey="pedidos"
         subtitle={`${pedidos.length} pedido${pedidos.length === 1 ? "" : "s"} registrado${pedidos.length === 1 ? "" : "s"}`}
       />
 
@@ -4440,6 +4747,11 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         </button>
       </div>
 
+      {proveedores.length === 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
+          ⚠ No puedes crear un pedido todavía: primero da de alta al menos un proveedor en la pestaña Proveedores.
+        </div>
+      )}
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         disabled={proveedores.length === 0}
@@ -5122,6 +5434,7 @@ function SolicitudesPedidoModulo({ solicitudes, proyectos, currentUser, isAdmin,
       <Header
         icon={<ClipboardList size={20} className="text-[#2E8B57]" />}
         title="Solicitudes de empleados"
+        manualKey="solicitudesPedido"
         subtitle={isAdmin ? `${solicitudes.length} solicitud${solicitudes.length === 1 ? "" : "es"} · ${pendientesN} pendiente${pendientesN === 1 ? "" : "s"} de revisar` : `${visibles.length} solicitud${visibles.length === 1 ? "" : "es"} tuya${visibles.length === 1 ? "" : "s"}`}
       />
 
@@ -5394,20 +5707,21 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
       const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
-      // Lanzamos el job, y luego sondeamos Firebase cada pocos segundos hasta que
-      // el resultado esté listo (o hasta 3 minutos, que es más que suficiente para
-      // un packing list con el modelo rápido).
+      // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
+      // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
+      // archivo directamente en Firebase (sin ese límite) y a la función solo
+      // le mandamos el jobId; ella misma va a buscar el archivo a Firebase.
       const jobId = uid();
+      await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), {
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 8000,
+        contentBlock,
+        prompt,
+      });
       await fetch("/.netlify/functions/anthropic-proxy-background", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobId,
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          contentBlock,
-          prompt,
-        }),
+        body: JSON.stringify({ jobId }),
       });
 
       let resultado = null;
@@ -5421,6 +5735,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         }
       }
       fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
+      fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
 
       if (!resultado) {
         throw new Error("La lectura está tardando demasiado (más de 3 minutos). Prueba de nuevo o con un documento más corto.");
@@ -5927,7 +6242,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 
   return (
     <div className="p-8">
-      <Header icon={<Factory size={20} className="text-[#2E8B57]" />} title="Fábrica" subtitle="Control desde almacén — independiente del control de oficina" />
+      <Header icon={<Factory size={20} className="text-[#2E8B57]" />} title="Fábrica" manualKey="fabrica" subtitle="Control desde almacén — independiente del control de oficina" />
 
       <div className="flex flex-wrap items-center gap-1 mb-6 border-b border-slate-200">
         <button onClick={() => setTab("listo")}
@@ -6196,6 +6511,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
       <Header
         icon={<Wrench size={20} className="text-[#2E8B57]" />}
         title="Instalaciones"
+        manualKey="instalaciones"
         subtitle={`${instalaciones.length} instalación${instalaciones.length === 1 ? "" : "es"} registrada${instalaciones.length === 1 ? "" : "s"}`}
       />
 
@@ -6312,7 +6628,7 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
     <div className="p-8 max-w-3xl">
       <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver a Instalaciones</button>
 
-      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Vehículos de la flota" subtitle="Furgonetas y camiones disponibles para asignar a instalaciones" />
+      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Vehículos de la flota" manualKey="vehiculos" subtitle="Furgonetas y camiones disponibles para asignar a instalaciones" />
 
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap gap-2 items-end mb-4">
         <Field label="Nombre del vehículo">
@@ -6427,7 +6743,7 @@ function FurgonetaModulo({ instalaciones, proyectos, onCiclo, onVerInstalacion, 
     <div className="p-8">
       <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver a Instalaciones</button>
 
-      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Furgoneta" subtitle="Qué falta cargar, qué va ya en la furgoneta, y qué está en la obra — de todas las instalaciones activas" />
+      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Furgoneta" manualKey="furgoneta" subtitle="Qué falta cargar, qué va ya en la furgoneta, y qué está en la obra — de todas las instalaciones activas" />
 
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-6">
         Toca un material para pasarlo a la siguiente columna (Pendiente de cargar → En la furgoneta → En la obra). Toca el nombre de la instalación para abrir su ficha.
@@ -6807,6 +7123,31 @@ function parsearExcelMontaje(arrayBuffer) {
   return viviendas;
 }
 
+// Lista de componentes que se controlan por defecto en cada puerta/ventana.
+// El usuario puede añadir más componentes personalizados con el botón "+".
+const COMPONENTES_DEFECTO_ELEMENTO = ["Marco", "Hoja izquierda", "Hoja derecha", "Persiana", "Tapajuntas", "Silicona"];
+
+// Si el elemento todavía no tiene su propia lista de componentes guardada
+// (por ejemplo, viene de una importación antigua), se genera la lista por
+// defecto al vuelo. No se guarda hasta que el usuario marca/añade algo.
+function componentesDeElemento(el) {
+  if (el.componentes && el.componentes.length) return el.componentes;
+  return COMPONENTES_DEFECTO_ELEMENTO.map((nombre) => ({ id: uid(), nombre, hecho: false }));
+}
+
+// Categorías para clasificar los documentos guardados por vivienda (planos, etc.)
+const CATEGORIAS_DOCUMENTO_MONTAJE = ["Planos", "Contratos", "Fichas técnicas", "Fotos de obra", "Otros"];
+
+function agruparDocumentosPorCategoria(documentos) {
+  const grupos = {};
+  (documentos || []).forEach((d) => {
+    const cat = d.categoria || "Otros";
+    if (!grupos[cat]) grupos[cat] = [];
+    grupos[cat].push(d);
+  });
+  return grupos;
+}
+
 function nombreElementoMontaje(el) {
   const base = el.tipo === "puerta" ? "Puerta" : el.tipo === "ventana" ? "Ventana" : el.codigo;
   const sufijo =
@@ -6855,7 +7196,26 @@ function leerDocumentoMontaje(file) {
 // reutiliza fbDb, uid y toArray que ya están definidos arriba en el archivo.
 // Para las incidencias sí usa las funciones reales de la app (onUpsertIncidencia,
 // y el array "incidencias" ya cargado), para no crear un sistema paralelo.
+// Componente genérico: la lista de "viviendas" con su checklist de elementos,
+// fotos, documentos por categoría, extras e incidencias. Lo usa tanto
+// "Control de montaje" (dentro de cada instalación, basePath=controlMontaje/<id>)
+// como "Mediciones" (basePath=mediciones/<id>/detalle), para que ambos
+// tengan exactamente las mismas funciones.
+// Envoltorio usado dentro de cada instalación: calcula la ruta de Firebase a
+// partir del id de la instalación y delega en el componente genérico de
+// arriba. Esto es exactamente el mismo comportamiento que tenía antes.
 function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpsertIncidencia }) {
+  return (
+    <ControlElementosPorVivienda
+      basePath={`controlMontaje/${instalacionId}`}
+      proyectoId={proyectoId}
+      incidencias={incidencias}
+      onUpsertIncidencia={onUpsertIncidencia}
+    />
+  );
+}
+
+function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpsertIncidencia, accionPrincipal }) {
   const [viviendas, setViviendas] = useState([]);
   const [jefeDeObra, setJefeDeObra] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -6869,8 +7229,10 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
   const [nuevaIncidenciaTexto, setNuevaIncidenciaTexto] = useState({});
   const [vinculandoEn, setVinculandoEn] = useState(null);
   const [mostrarManual, setMostrarManual] = useState(false);
+  const [anadiendoComponente, setAnadiendoComponente] = useState(null);
+  const [nuevoComponenteTexto, setNuevoComponenteTexto] = useState({});
+  const [docCategoria, setDocCategoria] = useState({});
   const fileInputRef = useRef(null);
-  const basePath = `controlMontaje/${instalacionId}`;
 
   const descargarPlantilla = () => {
     const datosLeeme = [
@@ -6915,7 +7277,7 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
   };
 
   useEffect(() => {
-    if (!instalacionId) return;
+    if (!basePath) return;
     (async () => {
       setCargando(true);
       try {
@@ -6931,7 +7293,7 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
         setCargando(false);
       }
     })();
-  }, [instalacionId]);
+  }, [basePath]);
 
   const guardarViviendas = async (next) => {
     setViviendas(next);
@@ -7009,6 +7371,38 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
     });
   };
 
+  const toggleComponente = (v, elId, compId) => {
+    actualizarVivienda(v.id, {
+      elementos: v.elementos.map((el) => {
+        if (el.id !== elId) return el;
+        const lista = componentesDeElemento(el);
+        return { ...el, componentes: lista.map((c) => (c.id === compId ? { ...c, hecho: !c.hecho } : c)) };
+      }),
+    });
+  };
+
+  const agregarComponente = (v, elId, nombre) => {
+    const limpio = (nombre || "").trim();
+    if (!limpio) return;
+    actualizarVivienda(v.id, {
+      elementos: v.elementos.map((el) => {
+        if (el.id !== elId) return el;
+        const lista = componentesDeElemento(el);
+        return { ...el, componentes: [...lista, { id: uid(), nombre: limpio, hecho: false }] };
+      }),
+    });
+  };
+
+  const subirFotoElemento = async (v, elId, file) => {
+    if (!file) return;
+    const dataUrl = await comprimirFotoMontaje(file);
+    actualizarVivienda(v.id, {
+      elementos: v.elementos.map((el) =>
+        el.id === elId ? { ...el, fotos: [...(el.fotos || []), { id: uid(), url: dataUrl, subidaEn: Date.now() }] } : el
+      ),
+    });
+  };
+
   const agregarExtra = (v) => {
     const texto = (extraTexto[v.id] || "").trim();
     if (!texto) return;
@@ -7022,7 +7416,7 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
     actualizarVivienda(v.id, { fotos: [...(v.fotos || []), { id: uid(), url: dataUrl, subidaEn: Date.now() }] });
   };
 
-  const subirDocumento = async (v, file) => {
+  const subirDocumento = async (v, file, categoria) => {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
       alert("El archivo pesa más de 8 MB. Prueba a comprimirlo o súbelo a Dropbox y enlázalo aparte.");
@@ -7030,7 +7424,7 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
     }
     const dataUrl = await leerDocumentoMontaje(file);
     actualizarVivienda(v.id, {
-      documentos: [...(v.documentos || []), { id: uid(), nombre: file.name, url: dataUrl, subidoEn: Date.now() }],
+      documentos: [...(v.documentos || []), { id: uid(), nombre: file.name, categoria: categoria || "Otros", url: dataUrl, subidoEn: Date.now() }],
     });
   };
 
@@ -7070,9 +7464,10 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
   const resumenVivienda = (v) => {
     const instalados = v.elementos.filter((el) => el.instalado).length;
     const lineas = v.elementos.map((el) => {
-      const t = el.tapajuntas || {};
+      const comps = componentesDeElemento(el);
       const estado = el.instalado ? "Instalado" : "Pendiente";
-      return `- ${nombreElementoMontaje(el)}: ${estado} | Tapajuntas izq:${t.izquierda ? "SI" : "NO"} der:${t.derecha ? "SI" : "NO"} arriba:${t.arriba ? "SI" : "NO"}`;
+      const detalleComp = comps.map((c) => `${c.nombre}:${c.hecho ? "SI" : "NO"}`).join(" | ");
+      return `- ${nombreElementoMontaje(el)}: ${estado} (${detalleComp})`;
     });
     const incs = v.incidenciasVinculadas || [];
     const lineasInc = incs.length ? `\nIncidencias vinculadas:\n${incs.map((i) => `- ${i.descripcion}`).join("\n")}` : "";
@@ -7163,6 +7558,16 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
         </div>
       )}
 
+      {accionPrincipal && listaOrdenada.length > 0 && (
+        <button
+          onClick={() => accionPrincipal.onClick(listaOrdenada.map(resumenVivienda).join("\n\n"), listaOrdenada)}
+          style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+          className="w-full flex items-center justify-center gap-2 hover:opacity-90 text-sm font-bold py-3 rounded-lg mb-4 shadow-md"
+        >
+          {accionPrincipal.etiqueta}
+        </button>
+      )}
+
       {listaFiltrada.length === 0 && (
         <p className="text-sm text-slate-400">Todavía no hay viviendas importadas. Pulsa "Importar Excel/ODS" y sube el archivo de cálculo de montaje.</p>
       )}
@@ -7187,23 +7592,76 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
               {abierta && (
                 <div className="px-4 pb-4 border-t border-slate-100">
                   <div className="space-y-2 mt-3">
-                    {elementos.map((el) => (
-                      <div key={el.id} className="border border-slate-200 rounded-md p-2">
-                        <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                          <input type="checkbox" checked={!!el.instalado} onChange={() => toggleInstalado(v, el.id)} />
-                          {nombreElementoMontaje(el)}
-                          {el.medida && <span className="text-xs text-slate-400 font-normal">({el.medida})</span>}
-                        </label>
-                        <div className="flex gap-3 mt-2 ml-6 text-xs text-slate-600">
-                          {["izquierda", "derecha", "arriba"].map((lado) => (
-                            <label key={lado} className="flex items-center gap-1">
-                              <input type="checkbox" checked={!!(el.tapajuntas && el.tapajuntas[lado])} onChange={() => toggleTapajuntas(v, el.id, lado)} />
-                              Tapajuntas {lado}
+                    {elementos.map((el) => {
+                      const comps = componentesDeElemento(el);
+                      const keyAdd = `${v.id}_${el.id}`;
+                      return (
+                        <div key={el.id} className="border border-slate-200 rounded-md p-2">
+                          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                            <input type="checkbox" checked={!!el.instalado} onChange={() => toggleInstalado(v, el.id)} />
+                            {nombreElementoMontaje(el)}
+                            {el.medida && <span className="text-xs text-slate-400 font-normal">({el.medida})</span>}
+                          </label>
+
+                          <div className="flex flex-wrap gap-3 mt-2 ml-6 text-xs text-slate-600 items-center">
+                            {comps.map((c) => (
+                              <label key={c.id} className="flex items-center gap-1">
+                                <input type="checkbox" checked={!!c.hecho} onChange={() => toggleComponente(v, el.id, c.id)} />
+                                {c.nombre}
+                              </label>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => setAnadiendoComponente(anadiendoComponente === keyAdd ? null : keyAdd)}
+                              title="Añadir otro elemento a controlar (por ejemplo: cerradura, mosquitera...)"
+                              className="w-5 h-5 flex items-center justify-center rounded-full border border-slate-300 text-slate-500 hover:bg-slate-100 font-bold shrink-0"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          {anadiendoComponente === keyAdd && (
+                            <div className="flex gap-2 mt-2 ml-6">
+                              <TextInput
+                                value={nuevoComponenteTexto[keyAdd] || ""}
+                                onChange={(e) => setNuevoComponenteTexto((prev) => ({ ...prev, [keyAdd]: e.target.value }))}
+                                placeholder="Ej: cerradura, mosquitera..."
+                                className="flex-1 !text-xs !py-1"
+                              />
+                              <button
+                                onClick={() => {
+                                  agregarComponente(v, el.id, nuevoComponenteTexto[keyAdd]);
+                                  setNuevoComponenteTexto((prev) => ({ ...prev, [keyAdd]: "" }));
+                                  setAnadiendoComponente(null);
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 rounded-md text-xs font-semibold shrink-0"
+                              >
+                                Añadir
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 flex-wrap mt-2 ml-6">
+                            {(el.fotos || []).map((f) => (
+                              <img key={f.id} src={f.url} alt="" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
+                            ))}
+                            <label
+                              title="Añadir foto de este elemento"
+                              className="w-12 h-12 flex items-center justify-center border border-dashed border-slate-300 rounded-md text-slate-400 cursor-pointer hover:bg-slate-50"
+                            >
+                              <ImageIcon size={16} />
+                              <input
+                                type="file"
+                                accept="image/*"
+                                capture="environment"
+                                className="hidden"
+                                onChange={(e) => subirFotoElemento(v, el.id, e.target.files[0])}
+                              />
                             </label>
-                          ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <div className="mt-4">
@@ -7227,10 +7685,29 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
 
                   <div className="mt-4">
                     <div className="text-sm font-semibold text-slate-700 mb-1">Documentos ({(v.documentos || []).length})</div>
-                    {(v.documentos || []).map((d) => (
-                      <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
+                    {Object.entries(agruparDocumentosPorCategoria(v.documentos)).map(([cat, docs]) => (
+                      <div key={cat} className="mb-2">
+                        <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 ml-2">{cat}</div>
+                        {docs.map((d) => (
+                          <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
+                        ))}
+                      </div>
                     ))}
-                    <input type="file" accept="application/pdf" onChange={(e) => subirDocumento(v, e.target.files[0])} className="text-sm mt-1" />
+                    <div className="flex gap-2 mt-2 items-center">
+                      <Select
+                        value={docCategoria[v.id] || "Planos"}
+                        onChange={(e) => setDocCategoria((prev) => ({ ...prev, [v.id]: e.target.value }))}
+                        className="max-w-[150px] !py-1 !text-xs shrink-0"
+                      >
+                        {CATEGORIAS_DOCUMENTO_MONTAJE.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </Select>
+                      <input
+                        type="file"
+                        accept="application/pdf,image/*"
+                        onChange={(e) => subirDocumento(v, e.target.files[0], docCategoria[v.id] || "Planos")}
+                        className="text-sm flex-1"
+                      />
+                    </div>
                   </div>
 
                   <div className="mt-4">
@@ -7270,6 +7747,194 @@ function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpse
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ================= MEDICIONES ================= */
+
+function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
+  const [q, setQ] = useState("");
+
+  const filtered = mediciones.filter((m) => {
+    if (!q) return true;
+    return `${m.clienteNombre} ${m.direccion || ""}`.toLowerCase().includes(q.toLowerCase());
+  });
+
+  if (view === "form") {
+    const editing = mediciones.find((m) => m.id === editId) || null;
+    return (
+      <MedicionForm
+        initial={editing}
+        onCancel={() => setView(editId ? "detail" : "list")}
+        onSave={(data) => { onUpsert(data); setDetailId(data.id); setView("detail"); }}
+      />
+    );
+  }
+
+  if (view === "detail") {
+    const medicion = mediciones.find((m) => m.id === detailId);
+    if (!medicion) { setView("list"); return null; }
+    return (
+      <MedicionDetail
+        medicion={medicion}
+        onBack={() => setView("list")}
+        onEdit={() => { setEditId(medicion.id); setView("form"); }}
+        onDelete={() => { onDelete(medicion.id); setView("list"); }}
+        incidencias={incidencias}
+        onUpsertIncidencia={onUpsertIncidencia}
+        onPasarAPresupuesto={onPasarAPresupuesto}
+      />
+    );
+  }
+
+  return (
+    <div className="p-8 max-w-6xl overflow-x-hidden">
+      <Header
+        icon={<Ruler size={20} className="text-[#2E8B57]" />}
+        title="Mediciones"
+        manualKey="mediciones"
+        subtitle={`${mediciones.length} medición${mediciones.length === 1 ? "" : "es"} registrada${mediciones.length === 1 ? "" : "s"}`}
+      />
+
+      <button
+        onClick={() => { setEditId(null); setView("form"); }}
+        className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
+      >
+        <Plus size={22} /> NUEVA MEDICIÓN
+      </button>
+
+      <div className="relative flex-1 max-w-sm mb-4">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar por cliente o dirección..."
+          className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]"
+        />
+      </div>
+
+      <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+              <th className="px-4 py-3 font-semibold">Cliente</th>
+              <th className="px-4 py-3 font-semibold">Dirección</th>
+              <th className="px-4 py-3 font-semibold">Fecha</th>
+              <th className="px-4 py-3 font-semibold">Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400 text-sm">No hay mediciones que coincidan con la búsqueda.</td></tr>
+            )}
+            {filtered.map((m) => (
+              <tr
+                key={m.id}
+                onClick={() => { setDetailId(m.id); setView("detail"); }}
+                className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition"
+              >
+                <td className="px-4 py-3 font-medium text-slate-800">{m.clienteNombre}</td>
+                <td className="px-4 py-3 text-slate-500">{m.direccion || "—"}</td>
+                <td className="px-4 py-3 text-slate-500">{m.fecha || "—"}</td>
+                <td className="px-4 py-3">
+                  {m.presupuestoCreado
+                    ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Pasada a presupuesto</Badge>
+                    : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">En curso</Badge>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MedicionForm({ initial, onCancel, onSave }) {
+  const [f, setF] = useState(
+    initial || { id: null, clienteNombre: "", direccion: "", fecha: new Date().toISOString().slice(0, 10), notas: "" }
+  );
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const submit = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!f.clienteNombre.trim()) { setErrorMsg("Falta el nombre del cliente (es obligatorio)."); return; }
+    if (!f.fecha) { setErrorMsg("Falta la fecha (es obligatoria)."); return; }
+    setErrorMsg("");
+    onSave({ ...f, id: f.id || uid() });
+  };
+
+  return (
+    <div className="p-8 max-w-2xl">
+      <button onClick={onCancel} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
+      <h1 className="font-display text-2xl font-extrabold text-slate-900 mb-6">{initial?.id ? "Editar medición" : "Nueva medición"}</h1>
+
+      {errorMsg && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
+          ⚠ {errorMsg}
+        </div>
+      )}
+
+      <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
+        <p className="text-xs text-slate-400">
+          El cliente no tiene por qué existir todavía en el CRM — puedes escribir su nombre aunque aún no lo hayas dado de alta como cliente. Cuando pases esta medición a presupuesto, si el cliente no existe, se te avisará para darlo de alta primero.
+        </p>
+        <Field label="Cliente" required>
+          <TextInput value={f.clienteNombre} onChange={set("clienteNombre")} placeholder="Nombre del cliente o de la obra" />
+        </Field>
+        <Field label="Dirección">
+          <TextInput value={f.direccion} onChange={set("direccion")} placeholder="Dirección donde se mide" />
+        </Field>
+        <Field label="Fecha" required>
+          <TextInput type="date" value={f.fecha} onChange={set("fecha")} />
+        </Field>
+        <Field label="Notas">
+          <TextArea value={f.notas} onChange={set("notas")} rows={3} placeholder="Cualquier apunte general de la visita" />
+        </Field>
+        <div className="flex gap-3 pt-2">
+          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-md border border-slate-300 text-sm font-semibold text-slate-600">Cancelar</button>
+          <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2 rounded-md text-sm font-semibold">Guardar</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
+  return (
+    <div className="p-8 max-w-5xl overflow-x-hidden">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
+
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
+        <div>
+          <h1 className="font-display text-2xl font-extrabold text-slate-900">{medicion.clienteNombre}</h1>
+          <p className="text-sm text-slate-500 mt-1">{medicion.direccion || "Sin dirección"} · {medicion.fecha || "—"}</p>
+          {medicion.notas && <p className="text-sm text-slate-500 mt-1">{medicion.notas}</p>}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
+          <button onClick={() => { if (window.confirm("¿Borrar esta medición? Esta acción no se puede deshacer.")) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Borrar</button>
+        </div>
+      </div>
+
+      {medicion.presupuestoCreado && (
+        <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-300 text-emerald-800 text-sm font-semibold mb-4">
+          ✓ Esta medición ya se pasó a presupuesto. Si mides algo más, puedes volver a pasarla a presupuesto cuando quieras.
+        </div>
+      )}
+
+      <ControlElementosPorVivienda
+        basePath={`mediciones/${medicion.id}/detalle`}
+        proyectoId={null}
+        incidencias={incidencias}
+        onUpsertIncidencia={onUpsertIncidencia}
+        accionPrincipal={{
+          etiqueta: "Pasar a presupuesto →",
+          onClick: (resumenGlobal) => onPasarAPresupuesto(medicion, resumenGlobal),
+        }}
+      />
     </div>
   );
 }
@@ -7338,9 +8003,15 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
       <Header
         icon={<AlertOctagon size={20} className="text-[#2E8B57]" />}
         title="Incidencias"
+        manualKey="incidencias"
         subtitle={`${incidencias.length} incidencia${incidencias.length === 1 ? "" : "s"} registrada${incidencias.length === 1 ? "" : "s"}`}
       />
 
+      {proyectos.length === 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
+          ⚠ No puedes crear una incidencia todavía: primero da de alta al menos un proyecto en la pestaña Proyectos.
+        </div>
+      )}
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         disabled={proyectos.length === 0}
@@ -7986,6 +8657,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
       <Header
         icon={<CalendarDays size={20} className="text-[#2E8B57]" />}
         title="Calendario de trabajos"
+        manualKey="calendario"
         subtitle="Vista mensual automática a partir de proyectos, pedidos e incidencias"
       />
 
@@ -8162,6 +8834,7 @@ function ArticulosModulo({ articulos, proveedores, materiales, view, setView, ed
       <Header
         icon={<Layers size={20} className="text-[#2E8B57]" />}
         title="Artículos"
+        manualKey="articulos"
         subtitle={`${articulos.length} artículo${articulos.length === 1 ? "" : "s"} en catálogo`}
       />
 
@@ -8615,9 +9288,15 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
       <Header
         icon={<Receipt size={20} className="text-[#2E8B57]" />}
         title="Facturas"
+        manualKey="facturas"
         subtitle={`${facturas.length} factura${facturas.length === 1 ? "" : "s"} emitida${facturas.length === 1 ? "" : "s"}`}
       />
 
+      {clientes.length === 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
+          ⚠ No puedes crear una factura todavía: primero da de alta al menos un cliente en la pestaña Clientes.
+        </div>
+      )}
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         disabled={clientes.length === 0}
@@ -8980,7 +9659,7 @@ const semanaISO = (fechaStr) => {
   return `${d.getFullYear()}-S${String(weekNo).padStart(2, "0")}`;
 };
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin }) {
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -8990,6 +9669,24 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
   const inputFotoRef = useRef(null);
+
+  // Cuando llega un "prefill" desde fuera (por ejemplo, al pulsar "Pasar a
+  // presupuesto" en una medición), lo convertimos al mismo formato que ya usa
+  // el prefill interno de "leer foto", y abrimos el formulario directamente.
+  useEffect(() => {
+    if (!prefill) return;
+    setPrefillPresupuesto({
+      id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
+      clienteNombre: prefill.clienteNombre || "", telefono: "",
+      descripcion: prefill.descripcion || "", importe: "", estado: "Pendiente",
+      motivoRechazo: "", fechaRespuesta: "", comentarios: "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
+      fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, zona: "",
+    });
+    setEditId(null);
+    setView("form");
+    if (onClearPrefill) onClearPrefill();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill]);
 
   const leerFotoPresupuesto = async (file) => {
     setLeyendoFoto(true);
@@ -9225,6 +9922,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       <Header
         icon={<FileSpreadsheet size={20} className="text-[#2E8B57]" />}
         title="Presupuestos"
+        manualKey="presupuestos"
         subtitle={`${presupuestos.length} presupuesto${presupuestos.length === 1 ? "" : "s"} registrado${presupuestos.length === 1 ? "" : "s"}`}
       />
 
@@ -9786,6 +10484,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
       <Header
         icon={<Wallet size={20} className="text-[#2E8B57]" />}
         title="Entrada de dinero"
+        manualKey="ingresos"
         subtitle={`${ingresos.length} entrada${ingresos.length === 1 ? "" : "s"} registrada${ingresos.length === 1 ? "" : "s"}`}
       />
 
@@ -9908,6 +10607,7 @@ function VincularProyectoSelect({ proyectos, onVincular }) {
       <button
         onClick={() => sel && onVincular(sel)}
         disabled={!sel}
+        title={!sel ? "Elige primero un proyecto de la lista" : ""}
         style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
         className="text-xs font-semibold disabled:bg-slate-300 px-2.5 py-1.5 rounded-md"
       >
@@ -10036,7 +10736,7 @@ const enRango = (fechaStr, rango) => {
   return f >= rango.desde && f <= rango.hasta;
 };
 
-function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones }) {
+function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin }) {
   const COLOR_ESTADO = { Pendiente: "#f59e0b", Aceptado: "#10b981", Rechazado: "#f43f5e", "En espera": "#94a3b8" };
   const [periodo, setPeriodo] = useState("mes");
   const rango = rangoPeriodo(periodo, 0);
@@ -10115,6 +10815,41 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
   const importePedidosActual = pedidosActual.reduce((s, p) => s + (p.lineas || []).reduce((s2, l) => s2 + (parseFloat(l.cantidad) || 0) * (parseFloat(l.precio) || 0), 0), 0);
 
   const ultimosMovimientos = [...ingresos].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).slice(0, 8);
+
+  const formatoHorasMin = (ms) => {
+    if (!ms || ms <= 0) return "0 min";
+    const totalMin = Math.round(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if (h === 0) return `${m} min`;
+    return `${h} h ${m} min`;
+  };
+
+  const resumenConexion = useMemo(() => {
+    const inicioHoy = new Date();
+    inicioHoy.setHours(0, 0, 0, 0);
+    const tsInicioHoy = inicioHoy.getTime();
+    const inicioSemana = new Date(inicioHoy);
+    inicioSemana.setDate(inicioSemana.getDate() - 6);
+    const tsInicioSemana = inicioSemana.getTime();
+
+    return (usuarios || [])
+      .map((u) => {
+        const sesiones = Object.values((sesionesUsuario && sesionesUsuario[u.id]) || {});
+        let total = 0, hoy = 0, ultimos7 = 0, ultimaConexion = null;
+        sesiones.forEach((s) => {
+          const inicio = s.inicio || 0;
+          const fin = Math.max(s.fin || s.inicio || 0, inicio);
+          total += fin - inicio;
+          if (fin >= tsInicioHoy) hoy += Math.max(fin - Math.max(inicio, tsInicioHoy), 0);
+          if (fin >= tsInicioSemana) ultimos7 += Math.max(fin - Math.max(inicio, tsInicioSemana), 0);
+          if (!ultimaConexion || fin > ultimaConexion) ultimaConexion = fin;
+        });
+        return { usuario: u, total, hoy, ultimos7, ultimaConexion };
+      })
+      .sort((a, b) => b.total - a.total);
+  }, [usuarios, sesionesUsuario]);
+
 
   const comparacionFabrica = useMemo(() => {
     const filas = [];
@@ -10318,7 +11053,7 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
 
   return (
     <div className="p-8">
-      <Header icon={<BarChart3 size={20} className="text-[#2E8B57]" />} title="Informes" subtitle="Vista general de proyectos, presupuestos y dinero" />
+      <Header icon={<BarChart3 size={20} className="text-[#2E8B57]" />} title="Informes" manualKey="informes" subtitle="Vista general de proyectos, presupuestos y dinero" />
 
       <div className="flex flex-wrap items-center gap-2 mb-6">
         {PERIODOS_INFORME.map((p) => (
@@ -10714,6 +11449,38 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
           </tbody>
         </table>
       </div>
+
+      {isAdmin && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <h2 className="font-display font-bold text-slate-700 text-sm p-4 pb-0">Tiempo conectado por usuario</h2>
+          <p className="text-xs text-slate-400 px-4 pt-1">Tiempo que cada usuario ha tenido el CRM abierto en el navegador (aproximado — no es lo mismo que las horas fichadas en Fichajes).</p>
+          <table className="w-full text-sm mt-3">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-2.5 font-semibold">Usuario</th>
+                <th className="px-4 py-2.5 font-semibold text-right">Hoy</th>
+                <th className="px-4 py-2.5 font-semibold text-right">Últimos 7 días</th>
+                <th className="px-4 py-2.5 font-semibold text-right">Total acumulado</th>
+                <th className="px-4 py-2.5 font-semibold">Última conexión</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resumenConexion.map((r) => (
+                <tr key={r.usuario.id} className="border-b border-slate-100 last:border-0">
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{r.usuario.nombre} {r.usuario.apellidos || ""}</td>
+                  <td className="px-4 py-2.5 text-right font-mono-num text-slate-600">{formatoHorasMin(r.hoy)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono-num text-slate-600">{formatoHorasMin(r.ultimos7)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono-num font-semibold text-slate-800">{formatoHorasMin(r.total)}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{r.ultimaConexion ? new Date(r.ultimaConexion).toLocaleString("es-ES") : "—"}</td>
+                </tr>
+              ))}
+              {resumenConexion.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-sm">Todavía no hay datos de conexión registrados.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -11185,7 +11952,7 @@ function FichajesModulo({ fichajes, empleadoActual, setEmpleadoActual, onFichar,
       <div className="flex items-center gap-2 mb-1">
         <Badge className="bg-slate-100 text-slate-500 ring-slate-200">Fase posterior</Badge>
       </div>
-      <Header icon={<Timer size={20} className="text-[#2E8B57]" />} title="Fichajes" subtitle="Control horario de empleados" />
+      <Header icon={<Timer size={20} className="text-[#2E8B57]" />} title="Fichajes" manualKey="fichajes" subtitle="Control horario de empleados" />
 
       <div className="flex gap-1 mb-6 border-b border-slate-200">
         {[
@@ -11669,6 +12436,7 @@ function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
       <Header
         icon={<UserCog size={20} className="text-[#2E8B57]" />}
         title="Administración de usuarios"
+        manualKey="administracion"
         subtitle={`${usuarios.length} usuario${usuarios.length === 1 ? "" : "s"} con acceso al CRM`}
       />
 

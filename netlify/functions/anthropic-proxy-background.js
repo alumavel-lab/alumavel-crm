@@ -20,18 +20,32 @@ async function guardarResultado(jobId, payload) {
   }
 }
 
+// La foto/PDF (en base64) puede pesar varios MB, y las funciones de Netlify
+// rechazan peticiones grandes con un error 413. Por eso el navegador ya NO
+// nos manda el archivo directamente: lo deja guardado en Firebase primero
+// (que no tiene ese límite), y aquí solo recibimos el jobId y vamos a
+// buscarlo nosotros mismos.
+async function leerEntrada(jobId) {
+  const res = await fetch(`${FIREBASE_DB_URL}/packingListJobsInput/${jobId}.json`);
+  if (!res.ok) throw new Error("No se pudo leer la entrada del trabajo desde Firebase (status " + res.status + ")");
+  const data = await res.json();
+  if (!data) throw new Error("No se encontró la entrada del trabajo en Firebase (jobId: " + jobId + ")");
+  return data;
+}
+
 export const handler = async (event) => {
   let jobId = null;
   try {
     const body = JSON.parse(event.body || "{}");
     jobId = body.jobId;
-    const { model, max_tokens, contentBlock, prompt } = body;
     const apiKey = process.env.ANTHROPIC_API_KEY;
 
     if (!apiKey) {
       await guardarResultado(jobId, { status: "error", error: "ANTHROPIC_API_KEY no configurada en Netlify" });
       return { statusCode: 200, body: "ok" };
     }
+
+    const { model, max_tokens, contentBlock, prompt } = await leerEntrada(jobId);
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
