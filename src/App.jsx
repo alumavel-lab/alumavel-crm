@@ -6726,8 +6726,14 @@ function parsearExcelMontaje(arrayBuffer) {
     };
 
     filas.forEach((fila) => {
-      const etiqueta = fila[1] != null ? String(fila[1]).trim() : "";
-      if (!etiqueta) return;
+      // Buscamos la primera celda con contenido en la fila, sea cual sea su columna
+      // (algunos lectores de ODS no dejan la columna A vacía como en el Excel original)
+      let colEtiqueta = -1;
+      for (let c = 0; c < fila.length; c++) {
+        if (fila[c] != null && String(fila[c]).trim() !== "") { colEtiqueta = c; break; }
+      }
+      if (colEtiqueta === -1) return;
+      const etiqueta = String(fila[colEtiqueta]).trim();
       const up = etiqueta.toUpperCase();
 
       if (up.startsWith("BLOQUE")) return;
@@ -6770,8 +6776,8 @@ function parsearExcelMontaje(arrayBuffer) {
           tipo: esPuerta ? "puerta" : esVentana ? "ventana" : "otro",
           ladoApertura: esPuerta ? sufijo : null,
           tipoVentana: esVentana ? sufijo : null,
-          medida: fila[2] != null ? String(fila[2]).trim() : null,
-          cantidad: fila[4] != null ? Number(fila[4]) : 1,
+          medida: fila[colEtiqueta + 1] != null ? String(fila[colEtiqueta + 1]).trim() : null,
+          cantidad: fila[colEtiqueta + 3] != null ? Number(fila[colEtiqueta + 3]) : 1,
           instalado: false,
           tapajuntas: { izquierda: false, derecha: false, arriba: false },
         });
