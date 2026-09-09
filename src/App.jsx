@@ -5870,6 +5870,20 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       {subTab === "pendientes" && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {pendientes.length > 0 && (
+            <div className="flex justify-end px-4 pt-3">
+              <button
+                onClick={() => {
+                  if (window.confirm(`¿Borrar los ${pendientes.length} caballete(s) pendientes que ves ahora en la lista (según el buscador)? Esta acción no se puede deshacer.`)) {
+                    pendientes.forEach((c) => onDelete(c.id));
+                  }
+                }}
+                className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md hover:bg-rose-50"
+              >
+                Vaciar {q ? "esta lista filtrada" : "todos los pendientes"} ({pendientes.length})
+              </button>
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
@@ -5890,9 +5904,17 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                   <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}</td>
                   <td className="px-4 py-2.5 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => setAsignando(c)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md">
-                      Asignar ubicación
-                    </button>
+                    <div className="flex gap-1.5 justify-end">
+                      <button onClick={() => setAsignando(c)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md">
+                        Asignar ubicación
+                      </button>
+                      <button
+                        onClick={() => { if (window.confirm("¿Borrar este caballete pendiente?")) onDelete(c.id); }}
+                        className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1.5 rounded-md hover:bg-rose-50"
+                      >
+                        Borrar
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -5905,7 +5927,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       )}
 
       {subTab === "mapa" && (
-        <MapaAlmacenCristales cristales={cristales} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
+        <MapaAlmacenCristales cristales={cristales} q={q} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
       )}
 
       {subTab === "estadisticas" && (
@@ -5925,10 +5947,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       {verDetalle && (
         <DetalleHuecoModal
           ubicacion={verDetalle}
-          cristal={cristales.find((c) => c.ubicacion && c.ubicacion.zona === verDetalle.zona && c.ubicacion.fila === verDetalle.fila && c.ubicacion.hueco === verDetalle.hueco)}
+          cristalesEnHueco={cristales.filter((c) => c.ubicacion && c.ubicacion.zona === verDetalle.zona && c.ubicacion.fila === verDetalle.fila && c.ubicacion.hueco === verDetalle.hueco)}
           onClose={() => setVerDetalle(null)}
-          onLiberar={(id) => { onLiberar(id); setVerDetalle(null); }}
-          onEliminar={(id) => { onDelete(id); setVerDetalle(null); }}
+          onLiberar={(id) => onLiberar(id)}
+          onEliminar={(id) => onDelete(id)}
         />
       )}
     </div>
@@ -5957,10 +5979,17 @@ function NuevoCristalForm({ onCancel, onSave }) {
   );
 }
 
-function MapaAlmacenCristales({ cristales, onVerHueco, onAsignarDesdeMapa }) {
-  const ocupante = (zona, fila, hueco) => cristales.find((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) {
+  const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
+  const nq = normalizarMapa(q);
+  const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   return (
     <div className="space-y-6">
+      {q && (
+        <div className="px-4 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
+          Los huecos resaltados en naranja coinciden con "{q}".
+        </div>
+      )}
       {Object.entries(ZONAS_CRISTALES).map(([zonaId, cfg]) => (
         <div key={zonaId} className="bg-white border border-slate-200 rounded-lg p-4">
           <h3 className="font-display font-bold text-slate-800 mb-3">{cfg.label}</h3>
@@ -5970,15 +5999,27 @@ function MapaAlmacenCristales({ cristales, onVerHueco, onAsignarDesdeMapa }) {
                 <span className="text-xs text-slate-400 w-14 shrink-0">Fila {fila}</span>
                 <div className="flex gap-1.5 flex-1">
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
-                    const c = ocupante(zonaId, fila, hueco);
+                    const cs = ocupantes(zonaId, fila, hueco);
+                    const c = cs[0];
+                    const coincide = q && cs.some((x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida}`).includes(nq));
+                    const clase = coincide
+                      ? "bg-amber-500 text-white ring-2 ring-amber-300 cursor-pointer hover:opacity-80"
+                      : c
+                      ? "bg-[#2E8B57] text-white cursor-pointer hover:opacity-80"
+                      : "bg-slate-100 text-slate-300";
                     return (
                       <button
                         key={hueco}
                         onClick={() => c && onVerHueco({ zona: zonaId, fila, hueco })}
-                        title={c ? `${c.lote || ""} ${c.secuencia || ""} — ${c.cliente || ""}` : "Libre"}
-                        className={`flex-1 h-10 rounded-md text-[11px] font-semibold flex items-center justify-center px-1 truncate ${c ? "bg-[#2E8B57] text-white cursor-pointer hover:opacity-80" : "bg-slate-100 text-slate-300"}`}
+                        title={c ? cs.map((x) => `${x.lote || ""} ${x.secuencia || ""} — ${x.cliente || ""}`).join(" | ") : "Libre"}
+                        className={`relative flex-1 h-10 rounded-md text-[11px] font-semibold flex items-center justify-center px-1 truncate ${clase}`}
                       >
                         {c ? (c.lote || c.secuencia || "•") : "—"}
+                        {cs.length > 1 && (
+                          <span className="absolute -top-1.5 -right-1.5 bg-slate-800 text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
+                            {cs.length}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -6044,26 +6085,43 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
   );
 }
 
-function DetalleHuecoModal({ ubicacion, cristal, onClose, onLiberar, onEliminar }) {
-  if (!cristal) return null;
+function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar }) {
+  useEffect(() => {
+    if (cristalesEnHueco.length === 0) onClose();
+  }, [cristalesEnHueco.length]);
+
+  if (cristalesEnHueco.length === 0) return null;
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg p-5 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-lg p-5 max-w-md w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display font-bold text-slate-800 mb-1">{ubicacionTexto(ubicacion)}</h3>
-        <div className="text-sm text-slate-600 space-y-1 my-3">
-          <p><b>Lote:</b> {cristal.lote || "—"}</p>
-          <p><b>Secuencia:</b> {cristal.secuencia || "—"}</p>
-          <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
-          <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
-          <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
-          <p><b>Medida:</b> {cristal.medida || "—"}</p>
-          <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
+        <p className="text-xs text-slate-500 mb-3">
+          {cristalesEnHueco.length === 1 ? "1 expediente en este caballete." : `${cristalesEnHueco.length} expedientes juntos en este mismo caballete.`}
+        </p>
+        <div className="space-y-3">
+          {cristalesEnHueco.map((cristal) => (
+            <div key={cristal.id} className="border border-slate-200 rounded-md p-3">
+              <div className="text-sm text-slate-600 space-y-1 mb-2">
+                <p><b>Lote:</b> {cristal.lote || "—"}</p>
+                <p><b>Secuencia:</b> {cristal.secuencia || "—"}</p>
+                <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
+                <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
+                <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
+                <p><b>Medida:</b> {cristal.medida || "—"}</p>
+                <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => onLiberar(cristal.id)} className="flex-1 text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md hover:bg-amber-50">
+                  Liberar (vuelve a pendiente)
+                </button>
+                <button onClick={() => onEliminar(cristal.id)} className="flex-1 text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md hover:bg-rose-50">
+                  Dar de baja este expediente
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-        <div className="flex flex-col gap-2">
-          <button onClick={() => onLiberar(cristal.id)} className="text-sm font-semibold text-amber-700 border border-amber-300 px-4 py-2 rounded-md hover:bg-amber-50">Liberar hueco (vuelve a pendiente)</button>
-          <button onClick={() => onEliminar(cristal.id)} className="text-sm font-semibold text-rose-600 border border-rose-200 px-4 py-2 rounded-md hover:bg-rose-50">Eliminar caballete</button>
-          <button onClick={onClose} className="text-sm font-semibold text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cerrar</button>
-        </div>
+        <button onClick={onClose} className="w-full mt-4 text-sm font-semibold text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cerrar</button>
       </div>
     </div>
   );
