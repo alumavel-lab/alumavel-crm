@@ -5393,26 +5393,43 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
       const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
+      // Lanzamos el job, y luego sondeamos Firebase cada pocos segundos hasta que
+      // el resultado esté listo (o hasta 3 minutos, que es más que suficiente para
+      // un packing list con el modelo rápido).
+      const jobId = uid();
+      await fetch("/.netlify/functions/anthropic-proxy-background", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          jobId,
           model: "claude-haiku-4-5-20251001",
           max_tokens: 8000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+          contentBlock,
+          prompt,
         }),
       });
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
-        throw new Error("Respuesta no válida: " + response.status);
+
+      let resultado = null;
+      for (let intento = 0; intento < 60; intento++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
+        const val = snap && snap.exists ? (snap.exists() ? snap.val() : null) : null;
+        if (val && (val.status === "done" || val.status === "error")) {
+          resultado = val;
+          break;
+        }
       }
-      const data = await response.json();
-      if (data.error) {
-        console.error("Error devuelto por la API:", data.error);
-        throw new Error(data.error.message || "Error de la API");
+      fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
+
+      if (!resultado) {
+        throw new Error("La lectura está tardando demasiado (más de 3 minutos). Prueba de nuevo o con un documento más corto.");
       }
-      const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      if (resultado.status === "error") {
+        console.error("Error devuelto por la función en segundo plano:", resultado.error);
+        throw new Error(resultado.error || "Error de la API");
+      }
+      const texto = resultado.texto || "";
       const limpio = texto.replace(/```json|```/g, "").trim();
       const inicio = limpio.indexOf("[");
       const fin = limpio.lastIndexOf("]");
