@@ -67,9 +67,12 @@ const MODULOS_DISPONIBLES = [
 // asigna a nivel de CABALLETE (rack), no por cristal individual — cada hueco guarda
 // un caballete entero. Arriba son los caballetes de Uxcar, abajo los de ALUMAVEL.
 const ZONAS_CRISTALES = {
-  arriba: { label: "Arriba (Uxcar)", filas: 13, huecos: 2 },
-  abajo: { label: "Abajo (ALUMAVEL)", filas: 8, huecos: 2 },
+  arriba: { label: "Arriba (Uxcar)", filas: 3, huecos: 15 },
+  abajo: { label: "Abajo (ALUMAVEL)", filas: 2, huecos: 15 },
 };
+// Fila que se deja siempre libre como "colchón": solo se usa cuando el resto de
+// filas de esa zona ya están completamente llenas.
+const FILA_RESERVA = { arriba: 3 };
 const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -2116,6 +2119,8 @@ export default function App() {
             onCicloMaterialFurgoneta={cicloEstadoMaterialFurgoneta}
             onDeleteMaterialFurgoneta={deleteMaterialFurgoneta}
             isAdmin={isAdmin}
+            incidencias={incidencias}
+            onUpsertIncidencia={upsertIncidencia}
           />
         )}
         {modulo === "fichajes" && (
@@ -4281,22 +4286,39 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es una lista de materiales o un pedido escrito/impreso (puede ser una foto de notas a mano, una lista de un proveedor, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: [{"referencia":"nombre o descripción tal cual aparece","ancho":"","alto":"","cantidad":numero}]. Si hay medidas (ancho x alto) inclúyelas, si no, deja esos campos vacíos.';
+      const prompt = 'Esto es una lista de materiales o un pedido escrito/impreso (puede ser una foto de notas a mano, una lista de un proveedor, etc). Puede tener varias líneas. Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: [{"referencia":"nombre o descripción tal cual aparece","ancho":"","alto":"","cantidad":numero}]. Si hay medidas (ancho x alto) inclúyelas, si no, deja esos campos vacíos. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 1500,
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const items = JSON.parse(limpio);
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
+      let items;
+      try {
+        items = JSON.parse(jsonCandidato);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
       const lineas = items.map((it) => ({
         id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
         ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
@@ -4309,7 +4331,8 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
       }
       onCrearDesdeFoto(lineas, `Pedido creado a partir de una foto/PDF subida (${file.name}). Revisa las líneas antes de guardar.`);
     } catch (err) {
-      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo foto de pedido:", err);
+      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoFoto(false);
     }
@@ -4744,22 +4767,39 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es un albarán de entrega de un proveedor. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) con este formato exacto: [{"material":"nombre o referencia tal cual aparece en el albarán","cantidad":numero}]. Una línea por cada material o referencia distinta que aparezca.';
+      const prompt = 'Esto es un albarán de entrega de un proveedor. Puede tener varias líneas. Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) con este formato exacto: [{"material":"nombre o referencia tal cual aparece en el albarán","cantidad":numero}]. Una línea por cada material o referencia distinta que aparezca. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 1500,
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const lineasAlbaran = JSON.parse(limpio);
+      const inicioA = limpio.indexOf("[");
+      const finA = limpio.lastIndexOf("]");
+      const jsonCandidatoA = inicioA !== -1 && finA !== -1 ? limpio.slice(inicioA, finA + 1) : limpio;
+      let lineasAlbaran;
+      try {
+        lineasAlbaran = JSON.parse(jsonCandidatoA);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON del albarán. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
 
       const comparacion = pedido.lineas.map((l) => {
         const nombre = nombreLinea(l);
@@ -4783,7 +4823,8 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
 
       setResultadoAlbaran({ comparacion, sobrantesAlbaran, fecha: new Date().toISOString(), archivo: file.name });
     } catch (err) {
-      setErrorAlbaran("No se pudo leer el albarán. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo albarán:", err);
+      setErrorAlbaran("No se pudo leer el albarán. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoAlbaran(false);
     }
@@ -5306,7 +5347,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
   // Sugiere una ubicación: prioriza un hueco libre en la misma fila que otro caballete
   // del mismo expediente ya colocado, para mantenerlos juntos; si no, el primer hueco
-  // libre de la zona que corresponda según el proveedor.
+  // libre de la zona que corresponda según el proveedor (dejando la fila reservada, si
+  // la hay, para el final, como colchón cuando el resto esté lleno).
   const sugerirUbicacion = (cristal) => {
     const zonaSugerida = (cristal.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
     const ocupado = (zona, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
@@ -5321,9 +5363,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       }
     }
     const cfg = ZONAS_CRISTALES[zonaSugerida];
-    for (let f = 1; f <= cfg.filas; f++) {
+    const filaReservada = FILA_RESERVA[zonaSugerida];
+    const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
+    for (const f of filasNormales) {
       for (let h = 1; h <= cfg.huecos; h++) {
         if (!ocupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
+      }
+    }
+    if (filaReservada) {
+      for (let h = 1; h <= cfg.huecos; h++) {
+        if (!ocupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
       }
     }
     return null;
@@ -5343,33 +5392,119 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta. Deja en blanco lo que no encuentres.';
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
+      // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
+      // Lanzamos el job, y luego sondeamos Firebase cada pocos segundos hasta que
+      // el resultado esté listo (o hasta 3 minutos, que es más que suficiente para
+      // un packing list con el modelo rápido).
+      const jobId = uid();
+      await fetch("/.netlify/functions/anthropic-proxy-background", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+          jobId,
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          contentBlock,
+          prompt,
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida");
-      const data = await response.json();
-      const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+
+      let resultado = null;
+      for (let intento = 0; intento < 60; intento++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
+        const val = snap && snap.exists ? (snap.exists() ? snap.val() : null) : null;
+        if (val && (val.status === "done" || val.status === "error")) {
+          resultado = val;
+          break;
+        }
+      }
+      fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
+
+      if (!resultado) {
+        throw new Error("La lectura está tardando demasiado (más de 3 minutos). Prueba de nuevo o con un documento más corto.");
+      }
+      if (resultado.status === "error") {
+        console.error("Error devuelto por la función en segundo plano:", resultado.error);
+        throw new Error(resultado.error || "Error de la API");
+      }
+      const texto = resultado.texto || "";
       const limpio = texto.replace(/```json|```/g, "").trim();
-      const items = JSON.parse(limpio);
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
+      let items;
+      try {
+        items = JSON.parse(jsonCandidato);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
       if (!Array.isArray(items) || items.length === 0) {
         setErrorPacking("No he podido leer ningún caballete claro en el documento. Prueba con una foto más nítida.");
         setLeyendoPacking(false);
         return;
       }
-      items.forEach((it) => onAdd({
-        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
-        proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
-        cantidad: it.cantidad || 1,
-      }));
+      // Simulamos la colocación de cada caballete nuevo uno a uno, usando la misma lógica
+      // de sugerencia (agrupar por expediente en la misma fila, si no el primer hueco libre
+      // de la zona). Trabajamos sobre una copia local para que los caballetes del mismo
+      // packing list también se tengan en cuenta entre sí según se van "colocando".
+      const ocupadosSimulado = cristales
+        .filter((c) => c.ubicacion)
+        .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente }));
+
+      const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
+
+      const calcularUbicacion = (item) => {
+        const zonaSugerida = (item.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+        if (item.expediente) {
+          const mismos = ocupadosSimulado.filter((o) => o.expediente === item.expediente);
+          for (const m of mismos) {
+            for (let h = 1; h <= ZONAS_CRISTALES[m.zona].huecos; h++) {
+              if (!estaOcupado(m.zona, m.fila, h)) return { zona: m.zona, fila: m.fila, hueco: h };
+            }
+          }
+        }
+        const cfg = ZONAS_CRISTALES[zonaSugerida];
+        const filaReservada = FILA_RESERVA[zonaSugerida];
+        const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
+        for (const f of filasNormales) {
+          for (let h = 1; h <= cfg.huecos; h++) {
+            if (!estaOcupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
+          }
+        }
+        if (filaReservada) {
+          for (let h = 1; h <= cfg.huecos; h++) {
+            if (!estaOcupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
+          }
+        }
+        return null;
+      };
+
+      let sinHueco = 0;
+      const hoy = new Date().toISOString().slice(0, 10);
+      items.forEach((it) => {
+        const datosBase = {
+          lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
+          proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
+          cantidad: it.cantidad || 1,
+        };
+        const ubicacion = calcularUbicacion(datosBase);
+        if (ubicacion) {
+          ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente });
+          onAdd({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
+        } else {
+          sinHueco++;
+          onAdd(datosBase);
+        }
+      });
+      if (sinHueco > 0) {
+        setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
+      }
     } catch (e) {
-      setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF.");
+      console.error("Error leyendo packing list:", e);
+      setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF. (" + e.message + ")");
     } finally {
       setLeyendoPacking(false);
     }
@@ -5378,7 +5513,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   return (
     <div>
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-4">
-        La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (13 filas), abajo los de ALUMAVEL (8 filas), 2 huecos por fila.
+        La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (3 filas), abajo los de ALUMAVEL (2 filas), 15 huecos por fila.
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -5964,7 +6099,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin }) {
+function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -6025,6 +6160,8 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         otrasInstalaciones={instalaciones.filter((i) => i.id !== instalacion.id)}
         proyectos={proyectos}
         isAdmin={isAdmin}
+        incidencias={incidencias}
+        onUpsertIncidencia={onUpsertIncidencia}
       />
     );
   }
@@ -6372,7 +6509,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin }) {
+function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia }) {
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -6573,6 +6710,566 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
         <button type="submit" onClick={submitGasto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center justify-center gap-1 text-sm font-semibold px-3 py-2 rounded-md h-[38px]"><Plus size={15} /> Añadir</button>
       </form>
       {errorGasto && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorGasto}</p>}
+
+      <div className="mt-10 pt-8 border-t border-slate-200">
+        <ControlMontajeVivienda
+          instalacionId={instalacion.id}
+          proyectoId={instalacion.proyectoId}
+          incidencias={incidencias}
+          onUpsertIncidencia={onUpsertIncidencia}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ================= CONTROL DE MONTAJE POR VIVIENDA ================= */
+
+// Convierte un texto tipo "CAR BL1 PB A0-1" en piezas de vivienda, y a partir
+// de ahí lee las filas de elementos (puertas/ventanas) que le siguen.
+function parsearExcelMontaje(arrayBuffer) {
+  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  const viviendas = [];
+  const hojasBloque = workbook.SheetNames.filter((n) => n.toUpperCase().startsWith("BLOQUE"));
+
+  hojasBloque.forEach((nombreHoja) => {
+    const hoja = workbook.Sheets[nombreHoja];
+    const filas = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: null });
+    let viviendaActual = null;
+
+    const cerrarVivienda = () => {
+      if (viviendaActual && viviendaActual.elementos.length > 0) viviendas.push(viviendaActual);
+      viviendaActual = null;
+    };
+
+    filas.forEach((fila) => {
+      // Buscamos la primera celda con contenido en la fila, sea cual sea su columna
+      // (algunos lectores de ODS no dejan la columna A vacía como en el Excel original)
+      let colEtiqueta = -1;
+      for (let c = 0; c < fila.length; c++) {
+        if (fila[c] != null && String(fila[c]).trim() !== "") { colEtiqueta = c; break; }
+      }
+      if (colEtiqueta === -1) return;
+      const etiqueta = String(fila[colEtiqueta]).trim();
+      const up = etiqueta.toUpperCase();
+
+      if (up.startsWith("BLOQUE")) return;
+      if (up.startsWith("TOTAL")) { cerrarVivienda(); return; }
+
+      if (up.startsWith("CAR ")) {
+        cerrarVivienda();
+        const resto = etiqueta.substring(4).trim();
+        const partes = resto.split(/\s+/);
+        const bloqueCode = partes[0] || "";
+        const planta = partes[1] || "";
+        const codigoVivienda = partes.slice(2).join(" ") || "";
+        const esZonaComun = /HUECO|ESCALERA|ZONA/i.test(codigoVivienda);
+        const codigoLimpio = codigoVivienda.replace(/[()]/g, "").trim();
+        viviendaActual = {
+          id: uid(),
+          claveImportacion: `${bloqueCode}_${planta}_${codigoLimpio}`.replace(/\s+/g, "_"),
+          bloque: bloqueCode,
+          planta,
+          codigoVivienda: codigoLimpio,
+          esZonaComun,
+          elementos: [],
+          extras: [],
+          fotos: [],
+          documentos: [],
+          incidenciasVinculadas: [],
+        };
+        return;
+      }
+
+      if (viviendaActual) {
+        const partesCodigo = etiqueta.split(/\s+/);
+        const codigoBase = partesCodigo[0] || etiqueta;
+        const sufijo = partesCodigo[1] || null;
+        const esVentana = codigoBase.toUpperCase().startsWith("V");
+        const esPuerta = codigoBase.toUpperCase().startsWith("P");
+        viviendaActual.elementos.push({
+          id: uid(),
+          codigo: codigoBase,
+          tipo: esPuerta ? "puerta" : esVentana ? "ventana" : "otro",
+          ladoApertura: esPuerta ? sufijo : null,
+          tipoVentana: esVentana ? sufijo : null,
+          medida: fila[colEtiqueta + 1] != null ? String(fila[colEtiqueta + 1]).trim() : null,
+          cantidad: fila[colEtiqueta + 3] != null ? Number(fila[colEtiqueta + 3]) : 1,
+          instalado: false,
+          tapajuntas: { izquierda: false, derecha: false, arriba: false },
+        });
+      }
+    });
+
+    cerrarVivienda();
+  });
+
+  return viviendas;
+}
+
+function nombreElementoMontaje(el) {
+  const base = el.tipo === "puerta" ? "Puerta" : el.tipo === "ventana" ? "Ventana" : el.codigo;
+  const sufijo =
+    el.tipo === "puerta" && el.ladoApertura
+      ? ` (apertura ${el.ladoApertura === "I" ? "izquierda" : "derecha"})`
+      : el.tipo === "ventana" && el.tipoVentana
+      ? ` (${el.tipoVentana})`
+      : "";
+  return `${base} ${el.codigo}${sufijo}`;
+}
+
+function comprimirFotoMontaje(file, maxAncho = 1200, calidad = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const escala = Math.min(1, maxAncho / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * escala;
+        canvas.height = img.height * escala;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", calidad));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function leerDocumentoMontaje(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Guarda todo bajo la clave "controlMontaje/<instalacionId>" en Firebase.
+// No usa las funciones persist()/uid() de tiempo real del resto de la app
+// porque este control vive solo dentro de la ficha de instalación — pero
+// reutiliza fbDb, uid y toArray que ya están definidos arriba en el archivo.
+// Para las incidencias sí usa las funciones reales de la app (onUpsertIncidencia,
+// y el array "incidencias" ya cargado), para no crear un sistema paralelo.
+function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpsertIncidencia }) {
+  const [viviendas, setViviendas] = useState([]);
+  const [jefeDeObra, setJefeDeObra] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [importando, setImportando] = useState(false);
+  const [expandida, setExpandida] = useState(null);
+  const [filtroBloque, setFiltroBloque] = useState("todos");
+  const [extraTexto, setExtraTexto] = useState({});
+  const [editandoJefe, setEditandoJefe] = useState(false);
+  const [jefeEmail, setJefeEmail] = useState("");
+  const [jefeTelefono, setJefeTelefono] = useState("");
+  const [nuevaIncidenciaTexto, setNuevaIncidenciaTexto] = useState({});
+  const [vinculandoEn, setVinculandoEn] = useState(null);
+  const [mostrarManual, setMostrarManual] = useState(false);
+  const fileInputRef = useRef(null);
+  const basePath = `controlMontaje/${instalacionId}`;
+
+  const descargarPlantilla = () => {
+    const datosLeeme = [
+      ["CÓMO RELLENAR ESTE EXCEL PARA EL CONTROL DE MONTAJE POR VIVIENDA"],
+      [""],
+      ["Esta hoja LEEME es solo para ti — el CRM no la lee. Rellena las hojas BLOQUE_1, BLOQUE_2, etc."],
+      [""],
+      ["1. Cada hoja que quieras que el CRM lea debe empezar su nombre por BLOQUE (BLOQUE_1, BLOQUE_2, BLOQUE_3...)."],
+      ["2. Cada vivienda empieza con una fila en la COLUMNA B con este formato exacto: CAR <bloque> <planta> <vivienda>"],
+      ["   Ejemplo: CAR BL1 PB A0-1        Zona común: CAR BL1 PB (HUECO ESCALERA)"],
+      ["   Esta fila es IMPRESCINDIBLE — así el CRM sabe que empieza una vivienda nueva."],
+      ["3. Debajo de cada CAR, una fila por cada puerta o ventana de esa vivienda:"],
+      ["   Columna B = código. IMPRESCINDIBLE. Empieza por P (puerta) o V (ventana), ej: P01 I / V01 CA"],
+      ["   Columna E = cantidad. IMPRESCINDIBLE (si se deja vacío, el CRM pone 1)."],
+      ["   Columnas C y D y F (medida, valor, total) son opcionales, solo para tu referencia."],
+      ["4. Deja una fila completamente en blanco entre una vivienda y la siguiente."],
+      ["5. Puedes cerrar cada bloque con una fila que empiece por TOTAL (ej: TOTAL BLOQUE 1). Es opcional."],
+      [""],
+      ["En la hoja BLOQUE_1 tienes un ejemplo ya relleno — cópialo y sustituye por los datos de tu obra."],
+    ];
+    const datosBloque1 = [
+      ["", "Código / vivienda", "Medida (opcional)", "Valor (opcional)", "Cantidad (OBLIGATORIO)", "Total (opcional)"],
+      ["", "BLOQUE 1"],
+      ["", "CAR BL1 PB A0-1"],
+      ["", "P01 I", "0,90 x 2,20", 108, 1, 108],
+      ["", "V01 CA", "2,60 x 2,20", 204, 2, 408],
+      ["", "V02 CA", "1,80 x 1,25", 108, 1, 108],
+      [],
+      ["", "CAR BL1 PB B0-2"],
+      ["", "P01 D", "0,90 x 2,20", 108, 1, 108],
+      ["", "V02 CA", "1,80 x 1,25", 108, 1, 108],
+      [],
+      ["", "CAR BL1 PB (HUECO ESCALERA)"],
+      ["", "V07", "0,80 x 1,25", 84, 1, 84],
+      [],
+      ["", "TOTAL BLOQUE 1"],
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(datosLeeme), "LEEME");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(datosBloque1), "BLOQUE_1");
+    XLSX.writeFile(wb, "Plantilla_Control_Montaje_Vivienda.xlsx");
+  };
+
+  useEffect(() => {
+    if (!instalacionId) return;
+    (async () => {
+      setCargando(true);
+      try {
+        const snap = await fbGet(ref(fbDb, basePath));
+        const datos = snap.val() || {};
+        setViviendas(toArray(datos.viviendas));
+        setJefeDeObra(datos.jefeDeObra || null);
+        setJefeEmail(datos.jefeDeObra?.email || "");
+        setJefeTelefono(datos.jefeDeObra?.telefono || "");
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setCargando(false);
+      }
+    })();
+  }, [instalacionId]);
+
+  const guardarViviendas = async (next) => {
+    setViviendas(next);
+    try {
+      await fbSet(ref(fbDb, `${basePath}/viviendas`), next);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const guardarJefeDeObra = async () => {
+    const datos = { email: jefeEmail.trim(), telefono: jefeTelefono.trim() };
+    setJefeDeObra(datos);
+    setEditandoJefe(false);
+    try {
+      await fbSet(ref(fbDb, `${basePath}/jefeDeObra`), datos);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const listaOrdenada = [...viviendas].sort((a, b) => {
+    if (a.bloque !== b.bloque) return String(a.bloque).localeCompare(String(b.bloque));
+    if (a.planta !== b.planta) return String(a.planta).localeCompare(String(b.planta));
+    return String(a.codigoVivienda).localeCompare(String(b.codigoVivienda));
+  });
+  const bloquesDisponibles = [...new Set(listaOrdenada.map((v) => v.bloque))].sort();
+  const listaFiltrada = filtroBloque === "todos" ? listaOrdenada : listaOrdenada.filter((v) => v.bloque === filtroBloque);
+
+  const handleImportar = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportando(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const nuevas = parsearExcelMontaje(arrayBuffer);
+      const clavesExistentes = new Set(viviendas.map((v) => v.claveImportacion));
+      const aAgregar = nuevas.filter((v) => !clavesExistentes.has(v.claveImportacion));
+      // si la vivienda ya existía, añadimos solo los elementos nuevos sin tocar el estado marcado
+      const actualizadas = viviendas.map((v) => {
+        const importada = nuevas.find((n) => n.claveImportacion === v.claveImportacion);
+        if (!importada) return v;
+        const codigosExistentes = new Set(v.elementos.map((el) => el.codigo + (el.ladoApertura || "") + (el.tipoVentana || "")));
+        const nuevosElementos = importada.elementos.filter(
+          (el) => !codigosExistentes.has(el.codigo + (el.ladoApertura || "") + (el.tipoVentana || ""))
+        );
+        return nuevosElementos.length ? { ...v, elementos: [...v.elementos, ...nuevosElementos] } : v;
+      });
+      await guardarViviendas([...actualizadas, ...aAgregar]);
+      alert(`Importación completa: ${nuevas.length} viviendas leídas del archivo.`);
+    } catch (err) {
+      console.error(err);
+      alert("No se pudo leer el archivo. Comprueba que es el Excel/ODS de cálculo de montaje.");
+    } finally {
+      setImportando(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const actualizarVivienda = (viviendaId, cambios) => {
+    guardarViviendas(viviendas.map((v) => (v.id === viviendaId ? { ...v, ...cambios } : v)));
+  };
+
+  const toggleInstalado = (v, elId) => {
+    actualizarVivienda(v.id, {
+      elementos: v.elementos.map((el) => (el.id === elId ? { ...el, instalado: !el.instalado } : el)),
+    });
+  };
+
+  const toggleTapajuntas = (v, elId, lado) => {
+    actualizarVivienda(v.id, {
+      elementos: v.elementos.map((el) =>
+        el.id === elId ? { ...el, tapajuntas: { ...el.tapajuntas, [lado]: !el.tapajuntas[lado] } } : el
+      ),
+    });
+  };
+
+  const agregarExtra = (v) => {
+    const texto = (extraTexto[v.id] || "").trim();
+    if (!texto) return;
+    actualizarVivienda(v.id, { extras: [...(v.extras || []), { id: uid(), descripcion: texto, creadoEn: Date.now() }] });
+    setExtraTexto((prev) => ({ ...prev, [v.id]: "" }));
+  };
+
+  const subirFoto = async (v, file) => {
+    if (!file) return;
+    const dataUrl = await comprimirFotoMontaje(file);
+    actualizarVivienda(v.id, { fotos: [...(v.fotos || []), { id: uid(), url: dataUrl, subidaEn: Date.now() }] });
+  };
+
+  const subirDocumento = async (v, file) => {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      alert("El archivo pesa más de 8 MB. Prueba a comprimirlo o súbelo a Dropbox y enlázalo aparte.");
+      return;
+    }
+    const dataUrl = await leerDocumentoMontaje(file);
+    actualizarVivienda(v.id, {
+      documentos: [...(v.documentos || []), { id: uid(), nombre: file.name, url: dataUrl, subidoEn: Date.now() }],
+    });
+  };
+
+  const crearIncidencia = (v) => {
+    const texto = (nuevaIncidenciaTexto[v.id] || "").trim();
+    if (!texto) return;
+    onUpsertIncidencia({
+      id: null,
+      proyectoId: proyectoId || "",
+      fecha: new Date().toISOString().slice(0, 10),
+      especificaciones: texto,
+      observaciones: `Vivienda ${v.bloque} ${v.planta} ${v.codigoVivienda} (control de montaje)`,
+      responsableInicial: "",
+      comercialAsociado: "",
+      responsableActual: "",
+      estadoTrabajo: "Pendiente revisión",
+      estadoIncidencia: "Pendiente revisión",
+      fechaEntregaPrevista: "",
+      fechaEntregado: "",
+    });
+    actualizarVivienda(v.id, {
+      incidenciasVinculadas: [...(v.incidenciasVinculadas || []), { id: uid(), descripcion: texto, creadaEn: Date.now() }],
+    });
+    setNuevaIncidenciaTexto((prev) => ({ ...prev, [v.id]: "" }));
+  };
+
+  const vincularIncidenciaExistente = (v, incidencia) => {
+    actualizarVivienda(v.id, {
+      incidenciasVinculadas: [
+        ...(v.incidenciasVinculadas || []),
+        { id: incidencia.id, numero: incidencia.numero, descripcion: incidencia.especificaciones, vinculadaEn: Date.now() },
+      ],
+    });
+    setVinculandoEn(null);
+  };
+
+  const resumenVivienda = (v) => {
+    const instalados = v.elementos.filter((el) => el.instalado).length;
+    const lineas = v.elementos.map((el) => {
+      const t = el.tapajuntas || {};
+      const estado = el.instalado ? "Instalado" : "Pendiente";
+      return `- ${nombreElementoMontaje(el)}: ${estado} | Tapajuntas izq:${t.izquierda ? "SI" : "NO"} der:${t.derecha ? "SI" : "NO"} arriba:${t.arriba ? "SI" : "NO"}`;
+    });
+    const incs = v.incidenciasVinculadas || [];
+    const lineasInc = incs.length ? `\nIncidencias vinculadas:\n${incs.map((i) => `- ${i.descripcion}`).join("\n")}` : "";
+    return `Control montaje ${v.bloque} ${v.planta} ${v.codigoVivienda} (${instalados}/${v.elementos.length})\n${lineas.join("\n")}${lineasInc}`;
+  };
+
+  const avisarWhatsapp = (v) => {
+    const texto = encodeURIComponent(resumenVivienda(v));
+    const telefono = jefeDeObra?.telefono ? jefeDeObra.telefono.replace(/[^\d+]/g, "") : "";
+    window.open(`https://wa.me/${telefono}?text=${texto}`, "_blank");
+  };
+
+  const avisarCorreo = (v) => {
+    const asunto = encodeURIComponent(`Control montaje ${v.bloque} ${v.codigoVivienda}`);
+    const cuerpo = encodeURIComponent(resumenVivienda(v));
+    window.location.href = `mailto:${jefeDeObra?.email || ""}?subject=${asunto}&body=${cuerpo}`;
+  };
+
+  if (cargando) return <p className="text-sm text-slate-400">Cargando control de montaje...</p>;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <h2 className="font-display font-bold text-slate-800">Control de montaje por vivienda</h2>
+        <div className="flex gap-2">
+          <button onClick={descargarPlantilla} className="px-3 py-2 rounded-md text-sm font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50">
+            Descargar plantilla vacía
+          </button>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.ods" className="hidden" onChange={handleImportar} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importando}
+            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="px-3 py-2 rounded-md text-sm font-semibold"
+          >
+            {importando ? "Importando..." : "Importar Excel/ODS"}
+          </button>
+        </div>
+      </div>
+
+      <button onClick={() => setMostrarManual((v) => !v)} className="text-xs font-semibold text-emerald-700 mb-4">
+        {mostrarManual ? "Ocultar instrucciones ▲" : "¿Cómo relleno el Excel? ▼"}
+      </button>
+      {mostrarManual && (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-4 text-sm text-slate-600 space-y-1.5">
+          <p className="font-semibold text-slate-700">Cómo tiene que estar el Excel para que el CRM lo reconozca:</p>
+          <p>1. Cada hoja que quieras que se lea debe empezar su nombre por <b>BLOQUE</b> (BLOQUE_1, BLOQUE_2, BLOQUE_3...).</p>
+          <p>2. Cada vivienda empieza con una fila en la columna B: <b>CAR &lt;bloque&gt; &lt;planta&gt; &lt;vivienda&gt;</b>, ej: <span className="font-mono">CAR BL1 PB A0-1</span>. Para zonas comunes: <span className="font-mono">CAR BL1 PB (HUECO ESCALERA)</span>.</p>
+          <p>3. Debajo, una fila por cada puerta/ventana: columna B = código (empieza por P o V), columna E = cantidad. Ambas son imprescindibles.</p>
+          <p>4. Deja una fila en blanco entre cada vivienda.</p>
+          <p>5. Puedes cerrar cada bloque con una fila "TOTAL BLOQUE N" (opcional).</p>
+          <p className="text-slate-400">Descarga la plantilla de arriba para ver un ejemplo ya relleno.</p>
+        </div>
+      )}
+
+
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4">
+        <div className="flex items-center justify-between">
+          <div className="text-sm">
+            <span className="font-semibold">Jefe de obra: </span>
+            {jefeDeObra?.email || jefeDeObra?.telefono ? (
+              <span className="text-slate-600">{jefeDeObra.email} {jefeDeObra.telefono && `· ${jefeDeObra.telefono}`}</span>
+            ) : (
+              <span className="text-slate-400">sin configurar</span>
+            )}
+          </div>
+          <button onClick={() => setEditandoJefe((v) => !v)} className="text-xs font-semibold text-emerald-700">
+            {editandoJefe ? "Cerrar" : "Configurar"}
+          </button>
+        </div>
+        {editandoJefe && (
+          <div className="flex flex-col gap-2 mt-2">
+            <TextInput type="email" placeholder="Correo del jefe de obra" value={jefeEmail} onChange={(e) => setJefeEmail(e.target.value)} />
+            <TextInput type="tel" placeholder="WhatsApp (con prefijo, ej: +34600000000)" value={jefeTelefono} onChange={(e) => setJefeTelefono(e.target.value)} />
+            <button onClick={guardarJefeDeObra} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold self-start">
+              Guardar
+            </button>
+          </div>
+        )}
+      </div>
+
+      {bloquesDisponibles.length > 1 && (
+        <div className="flex gap-2 mb-4 overflow-x-auto">
+          <button onClick={() => setFiltroBloque("todos")} className={`px-3 py-1 rounded-md text-sm whitespace-nowrap ${filtroBloque === "todos" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>Todos</button>
+          {bloquesDisponibles.map((b) => (
+            <button key={b} onClick={() => setFiltroBloque(b)} className={`px-3 py-1 rounded-md text-sm whitespace-nowrap ${filtroBloque === b ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>{b}</button>
+          ))}
+        </div>
+      )}
+
+      {listaFiltrada.length === 0 && (
+        <p className="text-sm text-slate-400">Todavía no hay viviendas importadas. Pulsa "Importar Excel/ODS" y sube el archivo de cálculo de montaje.</p>
+      )}
+
+      <div className="space-y-3">
+        {listaFiltrada.map((v) => {
+          const elementos = [...v.elementos].sort((a, b) => a.codigo.localeCompare(b.codigo));
+          const instalados = elementos.filter((el) => el.instalado).length;
+          const abierta = expandida === v.id;
+          return (
+            <div key={v.id} className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+              <button onClick={() => setExpandida(abierta ? null : v.id)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+                <div className="font-semibold text-slate-800 text-sm">
+                  {v.bloque} · {v.planta} · {v.codigoVivienda}
+                  {v.esZonaComun && <span className="ml-2 text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md">Zona común</span>}
+                </div>
+                <span className={`text-xs px-2 py-1 rounded-md font-semibold ${instalados === elementos.length && elementos.length > 0 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                  {instalados}/{elementos.length} instalado
+                </span>
+              </button>
+
+              {abierta && (
+                <div className="px-4 pb-4 border-t border-slate-100">
+                  <div className="space-y-2 mt-3">
+                    {elementos.map((el) => (
+                      <div key={el.id} className="border border-slate-200 rounded-md p-2">
+                        <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                          <input type="checkbox" checked={!!el.instalado} onChange={() => toggleInstalado(v, el.id)} />
+                          {nombreElementoMontaje(el)}
+                          {el.medida && <span className="text-xs text-slate-400 font-normal">({el.medida})</span>}
+                        </label>
+                        <div className="flex gap-3 mt-2 ml-6 text-xs text-slate-600">
+                          {["izquierda", "derecha", "arriba"].map((lado) => (
+                            <label key={lado} className="flex items-center gap-1">
+                              <input type="checkbox" checked={!!(el.tapajuntas && el.tapajuntas[lado])} onChange={() => toggleTapajuntas(v, el.id, lado)} />
+                              Tapajuntas {lado}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-sm font-semibold text-slate-700 mb-1">Extras añadidos ({(v.extras || []).length})</div>
+                    {(v.extras || []).map((ex) => (
+                      <div key={ex.id} className="text-sm text-slate-600 ml-2">· {ex.descripcion}</div>
+                    ))}
+                    <div className="flex gap-2 mt-2">
+                      <TextInput value={extraTexto[v.id] || ""} onChange={(e) => setExtraTexto((prev) => ({ ...prev, [v.id]: e.target.value }))} placeholder="Describe el extra" className="flex-1" />
+                      <button onClick={() => agregarExtra(v)} className="px-3 py-1.5 bg-slate-100 rounded-md text-sm font-semibold">Añadir</button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-sm font-semibold text-slate-700 mb-1">Fotos ({(v.fotos || []).length})</div>
+                    <div className="flex gap-2 flex-wrap mb-2">
+                      {(v.fotos || []).map((f) => <img key={f.id} src={f.url} alt="" className="w-16 h-16 object-cover rounded-md" />)}
+                    </div>
+                    <input type="file" accept="image/*" capture="environment" onChange={(e) => subirFoto(v, e.target.files[0])} className="text-sm" />
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-sm font-semibold text-slate-700 mb-1">Documentos ({(v.documentos || []).length})</div>
+                    {(v.documentos || []).map((d) => (
+                      <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
+                    ))}
+                    <input type="file" accept="application/pdf" onChange={(e) => subirDocumento(v, e.target.files[0])} className="text-sm mt-1" />
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-sm font-semibold text-slate-700 mb-1">Incidencias vinculadas ({(v.incidenciasVinculadas || []).length})</div>
+                    {(v.incidenciasVinculadas || []).map((inc) => (
+                      <div key={inc.id} className="text-sm text-slate-600 ml-2">· {inc.descripcion}</div>
+                    ))}
+                    <div className="flex gap-2 mt-2">
+                      <TextInput value={nuevaIncidenciaTexto[v.id] || ""} onChange={(e) => setNuevaIncidenciaTexto((prev) => ({ ...prev, [v.id]: e.target.value }))} placeholder="Describe la incidencia nueva" className="flex-1" />
+                      <button onClick={() => crearIncidencia(v)} className="px-3 py-1.5 bg-slate-100 rounded-md text-sm font-semibold">Crear</button>
+                    </div>
+                    <button onClick={() => setVinculandoEn(vinculandoEn === v.id ? null : v.id)} className="text-xs font-semibold text-emerald-700 mt-2">
+                      {vinculandoEn === v.id ? "Cerrar" : "Vincular incidencia ya existente"}
+                    </button>
+                    {vinculandoEn === v.id && (
+                      <div className="mt-2 border border-slate-200 rounded-md max-h-40 overflow-y-auto">
+                        {(incidencias || []).length === 0 && <div className="text-sm text-slate-400 p-2">No hay incidencias registradas.</div>}
+                        {(incidencias || []).map((inc) => (
+                          <button key={inc.id} onClick={() => vincularIncidenciaExistente(v, inc)} className="block w-full text-left text-sm px-2 py-1 hover:bg-slate-50">
+                            #{inc.numero} — {inc.especificaciones}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 mt-4">
+                    <button onClick={() => avisarWhatsapp(v)} className="flex-1 px-3 py-2 bg-emerald-50 text-emerald-700 rounded-md text-sm font-semibold">Avisar por WhatsApp</button>
+                    <button onClick={() => avisarCorreo(v)} className="flex-1 px-3 py-2 bg-sky-50 text-sky-700 rounded-md text-sm font-semibold">Avisar por correo</button>
+                  </div>
+                  {!jefeDeObra?.email && !jefeDeObra?.telefono && (
+                    <p className="text-xs text-slate-400 mt-1">Configura el jefe de obra arriba para que se rellene el destinatario automáticamente.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -8309,22 +9006,39 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Léelo y devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
+      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 1200,
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
           messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+        throw new Error("Respuesta no válida de la API: " + response.status);
+      }
       const data = await response.json();
+      if (data.error) {
+        console.error("Error devuelto por la API:", data.error);
+        throw new Error(data.error.message || "Error de la API");
+      }
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const info = JSON.parse(limpio);
+      const inicioP = limpio.indexOf("{");
+      const finP = limpio.lastIndexOf("}");
+      const jsonCandidatoP = inicioP !== -1 && finP !== -1 ? limpio.slice(inicioP, finP + 1) : limpio;
+      let info;
+      try {
+        info = JSON.parse(jsonCandidatoP);
+      } catch (parseErr) {
+        console.error("No se pudo parsear el JSON del presupuesto. Texto recibido:", textoRespuesta);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
 
       const medidas = Array.isArray(info.medidas) ? info.medidas.filter((m) => m && (m.ancho || m.alto)) : [];
       const textoMedidas = medidas.length > 0
@@ -8347,7 +9061,8 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       setEditId(null);
       setView("form");
     } catch (err) {
-      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo.");
+      console.error("Error leyendo foto de presupuesto:", err);
+      setErrorFoto("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
       setLeyendoFoto(false);
     }
@@ -9327,6 +10042,20 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
   const rango = rangoPeriodo(periodo, 0);
   const rangoAnterior = rangoPeriodo(periodo, -1);
 
+  // Datos de "Control de montaje por vivienda" (una entrada por instalación),
+  // se cargan una vez para poder cruzar horas trabajadas con viviendas completadas.
+  const [controlMontajeData, setControlMontajeData] = useState({});
+  useEffect(() => {
+    (async () => {
+      try {
+        const snap = await fbGet(ref(fbDb, "controlMontaje"));
+        setControlMontajeData(snap.val() || {});
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
+
   const presupActual = presupuestos.filter((p) => enRango(p.fechaEnvio, rango));
   const presupAnterior = presupuestos.filter((p) => enRango(p.fechaEnvio, rangoAnterior));
   const ingresosActual = ingresos.filter((i) => enRango(i.fecha, rango));
@@ -9421,6 +10150,44 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
   const totalPresupuestadoInstalacion = instalacionesConDatos.reduce((s, i) => s + i.presupuesto, 0);
   const totalCosteInstalacion = instalacionesConDatos.reduce((s, i) => s + i.costeTotal, 0);
   const instalacionesSobrepresupuesto = instalacionesConDatos.filter((i) => i.presupuesto > 0 && i.diferencia < 0);
+
+  // -------- Productividad: horas por instalador, dentro del periodo seleccionado --------
+  const productividadInstaladores = useMemo(() => {
+    const map = new Map();
+    (instalaciones || []).forEach((inst) => {
+      (inst.registroHoras || []).forEach((r) => {
+        if (!enRango(r.fecha, rango)) return;
+        const nombre = (r.instalador || "Sin nombre").trim();
+        const actual = map.get(nombre) || { instalador: nombre, horas: 0, dias: new Set() };
+        actual.horas += parseFloat(r.horas) || 0;
+        actual.dias.add(r.fecha);
+        map.set(nombre, actual);
+      });
+    });
+    return Array.from(map.values())
+      .map((x) => ({ instalador: x.instalador, horas: x.horas, dias: x.dias.size }))
+      .sort((a, b) => b.horas - a.horas);
+  }, [instalaciones, rango]);
+  const totalHorasPeriodo = productividadInstaladores.reduce((s, x) => s + x.horas, 0);
+
+  // -------- Productividad: horas por vivienda completada, cruzando con el control de montaje --------
+  const productividadPorObra = useMemo(() => {
+    return instalacionesConDatos
+      .map((i) => {
+        const datos = controlMontajeData[i.inst.id];
+        const viviendas = toArray(datos?.viviendas);
+        const viviendasCompletas = viviendas.filter((v) => v.elementos && v.elementos.length > 0 && v.elementos.every((el) => el.instalado)).length;
+        const horasPorVivienda = viviendasCompletas > 0 ? i.totalHoras / viviendasCompletas : null;
+        return {
+          nombre: i.proyecto ? `#${i.proyecto.numero} — ${i.proyecto.nombre}` : (i.inst.nombre || "Instalación sin proyecto"),
+          totalHoras: i.totalHoras,
+          totalViviendas: viviendas.length,
+          viviendasCompletas,
+          horasPorVivienda,
+        };
+      })
+      .filter((x) => x.totalViviendas > 0);
+  }, [instalacionesConDatos, controlMontajeData]);
 
   const [filtroClientes, setFiltroClientes] = useState("pendiente");
   const situacionClientes = useMemo(() => {
@@ -9796,6 +10563,74 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
           )}
         </div>
       )}
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-8">
+        <h2 className="font-display font-bold text-slate-700 text-sm mb-3">Productividad ({PERIODOS_INFORME.find((p) => p.id === periodo)?.label || periodo})</h2>
+
+        <h3 className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Horas por instalador</h3>
+        {productividadInstaladores.length === 0 ? (
+          <p className="text-sm text-slate-400 mb-4">No hay horas registradas en este periodo.</p>
+        ) : (
+          <div className="mb-6">
+            <ResponsiveContainer width="100%" height={Math.max(160, productividadInstaladores.length * 36)}>
+              <BarChart data={productividadInstaladores} layout="vertical" margin={{ left: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" />
+                <YAxis type="category" dataKey="instalador" width={120} />
+                <Tooltip formatter={(v) => `${v.toFixed(1)} h`} />
+                <Bar dataKey="horas" fill="#2E8B57" />
+              </BarChart>
+            </ResponsiveContainer>
+            <table className="w-full text-sm mt-2">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="py-1.5">Instalador</th>
+                  <th className="py-1.5">Horas</th>
+                  <th className="py-1.5">Días trabajados</th>
+                  <th className="py-1.5">% del total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {productividadInstaladores.map((x) => (
+                  <tr key={x.instalador} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1.5 font-medium text-slate-700">{x.instalador}</td>
+                    <td className="py-1.5">{x.horas.toFixed(1)} h</td>
+                    <td className="py-1.5">{x.dias}</td>
+                    <td className="py-1.5">{totalHorasPeriodo ? ((x.horas / totalHorasPeriodo) * 100).toFixed(0) : 0}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <h3 className="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Horas por vivienda completada (control de montaje)</h3>
+        {productividadPorObra.length === 0 ? (
+          <p className="text-sm text-slate-400">Todavía no hay obras con viviendas importadas en el control de montaje.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="py-1.5">Obra</th>
+                <th className="py-1.5">Viviendas completas</th>
+                <th className="py-1.5">Horas totales</th>
+                <th className="py-1.5">Horas / vivienda</th>
+              </tr>
+            </thead>
+            <tbody>
+              {productividadPorObra.map((x) => (
+                <tr key={x.nombre} className="border-b border-slate-100 last:border-0">
+                  <td className="py-1.5 font-medium text-slate-700">{x.nombre}</td>
+                  <td className="py-1.5">{x.viviendasCompletas} / {x.totalViviendas}</td>
+                  <td className="py-1.5">{x.totalHoras.toFixed(1)} h</td>
+                  <td className="py-1.5">{x.horasPorVivienda !== null ? `${x.horasPorVivienda.toFixed(1)} h` : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="text-xs text-slate-400 mt-2">Horas totales de todo el histórico de la instalación (no solo del periodo filtrado arriba), para comparar contra viviendas ya terminadas.</p>
+      </div>
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-8">
         <div className="p-4 pb-3 flex flex-wrap items-center justify-between gap-3">
