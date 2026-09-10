@@ -5,7 +5,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -57,6 +57,8 @@ const MODULOS_DISPONIBLES = [
   { id: "facturas", label: "Facturas" },
   { id: "presupuestos", label: "Presupuestos" },
   { id: "mediciones", label: "Mediciones" },
+  { id: "chat", label: "Chat" },
+  { id: "tareas", label: "Tareas" },
   { id: "ingresos", label: "Entrada de dinero" },
   { id: "informes", label: "Informes" },
   { id: "fabrica", label: "Fábrica" },
@@ -84,6 +86,29 @@ const toArray = (val) => {
   if (val && typeof val === "object") return Object.values(val);
   return [];
 };
+const escapeHtml = (s) => (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Lector genérico de Excel/CSV para importaciones masivas (contactos, tarifas...).
+// A diferencia del importador de "control de montaje" (que espera una estructura
+// fija de bloques/viviendas), este simplemente lee la primera fila como cabeceras
+// y el resto como filas de datos, tolerando que las columnas tengan nombres
+// distintos (Nombre/Cliente/Empresa, Teléfono/Móvil/Tel, etc.).
+function leerFilasExcel(arrayBuffer) {
+  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  const hoja = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(hoja, { defval: "" });
+}
+function normalizarCabecera(s) {
+  return (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+}
+function valorPorCabeceras(fila, candidatos) {
+  const claves = Object.keys(fila);
+  for (const candidato of candidatos) {
+    const claveEncontrada = claves.find((k) => normalizarCabecera(k) === candidato);
+    if (claveEncontrada !== undefined && String(fila[claveEncontrada]).trim() !== "") return fila[claveEncontrada];
+  }
+  return "";
+}
 const money = (n) => (isNaN(n) ? "0,00 €" : Number(n).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €");
 const fmtDate = (d) => {
   if (!d) return "—";
@@ -255,6 +280,8 @@ export default function App() {
   const [solicitudesPedido, setSolicitudesPedido] = useState([]);
   const [instalaciones, setInstalaciones] = useState([]);
   const [mediciones, setMediciones] = useState([]);
+  const [tareas, setTareas] = useState([]);
+  const [archivosEmpresa, setArchivosEmpresa] = useState([]);
   const [vehiculos, setVehiculos] = useState([]);
   const [cristales, setCristales] = useState([]);
   const [fichajes, setFichajes] = useState([]);
@@ -342,7 +369,7 @@ export default function App() {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
-          "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario"];
+          "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -379,6 +406,8 @@ export default function App() {
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
+        if (resultados.tareas) setTareas(toArray(resultados.tareas));
+        if (resultados.archivosEmpresa) setArchivosEmpresa(toArray(resultados.archivosEmpresa));
 
         // Estas son locales de este navegador/dispositivo, no compartidas — cada persona
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
@@ -563,6 +592,11 @@ export default function App() {
   };
 
   const saveClientes = (next) => { setClientes(next); persist("clientes", next); };
+
+  const importarContactosMasivo = (nuevosClientes) => {
+    saveClientes([...nuevosClientes, ...clientes]);
+    showToast(`${nuevosClientes.length} contacto(s) importado(s)`);
+  };
   const saveProyectos = (next) => { setProyectos(next); persist("proyectos", next); };
 
   const upsertCliente = (data) => {
@@ -636,6 +670,76 @@ export default function App() {
     setModulo("presupuestos");
     setPresupuestoEditId(null);
     setPresupuestoView("form");
+  };
+
+  // ---- Tareas (asignadas desde el chat interno o directamente) ----
+  const saveTareas = (next) => { setTareas(next); persist("tareas", next); };
+
+  const crearTarea = (data) => {
+    const nueva = {
+      id: uid(),
+      titulo: data.titulo || "",
+      descripcion: data.descripcion || "",
+      asignadoA: data.asignadoA,
+      asignadoANombre: data.asignadoANombre || "",
+      asignadoPor: currentUser?.id || null,
+      asignadoPorNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
+      requiereConfirmacion: !!data.requiereConfirmacion,
+      fechaLimite: data.fechaLimite || "",
+      salaId: data.salaId || null,
+      salaNombre: data.salaNombre || "",
+      estado: "Pendiente",
+      fechaCreacion: Date.now(),
+      fechaCompletada: null,
+    };
+    saveTareas([nueva, ...tareas]);
+    showToast("Tarea creada");
+  };
+
+  const marcarTareaHecha = (id) => {
+    saveTareas(tareas.map((t) => {
+      if (t.id !== id) return t;
+      return t.requiereConfirmacion
+        ? { ...t, estado: "Pendiente de confirmar", fechaCompletada: Date.now() }
+        : { ...t, estado: "Hecha", fechaCompletada: Date.now() };
+    }));
+    showToast("Tarea marcada como hecha");
+  };
+
+  const confirmarTarea = (id, ok) => {
+    saveTareas(tareas.map((t) => (t.id === id ? { ...t, estado: ok ? "Hecha" : "Pendiente" } : t)));
+    showToast(ok ? "Tarea confirmada" : "Tarea devuelta a pendiente");
+  };
+
+  const deleteTarea = (id) => {
+    saveTareas(tareas.filter((t) => t.id !== id));
+    showToast("Tarea borrada");
+  };
+
+  // ---- Archivos de empresa (tarifas, contactos, plantillas... no ligados a una obra) ----
+  const saveArchivosEmpresa = (next) => { setArchivosEmpresa(next); persist("archivosEmpresa", next); };
+
+  const subirArchivoEmpresa = (file, categoria) => {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      showToast("El archivo pesa más de 8 MB, no se puede subir", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const nuevo = {
+        id: uid(), nombre: file.name, categoria: categoria || "Otros", url: e.target.result,
+        subidoEn: Date.now(), subidoPor: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
+      };
+      saveArchivosEmpresa([nuevo, ...archivosEmpresa]);
+      showToast("Archivo guardado");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const deleteArchivoEmpresa = (id) => {
+    saveArchivosEmpresa(archivosEmpresa.filter((a) => a.id !== id));
+    showToast("Archivo borrado");
   };
 
   const crearInstalacionParaProyecto = (proyecto) => {
@@ -859,6 +963,38 @@ export default function App() {
   const saveProveedores = (next) => { setProveedores(next); persist("proveedores", next); };
   const saveMateriales = (next) => { setMateriales(next); persist("materiales", next); };
 
+  // Importación masiva de tarifas de materiales: si el código o la descripción
+  // ya existen, actualiza el precio; si no, da de alta el material nuevo.
+  // Se hace todo en una sola escritura para no perder filas del lote.
+  const importarTarifasMateriales = (filas) => {
+    let working = [...materiales];
+    let actualizados = 0, creados = 0;
+    filas.forEach((fila) => {
+      const idx = working.findIndex((m) =>
+        (fila.codigo && m.codigo && m.codigo.toLowerCase() === String(fila.codigo).toLowerCase()) ||
+        (fila.descripcion && m.descripcion && m.descripcion.toLowerCase() === String(fila.descripcion).toLowerCase())
+      );
+      if (idx >= 0) {
+        working[idx] = {
+          ...working[idx],
+          ...(fila.precioVenta !== "" && fila.precioVenta != null ? { precioVenta: fila.precioVenta } : {}),
+          ...(fila.precioCompra !== "" && fila.precioCompra != null ? { precioCompra: fila.precioCompra } : {}),
+        };
+        actualizados++;
+      } else if (fila.codigo || fila.descripcion) {
+        working = [{
+          id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: "",
+          stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
+          longitud: "", ancho: "", alto: "", grueso: "",
+          precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: "",
+        }, ...working];
+        creados++;
+      }
+    });
+    saveMateriales(working);
+    showToast(`${actualizados} tarifa(s) actualizada(s), ${creados} material(es) nuevo(s)`);
+  };
+
   const upsertProveedor = (data) => {
     let next;
     if (data.id) {
@@ -1071,14 +1207,10 @@ export default function App() {
   // Asigna una ubicación concreta (zona/fila/hueco) a un caballete, comprobando que
   // no esté ya ocupada por otro.
   const ubicarCristal = (id, ubicacion) => {
-    const ocupado = cristales.some((c) => c.id !== id && c.ubicacion &&
+    const otros = cristales.filter((c) => c.id !== id && c.ubicacion &&
       c.ubicacion.zona === ubicacion.zona && c.ubicacion.fila === ubicacion.fila && c.ubicacion.hueco === ubicacion.hueco);
-    if (ocupado) {
-      showToast("Ese hueco ya está ocupado por otro caballete", "error");
-      return false;
-    }
     updateCristal(id, { ubicacion, estado: "Colocado", fechaColocado: new Date().toISOString().slice(0, 10) });
-    showToast("Caballete ubicado en el almacén");
+    showToast(otros.length > 0 ? `Caballete añadido a un hueco que ya tenía ${otros.length} expediente(s)` : "Caballete ubicado en el almacén");
     return true;
   };
 
@@ -1125,11 +1257,35 @@ export default function App() {
 
   const openProyectoFromCalendar = (id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); };
   const openPedidoFromCalendar = (id) => { setModulo("pedidos"); setPedidoDetailId(id); setPedidoView("detail"); };
+  // Cuando el usuario toca el aviso de "han llegado" pedidos, los marcamos como
+  // vistos para que no se lo sigamos recordando cada vez que entra al CRM.
+  const marcarAvisosPedidosVistos = (lista) => {
+    if (!lista || lista.length === 0) return;
+    const ids = new Set(lista.map((p) => p.id));
+    savePedidos(pedidos.map((p) => (ids.has(p.id) ? { ...p, avisoLlegadaVisto: true } : p)));
+  };
+
   const enviarAPedido = (proveedorId, lineas, proyectoId, comentarios) => {
     setPedidoPrefill({ proveedorId, lineas, proyectoId, comentarios });
     setPedidoEditId(null);
     setPedidoView("form");
     setModulo("pedidos");
+  };
+
+  // Cuando el albarán no cuadra con lo pedido, esto crea (y abre listo para
+  // revisar y enviar) un pedido nuevo al mismo proveedor solo con lo que falta.
+  const crearPedidoFaltanteDesdeAlbaran = (pedidoOriginal, lineasFaltantes) => {
+    if (!lineasFaltantes || lineasFaltantes.length === 0) {
+      showToast("No hay líneas pendientes que pedir", "error");
+      return;
+    }
+    enviarAPedido(
+      pedidoOriginal.proveedorId,
+      lineasFaltantes,
+      pedidoOriginal.proyectoId,
+      `Pedido de reposición: esto es lo que faltó (o no coincidió) en el albarán del pedido #${pedidoOriginal.numero}.`
+    );
+    showToast("Pedido con lo que falta creado — revísalo y envíalo");
   };
   const irARegistrarIngreso = (proyecto, clienteNombre, importeSugerido) => {
     setIngresoPrefill({
@@ -1168,6 +1324,26 @@ export default function App() {
   const irAInstalacion = (instalacionId) => { setModulo("instalaciones"); setInstalacionDetailId(instalacionId); setInstalacionView("detail"); };
 
   const saveArticulos = (next) => { setArticulos(next); persist("articulos", next); };
+
+  const importarTarifasArticulos = (filas) => {
+    let working = [...articulos];
+    let actualizados = 0, creados = 0;
+    filas.forEach((fila) => {
+      const idx = working.findIndex((a) => fila.nombre && a.nombre && a.nombre.toLowerCase() === String(fila.nombre).toLowerCase());
+      if (idx >= 0) {
+        working[idx] = { ...working[idx], ...(fila.precioVenta !== "" && fila.precioVenta != null ? { precioVenta: fila.precioVenta } : {}) };
+        actualizados++;
+      } else if (fila.nombre) {
+        working = [{
+          id: uid(), nombre: fila.nombre, descripcion: "", proveedorId: "", precioVenta: fila.precioVenta || "",
+          materiales: [], fases: [], tamano: "", medidas: "", volumen: "", importeEnvio: "", importeMontaje: "",
+        }, ...working];
+        creados++;
+      }
+    });
+    saveArticulos(working);
+    showToast(`${actualizados} tarifa(s) actualizada(s), ${creados} artículo(s) nuevo(s)`);
+  };
 
   const nextNumeroArticulo = () => {
     const nums = articulos.map((a) => parseInt(String(a.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
@@ -1601,6 +1777,10 @@ export default function App() {
     ? MODULOS_DISPONIBLES.map((m) => m.id)
     : (currentUser?.modulos || MODULOS_DISPONIBLES.map((m) => m.id));
   const tieneAcceso = (id) => modulosPermitidos.includes(id);
+  const misTareasPendientes = tareas.filter((t) =>
+    (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
+    (t.asignadoPor === currentUser?.id && t.estado === "Pendiente de confirmar")
+  ).length;
 
   useEffect(() => {
     if (currentUser && modulo !== "administracion" && !tieneAcceso(modulo)) {
@@ -1677,6 +1857,16 @@ export default function App() {
           </div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1" onClick={() => setMenuMovilAbierto(false)}>
+          {tieneAcceso("clientes") && (
+          <button
+            onClick={() => setModulo("clientes")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "clientes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Users size={16} /> Clientes
+          </button>
+          )}
           {tieneAcceso("proyectos") && (
           <button
             onClick={() => setModulo("proyectos")}
@@ -1687,14 +1877,34 @@ export default function App() {
             <Briefcase size={16} /> Proyectos / Obras
           </button>
           )}
-          {tieneAcceso("clientes") && (
+          {tieneAcceso("mediciones") && (
           <button
-            onClick={() => setModulo("clientes")}
+            onClick={() => setModulo("mediciones")}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "clientes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+              modulo === "mediciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
             }`}
           >
-            <Users size={16} /> Clientes
+            <Ruler size={16} /> Mediciones
+          </button>
+          )}
+          {tieneAcceso("presupuestos") && (
+          <button
+            onClick={() => setModulo("presupuestos")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "presupuestos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <FileSpreadsheet size={16} /> Presupuestos
+          </button>
+          )}
+          {tieneAcceso("instalaciones") && (
+          <button
+            onClick={() => setModulo("instalaciones")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "instalaciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Wrench size={16} /> Instalaciones
           </button>
           )}
           {tieneAcceso("proveedores") && (
@@ -1707,6 +1917,16 @@ export default function App() {
             <Truck size={16} /> Proveedores
           </button>
           )}
+          {tieneAcceso("pedidos") && (
+          <button
+            onClick={() => setModulo("pedidos")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "pedidos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <ClipboardList size={16} /> Pedidos
+          </button>
+          )}
           {tieneAcceso("stock") && (
           <button
             onClick={() => setModulo("stock")}
@@ -1717,14 +1937,15 @@ export default function App() {
             <Boxes size={16} /> Gestión de Stock
           </button>
           )}
-          {tieneAcceso("pedidos") && (
+          {tieneAcceso("articulos") && (
           <button
-            onClick={() => setModulo("pedidos")}
+            onClick={() => setModulo("articulos")}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "pedidos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+              modulo === "articulos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
             }`}
           >
-            <ClipboardList size={16} /> Pedidos
+            <Layers size={16} /> Artículos
+            <Badge className="ml-auto bg-white/10 text-slate-300 ring-white/10 !py-0">Fase II</Badge>
           </button>
           )}
           {tieneAcceso("incidencias") && (
@@ -1747,48 +1968,6 @@ export default function App() {
             <CalendarDays size={16} /> Calendario
           </button>
           )}
-          {tieneAcceso("articulos") && (
-          <button
-            onClick={() => setModulo("articulos")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "articulos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
-            }`}
-          >
-            <Layers size={16} /> Artículos
-            <Badge className="ml-auto bg-white/10 text-slate-300 ring-white/10 !py-0">Fase II</Badge>
-          </button>
-          )}
-          <div className="pt-2 mt-2 border-t border-white/10" />
-          {tieneAcceso("facturas") && (
-          <button
-            onClick={() => setModulo("facturas")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "facturas" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
-            }`}
-          >
-            <Receipt size={16} /> Facturas
-          </button>
-          )}
-          {tieneAcceso("presupuestos") && (
-          <button
-            onClick={() => setModulo("presupuestos")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "presupuestos" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
-            }`}
-          >
-            <FileSpreadsheet size={16} /> Presupuestos
-          </button>
-          )}
-          {tieneAcceso("mediciones") && (
-          <button
-            onClick={() => setModulo("mediciones")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "mediciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
-            }`}
-          >
-            <Ruler size={16} /> Mediciones
-          </button>
-          )}
           {tieneAcceso("ingresos") && (
           <button
             onClick={() => setModulo("ingresos")}
@@ -1799,14 +1978,14 @@ export default function App() {
             <Wallet size={16} /> Entrada de dinero
           </button>
           )}
-          {tieneAcceso("informes") && (
+          {tieneAcceso("facturas") && (
           <button
-            onClick={() => setModulo("informes")}
+            onClick={() => setModulo("facturas")}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "informes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+              modulo === "facturas" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
             }`}
           >
-            <BarChart3 size={16} /> Informes
+            <Receipt size={16} /> Facturas
           </button>
           )}
           {tieneAcceso("fabrica") && (
@@ -1819,14 +1998,14 @@ export default function App() {
             <Factory size={16} /> Fábrica
           </button>
           )}
-          {tieneAcceso("instalaciones") && (
+          {tieneAcceso("informes") && (
           <button
-            onClick={() => setModulo("instalaciones")}
+            onClick={() => setModulo("informes")}
             className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
-              modulo === "instalaciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+              modulo === "informes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
             }`}
           >
-            <Wrench size={16} /> Instalaciones
+            <BarChart3 size={16} /> Informes
           </button>
           )}
           {tieneAcceso("fichajes") && (
@@ -1839,9 +2018,9 @@ export default function App() {
             <Timer size={16} /> Fichajes
           </button>
           )}
+          <div className="pt-2 mt-2 border-t border-white/10" />
           {isAdmin && (
             <>
-              <div className="pt-2 mt-2 border-t border-white/10" />
               <button
                 onClick={() => setModulo("administracion")}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
@@ -1851,6 +2030,30 @@ export default function App() {
                 <UserCog size={16} /> Administración
               </button>
             </>
+          )}
+          <div className="pt-2 mt-2 border-t border-white/10" />
+          {tieneAcceso("chat") && (
+          <button
+            onClick={() => setModulo("chat")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "chat" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <MessageCircle size={16} /> Chat
+          </button>
+          )}
+          {tieneAcceso("tareas") && (
+          <button
+            onClick={() => setModulo("tareas")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "tareas" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <ClipboardList size={16} /> Tareas
+            {misTareasPendientes > 0 && (
+              <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">{misTareasPendientes}</span>
+            )}
+          </button>
           )}
         </nav>
         <div className="px-5 py-3 border-t border-white/10">
@@ -1896,6 +2099,33 @@ export default function App() {
             </button>
           );
         })()}
+        {(() => {
+          if (!currentUser) return null;
+          const hoy = new Date().toISOString().slice(0, 10);
+          const pedidosRetrasados = pedidos.filter((p) =>
+            p.avisos?.retraso && p.avisos?.usuarioId === currentUser.id &&
+            p.estado !== "Recibido" && p.estado !== "Cancelado" &&
+            p.fechaEntregaPrevista && p.fechaEntregaPrevista < hoy
+          );
+          const pedidosLlegados = pedidos.filter((p) =>
+            p.avisos?.llegada && p.avisos?.usuarioId === currentUser.id &&
+            p.estado === "Recibido" && !p.avisoLlegadaVisto
+          );
+          const total = pedidosRetrasados.length + pedidosLlegados.length;
+          if (total === 0 || modulo === "pedidos") return null;
+          return (
+            <button
+              onClick={() => { marcarAvisosPedidosVistos(pedidosLlegados); setModulo("pedidos"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-sky-50 text-sky-700 hover:bg-sky-100"
+            >
+              <Truck size={15} />
+              {pedidosLlegados.length > 0 && `${pedidosLlegados.length} pedido${pedidosLlegados.length === 1 ? "" : "s"} han llegado`}
+              {pedidosLlegados.length > 0 && pedidosRetrasados.length > 0 && " · "}
+              {pedidosRetrasados.length > 0 && `${pedidosRetrasados.length} pedido${pedidosRetrasados.length === 1 ? "" : "s"} van con retraso`}
+              . Toca para verlos →
+            </button>
+          );
+        })()}
         {modulo === "clientes" && (
           <ClientesModulo
             clientes={clientes}
@@ -1909,6 +2139,7 @@ export default function App() {
             setDetailId={setClienteDetailId}
             onUpsert={upsertCliente}
             onDelete={deleteCliente}
+            onImportarMasivo={importarContactosMasivo}
             isAdmin={isAdmin}
             openProyecto={(pid) => {
               setModulo("proyectos");
@@ -1980,6 +2211,7 @@ export default function App() {
             onAddMovimiento={addMovimiento}
             onRemoveMovimiento={removeMovimiento}
             onEnviarAPedido={enviarAPedido}
+            onImportarTarifas={importarTarifasMateriales}
           />
         )}
         {modulo === "pedidos" && (
@@ -2004,6 +2236,7 @@ export default function App() {
             onConfirmarAlbaran={confirmarAlbaranPedido}
             onMarcarEnviado={marcarPedidoEnviado}
             onCrearDesdeFoto={(lineas, comentario) => enviarAPedido(undefined, lineas, "", comentario)}
+            onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             tabPrincipal={pedidoTabPrincipal}
             setTabPrincipal={setPedidoTabPrincipal}
             solicitudes={solicitudesPedido}
@@ -2081,6 +2314,7 @@ export default function App() {
             onInlineUpdate={updateArticuloInline}
             nextNumero={nextNumeroArticulo}
             onSolicitarArticulo={() => irASolicitarArticulo()}
+            onImportarTarifas={importarTarifasArticulos}
           />
         )}
         {modulo === "facturas" && (
@@ -2148,6 +2382,24 @@ export default function App() {
             incidencias={incidencias}
             onUpsertIncidencia={upsertIncidencia}
             onPasarAPresupuesto={pasarMedicionAPresupuesto}
+          />
+        )}
+        {modulo === "chat" && (
+          <ChatModulo
+            usuarios={usuarios}
+            currentUser={currentUser}
+            proyectos={proyectos}
+            onCrearTarea={crearTarea}
+          />
+        )}
+        {modulo === "tareas" && (
+          <TareasModulo
+            tareas={tareas}
+            usuarios={usuarios}
+            currentUser={currentUser}
+            onMarcarHecha={marcarTareaHecha}
+            onConfirmar={confirmarTarea}
+            onDelete={deleteTarea}
           />
         )}
         {modulo === "ingresos" && (
@@ -2266,9 +2518,39 @@ export default function App() {
 
 /* ================= CLIENTES ================= */
 
-function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, openProyecto, isAdmin }) {
+function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onImportarMasivo, openProyecto, isAdmin }) {
   const [q, setQ] = useState("");
   const [tipo, setTipo] = useState("");
+  const inputContactosRef = useRef(null);
+
+  const manejarImportarContactos = async (file) => {
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const filas = leerFilasExcel(buffer);
+    const nuevos = [];
+    filas.forEach((fila) => {
+      const nombre = String(valorPorCabeceras(fila, ["nombre", "cliente", "empresa", "razonsocial", "nombrecliente"])).trim();
+      if (!nombre) return;
+      nuevos.push({
+        id: uid(), nombre, codigo: "", tipo: "Cliente",
+        cif: String(valorPorCabeceras(fila, ["cif", "nif", "dni"])).trim(),
+        direccion: String(valorPorCabeceras(fila, ["direccion", "domicilio"])).trim(),
+        direccionFiscal: "", provincia: "", provinciaManual: "",
+        pueblo: String(valorPorCabeceras(fila, ["pueblo", "poblacion", "ciudad", "localidad"])).trim(),
+        cp: String(valorPorCabeceras(fila, ["cp", "codigopostal"])).trim(),
+        email: String(valorPorCabeceras(fila, ["email", "correo", "mail"])).trim(),
+        movil: String(valorPorCabeceras(fila, ["telefono", "movil", "tel", "phone"])).trim(),
+        observaciones: String(valorPorCabeceras(fila, ["notas", "observaciones", "comentarios"])).trim(),
+        primerPago: false, formaPago: "Contado", limiteCredito: "", tipoTarifa: "",
+        portalActivo: false, portalPassword: "",
+      });
+    });
+    if (nuevos.length === 0) {
+      alert("No se ha encontrado ninguna fila con nombre. Revisa que el Excel tenga una columna \"Nombre\" (o \"Cliente\"/\"Empresa\").");
+      return;
+    }
+    onImportarMasivo(nuevos);
+  };
 
   const filtered = useMemo(() => {
     return clientes.filter((c) => {
@@ -2320,9 +2602,23 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
 
       <button
         onClick={() => { setEditId(null); setView("form"); }}
-        className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
+        className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-3 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVO CLIENTE
+      </button>
+
+      <input
+        ref={inputContactosRef}
+        type="file"
+        accept=".xlsx,.xls,.ods,.csv"
+        className="hidden"
+        onChange={(e) => { manejarImportarContactos(e.target.files[0]); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputContactosRef.current?.click()}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+      >
+        Importar contactos desde Excel (masivo)
       </button>
 
       <div className="flex gap-3 mb-4">
@@ -2528,9 +2824,27 @@ const MANUALES = {
   mediciones: {
     puntos: [
       "Aquí registras las medidas que tomas en una visita, antes incluso de tener un presupuesto o, a veces, antes de tener el cliente dado de alta en el CRM.",
-      "Cada medición puede tener varios bloques/viviendas (igual que Control de montaje): puedes importar un Excel/ODS con la plantilla, o ir añadiéndolas a mano.",
-      "En cada puerta/ventana marcas qué componentes lleva (marco, hojas, persiana, tapajuntas, silicona...) y puedes añadir foto y documentos (planos, etc.) clasificados por categoría.",
-      "Cuando termines de medir, pulsa \"Pasar a presupuesto\" dentro de la medición: se abre un presupuesto nuevo con el cliente puesto y una descripción con el resumen de todo lo medido, para que solo tengas que poner el número y el importe.",
+      "Puedes importar un Excel/ODS con la plantilla, o pulsar \"+ Añadir a mano (sin Excel)\" para crear una vivienda/habitación escribiendo su nombre directamente.",
+      "Dentro de cada vivienda, además de lo que venga del Excel, puedes añadir una habitación o elemento a mano poniéndole un nombre (ej: \"Cocina\") y su medida.",
+      "En cada elemento marcas qué lleva: marco, hojas, persiana, mosquitera, cajón de obra, montaje, tapajuntas, postigo, silicona... y puedes añadir cualquier otro con el \"+\".",
+      "Puedes añadir foto por elemento y documentos (planos, Excel, PDF...) clasificados por categoría.",
+      "Cuando termines de medir, pulsa \"Pasar a presupuesto\" dentro de la medición: se abre un presupuesto nuevo con el cliente puesto y una descripción con el resumen de todo lo medido.",
+    ],
+  },
+  chat: {
+    puntos: [
+      "Chat interno de la empresa: hay una sala \"General\" para todos, y una sala automática para cada proyecto/obra.",
+      "Los mensajes se guardan — puedes cerrar el CRM y al volver seguirán ahí.",
+      "Pasa el ratón por encima de un mensaje y pulsa \"→ Crear tarea\" para convertirlo directamente en una tarea asignada a un compañero, sin tener que escribirla de nuevo.",
+      "Pulsa \"Exportar a PDF\", marca los mensajes que quieras (no hace falta que sean todos) y se abrirá una ventana lista para imprimir o guardar como PDF.",
+    ],
+  },
+  tareas: {
+    puntos: [
+      "Aquí ves las tareas que te han asignado (pestaña \"Asignadas a mí\") y las que tú le has asignado a otros (\"Creadas por mí\").",
+      "Las tareas normalmente se crean desde un mensaje del Chat, con el botón \"→ Crear tarea\".",
+      "Al crear una tarea puedes elegir si necesitas confirmarla tú mismo cuando la marquen como hecha, o si con que la marquen como hecha ya es suficiente.",
+      "Si pediste confirmación, cuando tu compañero la marque como hecha te aparecerá en \"Pendiente de confirmar\" dentro de \"Creadas por mí\", y podrás confirmarla o devolverla si no está bien.",
     ],
   },
   ingresos: {
@@ -4138,9 +4452,27 @@ function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onIn
 
 /* ================= STOCK ================= */
 
-function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido }) {
+function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido, onImportarTarifas }) {
   const [q, setQ] = useState("");
   const [subview, setSubview] = useState("catalogo"); // catalogo | reponer
+  const inputTarifasRef = useRef(null);
+
+  const manejarImportarTarifas = async (file) => {
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const filasExcel = leerFilasExcel(buffer);
+    const filas = filasExcel.map((fila) => ({
+      codigo: String(valorPorCabeceras(fila, ["codigo", "cod", "referencia", "ref"])).trim(),
+      descripcion: String(valorPorCabeceras(fila, ["descripcion", "nombre", "material"])).trim(),
+      precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
+      precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
+    })).filter((f) => f.codigo || f.descripcion);
+    if (filas.length === 0) {
+      alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
+      return;
+    }
+    onImportarTarifas(filas);
+  };
 
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
 
@@ -4237,6 +4569,20 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVO MATERIAL
+      </button>
+
+      <input
+        ref={inputTarifasRef}
+        type="file"
+        accept=".xlsx,.xls,.ods,.csv"
+        className="hidden"
+        onChange={(e) => { manejarImportarTarifas(e.target.files[0]); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputTarifasRef.current?.click()}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+      >
+        Importar tarifas desde Excel (masivo) — actualiza precios existentes o da de alta materiales nuevos
       </button>
 
       {proveedores.length === 0 && (
@@ -4571,7 +4917,7 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
 
 /* ================= PEDIDOS ================= */
 
-function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
@@ -4671,6 +5017,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         materiales={materiales}
         proyectos={proyectos}
         nextNumero={nextNumero}
+        currentUser={currentUser}
         onCancel={() => setView(editId ? "detail" : "list")}
         onSave={onUpsert}
         prefill={editing ? null : prefill}
@@ -4688,6 +5035,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         proveedor={proveedores.find((p) => p.id === pedido.proveedorId)}
         materiales={materiales}
         proyectos={proyectos}
+        currentUser={currentUser}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(pedido.id); setView("form"); }}
         onDelete={() => onDelete(pedido.id)}
@@ -4695,6 +5043,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         onRecibir={() => onRecibir(pedido.id)}
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
         onMarcarEnviado={(metodo) => onMarcarEnviado(pedido.id, metodo)}
+        onCrearPedidoFaltante={onCrearPedidoFaltante}
       />
     );
   }
@@ -4858,24 +5207,42 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
   );
 }
 
-function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, onCancel, onSave, prefill, onClearPrefill }) {
+function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
   const blankLinea = () => ({ id: uid(), modo: "catalogo", materialId: materiales[0]?.id || "", referencia: "", ancho: "", alto: "", cantidad: "", precio: "", estado: "Solicitado" });
+  const avisosPorDefecto = () => ({
+    llegada: true, retraso: true,
+    usuarioId: currentUser?.id || null,
+    usuarioNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
+  });
   const [f, setF] = useState(() => {
-    if (initial) return initial;
+    if (initial) return { avisos: avisosPorDefecto(), ...initial };
     if (prefill) {
       return {
         id: null, proveedorId: prefill.proveedorId || proveedores[0]?.id || "", proyectoId: prefill.proyectoId || "",
         fechaCompra: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", estado: "Pendiente",
         comentarios: prefill.comentarios || "Generado automáticamente desde Stock (materiales por debajo del mínimo).",
         lineas: prefill.lineas && prefill.lineas.length ? prefill.lineas : [blankLinea()],
+        avisos: avisosPorDefecto(),
       };
     }
     return {
       id: null, proveedorId: proveedores[0]?.id || "", proyectoId: "", fechaCompra: new Date().toISOString().slice(0, 10),
       fechaEntregaPrevista: "", estado: "Pendiente", comentarios: "",
       lineas: [blankLinea()],
+      avisos: avisosPorDefecto(),
     };
   });
+  const setAviso = (clave, valor) => {
+    setF((prev) => ({
+      ...prev,
+      avisos: {
+        ...(prev.avisos || {}),
+        [clave]: valor,
+        usuarioId: currentUser?.id || null,
+        usuarioNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
+      },
+    }));
+  };
   useEffect(() => {
     if (!initial && prefill && onClearPrefill) onClearPrefill();
   }, []);
@@ -5032,6 +5399,22 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, o
 
         <Field label="Comentarios"><TextArea rows={2} value={f.comentarios} onChange={set("comentarios")} /></Field>
 
+        <Field label="Avisos">
+          <div className="flex flex-col gap-2 pt-1">
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={!!f.avisos?.llegada} onChange={(e) => setAviso("llegada", e.target.checked)} />
+              Avisarme a mí cuando llegue este pedido
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={!!f.avisos?.retraso} onChange={(e) => setAviso("retraso", e.target.checked)} />
+              Avisarme a mí si se pasa la fecha de entrega prevista y todavía no ha llegado
+            </label>
+            {(f.avisos?.llegada || f.avisos?.retraso) && (
+              <p className="text-xs text-slate-400">El aviso te aparecerá a ti (usuario con la sesión iniciada ahora) en un banner al entrar al CRM.</p>
+            )}
+          </div>
+        </Field>
+
         {errorMsg && (
           <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
             ⚠ {errorMsg}
@@ -5047,7 +5430,7 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, o
   );
 }
 
-function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, isAdmin }) {
+function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin }) {
   const materialInfo = (id) => materiales.find((m) => m.id === id);
   const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
   const puedeRecibir = pedido.estado !== "Recibido" && pedido.estado !== "Cancelado";
@@ -5056,6 +5439,9 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
   const [resultadoAlbaran, setResultadoAlbaran] = useState(null);
   const [errorAlbaran, setErrorAlbaran] = useState("");
   const inputAlbaranRef = useRef(null);
+  const [enviandoEmail, setEnviandoEmail] = useState(false);
+  const [errorEnvioEmail, setErrorEnvioEmail] = useState("");
+  const [emailEnviadoOk, setEmailEnviadoOk] = useState(false);
 
   const nombreLinea = (l) => {
     const esLibre = l.modo === "libre";
@@ -5153,6 +5539,70 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
+  const enviarEmailAutomatico = async () => {
+    if (!proveedor?.email) return;
+    setEnviandoEmail(true);
+    setErrorEnvioEmail("");
+    setEmailEnviadoOk(false);
+    try {
+      const lineasTexto = pedido.lineas.map((l) => {
+        const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
+        return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
+      }).join("\n");
+      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+
+      const response = await fetch("/.netlify/functions/enviar-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destinatario: proveedor.email,
+          asunto: `Pedido ${pedido.numero} — ALUMAVEL`,
+          cuerpo,
+          replyTo: currentUser?.email || "",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        throw new Error(data.error || "No se pudo enviar el correo.");
+      }
+      setEmailEnviadoOk(true);
+      onMarcarEnviado("email");
+    } catch (err) {
+      console.error("Error enviando email automático:", err);
+      setErrorEnvioEmail(err.message + " Puedes usar el botón de abajo para enviarlo desde tu propio correo mientras tanto.");
+    } finally {
+      setEnviandoEmail(false);
+    }
+  };
+
+  const enlaceWhatsappProveedor = () => {
+    if (!proveedor?.movil) return null;
+    const lineasTexto = pedido.lineas.map((l) => {
+      const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
+      return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
+    }).join("\n");
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const tel = proveedor.movil.replace(/[^\d+]/g, "");
+    return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
+  };
+
+  // Líneas que faltan o no cuadran según el albarán leído, listas para pasarlas
+  // a un pedido nuevo (reponiendo modo/material/medidas de la línea original).
+  const lineasFaltantesAlbaran = () => {
+    if (!resultadoAlbaran) return [];
+    return pedido.lineas
+      .map((l) => {
+        const comp = resultadoAlbaran.comparacion.find((c) => c.nombre === nombreLinea(l));
+        if (!comp || comp.coincide) return null;
+        const recibida = comp.encontrado ? parseFloat(comp.cantidadAlbaran) || 0 : 0;
+        const pedida = parseFloat(l.cantidad) || 0;
+        const falta = Math.round((pedida - recibida) * 100) / 100;
+        if (falta <= 0) return null;
+        return { ...l, id: uid(), cantidad: falta, estado: "Solicitado" };
+      })
+      .filter(Boolean);
+  };
+
   return (
     <div className="p-8 max-w-4xl">
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver al listado</button>
@@ -5167,13 +5617,36 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
         </div>
         <div className="flex gap-2 shrink-0">
-          {enlaceEmailProveedor() ? (
-            <a href={enlaceEmailProveedor()} onClick={() => onMarcarEnviado("email")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-3.5 py-2 rounded-md">
-              <Mail size={14} /> Enviar por email
-            </a>
+          {proveedor?.email ? (
+            <div className="flex flex-col items-end gap-1">
+              <button
+                onClick={enviarEmailAutomatico}
+                disabled={enviandoEmail}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60 px-3.5 py-2 rounded-md"
+              >
+                <Mail size={14} /> {enviandoEmail ? "Enviando..." : "Enviar por email"}
+              </button>
+              {emailEnviadoOk && <span className="text-xs text-emerald-600 font-semibold">✓ Correo enviado</span>}
+              {errorEnvioEmail && (
+                <div className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">
+                  ⚠ {errorEnvioEmail}
+                  <a href={enlaceEmailProveedor()} onClick={() => onMarcarEnviado("email")} className="block underline mt-0.5">Abrir en mi correo</a>
+                </div>
+              )}
+            </div>
           ) : (
             <span title="Este proveedor no tiene email guardado" className="flex items-center gap-1.5 text-sm font-semibold text-slate-300 border border-slate-200 px-3.5 py-2 rounded-md cursor-not-allowed">
               <Mail size={14} /> Sin email
+            </span>
+          )}
+          {enlaceWhatsappProveedor() ? (
+            <a href={enlaceWhatsappProveedor()} target="_blank" rel="noreferrer" onClick={() => onMarcarEnviado("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
+              <MessageCircle size={14} /> Enviar por WhatsApp
+            </a>
+          ) : (
+            <span title="Este proveedor no tiene móvil guardado" className="flex items-center gap-1.5 text-sm font-semibold text-slate-300 border border-slate-200 px-3.5 py-2 rounded-md cursor-not-allowed">
+              <MessageCircle size={14} /> Sin móvil
             </span>
           )}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
@@ -5186,11 +5659,16 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
       <div className="flex items-center gap-2 mb-6">
         <Badge className={ESTADO_PEDIDO_STYLE[pedido.estado]}>{pedido.estado}</Badge>
         {pedido.fechaRecibido && <span className="text-xs text-slate-400">Recibido el {fmtDate(pedido.fechaRecibido)}</span>}
+        {(pedido.avisos?.llegada || pedido.avisos?.retraso) && (
+          <span className="text-xs text-sky-600 font-semibold" title={`Avisos para ${pedido.avisos?.usuarioNombre || "un usuario"}`}>
+            🔔 {[pedido.avisos?.llegada && "llegada", pedido.avisos?.retraso && "retraso"].filter(Boolean).join(" y ")} — {pedido.avisos?.usuarioNombre}
+          </span>
+        )}
       </div>
 
       {pedido.envioConfirmado ? (
         <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold mb-6">
-          ✓ {pedido.envioMetodo === "email" ? "Enviado por email" : "Pedido realizado"} el {fmtDate(pedido.fechaEnvioConfirmado?.slice(0, 10))}.
+          ✓ {pedido.envioMetodo === "email" ? "Enviado por email" : pedido.envioMetodo === "whatsapp" ? "Enviado por WhatsApp" : "Pedido realizado"} el {fmtDate(pedido.fechaEnvioConfirmado?.slice(0, 10))}.
         </div>
       ) : (
         <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-6 space-y-2">
@@ -5336,6 +5814,14 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, onBack, onEdit
               <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
                 ⚠ Hay líneas marcadas como "Revisar" arriba. Si confirmas igualmente, se recibirá el pedido completo tal y como está pedido.
               </div>
+            )}
+            {resultadoAlbaran.comparacion.some((c) => !c.coincide) && !pedido.albaranComprobado && (
+              <button
+                onClick={() => onCrearPedidoFaltante(pedido, lineasFaltantesAlbaran())}
+                className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-4 py-2.5 rounded-md hover:bg-amber-50 mb-3"
+              >
+                📦 Crear pedido al proveedor con lo que falta
+              </button>
             )}
             {pedido.albaranComprobado ? (
               <div className="px-3 py-2.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
@@ -5847,7 +6333,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           <Plus size={14} /> Añadir a mano
         </button>
       </div>
-      {errorPacking && <p className="text-xs text-rose-600 font-semibold mb-4">⚠ {errorPacking}</p>}
+      {errorPacking && (
+        <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-rose-50 border border-rose-200">
+          <p className="text-xs text-rose-600 font-semibold">⚠ {errorPacking}</p>
+          <button onClick={() => setErrorPacking("")} className="text-rose-400 hover:text-rose-600 text-xs font-bold shrink-0">✕</button>
+        </div>
+      )}
 
       {mostrarNuevo && (
         <NuevoCristalForm onCancel={() => setMostrarNuevo(false)} onSave={(data) => { onAdd(data); setMostrarNuevo(false); }} />
@@ -5951,6 +6442,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           onClose={() => setVerDetalle(null)}
           onLiberar={(id) => onLiberar(id)}
           onEliminar={(id) => onDelete(id)}
+          onMover={(cristal) => { setVerDetalle(null); setAsignando(cristal); }}
         />
       )}
     </div>
@@ -6035,16 +6527,27 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
 
 function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar }) {
   const [zona, setZona] = useState(sugerencia?.zona || "arriba");
-  const ocupado = (z, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === z && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+  const ocupantesEn = (z, fila, hueco) => cristales.filter((c) => c.id !== cristal.id && c.ubicacion && c.ubicacion.zona === z && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   const cfg = ZONAS_CRISTALES[zona];
+
+  const elegir = (z, fila, hueco) => {
+    const ocupantes = ocupantesEn(z, fila, hueco);
+    if (ocupantes.length > 0) {
+      const nombres = ocupantes.map((o) => o.expediente || o.lote || o.secuencia || "un expediente").join(", ");
+      if (!window.confirm(`Ese hueco ya tiene ${ocupantes.length} expediente(s) (${nombres}). ¿Añadir también este caballete ahí, juntos?`)) return;
+    }
+    onConfirmar({ zona: z, fila, hueco });
+  };
+
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-lg p-5 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display font-bold text-slate-800 mb-1">Ubicar: {cristal.lote || cristal.secuencia || "Caballete"}</h3>
         <p className="text-xs text-slate-500 mb-3">{cristal.cliente} · {cristal.proveedor}</p>
+        <p className="text-xs text-slate-400 mb-3">Los huecos "Ocupado" no están bloqueados: puedes pulsarlos igualmente si quieres juntar varios expedientes en el mismo caballete.</p>
         {sugerencia && (
           <button
-            onClick={() => onConfirmar(sugerencia)}
+            onClick={() => elegir(sugerencia.zona, sugerencia.fila, sugerencia.hueco)}
             className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 px-4 py-2.5 rounded-md mb-3"
           >
             ✨ Usar sugerencia: {ubicacionTexto(sugerencia)}
@@ -6063,15 +6566,15 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
               <span className="text-xs text-slate-400 w-12 shrink-0">F{fila}</span>
               <div className="flex gap-1.5 flex-1">
                 {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
-                  const libre = !ocupado(zona, fila, hueco);
+                  const ocupantes = ocupantesEn(zona, fila, hueco);
+                  const libre = ocupantes.length === 0;
                   return (
                     <button
                       key={hueco}
-                      disabled={!libre}
-                      onClick={() => onConfirmar({ zona, fila, hueco })}
-                      className={`flex-1 h-9 rounded-md text-xs font-semibold ${libre ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer" : "bg-slate-100 text-slate-300 cursor-not-allowed"}`}
+                      onClick={() => elegir(zona, fila, hueco)}
+                      className={`flex-1 h-9 rounded-md text-xs font-semibold ${libre ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer" : "bg-amber-50 text-amber-700 hover:bg-amber-100 cursor-pointer"}`}
                     >
-                      {libre ? "Libre" : "Ocupado"}
+                      {libre ? "Libre" : `Ocupado (${ocupantes.length})`}
                     </button>
                   );
                 })}
@@ -6085,7 +6588,7 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
   );
 }
 
-function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar }) {
+function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover }) {
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
   }, [cristalesEnHueco.length]);
@@ -6110,7 +6613,10 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Medida:</b> {cristal.medida || "—"}</p>
                 <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => onMover(cristal)} className="flex-1 text-xs font-semibold text-sky-700 border border-sky-300 px-3 py-1.5 rounded-md hover:bg-sky-50">
+                  Mover a otro hueco
+                </button>
                 <button onClick={() => onLiberar(cristal.id)} className="flex-1 text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md hover:bg-amber-50">
                   Liberar (vuelve a pendiente)
                 </button>
@@ -7183,7 +7689,7 @@ function parsearExcelMontaje(arrayBuffer) {
 
 // Lista de componentes que se controlan por defecto en cada puerta/ventana.
 // El usuario puede añadir más componentes personalizados con el botón "+".
-const COMPONENTES_DEFECTO_ELEMENTO = ["Marco", "Hoja izquierda", "Hoja derecha", "Persiana", "Tapajuntas", "Silicona"];
+const COMPONENTES_DEFECTO_ELEMENTO = ["Marco", "Hoja izquierda", "Hoja derecha", "Persiana", "Mosquitera", "Cajón de obra", "Montaje", "Tapajuntas", "Postigo", "Silicona"];
 
 // Si el elemento todavía no tiene su propia lista de componentes guardada
 // (por ejemplo, viene de una importación antigua), se genera la lista por
@@ -7207,6 +7713,7 @@ function agruparDocumentosPorCategoria(documentos) {
 }
 
 function nombreElementoMontaje(el) {
+  if (el.nombre) return el.nombre;
   const base = el.tipo === "puerta" ? "Puerta" : el.tipo === "ventana" ? "Ventana" : el.codigo;
   const sufijo =
     el.tipo === "puerta" && el.ladoApertura
@@ -7290,6 +7797,9 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   const [anadiendoComponente, setAnadiendoComponente] = useState(null);
   const [nuevoComponenteTexto, setNuevoComponenteTexto] = useState({});
   const [docCategoria, setDocCategoria] = useState({});
+  const [nuevaViviendaTexto, setNuevaViviendaTexto] = useState("");
+  const [nuevoElementoNombre, setNuevoElementoNombre] = useState({});
+  const [nuevoElementoMedida, setNuevoElementoMedida] = useState({});
   const fileInputRef = useRef(null);
 
   const descargarPlantilla = () => {
@@ -7413,6 +7923,20 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
   const actualizarVivienda = (viviendaId, cambios) => {
     guardarViviendas(viviendas.map((v) => (v.id === viviendaId ? { ...v, ...cambios } : v)));
+  };
+
+  const agregarViviendaAMano = (nombre) => {
+    const limpio = (nombre || "").trim();
+    if (!limpio) return;
+    const nueva = { id: uid(), bloque: limpio, planta: "", puerta: "", elementos: [], extras: [], fotos: [], documentos: [], incidenciasVinculadas: [] };
+    guardarViviendas([...viviendas, nueva]);
+  };
+
+  const agregarElementoAMano = (v, nombre, medida) => {
+    const limpio = (nombre || "").trim();
+    if (!limpio) return;
+    const nuevo = { id: uid(), nombre: limpio, medida: (medida || "").trim(), instalado: false, componentes: [], fotos: [] };
+    actualizarVivienda(v.id, { elementos: [...v.elementos, nuevo] });
   };
 
   const toggleInstalado = (v, elId) => {
@@ -7564,6 +8088,21 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
             {importando ? "Importando..." : "Importar Excel/ODS"}
           </button>
         </div>
+      </div>
+
+      <div className="flex gap-2 mb-4">
+        <TextInput
+          value={nuevaViviendaTexto}
+          onChange={(e) => setNuevaViviendaTexto(e.target.value)}
+          placeholder="Ej: Vivienda única, Piso 1A, Local..."
+          className="max-w-xs"
+        />
+        <button
+          onClick={() => { agregarViviendaAMano(nuevaViviendaTexto); setNuevaViviendaTexto(""); }}
+          className="px-3 py-2 rounded-md text-sm font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 shrink-0"
+        >
+          + Añadir a mano (sin Excel)
+        </button>
       </div>
 
       <button onClick={() => setMostrarManual((v) => !v)} className="text-xs font-semibold text-emerald-700 mb-4">
@@ -7722,6 +8261,31 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                     })}
                   </div>
 
+                  <div className="flex gap-2 mt-3">
+                    <TextInput
+                      value={nuevoElementoNombre[v.id] || ""}
+                      onChange={(e) => setNuevoElementoNombre((prev) => ({ ...prev, [v.id]: e.target.value }))}
+                      placeholder="Nombre (ej: Cocina, Salón, Dormitorio 1...)"
+                      className="flex-1 !text-xs !py-1.5"
+                    />
+                    <TextInput
+                      value={nuevoElementoMedida[v.id] || ""}
+                      onChange={(e) => setNuevoElementoMedida((prev) => ({ ...prev, [v.id]: e.target.value }))}
+                      placeholder="Medida (ej: 120x150)"
+                      className="max-w-[140px] !text-xs !py-1.5"
+                    />
+                    <button
+                      onClick={() => {
+                        agregarElementoAMano(v, nuevoElementoNombre[v.id], nuevoElementoMedida[v.id]);
+                        setNuevoElementoNombre((prev) => ({ ...prev, [v.id]: "" }));
+                        setNuevoElementoMedida((prev) => ({ ...prev, [v.id]: "" }));
+                      }}
+                      className="px-3 py-1.5 rounded-md text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 shrink-0"
+                    >
+                      + Añadir habitación/elemento
+                    </button>
+                  </div>
+
                   <div className="mt-4">
                     <div className="text-sm font-semibold text-slate-700 mb-1">Extras añadidos ({(v.extras || []).length})</div>
                     {(v.extras || []).map((ex) => (
@@ -7761,7 +8325,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                       </Select>
                       <input
                         type="file"
-                        accept="application/pdf,image/*"
+                        accept="application/pdf,image/*,.xlsx,.xls,.ods,.doc,.docx"
                         onChange={(e) => subirDocumento(v, e.target.files[0], docCategoria[v.id] || "Planos")}
                         className="text-sm flex-1"
                       />
@@ -7993,6 +8557,413 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
           onClick: (resumenGlobal) => onPasarAPresupuesto(medicion, resumenGlobal),
         }}
       />
+    </div>
+  );
+}
+
+/* ================= CHAT INTERNO ================= */
+
+function ChatModulo({ usuarios, currentUser, proyectos, onCrearTarea }) {
+  const salas = useMemo(() => [
+    { id: "general", nombre: "General" },
+    ...proyectos.map((p) => ({ id: `proyecto_${p.id}`, nombre: p.nombre || `Proyecto ${p.numero || ""}` })),
+  ], [proyectos]);
+
+  const [salaId, setSalaId] = useState("general");
+  const sala = salas.find((s) => s.id === salaId) || salas[0];
+  const [mensajes, setMensajes] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [texto, setTexto] = useState("");
+  const [seleccionando, setSeleccionando] = useState(false);
+  const [seleccionados, setSeleccionados] = useState({});
+  const [creandoTareaDesde, setCreandoTareaDesde] = useState(null);
+  const [busquedaSala, setBusquedaSala] = useState("");
+  const finRef = useRef(null);
+
+  useEffect(() => {
+    let activo = true;
+    const cargar = async () => {
+      try {
+        const snap = await fbGet(ref(fbDb, `chatMensajes/${salaId}`));
+        const val = snap.exists() ? snap.val() : {};
+        const lista = toArray(val).sort((a, b) => (a.fecha || 0) - (b.fecha || 0));
+        if (activo) setMensajes(lista);
+      } catch (e) { /* sin conexión momentánea, se reintenta en el siguiente sondeo */ }
+      if (activo) setCargando(false);
+    };
+    setCargando(true);
+    cargar();
+    const intervalo = setInterval(cargar, 8000);
+    return () => { activo = false; clearInterval(intervalo); };
+  }, [salaId]);
+
+  useEffect(() => {
+    finRef.current?.scrollIntoView({ block: "end" });
+  }, [mensajes.length, salaId]);
+
+  const enviar = async () => {
+    const limpio = texto.trim();
+    if (!limpio || !currentUser) return;
+    const msgId = uid();
+    const mensaje = {
+      id: msgId,
+      autorId: currentUser.id,
+      autorNombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim(),
+      texto: limpio,
+      fecha: Date.now(),
+    };
+    setMensajes((prev) => [...prev, mensaje]);
+    setTexto("");
+    await fbSet(ref(fbDb, `chatMensajes/${salaId}/${msgId}`), mensaje).catch(() => {});
+  };
+
+  const toggleSeleccion = (id) => {
+    setSeleccionados((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id]; else next[id] = true;
+      return next;
+    });
+  };
+
+  const exportarPDF = () => {
+    const elegidos = mensajes.filter((m) => seleccionados[m.id]).sort((a, b) => (a.fecha || 0) - (b.fecha || 0));
+    if (elegidos.length === 0) { alert("Selecciona al menos un mensaje para exportar."); return; }
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conversación - ${escapeHtml(sala.nombre)}</title>
+      <style>
+        body { font-family: Arial, Helvetica, sans-serif; padding: 28px; color: #1e293b; }
+        h1 { font-size: 18px; margin-bottom: 2px; }
+        .meta { color: #64748b; font-size: 12px; margin-bottom: 24px; }
+        .msg { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0; }
+        .autor { font-weight: bold; }
+        .hora { color: #94a3b8; font-size: 11px; margin-left: 8px; }
+        .texto { margin-top: 4px; white-space: pre-wrap; }
+      </style></head><body>
+      <h1>Chat ALUMAVEL — ${escapeHtml(sala.nombre)}</h1>
+      <div class="meta">Exportado el ${new Date().toLocaleString("es-ES")} · ${elegidos.length} mensaje(s)</div>
+      ${elegidos.map((m) => `<div class="msg"><span class="autor">${escapeHtml(m.autorNombre)}</span><span class="hora">${new Date(m.fecha).toLocaleString("es-ES")}</span><div class="texto">${escapeHtml(m.texto)}</div></div>`).join("")}
+      </body></html>`;
+    const ventana = window.open("", "_blank");
+    if (!ventana) { alert("El navegador ha bloqueado la ventana emergente. Permítela para poder exportar."); return; }
+    ventana.document.write(html);
+    ventana.document.close();
+    ventana.focus();
+    setTimeout(() => ventana.print(), 350);
+  };
+
+  const salasFiltradas = busquedaSala ? salas.filter((s) => s.nombre.toLowerCase().includes(busquedaSala.toLowerCase())) : salas;
+
+  return (
+    <div className="p-8 max-w-6xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+      <Header icon={<MessageCircle size={20} className="text-[#2E8B57]" />} title="Chat interno" manualKey="chat" subtitle="General y por proyecto — todo el equipo puede escribir y ver el historial" />
+
+      <div className="flex-1 flex gap-4 min-h-0">
+        <div className="w-56 shrink-0 bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
+          <div className="p-2 border-b border-slate-100">
+            <input value={busquedaSala} onChange={(e) => setBusquedaSala(e.target.value)} placeholder="Buscar proyecto..." className="w-full text-xs px-2 py-1.5 rounded-md border border-slate-200" />
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {salasFiltradas.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => { setSalaId(s.id); setSeleccionando(false); setSeleccionados({}); }}
+                className={`w-full text-left px-3 py-2.5 text-sm border-b border-slate-50 truncate ${salaId === s.id ? "bg-[#2E8B57]/10 text-[#2E8B57] font-semibold" : "text-slate-600 hover:bg-slate-50"}`}
+              >
+                {s.id === "general" ? "💬 " : "📁 "}{s.nombre}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex-1 bg-white border border-slate-200 rounded-lg flex flex-col min-w-0">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <h2 className="font-semibold text-slate-800 text-sm truncate">{sala.nombre}</h2>
+            <div className="flex gap-2 shrink-0">
+              {seleccionando ? (
+                <>
+                  <button onClick={exportarPDF} className="text-xs font-semibold text-white bg-[#2E8B57] px-3 py-1.5 rounded-md">Exportar ({Object.keys(seleccionados).length})</button>
+                  <button onClick={() => { setSeleccionando(false); setSeleccionados({}); }} className="text-xs font-semibold text-slate-500 border border-slate-300 px-3 py-1.5 rounded-md">Cancelar</button>
+                </>
+              ) : (
+                <button onClick={() => setSeleccionando(true)} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-1.5 rounded-md hover:bg-slate-50">
+                  <Download size={12} className="inline -mt-0.5 mr-1" /> Exportar a PDF
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            {cargando && mensajes.length === 0 && <p className="text-center text-slate-400 text-sm py-8">Cargando conversación...</p>}
+            {!cargando && mensajes.length === 0 && <p className="text-center text-slate-400 text-sm py-8">Todavía no hay mensajes en esta sala. ¡Escribe el primero!</p>}
+            {mensajes.map((m) => {
+              const esMio = m.autorId === currentUser?.id;
+              return (
+                <div key={m.id} className={`flex gap-2 ${seleccionando ? "items-center" : ""}`}>
+                  {seleccionando && (
+                    <input type="checkbox" checked={!!seleccionados[m.id]} onChange={() => toggleSeleccion(m.id)} className="mt-1 shrink-0" />
+                  )}
+                  <div className={`group max-w-[75%] ${esMio ? "ml-auto" : ""}`}>
+                    <div className={`rounded-lg px-3 py-2 text-sm ${esMio ? "bg-[#2E8B57] text-white" : "bg-slate-100 text-slate-800"}`}>
+                      {!esMio && <p className="text-[11px] font-bold opacity-70 mb-0.5">{m.autorNombre}</p>}
+                      <p className="whitespace-pre-wrap">{m.texto}</p>
+                    </div>
+                    <div className={`flex items-center gap-2 mt-1 ${esMio ? "justify-end" : ""}`}>
+                      <span className="text-[10px] text-slate-400">{new Date(m.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                      <button onClick={() => setCreandoTareaDesde(m)} className="text-[10px] font-semibold text-sky-600 opacity-0 group-hover:opacity-100 transition">→ Crear tarea</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={finRef} />
+          </div>
+
+          <div className="p-3 border-t border-slate-100 flex gap-2">
+            <TextArea
+              value={texto}
+              onChange={(e) => setTexto(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }}
+              rows={1}
+              placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para salto de línea)"
+              className="flex-1 resize-none"
+            />
+            <button onClick={enviar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 rounded-md flex items-center justify-center shrink-0">
+              <Send size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {creandoTareaDesde && (
+        <CrearTareaModal
+          mensaje={creandoTareaDesde}
+          usuarios={usuarios}
+          currentUser={currentUser}
+          salaId={salaId}
+          salaNombre={sala.nombre}
+          onClose={() => setCreandoTareaDesde(null)}
+          onCrear={(data) => { onCrearTarea(data); setCreandoTareaDesde(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CrearTareaModal({ mensaje, usuarios, currentUser, salaId, salaNombre, onClose, onCrear }) {
+  const [asignadoA, setAsignadoA] = useState("");
+  const [titulo, setTitulo] = useState(mensaje.texto.slice(0, 80));
+  const [descripcion, setDescripcion] = useState(mensaje.texto);
+  const [fechaLimite, setFechaLimite] = useState("");
+  const [requiereConfirmacion, setRequiereConfirmacion] = useState(true);
+  const [error, setError] = useState("");
+
+  const candidatos = usuarios.filter((u) => u.id !== currentUser?.id);
+
+  const submit = () => {
+    if (!asignadoA) { setError("Elige a quién se la asignas."); return; }
+    if (!titulo.trim()) { setError("Ponle un título a la tarea."); return; }
+    const usuario = usuarios.find((u) => u.id === asignadoA);
+    onCrear({
+      titulo: titulo.trim(),
+      descripcion: descripcion.trim(),
+      asignadoA,
+      asignadoANombre: usuario ? `${usuario.nombre} ${usuario.apellidos || ""}`.trim() : "",
+      requiereConfirmacion,
+      fechaLimite,
+      salaId,
+      salaNombre,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg p-5 max-w-md w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-800 mb-3">Crear tarea desde este mensaje</h3>
+        {error && <p className="text-xs text-rose-600 font-semibold mb-3">⚠ {error}</p>}
+        <div className="space-y-3">
+          <Field label="Asignar a" required>
+            <Select value={asignadoA} onChange={(e) => setAsignadoA(e.target.value)}>
+              <option value="">Elige un compañero...</option>
+              {candidatos.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+            </Select>
+          </Field>
+          <Field label="Título" required>
+            <TextInput value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+          </Field>
+          <Field label="Descripción">
+            <TextArea value={descripcion} onChange={(e) => setDescripcion(e.target.value)} rows={3} />
+          </Field>
+          <Field label="Fecha límite (opcional)">
+            <TextInput type="date" value={fechaLimite} onChange={(e) => setFechaLimite(e.target.value)} />
+          </Field>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={requiereConfirmacion} onChange={(e) => setRequiereConfirmacion(e.target.checked)} />
+            Pedir confirmación cuando la marque como hecha (si no, se da por completada directamente)
+          </label>
+        </div>
+        <div className="flex gap-2 mt-5">
+          <button onClick={onClose} className="flex-1 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2 rounded-md">Cancelar</button>
+          <button onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-semibold px-4 py-2 rounded-md">Crear tarea</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= TAREAS ================= */
+
+function TareasModulo({ tareas, usuarios, currentUser, onMarcarHecha, onConfirmar, onDelete }) {
+  const [filtro, setFiltro] = useState("asignadas");
+
+  const asignadas = tareas.filter((t) => t.asignadoA === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
+  const creadas = tareas.filter((t) => t.asignadoPor === currentUser?.id).sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
+  const lista = filtro === "asignadas" ? asignadas : creadas;
+
+  const badgeEstado = (t) => {
+    if (t.estado === "Hecha") return <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Hecha</Badge>;
+    if (t.estado === "Pendiente de confirmar") return <Badge className="bg-amber-50 text-amber-700 ring-amber-200">Pendiente de confirmar</Badge>;
+    return <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Pendiente</Badge>;
+  };
+
+  return (
+    <div className="p-8 max-w-4xl">
+      <Header icon={<ClipboardList size={20} className="text-[#2E8B57]" />} title="Tareas" manualKey="tareas" subtitle={`${asignadas.filter((t) => t.estado === "Pendiente").length} pendiente(s) para ti`} />
+
+      <div className="flex gap-2 mb-5">
+        <button onClick={() => setFiltro("asignadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "asignadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
+          Asignadas a mí ({asignadas.length})
+        </button>
+        <button onClick={() => setFiltro("creadas")} className={`px-4 py-2 rounded-md text-sm font-semibold ${filtro === "creadas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>
+          Creadas por mí ({creadas.length})
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {lista.length === 0 && (
+          <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-slate-400 text-sm">
+            {filtro === "asignadas" ? "No tienes tareas asignadas." : "No has creado ninguna tarea todavía. Puedes crear una desde cualquier mensaje del Chat."}
+          </div>
+        )}
+        {lista.map((t) => (
+          <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-4">
+            <div className="flex items-start justify-between gap-3 mb-1.5">
+              <h3 className="font-semibold text-slate-800 text-sm">{t.titulo}</h3>
+              {badgeEstado(t)}
+            </div>
+            {t.descripcion && <p className="text-sm text-slate-600 mb-2 whitespace-pre-wrap">{t.descripcion}</p>}
+            <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1 mb-3">
+              {filtro === "asignadas" ? <span>De: {t.asignadoPorNombre}</span> : <span>Para: {t.asignadoANombre}</span>}
+              {t.salaNombre && <span>Sala: {t.salaNombre}</span>}
+              {t.fechaLimite && <span>Fecha límite: {fmtDate(t.fechaLimite)}</span>}
+              <span>Creada: {new Date(t.fechaCreacion).toLocaleDateString("es-ES")}</span>
+            </div>
+            <div className="flex gap-2">
+              {filtro === "asignadas" && t.estado === "Pendiente" && (
+                <button onClick={() => onMarcarHecha(t.id)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">
+                  Marcar como hecha
+                </button>
+              )}
+              {filtro === "creadas" && t.estado === "Pendiente de confirmar" && (
+                <>
+                  <button onClick={() => onConfirmar(t.id, true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">
+                    Confirmar hecha
+                  </button>
+                  <button onClick={() => onConfirmar(t.id, false)} className="text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md">
+                    No está hecha, devolver
+                  </button>
+                </>
+              )}
+              {filtro === "creadas" && (
+                <button onClick={() => { if (window.confirm("¿Borrar esta tarea?")) onDelete(t.id); }} className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md ml-auto">
+                  Borrar
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ================= ARCHIVOS DE EMPRESA ================= */
+
+const CATEGORIAS_ARCHIVO_EMPRESA = ["Tarifas", "Contactos", "Plantillas", "Manuales", "Otros"];
+
+function ArchivosModulo({ archivos, onSubir, onDelete }) {
+  const [categoria, setCategoria] = useState("Tarifas");
+  const [filtro, setFiltro] = useState("todas");
+  const [q, setQ] = useState("");
+  const inputRef = useRef(null);
+
+  const visibles = archivos.filter((a) => {
+    if (filtro !== "todas" && (a.categoria || "Otros") !== filtro) return false;
+    if (q && !a.nombre.toLowerCase().includes(q.toLowerCase())) return false;
+    return true;
+  });
+
+  const grupos = {};
+  visibles.forEach((a) => {
+    const cat = a.categoria || "Otros";
+    if (!grupos[cat]) grupos[cat] = [];
+    grupos[cat].push(a);
+  });
+
+  return (
+    <div className="p-8 max-w-4xl">
+      <Header
+        icon={<FileText size={20} className="text-[#2E8B57]" />}
+        title="Archivos"
+        manualKey="archivos"
+        subtitle={`${archivos.length} archivo(s) guardado(s) — tarifas, contactos y otros documentos de referencia`}
+      />
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5 flex flex-wrap gap-2 items-center">
+        <Select value={categoria} onChange={(e) => setCategoria(e.target.value)} className="max-w-[160px]">
+          {CATEGORIAS_ARCHIVO_EMPRESA.map((c) => <option key={c} value={c}>{c}</option>)}
+        </Select>
+        <input
+          ref={inputRef}
+          type="file"
+          onChange={(e) => { onSubir(e.target.files[0], categoria); e.target.value = ""; }}
+          className="hidden"
+        />
+        <button onClick={() => inputRef.current?.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2 rounded-md text-sm font-semibold">
+          Subir archivo
+        </button>
+        <p className="text-xs text-slate-400">Excel, PDF, Word, imágenes... cualquier tipo de archivo, hasta 8 MB.</p>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button onClick={() => setFiltro("todas")} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${filtro === "todas" ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>Todas</button>
+        {CATEGORIAS_ARCHIVO_EMPRESA.map((c) => (
+          <button key={c} onClick={() => setFiltro(c)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${filtro === c ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600"}`}>{c}</button>
+        ))}
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nombre..." className="w-full pl-8 pr-3 py-1.5 rounded-md border border-slate-300 text-xs" />
+        </div>
+      </div>
+
+      {Object.keys(grupos).length === 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-10 text-center text-slate-400 text-sm">No hay archivos guardados todavía.</div>
+      )}
+
+      {Object.entries(grupos).map(([cat, lista]) => (
+        <div key={cat} className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-4">
+          <h3 className="font-display font-bold text-slate-700 text-sm px-4 py-2.5 bg-slate-50 border-b border-slate-200">{cat}</h3>
+          <div className="divide-y divide-slate-100">
+            {lista.map((a) => (
+              <div key={a.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <a href={a.url} download={a.nombre} className="text-sm text-emerald-700 underline truncate">{a.nombre}</a>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-xs text-slate-400">{new Date(a.subidoEn).toLocaleDateString("es-ES")}{a.subidoPor ? ` · ${a.subidoPor}` : ""}</span>
+                  <button onClick={() => { if (window.confirm("¿Borrar este archivo?")) onDelete(a.id); }} className="text-xs font-semibold text-rose-600 hover:underline">Borrar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -8840,9 +9811,25 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
 
 /* ================= ARTÍCULOS (Fase II) ================= */
 
-function ArticulosModulo({ articulos, proveedores, materiales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onSolicitarArticulo }) {
+function ArticulosModulo({ articulos, proveedores, materiales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onSolicitarArticulo, onImportarTarifas }) {
   const [q, setQ] = useState("");
+  const inputTarifasArticulosRef = useRef(null);
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
+
+  const manejarImportarTarifasArticulos = async (file) => {
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const filasExcel = leerFilasExcel(buffer);
+    const filas = filasExcel.map((fila) => ({
+      nombre: String(valorPorCabeceras(fila, ["nombre", "articulo", "producto"])).trim(),
+      precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
+    })).filter((f) => f.nombre);
+    if (filas.length === 0) {
+      alert("No se ha encontrado ninguna fila con nombre. Revisa las cabeceras del Excel.");
+      return;
+    }
+    onImportarTarifas(filas);
+  };
 
   const precioMateriales = (a) => (a.materiales || []).reduce((s, l) => s + (parseFloat(l.cantidad) || 0) * (parseFloat(l.precio) || 0), 0);
 
@@ -8901,6 +9888,20 @@ function ArticulosModulo({ articulos, proveedores, materiales, view, setView, ed
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-3 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVO ARTÍCULO
+      </button>
+
+      <input
+        ref={inputTarifasArticulosRef}
+        type="file"
+        accept=".xlsx,.xls,.ods,.csv"
+        className="hidden"
+        onChange={(e) => { manejarImportarTarifasArticulos(e.target.files[0]); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputTarifasArticulosRef.current?.click()}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+      >
+        Importar tarifas desde Excel (masivo) — actualiza precios existentes o da de alta artículos nuevos
       </button>
 
       <button
@@ -9746,72 +10747,83 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill]);
 
+  const leerDatosDesdeArchivo = async (file) => {
+    const base64Data = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]);
+      r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+      r.readAsDataURL(file);
+    });
+    const esPdf = file.type === "application/pdf";
+    const contentBlock = esPdf
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+      : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+
+    const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
+
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 8000,
+        messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+      }),
+    });
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
+      throw new Error("Respuesta no válida de la API: " + response.status);
+    }
+    const data = await response.json();
+    if (data.error) {
+      console.error("Error devuelto por la API:", data.error);
+      throw new Error(data.error.message || "Error de la API");
+    }
+    const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+    const inicioP = limpio.indexOf("{");
+    const finP = limpio.lastIndexOf("}");
+    const jsonCandidatoP = inicioP !== -1 && finP !== -1 ? limpio.slice(inicioP, finP + 1) : limpio;
+    let info;
+    try {
+      info = JSON.parse(jsonCandidatoP);
+    } catch (parseErr) {
+      console.error("No se pudo parsear el JSON del presupuesto. Texto recibido:", textoRespuesta);
+      throw new Error("La respuesta de la IA no tenía formato válido");
+    }
+
+    const medidas = Array.isArray(info.medidas) ? info.medidas.filter((m) => m && (m.ancho || m.alto)) : [];
+    const textoMedidas = medidas.length > 0
+      ? "\n\nMedidas:\n" + medidas.map((m) => `- ${m.referencia || "Pieza"}: ${m.ancho || "—"} x ${m.alto || "—"} mm${m.cantidad ? ` (x${m.cantidad})` : ""}`).join("\n")
+      : "";
+    const descripcionCompleta = `${info.descripcionGeneral || ""}${textoMedidas}`.trim();
+
+    if (!info.clienteNombre && !descripcionCompleta && !info.importe) {
+      throw new Error("No he podido leer datos claros en la imagen. Prueba con una foto más nítida.");
+    }
+
+    return {
+      clienteNombre: info.clienteNombre || "",
+      telefono: info.telefono || "",
+      descripcion: descripcionCompleta,
+      importe: info.importe || "",
+      zona: info.zona || "",
+      nombreArchivo: file.name,
+    };
+  };
+
   const leerFotoPresupuesto = async (file) => {
     setLeyendoFoto(true);
     setErrorFoto("");
     try {
-      const base64Data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
-        r.readAsDataURL(file);
-      });
-      const esPdf = file.type === "application/pdf";
-      const contentBlock = esPdf
-        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
-        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-
-      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
-        }),
-      });
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
-        throw new Error("Respuesta no válida de la API: " + response.status);
-      }
-      const data = await response.json();
-      if (data.error) {
-        console.error("Error devuelto por la API:", data.error);
-        throw new Error(data.error.message || "Error de la API");
-      }
-      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
-      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const inicioP = limpio.indexOf("{");
-      const finP = limpio.lastIndexOf("}");
-      const jsonCandidatoP = inicioP !== -1 && finP !== -1 ? limpio.slice(inicioP, finP + 1) : limpio;
-      let info;
-      try {
-        info = JSON.parse(jsonCandidatoP);
-      } catch (parseErr) {
-        console.error("No se pudo parsear el JSON del presupuesto. Texto recibido:", textoRespuesta);
-        throw new Error("La respuesta de la IA no tenía formato válido");
-      }
-
-      const medidas = Array.isArray(info.medidas) ? info.medidas.filter((m) => m && (m.ancho || m.alto)) : [];
-      const textoMedidas = medidas.length > 0
-        ? "\n\nMedidas:\n" + medidas.map((m) => `- ${m.referencia || "Pieza"}: ${m.ancho || "—"} x ${m.alto || "—"} mm${m.cantidad ? ` (x${m.cantidad})` : ""}`).join("\n")
-        : "";
-      const descripcionCompleta = `${info.descripcionGeneral || ""}${textoMedidas}`.trim();
-
-      if (!info.clienteNombre && !descripcionCompleta && !info.importe) {
-        setErrorFoto("No he podido leer datos claros en la imagen. Prueba con una foto más nítida.");
-        setLeyendoFoto(false);
-        return;
-      }
+      const datos = await leerDatosDesdeArchivo(file);
       setPrefillPresupuesto({
         id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
-        clienteNombre: info.clienteNombre || "", telefono: info.telefono || "",
-        descripcion: descripcionCompleta, importe: info.importe || "", estado: "Pendiente",
-        motivoRechazo: "", fechaRespuesta: "", comentarios: `Creado a partir de una foto/PDF subida (${file.name}). Revisa los datos antes de guardar.`,
-        fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: info.zona || "",
+        clienteNombre: datos.clienteNombre, telefono: datos.telefono,
+        descripcion: datos.descripcion, importe: datos.importe, estado: "Pendiente",
+        motivoRechazo: "", fechaRespuesta: "", comentarios: `Creado a partir de una foto/PDF subida (${datos.nombreArchivo}). Revisa los datos antes de guardar.`,
+        fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: datos.zona,
       });
       setEditId(null);
       setView("form");
@@ -9949,6 +10961,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         clientes={clientes}
         presupuestosExistentes={presupuestos}
         onCrearClienteRapido={onCrearClienteRapido}
+        onLeerDatos={leerDatosDesdeArchivo}
         onCancel={() => { setView(editId ? "detail" : "list"); setPrefillPresupuesto(null); }}
         onSave={(data) => { onUpsert(data); setPrefillPresupuesto(null); }}
       />
@@ -11605,7 +12618,7 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
   );
 }
 
-function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onCancel, onSave }) {
+function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave }) {
   const [f, setF] = useState(
     initial || {
       id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
@@ -11615,6 +12628,30 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
+  const [leyendoFotoForm, setLeyendoFotoForm] = useState(false);
+  const [errorFotoForm, setErrorFotoForm] = useState("");
+  const inputFotoFormRef = useRef(null);
+
+  const rellenarDesdeArchivo = async (file) => {
+    if (!file || !onLeerDatos) return;
+    setLeyendoFotoForm(true);
+    setErrorFotoForm("");
+    try {
+      const datos = await onLeerDatos(file);
+      setF((prev) => ({
+        ...prev,
+        clienteNombre: datos.clienteNombre || prev.clienteNombre,
+        telefono: datos.telefono || prev.telefono,
+        descripcion: datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion,
+        importe: datos.importe || prev.importe,
+        zona: datos.zona || prev.zona,
+      }));
+    } catch (err) {
+      setErrorFotoForm("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
+    } finally {
+      setLeyendoFotoForm(false);
+    }
+  };
 
   const clientesDisponibles = useMemo(() => clientes.map((c) => c.nombre).sort(), [clientes]);
   const [confirmarDuplicado, setConfirmarDuplicado] = useState(false);
@@ -11655,7 +12692,29 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
   return (
     <div className="p-8 max-w-3xl">
       <button onClick={onCancel} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
-      <h1 className="font-display text-2xl font-extrabold text-slate-900 mb-6">{initial?.id ? `Editar presupuesto ${initial.numero}` : "Nuevo presupuesto"}</h1>
+      <h1 className="font-display text-2xl font-extrabold text-slate-900 mb-4">{initial?.id ? `Editar presupuesto ${initial.numero}` : "Nuevo presupuesto"}</h1>
+
+      {onLeerDatos && (
+        <div className="mb-5">
+          <input
+            ref={inputFotoFormRef}
+            type="file"
+            accept="image/*,application/pdf"
+            className="hidden"
+            onChange={(e) => { rellenarDesdeArchivo(e.target.files[0]); e.target.value = ""; }}
+          />
+          <button
+            type="button"
+            onClick={() => inputFotoFormRef.current?.click()}
+            disabled={leyendoFotoForm}
+            className="flex items-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 disabled:opacity-60"
+          >
+            {leyendoFotoForm ? "Leyendo el archivo..." : "📷 Rellenar (o completar) desde foto/PDF"}
+          </button>
+          <p className="text-xs text-slate-400 mt-1">Rellena los campos vacíos con lo que encuentre en la foto/PDF, sin borrar lo que ya tengas escrito. Útil también al duplicar un presupuesto.</p>
+          {errorFotoForm && <p className="text-xs text-rose-600 font-semibold mt-1">⚠ {errorFotoForm}</p>}
+        </div>
+      )}
 
       {errorMsg && (
         <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
