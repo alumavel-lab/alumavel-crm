@@ -122,9 +122,16 @@ function normalizarCabecera(s) {
 }
 function valorPorCabeceras(fila, candidatos) {
   const claves = Object.keys(fila);
+  // Primero probamos coincidencia exacta (más fiable), y si no hay ninguna,
+  // probamos que la cabecera "contenga" al candidato (ej: "Cliente / Referencia"
+  // contiene "cliente"), para no depender de que el texto sea idéntico.
   for (const candidato of candidatos) {
-    const claveEncontrada = claves.find((k) => normalizarCabecera(k) === candidato);
-    if (claveEncontrada !== undefined && String(fila[claveEncontrada]).trim() !== "") return fila[claveEncontrada];
+    const claveExacta = claves.find((k) => normalizarCabecera(k) === candidato);
+    if (claveExacta !== undefined && String(fila[claveExacta]).trim() !== "") return fila[claveExacta];
+  }
+  for (const candidato of candidatos) {
+    const claveParcial = claves.find((k) => normalizarCabecera(k).includes(candidato));
+    if (claveParcial !== undefined && String(fila[claveParcial]).trim() !== "") return fila[claveParcial];
   }
   return "";
 }
