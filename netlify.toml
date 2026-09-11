@@ -1,0 +1,6 @@
+# Este archivo solo añade la tarea programada de la copia de seguridad diaria.
+# No toca la configuración de build/publish (esa sigue gestionada desde el
+# panel de Netlify, como hasta ahora).
+
+[functions."backup-diario"]
+  schedule = "@daily"

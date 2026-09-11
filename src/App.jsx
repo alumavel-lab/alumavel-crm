@@ -96,7 +96,26 @@ const escapeHtml = (s) => (s || "").toString().replace(/&/g, "&amp;").replace(/<
 function leerFilasExcel(arrayBuffer) {
   const workbook = XLSX.read(arrayBuffer, { type: "array" });
   const hoja = workbook.Sheets[workbook.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(hoja, { defval: "" });
+  // Algunas hojas tienen un título o notas en las primeras filas antes de las
+  // cabeceras reales (como "Control de Reparaciones" en la fila 1). Buscamos
+  // la primera fila con al menos 2 celdas rellenas y la usamos como cabecera,
+  // en vez de asumir siempre que las cabeceras están en la fila 1.
+  const filasCrudas = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: "" });
+  let indiceCabecera = 0;
+  for (let i = 0; i < Math.min(filasCrudas.length, 15); i++) {
+    const noVacias = (filasCrudas[i] || []).filter((c) => String(c).trim() !== "").length;
+    if (noVacias >= 2) { indiceCabecera = i; break; }
+  }
+  const cabeceras = (filasCrudas[indiceCabecera] || []).map((c) => String(c || "").trim());
+  const filas = [];
+  for (let i = indiceCabecera + 1; i < filasCrudas.length; i++) {
+    const fila = filasCrudas[i];
+    if (!fila || fila.every((c) => String(c).trim() === "")) continue;
+    const obj = {};
+    cabeceras.forEach((cab, idx) => { if (cab) obj[cab] = fila[idx] !== undefined ? fila[idx] : ""; });
+    filas.push(obj);
+  }
+  return filas;
 }
 function normalizarCabecera(s) {
   return (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
@@ -1220,6 +1239,59 @@ export default function App() {
 
   const saveIncidencias = (next) => { setIncidencias(next); persist("incidencias", next); };
 
+  // Importa incidencias masivamente desde un Excel tipo "Control de reparaciones".
+  // Cada fila necesita encajar con un cliente que ya exista y que tenga al
+  // menos un proyecto (las incidencias van siempre ligadas a un proyecto).
+  // Las filas que no encuentran coincidencia se reportan al final para
+  // revisarlas a mano.
+  const importarIncidenciasMasivo = (filas) => {
+    const nums = incidencias.map((i) => parseInt(String(i.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+    let siguienteNum = (nums.length ? Math.max(...nums) : 0) + 1;
+    const normalizar = (s) => (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\(.*?\)/g, "").trim();
+
+    const nuevas = [];
+    const sinCoincidencia = [];
+    filas.forEach((fila) => {
+      const nombreBuscado = normalizar(fila.clienteTexto);
+      if (!nombreBuscado) return;
+      const clienteMatch = clientes.find((c) => {
+        const n = normalizar(c.nombre);
+        return n && (n.includes(nombreBuscado) || nombreBuscado.includes(n));
+      });
+      const proyectoMatch = clienteMatch ? proyectos.find((p) => p.clienteId === clienteMatch.id) : null;
+      if (!proyectoMatch) {
+        sinCoincidencia.push(fila.clienteTexto);
+        return;
+      }
+      const especificaciones = [
+        fila.tareas,
+        fila.materiales ? `Materiales a pedir: ${fila.materiales}` : "",
+        fila.dudas ? `Dudas / a confirmar: ${fila.dudas}` : "",
+      ].filter(Boolean).join("\n\n");
+      nuevas.push({
+        id: uid(), numero: String(siguienteNum++), proyectoId: proyectoMatch.id,
+        fecha: new Date().toISOString().slice(0, 10),
+        especificaciones: especificaciones || "(Importado desde Excel sin descripción)",
+        observaciones: [fila.telefono ? `Teléfono: ${fila.telefono}` : "", fila.notas || ""].filter(Boolean).join(" — "),
+        responsableInicial: "", comercialAsociado: "", responsableActual: "",
+        estadoTrabajo: "Pendiente revisión", estadoIncidencia: "Pendiente revisión",
+        fechaEntregaPrevista: "", fechaEntregado: "",
+      });
+    });
+
+    if (nuevas.length > 0) saveIncidencias([...nuevas, ...incidencias]);
+
+    if (nuevas.length === 0 && sinCoincidencia.length === 0) {
+      showToast("No se encontró ninguna fila válida en el Excel", "error");
+    } else {
+      let resumen = `${nuevas.length} incidencia(s) creada(s).`;
+      if (sinCoincidencia.length > 0) {
+        resumen += `\n\n${sinCoincidencia.length} fila(s) NO se pudieron importar porque no encontré un cliente con proyecto que coincida:\n${sinCoincidencia.slice(0, 15).join("\n")}${sinCoincidencia.length > 15 ? "\n..." : ""}\n\nDa de alta a esos clientes (con al menos un proyecto) y vuelve a intentarlo con esas filas.`;
+      }
+      alert(resumen);
+    }
+  };
+
   const nextNumeroIncidencia = () => {
     const nums = incidencias.map((i) => parseInt(String(i.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
     const max = nums.length ? Math.max(...nums) : 0;
@@ -2281,6 +2353,7 @@ export default function App() {
             isAdmin={isAdmin}
             onInlineUpdate={updateIncidenciaInline}
             nextNumero={nextNumeroIncidencia}
+            onImportarMasivo={importarIncidenciasMasivo}
           />
         )}
         {modulo === "calendario" && (
@@ -2870,6 +2943,7 @@ const MANUALES = {
     puntos: [
       "Aquí gestionas quién tiene acceso al CRM y con qué permisos (administrador o empleado normal).",
       "Puedes dar de alta nuevos usuarios o quitarle el acceso a alguien.",
+      "Botón \"Descargar copia de seguridad ahora\": te descargas al momento todos los datos del CRM en un archivo. Además, todos los días se envía automáticamente una copia por email a alumavel@alumavel.es, sin que tengas que hacer nada.",
     ],
   },
 };
@@ -8970,10 +9044,31 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin }) {
+function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
+  const inputIncidenciasRef = useRef(null);
+
+  const manejarImportarIncidencias = async (file) => {
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const filasExcel = leerFilasExcel(buffer);
+    const filas = filasExcel.map((fila) => ({
+      clienteTexto: String(valorPorCabeceras(fila, ["clientereferencia", "cliente", "referencia", "nombre"])).trim(),
+      telefono: String(valorPorCabeceras(fila, ["telefono", "tel", "movil"])).trim(),
+      tareas: String(valorPorCabeceras(fila, ["tareasdereparacion", "tareas", "reparacion", "descripcion"])).trim(),
+      materiales: String(valorPorCabeceras(fila, ["materialesapedir", "materiales"])).trim(),
+      estado: String(valorPorCabeceras(fila, ["estado"])).trim(),
+      dudas: String(valorPorCabeceras(fila, ["dudasaconfirmarconmiguel", "dudas"])).trim(),
+      notas: String(valorPorCabeceras(fila, ["notas", "observaciones"])).trim(),
+    })).filter((f) => f.clienteTexto);
+    if (filas.length === 0) {
+      alert("No se ha encontrado ninguna fila con cliente/referencia. Revisa las cabeceras del Excel.");
+      return;
+    }
+    onImportarMasivo(filas);
+  };
 
   const proyecto = (id) => proyectos.find((p) => p.id === id);
   const clienteNombre = (proyectoId) => {
@@ -9048,6 +9143,20 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVA INCIDENCIA
+      </button>
+
+      <input
+        ref={inputIncidenciasRef}
+        type="file"
+        accept=".xlsx,.xls,.ods,.csv"
+        className="hidden"
+        onChange={(e) => { manejarImportarIncidencias(e.target.files[0]); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputIncidenciasRef.current?.click()}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+      >
+        Importar incidencias desde Excel (masivo) — ej: hoja de control de reparaciones
       </button>
 
       {proyectos.length === 0 && (
@@ -13536,6 +13645,28 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
 function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
   const [view, setView] = useState("list");
   const [editId, setEditId] = useState(null);
+  const [descargandoBackup, setDescargandoBackup] = useState(false);
+
+  const descargarCopiaSeguridad = async () => {
+    setDescargandoBackup(true);
+    try {
+      const snap = await fbGet(ref(fbDb, "/"));
+      const datos = JSON.stringify(snap.val(), null, 2);
+      const blob = new Blob([datos], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `backup-alumavel-crm-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("No se pudo descargar la copia de seguridad: " + err.message);
+    } finally {
+      setDescargandoBackup(false);
+    }
+  };
 
   if (view === "form") {
     const editing = usuarios.find((u) => u.id === editId) || null;
@@ -13556,6 +13687,20 @@ function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
         manualKey="administracion"
         subtitle={`${usuarios.length} usuario${usuarios.length === 1 ? "" : "s"} con acceso al CRM`}
       />
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-display font-bold text-slate-800 text-sm mb-1">Copia de seguridad</h2>
+          <p className="text-xs text-slate-500">Descarga ahora mismo todos los datos del CRM en un archivo. Además, cada día se envía automáticamente una copia por email.</p>
+        </div>
+        <button
+          onClick={descargarCopiaSeguridad}
+          disabled={descargandoBackup}
+          className="flex items-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50 disabled:opacity-60 shrink-0"
+        >
+          <Download size={15} /> {descargandoBackup ? "Descargando..." : "Descargar copia de seguridad ahora"}
+        </button>
+      </div>
 
       <button
         onClick={() => { setEditId(null); setView("form"); }}
