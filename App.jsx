@@ -686,13 +686,25 @@ export default function App() {
   // Al pulsar "Pasar a presupuesto" dentro de una medición: se abre el
   // formulario de Presupuestos ya con el cliente y una descripción con el
   // resumen de todo lo medido, para que solo falte poner el número y el importe.
-  const pasarMedicionAPresupuesto = (medicion, resumenGlobal) => {
+  const pasarMedicionAPresupuesto = async (medicion, resumenGlobal) => {
     saveMediciones(mediciones.map((m) => (m.id === medicion.id ? { ...m, presupuestoCreado: true } : m)));
+    // Los techos se guardan directo en Firebase (igual que el resto del control de
+    // montaje), así que el array "mediciones" que tenemos en memoria puede no
+    // enterarse todavía — los releemos frescos aquí para no perderlos al pasar
+    // a presupuesto.
+    let techos = medicion.techos || [];
+    try {
+      const snap = await fbGet(ref(fbDb, `mediciones/${medicion.id}/techos`));
+      const frescos = toArray(snap.val());
+      if (frescos.length) techos = frescos;
+    } catch (e) {
+      console.error("No se pudieron releer los techos frescos de la medición:", e);
+    }
     setPresupuestoPrefill({
       clienteNombre: medicion.clienteNombre,
       direccionEnvio: medicion.direccion || "",
-      descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || "(Todavía no se han registrado elementos medidos en esta medición.)"}`,
-      techos: medicion.techos || [],
+      descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || (techos.length ? `${techos.length} techo(s) calculado(s) — ver despiece y precio en la sección Techos de esta medición.` : "(Todavía no se han registrado elementos medidos en esta medición.)")}`,
+      techos,
     });
     setModulo("presupuestos");
     setPresupuestoEditId(null);
@@ -9400,6 +9412,13 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
           {medicion.notas && <p className="text-sm text-slate-500 mt-1">{medicion.notas}</p>}
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => onPasarAPresupuesto(medicion, "")}
+            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="flex items-center gap-1.5 text-sm font-bold px-3.5 py-2 rounded-md hover:opacity-90"
+          >
+            Pasar a presupuesto →
+          </button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           <button onClick={() => { if (window.confirm("¿Borrar esta medición? Esta acción no se puede deshacer.")) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Borrar</button>
         </div>
