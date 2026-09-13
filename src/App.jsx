@@ -2563,6 +2563,10 @@ export default function App() {
             isAdmin={isAdmin}
             incidencias={incidencias}
             onUpsertIncidencia={upsertIncidencia}
+            materiales={materiales}
+            usuarios={usuarios}
+            onCrearTarea={crearTarea}
+            currentUser={currentUser}
           />
         )}
         {modulo === "fichajes" && (
@@ -7135,7 +7139,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia }) {
+function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -7154,14 +7158,19 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
     return { proyecto, cliente, nombreMostrar, clienteMostrar, totalHoras, costeManoObra, totalGastos, costeTotal, presupuesto, diferencia };
   };
 
+  // Si no eres admin, solo ves las instalaciones donde estás asignado como instalador.
+  const instalacionesVisibles = isAdmin
+    ? instalaciones
+    : instalaciones.filter((i) => (i.instaladoresAsignados || []).includes(currentUser?.id));
+
   const filtered = useMemo(() => {
-    return instalaciones.filter((i) => {
+    return instalacionesVisibles.filter((i) => {
       if (estadoFiltro && i.estado !== estadoFiltro) return false;
       if (!q) return true;
       const { nombreMostrar, clienteMostrar } = datos(i);
       return `${nombreMostrar} ${clienteMostrar}`.toLowerCase().includes(q.toLowerCase());
     });
-  }, [instalaciones, q, estadoFiltro, proyectos, clientes]);
+  }, [instalacionesVisibles, q, estadoFiltro, proyectos, clientes]);
 
   if (view === "form") {
     return (
@@ -7175,7 +7184,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
   }
 
   if (view === "detail") {
-    const instalacion = instalaciones.find((i) => i.id === detailId);
+    const instalacion = instalacionesVisibles.find((i) => i.id === detailId);
     if (!instalacion) { setView("list"); return null; }
     const proyecto = instalacion.proyectoId ? proyectos.find((p) => p.id === instalacion.proyectoId) : null;
     return (
@@ -7198,6 +7207,9 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         isAdmin={isAdmin}
         incidencias={incidencias}
         onUpsertIncidencia={onUpsertIncidencia}
+        materiales={materiales}
+        usuarios={usuarios}
+        onCrearTarea={onCrearTarea}
       />
     );
   }
@@ -7206,7 +7218,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
     return (
       <VehiculosModulo
         vehiculos={vehiculos}
-        instalaciones={instalaciones}
+        instalaciones={instalacionesVisibles}
         proyectos={proyectos}
         onUpsert={onUpsertVehiculo}
         onDelete={onDeleteVehiculo}
@@ -7218,7 +7230,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
   if (tabPrincipal === "furgoneta") {
     return (
       <FurgonetaModulo
-        instalaciones={instalaciones}
+        instalaciones={instalacionesVisibles}
         proyectos={proyectos}
         onCiclo={onCicloMaterialFurgoneta}
         onVerInstalacion={(id) => { setDetailId(id); setView("detail"); }}
@@ -7233,7 +7245,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         icon={<Wrench size={20} className="text-[#2E8B57]" />}
         title="Instalaciones"
         manualKey="instalaciones"
-        subtitle={`${instalaciones.length} instalación${instalaciones.length === 1 ? "" : "es"} registrada${instalaciones.length === 1 ? "" : "s"}`}
+        subtitle={`${instalacionesVisibles.length} instalación${instalacionesVisibles.length === 1 ? "" : "es"} registrada${instalacionesVisibles.length === 1 ? "" : "s"}`}
       />
 
       <button
@@ -7546,7 +7558,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia }) {
+function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -7572,6 +7584,45 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
     : null;
 
   const guardarFechaMontaje = () => onUpdate({ fechaMontaje: fechaMontajeInput });
+
+  // ---- Fecha de instalación propuesta: fabricación (manual) + stock cubierto + primer hueco libre del vehículo ----
+  const [fechaFabricacionInput, setFechaFabricacionInput] = useState(instalacion.fechaFabricacionEstimada || "");
+  const [avisandoTarea, setAvisandoTarea] = useState(false);
+  const [usuarioAvisoId, setUsuarioAvisoId] = useState("");
+  const guardarFechaFabricacion = () => onUpdate({ fechaFabricacionEstimada: fechaFabricacionInput });
+
+  const despieceConStock = proyecto ? compararDespieceConStock(calcularDespieceConjuntoProyecto(proyecto.techos), materiales) : [];
+  const hayTechos = proyecto && (proyecto.techos || []).length > 0;
+  const stockCubierto = hayTechos && despieceConStock.every((d) => d.falta <= 0.01);
+
+  const primerHuecoLibre = (desde, vehiculoId) => {
+    if (!vehiculoId || !desde) return null;
+    let fecha = new Date(desde + "T00:00:00");
+    for (let i = 0; i < 90; i++) {
+      const iso = fecha.toISOString().slice(0, 10);
+      const ocupado = otrasInstalaciones.some((i2) => i2.vehiculoId === vehiculoId && i2.fechaMontaje === iso);
+      if (!ocupado) return iso;
+      fecha.setDate(fecha.getDate() + 1);
+    }
+    return null;
+  };
+  const fechaPropuesta = stockCubierto ? primerHuecoLibre(instalacion.fechaFabricacionEstimada, instalacion.vehiculoId) : null;
+
+  const avisarFabricacionTerminada = () => {
+    if (!usuarioAvisoId) { alert("Elige a quién avisar."); return; }
+    const usuario = usuarios.find((u) => u.id === usuarioAvisoId);
+    onCrearTarea({
+      titulo: `Fábrica terminada: ${proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "instalación"}`,
+      descripcion: `La fabricación de esta obra ya está lista. ${instalacion.fechaMontaje ? `Día de montaje: ${instalacion.fechaMontaje}.` : "Falta fijar día de montaje."}`,
+      asignadoA: usuarioAvisoId,
+      asignadoANombre: usuario ? `${usuario.nombre} ${usuario.apellidos || ""}`.trim() : "",
+      requiereConfirmacion: true,
+    });
+    setAvisandoTarea(false);
+    setUsuarioAvisoId("");
+    alert("Aviso enviado a Tareas.");
+  };
+
   const [presupuestoInput, setPresupuestoInput] = useState(instalacion.presupuestoInstalacion || "");
   const [costeHoraInput, setCosteHoraInput] = useState(instalacion.costeHora || "");
   const [hForm, setHForm] = useState({ fecha: new Date().toISOString().slice(0, 10), instalador: "", horas: "" });
@@ -7662,11 +7713,104 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
         </div>
       </div>
 
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+        <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-2">Instaladores asignados a esta obra</label>
+        {usuarios.length === 0 ? (
+          <p className="text-sm text-slate-400">No hay usuarios dados de alta todavía.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {usuarios.map((u) => {
+              const asignado = (instalacion.instaladoresAsignados || []).includes(u.id);
+              return (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => {
+                    const actuales = instalacion.instaladoresAsignados || [];
+                    const next = asignado ? actuales.filter((id) => id !== u.id) : [...actuales, u.id];
+                    onUpdate({ instaladoresAsignados: next });
+                  }}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${asignado ? "bg-emerald-600 border-emerald-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:bg-slate-50"}`}
+                >
+                  {u.nombre} {u.apellidos || ""}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-xs text-slate-400 mt-2">Si no eres administrador, solo ves las obras donde estás marcado aquí.</p>
+      </div>
+
       {conflicto && (
         <div className="mb-6 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
           ⚠ Ese vehículo ya está asignado ese día a: {nombreOtraInstalacion(conflicto)}. Se solapan.
         </div>
       )}
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+        <h3 className="font-display font-bold text-slate-800 mb-3">Fecha de instalación</h3>
+
+        {!hayTechos ? (
+          <p className="text-sm text-slate-400">Esta obra no tiene techos calculados desde Mediciones, así que no se puede proponer fecha automáticamente. Pon el día de montaje a mano arriba.</p>
+        ) : (
+          <>
+            <div className="mb-3">
+              <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">Fecha estimada de fin de fabricación</label>
+              <div className="flex gap-2 max-w-xs">
+                <TextInput type="date" value={fechaFabricacionInput} onChange={(e) => setFechaFabricacionInput(e.target.value)} />
+                <button onClick={guardarFechaFabricacion} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold hover:opacity-90 px-3 rounded-md">Guardar</button>
+              </div>
+            </div>
+
+            <div className={`text-sm px-3 py-2 rounded-md mb-3 ${stockCubierto ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+              {stockCubierto ? "✓ El despiece de esta obra está cubierto en Stock." : "El despiece todavía tiene material pendiente (revisa la pestaña \"Despiece de techos\" en el Proyecto) — no se propone fecha hasta que esté cubierto."}
+            </div>
+
+            {stockCubierto && !instalacion.fechaFabricacionEstimada && (
+              <p className="text-sm text-slate-400">Pon la fecha estimada de fin de fabricación arriba para que se pueda proponer día de montaje.</p>
+            )}
+
+            {stockCubierto && instalacion.fechaFabricacionEstimada && !instalacion.vehiculoId && (
+              <p className="text-sm text-slate-400">Asigna un vehículo abajo para poder buscar el primer hueco libre.</p>
+            )}
+
+            {stockCubierto && instalacion.fechaFabricacionEstimada && instalacion.vehiculoId && (
+              fechaPropuesta ? (
+                <div className="flex items-center gap-3">
+                  <p className="text-sm text-slate-700">Fecha propuesta: <span className="font-semibold">{fmtDate(fechaPropuesta)}</span> (primer hueco libre de ese vehículo desde fin de fabricación)</p>
+                  <button
+                    onClick={() => { onUpdate({ fechaMontaje: fechaPropuesta }); setFechaMontajeInput(fechaPropuesta); }}
+                    className="text-xs font-semibold text-emerald-700 border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 rounded-md hover:bg-emerald-100"
+                  >
+                    Usar esta fecha
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400">No se ha encontrado hueco libre en los próximos 90 días para ese vehículo.</p>
+              )
+            )}
+          </>
+        )}
+
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          {!avisandoTarea ? (
+            <button onClick={() => setAvisandoTarea(true)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
+              Fábrica terminada → avisar a instalaciones
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Select value={usuarioAvisoId} onChange={(e) => setUsuarioAvisoId(e.target.value)} className="max-w-xs">
+                <option value="">¿A quién avisamos?</option>
+                {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+              </Select>
+              <button onClick={avisarFabricacionTerminada} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-2 rounded-md">Enviar aviso</button>
+              <button onClick={() => setAvisandoTarea(false)} className="text-xs font-semibold text-slate-400 px-2">Cancelar</button>
+            </div>
+          )}
+          <p className="text-xs text-slate-400 mt-1.5">Crea una tarea con confirmación para que quede constancia de que se avisó.</p>
+        </div>
+      </div>
+
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <Kpi label="Horas totales" value={`${totalHoras.toFixed(1)} h`} />
@@ -8185,7 +8329,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
   const toggleInstalado = (v, elId) => {
     actualizarVivienda(v.id, {
-      elementos: v.elementos.map((el) => (el.id === elId ? { ...el, instalado: !el.instalado } : el)),
+      elementos: v.elementos.map((el) => (el.id === elId ? { ...el, instalado: !el.instalado, instaladoEn: !el.instalado ? Date.now() : null } : el)),
     });
   };
 
