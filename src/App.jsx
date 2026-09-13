@@ -5,7 +5,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send, Printer
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -7678,6 +7678,9 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
           proyectoId={instalacion.proyectoId}
           incidencias={incidencias}
           onUpsertIncidencia={onUpsertIncidencia}
+          instalacion={instalacion}
+          proyecto={proyecto}
+          cliente={cliente}
         />
       </div>
     </div>
@@ -7850,18 +7853,102 @@ function leerDocumentoMontaje(file) {
 // Envoltorio usado dentro de cada instalación: calcula la ruta de Firebase a
 // partir del id de la instalación y delega en el componente genérico de
 // arriba. Esto es exactamente el mismo comportamiento que tenía antes.
-function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpsertIncidencia }) {
+function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpsertIncidencia, instalacion, proyecto, cliente }) {
   return (
     <ControlElementosPorVivienda
       basePath={`controlMontaje/${instalacionId}`}
       proyectoId={proyectoId}
       incidencias={incidencias}
       onUpsertIncidencia={onUpsertIncidencia}
+      instalacion={instalacion}
+      proyecto={proyecto}
+      cliente={cliente}
     />
   );
 }
 
-function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpsertIncidencia, accionPrincipal }) {
+// Escapa texto antes de insertarlo en el HTML del informe imprimible, para
+// que direcciones/nombres con caracteres especiales no rompan el documento.
+function escaparHtmlInforme(texto) {
+  return String(texto ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+// Genera el HTML del "Informe del día de montaje" para una vivienda concreta
+// (datos de obra/contacto, plano/croquis si hay uno subido, y los materiales
+// —elementos— que hay que llevar ese día) y lo abre en una pestaña nueva con
+// un botón de imprimir. No incluye el checklist de instalado/pendiente: eso
+// se sigue gestionando dentro del propio Control de Montaje.
+function abrirInformeDiaMontaje(v, { proyecto, cliente, instalacion, jefeDeObra }) {
+  const e = escaparHtmlInforme;
+  const direccionObra = [cliente?.direccion, cliente?.pueblo, cliente?.provincia === "Otra ciudad..." ? cliente?.provinciaManual : cliente?.provincia, cliente?.cp]
+    .filter(Boolean).join(", ");
+  const nombreObra = proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : (instalacion?.nombre || "Instalación sin proyecto");
+  const planos = (v.documentos || []).filter((d) => d.categoria === "Planos");
+  const elementos = [...(v.elementos || [])].sort((a, b) => (a.codigo || "").localeCompare(b.codigo || ""));
+
+  const filasMateriales = elementos.length
+    ? elementos.map((el) => `<tr><td>${e(nombreElementoMontaje(el))}</td><td>${e(el.medida || "—")}</td></tr>`).join("")
+    : `<tr><td colspan="2" style="color:#94a3b8;">Sin elementos registrados en esta vivienda.</td></tr>`;
+
+  const bloquePlanos = planos.length
+    ? planos.map((p) => {
+        const esImagen = /\.(png|jpe?g|gif|webp)$/i.test(p.nombre || "") || (p.url || "").startsWith("data:image");
+        return esImagen
+          ? `<div class="plano"><img src="${p.url}" alt="${e(p.nombre)}" /><p class="pie">${e(p.nombre)}</p></div>`
+          : `<div class="plano"><a href="${p.url}" target="_blank">${e(p.nombre)} (abrir documento)</a></div>`;
+      }).join("")
+    : `<p style="color:#94a3b8;">No hay ningún plano/croquis subido en la categoría "Planos" de esta vivienda.</p>`;
+
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8" />
+<title>Informe de montaje — ${e(v.codigoVivienda || v.bloque)}</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; color: #1e293b; margin: 24px; max-width: 800px; }
+  h1 { font-size: 18px; margin-bottom: 2px; }
+  h2 { font-size: 14px; margin: 20px 0 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 6px 4px; border-bottom: 1px solid #f1f5f9; }
+  .plano img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; }
+  .plano .pie { color: #94a3b8; font-size: 12px; margin-top: 2px; }
+  .btn-print { background: #2E8B57; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+  @media print { .btn-print { display: none; } }
+</style></head>
+<body>
+  <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <h1>Informe del día de montaje</h1>
+  <p class="sub">${e(nombreObra)} · ${v.bloque || ""} ${v.planta || ""} ${v.codigoVivienda || ""}</p>
+
+  <h2>Datos de contacto / obra</h2>
+  <table>
+    <tr><td style="width:140px;color:#64748b;">Obra</td><td>${e(nombreObra)}</td></tr>
+    <tr><td style="color:#64748b;">Cliente</td><td>${e(cliente?.nombre || instalacion?.clienteNombre || "—")}</td></tr>
+    <tr><td style="color:#64748b;">Dirección</td><td>${e(direccionObra || "—")}</td></tr>
+    <tr><td style="color:#64748b;">Jefe de obra</td><td>${e(jefeDeObra?.email || "—")} ${jefeDeObra?.telefono ? "· " + e(jefeDeObra.telefono) : ""}</td></tr>
+  </table>
+
+  <h2>Plano / croquis de la vivienda</h2>
+  ${bloquePlanos}
+
+  <h2>Materiales que se llevan ese día</h2>
+  <table>
+    <tr><td style="color:#64748b;font-weight:600;">Elemento</td><td style="color:#64748b;font-weight:600;">Medida</td></tr>
+    ${filasMateriales}
+  </table>
+</body></html>`;
+
+  const ventana = window.open("", "_blank");
+  if (!ventana) {
+    alert("El navegador ha bloqueado la ventana emergente. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    return;
+  }
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
+function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpsertIncidencia, accionPrincipal, instalacion, proyecto, cliente }) {
   const [viviendas, setViviendas] = useState([]);
   const [jefeDeObra, setJefeDeObra] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -8269,6 +8356,14 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
               {abierta && (
                 <div className="px-4 pb-4 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => abrirInformeDiaMontaje(v, { proyecto, cliente, instalacion, jefeDeObra })}
+                    className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 rounded-md hover:bg-emerald-100"
+                    title="Abre un informe imprimible con datos de la obra, el plano y los materiales del día"
+                  >
+                    <Printer size={13} /> Informe del día de montaje
+                  </button>
                   <div className="space-y-2 mt-3">
                     {elementos.map((el) => {
                       const comps = componentesDeElemento(el);
@@ -8456,6 +8551,442 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
 /* ================= MEDICIONES ================= */
 
+/* ================= PRESUPUESTOS Y DESPIECE DE TECHOS (calculado en el propio CRM) =================
+   Réplica exacta, en JavaScript, de las plantillas Excel reales que se usaban a mano:
+   - Techo abatible: marco cerrado + con puerta + sin barandilla (caso más habitual).
+   - Techo corredero: solo el despiece de corte (la parte de precios de ese Excel usa
+     cantidades manuales por obra, así que de momento no se automatiza el coste). */
+
+// Techo abatible — marco cerrado, con puerta, sin barandilla.
+// Fórmulas portadas 1:1 desde la plantilla real (validado: 900x2400 -> 2200,57 € de coste).
+function calcularPresupuestoTechoAbatible(anchoIn, largoIn, nTechosIn) {
+  const ancho = parseFloat(anchoIn) || 0;
+  const largo = parseFloat(largoIn) || 0;
+  const nTechos = parseFloat(nTechosIn) || 1;
+  const perimetro = ancho * 2 + largo * 2;
+
+  const despiece = [
+    { perfil: "120x40 (premarco)", cantidad: 2, medida: ancho, nota: "" },
+    { perfil: "120x40 (premarco)", cantidad: 2, medida: largo, nota: "" },
+    { perfil: "Ángulo 80x40", cantidad: 1, medida: ancho, nota: "para tapar Pladur" },
+    { perfil: "Ángulo 80x40", cantidad: 2, medida: largo, nota: "para tapar Pladur" },
+    { perfil: "Marco liso 40x20", cantidad: 1, medida: ancho, nota: "" },
+    { perfil: "Marco liso 40x20", cantidad: 2, medida: largo - 5, nota: "(-5 del tapón)" },
+    { perfil: "120x40 (marco)", cantidad: 1, medida: ancho, nota: "" },
+    { perfil: "120x40 (marco)", cantidad: 2, medida: largo - 5, nota: "(-5 del tapón)" },
+    { perfil: "T ventana 40x20", cantidad: 2, medida: ancho + 70, nota: "" },
+    { perfil: "T ventana 40x20", cantidad: 2, medida: largo + 81, nota: "" },
+    { perfil: "100x40 rajado", cantidad: 2, medida: ancho + 112, nota: "" },
+    { perfil: "100x40 rajado", cantidad: 2, medida: largo + 122, nota: "" },
+    { perfil: "35x35 bruto", cantidad: 8, medida: 180, nota: "" },
+    { perfil: "35x35 bruto", cantidad: 8, medida: 130, nota: "" },
+  ];
+
+  // [precio unitario, cantidad] — cantidad ya en la unidad correcta (m, ud...), escala con nTechos.
+  const materiales = [
+    ["Ángulo 80x40", 3.5, (ancho * 1 + largo * 2) / 1000],
+    ["120x40", 11.2, (ancho * 1 + (largo - 5) * 2) / 1000],
+    ["100x40", 9.2, ((ancho + 112) * 2 + (largo + 122) * 2) / 1000],
+    ["Marco liso 40x20", 3.7, (ancho * 1 + (largo - 5) * 2) / 1000],
+    ["T 40x20", 4.6, ((ancho + 70) * 2 + (largo + 81) * 2) / 1000],
+    ["Bisagras", 1.1, 16],
+    ["Escuadra ventana", 0.5, 6],
+    ["35x35", 3.5, 2.7],
+    ["Premarco techo", 50, 1],
+    ["Goma marco y hoja", 0.3, perimetro / 1000],
+    ["Polímero y silicona", 5, 4],
+    ["Panel sandwich (Polipanel)", 180, 1],
+    ["Loseta (m2)", 9.4, (1.5 * largo) / 1000],
+    ["Danopol (m2)", 6, (1.8 * largo) / 1000],
+    ["Cola (litro)", 2.9, 4],
+    ["Pistones", 19.4, 2],
+    ["Pletinas", 3, 3],
+    ["Placa anclaje", 10, 1],
+    ["Pintura", 5, 1],
+    ["Motor", 284, 1],
+    ["Batería", 82, 1],
+    ["Tapón 120x40", 0.9, 2],
+    ["Tapón 40x20", 0.3, 2],
+    ["Tornillo 4,2x19", 0.02, 20],
+    ["Tornillo 4,8x25 (perímetro panel)", 0.02, perimetro / 10 / 8],
+    ["Tornillo 4,2x22 (interior)", 0.02, largo / 10 / 5],
+    ["Tornillo 4,8x25 (tubo-marco)", 0.02, perimetro / 10 / 9],
+  ];
+  // Estos 4 son costes fijos por proyecto: NO escalan con el nº de techos (así está en la plantilla real).
+  const fijos = [
+    ["Fabricación", 300, 1],
+    ["Montaje", 720, 1],
+    ["Dietas y hotel", 90, 1],
+    ["Km", 100, 1],
+  ];
+
+  let costeTotal = 0;
+  materiales.forEach(([, precio, cantidad]) => { costeTotal += precio * cantidad * nTechos; });
+  fijos.forEach(([, precio, cantidad]) => { costeTotal += precio * cantidad; });
+
+  const mas20 = costeTotal + costeTotal * 0.2;
+  const mas20_5 = mas20 + mas20 * 0.05;
+  const mas30 = costeTotal + costeTotal * 0.3;
+
+  return {
+    medidaPanel: { ancho: ancho + 102, largo: largo + 115 },
+    despiece,
+    costeTotal, mas20, mas20_5, mas30,
+  };
+}
+
+// Techo corredero — despiece de corte (fórmulas de la plantilla real, validado contra el
+// ejemplo 840x2780x860 -> panel 980x2950). La parte de PRECIOS de este tipo de techo usa
+// cantidades manuales por obra en el Excel original, así que no se automatiza aquí todavía.
+function calcularDespieceTechoCorredero(anchoIn, largoIn, alturaIn) {
+  const ancho = parseFloat(anchoIn) || 0;
+  const largo = parseFloat(largoIn) || 0;
+  const altura = parseFloat(alturaIn) || 0;
+  // Deducido del único ejemplo disponible (840→980, es decir +140). A confirmar con más casos reales.
+  const panelAncho = ancho + 140;
+  const panelLargo = largo + 170;
+
+  const items = [
+    { perfil: "Cobija", cantidad: 1, medida: panelAncho < 1001 ? 2000 : panelAncho * 2, nota: "" },
+    { perfil: "Larguero largo (marco)", cantidad: 1, medida: largo + 185, nota: "dibujo 1" },
+    { perfil: "Larguero corto (marco)", cantidad: 1, medida: altura + 185, nota: "dibujo 2" },
+    { perfil: "Larguero largo (marco)", cantidad: 1, medida: largo + 57, nota: "dibujo 3" },
+    { perfil: "Larguero corto (marco)", cantidad: 1, medida: altura + 57, nota: "dibujo 2" },
+    { perfil: "Larguero largo (hoja) — rectángulo 80x40x3", cantidad: 2, medida: largo + 50, nota: "" },
+    { perfil: "Larguero corto (hoja) — rectángulo 120x40x3", cantidad: 2, medida: altura + 46, nota: "" },
+    { perfil: "Ancho (hoja) — rectángulo 80x40x3", cantidad: 4, medida: ancho, nota: "" },
+    { perfil: "Ángulo largo — 100x40x3", cantidad: 2, medida: largo + 170, nota: "" },
+    { perfil: "Ángulo corto — 100x40x3", cantidad: 2, medida: altura + 96, nota: "" },
+    { perfil: "Rodamiento", cantidad: 1, medida: ancho + 80, nota: "" },
+  ];
+
+  return { panel: { ancho: panelAncho, largo: panelLargo }, items };
+}
+
+// Croquis guía fijo del techo corredero, con el mismo estilo de los croquis a mano
+// (ancho arriba, código de vivienda a la izquierda, largo a la derecha, altura abajo en V).
+function CroquisTechoCorredero() {
+  return (
+    <svg viewBox="0 0 280 220" className="w-full max-w-xs mx-auto" role="img" aria-label="Croquis de premarco: ancho arriba, largo lateral, altura abajo">
+      <line x1="50" y1="30" x2="200" y2="30" stroke="#334155" strokeWidth="2" />
+      <text x="105" y="22" fontSize="13" fill="#334155">ancho</text>
+      <line x1="50" y1="30" x2="50" y2="130" stroke="#334155" strokeWidth="2" />
+      <line x1="130" y1="30" x2="130" y2="130" stroke="#334155" strokeWidth="2" />
+      <text x="10" y="84" fontSize="13" fill="#334155">vivienda</text>
+      <text x="145" y="84" fontSize="13" fill="#334155">largo</text>
+      <line x1="50" y1="130" x2="80" y2="170" stroke="#334155" strokeWidth="2" />
+      <line x1="130" y1="130" x2="100" y2="170" stroke="#334155" strokeWidth="2" />
+      <text x="65" y="195" fontSize="13" fill="#334155">altura</text>
+    </svg>
+  );
+}
+
+// Lienzo táctil sencillo para anotar particularidades de la medición a mano,
+// igual que se hace hoy en papel. Guarda el trazo como imagen (dataURL).
+function LienzoDibujo({ onGuardar }) {
+  const canvasRef = useRef(null);
+  const dibujando = useRef(false);
+
+  const getPos = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: ((clientX - rect.left) / rect.width) * canvas.width,
+      y: ((clientY - rect.top) / rect.height) * canvas.height,
+    };
+  };
+
+  const empezar = (e) => {
+    e.preventDefault();
+    dibujando.current = true;
+    const ctx = canvasRef.current.getContext("2d");
+    const p = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const dibujar = (e) => {
+    if (!dibujando.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const p = getPos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.strokeStyle = "#1e293b";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.stroke();
+  };
+  const terminar = () => { dibujando.current = false; };
+
+  const limpiar = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  };
+
+  useEffect(() => { limpiar(); }, []);
+
+  return (
+    <div>
+      <canvas
+        ref={canvasRef}
+        width={300}
+        height={180}
+        className="w-full border border-slate-300 rounded-md touch-none bg-white"
+        onMouseDown={empezar} onMouseMove={dibujar} onMouseUp={terminar} onMouseLeave={terminar}
+        onTouchStart={empezar} onTouchMove={dibujar} onTouchEnd={terminar}
+      />
+      <div className="flex gap-2 mt-2">
+        <button type="button" onClick={limpiar} className="text-xs font-semibold text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Limpiar</button>
+        <button
+          type="button"
+          onClick={() => onGuardar(canvasRef.current.toDataURL("image/png"))}
+          className="text-xs font-semibold text-emerald-700 border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 rounded-md hover:bg-emerald-100"
+        >
+          Guardar dibujo en esta medición
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Módulo "Techos" dentro de cada medición: añadir techos abatibles (con presupuesto
+// automático) o correderos (con croquis guía + dibujo + despiece de corte), y ver el
+// historial de los que ya se han calculado para esa medición.
+function TechosMedicion({ medicionId }) {
+  const basePath = `mediciones/${medicionId}/techos`;
+  const [techos, setTechos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [nuevoTipo, setNuevoTipo] = useState(null);
+  const [expandidoId, setExpandidoId] = useState(null);
+  const [form, setForm] = useState({ vivienda: "", ancho: "", largo: "", altura: "", nTechos: "1", abre: "Izquierda" });
+  const [dibujoPendiente, setDibujoPendiente] = useState(null);
+
+  useEffect(() => {
+    if (!medicionId) return;
+    (async () => {
+      setCargando(true);
+      try {
+        const snap = await fbGet(ref(fbDb, basePath));
+        setTechos(toArray(snap.val()));
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setCargando(false);
+      }
+    })();
+  }, [medicionId]);
+
+  const guardarTechos = async (next) => {
+    setTechos(next);
+    try {
+      await fbSet(ref(fbDb, basePath), next);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const resetForm = () => {
+    setForm({ vivienda: "", ancho: "", largo: "", altura: "", nTechos: "1", abre: "Izquierda" });
+    setDibujoPendiente(null);
+    setNuevoTipo(null);
+  };
+
+  const anadirAbatible = () => {
+    if (!form.ancho || !form.largo) { alert("Faltan el ancho y el largo."); return; }
+    const resultado = calcularPresupuestoTechoAbatible(form.ancho, form.largo, form.nTechos);
+    const nuevo = {
+      id: uid(),
+      tipo: "abatible",
+      vivienda: form.vivienda || "Sin nombre",
+      ancho: form.ancho, largo: form.largo, nTechos: form.nTechos || "1",
+      resultado,
+      creadoEn: Date.now(),
+    };
+    guardarTechos([nuevo, ...techos]);
+    resetForm();
+  };
+
+  const anadirCorredero = () => {
+    if (!form.ancho || !form.largo || !form.altura) { alert("Faltan ancho, largo o altura."); return; }
+    const despiece = calcularDespieceTechoCorredero(form.ancho, form.largo, form.altura);
+    const nuevo = {
+      id: uid(),
+      tipo: "corredero",
+      vivienda: form.vivienda || "Sin nombre",
+      ancho: form.ancho, largo: form.largo, altura: form.altura, abre: form.abre,
+      despiece,
+      dibujo: dibujoPendiente || null,
+      creadoEn: Date.now(),
+    };
+    guardarTechos([nuevo, ...techos]);
+    resetForm();
+  };
+
+  const borrarTecho = (id) => {
+    if (!window.confirm("¿Borrar este techo de la medición?")) return;
+    guardarTechos(techos.filter((t) => t.id !== id));
+  };
+
+  return (
+    <div className="mt-8 pt-8 border-t border-slate-200">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-display font-bold text-slate-800">Techos ({techos.length})</h2>
+        {!nuevoTipo && (
+          <div className="flex gap-2">
+            <button onClick={() => setNuevoTipo("abatible")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-2 rounded-md">
+              + Techo abatible
+            </button>
+            <button onClick={() => setNuevoTipo("corredero")} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">
+              + Techo corredero
+            </button>
+          </div>
+        )}
+      </div>
+
+      {nuevoTipo && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+          <p className="text-sm font-semibold text-slate-700 mb-3">
+            Nuevo techo {nuevoTipo === "abatible" ? "abatible (marco cerrado, con puerta, sin barandilla)" : "corredero"}
+          </p>
+
+          {nuevoTipo === "corredero" && (
+            <div className="mb-4">
+              <CroquisTechoCorredero />
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <Field label="Vivienda / referencia">
+              <TextInput value={form.vivienda} onChange={(e) => setForm({ ...form, vivienda: e.target.value })} placeholder="Ej: B9-V130" />
+            </Field>
+            {nuevoTipo === "abatible" && (
+              <Field label="Nº de techos iguales">
+                <TextInput type="number" value={form.nTechos} onChange={(e) => setForm({ ...form, nTechos: e.target.value })} />
+              </Field>
+            )}
+            {nuevoTipo === "corredero" && (
+              <Field label="Abre visto desde fuera">
+                <select className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm" value={form.abre} onChange={(e) => setForm({ ...form, abre: e.target.value })}>
+                  <option>Izquierda</option>
+                  <option>Derecha</option>
+                </select>
+              </Field>
+            )}
+            <Field label="Ancho (mm)">
+              <TextInput type="number" value={form.ancho} onChange={(e) => setForm({ ...form, ancho: e.target.value })} placeholder="900" />
+            </Field>
+            <Field label="Largo (mm)">
+              <TextInput type="number" value={form.largo} onChange={(e) => setForm({ ...form, largo: e.target.value })} placeholder="2400" />
+            </Field>
+            {nuevoTipo === "corredero" && (
+              <Field label="Altura (mm)">
+                <TextInput type="number" value={form.altura} onChange={(e) => setForm({ ...form, altura: e.target.value })} placeholder="860" />
+              </Field>
+            )}
+          </div>
+
+          {nuevoTipo === "corredero" && (
+            <div className="mb-4">
+              <p className="text-xs font-semibold text-slate-600 mb-1.5">Dibuja aquí particularidades (opcional)</p>
+              <LienzoDibujo onGuardar={(dataUrl) => { setDibujoPendiente(dataUrl); alert("Dibujo guardado, se adjuntará al pulsar \"Calcular y guardar\"."); }} />
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={nuevoTipo === "abatible" ? anadirAbatible : anadirCorredero}
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="text-sm font-semibold px-4 py-2 rounded-md"
+            >
+              Calcular y guardar
+            </button>
+            <button onClick={resetForm} className="text-sm font-semibold text-slate-500 px-4 py-2 rounded-md hover:bg-slate-50">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {cargando ? (
+        <p className="text-sm text-slate-400">Cargando…</p>
+      ) : techos.length === 0 && !nuevoTipo ? (
+        <p className="text-sm text-slate-400">Todavía no hay techos calculados en esta medición.</p>
+      ) : (
+        <div className="space-y-2">
+          {techos.map((t) => {
+            const abierto = expandidoId === t.id;
+            return (
+              <div key={t.id} className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                <button onClick={() => setExpandidoId(abierto ? null : t.id)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-800">{t.vivienda}</span>
+                    <span className="text-slate-400"> · {t.tipo === "abatible" ? "Abatible" : "Corredero"} · {t.ancho}×{t.largo}{t.tipo === "corredero" ? `×${t.altura}` : ""} mm</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {t.tipo === "abatible" && <span className="text-xs font-semibold text-emerald-700">{money(t.resultado.costeTotal)}</span>}
+                    <Trash2 size={14} className="text-slate-300 hover:text-rose-500" onClick={(e) => { e.stopPropagation(); borrarTecho(t.id); }} />
+                  </div>
+                </button>
+
+                {abierto && (
+                  <div className="px-4 pb-4 border-t border-slate-100 pt-3">
+                    {t.tipo === "abatible" ? (
+                      <>
+                        <p className="text-xs text-slate-500 mb-2">
+                          Medida de fabricación del panel: {Math.round(t.resultado.medidaPanel.ancho)} x {Math.round(t.resultado.medidaPanel.largo)} mm
+                        </p>
+                        <table className="w-full text-xs mb-3">
+                          <thead><tr className="text-slate-400 text-left"><th className="pb-1">Perfil</th><th className="pb-1">Cant.</th><th className="pb-1">Medida (mm)</th><th className="pb-1">Nota</th></tr></thead>
+                          <tbody>
+                            {t.resultado.despiece.map((d, i) => (
+                              <tr key={i} className="border-t border-slate-100">
+                                <td className="py-1 pr-2">{d.perfil}</td>
+                                <td className="py-1 pr-2">{d.cantidad}</td>
+                                <td className="py-1 pr-2">{Math.round(d.medida)}</td>
+                                <td className="py-1 text-slate-400">{d.nota}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="grid grid-cols-4 gap-2 text-xs">
+                          <div className="bg-slate-50 rounded-md p-2"><div className="text-slate-400">Coste</div><div className="font-semibold">{money(t.resultado.costeTotal)}</div></div>
+                          <div className="bg-slate-50 rounded-md p-2"><div className="text-slate-400">+20%</div><div className="font-semibold">{money(t.resultado.mas20)}</div></div>
+                          <div className="bg-slate-50 rounded-md p-2"><div className="text-slate-400">+20%+5%</div><div className="font-semibold">{money(t.resultado.mas20_5)}</div></div>
+                          <div className="bg-slate-50 rounded-md p-2"><div className="text-slate-400">+30%</div><div className="font-semibold">{money(t.resultado.mas30)}</div></div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-xs text-slate-500 mb-2">Abre: {t.abre} · Medida panel: {Math.round(t.despiece.panel.ancho)} x {Math.round(t.despiece.panel.largo)} mm</p>
+                        {t.dibujo && <img src={t.dibujo} alt="Dibujo de la medición" className="border border-slate-200 rounded-md mb-3 max-w-xs" />}
+                        <table className="w-full text-xs">
+                          <thead><tr className="text-slate-400 text-left"><th className="pb-1">Pieza</th><th className="pb-1">Cant.</th><th className="pb-1">Medida (mm)</th><th className="pb-1">Nota</th></tr></thead>
+                          <tbody>
+                            {t.despiece.items.map((d, i) => (
+                              <tr key={i} className="border-t border-slate-100">
+                                <td className="py-1 pr-2">{d.perfil}</td>
+                                <td className="py-1 pr-2">{d.cantidad}</td>
+                                <td className="py-1 pr-2">{Math.round(d.medida)}</td>
+                                <td className="py-1 text-slate-400">{d.nota}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="text-xs text-amber-600 mt-2">El coste de este tipo de techo todavía no se calcula solo — se sigue presupuestando a mano.</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
   const [q, setQ] = useState("");
 
@@ -8638,6 +9169,8 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
           onClick: (resumenGlobal) => onPasarAPresupuesto(medicion, resumenGlobal),
         }}
       />
+
+      <TechosMedicion medicionId={medicion.id} />
     </div>
   );
 }
