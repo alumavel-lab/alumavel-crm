@@ -692,6 +692,7 @@ export default function App() {
       clienteNombre: medicion.clienteNombre,
       direccionEnvio: medicion.direccion || "",
       descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || "(Todavía no se han registrado elementos medidos en esta medición.)"}`,
+      techos: medicion.techos || [],
     });
     setModulo("presupuestos");
     setPresupuestoEditId(null);
@@ -1570,6 +1571,7 @@ export default function App() {
       gastos: [],
       registroHorario: [],
       checklistMateriales: checklistMaterialesPorDefecto(),
+      techos: presupuesto.techos || [],
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
@@ -2256,6 +2258,7 @@ export default function App() {
             onRegistrarIngreso={irARegistrarIngreso}
             instalaciones={instalaciones}
             onVerInstalacion={irAInstalacion}
+            onGenerarPedidoFaltante={enviarAPedido}
           />
         )}
         {modulo === "proveedores" && (
@@ -3307,7 +3310,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion }) {
+function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -3373,6 +3376,7 @@ function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, 
         onRegistrarIngreso={onRegistrarIngreso}
         instalacion={instalaciones.find((i) => i.proyectoId === proyecto.id)}
         onVerInstalacion={onVerInstalacion}
+        onGenerarPedidoFaltante={onGenerarPedidoFaltante}
       />
     );
   }
@@ -3676,7 +3680,7 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
   );
 }
 
-function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion }) {
+function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -3687,6 +3691,23 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     ? (proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto)
     : null;
   const checklist = normalizarChecklist(proyecto.checklistMateriales);
+  const despieceAgrupado = calcularDespieceConjuntoProyecto(proyecto.techos);
+  const despieceConStock = compararDespieceConStock(despieceAgrupado, materiales);
+  const generarPedidoDeFaltantes = () => {
+    const faltantes = despieceConStock.filter((d) => d.falta > 0.01);
+    if (faltantes.length === 0) { alert("No falta nada: el stock cubre todo el despiece calculado."); return; }
+    const lineas = faltantes.map((d) => ({
+      id: uid(),
+      modo: d.material ? "catalogo" : "libre",
+      materialId: d.material ? d.material.id : "",
+      referencia: d.material ? "" : d.perfil,
+      ancho: "", alto: "",
+      cantidad: Math.ceil(d.falta),
+      precio: d.material ? (d.material.precioCompra || "") : "",
+      estado: "Solicitado",
+    }));
+    onGenerarPedidoFaltante(null, lineas, proyecto.id, `Pedido de faltantes generado desde el despiece conjunto del proyecto #${proyecto.numero}. Revisa proveedor y precios antes de enviarlo.`);
+  };
   const totalRecibido = (ingresos || []).reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
   const importePresupuesto = parseFloat(proyecto.importePresupuesto) || 0;
   const saldoPendiente = importePresupuesto - totalRecibido;
@@ -3840,6 +3861,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           { id: "pagos", label: `Pagos / Facturas (${facturas.length})`, icon: Wallet },
           { id: "pedidos", label: `Pedidos de materiales (${pedidos.length})`, icon: ClipboardList },
           { id: "checklist", label: `Qué lleva la obra (${checklist.filter((c) => c.estado).length}/${checklist.length})`, icon: CheckCircle2 },
+          { id: "despiece", label: `Despiece de techos (${(proyecto.techos || []).length})`, icon: Ruler },
         ].map((t) => (
           <button
             key={t.id}
@@ -4230,6 +4252,60 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {tab === "despiece" && (
+        <div className="space-y-4">
+          {(proyecto.techos || []).length === 0 ? (
+            <p className="text-sm text-slate-400">
+              Esta obra todavía no tiene techos calculados. Se añaden desde Mediciones (sección "Techos") y, al pasar la medición a presupuesto y aceptarlo, se traen aquí solos.
+            </p>
+          ) : (
+            <>
+              <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm">
+                Suma del despiece de los {proyecto.techos.length} techo(s) calculados en esta obra, comparado con el Stock actual. La comparación es solo por nombre y cantidad total — todavía no sabe en qué almacén está cada cosa (eso solo existe hoy para Cristales).
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      <th className="text-left px-4 py-2">Perfil</th>
+                      <th className="text-left px-4 py-2">Piezas</th>
+                      <th className="text-left px-4 py-2">Metros necesarios</th>
+                      <th className="text-left px-4 py-2">En stock</th>
+                      <th className="text-left px-4 py-2">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {despieceConStock.map((d) => (
+                      <tr key={d.perfil}>
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{d.perfil}</td>
+                        <td className="px-4 py-2.5 text-slate-500">{d.piezas}</td>
+                        <td className="px-4 py-2.5 text-slate-500">{d.metros.toFixed(2)} m</td>
+                        <td className="px-4 py-2.5 text-slate-500">{d.disponible === null ? "no está en Stock" : `${d.disponible} m`}</td>
+                        <td className="px-4 py-2.5">
+                          {d.falta > 0.01 ? (
+                            <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Faltan {d.falta.toFixed(2)} m</Badge>
+                          ) : (
+                            <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Cubierto</Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                onClick={generarPedidoDeFaltantes}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                className="text-sm font-semibold px-4 py-2.5 rounded-md"
+              >
+                Generar pedido con lo que falta
+              </button>
+              <p className="text-xs text-slate-400">Esto abre el formulario de pedido ya relleno — revísalo, pon el proveedor y guárdalo tú. No se envía nada solo.</p>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -8663,6 +8739,38 @@ function calcularDespieceTechoCorredero(anchoIn, largoIn, alturaIn) {
   return { panel: { ancho: panelAncho, largo: panelLargo }, items };
 }
 
+// Agrupa el despiece de TODOS los techos de un proyecto (abatibles + correderos) en una
+// sola lista por tipo de perfil, sumando los metros lineales totales que hacen falta.
+function calcularDespieceConjuntoProyecto(techos) {
+  const grupos = {};
+  (techos || []).forEach((t) => {
+    const items = t.tipo === "abatible" ? t.resultado.despiece : t.despiece.items;
+    items.forEach((it) => {
+      const clave = it.perfil;
+      if (!grupos[clave]) grupos[clave] = { perfil: clave, piezas: 0, metros: 0 };
+      grupos[clave].piezas += it.cantidad;
+      grupos[clave].metros += (it.cantidad * it.medida) / 1000;
+    });
+  });
+  return Object.values(grupos).sort((a, b) => b.metros - a.metros);
+}
+
+// Compara el despiece agrupado con el catálogo de Stock (materiales) por coincidencia de
+// nombre, para saber qué hay y qué falta. No sabe de almacenes/ubicaciones (eso solo
+// existe hoy para Cristales) — solo compara cantidad total disponible vs necesaria.
+function compararDespieceConStock(despieceAgrupado, materiales) {
+  return despieceAgrupado.map((d) => {
+    const nombreBuscado = d.perfil.toLowerCase();
+    const material = (materiales || []).find((m) => {
+      const n = (m.descripcion || "").toLowerCase();
+      return n.includes(nombreBuscado) || nombreBuscado.includes(n);
+    });
+    const disponible = material ? parseFloat(material.stockReal) || 0 : null;
+    const falta = disponible === null ? d.metros : Math.max(0, d.metros - disponible);
+    return { ...d, material, disponible, falta };
+  });
+}
+
 // Croquis guía fijo del techo corredero, con el mismo estilo de los croquis a mano
 // (ancho arriba, código de vivienda a la izquierda, largo a la derecha, altura abajo en V).
 function CroquisTechoCorredero() {
@@ -11389,6 +11497,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       descripcion: prefill.descripcion || "", importe: "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, zona: "",
+      techos: prefill.techos || [],
     });
     setEditId(null);
     setView("form");
