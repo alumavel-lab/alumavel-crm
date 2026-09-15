@@ -11,6 +11,7 @@ import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, get as fbGet, set as fbSet } from "firebase/database";
+import { jsPDF } from "jspdf";
 
 // Configuración de tu proyecto de Firebase (crmalumavel). La apiKey de Firebase
 // no es un secreto — el acceso real se controla con las reglas de seguridad de
@@ -494,131 +495,68 @@ export default function App() {
     setTimeout(() => setToast(null), 2600);
   };
 
-  // Al crear un proyecto nuevo, se genera automáticamente una tarjeta en el
-  // tablero de Trello "BETA - Flujo Pedidos ALUMAVEL", en la lista
-  // "1. Presupuesto". Las listas de destino están fijadas (no se
-  // buscan dinámicamente) para que sea rápido y fiable.
-  const TRELLO_LIST_PRESUPUESTO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c8559d524e872245b15";
-  const TRELLO_LIST_PRESUPUESTO_ACEPTADO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c88ccd1454328ee7bdb";
-  const TRELLO_LIST_PRESUPUESTO_NO_ACEPTADO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c8b012703c3f4d05960";
-  const TRELLO_LIST_PEDIDO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c8d3a955c40e82419ea";
-  const TRELLO_LIST_FABRICA = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1fde6c1c9fa356948902";
-  const TRELLO_LIST_ALBARAN_FIRMADO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b25bfd19de306990759e6";
-  const TRELLO_LIST_INCIDENCIA = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c93ca0a4bdfc7864ecf";
-  const TRELLO_LIST_TERMINADO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1c9627043753aababaf2";
-  const TRELLO_LIST_REPARTO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1d1886784010eff5f400";
-  const TRELLO_LIST_RECOGIDA = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1d1a4e0416054c67d219";
-  const TRELLO_LIST_FACTURADO = "ari:cloud:trello::list/workspace/660f99b0d1c36157c36cae6d/6a8b1f44235d22fcea51c83f";
-
-  const crearTarjetaTrello = async (proyecto, clienteNombre, onCreated) => {
-    try {
-      const desc = [
-        `Cliente: ${clienteNombre || "—"}`,
-        `Presupuesto: ${proyecto.importePresupuesto ? money(proyecto.importePresupuesto) : "—"}`,
-        `Entrega prevista: ${proyecto.fechaEntregaPrevista || "—"}`,
-        `Referencia CRM: Proyecto #${proyecto.numero} — ${proyecto.nombre || ""}`,
-      ].join("\n");
-
-      const prompt = `Crea una tarjeta nueva en Trello usando la herramienta trelloWriteCard con action="create", listId="${TRELLO_LIST_PRESUPUESTO}", name="#${proyecto.numero} — ${proyecto.nombre || "Sin nombre"} (${clienteNombre || "sin cliente"})", y desc="${desc.replace(/"/g, "'")}". No hagas nada más, no busques el tablero ni la lista, usa exactamente el listId indicado. Al terminar, responde ÚNICAMENTE con el id de la tarjeta creada (el campo "id" que devuelve la herramienta), sin ningún otro texto.`;
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }],
-          mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
-        }),
-      });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
-      const data = await response.json();
-      showToast("Tarjeta creada en Trello (Presupuesto)");
-
-      if (onCreated) {
-        const toolResults = (data.content || []).filter((c) => c.type === "mcp_tool_result");
-        let cardId = null;
-        for (const block of toolResults) {
-          const text = block?.content?.[0]?.text || "";
-          const match = text.match(/ari:cloud:trello::card\/[^\s"'\\]+/);
-          if (match) { cardId = match[0]; break; }
-        }
-        if (!cardId) {
-          const finalText = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join(" ");
-          const match2 = finalText.match(/ari:cloud:trello::card\/[^\s"'\\]+/);
-          if (match2) cardId = match2[0];
-        }
-        if (cardId) onCreated(cardId);
-      }
-    } catch (err) {
-      showToast("No se pudo crear la tarjeta en Trello (revisa la conexión)", "error");
-    }
+  // Genera un PDF sencillo (una página, solo texto) con los datos del presupuesto,
+  // para mandarlo a firmar por Firma.dev. No es el documento "bonito" de la
+  // calculadora de techos/persianas — es un resumen claro de lo que se está
+  // aceptando (cliente, importe, descripción), suficiente como documento firmable.
+  // Devuelve el PDF en base64 (sin el prefijo "data:application/pdf;base64,").
+  const generarPdfBase64Presupuesto = (presupuesto) => {
+    const doc = new jsPDF();
+    const margen = 20;
+    let y = 25;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("ALUMAVEL — Presupuesto", margen, y);
+    y += 10;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(`Nº presupuesto: ${presupuesto.numero}`, margen, y); y += 7;
+    doc.text(`Cliente: ${presupuesto.clienteNombre || "—"}`, margen, y); y += 7;
+    doc.text(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, margen, y); y += 7;
+    doc.text(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, margen, y); y += 10;
+    doc.setFont("helvetica", "bold");
+    doc.text("Descripción:", margen, y); y += 7;
+    doc.setFont("helvetica", "normal");
+    const lineasDesc = doc.splitTextToSize(presupuesto.descripcion || "—", 170);
+    doc.text(lineasDesc, margen, y);
+    y += lineasDesc.length * 6 + 10;
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text("Documento generado desde el CRM de Alumavel para firma electrónica (Firma.dev).", margen, y);
+    return doc.output("datauristring").split(",")[1];
   };
 
-  const moverTarjetaTrello = async (cardId, listId, etiqueta) => {
-    if (!cardId) return;
+  // Manda un presupuesto a firmar: si "firmante" no se indica, usa el
+  // responsable interno de aprobación de la obra vinculada (si la tiene) o el
+  // propio cliente del presupuesto. Actualiza el estado de firma en Firebase
+  // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
+  const enviarPresupuestoAFirmar = async (presupuesto, firmante) => {
     try {
-      const prompt = `Mueve la tarjeta de Trello con id="${cardId}" a la lista con listId="${listId}" usando la herramienta trelloWriteCard con action="move". No hagas nada más ni busques nada, usa exactamente esos identificadores.`;
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      const pdfBase64 = generarPdfBase64Presupuesto(presupuesto);
+      const response = await fetch("/.netlify/functions/firma-enviar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 500,
-          messages: [{ role: "user", content: prompt }],
-          mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
+          registroTipo: "presupuestos",
+          registroId: presupuesto.id,
+          pdfBase64,
+          nombreDocumento: `Presupuesto ${presupuesto.numero}`,
+          firmante,
         }),
       });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
-      showToast(`Tarjeta de Trello movida${etiqueta ? ` a "${etiqueta}"` : ""}`);
-    } catch (err) {
-      showToast("No se pudo mover la tarjeta en Trello (revisa la conexión)", "error");
-    }
-  };
-
-  const crearTarjetaTrelloPresupuesto = async (presupuesto, onCreated) => {
-    try {
-      const desc = [
-        `Cliente: ${presupuesto.clienteNombre || "—"}`,
-        `Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`,
-        `Descripción: ${presupuesto.descripcion || "—"}`,
-        `Teléfono: ${presupuesto.telefono || "—"}`,
-        `Referencia CRM: Presupuesto ${presupuesto.numero}`,
-      ].join("\n");
-      const nombreTarjeta = `${presupuesto.numero} — ${presupuesto.clienteNombre || "Sin cliente"}`;
-      const prompt = `Crea una tarjeta nueva en Trello usando la herramienta trelloWriteCard con action="create", listId="${TRELLO_LIST_PRESUPUESTO}", name="${nombreTarjeta.replace(/"/g, "'")}", y desc="${desc.replace(/"/g, "'")}". No hagas nada más, no busques el tablero ni la lista, usa exactamente el listId indicado. Al terminar, responde ÚNICAMENTE con el id de la tarjeta creada (el campo "id" que devuelve la herramienta), sin ningún otro texto.`;
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }],
-          mcp_servers: [{ type: "url", url: "https://mcp.trello.com/v1", name: "trello-mcp" }],
-        }),
-      });
-      if (!response.ok) throw new Error("Respuesta no válida de la API");
       const data = await response.json();
-      showToast("Tarjeta creada en Trello (Presupuesto)");
-
-      if (onCreated) {
-        const toolResults = (data.content || []).filter((c) => c.type === "mcp_tool_result");
-        let cardId = null;
-        for (const block of toolResults) {
-          const text = block?.content?.[0]?.text || "";
-          const match = text.match(/ari:cloud:trello::card\/[^\s"'\\]+/);
-          if (match) { cardId = match[0]; break; }
-        }
-        if (!cardId) {
-          const finalText = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join(" ");
-          const match2 = finalText.match(/ari:cloud:trello::card\/[^\s"'\\]+/);
-          if (match2) cardId = match2[0];
-        }
-        if (cardId) onCreated(cardId);
+      if (!response.ok) {
+        showToast(data.error || "No se pudo enviar a firmar", "error");
+        return;
       }
+      const next = presupuestos.map((p) => (p.id === presupuesto.id ? {
+        ...p,
+        firma: { signingRequestId: data.signingRequestId, estado: "enviado", enviadoEn: Date.now(), firmanteNombre: firmante.nombre || "", firmanteEmail: firmante.email },
+      } : p));
+      savePresupuestos(next);
+      showToast(`Enviado a firmar a ${firmante.email}`);
     } catch (err) {
-      showToast("No se pudo crear la tarjeta en Trello (revisa la conexión)", "error");
+      showToast("No se pudo enviar a firmar (revisa la conexión)", "error");
     }
   };
 
@@ -914,28 +852,6 @@ export default function App() {
         showToast("Ficha de instalación creada — pendiente de instalación");
       }
 
-      if (anterior?.trelloCardId && data.estadoPresupuesto && data.estadoPresupuesto !== anterior.estadoPresupuesto) {
-        if (data.estadoPresupuesto === "Presupuesto aceptado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_PRESUPUESTO_ACEPTADO, "Presupuesto aceptado");
-        } else if (data.estadoPresupuesto === "Presupuesto rechazado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_PRESUPUESTO_NO_ACEPTADO, "Presupuesto no aceptado");
-        }
-      }
-      if (anterior?.trelloCardId && data.estadoTrabajo && data.estadoTrabajo !== anterior.estadoTrabajo) {
-        if (data.estadoTrabajo === "Albarán de carga firmado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_ALBARAN_FIRMADO, "Albarán de carga firmado");
-        } else if (data.estadoTrabajo === "Listo para reparto/recogida") {
-          if (data.estadoLogistica === "Recogida en fábrica") {
-            moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_RECOGIDA, "Recogida");
-          } else if (data.estadoLogistica === "Reparto (camión)") {
-            moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_REPARTO, "Reparto");
-          } else {
-            showToast('Elige "Reparto" o "Recogida" en el proyecto para que la tarjeta se mueva bien', "error");
-          }
-        } else if (data.estadoTrabajo === "Entregado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_TERMINADO, "Terminado");
-        }
-      }
     } else {
       const np = {
         ...data,
@@ -950,14 +866,6 @@ export default function App() {
       if (np.llevaInstalacion) {
         crearInstalacionParaProyecto(np);
       }
-      const clienteNombre = clientes.find((c) => c.id === np.clienteId)?.nombre;
-      crearTarjetaTrello(np, clienteNombre, (cardId) => {
-        setProyectos((prev) => {
-          const updated = prev.map((p) => (p.id === np.id ? { ...p, trelloCardId: cardId } : p));
-          persist("proyectos", updated);
-          return updated;
-        });
-      });
     }
     saveProyectos(next);
     setProyectoView("list");
@@ -1158,12 +1066,6 @@ export default function App() {
       }
       next = [{ ...data, id: uid(), numero: nextNumeroPedido() }, ...pedidos];
       showToast("Pedido dado de alta");
-      if (data.proyectoId) {
-        const proyecto = proyectos.find((p) => p.id === data.proyectoId);
-        if (proyecto?.trelloCardId) {
-          moverTarjetaTrello(proyecto.trelloCardId, TRELLO_LIST_PEDIDO, "Pedido");
-        }
-      }
     }
     savePedidos(next);
     setPedidoView("list");
@@ -1206,15 +1108,6 @@ export default function App() {
     savePedidos(pedidosNext);
     showToast("Pedido recibido: stock actualizado automáticamente");
 
-    if (pedido.proyectoId) {
-      const proyecto = proyectos.find((p) => p.id === pedido.proyectoId);
-      const pedidosDelProyecto = pedidosNext.filter((p) => p.proyectoId === pedido.proyectoId);
-      const todosCerrados = pedidosDelProyecto.every((p) => p.estado === "Recibido" || p.estado === "Cancelado");
-      const algunoRecibido = pedidosDelProyecto.some((p) => p.estado === "Recibido");
-      if (proyecto?.trelloCardId && todosCerrados && algunoRecibido) {
-        moverTarjetaTrello(proyecto.trelloCardId, TRELLO_LIST_FABRICA, "Fábrica");
-      }
-    }
   };
 
   // Guarda el resultado de la comprobación de un albarán en el pedido, SOLO cuando
@@ -1352,12 +1245,6 @@ export default function App() {
     } else {
       next = [{ ...data, id: uid(), numero: nextNumeroIncidencia(), gastos: [] }, ...incidencias];
       showToast("Incidencia dada de alta");
-      if (data.proyectoId) {
-        const proyecto = proyectos.find((p) => p.id === data.proyectoId);
-        if (proyecto?.trelloCardId) {
-          moverTarjetaTrello(proyecto.trelloCardId, TRELLO_LIST_INCIDENCIA, "Incidencia");
-        }
-      }
     }
     saveIncidencias(next);
     setIncidenciaView("list");
@@ -1547,9 +1434,6 @@ export default function App() {
     };
     saveFacturas([nueva, ...facturas]);
     showToast(`Factura ${nueva.numero} generada por ${money(importeNum)}`);
-    if (proyecto.trelloCardId) {
-      moverTarjetaTrello(proyecto.trelloCardId, TRELLO_LIST_FACTURADO, "Facturado");
-    }
   };
 
   const savePresupuestos = (next) => { setPresupuestos(next); persist("presupuestos", next); };
@@ -1561,27 +1445,10 @@ export default function App() {
       const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
-
-      if (anterior?.trelloCardId && dataNormalizada.estado && dataNormalizada.estado !== anterior.estado) {
-        if (dataNormalizada.estado === "Aceptado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_PRESUPUESTO_ACEPTADO, "Presupuesto aceptado");
-        } else if (dataNormalizada.estado === "Rechazado") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_PRESUPUESTO_NO_ACEPTADO, "Presupuesto no aceptado");
-        } else if (dataNormalizada.estado === "Pendiente" || dataNormalizada.estado === "En espera") {
-          moverTarjetaTrello(anterior.trelloCardId, TRELLO_LIST_PRESUPUESTO, "Presupuesto");
-        }
-      }
     } else {
       const np = { estado: "Pendiente", ...data, id: uid() };
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
-      crearTarjetaTrelloPresupuesto(np, (cardId) => {
-        setPresupuestos((prev) => {
-          const updated = prev.map((p) => (p.id === np.id ? { ...p, trelloCardId: cardId } : p));
-          persist("presupuestos", updated);
-          return updated;
-        });
-      });
     }
     savePresupuestos(next);
     setPresupuestoView("list");
@@ -1593,8 +1460,7 @@ export default function App() {
     showToast("Presupuesto eliminado");
   };
 
-  // Crea un Proyecto a partir de un Presupuesto ya aceptado, REUTILIZANDO la misma
-  // tarjeta de Trello (no se crea una tarjeta nueva) para que el hilo no se corte.
+  // Crea un Proyecto a partir de un Presupuesto ya aceptado.
   const crearProyectoDesdePresupuesto = (presupuesto) => {
     let clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (presupuesto.clienteNombre || "").trim().toLowerCase())?.id || "";
     const np = {
@@ -1605,7 +1471,6 @@ export default function App() {
       importePresupuesto: presupuesto.importe || 0,
       estadoPresupuesto: "Presupuesto aceptado",
       estadoTrabajo: "Pendiente de aceptación",
-      trelloCardId: presupuesto.trelloCardId || null,
       gastos: [],
       registroHorario: [],
       checklistMateriales: checklistMaterialesPorDefecto(),
@@ -1614,7 +1479,7 @@ export default function App() {
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
-    showToast(`Proyecto #${np.numero} creado desde el presupuesto (misma tarjeta de Trello)`);
+    showToast(`Proyecto #${np.numero} creado desde el presupuesto`);
     return np.id;
   };
 
@@ -1624,8 +1489,7 @@ export default function App() {
   // versiones (mismo registro, sin duplicar nada en el listado), y lo deja abierto
   // para editar el importe/descripción de la nueva revisión.
   // Crea una réplica del presupuesto (mismo número base + guion + siguiente número:
-  // 4192 -> 4192-1 -> 4192-2), como una fila más en el listado, con su propia
-  // tarjeta de Trello, lista para abrir y modificar.
+  // 4192 -> 4192-1 -> 4192-2), como una fila más en el listado, lista para abrir y modificar.
   const duplicarPresupuesto = (presupuesto) => {
     const numeroBase = String(presupuesto.numero).split("-")[0].trim();
     const sufijos = presupuestos
@@ -1657,13 +1521,6 @@ export default function App() {
       llamadas: [],
     };
     savePresupuestos([nueva, ...presupuestos]);
-    crearTarjetaTrelloPresupuesto(nueva, (cardId) => {
-      setPresupuestos((prev) => {
-        const updated = prev.map((p) => (p.id === nueva.id ? { ...p, trelloCardId: cardId } : p));
-        persist("presupuestos", updated);
-        return updated;
-      });
-    });
     showToast(`Réplica creada: ${nuevoNumero} — ya la puedes modificar`);
     return nueva.id;
   };
@@ -2492,6 +2349,8 @@ export default function App() {
             tarifasPersianas={tarifasPersianas}
             onSaveTarifasPersianas={saveTarifasPersianas}
             onPasarPersianasAPresupuesto={pasarPersianasAPresupuesto}
+            proyectos={proyectos}
+            onEnviarFirma={enviarPresupuestoAFirmar}
           />
         )}
         {modulo === "mediciones" && (
@@ -3568,6 +3427,7 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
       ubicacion: "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
       provinciaReparto: "", ciudadRepartoManual: "", llevaInstalacion: false,
       diasPlazoMateriales: "", fechaFabricacion: "", fechaMontaje: "",
+      contratoConstructoraFirmado: false, responsableAprobacionNombre: "", responsableAprobacionEmail: "",
     }
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -3716,6 +3576,24 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
           </Field>
         </div>
 
+        <div className="border-t border-slate-200 pt-5">
+          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium mb-3">
+            <input type="checkbox" checked={f.contratoConstructoraFirmado} onChange={set("contratoConstructoraFirmado")} className="w-4 h-4" />
+            Contrato ya firmado directamente con la constructora
+          </label>
+          {f.contratoConstructoraFirmado && (
+            <div className="grid grid-cols-2 gap-4 bg-slate-50 border border-slate-200 rounded-md p-4">
+              <Field label="Responsable de aprobación interna">
+                <TextInput value={f.responsableAprobacionNombre} onChange={set("responsableAprobacionNombre")} placeholder="Nombre del responsable" />
+                <p className="text-xs text-slate-400 mt-1">Los presupuestos de esta obra se mandarán a esta persona para firmar, en vez de al cliente.</p>
+              </Field>
+              <Field label="Email del responsable">
+                <TextInput type="email" value={f.responsableAprobacionEmail} onChange={set("responsableAprobacionEmail")} placeholder="responsable@alumavel.es" />
+              </Field>
+            </div>
+          )}
+        </div>
+
         <div className="flex flex-wrap justify-end gap-2 pt-2">
           <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100 border border-slate-300">Cancelar</button>
           <button type="submit" onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="whitespace-nowrap flex items-center gap-1.5 text-sm font-bold px-5 py-2.5 rounded-md">
@@ -3848,6 +3726,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         <Badge className={ESTADO_PRESUPUESTO_STYLE[proyecto.estadoPresupuesto]}>{proyecto.estadoPresupuesto}</Badge>
         <Badge className={ESTADO_TRABAJO_STYLE[proyecto.estadoTrabajo]}>{proyecto.estadoTrabajo}</Badge>
         {proyecto.presupuestoFirmado && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Presupuesto firmado</Badge>}
+        {proyecto.contratoConstructoraFirmado && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Contrato con constructora</Badge>}
         {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
         {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
         {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
@@ -12056,7 +11935,7 @@ const semanaISO = (fechaStr) => {
   return `${d.getFullYear()}-S${String(weekNo).padStart(2, "0")}`;
 };
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto }) {
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -12304,6 +12183,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         onLeerDatos={leerDatosDesdeArchivo}
         onCancel={() => { setView(editId ? "detail" : "list"); setPrefillPresupuesto(null); }}
         onSave={(data) => { onUpsert(data); setPrefillPresupuesto(null); }}
+        proyectos={proyectos}
       />
     );
   }
@@ -12324,6 +12204,8 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         replicas={replicasDe(presupuesto)}
         onAbrirReplica={(id) => { setDetailId(id); setView("detail"); }}
         isAdmin={isAdmin}
+        proyectos={proyectos}
+        onEnviarFirma={onEnviarFirma}
       />
     );
   }
@@ -14214,12 +14096,13 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
   );
 }
 
-function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave }) {
+function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos }) {
   const [f, setF] = useState(
     initial || {
       id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
       descripcion: "", importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
       comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: "",
+      proyectoId: "",
     }
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -14363,6 +14246,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
           <Field label="Zona">
             <TextInput value={f.zona} onChange={set("zona")} placeholder="Ej: Almería, Granada..." />
           </Field>
+          <Field label="Vincular a obra existente (opcional)">
+            <Select value={f.proyectoId} onChange={set("proyectoId")}>
+              <option value="">Ninguna — presupuesto independiente</option>
+              {(proyectos || []).map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            </Select>
+            <p className="text-xs text-slate-400 mt-1">Si la obra tiene marcado "Contrato ya firmado con constructora", este presupuesto se manda a firmar al responsable interno, no al cliente.</p>
+          </Field>
         </div>
 
         <Field label="Descripción / Obra">
@@ -14429,7 +14319,80 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin }) {
+// Tarjeta de firma electrónica de un presupuesto (Firma.dev). Si el presupuesto
+// está vinculado a un proyecto/obra con "contratoConstructoraFirmado" marcado,
+// se envía por defecto al responsable de aprobación interna de esa obra en vez
+// de al cliente — el mecanismo (enlace de firma con validez legal) es el mismo,
+// solo cambia quién firma. El estado (enviado/firmado) se guarda en Firebase y
+// lo actualiza el webhook de Firma.dev en cuanto se firma — como la app carga
+// los datos una sola vez, hay un botón para refrescar solo este registro.
+function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
+  const proyectoVinculado = (proyectos || []).find((p) => p.id === (presupuesto.proyectoId || presupuesto.proyectoCreadoId));
+  const esAprobacionInterna = !!(proyectoVinculado?.contratoConstructoraFirmado && proyectoVinculado?.responsableAprobacionEmail);
+  const [mostrarForm, setMostrarForm] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [firmante, setFirmante] = useState({
+    nombre: esAprobacionInterna ? (proyectoVinculado.responsableAprobacionNombre || "") : (presupuesto.clienteNombre || ""),
+    email: esAprobacionInterna ? (proyectoVinculado.responsableAprobacionEmail || "") : "",
+  });
+  const firma = presupuesto.firma;
+
+  const enviar = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!firmante.email.trim()) return;
+    setEnviando(true);
+    await onEnviarFirma(presupuesto, firmante);
+    setEnviando(false);
+    setMostrarForm(false);
+  };
+
+  if (firma?.estado === "firmado") {
+    return (
+      <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm">
+        <p className="font-semibold">✓ Firmado por {firma.firmanteNombre || firma.firmanteEmail} el {fmtDate(new Date(firma.firmadoEn).toISOString().slice(0, 10))}</p>
+        {firma.pdfUrl && <a href={firma.pdfUrl} target="_blank" rel="noopener noreferrer" className="underline">Ver documento firmado</a>}
+      </div>
+    );
+  }
+
+  if (firma?.estado === "enviado") {
+    return (
+      <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-sm">
+        <p className="font-semibold">✎ Pendiente de firma — enviado a {firma.firmanteEmail}</p>
+        <p className="text-xs text-amber-600 mt-1">El estado se actualiza solo cuando firme (puede tardar en verse hasta que recargues la página).</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 px-4 py-3 rounded-md bg-slate-50 border border-slate-200 text-sm">
+      {!mostrarForm ? (
+        <button onClick={() => setMostrarForm(true)} className="flex items-center gap-1.5 font-semibold text-slate-700 hover:text-slate-900">
+          <Pencil size={14} /> Enviar a firmar {esAprobacionInterna ? `(responsable de la obra: ${proyectoVinculado.responsableAprobacionNombre})` : "(cliente)"}
+        </button>
+      ) : (
+        <form onSubmit={enviar} className="space-y-2">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nombre del firmante">
+              <TextInput value={firmante.nombre} onChange={(e) => setFirmante({ ...firmante, nombre: e.target.value })} />
+            </Field>
+            <Field label="Email del firmante" required>
+              <TextInput type="email" value={firmante.email} onChange={(e) => setFirmante({ ...firmante, email: e.target.value })} required />
+            </Field>
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
+              {enviando ? "Enviando..." : "Enviar a firmar"}
+            </button>
+            <button type="button" onClick={() => setMostrarForm(false)} className="text-sm font-semibold text-slate-500 px-3.5 py-2">Cancelar</button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
@@ -14503,9 +14466,11 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       )}
       {presupuesto.proyectoCreadoId && (
         <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
-          ✓ Ya se creó un proyecto a partir de este presupuesto (misma tarjeta de Trello).
+          ✓ Ya se creó un proyecto a partir de este presupuesto.
         </div>
       )}
+
+      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} />
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
