@@ -5,7 +5,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send, Printer
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send, Printer, Calculator
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -390,12 +390,16 @@ export default function App() {
   // fichajes
   const [empleadoActual, setEmpleadoActual] = useState("");
 
+  // tarifas de la Calculadora de Presupuestos (precios editables por producto)
+  const [tarifasPersianas, setTarifasPersianas] = useState({});
+
   useEffect(() => {
     (async () => {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
-          "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa"];
+          "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
+          "tarifasPersianas"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -434,6 +438,7 @@ export default function App() {
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
         if (resultados.archivosEmpresa) setArchivosEmpresa(toArray(resultados.archivosEmpresa));
+        if (resultados.tarifasPersianas) setTarifasPersianas(resultados.tarifasPersianas);
 
         // Estas son locales de este navegador/dispositivo, no compartidas — cada persona
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
@@ -703,8 +708,29 @@ export default function App() {
     setPresupuestoPrefill({
       clienteNombre: medicion.clienteNombre,
       direccionEnvio: medicion.direccion || "",
-      descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || (techos.length ? `${techos.length} techo(s) calculado(s) — ver despiece y precio en la sección Techos de esta medición.` : "(Todavía no se han registrado elementos medidos en esta medición.)")}`,
+      descripcion: `Medición realizada el ${medicion.fecha || ""} en ${medicion.direccion || "la obra"}:\n\n${resumenGlobal || "(Todavía no se han registrado elementos medidos en esta medición.)"}`,
       techos,
+    });
+    setModulo("presupuestos");
+    setPresupuestoEditId(null);
+    setPresupuestoView("form");
+  };
+
+  // Al pulsar "Pasar a presupuesto" desde la Calculadora de Presupuestos (ej. Persianas):
+  // se abre el formulario de Presupuestos con el cliente, la descripción (resumen del
+  // despiece) y el importe ya calculados a partir de las tarifas, listo para revisar,
+  // poner el número y guardar. El despiece calculado viaja con el presupuesto y, si
+  // luego se pasa a proyecto, se importa solo (igual que ya pasa con los techos).
+  const saveTarifasPersianas = (next) => { setTarifasPersianas(next); persist("tarifasPersianas", next); };
+
+  const pasarPersianasAPresupuesto = (datos) => {
+    setPresupuestoPrefill({
+      clienteNombre: datos.clienteNombre || "",
+      direccionEnvio: datos.direccionObra || "",
+      descripcion: datos.descripcion || "",
+      importe: datos.importe || "",
+      comentarios: "Creado desde la Calculadora de Presupuestos (Persianas). Revisa los datos y el importe antes de guardar.",
+      persianas: datos.persianas || [],
     });
     setModulo("presupuestos");
     setPresupuestoEditId(null);
@@ -1584,6 +1610,7 @@ export default function App() {
       registroHorario: [],
       checklistMateriales: checklistMaterialesPorDefecto(),
       techos: presupuesto.techos || [],
+      persianas: presupuesto.persianas || [],
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
@@ -2331,6 +2358,7 @@ export default function App() {
             onMarcarEnviado={marcarPedidoEnviado}
             onCrearDesdeFoto={(lineas, comentario) => enviarAPedido(undefined, lineas, "", comentario)}
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
+            onGenerarPedidoDesdeObras={(lineas, comentarios) => enviarAPedido(undefined, lineas, "", comentarios)}
             tabPrincipal={pedidoTabPrincipal}
             setTabPrincipal={setPedidoTabPrincipal}
             solicitudes={solicitudesPedido}
@@ -2461,6 +2489,9 @@ export default function App() {
             isAdmin={isAdmin}
             prefill={presupuestoPrefill}
             onClearPrefill={() => setPresupuestoPrefill(null)}
+            tarifasPersianas={tarifasPersianas}
+            onSaveTarifasPersianas={saveTarifasPersianas}
+            onPasarPersianasAPresupuesto={pasarPersianasAPresupuesto}
           />
         )}
         {modulo === "mediciones" && (
@@ -5090,10 +5121,11 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
 
 /* ================= PEDIDOS ================= */
 
-function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
+  const [mostrarAgrupador, setMostrarAgrupador] = useState(false);
   const inputFotoRef = useRef(null);
 
   const leerFotoPedido = async (file) => {
@@ -5299,6 +5331,23 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         className="hidden"
         onChange={(e) => { if (e.target.files?.[0]) leerFotoPedido(e.target.files[0]); e.target.value = ""; }}
       />
+
+      <button
+        type="button"
+        onClick={() => setMostrarAgrupador((v) => !v)}
+        style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+        className="w-full flex items-center justify-center gap-2 border-2 hover:bg-slate-50 text-sm font-semibold py-3 rounded-lg mb-6 cursor-pointer select-none"
+      >
+        <Layers size={16} /> {mostrarAgrupador ? "Ocultar" : "Generar pedido agrupando varias obras"}
+      </button>
+      {mostrarAgrupador && (
+        <GenerarPedidoDesdeObrasPanel
+          proyectos={proyectos}
+          materiales={materiales}
+          onGenerar={onGenerarPedidoDesdeObras}
+          onClose={() => setMostrarAgrupador(false)}
+        />
+      )}
       {errorFoto && (
         <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold mb-6">⚠ {errorFoto}</div>
       )}
@@ -5375,6 +5424,92 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// Panel para elegir varias obras y juntar en un único pedido todo lo que les falte
+// (techos + persianas calculados, comparado con Stock). Vive dentro de Pedidos.
+function GenerarPedidoDesdeObrasPanel({ proyectos, materiales, onGenerar, onClose }) {
+  const [seleccion, setSeleccion] = useState([]);
+  const toggle = (id) => setSeleccion((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const proyectosConDespiece = useMemo(
+    () => (proyectos || []).filter((p) => (p.techos || []).length > 0 || (p.persianas || []).length > 0),
+    [proyectos]
+  );
+
+  const combinado = useMemo(() => {
+    const grupos = {};
+    proyectosConDespiece.filter((p) => seleccion.includes(p.id)).forEach((p) => {
+      calcularDespiecePendienteProyecto(p, materiales).forEach((d) => {
+        if (d.falta <= 0.01) return;
+        if (!grupos[d.perfil]) grupos[d.perfil] = { perfil: d.perfil, falta: 0, material: d.material, obras: [] };
+        grupos[d.perfil].falta += d.falta;
+        grupos[d.perfil].obras.push(`#${p.numero}`);
+      });
+    });
+    return Object.values(grupos);
+  }, [seleccion, proyectosConDespiece, materiales]);
+
+  const generar = () => {
+    if (combinado.length === 0) {
+      alert("No hay nada pendiente en las obras seleccionadas (o no has marcado ninguna obra).");
+      return;
+    }
+    const lineas = combinado.map((d) => ({
+      id: uid(),
+      modo: d.material ? "catalogo" : "libre",
+      materialId: d.material ? d.material.id : "",
+      referencia: d.material ? "" : `${d.perfil} (obras: ${d.obras.join(", ")})`,
+      ancho: "", alto: "",
+      cantidad: Math.ceil(d.falta),
+      precio: d.material ? (d.material.precioCompra || "") : "",
+      estado: "Solicitado",
+    }));
+    const numeros = proyectosConDespiece.filter((p) => seleccion.includes(p.id)).map((p) => `#${p.numero}`).join(", ");
+    onGenerar(lineas, `Pedido conjunto generado agrupando el despiece pendiente de las obras: ${numeros}. Revisa proveedor y precios antes de enviarlo.`);
+    onClose();
+  };
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-4 mb-6 bg-slate-50">
+      <h3 className="text-sm font-bold text-slate-700 mb-1">Elige las obras a agrupar</h3>
+      <p className="text-xs text-slate-400 mb-3">Solo aparecen las obras que tienen techos o persianas calculados. Se junta lo que le falte a cada una según Stock.</p>
+      {proyectosConDespiece.length === 0 ? (
+        <p className="text-sm text-slate-400">Ninguna obra tiene todavía techos o persianas calculados.</p>
+      ) : (
+        <div className="space-y-1.5 max-h-64 overflow-y-auto mb-3">
+          {proyectosConDespiece.map((p) => (
+            <label key={p.id} className="flex items-center gap-2 text-sm bg-white px-3 py-2 rounded border border-slate-200 cursor-pointer">
+              <input type="checkbox" checked={seleccion.includes(p.id)} onChange={() => toggle(p.id)} />
+              #{p.numero} — {p.nombre}
+            </label>
+          ))}
+        </div>
+      )}
+      {combinado.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr><th className="text-left px-3 py-2">Material</th><th className="text-left px-3 py-2">Falta</th><th className="text-left px-3 py-2">Obras</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {combinado.map((d) => (
+                <tr key={d.perfil}>
+                  <td className="px-3 py-2 font-medium text-slate-700">{d.perfil}</td>
+                  <td className="px-3 py-2 text-slate-500">{d.falta.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-slate-500">{d.obras.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button onClick={generar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md">Generar pedido conjunto</button>
+        <button onClick={onClose} className="text-sm font-semibold text-slate-500 px-4 py-2">Cancelar</button>
       </div>
     </div>
   );
@@ -8927,6 +9062,296 @@ function compararDespieceConStock(despieceAgrupado, materiales) {
   });
 }
 
+/* ================= PERSIANAS — CALCULADORA DE PRESUPUESTOS Y DESPIECE =================
+   Réplica en JavaScript de las plantillas Excel reales de cálculo de piezas de persianas
+   (archivos de cajón 155/185/200mm de Miguel). Fórmulas portadas 1:1. */
+
+const PERSIANAS_CAJON_OPCIONES = [155, 185, 200];
+const PERSIANAS_MOTOR_OPCIONES = [
+  { valor: 0, label: "Sin motor (manual — lleva recogedor y discos)" },
+  { valor: 1, label: "Con motor, con recogedor (sin discos)" },
+  { valor: 2, label: "Con motor, sin recogedor ni discos" },
+];
+
+// Calcula el despiece de UNA línea (un grupo de persianas iguales). Fórmulas portadas de
+// las plantillas Excel reales. Nota: en la plantilla de cajón de 200mm el nº de lamas se
+// multiplica también por el nº de persianas/hojas; en las de 155 y 185 no — así estaba en
+// los 3 archivos originales, se ha respetado tal cual.
+function calcularDespiecePersianaLinea(fila) {
+  const ud = parseFloat(fila.ud) || 0;
+  const ancho = parseFloat(fila.ancho) || 0;
+  const alto = parseFloat(fila.alto) || 0;
+  const cajon = parseFloat(fila.cajon) || 155;
+  const motor = parseFloat(fila.motor) || 0;
+  const np = parseFloat(fila.npersianas) || 1;
+
+  const cajonTotalM = (ancho * ud) / 1000;
+  const lamas = np ? Math.ceil(alto / 39 - 1) * ud * (cajon === 200 ? np : 1) : 0;
+  const longitudLamaM = np ? ((ancho / np) * lamas) / 1000 : 0;
+  const lamaFinal = np * ud;
+  const felpudo = np * ud;
+  const testeros = 2 * np * ud;
+  const placaContencion = 2 * np * ud;
+  const embudos = 2 * np * ud;
+  const recogedor = (motor > 1 ? 0 : np) * ud;
+  const tirantes = 3 * np * ud;
+  const discos = (motor > 0 ? 0 : np) * ud;
+  const capsula = np * ud;
+  const pasacintas = np * ud;
+  const nEjes = np * ud;
+  const tamanoEje = np ? ancho / np : 0;
+  const ejeTotalM = (nEjes * tamanoEje) / 1000;
+  const topes = 2 * np * ud;
+  const motoresUd = motor > 0 ? np * ud : 0;
+
+  return {
+    cajon, cajonTotalM, lamas, longitudLamaM, lamaFinal, felpudo, testeros,
+    placaContencion, embudos, recogedor, tirantes, discos, capsula, pasacintas,
+    nEjes, tamanoEje, ejeTotalM, topes, motoresUd,
+  };
+}
+
+// Agrupa el despiece de todas las filas de un cálculo: perfiles que se compran en barras
+// de 6m (cajón, lama y eje — se separan por tamaño de cajón porque cada tamaño usa perfil
+// distinto), y herraje que se compra por unidad (recuento simple, sin separar por cajón).
+function calcularDespiecePersianasConjunto(filas) {
+  const porCajon = {};
+  const herraje = {
+    felpudo: 0, testeros: 0, placaContencion: 0, embudos: 0, recogedor: 0,
+    tirantes: 0, discos: 0, capsula: 0, pasacintas: 0, topes: 0, motores: 0,
+  };
+  const lineas = [];
+
+  (filas || []).forEach((fila) => {
+    const r = calcularDespiecePersianaLinea(fila);
+    lineas.push({ fila, resultado: r });
+    if (!porCajon[r.cajon]) porCajon[r.cajon] = { cajonM: 0, lamaM: 0, ejeM: 0 };
+    porCajon[r.cajon].cajonM += r.cajonTotalM;
+    porCajon[r.cajon].lamaM += r.longitudLamaM;
+    porCajon[r.cajon].ejeM += r.ejeTotalM;
+    herraje.felpudo += r.felpudo;
+    herraje.testeros += r.testeros;
+    herraje.placaContencion += r.placaContencion;
+    herraje.embudos += r.embudos;
+    herraje.recogedor += r.recogedor;
+    herraje.tirantes += r.tirantes;
+    herraje.discos += r.discos;
+    herraje.capsula += r.capsula;
+    herraje.pasacintas += r.pasacintas;
+    herraje.topes += r.topes;
+    herraje.motores += r.motoresUd;
+  });
+
+  const barras6m = (m) => Math.ceil((m || 0) / 6);
+  const perfiles = Object.keys(porCajon).sort().map((cajon) => ({
+    cajon: parseFloat(cajon),
+    cajonM: porCajon[cajon].cajonM, cajonBarras: barras6m(porCajon[cajon].cajonM),
+    lamaM: porCajon[cajon].lamaM, lamaBarras: barras6m(porCajon[cajon].lamaM),
+    ejeM: porCajon[cajon].ejeM, ejeBarras: barras6m(porCajon[cajon].ejeM),
+  }));
+
+  return { lineas, perfiles, herraje };
+}
+
+// Calcula el importe del presupuesto a partir del despiece agrupado y las tarifas
+// (precios editables por Miguel). Los perfiles se cobran por los metros exactos
+// necesarios (no por barra completa); el herraje, por unidad.
+function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
+  const t = tarifas || {};
+  const detalle = [];
+  let total = 0;
+
+  despieceConjunto.perfiles.forEach((p) => {
+    [
+      [`cajon_${p.cajon}`, `Cajón ${p.cajon}mm`, p.cajonM],
+      [`lama_${p.cajon}`, `Lama ${p.cajon}mm`, p.lamaM],
+      ["eje", "Eje octogonal", p.ejeM],
+    ].forEach(([key, nombre, cantidad]) => {
+      const precio = parseFloat(t[key]) || 0;
+      const importe = precio * cantidad;
+      total += importe;
+      if (cantidad > 0) detalle.push({ nombre: p.cajon !== 200 || key !== "eje" ? `${nombre}${key === "eje" ? ` (cajón ${p.cajon})` : ""}` : nombre, cantidad, unidad: "m", precio, importe });
+    });
+  });
+
+  [
+    ["felpudo", "Felpudo", despieceConjunto.herraje.felpudo],
+    ["testeros", "Testeros (juego)", despieceConjunto.herraje.testeros],
+    ["placaContencion", "Placa contención (juego)", despieceConjunto.herraje.placaContencion],
+    ["embudos", "Embudos (juego)", despieceConjunto.herraje.embudos],
+    ["recogedor", "Recogedor", despieceConjunto.herraje.recogedor],
+    ["tirantes", "Tirantes", despieceConjunto.herraje.tirantes],
+    ["discos", "Discos", despieceConjunto.herraje.discos],
+    ["capsula", "Cápsula", despieceConjunto.herraje.capsula],
+    ["pasacintas", "Pasacintas", despieceConjunto.herraje.pasacintas],
+    ["topes", "Topes", despieceConjunto.herraje.topes],
+    ["motor", "Motor", despieceConjunto.herraje.motores],
+  ].forEach(([key, nombre, cantidad]) => {
+    const precio = parseFloat(t[key]) || 0;
+    const importe = precio * cantidad;
+    total += importe;
+    if (cantidad > 0) detalle.push({ nombre, cantidad, unidad: "ud", precio, importe });
+  });
+
+  return { detalle, total };
+}
+
+// Genera el texto de descripción (para el presupuesto) y el HTML imprimible del despiece
+// + presupuesto de persianas, a partir de las filas introducidas y el cálculo ya hecho.
+function resumenTextoPersianas(filas, despieceConjunto) {
+  const lineasTxt = filas.map((f, i) => {
+    const np = parseFloat(f.npersianas) || 1;
+    const motorTxt = (PERSIANAS_MOTOR_OPCIONES.find((m) => m.valor === (parseFloat(f.motor) || 0)) || {}).label || "";
+    return `${i + 1}. Persiana cajón ${f.cajon}mm — ${f.ancho || "?"} x ${f.alto || "?"} mm — ${f.npersianas || 1} hoja(s) — x${f.ud || 1} — ${motorTxt}`;
+  }).join("\n");
+  const barrasTxt = despieceConjunto.perfiles.map((p) =>
+    `Cajón ${p.cajon}mm: ${p.cajonBarras} barra(s) de 6m · Lama: ${p.lamaBarras} barra(s) de 6m · Eje: ${p.ejeBarras} barra(s) de 6m`
+  ).join("\n");
+  return `Persianas calculadas con la Calculadora de Presupuestos:\n\n${lineasTxt}\n\nBarras a pedir (redondeado a barras de 6m):\n${barrasTxt}`;
+}
+
+// modo: "despiece" (solo piezas/perfiles/herraje, para el taller — sin precios) o
+// "presupuesto" (solo el documento de precios para el cliente — sin despiece técnico).
+function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despieceConjunto, presupuestoCalc, modo }) {
+  const e = escaparHtmlInforme;
+  const esDespiece = modo === "despiece";
+  const esPresupuesto = modo === "presupuesto";
+
+  const filasHtml = filas.map((f, i) => `<tr>
+      <td>${i + 1}</td><td>${e(f.cajon)}mm</td><td>${e(f.ancho)}</td><td>${e(f.alto)}</td>
+      <td>${e(f.npersianas || 1)}</td><td>${e(f.ud || 1)}</td>
+      <td>${e((PERSIANAS_MOTOR_OPCIONES.find((m) => m.valor === (parseFloat(f.motor) || 0)) || {}).label || "")}</td>
+    </tr>`).join("");
+
+  const barrasHtml = despieceConjunto.perfiles.map((p) => `<tr>
+      <td>Cajón ${p.cajon}mm</td><td>${p.cajonM.toFixed(2)} m</td><td>${p.cajonBarras} barra(s)</td>
+    </tr>
+    <tr><td>Lama ${p.cajon}mm</td><td>${p.lamaM.toFixed(2)} m</td><td>${p.lamaBarras} barra(s)</td></tr>
+    <tr><td>Eje octogonal (cajón ${p.cajon})</td><td>${p.ejeM.toFixed(2)} m</td><td>${p.ejeBarras} barra(s)</td></tr>`).join("");
+
+  const herrajeFilas = [
+    ["Felpudo", despieceConjunto.herraje.felpudo], ["Testeros (juego)", despieceConjunto.herraje.testeros],
+    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Embudos (juego)", despieceConjunto.herraje.embudos],
+    ["Recogedor", despieceConjunto.herraje.recogedor], ["Tirantes", despieceConjunto.herraje.tirantes],
+    ["Discos", despieceConjunto.herraje.discos], ["Cápsula", despieceConjunto.herraje.capsula],
+    ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
+    ["Motores", despieceConjunto.herraje.motores],
+  ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => `<tr><td>${e(nombre)}</td><td>${cant}</td></tr>`).join("");
+
+  const precioFilas = presupuestoCalc.detalle.map((d) => `<tr>
+      <td>${e(d.nombre)}</td><td>${d.cantidad.toFixed(2)} ${d.unidad}</td><td>${d.precio.toFixed(2)} €</td><td>${d.importe.toFixed(2)} €</td>
+    </tr>`).join("");
+
+  const titulo = esDespiece ? "Despiece de persianas (taller)" : esPresupuesto ? "Presupuesto de persianas" : "Presupuesto y despiece de persianas";
+
+  const bloqueDespiece = `
+  <h2>Persianas</h2>
+  <table>
+    <tr><th>Nº</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Hojas</th><th>Ud.</th><th>Motor</th></tr>
+    ${filasHtml}
+  </table>
+
+  <h2>Perfiles a pedir (barras de 6 metros)</h2>
+  <table>
+    <tr><th>Perfil</th><th>Metros necesarios</th><th>Barras de 6m</th></tr>
+    ${barrasHtml}
+  </table>
+
+  <h2>Herraje</h2>
+  <table>
+    <tr><th>Pieza</th><th>Cantidad</th></tr>
+    ${herrajeFilas || `<tr><td colspan="2" style="color:#94a3b8;">—</td></tr>`}
+  </table>`;
+
+  const bloquePresupuesto = `
+  <h2>Presupuesto</h2>
+  <table>
+    <tr><th>Concepto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr>
+    ${precioFilas}
+  </table>
+  <p class="total">Total: ${presupuestoCalc.total.toFixed(2)} €</p>`;
+
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8" />
+<title>${e(titulo)} — ${e(clienteNombre || "")}</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; color: #1e293b; margin: 24px; max-width: 850px; }
+  h1 { font-size: 18px; margin-bottom: 2px; }
+  h2 { font-size: 14px; margin: 20px 0 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+  th, td { padding: 6px 4px; border-bottom: 1px solid #f1f5f9; text-align: left; }
+  th { color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .total { text-align: right; font-size: 16px; font-weight: 700; margin-top: 10px; }
+  .btn-print { background: #2E8B57; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+  @media print { .btn-print { display: none; } }
+</style></head>
+<body>
+  <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <h1>${e(titulo)}</h1>
+  <p class="sub">${e(clienteNombre || "Sin cliente")} ${direccionObra ? "· " + e(direccionObra) : ""} · ${new Date().toLocaleDateString("es-ES")}</p>
+
+  ${esPresupuesto ? bloquePresupuesto : bloqueDespiece}
+  ${!esDespiece && !esPresupuesto ? bloquePresupuesto : ""}
+</body></html>`;
+
+  const ventana = window.open("", "_blank");
+  if (!ventana) {
+    alert("El navegador ha bloqueado la ventana emergente. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    return;
+  }
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
+/* ================= PEDIDOS AGRUPANDO VARIAS OBRAS =================
+   Junta el despiece pendiente (techos + persianas, comparado con Stock) de VARIAS obras
+   a la vez, para poder generar un único pedido a partir de lo que falte en todas ellas. */
+
+// Convierte el despiece guardado de persianas de un proyecto (uno o varios cálculos) a la
+// misma forma {perfil, piezas, metros} que usa el despiece de techos, para poder juntarlos.
+function normalizarDespiecePersianasProyecto(persianasArr) {
+  const grupos = {};
+  const sumar = (nombre, metros, piezas) => {
+    if (!metros && !piezas) return;
+    if (!grupos[nombre]) grupos[nombre] = { perfil: nombre, piezas: 0, metros: 0 };
+    grupos[nombre].metros += metros || 0;
+    grupos[nombre].piezas += piezas || 0;
+  };
+  (persianasArr || []).forEach((entry) => {
+    const d = entry.despiece || entry;
+    (d.perfiles || []).forEach((p) => {
+      sumar(`Cajón ${p.cajon}mm (persiana)`, p.cajonM, 0);
+      sumar(`Lama ${p.cajon}mm (persiana)`, p.lamaM, 0);
+      sumar(`Eje octogonal ${p.cajon}mm (persiana)`, p.ejeM, 0);
+    });
+    const h = d.herraje || {};
+    const nombresHerraje = {
+      felpudo: "Felpudo (persiana)", testeros: "Testeros persiana (juego)",
+      placaContencion: "Placa contención persiana (juego)", embudos: "Embudos persiana (juego)",
+      recogedor: "Recogedor persiana", tirantes: "Tirante persiana", discos: "Disco persiana",
+      capsula: "Cápsula persiana", pasacintas: "Pasacintas persiana", topes: "Tope persiana", motores: "Motor persiana",
+    };
+    Object.entries(nombresHerraje).forEach(([key, nombre]) => sumar(nombre, 0, h[key] || 0));
+  });
+  return Object.values(grupos);
+}
+
+// Despiece pendiente (comparado con Stock) de UNA obra, sumando techos + persianas.
+function calcularDespiecePendienteProyecto(proyecto, materiales) {
+  const combinado = [
+    ...calcularDespieceConjuntoProyecto(proyecto.techos),
+    ...normalizarDespiecePersianasProyecto(proyecto.persianas),
+  ];
+  const grupos = {};
+  combinado.forEach((d) => {
+    if (!grupos[d.perfil]) grupos[d.perfil] = { perfil: d.perfil, piezas: 0, metros: 0 };
+    grupos[d.perfil].piezas += d.piezas;
+    grupos[d.perfil].metros += d.metros;
+  });
+  return compararDespieceConStock(Object.values(grupos).sort((a, b) => b.metros - a.metros), materiales);
+}
+
 // Croquis guía fijo del techo corredero, con el mismo estilo de los croquis a mano
 // (ancho arriba, código de vivienda a la izquierda, largo a la derecha, altura abajo en V).
 function CroquisTechoCorredero() {
@@ -9412,13 +9837,6 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
           {medicion.notas && <p className="text-sm text-slate-500 mt-1">{medicion.notas}</p>}
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => onPasarAPresupuesto(medicion, "")}
-            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-            className="flex items-center gap-1.5 text-sm font-bold px-3.5 py-2 rounded-md hover:opacity-90"
-          >
-            Pasar a presupuesto →
-          </button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           <button onClick={() => { if (window.confirm("¿Borrar esta medición? Esta acción no se puede deshacer.")) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Borrar</button>
         </div>
@@ -11638,7 +12056,7 @@ const semanaISO = (fechaStr) => {
   return `${d.getFullYear()}-S${String(weekNo).padStart(2, "0")}`;
 };
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill }) {
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -11657,10 +12075,11 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
     setPrefillPresupuesto({
       id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
       clienteNombre: prefill.clienteNombre || "", telefono: "",
-      descripcion: prefill.descripcion || "", importe: "", estado: "Pendiente",
-      motivoRechazo: "", fechaRespuesta: "", comentarios: "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
+      descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
+      motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, zona: "",
       techos: prefill.techos || [],
+      persianas: prefill.persianas || [],
     });
     setEditId(null);
     setView("form");
@@ -11984,7 +12403,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       )}
 
       <div className="flex gap-1 mb-5 border-b border-slate-200">
-        {[{ id: "lista", label: "Lista" }, { id: "stats", label: "Estadísticas" }, { id: "presentacion", label: "Presentación" }].map((t) => (
+        {[{ id: "lista", label: "Lista" }, { id: "calculadora", label: "Calculadora" }, { id: "stats", label: "Estadísticas" }, { id: "presentacion", label: "Presentación" }].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {t.label}
@@ -12059,8 +12478,264 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         </>
       )}
 
+      {tab === "calculadora" && (
+        <CalculadoraPresupuestos
+          clientes={clientes}
+          tarifasPersianas={tarifasPersianas}
+          onSaveTarifasPersianas={onSaveTarifasPersianas}
+          onPasarAPresupuesto={onPasarPersianasAPresupuesto}
+        />
+      )}
       {tab === "stats" && <PresupuestosEstadisticas presupuestos={presupuestos} />}
       {tab === "presentacion" && <PresupuestosPresentacion presupuestos={presupuestos} />}
+    </div>
+  );
+}
+
+/* ================= CALCULADORA DE PRESUPUESTOS (dentro de Presupuestos) =================
+   Pantalla con un botón por tipo de producto. Cada producto tiene su propio calculador de
+   presupuesto + despiece a partir de medidas. Para añadir un producto nuevo en el futuro,
+   basta con añadir una entrada aquí y su componente correspondiente. */
+const CALCULADORA_PRODUCTOS = [
+  { id: "persianas", label: "Persianas", icon: Ruler, disponible: true },
+  { id: "ventanas", label: "Ventanas", icon: Layers, disponible: false },
+  { id: "techos", label: "Techos", icon: Wrench, disponible: false, nota: "Ya disponible en Mediciones → sección Techos" },
+];
+
+function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPersianas, onPasarAPresupuesto }) {
+  const [producto, setProducto] = useState("persianas");
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {CALCULADORA_PRODUCTOS.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => p.disponible && setProducto(p.id)}
+            disabled={!p.disponible}
+            className={`flex flex-col items-center justify-center gap-2 py-6 rounded-lg border-2 text-sm font-semibold transition ${
+              !p.disponible ? "opacity-40 cursor-not-allowed border-slate-200 text-slate-400"
+                : producto === p.id ? "border-[#2E8B57] bg-emerald-50 text-[#2E8B57]" : "border-slate-200 text-slate-600 hover:border-slate-300"
+            }`}
+          >
+            <p.icon size={22} />
+            {p.label}
+            {!p.disponible && <span className="text-[10px] font-normal text-slate-400 px-2 text-center">{p.nota || "Próximamente"}</span>}
+          </button>
+        ))}
+      </div>
+
+      {producto === "persianas" && (
+        <CalculadoraPersianas
+          clientes={clientes}
+          tarifas={tarifasPersianas || {}}
+          onSaveTarifas={onSaveTarifasPersianas}
+          onPasarAPresupuesto={onPasarAPresupuesto}
+        />
+      )}
+    </div>
+  );
+}
+
+function filaPersianaVacia() {
+  return { id: uid(), cajon: 155, ud: 1, ancho: "", alto: "", motor: 0, npersianas: 1 };
+}
+
+function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresupuesto }) {
+  const [clienteNombre, setClienteNombre] = useState("");
+  const [direccionObra, setDireccionObra] = useState("");
+  const [filas, setFilas] = useState([filaPersianaVacia()]);
+  const [mostrarTarifas, setMostrarTarifas] = useState(false);
+
+  const actualizarFila = (id, campo, valor) => {
+    setFilas((prev) => prev.map((f) => (f.id === id ? { ...f, [campo]: valor } : f)));
+  };
+  const quitarFila = (id) => setFilas((prev) => (prev.length > 1 ? prev.filter((f) => f.id !== id) : prev));
+  const anadirFila = () => setFilas((prev) => [...prev, filaPersianaVacia()]);
+
+  const filasValidas = useMemo(() => filas.filter((f) => (parseFloat(f.ancho) || 0) > 0 && (parseFloat(f.alto) || 0) > 0), [filas]);
+  const despieceConjunto = useMemo(() => calcularDespiecePersianasConjunto(filasValidas), [filasValidas]);
+  const presupuestoCalc = useMemo(() => calcularPresupuestoPersianas(despieceConjunto, tarifas), [despieceConjunto, tarifas]);
+
+  const cambiarTarifa = (key, valor) => {
+    onSaveTarifas && onSaveTarifas({ ...tarifas, [key]: valor });
+  };
+
+  const handleImprimir = (modo) => {
+    imprimirDespiecePersianas({ clienteNombre, direccionObra, filas: filasValidas, despieceConjunto, presupuestoCalc, modo });
+  };
+
+  const handlePasarAPresupuesto = () => {
+    if (filasValidas.length === 0) { alert("Añade al menos una persiana con ancho y alto."); return; }
+    onPasarAPresupuesto && onPasarAPresupuesto({
+      clienteNombre,
+      direccionObra,
+      descripcion: resumenTextoPersianas(filasValidas, despieceConjunto),
+      importe: presupuestoCalc.total ? presupuestoCalc.total.toFixed(2) : "",
+      persianas: [{ id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto, tarifas, total: presupuestoCalc.total }],
+    });
+  };
+
+  const claveTarifaCajon = (cajon, tipo) => `${tipo}_${cajon}`;
+
+  return (
+    <div className="space-y-5">
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-semibold text-slate-500 mb-1">Cliente</label>
+          <input list="clientes-persianas" value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} placeholder="Nombre del cliente" className={inputCls} />
+          <datalist id="clientes-persianas">{(clientes || []).map((c) => <option key={c.id} value={c.nombre} />)}</datalist>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-500 mb-1">Obra / dirección</label>
+          <input value={direccionObra} onChange={(e) => setDireccionObra(e.target.value)} placeholder="Dirección u obra" className={inputCls} />
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm min-w-[760px]">
+          <thead className="bg-slate-50 text-slate-500 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">Cajón</th>
+              <th className="text-left px-3 py-2">Ancho (mm)</th>
+              <th className="text-left px-3 py-2">Alto (mm)</th>
+              <th className="text-left px-3 py-2">Hojas</th>
+              <th className="text-left px-3 py-2">Ud. iguales</th>
+              <th className="text-left px-3 py-2">Motor</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filas.map((f) => (
+              <tr key={f.id}>
+                <td className="px-3 py-2">
+                  <Select value={f.cajon} onChange={(e) => actualizarFila(f.id, "cajon", parseFloat(e.target.value))} className="min-w-[90px]">
+                    {PERSIANAS_CAJON_OPCIONES.map((c) => <option key={c} value={c}>{c}mm</option>)}
+                  </Select>
+                </td>
+                <td className="px-3 py-2"><input type="number" value={f.ancho} onChange={(e) => actualizarFila(f.id, "ancho", e.target.value)} className={inputCls + " w-24"} /></td>
+                <td className="px-3 py-2"><input type="number" value={f.alto} onChange={(e) => actualizarFila(f.id, "alto", e.target.value)} className={inputCls + " w-24"} /></td>
+                <td className="px-3 py-2"><input type="number" min="1" value={f.npersianas} onChange={(e) => actualizarFila(f.id, "npersianas", e.target.value)} className={inputCls + " w-16"} /></td>
+                <td className="px-3 py-2"><input type="number" min="1" value={f.ud} onChange={(e) => actualizarFila(f.id, "ud", e.target.value)} className={inputCls + " w-16"} /></td>
+                <td className="px-3 py-2">
+                  <Select value={f.motor} onChange={(e) => actualizarFila(f.id, "motor", parseFloat(e.target.value))} className="min-w-[220px]">
+                    {PERSIANAS_MOTOR_OPCIONES.map((m) => <option key={m.valor} value={m.valor}>{m.label}</option>)}
+                  </Select>
+                </td>
+                <td className="px-3 py-2">
+                  <button onClick={() => quitarFila(f.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button onClick={anadirFila} className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] border border-[#2E8B57]/40 px-3.5 py-2 rounded-md hover:bg-emerald-50">
+        <Plus size={15} /> Añadir persiana
+      </button>
+
+      {filasValidas.length > 0 && (
+        <>
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Perfiles a pedir (barras de 6 metros)</h3>
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr><th className="text-left px-4 py-2">Perfil</th><th className="text-left px-4 py-2">Metros necesarios</th><th className="text-left px-4 py-2">Barras de 6m</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {despieceConjunto.perfiles.map((p) => (
+                    <React.Fragment key={p.cajon}>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Cajón {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.cajonM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.cajonBarras}</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Lama {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.lamaM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.lamaBarras}</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Eje octogonal (cajón {p.cajon})</td><td className="px-4 py-2 text-slate-500">{p.ejeM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.ejeBarras}</td></tr>
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Herraje</h3>
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-slate-100">
+                  {[
+                    ["Felpudo", despieceConjunto.herraje.felpudo], ["Testeros (juego)", despieceConjunto.herraje.testeros],
+                    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Embudos (juego)", despieceConjunto.herraje.embudos],
+                    ["Recogedor", despieceConjunto.herraje.recogedor], ["Tirantes", despieceConjunto.herraje.tirantes],
+                    ["Discos", despieceConjunto.herraje.discos], ["Cápsula", despieceConjunto.herraje.capsula],
+                    ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
+                    ["Motores", despieceConjunto.herraje.motores],
+                  ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => (
+                    <tr key={nombre}><td className="px-4 py-2 font-medium text-slate-700">{nombre}</td><td className="px-4 py-2 text-slate-500">{cant}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <button onClick={() => setMostrarTarifas((v) => !v)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 mb-2">
+              <Euro size={14} /> {mostrarTarifas ? "Ocultar precios" : "Ver / editar precios"}
+            </button>
+            {mostrarTarifas && (
+              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr><th className="text-left px-4 py-2">Concepto</th><th className="text-left px-4 py-2">Cantidad</th><th className="text-left px-4 py-2">Precio (€)</th><th className="text-left px-4 py-2">Importe</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {presupuestoCalc.detalle.map((d, i) => {
+                      // Recuperamos la clave de tarifa a partir del nombre mostrado, buscándola
+                      // en las mismas combinaciones que generó calcularPresupuestoPersianas.
+                      let key = null;
+                      despieceConjunto.perfiles.forEach((p) => {
+                        if (d.nombre === `Cajón ${p.cajon}mm`) key = claveTarifaCajon(p.cajon, "cajon");
+                        if (d.nombre === `Lama ${p.cajon}mm`) key = claveTarifaCajon(p.cajon, "lama");
+                        if (d.nombre.startsWith("Eje octogonal")) key = "eje";
+                      });
+                      const herrajeKeys = { Felpudo: "felpudo", "Testeros (juego)": "testeros", "Placa contención (juego)": "placaContencion", "Embudos (juego)": "embudos", Recogedor: "recogedor", Tirantes: "tirantes", Discos: "discos", "Cápsula": "capsula", Pasacintas: "pasacintas", Topes: "topes", Motor: "motor" };
+                      if (herrajeKeys[d.nombre]) key = herrajeKeys[d.nombre];
+                      return (
+                        <tr key={i}>
+                          <td className="px-4 py-2 text-slate-700">{d.nombre}</td>
+                          <td className="px-4 py-2 text-slate-500">{d.cantidad.toFixed(2)} {d.unidad}</td>
+                          <td className="px-4 py-2">
+                            <input
+                              type="number" step="0.01" value={tarifas[key] ?? ""}
+                              onChange={(e) => key && cambiarTarifa(key, e.target.value)}
+                              className={inputCls + " w-24"}
+                              placeholder="0,00"
+                            />
+                          </td>
+                          <td className="px-4 py-2 font-mono-num text-slate-600">{money(d.importe)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <p className="text-xs text-slate-400 px-4 py-2">Los precios se guardan solos y se recuerdan la próxima vez. Cuando tengas tarifas por proveedor, se pueden asociar aquí mismo más adelante.</p>
+              </div>
+            )}
+            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoCalc.total)}</div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button onClick={() => handleImprimir("despiece")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
+              <Printer size={15} /> Imprimir despiece (taller)
+            </button>
+            <button onClick={() => handleImprimir("presupuesto")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
+              <Printer size={15} /> Imprimir presupuesto
+            </button>
+            <button onClick={handlePasarAPresupuesto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2.5 rounded-md hover:opacity-90">
+              Pasar a presupuesto →
+            </button>
+          </div>
+          <p className="text-xs text-slate-400">Desde el presupuesto, el botón "Crear proyecto" ya existente se lleva también este despiece al proyecto.</p>
+        </>
+      )}
     </div>
   );
 }
