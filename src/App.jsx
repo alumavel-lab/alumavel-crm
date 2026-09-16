@@ -80,6 +80,20 @@ const FILA_RESERVA = { arriba: 3 };
 const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+// Sube cualquier archivo (Blob/File) a una carpeta de Firebase Storage vía la API REST
+// (mismo patrón ya usado para las plantillas de firma) y devuelve su URL pública de
+// descarga. A diferencia de guardar el archivo en base64 dentro de Firebase Realtime
+// Database (limitado a ~900KB), esto no tiene ese límite — por eso lo usamos para vídeo.
+async function subirArchivoAStorage(blobOArchivo, carpeta, nombreArchivo, contentType) {
+  const rutaCompleta = `${carpeta}/${Date.now()}-${uid()}-${nombreArchivo}`;
+  const subida = await fetch(
+    `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?uploadType=media&name=${encodeURIComponent(rutaCompleta)}`,
+    { method: "POST", headers: { "Content-Type": contentType || blobOArchivo.type || "application/octet-stream" }, body: blobOArchivo }
+  );
+  if (!subida.ok) throw new Error("Fallo al subir el archivo a Storage");
+  return `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(rutaCompleta)}?alt=media`;
+}
 // Firebase Realtime Database a veces devuelve un objeto en vez de un array (por huecos
 // en los índices, o listas vacías) — esto lo normaliza siempre a un array de verdad.
 const toArray = (val) => {
@@ -200,6 +214,7 @@ const ESTADO_MOVIMIENTO_STYLE = {
   "Cancelado": "bg-slate-100 text-slate-500 ring-slate-200",
 };
 const ESTADO_PEDIDO = ["Pendiente", "Realizado", "Recibido", "Reclamado", "Cancelado"];
+const PEDIDO_CATEGORIAS = ["Cristales", "Compactos", "Aluminio", "PVC", "Herraje", "Otros"];
 const ESTADO_PEDIDO_STYLE = {
   "Pendiente": "bg-slate-100 text-slate-600 ring-slate-200",
   "Realizado": "bg-sky-50 text-sky-700 ring-sky-200",
@@ -1298,11 +1313,30 @@ export default function App() {
     if (data.id) {
       next = incidencias.map((i) => (i.id === data.id ? { ...i, ...data } : i));
       showToast("Incidencia actualizada");
+      saveIncidencias(next);
     } else {
-      next = [{ ...data, id: uid(), numero: nextNumeroIncidencia(), gastos: [] }, ...incidencias];
-      showToast("Incidencia dada de alta");
+      const nuevaIncidencia = { ...data, id: uid(), numero: nextNumeroIncidencia(), gastos: [], archivos: [] };
+      // Si la incidencia es "de Obra", se crea automáticamente un trabajo nuevo en
+      // Instalaciones vinculado al mismo proyecto — como pidió Miguel, que se trate
+      // como un trabajo más para que el instalador lo vea en su lista de siempre.
+      if (data.destino === "Obra") {
+        const proyectoDeIncidencia = proyectos.find((p) => p.id === data.proyectoId);
+        const nuevaInstalacion = {
+          id: uid(), proyectoId: data.proyectoId || null,
+          nombre: proyectoDeIncidencia ? "" : `Incidencia — ${data.especificaciones || ""}`.slice(0, 80),
+          clienteNombre: "", estado: "Pendiente de instalación", presupuestoInstalacion: "",
+          registroHoras: [], gastos: [], materialFurgoneta: [],
+          notas: `Generada automáticamente desde la incidencia #${nuevaIncidencia.numero}: ${data.especificaciones || ""}`,
+          fechaMontaje: "", vehiculoId: data.vehiculoId || null,
+          origenIncidenciaId: nuevaIncidencia.id,
+        };
+        saveInstalaciones([nuevaInstalacion, ...instalaciones]);
+        nuevaIncidencia.instalacionVinculadaId = nuevaInstalacion.id;
+      }
+      next = [nuevaIncidencia, ...incidencias];
+      showToast(data.destino === "Obra" ? "Incidencia dada de alta y trabajo creado en Instalaciones" : "Incidencia dada de alta");
+      saveIncidencias(next);
     }
-    saveIncidencias(next);
     setIncidenciaView("list");
   };
 
@@ -1383,6 +1417,7 @@ export default function App() {
     showToast("Fecha actualizada");
   };
   const irAInstalacion = (instalacionId) => { setModulo("instalaciones"); setInstalacionDetailId(instalacionId); setInstalacionView("detail"); };
+  const irAIncidencia = (incidenciaId) => { setModulo("incidencias"); setIncidenciaDetailId(incidenciaId); setIncidenciaView("detail"); };
 
   const saveArticulos = (next) => { setArticulos(next); persist("articulos", next); };
 
@@ -1473,23 +1508,40 @@ export default function App() {
 
   // Registra un pago de un proyecto. Cada ingreso genera su propia factura por el
   // importe exacto recibido (no por el total del presupuesto), quedando ya pagada.
-  const registrarPagoProyecto = (proyectoId, { importe, fecha, formaPago, tipo }) => {
+  // Registra un pago de un proyecto. Antes esto SIEMPRE creaba una factura,
+  // sin poder evitarlo, y además no dejaba constancia en "Ingresos" — por eso
+  // el "saldo pendiente" (que se calcula sobre Ingresos) no se enteraba de un
+  // pago registrado aquí (ej. una transferencia). Ahora: crearIngreso=true lo
+  // añade también a Ingresos (para que el saldo cuadre), y generarFactura
+  // controla si además se genera la factura — antes era obligatorio, ahora es opcional.
+  const registrarPagoProyecto = (proyectoId, { importe, fecha, formaPago, tipo, crearIngreso = true, generarFactura = true }) => {
     const proyecto = proyectos.find((p) => p.id === proyectoId);
     if (!proyecto) return;
     const importeNum = parseFloat(importe) || 0;
-    const pago = { id: uid(), importe: importeNum, fecha, formaPago };
-    const nueva = {
-      id: uid(),
-      numero: nextNumeroFactura(),
-      clienteId: proyecto.clienteId,
-      tipo: tipo || "Definitiva",
-      fecha,
-      proyectosIds: [proyectoId],
-      total: importeNum,
-      pagos: [pago],
-    };
-    saveFacturas([nueva, ...facturas]);
-    showToast(`Factura ${nueva.numero} generada por ${money(importeNum)}`);
+
+    if (generarFactura) {
+      const pago = { id: uid(), importe: importeNum, fecha, formaPago };
+      const nueva = {
+        id: uid(),
+        numero: nextNumeroFactura(),
+        clienteId: proyecto.clienteId,
+        tipo: tipo || "Definitiva",
+        fecha,
+        proyectosIds: [proyectoId],
+        total: importeNum,
+        pagos: [pago],
+      };
+      saveFacturas([nueva, ...facturas]);
+      showToast(`Factura ${nueva.numero} generada por ${money(importeNum)}`);
+    } else {
+      showToast(`Pago de ${money(importeNum)} registrado (sin factura)`);
+    }
+
+    if (crearIngreso) {
+      const clienteNombre = clientes.find((c) => c.id === proyecto.clienteId)?.nombre || "";
+      const nuevoIngreso = { id: uid(), fecha, clienteNombre, importe: importeNum, concepto: tipo || "Pago", formaPago, proyectoId, notas: "", vinculado: true };
+      saveIngresos([nuevoIngreso, ...ingresos]);
+    }
   };
 
   const savePresupuestos = (next) => { setPresupuestos(next); persist("presupuestos", next); };
@@ -1665,9 +1717,10 @@ export default function App() {
       const anterior = ingresos.find((i) => i.id === data.id);
       let actualizado = { ...anterior, ...data };
       if (!anterior?.proyectoId && data.proyectoId) {
-        registrarPagoProyecto(data.proyectoId, { importe: actualizado.importe, fecha: actualizado.fecha, formaPago: actualizado.formaPago, tipo: "Anticipo" });
+        const generarFactura = window.confirm("¿Quieres generar también una factura por este pago? (Aceptar = sí, Cancelar = solo registrar el cobro)");
+        registrarPagoProyecto(data.proyectoId, { importe: actualizado.importe, fecha: actualizado.fecha, formaPago: actualizado.formaPago, tipo: "Anticipo", crearIngreso: false, generarFactura });
         actualizado.vinculado = true;
-        showToast("Entrada vinculada al proyecto y factura generada");
+        showToast(generarFactura ? "Entrada vinculada al proyecto y factura generada" : "Entrada vinculada al proyecto (sin factura)");
       } else {
         showToast("Entrada de dinero actualizada");
       }
@@ -1675,11 +1728,14 @@ export default function App() {
     } else {
       const nuevo = { proyectoId: null, vinculado: false, ...data, id: uid() };
       if (nuevo.proyectoId) {
-        registrarPagoProyecto(nuevo.proyectoId, { importe: nuevo.importe, fecha: nuevo.fecha, formaPago: nuevo.formaPago, tipo: "Anticipo" });
+        const generarFactura = window.confirm("¿Quieres generar también una factura por este pago? (Aceptar = sí, Cancelar = solo registrar el cobro)");
+        registrarPagoProyecto(nuevo.proyectoId, { importe: nuevo.importe, fecha: nuevo.fecha, formaPago: nuevo.formaPago, tipo: "Anticipo", crearIngreso: false, generarFactura });
         nuevo.vinculado = true;
+        showToast(generarFactura ? "Entrada registrada y factura generada" : "Entrada registrada (sin factura)");
+      } else {
+        showToast("Entrada de dinero registrada");
       }
       next = [nuevo, ...ingresos];
-      showToast(nuevo.proyectoId ? "Entrada registrada y factura generada" : "Entrada de dinero registrada");
     }
     saveIngresos(next);
     setIngresoView("list");
@@ -1691,13 +1747,16 @@ export default function App() {
   };
 
   // Vincula una entrada de dinero (recibida antes de crear el proyecto) a un proyecto
-  // ya existente. Genera además la factura correspondiente, igual que un pago normal.
+  // ya existente. Pregunta si generar también la factura correspondiente — antes se
+  // generaba siempre, sin poder evitarlo (ej. cobros en efectivo, que muchas veces
+  // no llevan factura inmediata).
   const vincularIngresoAProyecto = (ingresoId, proyectoId) => {
     const ingreso = ingresos.find((i) => i.id === ingresoId);
     if (!ingreso || !proyectoId) return;
-    registrarPagoProyecto(proyectoId, { importe: ingreso.importe, fecha: ingreso.fecha, formaPago: ingreso.formaPago, tipo: "Anticipo" });
+    const generarFactura = window.confirm("¿Quieres generar también una factura por este pago? (Aceptar = sí, Cancelar = solo registrar el cobro)");
+    registrarPagoProyecto(proyectoId, { importe: ingreso.importe, fecha: ingreso.fecha, formaPago: ingreso.formaPago, tipo: "Anticipo", crearIngreso: false, generarFactura });
     saveIngresos(ingresos.map((i) => (i.id === ingresoId ? { ...i, proyectoId, vinculado: true } : i)));
-    showToast("Entrada vinculada al proyecto y factura generada");
+    showToast(generarFactura ? "Entrada vinculada al proyecto y factura generada" : "Entrada vinculada al proyecto (sin factura)");
   };
 
   const saveSolicitudesPedido = (next) => { setSolicitudesPedido(next); persist("solicitudes_pedido", next); };
@@ -2384,6 +2443,9 @@ export default function App() {
             onInlineUpdate={updateIncidenciaInline}
             nextNumero={nextNumeroIncidencia}
             onImportarMasivo={importarIncidenciasMasivo}
+            usuarios={usuarios}
+            vehiculos={vehiculos}
+            onVerInstalacion={irAInstalacion}
           />
         )}
         {modulo === "calendario" && (
@@ -2564,6 +2626,8 @@ export default function App() {
             onDeleteCristal={deleteCristal}
             onUbicarCristal={ubicarCristal}
             onLiberarCristal={liberarCristal}
+            incidencias={incidencias}
+            onVerIncidencia={irAIncidencia}
           />
         )}
         {modulo === "instalaciones" && (
@@ -2594,6 +2658,7 @@ export default function App() {
             usuarios={usuarios}
             onCrearTarea={crearTarea}
             currentUser={currentUser}
+            proveedores={proveedores}
           />
         )}
         {modulo === "fichajes" && (
@@ -3080,6 +3145,16 @@ function ClienteForm({ initial, clientes, onCancel, onSave }) {
       alert("Falta el campo Nombre / Empresa. Ese campo es obligatorio para guardar el cliente.");
       return;
     }
+    if (!f.direccion.trim()) {
+      setErrorMsg("Falta la Dirección de entrega (es obligatoria para poder llegar a la obra).");
+      alert("Falta la Dirección de entrega. Es obligatoria para poder llegar a la obra o hacer envíos.");
+      return;
+    }
+    if (!f.movil.trim()) {
+      setErrorMsg("Falta el Móvil (es obligatorio para poder contactar con el cliente).");
+      alert("Falta el Móvil. Es obligatorio para poder avisar de retrasos, entregas, etc.");
+      return;
+    }
     if (!f.limiteCredito || parseFloat(f.limiteCredito) <= 0) {
       setErrorMsg("Falta el Límite de crédito asegurado (es obligatorio y tiene que ser mayor que 0).");
       return;
@@ -3127,13 +3202,13 @@ function ClienteForm({ initial, clientes, onCancel, onSave }) {
           <Field label="DNI / CIF">
             <TextInput value={f.cif} onChange={set("cif")} />
           </Field>
-          <Field label="Móvil">
-            <TextInput value={f.movil} onChange={set("movil")} />
+          <Field label="Móvil" required>
+            <TextInput value={f.movil} onChange={set("movil")} required />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Dirección de entrega">
-            <TextInput value={f.direccion} onChange={set("direccion")} placeholder="Dónde se entrega el material" />
+          <Field label="Dirección de entrega" required>
+            <TextInput value={f.direccion} onChange={set("direccion")} placeholder="Dónde se entrega el material" required />
           </Field>
           <Field label="Dirección fiscal">
             <TextInput value={f.direccionFiscal} onChange={set("direccionFiscal")} placeholder="Para facturación (si es distinta)" />
@@ -3553,7 +3628,7 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
       condicionesCumplidas: false, importePresupuesto: "", estadoTrabajo: "Pendiente de aceptación",
       ubicacion: "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
       provinciaReparto: "", ciudadRepartoManual: "", llevaInstalacion: false,
-      diasPlazoMateriales: "", fechaFabricacion: "", fechaMontaje: "",
+      diasPlazoMateriales: "", fechaFabricacion: "", fechaMontaje: "", fechaFinGarantia: "",
       contratoConstructoraFirmado: false, responsableAprobacionNombre: "", responsableAprobacionEmail: "",
     }
   );
@@ -3565,6 +3640,11 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
     if (!f.nombre.trim() || !f.clienteId) {
       setErrorMsg("Faltan campos obligatorios: Cliente y Nombre / descripción.");
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
+      return;
+    }
+    if (!f.ubicacion.trim()) {
+      setErrorMsg("Falta la Ubicación / obra (es obligatoria para poder llegar a la obra).");
+      alert("Falta la Ubicación / obra. Es obligatoria para poder llegar al sitio.");
       return;
     }
     setErrorMsg("");
@@ -3617,8 +3697,8 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
               {TIPO_VENTA.map((t) => <option key={t}>{t}</option>)}
             </Select>
           </Field>
-          <Field label="Ubicación / obra">
-            <TextInput value={f.ubicacion} onChange={set("ubicacion")} />
+          <Field label="Ubicación / obra" required>
+            <TextInput value={f.ubicacion} onChange={set("ubicacion")} required />
           </Field>
           <Field label="Importe presupuesto (€)">
             <TextInput type="number" step="0.01" min="0" value={f.importePresupuesto} onChange={set("importePresupuesto")} />
@@ -3703,6 +3783,13 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
           </Field>
         </div>
 
+        <div className="grid grid-cols-3 gap-4">
+          <Field label="Fecha fin de garantía">
+            <TextInput type="date" value={f.fechaFinGarantia} onChange={set("fechaFinGarantia")} />
+            <p className="text-xs text-slate-400 mt-1">Se usa en Incidencias para avisar si una incidencia llega dentro o fuera de garantía.</p>
+          </Field>
+        </div>
+
         <div className="border-t border-slate-200 pt-5">
           <label className="flex items-center gap-2 text-sm text-slate-700 font-medium mb-3">
             <input type="checkbox" checked={f.contratoConstructoraFirmado} onChange={set("contratoConstructoraFirmado")} className="w-4 h-4" />
@@ -3743,6 +3830,12 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     ? (proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto)
     : null;
   const checklist = normalizarChecklist(proyecto.checklistMateriales);
+  const datosImportantesFaltan = [
+    !proyecto.ubicacion && "Ubicación de la obra",
+    !cliente?.movil && "Móvil del cliente",
+    !proyecto.fechaEntregaPrevista && "Fecha de entrega prevista",
+    proyecto.llevaInstalacion && !proyecto.fechaMontaje && "Fecha de montaje",
+  ].filter(Boolean);
   const despieceAgrupado = calcularDespieceConjuntoProyecto(proyecto.techos);
   const despieceConStock = compararDespieceConStock(despieceAgrupado, materiales);
   const generarPedidoDeFaltantes = () => {
@@ -3771,7 +3864,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
   const [gForm, setGForm] = useState({ proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
   const [hForm, setHForm] = useState({ tarea: "", tiempo: "", empleado: "", costeHora: "" });
-  const [pForm, setPForm] = useState({ importe: "", fecha: new Date().toISOString().slice(0, 10), formaPago: "Transferencia", tipo: "Definitiva" });
+  const [pForm, setPForm] = useState({ importe: "", fecha: new Date().toISOString().slice(0, 10), formaPago: "Transferencia", tipo: "Definitiva", generarFactura: true });
 
   const totalFacturado = facturas.reduce((s, f) => s + (parseFloat(f.total) || 0), 0);
   const saldoPresupuesto = (proyecto.importePresupuesto || 0) - totalFacturado;
@@ -3780,8 +3873,8 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     e.preventDefault();
     const importe = parseFloat(pForm.importe) || 0;
     if (importe <= 0) return;
-    onRegistrarPago({ importe, fecha: pForm.fecha, formaPago: pForm.formaPago, tipo: pForm.tipo });
-    setPForm({ importe: "", fecha: new Date().toISOString().slice(0, 10), formaPago: "Transferencia", tipo: "Definitiva" });
+    onRegistrarPago({ importe, fecha: pForm.fecha, formaPago: pForm.formaPago, tipo: pForm.tipo, generarFactura: pForm.generarFactura });
+    setPForm({ importe: "", fecha: new Date().toISOString().slice(0, 10), formaPago: "Transferencia", tipo: "Definitiva", generarFactura: true });
   };
 
 
@@ -3929,6 +4022,12 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         ))}
       </div>
 
+      {datosImportantesFaltan.length > 0 && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-4">
+          ⚠ Faltan datos importantes en este proyecto: {datosImportantesFaltan.join(", ")}.
+        </div>
+      )}
+
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
@@ -3937,6 +4036,9 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
             <InfoRow icon={<FileText size={14} />} label="Fecha solicitud" value={fmtDate(proyecto.fechaSolicitud)} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista" value={fmtDate(proyecto.fechaEntregaPrevista)} />
             <InfoRow icon={<CheckCircle2 size={14} />} label="Fecha entregado" value={fmtDate(proyecto.fechaEntregado)} />
+            {proyecto.fechaFinGarantia && (
+              <InfoRow icon={<AlertOctagon size={14} />} label="Fin de garantía" value={`${fmtDate(proyecto.fechaFinGarantia)}${new Date(proyecto.fechaFinGarantia) < new Date() ? " (vencida)" : ""}`} />
+            )}
             <InfoRow icon={<MapPin size={14} />} label="Ciudad de reparto" value={ciudadReparto || "—"} />
           </div>
           {proyecto.especificaciones && (
@@ -4228,13 +4330,18 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               </Select>
             </Field>
             <Field label="Tipo de factura">
-              <Select value={pForm.tipo} onChange={(e) => setPForm({ ...pForm, tipo: e.target.value })}>
+              <Select value={pForm.tipo} onChange={(e) => setPForm({ ...pForm, tipo: e.target.value })} disabled={!pForm.generarFactura}>
                 {TIPO_FACTURA.map((t) => <option key={t}>{t}</option>)}
               </Select>
             </Field>
             <button type="submit" className="flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-3 py-2 rounded-md h-[38px]">
-              <Plus size={15} /> Generar factura
+              <Plus size={15} /> {pForm.generarFactura ? "Registrar y facturar" : "Registrar pago"}
             </button>
+            <label className="col-span-5 flex items-center gap-2 text-sm text-slate-600 -mt-1">
+              <input type="checkbox" checked={pForm.generarFactura} onChange={(e) => setPForm({ ...pForm, generarFactura: e.target.checked })} className="w-4 h-4" />
+              Generar también una factura por este pago
+              <span className="text-xs text-slate-400">(desmárcalo para cobros en efectivo u otros que no lleven factura inmediata)</span>
+            </label>
           </form>
         </div>
       )}
@@ -5473,6 +5580,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
             <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
               <th className="px-4 py-3 font-semibold">Nº Pedido</th>
               <th className="px-4 py-3 font-semibold">Proveedor</th>
+              <th className="px-4 py-3 font-semibold">Categoría</th>
               <th className="px-4 py-3 font-semibold">Materiales</th>
               <th className="px-4 py-3 font-semibold">Fecha compra</th>
               <th className="px-4 py-3 font-semibold">Entrega prevista</th>
@@ -5482,7 +5590,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">No hay pedidos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400 text-sm">No hay pedidos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const vencido = p.estado !== "Recibido" && p.estado !== "Cancelado" && p.fechaEntregaPrevista && new Date(p.fechaEntregaPrevista) < new Date();
@@ -5490,6 +5598,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
                   <td className="px-4 py-3 font-medium text-slate-800">{proveedorNombre(p.proveedorId)}</td>
+                  <td className="px-4 py-3">{p.categoria ? <Badge className="bg-slate-100 text-slate-600 ring-slate-200">{p.categoria}</Badge> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
                   <td className={`px-4 py-3 ${vencido ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
@@ -5607,7 +5716,7 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
     if (prefill) {
       return {
         id: null, proveedorId: prefill.proveedorId || proveedores[0]?.id || "", proyectoId: prefill.proyectoId || "",
-        fechaCompra: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", estado: "Pendiente",
+        fechaCompra: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", estado: "Pendiente", categoria: "",
         comentarios: prefill.comentarios || "Generado automáticamente desde Stock (materiales por debajo del mínimo).",
         lineas: prefill.lineas && prefill.lineas.length ? prefill.lineas : [blankLinea()],
         avisos: avisosPorDefecto(),
@@ -5615,7 +5724,7 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
     }
     return {
       id: null, proveedorId: proveedores[0]?.id || "", proyectoId: "", fechaCompra: new Date().toISOString().slice(0, 10),
-      fechaEntregaPrevista: "", estado: "Pendiente", comentarios: "",
+      fechaEntregaPrevista: "", estado: "Pendiente", categoria: "", comentarios: "",
       lineas: [blankLinea()],
       avisos: avisosPorDefecto(),
     };
@@ -5756,6 +5865,14 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
           <Field label="Estado">
             <Select value={f.estado} onChange={set("estado")}>
               {ESTADO_PEDIDO.map((t) => <option key={t}>{t}</option>)}
+            </Select>
+          </Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Categoría">
+            <Select value={f.categoria || ""} onChange={set("categoria")}>
+              <option value="">Sin categoría</option>
+              {PEDIDO_CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
             </Select>
           </Field>
         </div>
@@ -6004,14 +6121,17 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
     }
   };
 
+  const proyectoDelPedido = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
+  const referenciaObra = proyectoDelPedido ? `Obra: #${proyectoDelPedido.numero} — ${proyectoDelPedido.nombre}` : "";
+
   const enlaceEmailProveedor = () => {
     if (!proveedor?.email) return null;
     const lineasTexto = pedido.lineas.map((l) => {
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const asunto = `Pedido ${pedido.numero} — ALUMAVEL`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+    const asunto = `Pedido ${pedido.numero}${proyectoDelPedido ? ` — Obra #${proyectoDelPedido.numero}` : ""} — ALUMAVEL`;
+    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${referenciaObra ? ` (${referenciaObra})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -6025,14 +6145,14 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
         const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
         return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
       }).join("\n");
-      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${referenciaObra ? ` (${referenciaObra})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           destinatario: proveedor.email,
-          asunto: `Pedido ${pedido.numero} — ALUMAVEL`,
+          asunto: `Pedido ${pedido.numero}${proyectoDelPedido ? ` — Obra #${proyectoDelPedido.numero}` : ""} — ALUMAVEL`,
           cuerpo,
           replyTo: currentUser?.email || "",
         }),
@@ -7190,13 +7310,16 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal }) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, incidencias, onVerIncidencia }) {
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
   const materialInfo = (id) => materiales.find((m) => m.id === id);
 
   const proyectosEnFabricacion = proyectos.filter((p) => ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
+
+  const incidenciasFabrica = (incidencias || []).filter((i) => i.destino === "Fábrica");
+  const incidenciasFabricaAbiertas = incidenciasFabrica.filter((i) => i.estadoIncidencia !== "Solucionado");
 
   const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && (p.lineas || []).some((l) => !l.confirmadoFabrica));
 
@@ -7303,7 +7426,12 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Cristales
           {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
         </button>
-        {tab !== "cristales" && (
+        <button onClick={() => setTab("incidencias")}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "incidencias" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Incidencias
+          {incidenciasFabricaAbiertas.length > 0 && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{incidenciasFabricaAbiertas.length}</Badge>}
+        </button>
+        {tab !== "cristales" && tab !== "incidencias" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
@@ -7441,6 +7569,39 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           onLiberar={onLiberarCristal}
         />
       )}
+
+      {tab === "incidencias" && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-3 font-semibold">Nº</th>
+                <th className="px-4 py-3 font-semibold">Proyecto</th>
+                <th className="px-4 py-3 font-semibold">Especificaciones</th>
+                <th className="px-4 py-3 font-semibold">Fecha</th>
+                <th className="px-4 py-3 font-semibold">Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {incidenciasFabrica.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">No hay incidencias asignadas a fábrica.</td></tr>
+              )}
+              {incidenciasFabrica.map((i) => {
+                const p = proyectos.find((pr) => pr.id === i.proyectoId);
+                return (
+                  <tr key={i.id} onClick={() => onVerIncidencia && onVerIncidencia(i.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
+                    <td className="px-4 py-3 font-mono-num text-slate-500">#{i.numero}</td>
+                    <td className="px-4 py-3 font-medium text-slate-800">{p ? `#${p.numero} — ${p.nombre}` : "—"}</td>
+                    <td className="px-4 py-3 text-slate-600 max-w-xs truncate">{i.especificaciones}</td>
+                    <td className="px-4 py-3 text-slate-500">{fmtDate(i.fecha)}</td>
+                    <td className="px-4 py-3"><Badge className={ESTADO_INCIDENCIA_STYLE[i.estadoIncidencia]}>{i.estadoIncidencia}</Badge></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -7454,7 +7615,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser }) {
+function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser, proveedores }) {
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -7525,6 +7686,7 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         materiales={materiales}
         usuarios={usuarios}
         onCrearTarea={onCrearTarea}
+        proveedores={proveedores}
       />
     );
   }
@@ -7653,6 +7815,8 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
   const [nombre, setNombre] = useState("");
   const [tipo, setTipo] = useState("Furgoneta pequeña");
   const [editandoId, setEditandoId] = useState(null);
+  const [vehiculoKmId, setVehiculoKmId] = useState(null);
+  const [kmForm, setKmForm] = useState({ fecha: new Date().toISOString().slice(0, 10), km: "", conductor: "", nota: "" });
 
   const nombreInstalacion = (inst) => {
     const p = inst.proyectoId ? proyectos.find((pr) => pr.id === inst.proyectoId) : null;
@@ -7671,6 +7835,25 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
   };
 
   const editar = (v) => { setEditandoId(v.id); setNombre(v.nombre); setTipo(v.tipo); };
+
+  const vehiculoKm = vehiculos.find((v) => v.id === vehiculoKmId);
+  const abrirKm = (v) => {
+    setVehiculoKmId(v.id);
+    setKmForm({ fecha: new Date().toISOString().slice(0, 10), km: "", conductor: "", nota: "" });
+  };
+  const submitKm = (e) => {
+    e.preventDefault();
+    if (!vehiculoKm) return;
+    if (!(parseFloat(kmForm.km) > 0)) return;
+    const nuevoRegistro = { id: uid(), fecha: kmForm.fecha, km: parseFloat(kmForm.km) || 0, conductor: kmForm.conductor.trim(), nota: kmForm.nota.trim() };
+    onUpsert({ ...vehiculoKm, registroKm: [...(vehiculoKm.registroKm || []), nuevoRegistro] });
+    setKmForm({ fecha: new Date().toISOString().slice(0, 10), km: "", conductor: "", nota: "" });
+  };
+  const borrarKm = (registroId) => {
+    if (!vehiculoKm) return;
+    onUpsert({ ...vehiculoKm, registroKm: (vehiculoKm.registroKm || []).filter((r) => r.id !== registroId) });
+  };
+  const totalKmVehiculo = (v) => (v.registroKm || []).reduce((s, r) => s + (parseFloat(r.km) || 0), 0);
 
   return (
     <div className="p-8 max-w-3xl">
@@ -7700,6 +7883,7 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
             <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
               <th className="px-4 py-2.5 font-semibold">Vehículo</th>
               <th className="px-4 py-2.5 font-semibold">Tipo</th>
+              <th className="px-4 py-2.5 font-semibold">Km registrados</th>
               <th className="px-4 py-2.5 font-semibold"></th>
             </tr>
           </thead>
@@ -7708,7 +7892,9 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
               <tr key={v.id} className="border-b border-slate-100 last:border-0">
                 <td className="px-4 py-2.5 font-medium text-slate-800">{v.nombre}</td>
                 <td className="px-4 py-2.5 text-slate-500">{v.tipo}</td>
+                <td className="px-4 py-2.5 text-slate-600 font-mono-num">{totalKmVehiculo(v).toLocaleString("es-ES")} km</td>
                 <td className="px-4 py-2.5 flex gap-2 justify-end">
+                  <button onClick={() => abrirKm(v)} className={`text-xs font-semibold px-2.5 py-1 rounded-md ring-1 ${vehiculoKmId === v.id ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-slate-50 text-slate-600 ring-slate-200 hover:bg-slate-100"}`}>Kilometraje</button>
                   <button onClick={() => editar(v)} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
                   <button onClick={() => onDelete(v.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
                 </td>
@@ -7717,6 +7903,31 @@ function VehiculosModulo({ vehiculos, instalaciones, proyectos, onUpsert, onDele
           </tbody>
         </table>
       </div>
+
+      {vehiculoKm && (
+        <div className="mb-8">
+          <h2 className="font-display font-bold text-slate-800 mb-3">Kilometraje — {vehiculoKm.nombre} ({totalKmVehiculo(vehiculoKm).toLocaleString("es-ES")} km en total)</h2>
+          <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3 space-y-2">
+            {(vehiculoKm.registroKm || []).length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-2">Todavía no hay kilometraje registrado para este vehículo.</p>
+            ) : (
+              [...(vehiculoKm.registroKm || [])].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map((r) => (
+                <div key={r.id} className="flex items-center justify-between border-b border-slate-100 last:border-0 pb-2 last:pb-0 text-sm">
+                  <span>{fmtDate(r.fecha)} · <span className="font-medium text-slate-700">{r.km.toLocaleString("es-ES")} km</span>{r.conductor ? ` · ${r.conductor}` : ""}{r.nota ? ` · ${r.nota}` : ""}</span>
+                  <button onClick={() => borrarKm(r.id)} className="text-slate-300 hover:text-rose-500"><X size={14} /></button>
+                </div>
+              ))
+            )}
+          </div>
+          <form onSubmit={submitKm} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-5 gap-2 items-end">
+            <Field label="Fecha"><TextInput type="date" value={kmForm.fecha} onChange={(e) => setKmForm({ ...kmForm, fecha: e.target.value })} /></Field>
+            <Field label="Km recorridos"><TextInput type="number" step="1" value={kmForm.km} onChange={(e) => setKmForm({ ...kmForm, km: e.target.value })} placeholder="Ej. 120" /></Field>
+            <Field label="Conductor"><TextInput value={kmForm.conductor} onChange={(e) => setKmForm({ ...kmForm, conductor: e.target.value })} placeholder="Nombre" /></Field>
+            <Field label="Nota"><TextInput value={kmForm.nota} onChange={(e) => setKmForm({ ...kmForm, nota: e.target.value })} placeholder="Ej. obra en Mallorca" /></Field>
+            <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center justify-center gap-1 text-sm font-semibold px-3 py-2 rounded-md h-[38px]"><Plus size={15} /> Añadir</button>
+          </form>
+        </div>
+      )}
 
       <h2 className="font-display font-bold text-slate-800 mb-3">Próximas asignaciones (para ver de un vistazo si algo se solapa)</h2>
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -7873,7 +8084,117 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
+// Panel de firma táctil: el cliente firma con el dedo (o el ratón) directamente en la
+// pantalla del móvil al recibir el trabajo. Se guarda como imagen en Firebase Storage.
+// Una vez firmado, muestra la firma guardada y enlaces para compartir el justificante
+// por WhatsApp o email (con la URL de la firma, ya que es pública una vez subida).
+function FirmaTactilPanel({ firmaUrl, firmaFecha, onGuardar, etiqueta, telefono, email, mensajeCompartir }) {
+  const canvasRef = useRef(null);
+  const dibujandoRef = useRef(false);
+  const [vacio, setVacio] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+
+  const getPos = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: (clientX - rect.left) * (canvas.width / rect.width), y: (clientY - rect.top) * (canvas.height / rect.height) };
+  };
+  const empezar = (e) => {
+    e.preventDefault();
+    dibujandoRef.current = true;
+    setVacio(false);
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+  const mover = (e) => {
+    if (!dibujandoRef.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = getPos(e);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.stroke();
+  };
+  const soltar = () => { dibujandoRef.current = false; };
+  const limpiar = () => {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    setVacio(true);
+  };
+  const guardar = async () => {
+    setGuardando(true);
+    setError("");
+    try {
+      const canvas = canvasRef.current;
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      await onGuardar(blob);
+      limpiar();
+    } catch (err) {
+      setError("No se pudo guardar la firma. Prueba de nuevo.");
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const telLimpio = (telefono || "").replace(/[^\d+]/g, "");
+  const telConPrefijo = telLimpio ? (telLimpio.startsWith("+") ? telLimpio.replace("+", "") : (telLimpio.startsWith("34") ? telLimpio : `34${telLimpio}`)) : "";
+  const textoCompartir = `${mensajeCompartir || "Le adjuntamos el justificante de entrega firmado."}\n\n${firmaUrl || ""}`;
+  const enlaceWhatsapp = telConPrefijo && firmaUrl ? `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(textoCompartir)}` : null;
+  const enlaceEmail = email && firmaUrl ? `mailto:${email}?subject=${encodeURIComponent("Justificante de entrega — ALUMAVEL")}&body=${encodeURIComponent(textoCompartir)}` : null;
+
+  if (firmaUrl) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <p className="text-xs font-bold text-slate-600 uppercase mb-2">Firma del cliente</p>
+        <img src={firmaUrl} alt="Firma del cliente" className="border border-slate-200 rounded-md bg-white max-w-xs" />
+        <p className="text-xs text-slate-400 mt-2">Firmado el {fmtDate(firmaFecha)}</p>
+        <div className="flex flex-wrap gap-2 mt-3">
+          {enlaceWhatsapp && (
+            <a href={enlaceWhatsapp} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">
+              <MessageCircle size={13} /> Enviar por WhatsApp
+            </a>
+          )}
+          {enlaceEmail && (
+            <a href={enlaceEmail} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md">
+              <Mail size={13} /> Enviar por email
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <p className="text-xs font-bold text-slate-600 uppercase mb-2">{etiqueta || "Firma del cliente al entregar el trabajo"}</p>
+      <p className="text-xs text-slate-400 mb-2">Pásale el móvil al cliente para que firme aquí con el dedo.</p>
+      <canvas
+        ref={canvasRef}
+        width={500} height={180}
+        className="w-full border border-slate-300 rounded-md bg-white"
+        style={{ maxWidth: "100%", touchAction: "none" }}
+        onMouseDown={empezar} onMouseMove={mover} onMouseUp={soltar} onMouseLeave={soltar}
+        onTouchStart={empezar} onTouchMove={mover} onTouchEnd={soltar}
+      />
+      {error && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {error}</p>}
+      <div className="flex gap-2 mt-2">
+        <button type="button" onClick={limpiar} className="text-xs font-semibold text-slate-500 border border-slate-300 px-3 py-1.5 rounded-md hover:bg-slate-50">Borrar</button>
+        <button type="button" onClick={guardar} disabled={vacio || guardando} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md disabled:opacity-50">
+          {guardando ? "Guardando..." : "Guardar firma"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, proveedores }) {
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -7938,10 +8259,29 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
     alert("Aviso enviado a Tareas.");
   };
 
+  const guardarFirmaClienteInstalacion = async (blob) => {
+    const url = await subirArchivoAStorage(blob, `firmas/instalaciones/${instalacion.id}`, "firma.png", "image/png");
+    onUpdate({ firmaClienteUrl: url, firmaClienteFecha: new Date().toISOString() });
+  };
+
   const [presupuestoInput, setPresupuestoInput] = useState(instalacion.presupuestoInstalacion || "");
   const [costeHoraInput, setCosteHoraInput] = useState(instalacion.costeHora || "");
+
+  // Estos campos se editan como texto local antes de guardar, así que solo
+  // cogían el valor guardado la PRIMERA vez que se montaba el componente. Al
+  // navegar a otra instalación (o volver a la misma) sin recargar la página
+  // del todo, se quedaban con el valor antiguo o en blanco en vez de coger el
+  // que había realmente guardado. Este efecto los vuelve a sincronizar cada
+  // vez que cambia la instalación que se está viendo.
+  useEffect(() => {
+    setFechaMontajeInput(instalacion.fechaMontaje || "");
+    setFechaFabricacionInput(instalacion.fechaFabricacionEstimada || "");
+    setPresupuestoInput(instalacion.presupuestoInstalacion || "");
+    setCosteHoraInput(instalacion.costeHora || "");
+  }, [instalacion.id]);
+
   const [hForm, setHForm] = useState({ fecha: new Date().toISOString().slice(0, 10), instalador: "", horas: "" });
-  const [gForm, setGForm] = useState({ fecha: new Date().toISOString().slice(0, 10), concepto: "Dietas", importe: "" });
+  const [gForm, setGForm] = useState({ fecha: new Date().toISOString().slice(0, 10), concepto: "Dietas", importe: "", proveedorId: "" });
 
   const totalHoras = (instalacion.registroHoras || []).reduce((s, r) => s + (parseFloat(r.horas) || 0), 0);
   const costeManoObra = totalHoras * (parseFloat(instalacion.costeHora) || 0);
@@ -7970,7 +8310,7 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
     if (!(parseFloat(gForm.importe) > 0)) { setErrorGasto("Pon un importe mayor que 0."); return; }
     setErrorGasto("");
     onAddGasto({ ...gForm, importe: parseFloat(gForm.importe) || 0 });
-    setGForm({ fecha: new Date().toISOString().slice(0, 10), concepto: "Dietas", importe: "" });
+    setGForm({ fecha: new Date().toISOString().slice(0, 10), concepto: "Dietas", importe: "", proveedorId: "" });
   };
 
   return (
@@ -7985,13 +8325,27 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
         <p className="text-sm text-slate-500">{cliente?.nombre || instalacion.clienteNombre || "—"}</p>
       </div>
 
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 items-center flex-wrap">
         {ESTADO_INSTALACION.map((e) => (
           <button key={e} onClick={() => onUpdate({ estado: e })}
             className={`px-3 py-2 rounded-md text-sm font-semibold transition ${instalacion.estado === e ? ESTADO_INSTALACION_STYLE[e] + " ring-1" : "bg-white border border-slate-300 text-slate-500 hover:bg-slate-50"}`}>
             {e}
           </button>
         ))}
+        <button onClick={() => imprimirAlbaranInstalacion(instalacion, proyecto, cliente)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 ml-auto">
+          <Printer size={15} /> Imprimir albarán
+        </button>
+      </div>
+
+      <div className="mb-6">
+        <FirmaTactilPanel
+          firmaUrl={instalacion.firmaClienteUrl}
+          firmaFecha={instalacion.firmaClienteFecha}
+          onGuardar={guardarFirmaClienteInstalacion}
+          telefono={cliente?.movil}
+          email={cliente?.email}
+          mensajeCompartir={`Hola${cliente?.nombre ? ` ${cliente.nombre}` : ""}, le adjuntamos el justificante firmado de la entrega del trabajo${proyecto ? ` de la obra #${proyecto.numero} — ${proyecto.nombre}` : ""}. Un saludo, ALUMAVEL.`}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-4 mb-6">
@@ -8179,7 +8533,12 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
       </div>
       <form onSubmit={submitHora} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-4 gap-2 items-end mb-2">
         <Field label="Fecha"><TextInput type="date" value={hForm.fecha} onChange={(e) => setHForm({ ...hForm, fecha: e.target.value })} /></Field>
-        <Field label="Instalador"><TextInput value={hForm.instalador} onChange={(e) => setHForm({ ...hForm, instalador: e.target.value })} placeholder="Nombre" /></Field>
+        <Field label="Instalador">
+          <TextInput value={hForm.instalador} onChange={(e) => setHForm({ ...hForm, instalador: e.target.value })} placeholder="Nombre" list="instaladores-datalist" />
+          <datalist id="instaladores-datalist">
+            {(usuarios || []).map((u) => <option key={u.id} value={`${u.nombre} ${u.apellidos || ""}`.trim()} />)}
+          </datalist>
+        </Field>
         <Field label="Horas"><TextInput type="number" step="0.5" value={hForm.horas} onChange={(e) => setHForm({ ...hForm, horas: e.target.value })} /></Field>
         <button type="submit" onClick={submitHora} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center justify-center gap-1 text-sm font-semibold px-3 py-2 rounded-md h-[38px]"><Plus size={15} /> Añadir</button>
       </form>
@@ -8193,14 +8552,20 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
         ) : (
           (instalacion.gastos || []).map((g) => (
             <div key={g.id} className="flex items-center justify-between border-b border-slate-100 last:border-0 pb-2 last:pb-0 text-sm">
-              <span>{fmtDate(g.fecha)} · <span className="font-medium text-slate-700">{g.concepto}</span> · {money(g.importe)}</span>
+              <span>{fmtDate(g.fecha)} · <span className="font-medium text-slate-700">{g.concepto}</span>{g.proveedorId ? ` · ${(proveedores || []).find((p) => p.id === g.proveedorId)?.nombre || ""}` : ""} · {money(g.importe)}</span>
               <button onClick={() => onDeleteGasto(g.id)} className="text-slate-300 hover:text-rose-500"><X size={14} /></button>
             </div>
           ))
         )}
       </div>
-      <form onSubmit={submitGasto} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-4 gap-2 items-end">
+      <form onSubmit={submitGasto} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-5 gap-2 items-end">
         <Field label="Fecha"><TextInput type="date" value={gForm.fecha} onChange={(e) => setGForm({ ...gForm, fecha: e.target.value })} /></Field>
+        <Field label="Proveedor">
+          <Select value={gForm.proveedorId} onChange={(e) => setGForm({ ...gForm, proveedorId: e.target.value })}>
+            <option value="">Sin proveedor / vario</option>
+            {(proveedores || []).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </Select>
+        </Field>
         <Field label="Concepto"><TextInput value={gForm.concepto} onChange={(e) => setGForm({ ...gForm, concepto: e.target.value })} /></Field>
         <Field label="Importe (€)"><TextInput type="number" step="0.01" value={gForm.importe} onChange={(e) => setGForm({ ...gForm, importe: e.target.value })} /></Field>
         <button type="submit" onClick={submitGasto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center justify-center gap-1 text-sm font-semibold px-3 py-2 rounded-md h-[38px]"><Plus size={15} /> Añadir</button>
@@ -9385,6 +9750,29 @@ function calcularDespiecePersianasConjunto(filas, ajustes) {
 // Calcula el importe del presupuesto a partir del despiece agrupado y las tarifas
 // (precios editables por Miguel). Los perfiles se cobran por los metros exactos
 // necesarios (no por barra completa); el herraje, por unidad.
+// Precio de venta al cliente por m² de persiana, con un mínimo de facturación de
+// 1,5 m² por persiana (si mide menos, se cobra igualmente como si midiera 1,5 m²).
+// Esto es un precio de venta APARTE del desglose de materiales (que es el coste,
+// no lo que se le cobra al cliente) — se suma como línea extra al total.
+const PERSIANAS_M2_MINIMO_FACTURACION = 1.5;
+
+function calcularVentaM2Persianas(filas, precioM2) {
+  const precio = parseFloat(precioM2) || 0;
+  const detalle = (filas || []).map((f) => {
+    const ud = parseFloat(f.ud) || 0;
+    const ancho = parseFloat(f.ancho) || 0;
+    const alto = parseFloat(f.alto) || 0;
+    const m2Real = (ancho * alto) / 1000000;
+    const m2Facturable = Math.max(m2Real, PERSIANAS_M2_MINIMO_FACTURACION);
+    const m2Total = m2Facturable * ud;
+    const importe = m2Total * precio;
+    return { fila: f, ud, ancho, alto, m2Real, m2Facturable, m2Total, importe };
+  });
+  const m2Total = detalle.reduce((s, d) => s + d.m2Total, 0);
+  const total = detalle.reduce((s, d) => s + d.importe, 0);
+  return { detalle, m2Total, total, precio };
+}
+
 function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
   const t = tarifas || {};
   const detalle = [];
@@ -9444,6 +9832,93 @@ function resumenTextoPersianas(filas, despieceConjunto) {
 // Imprime una pegatina de 100x150mm (tamaño etiqueta de envío) para pegar en la
 // persiana terminada o en su despiece dentro de fábrica: proyecto, cliente,
 // medida, cajón y lado del recogedor — lo justo para identificarla sin dudas.
+// Albarán de instalación: documento para dejarle al cliente (o que firme) cuando se
+// termina un montaje — qué se ha instalado, horas/fechas de trabajo, y una firma.
+// No es una factura ni un presupuesto, es solo la constancia de que el trabajo se hizo.
+function imprimirAlbaranInstalacion(instalacion, proyecto, cliente) {
+  const e = escaparHtmlInforme;
+  const materialesEntregados = (instalacion.materialFurgoneta || []).filter((m) => m.estado === "En la obra");
+  const fechasTrabajadas = [...new Set((instalacion.registroHoras || []).map((r) => r.fecha).filter(Boolean))].sort();
+  const totalHoras = (instalacion.registroHoras || []).reduce((s, r) => s + (parseFloat(r.horas) || 0), 0);
+  const numeroAlbaran = `${proyecto?.numero || "—"}-${(instalacion.id || "").slice(-4).toUpperCase()}`;
+
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8" />
+<title>Albarán instalación — ${e(numeroAlbaran)}</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; color: #0f172a; margin: 0; padding: 14mm; }
+  .btn-print { background: #2E8B57; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+  @media print { .btn-print { display: none; } body { padding: 10mm; } }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 18px; }
+  .cabecera { display: flex; justify-content: space-between; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 16px; }
+  .campo { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 8px; }
+  .valor { font-size: 14px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #e2e8f0; }
+  th { color: #64748b; font-size: 11px; text-transform: uppercase; }
+  .firma { margin-top: 50px; display: flex; justify-content: space-between; gap: 30px; }
+  .firma-caja { flex: 1; border-top: 1px solid #0f172a; padding-top: 6px; font-size: 12px; color: #64748b; text-align: center; }
+  .nota { font-size: 11px; color: #94a3b8; margin-top: 24px; }
+</style></head>
+<body>
+  <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <div class="cabecera">
+    <div>
+      <h1>Albarán de instalación</h1>
+      <div class="sub">Nº ${e(numeroAlbaran)} · ${e(fmtDate(new Date().toISOString()))}</div>
+    </div>
+    <div style="text-align:right">
+      <div class="valor">ALUMAVEL</div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:40px;">
+    <div style="flex:1">
+      <div class="campo">Obra</div>
+      <div class="valor">#${e(proyecto?.numero || "—")} — ${e(proyecto?.nombre || "")}</div>
+      <div class="campo">Dirección</div>
+      <div class="valor">${e(proyecto?.direccion || "—")}</div>
+    </div>
+    <div style="flex:1">
+      <div class="campo">Cliente</div>
+      <div class="valor">${e(cliente?.nombre || "—")}</div>
+      <div class="campo">Estado instalación</div>
+      <div class="valor">${e(instalacion.estado || "—")}</div>
+    </div>
+  </div>
+
+  <div class="campo" style="margin-top:20px;">Fechas de trabajo</div>
+  <div class="valor">${fechasTrabajadas.length ? fechasTrabajadas.map((f) => e(fmtDate(f))).join(", ") : "—"} ${totalHoras ? `(${totalHoras}h en total)` : ""}</div>
+
+  <div class="campo" style="margin-top:16px;">Material entregado / instalado en obra</div>
+  ${materialesEntregados.length === 0 ? '<p style="font-size:13px; color:#94a3b8;">Sin materiales marcados como "En la obra".</p>' : `
+  <table>
+    <thead><tr><th>Material</th></tr></thead>
+    <tbody>
+      ${materialesEntregados.map((m) => `<tr><td>${e(m.nombre)}</td></tr>`).join("")}
+    </tbody>
+  </table>`}
+
+  <p style="font-size:13px; margin-top:20px;">El cliente da conformidad a que el trabajo descrito arriba se ha realizado correctamente.</p>
+
+  <div class="firma">
+    <div class="firma-caja">Firma instalador</div>
+    <div class="firma-caja">Firma cliente</div>
+  </div>
+
+  <p class="nota">Este documento es un justificante de entrega/instalación, no una factura.</p>
+</body></html>`;
+
+  const ventana = window.open("", "_blank");
+  if (!ventana) {
+    alert("El navegador ha bloqueado la ventana emergente. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    return;
+  }
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
 function imprimirPegatinaPersiana(unidad, proyecto, cliente) {
   const e = escaparHtmlInforme;
   const html = `<!DOCTYPE html>
@@ -10134,6 +10609,7 @@ function MedicionDetail({ medicion, onBack, onEdit, onDelete, incidencias, onUps
         <div className="flex gap-2">
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           <button onClick={() => { if (window.confirm("¿Borrar esta medición? Esta acción no se puede deshacer.")) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Borrar</button>
+          <button onClick={() => onPasarAPresupuesto(medicion, "")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md">Pasar a presupuesto <ChevronRight size={14} /></button>
         </div>
       </div>
 
@@ -10568,10 +11044,11 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
 
 /* ================= INCIDENCIAS ================= */
 
-function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin }) {
+function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedores, openPedido, onPedirMateriales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, onImportarMasivo, isAdmin, usuarios, vehiculos, onVerInstalacion }) {
   const [q, setQ] = useState("");
   const [estadoIncidencia, setEstadoIncidencia] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
+  const [destinoFiltro, setDestinoFiltro] = useState("");
   const inputIncidenciasRef = useRef(null);
 
   const manejarImportarIncidencias = async (file) => {
@@ -10604,12 +11081,13 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
     return incidencias.filter((i) => {
       if (estadoIncidencia && i.estadoIncidencia !== estadoIncidencia) return false;
       if (estadoTrabajo && i.estadoTrabajo !== estadoTrabajo) return false;
+      if (destinoFiltro && (i.destino || "Obra") !== destinoFiltro) return false;
       if (!q) return true;
       const p = proyecto(i.proyectoId);
       const s = `${i.numero} ${p?.numero || ""} ${p?.nombre || ""} ${clienteNombre(i.proyectoId) || ""} ${i.especificaciones}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [incidencias, q, estadoIncidencia, estadoTrabajo, proyectos, clientes]);
+  }, [incidencias, q, estadoIncidencia, estadoTrabajo, destinoFiltro, proyectos, clientes]);
 
   if (view === "form") {
     const editing = incidencias.find((i) => i.id === editId) || null;
@@ -10621,6 +11099,8 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
         nextNumero={nextNumero}
         onCancel={() => setView(editId ? "detail" : "list")}
         onSave={onUpsert}
+        usuarios={usuarios}
+        vehiculos={vehiculos}
       />
     );
   }
@@ -10642,6 +11122,9 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
         onDelete={() => onDelete(incidencia.id)}
         isAdmin={isAdmin}
         onInlineUpdate={onInlineUpdate}
+        usuarios={usuarios}
+        vehiculos={vehiculos}
+        onVerInstalacion={onVerInstalacion}
       />
     );
   }
@@ -10703,6 +11186,11 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
           <option value="">Estado de la incidencia</option>
           {ESTADO_INCIDENCIA.map((t) => <option key={t}>{t}</option>)}
         </Select>
+        <Select value={destinoFiltro} onChange={(e) => setDestinoFiltro(e.target.value)} className="max-w-[150px]">
+          <option value="">Fábrica / Obra</option>
+          <option value="Fábrica">🏭 Fábrica</option>
+          <option value="Obra">🏗 Obra</option>
+        </Select>
       </div>
 
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
@@ -10713,6 +11201,7 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
               <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Cliente</th>
               <th className="px-4 py-3 font-semibold">Fecha</th>
+              <th className="px-4 py-3 font-semibold">Destino</th>
               <th className="px-4 py-3 font-semibold">Estado trabajo</th>
               <th className="px-4 py-3 font-semibold">Estado incidencia</th>
               <th className="px-4 py-3"></th>
@@ -10720,7 +11209,7 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">No hay incidencias que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400 text-sm">No hay incidencias que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((i) => {
               const p = proyecto(i.proyectoId);
@@ -10730,6 +11219,11 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
                   <td className="px-4 py-3 font-medium text-slate-800">{p ? `#${p.numero} — ${p.nombre}` : "Proyecto eliminado"}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(i.proyectoId) || "—"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(i.fecha)}</td>
+                  <td className="px-4 py-3">
+                    <Badge className={i.destino === "Fábrica" ? "bg-violet-50 text-violet-700 ring-violet-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>
+                      {i.destino === "Fábrica" ? "🏭 Fábrica" : "🏗 Obra"}
+                    </Badge>
+                  </td>
                   <td className="px-4 py-3"><Badge className={ESTADO_TRABAJO_INCIDENCIA_STYLE[i.estadoTrabajo]}>{i.estadoTrabajo}</Badge></td>
                   <td className="px-4 py-3"><Badge className={ESTADO_INCIDENCIA_STYLE[i.estadoIncidencia]}>{i.estadoIncidencia}</Badge></td>
                   <td className="px-4 py-3 text-right">
@@ -10747,16 +11241,17 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
   );
 }
 
-function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave }) {
+function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, onSave, usuarios, vehiculos }) {
   const [f, setF] = useState(
     initial || {
       id: null, proyectoId: proyectos[0]?.id || "", fecha: new Date().toISOString().slice(0, 10),
       especificaciones: "", observaciones: "", responsableInicial: "", comercialAsociado: "",
       responsableActual: "", estadoTrabajo: "Pendiente revisión", estadoIncidencia: "Pendiente revisión",
       fechaEntregaPrevista: "", fechaEntregado: "",
+      destino: "Obra", montadorNombre: "", vehiculoId: "", facturable: false, importeCobrar: "",
     }
   );
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const proyectoSel = proyectos.find((p) => p.id === f.proyectoId);
   const clienteSel = proyectoSel ? clientes.find((c) => c.id === proyectoSel.clienteId) : null;
@@ -10834,6 +11329,53 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
           <Field label="Fecha entregado"><TextInput type="date" value={f.fechaEntregado} onChange={set("fechaEntregado")} /></Field>
         </div>
 
+        {proyectoSel?.fechaFinGarantia && (
+          <div className={`px-4 py-3 rounded-md border text-sm font-semibold ${new Date(f.fecha) > new Date(proyectoSel.fechaFinGarantia) ? "bg-amber-50 border-amber-300 text-amber-800" : "bg-emerald-50 border-emerald-300 text-emerald-800"}`}>
+            {new Date(f.fecha) > new Date(proyectoSel.fechaFinGarantia)
+              ? `⚠ Esta obra está FUERA de garantía (terminó el ${fmtDate(proyectoSel.fechaFinGarantia)}). Revisa si esta incidencia hay que cobrarla.`
+              : `Esta obra está en garantía hasta el ${fmtDate(proyectoSel.fechaFinGarantia)}.`}
+          </div>
+        )}
+
+        <div className="border-t border-slate-200 pt-5">
+          <Field label="¿A quién se asigna la incidencia?" required>
+            <Select value={f.destino} onChange={set("destino")} required>
+              <option value="Obra">Obra (se crea como un trabajo en Instalaciones)</option>
+              <option value="Fábrica">Fábrica</option>
+            </Select>
+          </Field>
+          {f.destino === "Obra" && !initial && (
+            <p className="text-xs text-slate-400 mt-1">Al guardar, se creará automáticamente un trabajo nuevo en Instalaciones vinculado a este proyecto.</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Montador asignado">
+            <TextInput value={f.montadorNombre} onChange={set("montadorNombre")} placeholder="Nombre" list="montadores-incidencia-datalist" />
+            <datalist id="montadores-incidencia-datalist">
+              {(usuarios || []).map((u) => <option key={u.id} value={`${u.nombre} ${u.apellidos || ""}`.trim()} />)}
+            </datalist>
+          </Field>
+          <Field label="Furgoneta / vehículo">
+            <Select value={f.vehiculoId} onChange={set("vehiculoId")}>
+              <option value="">Sin asignar</option>
+              {(vehiculos || []).map((v) => <option key={v.id} value={v.id}>{v.nombre}</option>)}
+            </Select>
+          </Field>
+        </div>
+
+        <div className="border-t border-slate-200 pt-5">
+          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium mb-3">
+            <input type="checkbox" checked={f.facturable} onChange={set("facturable")} className="w-4 h-4" />
+            ¿Hay que cobrar esta incidencia al cliente?
+          </label>
+          {f.facturable && (
+            <Field label="Importe a cobrar (€)">
+              <TextInput type="number" step="0.01" value={f.importeCobrar} onChange={set("importeCobrar")} placeholder="Ej. 120" />
+            </Field>
+          )}
+        </div>
+
         <div className="flex flex-wrap justify-end gap-2 pt-2">
           <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
           <button type="submit" onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md"><Save size={15} /> Guardar incidencia</button>
@@ -10843,7 +11385,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
   );
 }
 
-function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores, openPedido, onPedirMateriales, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, usuarios, vehiculos, onVerInstalacion }) {
   const [tab, setTab] = useState("datos");
   const gastos = incidencia.gastos || [];
   const totalGastos = gastos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
@@ -10854,6 +11396,11 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
   const [subiendoArchivo, setSubiendoArchivo] = useState(false);
   const [errorArchivo, setErrorArchivo] = useState("");
   const inputArchivoRef = useRef(null);
+
+  const guardarFirmaClienteIncidencia = async (blob) => {
+    const url = await subirArchivoAStorage(blob, `firmas/incidencias/${incidencia.id}`, "firma.png", "image/png");
+    onInlineUpdate(incidencia.id, { firmaClienteUrl: url, firmaClienteFecha: new Date().toISOString() });
+  };
 
   // Reduce el tamaño de una foto antes de guardarla (máx. 1000px de lado, calidad 0.7)
   // para no llenar el límite de guardado compartido de Incidencias.
@@ -10883,26 +11430,27 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
     setErrorArchivo("");
     try {
       const esImagen = file.type.startsWith("image/");
-      let dataUrl;
+      const esVideo = file.type.startsWith("video/");
+      let blobASubir = file;
       if (esImagen) {
-        dataUrl = await comprimirImagen(file);
-      } else {
-        dataUrl = await new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result);
-          r.onerror = reject;
-          r.readAsDataURL(file);
-        });
+        // Las fotos se comprimen antes de subir para no gastar de más — los vídeos
+        // se suben tal cual (comprimir vídeo en el navegador no es viable aquí).
+        const dataUrl = await comprimirImagen(file);
+        const binario = atob(dataUrl.split(",")[1]);
+        const bytes = new Uint8Array(binario.length);
+        for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+        blobASubir = new Blob([bytes], { type: "image/jpeg" });
       }
-      if (dataUrl.length > 900000) {
-        setErrorArchivo("Este archivo sigue siendo demasiado grande incluso comprimido. Prueba con una foto más sencilla, o un PDF más corto.");
+      if (blobASubir.size > 200 * 1024 * 1024) {
+        setErrorArchivo("Este archivo pesa más de 200MB, es demasiado grande para subirlo.");
         setSubiendoArchivo(false);
         return;
       }
-      const nuevo = { id: uid(), nombre: file.name, tipo: esImagen ? "imagen" : "documento", dataUrl, fecha: new Date().toISOString() };
+      const url = await subirArchivoAStorage(blobASubir, `incidencias/${incidencia.id}`, file.name, blobASubir.type);
+      const nuevo = { id: uid(), nombre: file.name, tipo: esImagen ? "imagen" : (esVideo ? "video" : "documento"), url, fecha: new Date().toISOString() };
       onInlineUpdate(incidencia.id, { archivos: [nuevo, ...archivos] });
     } catch (err) {
-      setErrorArchivo("No se pudo subir el archivo. Prueba de nuevo.");
+      setErrorArchivo("No se pudo subir el archivo. Prueba de nuevo. (" + err.message + ")");
     } finally {
       setSubiendoArchivo(false);
     }
@@ -10974,10 +11522,30 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-6 mt-3">
+      <div className="flex flex-wrap gap-2 mb-3 mt-3">
         <Badge className={ESTADO_TRABAJO_INCIDENCIA_STYLE[incidencia.estadoTrabajo]}>Trabajo: {incidencia.estadoTrabajo}</Badge>
         <Badge className={ESTADO_INCIDENCIA_STYLE[incidencia.estadoIncidencia]}>Incidencia: {incidencia.estadoIncidencia}</Badge>
+        {incidencia.destino && (
+          <Badge className={incidencia.destino === "Fábrica" ? "bg-violet-50 text-violet-700 ring-violet-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>
+            {incidencia.destino === "Fábrica" ? "🏭 Fábrica" : "🏗 Obra"}
+          </Badge>
+        )}
+        {incidencia.montadorNombre && <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Montador: {incidencia.montadorNombre}</Badge>}
+        {incidencia.vehiculoId && <Badge className="bg-slate-100 text-slate-600 ring-slate-200">{(vehiculos || []).find((v) => v.id === incidencia.vehiculoId)?.nombre || "Vehículo"}</Badge>}
+        {incidencia.facturable && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">💶 A cobrar{incidencia.importeCobrar ? `: ${money(parseFloat(incidencia.importeCobrar) || 0)}` : ""}</Badge>}
       </div>
+
+      {incidencia.instalacionVinculadaId && onVerInstalacion && (
+        <button onClick={() => onVerInstalacion(incidencia.instalacionVinculadaId)} className="flex items-center gap-1.5 text-xs font-semibold text-violet-700 bg-violet-50 ring-1 ring-violet-200 px-3 py-1.5 rounded-md mb-3 hover:bg-violet-100">
+          <Wrench size={13} /> Ver el trabajo creado en Instalaciones
+        </button>
+      )}
+
+      {proyecto?.fechaFinGarantia && new Date(incidencia.fecha) > new Date(proyecto.fechaFinGarantia) && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-4">
+          ⚠ Esta obra está fuera de garantía desde el {fmtDate(proyecto.fechaFinGarantia)} — revisa si esta incidencia hay que cobrarla.
+        </div>
+      )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-200">
         {[
@@ -11015,6 +11583,19 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
         </CornerFrame>
       )}
 
+      {tab === "datos" && (
+        <div className="mt-4">
+          <FirmaTactilPanel
+            firmaUrl={incidencia.firmaClienteUrl}
+            firmaFecha={incidencia.firmaClienteFecha}
+            onGuardar={guardarFirmaClienteIncidencia}
+            telefono={cliente?.movil}
+            email={cliente?.email}
+            mensajeCompartir={`Hola${cliente?.nombre ? ` ${cliente.nombre}` : ""}, le adjuntamos el justificante firmado de la incidencia #${incidencia.numero}. Un saludo, ALUMAVEL.`}
+          />
+        </div>
+      )}
+
       {tab === "archivos" && (
         <div>
           <button
@@ -11029,14 +11610,14 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
           <input
             ref={inputArchivoRef}
             type="file"
-            accept="image/*,application/pdf"
+            accept="image/*,video/*,application/pdf"
             className="hidden"
             onChange={(e) => { if (e.target.files?.[0]) subirArchivo(e.target.files[0]); e.target.value = ""; }}
           />
           {errorArchivo && (
             <p className="text-xs text-rose-600 font-semibold mb-3">⚠ {errorArchivo}</p>
           )}
-          <p className="text-xs text-slate-400 mb-4">Las fotos se comprimen automáticamente al subirlas para no ocupar demasiado espacio.</p>
+          <p className="text-xs text-slate-400 mb-4">Fotos, vídeos y documentos — se guardan en Firebase Storage, sin límite práctico de tamaño (las fotos se comprimen antes de subir).</p>
 
           {archivos.length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">
@@ -11047,11 +11628,13 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
               {archivos.map((a) => (
                 <div key={a.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
                   {a.tipo === "imagen" ? (
-                    <a href={a.dataUrl} target="_blank" rel="noopener noreferrer">
-                      <img src={a.dataUrl} alt={a.nombre} className="w-full h-28 object-cover" />
+                    <a href={a.url} target="_blank" rel="noopener noreferrer">
+                      <img src={a.url} alt={a.nombre} className="w-full h-28 object-cover" />
                     </a>
+                  ) : a.tipo === "video" ? (
+                    <video src={a.url} controls className="w-full h-28 object-cover bg-black" />
                   ) : (
-                    <a href={a.dataUrl} target="_blank" rel="noopener noreferrer" download={a.nombre} className="flex items-center justify-center h-28 bg-slate-50">
+                    <a href={a.url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center h-28 bg-slate-50">
                       <FileText size={28} className="text-slate-400" />
                     </a>
                   )}
@@ -11059,7 +11642,10 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
                     <p className="text-xs text-slate-600 truncate" title={a.nombre}>{a.nombre}</p>
                     <div className="flex items-center justify-between mt-1">
                       <span className="text-[10px] text-slate-400">{fmtDate(a.fecha?.slice(0, 10))}</span>
-                      <button onClick={() => eliminarArchivo(a.id)} className="text-slate-300 hover:text-rose-500"><X size={12} /></button>
+                      <div className="flex items-center gap-2">
+                        <a href={a.url} download={a.nombre} target="_blank" rel="noopener noreferrer" className="text-slate-300 hover:text-[#2E8B57]" title="Descargar"><Download size={12} /></a>
+                        <button onClick={() => eliminarArchivo(a.id)} className="text-slate-300 hover:text-rose-500"><X size={12} /></button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -12996,10 +13582,16 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
     const precio = parseFloat(x.precio) || 0;
     return { nombre: x.nombre, cantidad, unidad: "ud", precio, importe: cantidad * precio, esExtra: true, extraId: x.id };
   });
+  const ventaM2Calc = useMemo(() => calcularVentaM2Persianas(filasValidas, tarifas?.precioVentaM2Persiana), [filasValidas, tarifas?.precioVentaM2Persiana]);
+  const ventaM2DetalleLinea = ventaM2Calc.total > 0 ? [{
+    nombre: `Persianas — venta por m² (mín. ${PERSIANAS_M2_MINIMO_FACTURACION}m²/ud)`,
+    cantidad: ventaM2Calc.m2Total, unidad: "m²", precio: ventaM2Calc.precio, importe: ventaM2Calc.total,
+  }] : [];
+
   const presupuestoFinal = useMemo(() => ({
-    detalle: [...presupuestoCalc.detalle, ...extrasDetalle],
-    total: presupuestoCalc.total + extrasDetalle.reduce((s, d) => s + d.importe, 0),
-  }), [presupuestoCalc, extrasDetalle]);
+    detalle: [...presupuestoCalc.detalle, ...ventaM2DetalleLinea, ...extrasDetalle],
+    total: presupuestoCalc.total + ventaM2Calc.total + extrasDetalle.reduce((s, d) => s + d.importe, 0),
+  }), [presupuestoCalc, ventaM2DetalleLinea, ventaM2Calc, extrasDetalle]);
 
   const cambiarTarifa = (key, valor) => {
     onSaveTarifas && onSaveTarifas({ ...tarifas, [key]: valor });
@@ -13203,6 +13795,17 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                       </div>
                     ))}
                   </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3">
+                  <h4 className="text-xs font-bold text-slate-600 uppercase mb-2">Venta al cliente — precio por m²</h4>
+                  <p className="text-xs text-slate-400 mb-3">Precio de venta aparte del desglose de materiales de abajo (que es el coste, no lo que se factura). Se cobra por m² de cada persiana, con un mínimo de facturación de {PERSIANAS_M2_MINIMO_FACTURACION}m² por unidad aunque mida menos.</p>
+                  <div className="w-40">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">€ / m²</label>
+                    <input type="number" step="0.01" value={tarifas?.precioVentaM2Persiana ?? ""} onChange={(e) => cambiarTarifa("precioVentaM2Persiana", e.target.value)} className={inputCls} placeholder="0,00" />
+                  </div>
+                  {ventaM2Calc.total > 0 && (
+                    <p className="text-xs text-slate-500 mt-3">{ventaM2Calc.m2Total.toFixed(2)} m² facturables × {money(ventaM2Calc.precio)}/m² = <span className="font-semibold text-slate-700">{money(ventaM2Calc.total)}</span></p>
+                  )}
                 </div>
                 <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
                 <table className="w-full text-sm">
@@ -14769,7 +15372,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
     initial || {
       id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
       descripcion: "", importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
-      comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: "",
+      comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, importeMontaje: "", zona: "",
       proyectoId: "",
     }
   );
@@ -14964,6 +15567,12 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
         {f.envio && (
           <Field label="Dirección de envío">
             <TextInput value={f.direccionEnvio} onChange={set("direccionEnvio")} />
+          </Field>
+        )}
+        {f.montaje && (
+          <Field label="Importe del montaje (€)">
+            <TextInput type="number" step="0.01" value={f.importeMontaje} onChange={set("importeMontaje")} placeholder="Ej. 350" />
+            <p className="text-xs text-slate-400 mt-1">Parte del importe total ({f.importe ? money(parseFloat(f.importe) || 0) : "—"}) que corresponde solo a la mano de obra de montaje, para que quede desglosado en el presupuesto.</p>
           </Field>
         )}
 
@@ -15171,6 +15780,9 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           <InfoRow icon={<CheckCircle2 size={14} />} label="¿Envío?" value={presupuesto.envio ? "Sí" : "No"} />
           {presupuesto.envio && <InfoRow icon={<MapPin size={14} />} label="Dirección de envío" value={presupuesto.direccionEnvio || "—"} />}
           <InfoRow icon={<CheckCircle2 size={14} />} label="¿Montaje?" value={presupuesto.montaje ? "Sí" : "No"} />
+          {presupuesto.montaje && presupuesto.importeMontaje && (
+            <InfoRow icon={<Euro size={14} />} label="Importe montaje" value={`${money(parseFloat(presupuesto.importeMontaje) || 0)} (materiales: ${money((parseFloat(presupuesto.importe) || 0) - (parseFloat(presupuesto.importeMontaje) || 0))})`} />
+          )}
         </div>
         {presupuesto.comentarios && (
           <div className="mt-4 pt-4 border-t border-slate-100 text-sm text-slate-600">
