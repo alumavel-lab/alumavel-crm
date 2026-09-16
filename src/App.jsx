@@ -11,7 +11,7 @@ import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, get as fbGet, set as fbSet } from "firebase/database";
-import { jsPDF } from "jspdf";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // Configuración de tu proyecto de Firebase (crmalumavel). La apiKey de Firebase
 // no es un secreto — el acceso real se controla con las reglas de seguridad de
@@ -394,13 +394,17 @@ export default function App() {
   // tarifas de la Calculadora de Presupuestos (precios editables por producto)
   const [tarifasPersianas, setTarifasPersianas] = useState({});
 
+  // PDF de condiciones/contrato que se adjunta a los presupuestos al enviarlos
+  // a firmar (además de los datos del propio presupuesto)
+  const [configuracionFirma, setConfiguracionFirma] = useState({});
+
   useEffect(() => {
     (async () => {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas"];
+          "tarifasPersianas", "configuracionFirma"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -440,6 +444,7 @@ export default function App() {
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
         if (resultados.archivosEmpresa) setArchivosEmpresa(toArray(resultados.archivosEmpresa));
         if (resultados.tarifasPersianas) setTarifasPersianas(resultados.tarifasPersianas);
+        if (resultados.configuracionFirma) setConfiguracionFirma(resultados.configuracionFirma);
 
         // Estas son locales de este navegador/dispositivo, no compartidas — cada persona
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
@@ -495,35 +500,84 @@ export default function App() {
     setTimeout(() => setToast(null), 2600);
   };
 
-  // Genera un PDF sencillo (una página, solo texto) con los datos del presupuesto,
-  // para mandarlo a firmar por Firma.dev. No es el documento "bonito" de la
-  // calculadora de techos/persianas — es un resumen claro de lo que se está
-  // aceptando (cliente, importe, descripción), suficiente como documento firmable.
+  // Genera el PDF que se manda a firmar: una portada con los datos del
+  // presupuesto (cliente, importe, descripción) seguida de las páginas del PDF
+  // de condiciones/contrato subido en "Configurar documento de firma" (si hay
+  // uno configurado). Si no hay ninguno subido, se manda solo la portada.
   // Devuelve el PDF en base64 (sin el prefijo "data:application/pdf;base64,").
-  const generarPdfBase64Presupuesto = (presupuesto) => {
-    const doc = new jsPDF();
-    const margen = 20;
-    let y = 25;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text("ALUMAVEL — Presupuesto", margen, y);
-    y += 10;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.text(`Nº presupuesto: ${presupuesto.numero}`, margen, y); y += 7;
-    doc.text(`Cliente: ${presupuesto.clienteNombre || "—"}`, margen, y); y += 7;
-    doc.text(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, margen, y); y += 7;
-    doc.text(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, margen, y); y += 10;
-    doc.setFont("helvetica", "bold");
-    doc.text("Descripción:", margen, y); y += 7;
-    doc.setFont("helvetica", "normal");
-    const lineasDesc = doc.splitTextToSize(presupuesto.descripcion || "—", 170);
-    doc.text(lineasDesc, margen, y);
-    y += lineasDesc.length * 6 + 10;
-    doc.setFontSize(9);
-    doc.setTextColor(120);
-    doc.text("Documento generado desde el CRM de Alumavel para firma electrónica (Firma.dev).", margen, y);
-    return doc.output("datauristring").split(",")[1];
+  const generarPdfBase64Presupuesto = async (presupuesto) => {
+    const pdfDoc = await PDFDocument.create();
+    const fuente = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fuenteNegrita = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const pagina = pdfDoc.addPage([595.28, 841.89]); // A4
+    const margen = 50;
+    let y = 800;
+    const negro = rgb(0.12, 0.16, 0.22);
+    const gris = rgb(0.45, 0.45, 0.45);
+
+    pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
+    y -= 28;
+    pagina.drawText(`Nº presupuesto: ${presupuesto.numero}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+    pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+    pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+    pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
+    pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
+
+    const anchoUtil = 495;
+    const palabras = (presupuesto.descripcion || "—").split(/\s+/);
+    let linea = "";
+    for (const palabra of palabras) {
+      const pruebaLinea = linea ? `${linea} ${palabra}` : palabra;
+      if (fuente.widthOfTextAtSize(pruebaLinea, 11) > anchoUtil) {
+        pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro });
+        y -= 15;
+        linea = palabra;
+      } else {
+        linea = pruebaLinea;
+      }
+    }
+    if (linea) { pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 15; }
+    y -= 15;
+    pagina.drawText("Documento generado desde el CRM de Alumavel para firma electrónica.", { x: margen, y, size: 9, font: fuente, color: gris });
+
+    // Si hay un PDF de condiciones configurado, se añaden sus páginas a continuación
+    if (configuracionFirma.condicionesPdfUrl) {
+      try {
+        const respuestaCondiciones = await fetch(configuracionFirma.condicionesPdfUrl);
+        const bytesCondiciones = await respuestaCondiciones.arrayBuffer();
+        const pdfCondiciones = await PDFDocument.load(bytesCondiciones);
+        const paginasCopiadas = await pdfDoc.copyPages(pdfCondiciones, pdfCondiciones.getPageIndices());
+        paginasCopiadas.forEach((p) => pdfDoc.addPage(p));
+      } catch (err) {
+        // Si el PDF de condiciones no se puede cargar, se manda igualmente solo
+        // la portada — mejor eso que bloquear el envío a firmar.
+        console.error("No se pudo adjuntar el PDF de condiciones:", err);
+      }
+    }
+
+    const bytesFinales = await pdfDoc.save();
+    let binario = "";
+    for (let i = 0; i < bytesFinales.length; i++) binario += String.fromCharCode(bytesFinales[i]);
+    return btoa(binario);
+  };
+
+  // Sube un nuevo PDF de condiciones/contrato a Firebase Storage y guarda su URL
+  // para que se adjunte automáticamente a partir de ahora en cada envío a firmar.
+  const subirPdfCondicionesFirma = async (file) => {
+    try {
+      const bytes = await file.arrayBuffer();
+      const nombreArchivo = `plantillas/condiciones-firma-${Date.now()}.pdf`;
+      const subida = await fetch(
+        `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?uploadType=media&name=${encodeURIComponent(nombreArchivo)}`,
+        { method: "POST", headers: { "Content-Type": "application/pdf" }, body: bytes }
+      );
+      if (!subida.ok) throw new Error("Fallo al subir el archivo");
+      const url = `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(nombreArchivo)}?alt=media`;
+      saveConfiguracionFirma({ condicionesPdfUrl: url, condicionesPdfNombre: file.name, subidoEn: Date.now() });
+      showToast("PDF de condiciones actualizado — se adjuntará en cada envío a firmar");
+    } catch (err) {
+      showToast("No se pudo subir el PDF de condiciones", "error");
+    }
   };
 
   // Manda un presupuesto a firmar: si "firmante" no se indica, usa el
@@ -532,7 +586,7 @@ export default function App() {
   // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
   const enviarPresupuestoAFirmar = async (presupuesto, firmante) => {
     try {
-      const pdfBase64 = generarPdfBase64Presupuesto(presupuesto);
+      const pdfBase64 = await generarPdfBase64Presupuesto(presupuesto);
       const response = await fetch("/.netlify/functions/firma-enviar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -551,10 +605,10 @@ export default function App() {
       }
       const next = presupuestos.map((p) => (p.id === presupuesto.id ? {
         ...p,
-        firma: { signingRequestId: data.signingRequestId, estado: "enviado", enviadoEn: Date.now(), firmanteNombre: firmante.nombre || "", firmanteEmail: firmante.email },
+        firma: { signingRequestId: data.signingRequestId, estado: "enviado", enviadoEn: Date.now(), firmanteNombre: firmante.nombre || "", firmanteEmail: firmante.email || "", firmanteTelefono: firmante.telefono || "", signingLink: data.signingLink || "" },
       } : p));
       savePresupuestos(next);
-      showToast(`Enviado a firmar a ${firmante.email}`);
+      showToast(firmante.email ? `Enviado a firmar a ${firmante.email}` : "Solicitud de firma creada — ya puedes mandarla por WhatsApp");
     } catch (err) {
       showToast("No se pudo enviar a firmar (revisa la conexión)", "error");
     }
@@ -660,6 +714,8 @@ export default function App() {
   // poner el número y guardar. El despiece calculado viaja con el presupuesto y, si
   // luego se pasa a proyecto, se importa solo (igual que ya pasa con los techos).
   const saveTarifasPersianas = (next) => { setTarifasPersianas(next); persist("tarifasPersianas", next); };
+
+  const saveConfiguracionFirma = (next) => { setConfiguracionFirma(next); persist("configuracionFirma", next); };
 
   const pasarPersianasAPresupuesto = (datos) => {
     setPresupuestoPrefill({
@@ -1445,6 +1501,15 @@ export default function App() {
       const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
+
+      // Si el presupuesto está vinculado a una obra ya existente (no una que se
+      // vaya a crear a partir de él) y se acaba de aceptar, sus persianas se
+      // añaden directamente al control de esa obra — sin crear un proyecto
+      // nuevo, y sin duplicar si ya se había procesado antes.
+      if (dataNormalizada.proyectoId && dataNormalizada.estado === "Aceptado" && anterior?.estado !== "Aceptado" && !dataNormalizada.proyectoCreadoId) {
+        fusionarPersianasEnProyecto(dataNormalizada.proyectoId, dataNormalizada);
+        next = next.map((p) => (p.id === data.id ? { ...p, proyectoCreadoId: dataNormalizada.proyectoId } : p));
+      }
     } else {
       const np = { estado: "Pendiente", ...data, id: uid() };
       next = [np, ...presupuestos];
@@ -1460,9 +1525,64 @@ export default function App() {
     showToast("Presupuesto eliminado");
   };
 
+  // Convierte las filas de un cálculo de persianas en "unidades" individuales
+  // rastreables (una fila con ud=5 se convierte en 5 unidades separadas), para
+  // el control de fabricación por unidad dentro de la obra.
+  const expandirUnidadesPersiana = (entryPersianas, presupuesto) => {
+    const unidades = [];
+    (entryPersianas.filas || []).forEach((fila) => {
+      const total = parseInt(fila.ud, 10) || 1;
+      for (let i = 1; i <= total; i++) {
+        unidades.push({
+          id: uid(),
+          origenPresupuestoId: presupuesto?.id || null,
+          numeroPresupuesto: presupuesto?.numero || "",
+          cajon: fila.cajon,
+          ancho: fila.ancho,
+          alto: fila.alto,
+          npersianas: fila.npersianas || 1,
+          motor: fila.motor || 0,
+          lado: fila.lado || "",
+          indice: i,
+          total,
+          estado: "Pendiente",
+          operario: "",
+          fechaTerminada: null,
+        });
+      }
+    });
+    return unidades;
+  };
+
+  // Añade una tanda de persianas (de un presupuesto recién aceptado) al proyecto
+  // que ya existe — se suma a lo que ya hubiera, no lo sustituye. Así el control
+  // de fabricación va creciendo según se van aceptando presupuestos de la obra.
+  const fusionarPersianasEnProyecto = (proyectoId, presupuesto) => {
+    const proyecto = proyectos.find((p) => p.id === proyectoId);
+    if (!proyecto || !(presupuesto.persianas || []).length) return;
+    const nuevasUnidades = (presupuesto.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, presupuesto));
+    const proyectoActualizado = {
+      ...proyecto,
+      persianas: [...(proyecto.persianas || []), ...(presupuesto.persianas || [])],
+      persianasControl: [...(proyecto.persianasControl || []), ...nuevasUnidades],
+    };
+    saveProyectos(proyectos.map((p) => (p.id === proyectoId ? proyectoActualizado : p)));
+    showToast(`${nuevasUnidades.length} persiana(s) añadida(s) al control de fabricación de la obra`);
+  };
+
+  // Cambia el estado (Pendiente / En fabricación / Terminada) de una unidad de
+  // persiana dentro del control de una obra, y quién la ha dado por terminada.
+  const actualizarUnidadPersiana = (proyectoId, unidadId, cambios) => {
+    const proyecto = proyectos.find((p) => p.id === proyectoId);
+    if (!proyecto) return;
+    const persianasControl = (proyecto.persianasControl || []).map((u) => (u.id === unidadId ? { ...u, ...cambios } : u));
+    saveProyectos(proyectos.map((p) => (p.id === proyectoId ? { ...p, persianasControl } : p)));
+  };
+
   // Crea un Proyecto a partir de un Presupuesto ya aceptado.
   const crearProyectoDesdePresupuesto = (presupuesto) => {
     let clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (presupuesto.clienteNombre || "").trim().toLowerCase())?.id || "";
+    const persianasControlInicial = (presupuesto.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, presupuesto));
     const np = {
       id: uid(),
       numero: nextNumeroProyecto(),
@@ -1476,6 +1596,7 @@ export default function App() {
       checklistMateriales: checklistMaterialesPorDefecto(),
       techos: presupuesto.techos || [],
       persianas: presupuesto.persianas || [],
+      persianasControl: persianasControlInicial,
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
@@ -2155,6 +2276,8 @@ export default function App() {
             instalaciones={instalaciones}
             onVerInstalacion={irAInstalacion}
             onGenerarPedidoFaltante={enviarAPedido}
+            usuarios={usuarios}
+            onActualizarUnidadPersiana={actualizarUnidadPersiana}
           />
         )}
         {modulo === "proveedores" && (
@@ -2351,6 +2474,8 @@ export default function App() {
             onPasarPersianasAPresupuesto={pasarPersianasAPresupuesto}
             proyectos={proyectos}
             onEnviarFirma={enviarPresupuestoAFirmar}
+            configuracionFirma={configuracionFirma}
+            onSubirPdfCondicionesFirma={subirPdfCondicionesFirma}
           />
         )}
         {modulo === "mediciones" && (
@@ -3216,7 +3341,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante }) {
+function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -3283,6 +3408,8 @@ function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, 
         instalacion={instalaciones.find((i) => i.proyectoId === proyecto.id)}
         onVerInstalacion={onVerInstalacion}
         onGenerarPedidoFaltante={onGenerarPedidoFaltante}
+        usuarios={usuarios}
+        onActualizarUnidadPersiana={(unidadId, cambios) => onActualizarUnidadPersiana(proyecto.id, unidadId, cambios)}
       />
     );
   }
@@ -3605,7 +3732,7 @@ function ProyectoForm({ initial, clientes, nextNumero, onCancel, onSave }) {
   );
 }
 
-function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante }) {
+function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -3788,6 +3915,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           { id: "pedidos", label: `Pedidos de materiales (${pedidos.length})`, icon: ClipboardList },
           { id: "checklist", label: `Qué lleva la obra (${checklist.filter((c) => c.estado).length}/${checklist.length})`, icon: CheckCircle2 },
           { id: "despiece", label: `Despiece de techos (${(proyecto.techos || []).length})`, icon: Ruler },
+          { id: "persianas", label: `Control de persianas (${(proyecto.persianasControl || []).length})`, icon: Ruler },
         ].map((t) => (
           <button
             key={t.id}
@@ -4230,6 +4358,79 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                 Generar pedido con lo que falta
               </button>
               <p className="text-xs text-slate-400">Esto abre el formulario de pedido ya relleno — revísalo, pon el proveedor y guárdalo tú. No se envía nada solo.</p>
+            </>
+          )}
+        </div>
+      )}
+      {tab === "persianas" && (
+        <div className="space-y-4">
+          {(proyecto.persianasControl || []).length === 0 ? (
+            <p className="text-sm text-slate-400">
+              Esta obra todavía no tiene persianas en control de fabricación. Se van añadiendo solas, unidad por unidad, cada vez que se acepta o se firma un presupuesto de persianas vinculado a esta obra.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                <Kpi label="Pendientes" value={(proyecto.persianasControl || []).filter((u) => u.estado === "Pendiente").length} />
+                <Kpi label="En fabricación" value={(proyecto.persianasControl || []).filter((u) => u.estado === "En fabricación").length} tone="good" />
+                <Kpi label="Terminadas" value={(proyecto.persianasControl || []).filter((u) => u.estado === "Terminada").length} tone="good" />
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      <th className="text-left px-4 py-2">Expediente</th>
+                      <th className="text-left px-4 py-2">Persiana</th>
+                      <th className="text-left px-4 py-2">Medida</th>
+                      <th className="text-left px-4 py-2">Estado</th>
+                      <th className="text-left px-4 py-2">Operario</th>
+                      <th className="text-left px-4 py-2">Terminada</th>
+                      <th className="px-4 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(proyecto.persianasControl || []).map((u) => (
+                      <tr key={u.id}>
+                        <td className="px-4 py-2.5 text-slate-500">{u.numeroPresupuesto || "—"}</td>
+                        <td className="px-4 py-2.5 text-slate-700">Cajón {u.cajon}mm — ud {u.indice}/{u.total} {u.lado ? `— ${u.lado}` : ""}</td>
+                        <td className="px-4 py-2.5 text-slate-500">{u.ancho || "?"} x {u.alto || "?"} mm</td>
+                        <td className="px-4 py-2.5">
+                          <Select
+                            value={u.estado}
+                            onChange={(e) => {
+                              const nuevoEstado = e.target.value;
+                              onActualizarUnidadPersiana(u.id, nuevoEstado === "Terminada"
+                                ? { estado: nuevoEstado, fechaTerminada: new Date().toISOString().slice(0, 10) }
+                                : { estado: nuevoEstado, fechaTerminada: null });
+                            }}
+                            className="min-w-[140px]"
+                          >
+                            <option>Pendiente</option>
+                            <option>En fabricación</option>
+                            <option>Terminada</option>
+                          </Select>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <Select
+                            value={u.operario || ""}
+                            onChange={(e) => onActualizarUnidadPersiana(u.id, { operario: e.target.value })}
+                            className="min-w-[140px]"
+                          >
+                            <option value="">Sin asignar</option>
+                            {(usuarios || []).map((us) => <option key={us.id} value={us.nombre}>{us.nombre}</option>)}
+                          </Select>
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-500">{u.fechaTerminada ? fmtDate(u.fechaTerminada) : "—"}</td>
+                        <td className="px-4 py-2.5">
+                          <button onClick={() => imprimirPegatinaPersiana(u, proyecto, cliente)} title="Imprimir pegatina (100x150mm)" className="flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">
+                            <Printer size={13} /> Pegatina
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
         </div>
@@ -5436,6 +5637,72 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const [pasteText, setPasteText] = useState("");
+  const [leyendoPdfPedido, setLeyendoPdfPedido] = useState(false);
+  const [errorPdfPedido, setErrorPdfPedido] = useState("");
+  const inputPdfPedidoRef = useRef(null);
+
+  // Lee un PDF de "listado de cajas" de proveedor (tipo Ecowin PVC) y convierte
+  // cada fila (de todas las páginas/grupos) en una línea de pedido "a medida",
+  // sin tener que teclearlas a mano. Usa la misma vía que ya lee presupuestos
+  // desde foto/PDF (proxy a Claude), pero con un prompt específico para esta
+  // clase de documento (Modelo / Código / Ancho / Alto / Color / Uds).
+  const importarLineasDesdePdf = async (file) => {
+    setLeyendoPdfPedido(true);
+    setErrorPdfPedido("");
+    try {
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const prompt = 'Esto es un "listado de cajas" o listado de pedido de un proveedor de PVC/aluminio (columnas típicas: Modelo, Código, Ancho, Alto, Color, Uds — puede tener varios grupos/páginas). Revisa el documento ENTERO, todas las páginas y todos los grupos, sin saltarte ninguna fila ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"lineas":[{"modelo":"","codigo":"","ancho":"","alto":"","color":"","cantidad":""}]}. Una entrada por cada fila de la tabla que tenga medidas o cantidad. Las medidas suelen venir en metros con coma decimal (ej. "1.400" = 1400 mm) — conviértelas siempre a milímetros como número entero. "cantidad" es la columna "Uds".';
+
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } },
+              { type: "text", text: prompt },
+            ],
+          }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+      const inicio = limpio.indexOf("{");
+      const fin = limpio.lastIndexOf("}");
+      const info = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+      const filasLeidas = Array.isArray(info.lineas) ? info.lineas.filter((l) => l && (l.ancho || l.alto || l.cantidad)) : [];
+      if (filasLeidas.length === 0) throw new Error("No he encontrado ninguna fila con medidas en el PDF.");
+
+      const nuevas = filasLeidas.map((l) => ({
+        id: uid(),
+        modo: "libre",
+        materialId: "",
+        referencia: [l.modelo, l.codigo, l.color].filter(Boolean).join(" — "),
+        ancho: l.ancho || "",
+        alto: l.alto || "",
+        cantidad: l.cantidad || "",
+        precio: "",
+        estado: "Solicitado",
+      }));
+      setF((prev) => ({ ...prev, lineas: [...prev.lineas, ...nuevas] }));
+    } catch (err) {
+      setErrorPdfPedido("No se pudo leer el PDF: " + err.message);
+    } finally {
+      setLeyendoPdfPedido(false);
+    }
+  };
 
   const setLinea = (id, patch) => setF({ ...f, lineas: f.lineas.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
   const addLinea = (modo = "catalogo") => setF({ ...f, lineas: [...f.lineas, { ...blankLinea(), modo }] });
@@ -5582,6 +5849,28 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
           <button type="button" onClick={convertirPegado} className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-700 hover:bg-slate-800 px-3.5 py-2 rounded-md">
             <Plus size={14} /> Convertir en líneas
           </button>
+        </div>
+
+        <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Importar directamente desde un PDF (Listado de cajas)</span>
+          <p className="text-xs text-slate-400 mb-2">Sube el PDF tal cual te lo manda el proveedor (ej. "Listado Cajas" de Ecowin) y se leen todas las medidas de todas las páginas automáticamente como líneas "a medida".</p>
+          <button
+            type="button"
+            onClick={() => inputPdfPedidoRef.current?.click()}
+            disabled={leyendoPdfPedido}
+            style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+            className="flex items-center gap-1.5 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md"
+          >
+            <FileText size={14} /> {leyendoPdfPedido ? "Leyendo el PDF..." : "Subir PDF de listado de cajas"}
+          </button>
+          <input
+            ref={inputPdfPedidoRef}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) importarLineasDesdePdf(e.target.files[0]); e.target.value = ""; }}
+          />
+          {errorPdfPedido && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfPedido}</p>}
         </div>
 
         <Field label="Comentarios"><TextArea rows={2} value={f.comentarios} onChange={set("comentarios")} /></Field>
@@ -8952,11 +9241,57 @@ const PERSIANAS_MOTOR_OPCIONES = [
   { valor: 2, label: "Con motor, sin recogedor ni discos" },
 ];
 
-// Calcula el despiece de UNA línea (un grupo de persianas iguales). Fórmulas portadas de
-// las plantillas Excel reales. Nota: en la plantilla de cajón de 200mm el nº de lamas se
-// multiplica también por el nº de persianas/hojas; en las de 155 y 185 no — así estaba en
-// los 3 archivos originales, se ha respetado tal cual.
-function calcularDespiecePersianaLinea(fila) {
+// Descuentos de corte por defecto, extraídos de la plantilla real de fabricación
+// (Hoja de corte para persianas). Son editables desde "Ver / editar precios" porque
+// pueden variar según el proveedor de perfil que se use en cada momento.
+const PERSIANAS_AJUSTES_CORTE_DEFECTO = {
+  descuentoCajon: 20,
+  descuentoAnchoLama: 67,
+  alturaLama: 45,
+  descuentoLamaFinal: 67,
+  descuentoEje: 120,
+};
+
+// Referencias de material para pedir al proveedor, extraídas de la plantilla real
+// (columna de referencias). Solo hay referencias documentadas para cajón 155 y 185 —
+// si se usa cajón de 200mm hace falta añadir sus referencias aquí.
+const PERSIANAS_REFERENCIAS_POR_CAJON = {
+  155: {
+    cajon: "Cajón RGBK 155 DT L Dec. Blanco",
+    aislante: "Perf Aisl TD155 RGBK PS30",
+    testero: "Jgo. Testero PVC 155 decorativo nº1 con espiga",
+    placaContencion: "Jgo. Placa contención P-137 taladro de 55",
+    disco: "Disco compacto 120 x 40 C/20 con rod. Ø28 incorporado (P11)",
+  },
+  185: {
+    cajon: "Cajón RGBK 185 DT L Dec. Blanco",
+    aislante: "Perf Aisl TD185 RGBK PS30",
+    testero: "Jgo. Testero PVC 185 decorativo nº1 con espiga",
+    placaContencion: "Jgo. Placa contención P-165 taladro de 55",
+    disco: "Disco compacto 140 x 40 C/20 con rod. Ø28 incorporado (P70)",
+  },
+};
+const PERSIANAS_REFERENCIAS_COMUNES = {
+  lama: "Lama perfilada C45 CE — Blanco Especial 6144M0600",
+  eje: "Metros eje octogonal 40 x 0,4",
+  terminal: "Terminal Alum extrus 60612 — Blanco",
+  recogedor: "Recogedor embutir compacto C/16 Carcasa plast.",
+  capsula: "Capsula telescopica 40 oct. Con rodamiento Ø28 incorporado",
+  tope: "Tope 40 cerrado de plástico con arandela torn. Galvanizado (T10)",
+  tirante: "Tirante fleje autoanclaje reforzado",
+  pasacintas: "Pasacintas inferior comp. PVC C/20 mm con felpudo",
+  embudoA: `Jgo. Embudo "A" enrasado testero recto/dec (guía 78)`,
+  embudoLV: "Jgo. Embudo C/pata P/guía LV 30x60",
+};
+
+// Calcula el despiece de UNA línea (un grupo de persianas iguales). Fórmulas
+// portadas EXACTAS de la plantilla real de fabricación (Hoja de corte para
+// persianas): cada pieza se corta al ancho de la persiana menos un descuento fijo
+// (distinto según la pieza), y el nº de lamas de alto sale de dividir el alto
+// entre la altura de una lama (45mm por defecto). "Lama final" es una pieza
+// aparte con la misma medida que la lama normal (1 por persiana).
+function calcularDespiecePersianaLinea(fila, ajustes) {
+  const aj = ajustes || PERSIANAS_AJUSTES_CORTE_DEFECTO;
   const ud = parseFloat(fila.ud) || 0;
   const ancho = parseFloat(fila.ancho) || 0;
   const alto = parseFloat(fila.alto) || 0;
@@ -8964,10 +9299,23 @@ function calcularDespiecePersianaLinea(fila) {
   const motor = parseFloat(fila.motor) || 0;
   const np = parseFloat(fila.npersianas) || 1;
 
-  const cajonTotalM = (ancho * ud) / 1000;
-  const lamas = np ? Math.ceil(alto / 39 - 1) * ud * (cajon === 200 ? np : 1) : 0;
-  const longitudLamaM = np ? ((ancho / np) * lamas) / 1000 : 0;
-  const lamaFinal = np * ud;
+  const alturaLama = parseFloat(aj.alturaLama) || 45;
+  const cajonCorteMm = ancho - (parseFloat(aj.descuentoCajon) || 0);
+  const lamaAnchoCorteMm = ancho - (parseFloat(aj.descuentoAnchoLama) || 0);
+  const lamaFinalCorteMm = ancho - (parseFloat(aj.descuentoLamaFinal) || 0);
+  const ejeCorteMm = ancho - (parseFloat(aj.descuentoEje) || 0);
+  // Redondeado hacia arriba: no se puede cortar media lama.
+  const lamasPorUnidad = alturaLama > 0 ? Math.ceil(alto / alturaLama) : 0;
+
+  const cajonUnidades = ud;
+  const cajonTotalM = (cajonCorteMm * ud) / 1000;
+  const lamasTotalUd = ud * lamasPorUnidad;
+  const longitudLamaM = (lamaAnchoCorteMm * lamasTotalUd) / 1000;
+  const lamaFinalUnidades = ud;
+  const lamaFinalTotalM = (lamaFinalCorteMm * ud) / 1000;
+  const ejeUnidades = ud;
+  const ejeTotalM = (ejeCorteMm * ud) / 1000;
+
   const felpudo = np * ud;
   const testeros = 2 * np * ud;
   const placaContencion = 2 * np * ud;
@@ -8977,23 +9325,25 @@ function calcularDespiecePersianaLinea(fila) {
   const discos = (motor > 0 ? 0 : np) * ud;
   const capsula = np * ud;
   const pasacintas = np * ud;
-  const nEjes = np * ud;
-  const tamanoEje = np ? ancho / np : 0;
-  const ejeTotalM = (nEjes * tamanoEje) / 1000;
   const topes = 2 * np * ud;
   const motoresUd = motor > 0 ? np * ud : 0;
 
   return {
-    cajon, cajonTotalM, lamas, longitudLamaM, lamaFinal, felpudo, testeros,
-    placaContencion, embudos, recogedor, tirantes, discos, capsula, pasacintas,
-    nEjes, tamanoEje, ejeTotalM, topes, motoresUd,
+    cajon,
+    cajonCorteMm, cajonUnidades, cajonTotalM,
+    lamaAnchoCorteMm, lamasPorUnidad, lamasTotalUd, longitudLamaM,
+    lamaFinalCorteMm, lamaFinalUnidades, lamaFinalTotalM,
+    ejeCorteMm, ejeUnidades, ejeTotalM,
+    felpudo, testeros, placaContencion, embudos, recogedor, tirantes, discos,
+    capsula, pasacintas, topes, motoresUd,
   };
 }
 
 // Agrupa el despiece de todas las filas de un cálculo: perfiles que se compran en barras
 // de 6m (cajón, lama y eje — se separan por tamaño de cajón porque cada tamaño usa perfil
 // distinto), y herraje que se compra por unidad (recuento simple, sin separar por cajón).
-function calcularDespiecePersianasConjunto(filas) {
+// La lama final se suma a los metros de lama normal (es el mismo perfil de stock).
+function calcularDespiecePersianasConjunto(filas, ajustes) {
   const porCajon = {};
   const herraje = {
     felpudo: 0, testeros: 0, placaContencion: 0, embudos: 0, recogedor: 0,
@@ -9002,11 +9352,11 @@ function calcularDespiecePersianasConjunto(filas) {
   const lineas = [];
 
   (filas || []).forEach((fila) => {
-    const r = calcularDespiecePersianaLinea(fila);
+    const r = calcularDespiecePersianaLinea(fila, ajustes);
     lineas.push({ fila, resultado: r });
     if (!porCajon[r.cajon]) porCajon[r.cajon] = { cajonM: 0, lamaM: 0, ejeM: 0 };
     porCajon[r.cajon].cajonM += r.cajonTotalM;
-    porCajon[r.cajon].lamaM += r.longitudLamaM;
+    porCajon[r.cajon].lamaM += r.longitudLamaM + r.lamaFinalTotalM;
     porCajon[r.cajon].ejeM += r.ejeTotalM;
     herraje.felpudo += r.felpudo;
     herraje.testeros += r.testeros;
@@ -9081,7 +9431,7 @@ function resumenTextoPersianas(filas, despieceConjunto) {
   const lineasTxt = filas.map((f, i) => {
     const np = parseFloat(f.npersianas) || 1;
     const motorTxt = (PERSIANAS_MOTOR_OPCIONES.find((m) => m.valor === (parseFloat(f.motor) || 0)) || {}).label || "";
-    return `${i + 1}. Persiana cajón ${f.cajon}mm — ${f.ancho || "?"} x ${f.alto || "?"} mm — ${f.npersianas || 1} hoja(s) — x${f.ud || 1} — ${motorTxt}`;
+    return `${i + 1}. Persiana cajón ${f.cajon}mm — ${f.ancho || "?"} x ${f.alto || "?"} mm — ${f.npersianas || 1} hoja(s) — x${f.ud || 1} — ${motorTxt} — recogedor a la ${f.lado || "Derecha"}`;
   }).join("\n");
   const barrasTxt = despieceConjunto.perfiles.map((p) =>
     `Cajón ${p.cajon}mm: ${p.cajonBarras} barra(s) de 6m · Lama: ${p.lamaBarras} barra(s) de 6m · Eje: ${p.ejeBarras} barra(s) de 6m`
@@ -9091,6 +9441,55 @@ function resumenTextoPersianas(filas, despieceConjunto) {
 
 // modo: "despiece" (solo piezas/perfiles/herraje, para el taller — sin precios) o
 // "presupuesto" (solo el documento de precios para el cliente — sin despiece técnico).
+// Imprime una pegatina de 100x150mm (tamaño etiqueta de envío) para pegar en la
+// persiana terminada o en su despiece dentro de fábrica: proyecto, cliente,
+// medida, cajón y lado del recogedor — lo justo para identificarla sin dudas.
+function imprimirPegatinaPersiana(unidad, proyecto, cliente) {
+  const e = escaparHtmlInforme;
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8" />
+<title>Pegatina persiana — ${e(proyecto?.numero || "")}</title>
+<style>
+  @page { size: 100mm 150mm; margin: 0; }
+  body { font-family: -apple-system, Arial, sans-serif; color: #0f172a; margin: 0; padding: 6mm; width: 88mm; height: 138mm; box-sizing: border-box; }
+  .btn-print { background: #2E8B57; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-bottom: 12px; }
+  @media print { .btn-print { display: none; } body { padding: 6mm; } }
+  h1 { font-size: 20px; margin: 0 0 2mm; }
+  .proyecto { font-size: 13px; color: #475569; margin-bottom: 5mm; }
+  .campo { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 4mm; }
+  .valor { font-size: 22px; font-weight: 800; }
+  .medida { font-size: 30px; font-weight: 800; margin-top: 2mm; }
+  .lado { display: inline-block; margin-top: 5mm; padding: 3px 10px; border: 2px solid #0f172a; border-radius: 6px; font-weight: 700; font-size: 16px; }
+</style></head>
+<body>
+  <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <h1>#${e(proyecto?.numero || "—")}</h1>
+  <div class="proyecto">${e(proyecto?.nombre || "")}${cliente?.nombre ? " · " + e(cliente.nombre) : ""}</div>
+
+  <div class="campo">Expediente</div>
+  <div class="valor">${e(unidad.numeroPresupuesto || "—")}</div>
+
+  <div class="campo">Cajón</div>
+  <div class="valor">${e(unidad.cajon)}mm</div>
+
+  <div class="campo">Medida (ancho x alto)</div>
+  <div class="medida">${e(unidad.ancho || "?")} x ${e(unidad.alto || "?")}</div>
+
+  <div class="campo">Unidad</div>
+  <div class="valor">${e(unidad.indice)} / ${e(unidad.total)}</div>
+
+  <div class="lado">Recogedor: ${e(unidad.lado || "Derecha")}</div>
+</body></html>`;
+
+  const ventana = window.open("", "_blank");
+  if (!ventana) {
+    alert("El navegador ha bloqueado la ventana emergente. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    return;
+  }
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
 function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despieceConjunto, presupuestoCalc, modo }) {
   const e = escaparHtmlInforme;
   const esDespiece = modo === "despiece";
@@ -9100,13 +9499,24 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
       <td>${i + 1}</td><td>${e(f.cajon)}mm</td><td>${e(f.ancho)}</td><td>${e(f.alto)}</td>
       <td>${e(f.npersianas || 1)}</td><td>${e(f.ud || 1)}</td>
       <td>${e((PERSIANAS_MOTOR_OPCIONES.find((m) => m.valor === (parseFloat(f.motor) || 0)) || {}).label || "")}</td>
+      <td>${e(f.lado || "Derecha")}</td>
+    </tr>`).join("");
+
+  // Medidas exactas de corte por cada línea — lo que necesita el operario para cortar,
+  // no solo el total agregado en metros.
+  const cortesHtml = (despieceConjunto.lineas || []).map(({ fila, resultado: r }, i) => `<tr>
+      <td>${i + 1}</td>
+      <td>Cajón: ${r.cajonUnidades} pieza(s) de ${r.cajonCorteMm.toFixed(0)} mm</td>
+      <td>Lama: ${r.lamasTotalUd} pieza(s) de ${r.lamaAnchoCorteMm.toFixed(0)} mm (${r.lamasPorUnidad}/persiana)</td>
+      <td>Lama final: ${r.lamaFinalUnidades} pieza(s) de ${r.lamaFinalCorteMm.toFixed(0)} mm</td>
+      <td>Eje: ${r.ejeUnidades} pieza(s) de ${r.ejeCorteMm.toFixed(0)} mm</td>
     </tr>`).join("");
 
   const barrasHtml = despieceConjunto.perfiles.map((p) => `<tr>
-      <td>Cajón ${p.cajon}mm</td><td>${p.cajonM.toFixed(2)} m</td><td>${p.cajonBarras} barra(s)</td>
+      <td>Cajón ${p.cajon}mm</td><td>${p.cajonM.toFixed(2)} m</td><td>${p.cajonBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_POR_CAJON[p.cajon]?.cajon || "—")}</td>
     </tr>
-    <tr><td>Lama ${p.cajon}mm</td><td>${p.lamaM.toFixed(2)} m</td><td>${p.lamaBarras} barra(s)</td></tr>
-    <tr><td>Eje octogonal (cajón ${p.cajon})</td><td>${p.ejeM.toFixed(2)} m</td><td>${p.ejeBarras} barra(s)</td></tr>`).join("");
+    <tr><td>Lama ${p.cajon}mm</td><td>${p.lamaM.toFixed(2)} m</td><td>${p.lamaBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_COMUNES.lama)}</td></tr>
+    <tr><td>Eje octogonal (cajón ${p.cajon})</td><td>${p.ejeM.toFixed(2)} m</td><td>${p.ejeBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_COMUNES.eje)}</td></tr>`).join("");
 
   const herrajeFilas = [
     ["Felpudo", despieceConjunto.herraje.felpudo], ["Testeros (juego)", despieceConjunto.herraje.testeros],
@@ -9115,7 +9525,7 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
     ["Discos", despieceConjunto.herraje.discos], ["Cápsula", despieceConjunto.herraje.capsula],
     ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
     ["Motores", despieceConjunto.herraje.motores],
-  ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => `<tr><td>${e(nombre)}</td><td>${cant}</td></tr>`).join("");
+  ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => `<tr><td>${e(nombre)}</td><td>${cant} ud</td></tr>`).join("");
 
   const precioFilas = presupuestoCalc.detalle.map((d) => `<tr>
       <td>${e(d.nombre)}</td><td>${d.cantidad.toFixed(2)} ${d.unidad}</td><td>${d.precio.toFixed(2)} €</td><td>${d.importe.toFixed(2)} €</td>
@@ -9126,13 +9536,19 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
   const bloqueDespiece = `
   <h2>Persianas</h2>
   <table>
-    <tr><th>Nº</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Hojas</th><th>Ud.</th><th>Motor</th></tr>
+    <tr><th>Nº</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Hojas</th><th>Ud.</th><th>Motor</th><th>Lado</th></tr>
     ${filasHtml}
+  </table>
+
+  <h2>Medidas de corte (por línea)</h2>
+  <table>
+    <tr><th>Nº</th><th>Cajón</th><th>Lama</th><th>Lama final</th><th>Eje</th></tr>
+    ${cortesHtml}
   </table>
 
   <h2>Perfiles a pedir (barras de 6 metros)</h2>
   <table>
-    <tr><th>Perfil</th><th>Metros necesarios</th><th>Barras de 6m</th></tr>
+    <tr><th>Perfil</th><th>Metros necesarios</th><th>Barras de 6m</th><th>Referencia</th></tr>
     ${barrasHtml}
   </table>
 
@@ -11935,7 +12351,60 @@ const semanaISO = (fechaStr) => {
   return `${d.getFullYear()}-S${String(weekNo).padStart(2, "0")}`;
 };
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma }) {
+// Panel plegable para subir/ver el PDF de condiciones que se adjunta
+// automáticamente a cada presupuesto que se manda a firmar (junto con sus
+// datos). Es una configuración única para toda la empresa, no por presupuesto.
+function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
+  const [abierto, setAbierto] = useState(false);
+  const [subiendo, setSubiendo] = useState(false);
+  const inputRef = useRef(null);
+
+  const seleccionarArchivo = async (file) => {
+    if (!file) return;
+    setSubiendo(true);
+    await onSubirPdf(file);
+    setSubiendo(false);
+  };
+
+  return (
+    <div className="mb-4 border border-slate-200 rounded-md bg-slate-50">
+      <button onClick={() => setAbierto(!abierto)} className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-slate-600">
+        <span className="flex items-center gap-1.5"><FileText size={14} /> Documento de condiciones para firmas</span>
+        <ChevronRight size={16} className={abierto ? "rotate-90 transition-transform" : "transition-transform"} />
+      </button>
+      {abierto && (
+        <div className="px-4 pb-4 text-sm space-y-2">
+          {configuracionFirma?.condicionesPdfUrl ? (
+            <p className="text-slate-600">
+              Actual: <a href={configuracionFirma.condicionesPdfUrl} target="_blank" rel="noopener noreferrer" className="underline text-[#2E8B57] font-semibold">{configuracionFirma.condicionesPdfNombre || "condiciones.pdf"}</a>
+              {" "}— se añade después de los datos en cada presupuesto que se manda a firmar.
+            </p>
+          ) : (
+            <p className="text-slate-500">Todavía no has subido ningún PDF de condiciones — de momento solo se manda la página con los datos del presupuesto.</p>
+          )}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={subiendo}
+            style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+            className="flex items-center gap-1.5 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md"
+          >
+            <FileText size={14} /> {subiendo ? "Subiendo..." : configuracionFirma?.condicionesPdfUrl ? "Reemplazar PDF de condiciones" : "Subir PDF de condiciones"}
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) seleccionarArchivo(e.target.files[0]); e.target.value = ""; }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -12219,6 +12688,8 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         subtitle={`${presupuestos.length} presupuesto${presupuestos.length === 1 ? "" : "s"} registrado${presupuestos.length === 1 ? "" : "s"}`}
       />
 
+      <ConfiguracionFirmaPanel configuracionFirma={configuracionFirma} onSubirPdf={onSubirPdfCondicionesFirma} />
+
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-3 shadow-md cursor-pointer select-none"
@@ -12420,7 +12891,60 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
 }
 
 function filaPersianaVacia() {
-  return { id: uid(), cajon: 155, ud: 1, ancho: "", alto: "", motor: 0, npersianas: 1 };
+  return { id: uid(), cajon: 155, ud: 1, ancho: "", alto: "", motor: 0, npersianas: 1, lado: "Derecha" };
+}
+
+// Lee un PDF de "listado de cajas" (tipo Ecowin PVC, con Modelo/Código/Ancho/Alto/
+// Color/Uds) y lo convierte en filas listas para la Calculadora de Persianas —
+// persiana por persiana, para revisar y corregir antes de pasarlo a presupuesto.
+// El documento no trae cajón (mm)/motor/lado, así que se rellenan con valores por
+// defecto editables (cajón 155, sin motor, recogedor a la derecha).
+async function leerListadoCajasPersianas(file) {
+  const base64Data = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result.split(",")[1]);
+    r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+    r.readAsDataURL(file);
+  });
+  const prompt = 'Esto es un "listado de cajas" o listado de pedido de un proveedor de PVC/aluminio (columnas típicas: Modelo, Código, Ancho, Alto, Color, Uds — puede tener varios grupos/páginas). Revisa el documento ENTERO, todas las páginas y todos los grupos, sin saltarte ninguna fila ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"lineas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. Una entrada por cada fila de la tabla que tenga medidas o cantidad. Las medidas suelen venir en metros con coma/punto decimal (ej. "1.400" = 1400 mm) — conviértelas siempre a milímetros como número entero. "cantidad" es la columna "Uds".';
+
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 8000,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } },
+          { type: "text", text: prompt },
+        ],
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "Error de la API");
+  const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+  const inicio = limpio.indexOf("{");
+  const fin = limpio.lastIndexOf("}");
+  const info = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+  const filasLeidas = Array.isArray(info.lineas) ? info.lineas.filter((l) => l && l.ancho && l.alto) : [];
+  if (filasLeidas.length === 0) throw new Error("No he encontrado ninguna fila con medidas en el PDF.");
+
+  return filasLeidas.map((l) => ({
+    id: uid(),
+    cajon: 155,
+    ud: l.cantidad || 1,
+    ancho: l.ancho,
+    alto: l.alto,
+    motor: 0,
+    npersianas: 1,
+    lado: "Derecha",
+  }));
 }
 
 function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresupuesto }) {
@@ -12428,6 +12952,26 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
   const [direccionObra, setDireccionObra] = useState("");
   const [filas, setFilas] = useState([filaPersianaVacia()]);
   const [mostrarTarifas, setMostrarTarifas] = useState(false);
+  const [extras, setExtras] = useState([]);
+  const [leyendoPdfPersianas, setLeyendoPdfPersianas] = useState(false);
+  const [errorPdfPersianas, setErrorPdfPersianas] = useState("");
+  const inputPdfPersianasRef = useRef(null);
+
+  const importarFilasDesdePdf = async (file) => {
+    setLeyendoPdfPersianas(true);
+    setErrorPdfPersianas("");
+    try {
+      const nuevasFilas = await leerListadoCajasPersianas(file);
+      setFilas((prev) => {
+        const prevValidas = prev.filter((f) => (parseFloat(f.ancho) || 0) > 0 || (parseFloat(f.alto) || 0) > 0);
+        return [...prevValidas, ...nuevasFilas];
+      });
+    } catch (err) {
+      setErrorPdfPersianas("No se pudo leer el PDF: " + err.message);
+    } finally {
+      setLeyendoPdfPersianas(false);
+    }
+  };
 
   const actualizarFila = (id, campo, valor) => {
     setFilas((prev) => prev.map((f) => (f.id === id ? { ...f, [campo]: valor } : f)));
@@ -12435,16 +12979,37 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
   const quitarFila = (id) => setFilas((prev) => (prev.length > 1 ? prev.filter((f) => f.id !== id) : prev));
   const anadirFila = () => setFilas((prev) => [...prev, filaPersianaVacia()]);
 
+  const anadirExtra = () => setExtras((prev) => [...prev, { id: uid(), nombre: "", cantidad: 1, precio: "" }]);
+  const actualizarExtra = (id, campo, valor) => setExtras((prev) => prev.map((x) => (x.id === id ? { ...x, [campo]: valor } : x)));
+  const quitarExtra = (id) => setExtras((prev) => prev.filter((x) => x.id !== id));
+
   const filasValidas = useMemo(() => filas.filter((f) => (parseFloat(f.ancho) || 0) > 0 && (parseFloat(f.alto) || 0) > 0), [filas]);
-  const despieceConjunto = useMemo(() => calcularDespiecePersianasConjunto(filasValidas), [filasValidas]);
+  const ajustesCorte = tarifas?.ajustesCorte || PERSIANAS_AJUSTES_CORTE_DEFECTO;
+  const despieceConjunto = useMemo(() => calcularDespiecePersianasConjunto(filasValidas, ajustesCorte), [filasValidas, ajustesCorte]);
   const presupuestoCalc = useMemo(() => calcularPresupuestoPersianas(despieceConjunto, tarifas), [despieceConjunto, tarifas]);
+
+  // Artículos añadidos a mano (que no salen del cálculo automático — instalación,
+  // portes, algún accesorio extra, etc.), sumados aparte al total.
+  const extrasValidos = useMemo(() => extras.filter((x) => x.nombre.trim()), [extras]);
+  const extrasDetalle = extrasValidos.map((x) => {
+    const cantidad = parseFloat(x.cantidad) || 0;
+    const precio = parseFloat(x.precio) || 0;
+    return { nombre: x.nombre, cantidad, unidad: "ud", precio, importe: cantidad * precio, esExtra: true, extraId: x.id };
+  });
+  const presupuestoFinal = useMemo(() => ({
+    detalle: [...presupuestoCalc.detalle, ...extrasDetalle],
+    total: presupuestoCalc.total + extrasDetalle.reduce((s, d) => s + d.importe, 0),
+  }), [presupuestoCalc, extrasDetalle]);
 
   const cambiarTarifa = (key, valor) => {
     onSaveTarifas && onSaveTarifas({ ...tarifas, [key]: valor });
   };
+  const cambiarAjusteCorte = (key, valor) => {
+    onSaveTarifas && onSaveTarifas({ ...tarifas, ajustesCorte: { ...ajustesCorte, [key]: valor } });
+  };
 
   const handleImprimir = (modo) => {
-    imprimirDespiecePersianas({ clienteNombre, direccionObra, filas: filasValidas, despieceConjunto, presupuestoCalc, modo });
+    imprimirDespiecePersianas({ clienteNombre, direccionObra, filas: filasValidas, despieceConjunto, presupuestoCalc: presupuestoFinal, modo });
   };
 
   const handlePasarAPresupuesto = () => {
@@ -12453,8 +13018,8 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
       clienteNombre,
       direccionObra,
       descripcion: resumenTextoPersianas(filasValidas, despieceConjunto),
-      importe: presupuestoCalc.total ? presupuestoCalc.total.toFixed(2) : "",
-      persianas: [{ id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto, tarifas, total: presupuestoCalc.total }],
+      importe: presupuestoFinal.total ? presupuestoFinal.total.toFixed(2) : "",
+      persianas: [{ id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto, tarifas, extras: extrasValidos, total: presupuestoFinal.total }],
     });
   };
 
@@ -12474,6 +13039,28 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
         </div>
       </div>
 
+      <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
+        <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Cargar medidas desde un PDF (listado de cajas)</span>
+        <p className="text-xs text-slate-400 mb-2">Sube el PDF tal cual te lo manda el proveedor y se añaden las filas automáticamente, persiana por persiana — revísalas y corrígelas (cajón, motor, lado) antes de pasar a presupuesto.</p>
+        <button
+          type="button"
+          onClick={() => inputPdfPersianasRef.current?.click()}
+          disabled={leyendoPdfPersianas}
+          style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+          className="flex items-center gap-1.5 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md"
+        >
+          <FileText size={14} /> {leyendoPdfPersianas ? "Leyendo el PDF..." : "Subir PDF de listado de cajas"}
+        </button>
+        <input
+          ref={inputPdfPersianasRef}
+          type="file"
+          accept="application/pdf"
+          className="hidden"
+          onChange={(e) => { if (e.target.files?.[0]) importarFilasDesdePdf(e.target.files[0]); e.target.value = ""; }}
+        />
+        {errorPdfPersianas && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfPersianas}</p>}
+      </div>
+
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm min-w-[760px]">
           <thead className="bg-slate-50 text-slate-500 text-xs">
@@ -12484,6 +13071,7 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               <th className="text-left px-3 py-2">Hojas</th>
               <th className="text-left px-3 py-2">Ud. iguales</th>
               <th className="text-left px-3 py-2">Motor</th>
+              <th className="text-left px-3 py-2">Lado recogedor</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
@@ -12505,6 +13093,12 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                   </Select>
                 </td>
                 <td className="px-3 py-2">
+                  <Select value={f.lado || "Derecha"} onChange={(e) => actualizarFila(f.id, "lado", e.target.value)} className="min-w-[110px]">
+                    <option>Derecha</option>
+                    <option>Izquierda</option>
+                  </Select>
+                </td>
+                <td className="px-3 py-2">
                   <button onClick={() => quitarFila(f.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>
                 </td>
               </tr>
@@ -12518,6 +13112,34 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
 
       {filasValidas.length > 0 && (
         <>
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Medidas de corte (lo que corta el operario)</h3>
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[700px]">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr>
+                    <th className="text-left px-4 py-2">Nº</th>
+                    <th className="text-left px-4 py-2">Cajón</th>
+                    <th className="text-left px-4 py-2">Lama</th>
+                    <th className="text-left px-4 py-2">Lama final</th>
+                    <th className="text-left px-4 py-2">Eje</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {despieceConjunto.lineas.map(({ resultado: r }, i) => (
+                    <tr key={i}>
+                      <td className="px-4 py-2 text-slate-500">{i + 1}</td>
+                      <td className="px-4 py-2 text-slate-700">{r.cajonUnidades} pza. de {r.cajonCorteMm.toFixed(0)} mm</td>
+                      <td className="px-4 py-2 text-slate-700">{r.lamasTotalUd} pza. de {r.lamaAnchoCorteMm.toFixed(0)} mm <span className="text-slate-400">({r.lamasPorUnidad}/persiana)</span></td>
+                      <td className="px-4 py-2 text-slate-700">{r.lamaFinalUnidades} pza. de {r.lamaFinalCorteMm.toFixed(0)} mm</td>
+                      <td className="px-4 py-2 text-slate-700">{r.ejeUnidades} pza. de {r.ejeCorteMm.toFixed(0)} mm</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div>
             <h3 className="text-sm font-bold text-slate-700 mb-2">Perfiles a pedir (barras de 6 metros)</h3>
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -12551,7 +13173,7 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                     ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
                     ["Motores", despieceConjunto.herraje.motores],
                   ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => (
-                    <tr key={nombre}><td className="px-4 py-2 font-medium text-slate-700">{nombre}</td><td className="px-4 py-2 text-slate-500">{cant}</td></tr>
+                    <tr key={nombre}><td className="px-4 py-2 font-medium text-slate-700">{nombre}</td><td className="px-4 py-2 text-slate-500">{cant} ud</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -12563,7 +13185,26 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               <Euro size={14} /> {mostrarTarifas ? "Ocultar precios" : "Ver / editar precios"}
             </button>
             {mostrarTarifas && (
-              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
+              <>
+                <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3">
+                  <h4 className="text-xs font-bold text-slate-600 uppercase mb-2">Descuentos de corte (mm)</h4>
+                  <p className="text-xs text-slate-400 mb-3">Se restan del ancho para calcular la medida exacta de cada pieza a cortar. Vienen de la plantilla real de fabricación — cámbialos si tu proveedor de perfil usa otros.</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                    {[
+                      ["descuentoCajon", "Cajón"],
+                      ["descuentoAnchoLama", "Ancho lama"],
+                      ["alturaLama", "Altura de 1 lama"],
+                      ["descuentoLamaFinal", "Lama final"],
+                      ["descuentoEje", "Eje"],
+                    ].map(([key, label]) => (
+                      <div key={key}>
+                        <label className="block text-xs font-semibold text-slate-500 mb-1">{label}</label>
+                        <input type="number" value={ajustesCorte[key] ?? PERSIANAS_AJUSTES_CORTE_DEFECTO[key]} onChange={(e) => cambiarAjusteCorte(key, e.target.value)} className={inputCls} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-slate-500 text-xs">
                     <tr><th className="text-left px-4 py-2">Concepto</th><th className="text-left px-4 py-2">Cantidad</th><th className="text-left px-4 py-2">Precio (€)</th><th className="text-left px-4 py-2">Importe</th></tr>
@@ -12600,8 +13241,35 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                 </table>
                 <p className="text-xs text-slate-400 px-4 py-2">Los precios se guardan solos y se recuerdan la próxima vez. Cuando tengas tarifas por proveedor, se pueden asociar aquí mismo más adelante.</p>
               </div>
+
+              <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3">
+                <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200">
+                  <span className="text-xs font-bold text-slate-600 uppercase">Artículos extra (instalación, portes, accesorios...)</span>
+                  <button type="button" onClick={anadirExtra} className="flex items-center gap-1 text-xs font-semibold text-[#2E8B57] hover:text-[#256E46]">
+                    <Plus size={14} /> Añadir artículo
+                  </button>
+                </div>
+                {extras.length === 0 ? (
+                  <p className="text-xs text-slate-400 px-4 py-3">Sin artículos extra. Úsalo para algo que no salga del cálculo automático (instalación, portes, un accesorio suelto...).</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <tbody className="divide-y divide-slate-100">
+                      {extras.map((x) => (
+                        <tr key={x.id}>
+                          <td className="px-4 py-2"><input value={x.nombre} onChange={(e) => actualizarExtra(x.id, "nombre", e.target.value)} placeholder="Ej: Instalación" className={inputCls} /></td>
+                          <td className="px-4 py-2 w-20"><input type="number" step="1" value={x.cantidad} onChange={(e) => actualizarExtra(x.id, "cantidad", e.target.value)} className={inputCls} /></td>
+                          <td className="px-4 py-2 w-28"><input type="number" step="0.01" value={x.precio} onChange={(e) => actualizarExtra(x.id, "precio", e.target.value)} placeholder="0,00" className={inputCls} /></td>
+                          <td className="px-4 py-2 font-mono-num text-slate-600 w-24">{money((parseFloat(x.cantidad) || 0) * (parseFloat(x.precio) || 0))}</td>
+                          <td className="px-2 py-2"><button type="button" onClick={() => quitarExtra(x.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              </>
             )}
-            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoCalc.total)}</div>
+            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoFinal.total)}</div>
           </div>
 
           <div className="flex flex-wrap gap-3">
@@ -14334,12 +15002,21 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
   const [firmante, setFirmante] = useState({
     nombre: esAprobacionInterna ? (proyectoVinculado.responsableAprobacionNombre || "") : (presupuesto.clienteNombre || ""),
     email: esAprobacionInterna ? (proyectoVinculado.responsableAprobacionEmail || "") : "",
+    telefono: esAprobacionInterna ? "" : (presupuesto.telefono || ""),
   });
   const firma = presupuesto.firma;
 
+  const enlaceWhatsappFirma = (tel, link) => {
+    const limpio = (tel || "").replace(/[^\d+]/g, "");
+    if (!limpio || !link) return null;
+    const conPrefijo = limpio.startsWith("+") ? limpio.replace("+", "") : (limpio.startsWith("34") ? limpio : `34${limpio}`);
+    const mensaje = `Hola, te paso el presupuesto ${presupuesto.numero} de Alumavel para que lo confirmes con tu firma: ${link}`;
+    return `https://wa.me/${conPrefijo}?text=${encodeURIComponent(mensaje)}`;
+  };
+
   const enviar = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!firmante.email.trim()) return;
+    if (!firmante.email.trim() && !firmante.telefono.trim()) return;
     setEnviando(true);
     await onEnviarFirma(presupuesto, firmante);
     setEnviando(false);
@@ -14356,10 +15033,16 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
   }
 
   if (firma?.estado === "enviado") {
+    const linkWhatsapp = enlaceWhatsappFirma(firma.firmanteTelefono, firma.signingLink);
     return (
-      <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-sm">
-        <p className="font-semibold">✎ Pendiente de firma — enviado a {firma.firmanteEmail}</p>
-        <p className="text-xs text-amber-600 mt-1">El estado se actualiza solo cuando firme (puede tardar en verse hasta que recargues la página).</p>
+      <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-sm space-y-2">
+        <p className="font-semibold">✎ Pendiente de firma — {firma.firmanteEmail && !firma.firmanteEmail.endsWith("@sinemail.alumavel.es") ? `enviado a ${firma.firmanteEmail}` : `${firma.firmanteNombre || "firmante"} sin email`}</p>
+        <p className="text-xs text-amber-600">El estado se actualiza solo cuando firme (puede tardar en verse hasta que recargues la página).</p>
+        {linkWhatsapp && (
+          <a href={linkWhatsapp} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
+            <MessageCircle size={14} /> Mandar enlace de firma por WhatsApp
+          </a>
+        )}
       </div>
     );
   }
@@ -14376,12 +15059,16 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
             <Field label="Nombre del firmante">
               <TextInput value={firmante.nombre} onChange={(e) => setFirmante({ ...firmante, nombre: e.target.value })} />
             </Field>
-            <Field label="Email del firmante" required>
-              <TextInput type="email" value={firmante.email} onChange={(e) => setFirmante({ ...firmante, email: e.target.value })} required />
+            <Field label="Teléfono (para WhatsApp)">
+              <TextInput value={firmante.telefono} onChange={(e) => setFirmante({ ...firmante, telefono: e.target.value })} placeholder="Ej: 600123456" />
             </Field>
           </div>
+          <Field label="Email del firmante (opcional si no tiene)">
+            <TextInput type="email" value={firmante.email} onChange={(e) => setFirmante({ ...firmante, email: e.target.value })} />
+          </Field>
+          <p className="text-xs text-slate-400">Si no pone email, el enlace de firma se manda solo por WhatsApp — pon el teléfono para poder compartirlo.</p>
           <div className="flex gap-2">
-            <button type="submit" disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
+            <button type="submit" disabled={enviando || (!firmante.email.trim() && !firmante.telefono.trim())} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {enviando ? "Enviando..." : "Enviar a firmar"}
             </button>
             <button type="button" onClick={() => setMostrarForm(false)} className="text-sm font-semibold text-slate-500 px-3.5 py-2">Cancelar</button>
