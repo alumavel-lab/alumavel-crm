@@ -19,7 +19,7 @@ export const handler = async () => {
   try {
     const user = process.env.EMAIL_USER;
     const pass = process.env.EMAIL_PASSWORD;
-    const destinatario = process.env.INFORME_SEMANAL_EMAIL_TO || user;
+    const destinatario = process.env.INFORME_SEMANAL_EMAIL_TO || "alumavel@gmail.com";
 
     if (!user || !pass) {
       console.error("Informe semanal: faltan EMAIL_USER / EMAIL_PASSWORD, no se puede enviar.");
