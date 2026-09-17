@@ -9675,6 +9675,21 @@ const PERSIANAS_MOTOR_OPCIONES = [
   { valor: 2, label: "Con motor, sin recogedor ni discos" },
 ];
 
+// Altura (mm) a partir de la cual el cajón de 155 no es válido y hay que pasar
+// a 185 obligatoriamente. Regla de Miguel: 1500mm o más -> 185.
+const PERSIANAS_ALTURA_MINIMA_CAJON_185 = 1500;
+
+// Guías compatibles según el cajón (ancho de guía en mm) y proveedor/sistema de
+// embudo asociado a cada uno (Gealan/Salamander o Cortizo — Cortizo depende del
+// modelo de ventana, así que se elige a mano).
+const PERSIANAS_GUIA_ANCHO_POR_CAJON = { 155: [30, 53], 185: [30, 53, 75], 200: [30, 53, 75] };
+const PERSIANAS_PROVEEDOR_GUIA_OPCIONES = ["Gealan/Salamander", "Cortizo"];
+const PERSIANAS_SALIDA_CINTA_OPCIONES = ["Frontal", "Inferior"];
+
+// Longitud de barra real de cada perfil (mm), para el aprovechamiento de barras.
+// La guía PVC viene en barras de 6,40m; el resto (cajón, lama, eje) en 6m.
+const PERSIANAS_LONGITUD_BARRA_MM = { cajon: 6000, lama: 6000, eje: 6000, guia: 6400 };
+
 // Descuentos de corte por defecto, extraídos de la plantilla real de fabricación
 // (Hoja de corte para persianas). Son editables desde "Ver / editar precios" porque
 // pueden variar según el proveedor de perfil que se use en cada momento.
@@ -9684,6 +9699,7 @@ const PERSIANAS_AJUSTES_CORTE_DEFECTO = {
   alturaLama: 45,
   descuentoLamaFinal: 67,
   descuentoEje: 120,
+  descuentoGuia: 0,
 };
 
 // Referencias de material para pedir al proveedor, extraídas de la plantilla real
@@ -9729,15 +9745,22 @@ function calcularDespiecePersianaLinea(fila, ajustes) {
   const ud = parseFloat(fila.ud) || 0;
   const ancho = parseFloat(fila.ancho) || 0;
   const alto = parseFloat(fila.alto) || 0;
-  const cajon = parseFloat(fila.cajon) || 155;
+  let cajon = parseFloat(fila.cajon) || 155;
   const motor = parseFloat(fila.motor) || 0;
   const np = parseFloat(fila.npersianas) || 1;
+  const proveedorGuia = fila.proveedorGuia || PERSIANAS_PROVEEDOR_GUIA_OPCIONES[0];
+  const salidaCinta = fila.salidaCinta || PERSIANAS_SALIDA_CINTA_OPCIONES[0];
+
+  // Regla de Miguel: con altura >= 1500mm no vale cajón 155, hay que subir a 185.
+  const alturaObligaCajon185 = alto >= PERSIANAS_ALTURA_MINIMA_CAJON_185 && cajon === 155;
+  if (alturaObligaCajon185) cajon = 185;
 
   const alturaLama = parseFloat(aj.alturaLama) || 45;
   const cajonCorteMm = ancho - (parseFloat(aj.descuentoCajon) || 0);
   const lamaAnchoCorteMm = ancho - (parseFloat(aj.descuentoAnchoLama) || 0);
   const lamaFinalCorteMm = ancho - (parseFloat(aj.descuentoLamaFinal) || 0);
   const ejeCorteMm = ancho - (parseFloat(aj.descuentoEje) || 0);
+  const guiaCorteMm = alto - (parseFloat(aj.descuentoGuia) || 0);
   // Redondeado hacia arriba: no se puede cortar media lama.
   const lamasPorUnidad = alturaLama > 0 ? Math.ceil(alto / alturaLama) : 0;
 
@@ -9749,27 +9772,41 @@ function calcularDespiecePersianaLinea(fila, ajustes) {
   const lamaFinalTotalM = (lamaFinalCorteMm * ud) / 1000;
   const ejeUnidades = ud;
   const ejeTotalM = (ejeCorteMm * ud) / 1000;
+  // Poliespán: relleno interior del cajón, misma longitud de corte que el cajón.
+  const poliespanUnidades = ud;
+  const poliespanTotalM = (cajonCorteMm * ud) / 1000;
+  // Guía: 2 por persiana (una a cada lado), a la medida del alto del hueco.
+  const guiaUnidades = 2 * np * ud;
+  const guiaTotalM = (guiaCorteMm * guiaUnidades) / 1000;
 
   const felpudo = np * ud;
   const testeros = 2 * np * ud;
   const placaContencion = 2 * np * ud;
-  const embudos = 2 * np * ud;
+  const jgoLateral = 2 * np * ud;
+  const embudosTotal = 2 * np * ud;
+  const embudosGealan = proveedorGuia === "Cortizo" ? 0 : embudosTotal;
+  const embudosCortizo = proveedorGuia === "Cortizo" ? embudosTotal : 0;
   const recogedor = (motor > 1 ? 0 : np) * ud;
   const tirantes = 3 * np * ud;
   const discos = (motor > 0 ? 0 : np) * ud;
   const capsula = np * ud;
-  const pasacintas = np * ud;
+  const pasacintasTotal = np * ud;
+  const pasacintasFrontal = salidaCinta === "Inferior" ? 0 : pasacintasTotal;
+  const pasacintasInferior = salidaCinta === "Inferior" ? pasacintasTotal : 0;
   const topes = 2 * np * ud;
   const motoresUd = motor > 0 ? np * ud : 0;
 
   return {
-    cajon,
+    cajon, alturaObligaCajon185, proveedorGuia, salidaCinta,
     cajonCorteMm, cajonUnidades, cajonTotalM,
     lamaAnchoCorteMm, lamasPorUnidad, lamasTotalUd, longitudLamaM,
     lamaFinalCorteMm, lamaFinalUnidades, lamaFinalTotalM,
     ejeCorteMm, ejeUnidades, ejeTotalM,
-    felpudo, testeros, placaContencion, embudos, recogedor, tirantes, discos,
-    capsula, pasacintas, topes, motoresUd,
+    poliespanUnidades, poliespanTotalM,
+    guiaCorteMm, guiaUnidades, guiaTotalM,
+    felpudo, testeros, placaContencion, jgoLateral,
+    embudosGealan, embudosCortizo, recogedor, tirantes, discos,
+    capsula, pasacintasFrontal, pasacintasInferior, topes, motoresUd,
   };
 }
 
@@ -9777,30 +9814,73 @@ function calcularDespiecePersianaLinea(fila, ajustes) {
 // de 6m (cajón, lama y eje — se separan por tamaño de cajón porque cada tamaño usa perfil
 // distinto), y herraje que se compra por unidad (recuento simple, sin separar por cajón).
 // La lama final se suma a los metros de lama normal (es el mismo perfil de stock).
+// Aprovechamiento real de barra (bin-packing "first-fit decreasing"): a partir de
+// una lista de piezas a cortar (en mm) y la longitud de la barra de stock, decide
+// en qué barra va cada pieza para gastar el mínimo de barras posible, y cuánto
+// sobra en cada una. No es solo "total ÷ 6" — es el plan de corte pieza a pieza.
+function empaquetarBarras(piezasMm, longitudBarraMm) {
+  const piezas = (piezasMm || []).filter((p) => p > 0).sort((a, b) => b - a);
+  const barras = [];
+  piezas.forEach((pieza) => {
+    const barra = barras.find((b) => b.usadoMm + pieza <= longitudBarraMm);
+    if (barra) { barra.piezas.push(pieza); barra.usadoMm += pieza; }
+    else barras.push({ piezas: [pieza], usadoMm: pieza });
+  });
+  return barras.map((b) => ({ piezas: b.piezas, usadoMm: b.usadoMm, sobraMm: longitudBarraMm - b.usadoMm }));
+}
+
+// Agrupa el despiece de todas las filas de un cálculo: perfiles que se compran en barras
+// (cajón, lama, eje y poliespán en 6m; guía en 6,40m — se separan por tamaño de cajón,
+// y la guía también por ancho, porque cada combinación usa perfil distinto), herraje que
+// se compra por unidad, y el plan de aprovechamiento de barra por cada perfil.
+// La lama final se suma a los metros de lama normal (es el mismo perfil de stock).
 function calcularDespiecePersianasConjunto(filas, ajustes) {
   const porCajon = {};
+  const piezasPorPerfil = {}; // clave -> [] de longitudes mm individuales, para empaquetarBarras
+  const empujarPiezas = (clave, longitudMm, cantidad) => {
+    if (!longitudMm || !cantidad) return;
+    if (!piezasPorPerfil[clave]) piezasPorPerfil[clave] = [];
+    for (let i = 0; i < cantidad; i++) piezasPorPerfil[clave].push(longitudMm);
+  };
   const herraje = {
-    felpudo: 0, testeros: 0, placaContencion: 0, embudos: 0, recogedor: 0,
-    tirantes: 0, discos: 0, capsula: 0, pasacintas: 0, topes: 0, motores: 0,
+    felpudo: 0, testeros: 0, placaContencion: 0, jgoLateral: 0,
+    embudosGealan: 0, embudosCortizo: 0, recogedor: 0,
+    tirantes: 0, discos: 0, capsula: 0, pasacintasFrontal: 0, pasacintasInferior: 0,
+    topes: 0, motores: 0,
   };
   const lineas = [];
 
   (filas || []).forEach((fila) => {
     const r = calcularDespiecePersianaLinea(fila, ajustes);
     lineas.push({ fila, resultado: r });
-    if (!porCajon[r.cajon]) porCajon[r.cajon] = { cajonM: 0, lamaM: 0, ejeM: 0 };
+    if (!porCajon[r.cajon]) porCajon[r.cajon] = { cajonM: 0, lamaM: 0, ejeM: 0, poliespanM: 0, guias: {} };
     porCajon[r.cajon].cajonM += r.cajonTotalM;
     porCajon[r.cajon].lamaM += r.longitudLamaM + r.lamaFinalTotalM;
     porCajon[r.cajon].ejeM += r.ejeTotalM;
+    porCajon[r.cajon].poliespanM += r.poliespanTotalM;
+    const anchoGuia = parseFloat(fila.guiaAncho) || 30;
+    if (!porCajon[r.cajon].guias[anchoGuia]) porCajon[r.cajon].guias[anchoGuia] = 0;
+    porCajon[r.cajon].guias[anchoGuia] += r.guiaTotalM;
+
+    empujarPiezas(`cajon_${r.cajon}`, r.cajonCorteMm, r.cajonUnidades);
+    empujarPiezas(`lama_${r.cajon}`, r.lamaAnchoCorteMm, r.lamasTotalUd);
+    empujarPiezas(`lama_${r.cajon}`, r.lamaFinalCorteMm, r.lamaFinalUnidades);
+    empujarPiezas(`eje_${r.cajon}`, r.ejeCorteMm, r.ejeUnidades);
+    empujarPiezas(`poliespan_${r.cajon}`, r.cajonCorteMm, r.poliespanUnidades);
+    empujarPiezas(`guia_${r.cajon}_${anchoGuia}`, r.guiaCorteMm, r.guiaUnidades);
+
     herraje.felpudo += r.felpudo;
     herraje.testeros += r.testeros;
     herraje.placaContencion += r.placaContencion;
-    herraje.embudos += r.embudos;
+    herraje.jgoLateral += r.jgoLateral;
+    herraje.embudosGealan += r.embudosGealan;
+    herraje.embudosCortizo += r.embudosCortizo;
     herraje.recogedor += r.recogedor;
     herraje.tirantes += r.tirantes;
     herraje.discos += r.discos;
     herraje.capsula += r.capsula;
-    herraje.pasacintas += r.pasacintas;
+    herraje.pasacintasFrontal += r.pasacintasFrontal;
+    herraje.pasacintasInferior += r.pasacintasInferior;
     herraje.topes += r.topes;
     herraje.motores += r.motoresUd;
   });
@@ -9811,9 +9891,20 @@ function calcularDespiecePersianasConjunto(filas, ajustes) {
     cajonM: porCajon[cajon].cajonM, cajonBarras: barras6m(porCajon[cajon].cajonM),
     lamaM: porCajon[cajon].lamaM, lamaBarras: barras6m(porCajon[cajon].lamaM),
     ejeM: porCajon[cajon].ejeM, ejeBarras: barras6m(porCajon[cajon].ejeM),
+    poliespanM: porCajon[cajon].poliespanM, poliespanBarras: barras6m(porCajon[cajon].poliespanM),
+    guias: Object.keys(porCajon[cajon].guias).sort().map((ancho) => ({
+      ancho: parseFloat(ancho), m: porCajon[cajon].guias[ancho], barras: Math.ceil((porCajon[cajon].guias[ancho] || 0) / 6.4),
+    })),
   }));
 
-  return { lineas, perfiles, herraje };
+  // Plan de corte real (qué pieza va en qué barra) para cada perfil.
+  const aprovechamiento = Object.keys(piezasPorPerfil).sort().map((clave) => {
+    const tipo = clave.split("_")[0];
+    const longitudBarraMm = PERSIANAS_LONGITUD_BARRA_MM[tipo] || 6000;
+    return { clave, tipo, longitudBarraMm, barras: empaquetarBarras(piezasPorPerfil[clave], longitudBarraMm) };
+  });
+
+  return { lineas, perfiles, herraje, aprovechamiento };
 }
 
 // Calcula el importe del presupuesto a partir del despiece agrupado y las tarifas
@@ -9828,12 +9919,20 @@ function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
     [
       [`cajon_${p.cajon}`, `Cajón ${p.cajon}mm`, p.cajonM],
       [`lama_${p.cajon}`, `Lama ${p.cajon}mm`, p.lamaM],
-      ["eje", "Eje octogonal", p.ejeM],
+      [`eje_${p.cajon}`, `Eje octogonal (cajón ${p.cajon})`, p.ejeM],
+      [`poliespan_${p.cajon}`, `Poliespán (cajón ${p.cajon})`, p.poliespanM],
     ].forEach(([key, nombre, cantidad]) => {
       const precio = parseFloat(t[key]) || 0;
       const importe = precio * cantidad;
       total += importe;
-      if (cantidad > 0) detalle.push({ nombre: p.cajon !== 200 || key !== "eje" ? `${nombre}${key === "eje" ? ` (cajón ${p.cajon})` : ""}` : nombre, cantidad, unidad: "m", precio, importe });
+      if (cantidad > 0) detalle.push({ nombre, cantidad, unidad: "m", precio, importe });
+    });
+    (p.guias || []).forEach((g) => {
+      const key = `guia_${g.ancho}`;
+      const precio = parseFloat(t[key]) || 0;
+      const importe = precio * g.m;
+      total += importe;
+      if (g.m > 0) detalle.push({ nombre: `Guía ${g.ancho}mm (cajón ${p.cajon})`, cantidad: g.m, unidad: "m", precio, importe });
     });
   });
 
@@ -9841,12 +9940,15 @@ function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
     ["felpudo", "Felpudo", despieceConjunto.herraje.felpudo],
     ["testeros", "Testeros (juego)", despieceConjunto.herraje.testeros],
     ["placaContencion", "Placa contención (juego)", despieceConjunto.herraje.placaContencion],
-    ["embudos", "Embudos (juego)", despieceConjunto.herraje.embudos],
+    ["jgoLateral", "Jgo. lateral", despieceConjunto.herraje.jgoLateral],
+    ["embudosGealan", "Embudos (Gealan/Salamander)", despieceConjunto.herraje.embudosGealan],
+    ["embudosCortizo", "Embudos (Cortizo)", despieceConjunto.herraje.embudosCortizo],
     ["recogedor", "Recogedor", despieceConjunto.herraje.recogedor],
     ["tirantes", "Tirantes", despieceConjunto.herraje.tirantes],
     ["discos", "Discos", despieceConjunto.herraje.discos],
     ["capsula", "Cápsula", despieceConjunto.herraje.capsula],
-    ["pasacintas", "Pasacintas", despieceConjunto.herraje.pasacintas],
+    ["pasacintasFrontal", "Pasacintas (salida frontal)", despieceConjunto.herraje.pasacintasFrontal],
+    ["pasacintasInferior", "Pasacintas (salida inferior)", despieceConjunto.herraje.pasacintasInferior],
     ["topes", "Topes", despieceConjunto.herraje.topes],
     ["motor", "Motor", despieceConjunto.herraje.motores],
   ].forEach(([key, nombre, cantidad]) => {
@@ -9857,6 +9959,18 @@ function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
   });
 
   return { detalle, total };
+}
+
+// Aplica horas de fabricación (a precio/hora) y % de gastos sobre el subtotal ya
+// calculado (materiales + extras + horas), para llegar al precio final al cliente:
+//   subtotal = materiales + extras + (horas × precio/hora)
+//   gastos   = subtotal × (%gastos / 100)
+//   final    = subtotal + gastos
+function calcularPresupuestoConGastos(subtotalMateriales, horas, precioHora, pctGastos) {
+  const importeHoras = (parseFloat(horas) || 0) * (parseFloat(precioHora) || 0);
+  const subtotal = (parseFloat(subtotalMateriales) || 0) + importeHoras;
+  const gastos = subtotal * ((parseFloat(pctGastos) || 0) / 100);
+  return { importeHoras, subtotal, gastos, total: subtotal + gastos };
 }
 
 // Genera el texto de descripción (para el presupuesto) y el HTML imprimible del despiece
@@ -9924,9 +10038,13 @@ function imprimirPegatinaPersiana(unidad, proyecto, cliente) {
   ventana.document.close();
 }
 
-function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despieceConjunto, presupuestoCalc, modo }) {
+// modo: "pedido" (persianas + medidas de corte + herraje — la orden limpia de fabricación,
+// SIN las barras), "barras" (solo el plan de corte de barras — qué pieza va en cada barra
+// y cuánto sobra), o "presupuesto" (el documento de precios para el cliente).
+function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despieceConjunto, presupuestoCalc, presupuestoGastos, modo }) {
   const e = escaparHtmlInforme;
-  const esDespiece = modo === "despiece";
+  const esPedido = modo === "pedido" || modo === "despiece"; // "despiece" queda como alias por compatibilidad
+  const esBarras = modo === "barras";
   const esPresupuesto = modo === "presupuesto";
 
   const filasHtml = filas.map((f, i) => `<tr>
@@ -9934,62 +10052,77 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
       <td>${e(f.npersianas || 1)}</td><td>${e(f.ud || 1)}</td>
       <td>${e((PERSIANAS_MOTOR_OPCIONES.find((m) => m.valor === (parseFloat(f.motor) || 0)) || {}).label || "")}</td>
       <td>${e(f.lado || "Derecha")}</td>
+      <td>${e(f.salidaCinta || "Frontal")}</td>
     </tr>`).join("");
 
   // Medidas exactas de corte por cada línea — lo que necesita el operario para cortar,
   // no solo el total agregado en metros.
   const cortesHtml = (despieceConjunto.lineas || []).map(({ fila, resultado: r }, i) => `<tr>
       <td>${i + 1}</td>
-      <td>Cajón: ${r.cajonUnidades} pieza(s) de ${r.cajonCorteMm.toFixed(0)} mm</td>
+      <td>Cajón: ${r.cajonUnidades} pieza(s) de ${r.cajonCorteMm.toFixed(0)} mm${r.alturaObligaCajon185 ? " (subido a 185 por altura ≥1500mm)" : ""}</td>
       <td>Lama: ${r.lamasTotalUd} pieza(s) de ${r.lamaAnchoCorteMm.toFixed(0)} mm (${r.lamasPorUnidad}/persiana)</td>
       <td>Lama final: ${r.lamaFinalUnidades} pieza(s) de ${r.lamaFinalCorteMm.toFixed(0)} mm</td>
       <td>Eje: ${r.ejeUnidades} pieza(s) de ${r.ejeCorteMm.toFixed(0)} mm</td>
+      <td>Guía ${fila.guiaAncho || 30}mm: ${r.guiaUnidades} pieza(s) de ${r.guiaCorteMm.toFixed(0)} mm</td>
     </tr>`).join("");
 
-  const barrasHtml = despieceConjunto.perfiles.map((p) => `<tr>
-      <td>Cajón ${p.cajon}mm</td><td>${p.cajonM.toFixed(2)} m</td><td>${p.cajonBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_POR_CAJON[p.cajon]?.cajon || "—")}</td>
-    </tr>
-    <tr><td>Lama ${p.cajon}mm</td><td>${p.lamaM.toFixed(2)} m</td><td>${p.lamaBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_COMUNES.lama)}</td></tr>
-    <tr><td>Eje octogonal (cajón ${p.cajon})</td><td>${p.ejeM.toFixed(2)} m</td><td>${p.ejeBarras} barra(s)</td><td>${e(PERSIANAS_REFERENCIAS_COMUNES.eje)}</td></tr>`).join("");
+  // Plan real de aprovechamiento de barra: qué piezas caben juntas en cada barra y cuánto sobra.
+  const NOMBRE_TIPO_PERFIL = { cajon: "Cajón", lama: "Lama", eje: "Eje octogonal", poliespan: "Poliespán", guia: "Guía" };
+  const barrasHtml = (despieceConjunto.aprovechamiento || []).map((perfil) => {
+    const partes = perfil.clave.split("_");
+    const tipo = partes[0];
+    const nombrePerfil = `${NOMBRE_TIPO_PERFIL[tipo] || tipo} ${partes.slice(1).join(" / ")}mm`.replace(/mm mm/, "mm");
+    const filasBarra = perfil.barras.map((b, i) => `<tr>
+        <td>${nombrePerfil} — barra ${i + 1}</td>
+        <td>${b.piezas.map((p) => `${p.toFixed(0)}mm`).join(" + ")}</td>
+        <td>${b.usadoMm.toFixed(0)} / ${perfil.longitudBarraMm} mm</td>
+        <td>${b.sobraMm.toFixed(0)} mm</td>
+      </tr>`).join("");
+    return filasBarra;
+  }).join("");
+  const totalBarrasNecesarias = (despieceConjunto.aprovechamiento || []).reduce((s, p) => s + p.barras.length, 0);
 
   const herrajeFilas = [
     ["Felpudo", despieceConjunto.herraje.felpudo], ["Testeros (juego)", despieceConjunto.herraje.testeros],
-    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Embudos (juego)", despieceConjunto.herraje.embudos],
+    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Jgo. lateral", despieceConjunto.herraje.jgoLateral],
+    ["Embudos (Gealan/Salamander)", despieceConjunto.herraje.embudosGealan], ["Embudos (Cortizo)", despieceConjunto.herraje.embudosCortizo],
     ["Recogedor", despieceConjunto.herraje.recogedor], ["Tirantes", despieceConjunto.herraje.tirantes],
     ["Discos", despieceConjunto.herraje.discos], ["Cápsula", despieceConjunto.herraje.capsula],
-    ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
-    ["Motores", despieceConjunto.herraje.motores],
+    ["Pasacintas (frontal)", despieceConjunto.herraje.pasacintasFrontal], ["Pasacintas (inferior)", despieceConjunto.herraje.pasacintasInferior],
+    ["Topes", despieceConjunto.herraje.topes], ["Motores", despieceConjunto.herraje.motores],
   ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => `<tr><td>${e(nombre)}</td><td>${cant} ud</td></tr>`).join("");
 
   const precioFilas = presupuestoCalc.detalle.map((d) => `<tr>
       <td>${e(d.nombre)}</td><td>${d.cantidad.toFixed(2)} ${d.unidad}</td><td>${d.precio.toFixed(2)} €</td><td>${d.importe.toFixed(2)} €</td>
     </tr>`).join("");
 
-  const titulo = esDespiece ? "Despiece de persianas (taller)" : esPresupuesto ? "Presupuesto de persianas" : "Presupuesto y despiece de persianas";
+  const titulo = esBarras ? "Barras a cortar (taller)" : esPedido ? "Orden de fabricación de persianas (taller)" : esPresupuesto ? "Presupuesto de persianas" : "Presupuesto y despiece de persianas";
 
-  const bloqueDespiece = `
-  <h2>Persianas</h2>
+  const bloquePedido = `
+  <h2>Persianas a fabricar</h2>
   <table>
-    <tr><th>Nº</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Hojas</th><th>Ud.</th><th>Motor</th><th>Lado</th></tr>
+    <tr><th>Nº</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Hojas</th><th>Ud.</th><th>Motor</th><th>Lado</th><th>Salida cinta</th></tr>
     ${filasHtml}
   </table>
 
   <h2>Medidas de corte (por línea)</h2>
   <table>
-    <tr><th>Nº</th><th>Cajón</th><th>Lama</th><th>Lama final</th><th>Eje</th></tr>
+    <tr><th>Nº</th><th>Cajón</th><th>Lama</th><th>Lama final</th><th>Eje</th><th>Guía</th></tr>
     ${cortesHtml}
   </table>
 
-  <h2>Perfiles a pedir (barras de 6 metros)</h2>
-  <table>
-    <tr><th>Perfil</th><th>Metros necesarios</th><th>Barras de 6m</th><th>Referencia</th></tr>
-    ${barrasHtml}
-  </table>
-
-  <h2>Herraje</h2>
+  <h2>Herraje y accesorios</h2>
   <table>
     <tr><th>Pieza</th><th>Cantidad</th></tr>
     ${herrajeFilas || `<tr><td colspan="2" style="color:#94a3b8;">—</td></tr>`}
+  </table>`;
+
+  const bloqueBarras = `
+  <h2>Plan de corte de barras (${totalBarrasNecesarias} barra(s) en total)</h2>
+  <p class="sub">Cada fila es UNA barra de stock. La columna "Piezas" indica qué cortes salen de esa barra concreta, en el orden en que se cortan.</p>
+  <table>
+    <tr><th>Perfil / barra</th><th>Piezas (mm)</th><th>Usado</th><th>Sobra</th></tr>
+    ${barrasHtml || `<tr><td colspan="4" style="color:#94a3b8;">—</td></tr>`}
   </table>`;
 
   const bloquePresupuesto = `
@@ -9998,7 +10131,16 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
     <tr><th>Concepto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr>
     ${precioFilas}
   </table>
-  <p class="total">Total: ${presupuestoCalc.total.toFixed(2)} €</p>`;
+  ${presupuestoGastos ? `
+  <table>
+    <tr><td>Subtotal materiales</td><td style="text-align:right;">${presupuestoCalc.total.toFixed(2)} €</td></tr>
+    <tr><td>Horas de fabricación (${e(presupuestoGastos.horas || 0)}h × ${(parseFloat(presupuestoGastos.precioHora) || 0).toFixed(2)}€/h)</td><td style="text-align:right;">${presupuestoGastos.importeHoras.toFixed(2)} €</td></tr>
+    <tr><td>Subtotal</td><td style="text-align:right;">${presupuestoGastos.subtotal.toFixed(2)} €</td></tr>
+    <tr><td>Gastos (${e(presupuestoGastos.pctGastos || 0)}%)</td><td style="text-align:right;">${presupuestoGastos.gastos.toFixed(2)} €</td></tr>
+  </table>` : ""}
+  <p class="total">Total: ${(presupuestoGastos ? presupuestoGastos.total : presupuestoCalc.total).toFixed(2)} €</p>`;
+
+  const bloque = esPresupuesto ? bloquePresupuesto : esBarras ? bloqueBarras : bloquePedido;
 
   const html = `<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8" />
@@ -10020,8 +10162,7 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
   <h1>${e(titulo)}</h1>
   <p class="sub">${e(clienteNombre || "Sin cliente")} ${direccionObra ? "· " + e(direccionObra) : ""} · ${new Date().toLocaleDateString("es-ES")}</p>
 
-  ${esPresupuesto ? bloquePresupuesto : bloqueDespiece}
-  ${!esDespiece && !esPresupuesto ? bloquePresupuesto : ""}
+  ${bloque}
 </body></html>`;
 
   const ventana = window.open("", "_blank");
@@ -13763,7 +13904,10 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
 }
 
 function filaPersianaVacia() {
-  return { id: uid(), cajon: 155, ud: 1, ancho: "", alto: "", motor: 0, npersianas: 1, lado: "Derecha" };
+  return {
+    id: uid(), cajon: 155, ud: 1, ancho: "", alto: "", motor: 0, npersianas: 1, lado: "Derecha",
+    guiaAncho: 30, proveedorGuia: PERSIANAS_PROVEEDOR_GUIA_OPCIONES[0], salidaCinta: PERSIANAS_SALIDA_CINTA_OPCIONES[0],
+  };
 }
 
 // Lee un PDF de "listado de cajas" (tipo Ecowin PVC, con Modelo/Código/Ancho/Alto/
@@ -13825,6 +13969,8 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
   const [filas, setFilas] = useState([filaPersianaVacia()]);
   const [mostrarTarifas, setMostrarTarifas] = useState(false);
   const [extras, setExtras] = useState([]);
+  const [horasFabricacion, setHorasFabricacion] = useState("");
+  const [pctGastos, setPctGastos] = useState("");
   const [leyendoPdfPersianas, setLeyendoPdfPersianas] = useState(false);
   const [errorPdfPersianas, setErrorPdfPersianas] = useState("");
   const inputPdfPersianasRef = useRef(null);
@@ -13873,6 +14019,13 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
     total: presupuestoCalc.total + extrasDetalle.reduce((s, d) => s + d.importe, 0),
   }), [presupuestoCalc, extrasDetalle]);
 
+  const precioHora = parseFloat(tarifas?.precioHora) || 0;
+  // Fórmula final: subtotal (materiales + extras + horas×precio/hora) + % de gastos sobre ese subtotal.
+  const presupuestoGastos = useMemo(
+    () => calcularPresupuestoConGastos(presupuestoFinal.total, horasFabricacion, precioHora, pctGastos),
+    [presupuestoFinal.total, horasFabricacion, precioHora, pctGastos]
+  );
+
   const cambiarTarifa = (key, valor) => {
     onSaveTarifas && onSaveTarifas({ ...tarifas, [key]: valor });
   };
@@ -13881,7 +14034,12 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
   };
 
   const handleImprimir = (modo) => {
-    imprimirDespiecePersianas({ clienteNombre, direccionObra, filas: filasValidas, despieceConjunto, presupuestoCalc: presupuestoFinal, modo });
+    imprimirDespiecePersianas({
+      clienteNombre, direccionObra, filas: filasValidas, despieceConjunto,
+      presupuestoCalc: presupuestoFinal,
+      presupuestoGastos: { ...presupuestoGastos, horas: horasFabricacion, precioHora, pctGastos },
+      modo,
+    });
   };
 
   const handlePasarAPresupuesto = () => {
@@ -13890,8 +14048,12 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
       clienteNombre,
       direccionObra,
       descripcion: resumenTextoPersianas(filasValidas, despieceConjunto),
-      importe: presupuestoFinal.total ? presupuestoFinal.total.toFixed(2) : "",
-      persianas: [{ id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto, tarifas, extras: extrasValidos, total: presupuestoFinal.total }],
+      importe: presupuestoGastos.total ? presupuestoGastos.total.toFixed(2) : "",
+      persianas: [{
+        id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto,
+        tarifas, extras: extrasValidos, horasFabricacion, precioHora, pctGastos,
+        total: presupuestoGastos.total,
+      }],
     });
   };
 
@@ -13934,7 +14096,7 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
-        <table className="w-full text-sm min-w-[760px]">
+        <table className="w-full text-sm min-w-[1180px]">
           <thead className="bg-slate-50 text-slate-500 text-xs">
             <tr>
               <th className="text-left px-3 py-2">Cajón</th>
@@ -13944,25 +14106,45 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               <th className="text-left px-3 py-2">Ud. iguales</th>
               <th className="text-left px-3 py-2">Motor</th>
               <th className="text-left px-3 py-2">Lado recogedor</th>
+              <th className="text-left px-3 py-2">Guía</th>
+              <th className="text-left px-3 py-2">Proveedor embudo</th>
+              <th className="text-left px-3 py-2">Salida cinta</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {filas.map((f) => (
+            {filas.map((f) => {
+              const alturaObligaCajon185 = (parseFloat(f.alto) || 0) >= PERSIANAS_ALTURA_MINIMA_CAJON_185 && parseFloat(f.cajon) === 155;
+              const guiasDisponibles = PERSIANAS_GUIA_ANCHO_POR_CAJON[parseFloat(f.cajon)] || PERSIANAS_GUIA_ANCHO_POR_CAJON[155];
+              return (
               <tr key={f.id}>
                 <td className="px-3 py-2">
                   <Select value={f.cajon} onChange={(e) => actualizarFila(f.id, "cajon", parseFloat(e.target.value))} className="min-w-[90px]">
                     {PERSIANAS_CAJON_OPCIONES.map((c) => <option key={c} value={c}>{c}mm</option>)}
                   </Select>
+                  {alturaObligaCajon185 && <p className="text-[10px] text-amber-600 font-semibold mt-1">Altura ≥1500 → se fabrica en 185</p>}
                 </td>
                 <td className="px-3 py-2"><input type="number" value={f.ancho} onChange={(e) => actualizarFila(f.id, "ancho", e.target.value)} className={inputCls + " w-24"} /></td>
                 <td className="px-3 py-2"><input type="number" value={f.alto} onChange={(e) => actualizarFila(f.id, "alto", e.target.value)} className={inputCls + " w-24"} /></td>
                 <td className="px-3 py-2"><input type="number" min="1" value={f.npersianas} onChange={(e) => actualizarFila(f.id, "npersianas", e.target.value)} className={inputCls + " w-16"} /></td>
                 <td className="px-3 py-2"><input type="number" min="1" value={f.ud} onChange={(e) => actualizarFila(f.id, "ud", e.target.value)} className={inputCls + " w-16"} /></td>
                 <td className="px-3 py-2">
-                  <Select value={f.motor} onChange={(e) => actualizarFila(f.id, "motor", parseFloat(e.target.value))} className="min-w-[220px]">
-                    {PERSIANAS_MOTOR_OPCIONES.map((m) => <option key={m.valor} value={m.valor}>{m.label}</option>)}
-                  </Select>
+                  <div className="flex gap-1 mb-1">
+                    <button
+                      type="button" onClick={() => actualizarFila(f.id, "motor", 0)}
+                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-md border-2 ${parseFloat(f.motor) === 0 ? "border-[#2E8B57] bg-emerald-50 text-[#2E8B57]" : "border-slate-200 text-slate-500"}`}
+                    >Sin motor</button>
+                    <button
+                      type="button" onClick={() => actualizarFila(f.id, "motor", parseFloat(f.motor) > 0 ? f.motor : 1)}
+                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-md border-2 ${parseFloat(f.motor) > 0 ? "border-[#2E8B57] bg-emerald-50 text-[#2E8B57]" : "border-slate-200 text-slate-500"}`}
+                    >Con motor</button>
+                  </div>
+                  {parseFloat(f.motor) > 0 && (
+                    <Select value={f.motor} onChange={(e) => actualizarFila(f.id, "motor", parseFloat(e.target.value))} className="min-w-[190px]">
+                      <option value={1}>Con recogedor</option>
+                      <option value={2}>Sin recogedor ni discos</option>
+                    </Select>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <Select value={f.lado || "Derecha"} onChange={(e) => actualizarFila(f.id, "lado", e.target.value)} className="min-w-[110px]">
@@ -13971,10 +14153,26 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                   </Select>
                 </td>
                 <td className="px-3 py-2">
+                  <Select value={f.guiaAncho || 30} onChange={(e) => actualizarFila(f.id, "guiaAncho", parseFloat(e.target.value))} className="min-w-[90px]">
+                    {guiasDisponibles.map((g) => <option key={g} value={g}>{g}mm</option>)}
+                  </Select>
+                </td>
+                <td className="px-3 py-2">
+                  <Select value={f.proveedorGuia || PERSIANAS_PROVEEDOR_GUIA_OPCIONES[0]} onChange={(e) => actualizarFila(f.id, "proveedorGuia", e.target.value)} className="min-w-[150px]">
+                    {PERSIANAS_PROVEEDOR_GUIA_OPCIONES.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </Select>
+                </td>
+                <td className="px-3 py-2">
+                  <Select value={f.salidaCinta || "Frontal"} onChange={(e) => actualizarFila(f.id, "salidaCinta", e.target.value)} className="min-w-[100px]">
+                    {PERSIANAS_SALIDA_CINTA_OPCIONES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </Select>
+                </td>
+                <td className="px-3 py-2">
                   <button onClick={() => quitarFila(f.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -13995,16 +14193,18 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                     <th className="text-left px-4 py-2">Lama</th>
                     <th className="text-left px-4 py-2">Lama final</th>
                     <th className="text-left px-4 py-2">Eje</th>
+                    <th className="text-left px-4 py-2">Guía</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {despieceConjunto.lineas.map(({ resultado: r }, i) => (
+                  {despieceConjunto.lineas.map(({ fila, resultado: r }, i) => (
                     <tr key={i}>
                       <td className="px-4 py-2 text-slate-500">{i + 1}</td>
-                      <td className="px-4 py-2 text-slate-700">{r.cajonUnidades} pza. de {r.cajonCorteMm.toFixed(0)} mm</td>
+                      <td className="px-4 py-2 text-slate-700">{r.cajonUnidades} pza. de {r.cajonCorteMm.toFixed(0)} mm{r.alturaObligaCajon185 && <span className="text-amber-600 font-semibold"> (→185)</span>}</td>
                       <td className="px-4 py-2 text-slate-700">{r.lamasTotalUd} pza. de {r.lamaAnchoCorteMm.toFixed(0)} mm <span className="text-slate-400">({r.lamasPorUnidad}/persiana)</span></td>
                       <td className="px-4 py-2 text-slate-700">{r.lamaFinalUnidades} pza. de {r.lamaFinalCorteMm.toFixed(0)} mm</td>
                       <td className="px-4 py-2 text-slate-700">{r.ejeUnidades} pza. de {r.ejeCorteMm.toFixed(0)} mm</td>
+                      <td className="px-4 py-2 text-slate-700">{r.guiaUnidades} pza. de {r.guiaCorteMm.toFixed(0)} mm <span className="text-slate-400">({fila.guiaAncho || 30}mm)</span></td>
                     </tr>
                   ))}
                 </tbody>
@@ -14013,18 +14213,22 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
           </div>
 
           <div>
-            <h3 className="text-sm font-bold text-slate-700 mb-2">Perfiles a pedir (barras de 6 metros)</h3>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Perfiles a pedir</h3>
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs">
-                  <tr><th className="text-left px-4 py-2">Perfil</th><th className="text-left px-4 py-2">Metros necesarios</th><th className="text-left px-4 py-2">Barras de 6m</th></tr>
+                  <tr><th className="text-left px-4 py-2">Perfil</th><th className="text-left px-4 py-2">Metros necesarios</th><th className="text-left px-4 py-2">Barras</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {despieceConjunto.perfiles.map((p) => (
                     <React.Fragment key={p.cajon}>
-                      <tr><td className="px-4 py-2 font-medium text-slate-700">Cajón {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.cajonM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.cajonBarras}</td></tr>
-                      <tr><td className="px-4 py-2 font-medium text-slate-700">Lama {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.lamaM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.lamaBarras}</td></tr>
-                      <tr><td className="px-4 py-2 font-medium text-slate-700">Eje octogonal (cajón {p.cajon})</td><td className="px-4 py-2 text-slate-500">{p.ejeM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.ejeBarras}</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Cajón {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.cajonM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.cajonBarras} (6m)</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Lama {p.cajon}mm</td><td className="px-4 py-2 text-slate-500">{p.lamaM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.lamaBarras} (6m)</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Eje octogonal (cajón {p.cajon})</td><td className="px-4 py-2 text-slate-500">{p.ejeM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.ejeBarras} (6m)</td></tr>
+                      <tr><td className="px-4 py-2 font-medium text-slate-700">Poliespán (cajón {p.cajon})</td><td className="px-4 py-2 text-slate-500">{p.poliespanM.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{p.poliespanBarras} (6m)</td></tr>
+                      {(p.guias || []).filter((g) => g.m > 0).map((g) => (
+                        <tr key={g.ancho}><td className="px-4 py-2 font-medium text-slate-700">Guía {g.ancho}mm (cajón {p.cajon})</td><td className="px-4 py-2 text-slate-500">{g.m.toFixed(2)} m</td><td className="px-4 py-2 text-slate-500">{g.barras} (6,4m)</td></tr>
+                      ))}
                     </React.Fragment>
                   ))}
                 </tbody>
@@ -14033,17 +14237,18 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
           </div>
 
           <div>
-            <h3 className="text-sm font-bold text-slate-700 mb-2">Herraje</h3>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Herraje y accesorios</h3>
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
               <table className="w-full text-sm">
                 <tbody className="divide-y divide-slate-100">
                   {[
                     ["Felpudo", despieceConjunto.herraje.felpudo], ["Testeros (juego)", despieceConjunto.herraje.testeros],
-                    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Embudos (juego)", despieceConjunto.herraje.embudos],
+                    ["Placa contención (juego)", despieceConjunto.herraje.placaContencion], ["Jgo. lateral", despieceConjunto.herraje.jgoLateral],
+                    ["Embudos (Gealan/Salamander)", despieceConjunto.herraje.embudosGealan], ["Embudos (Cortizo)", despieceConjunto.herraje.embudosCortizo],
                     ["Recogedor", despieceConjunto.herraje.recogedor], ["Tirantes", despieceConjunto.herraje.tirantes],
                     ["Discos", despieceConjunto.herraje.discos], ["Cápsula", despieceConjunto.herraje.capsula],
-                    ["Pasacintas", despieceConjunto.herraje.pasacintas], ["Topes", despieceConjunto.herraje.topes],
-                    ["Motores", despieceConjunto.herraje.motores],
+                    ["Pasacintas (frontal)", despieceConjunto.herraje.pasacintasFrontal], ["Pasacintas (inferior)", despieceConjunto.herraje.pasacintasInferior],
+                    ["Topes", despieceConjunto.herraje.topes], ["Motores", despieceConjunto.herraje.motores],
                   ].filter(([, cant]) => cant > 0).map(([nombre, cant]) => (
                     <tr key={nombre}><td className="px-4 py-2 font-medium text-slate-700">{nombre}</td><td className="px-4 py-2 text-slate-500">{cant} ud</td></tr>
                   ))}
@@ -14089,9 +14294,17 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                       despieceConjunto.perfiles.forEach((p) => {
                         if (d.nombre === `Cajón ${p.cajon}mm`) key = claveTarifaCajon(p.cajon, "cajon");
                         if (d.nombre === `Lama ${p.cajon}mm`) key = claveTarifaCajon(p.cajon, "lama");
-                        if (d.nombre.startsWith("Eje octogonal")) key = "eje";
+                        if (d.nombre === `Eje octogonal (cajón ${p.cajon})`) key = claveTarifaCajon(p.cajon, "eje");
+                        if (d.nombre === `Poliespán (cajón ${p.cajon})`) key = claveTarifaCajon(p.cajon, "poliespan");
+                        (p.guias || []).forEach((g) => { if (d.nombre === `Guía ${g.ancho}mm (cajón ${p.cajon})`) key = `guia_${g.ancho}`; });
                       });
-                      const herrajeKeys = { Felpudo: "felpudo", "Testeros (juego)": "testeros", "Placa contención (juego)": "placaContencion", "Embudos (juego)": "embudos", Recogedor: "recogedor", Tirantes: "tirantes", Discos: "discos", "Cápsula": "capsula", Pasacintas: "pasacintas", Topes: "topes", Motor: "motor" };
+                      const herrajeKeys = {
+                        Felpudo: "felpudo", "Testeros (juego)": "testeros", "Placa contención (juego)": "placaContencion",
+                        "Jgo. lateral": "jgoLateral", "Embudos (Gealan/Salamander)": "embudosGealan", "Embudos (Cortizo)": "embudosCortizo",
+                        Recogedor: "recogedor", Tirantes: "tirantes", Discos: "discos", "Cápsula": "capsula",
+                        "Pasacintas (salida frontal)": "pasacintasFrontal", "Pasacintas (salida inferior)": "pasacintasInferior",
+                        Topes: "topes", Motor: "motor",
+                      };
                       if (herrajeKeys[d.nombre]) key = herrajeKeys[d.nombre];
                       return (
                         <tr key={i}>
@@ -14141,12 +14354,65 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               </div>
               </>
             )}
-            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoFinal.total)}</div>
+
+            <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3 grid sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Horas de fabricación</label>
+                <input type="number" step="0.25" min="0" value={horasFabricacion} onChange={(e) => setHorasFabricacion(e.target.value)} placeholder="0" className={inputCls} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Precio / hora (€)</label>
+                <input type="number" step="0.01" min="0" value={tarifas.precioHora ?? ""} onChange={(e) => cambiarTarifa("precioHora", e.target.value)} placeholder="0,00" className={inputCls} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">% de gastos (sobre el precio final)</label>
+                <input type="number" step="0.1" min="0" value={pctGastos} onChange={(e) => setPctGastos(e.target.value)} placeholder="0" className={inputCls} />
+              </div>
+            </div>
+
+            <div className="text-right text-sm text-slate-500 space-y-0.5">
+              <div>Subtotal materiales + extras: {money(presupuestoFinal.total)}</div>
+              {(parseFloat(horasFabricacion) || 0) > 0 && <div>Horas de fabricación: {money(presupuestoGastos.importeHoras)}</div>}
+              {(parseFloat(pctGastos) || 0) > 0 && <div>Gastos ({pctGastos}%): {money(presupuestoGastos.gastos)}</div>}
+            </div>
+            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoGastos.total)}</div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-700 mb-2">Aprovechamiento de barras (plan de corte)</h3>
+            <p className="text-xs text-slate-400 mb-2">Cada fila es una barra real de stock, con las piezas que se cortan de ella y lo que sobra.</p>
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[600px]">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr><th className="text-left px-4 py-2">Perfil</th><th className="text-left px-4 py-2">Barra</th><th className="text-left px-4 py-2">Piezas</th><th className="text-left px-4 py-2">Sobra</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(despieceConjunto.aprovechamiento || []).flatMap((perfil) => {
+                    const partes = perfil.clave.split("_");
+                    const nombre = `${{ cajon: "Cajón", lama: "Lama", eje: "Eje", poliespan: "Poliespán", guia: "Guía" }[partes[0]] || partes[0]} ${partes.slice(1).join("/")}mm`;
+                    return perfil.barras.map((b, i) => (
+                      <tr key={`${perfil.clave}_${i}`}>
+                        <td className="px-4 py-2 font-medium text-slate-700">{nombre}</td>
+                        <td className="px-4 py-2 text-slate-500">Barra {i + 1} de {perfil.barras.length}</td>
+                        <td className="px-4 py-2 text-slate-500">{b.piezas.map((p) => `${p.toFixed(0)}mm`).join(" + ")}</td>
+                        <td className="px-4 py-2 text-slate-500">{b.sobraMm.toFixed(0)} mm</td>
+                      </tr>
+                    ));
+                  })}
+                  {(despieceConjunto.aprovechamiento || []).length === 0 && (
+                    <tr><td colSpan={4} className="px-4 py-3 text-slate-400">—</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <button onClick={() => handleImprimir("despiece")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
-              <Printer size={15} /> Imprimir despiece (taller)
+            <button onClick={() => handleImprimir("pedido")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
+              <Printer size={15} /> Imprimir orden de fabricación
+            </button>
+            <button onClick={() => handleImprimir("barras")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
+              <Printer size={15} /> Imprimir barras a cortar
             </button>
             <button onClick={() => handleImprimir("presupuesto")} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-4 py-2.5 rounded-md hover:bg-slate-50">
               <Printer size={15} /> Imprimir presupuesto
