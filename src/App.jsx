@@ -609,11 +609,29 @@ export default function App() {
 
     if (documentos.length > 0) {
       for (const doc of documentos) {
-        const match = /^data:([^;]+);base64,(.*)$/.exec(doc.url || "");
-        if (!match) continue;
-        const [, mimeType, base64] = match;
-        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
         try {
+          let bytes, mimeType;
+          const matchDataUri = /^data:([^;]+);base64,(.*)$/.exec(doc.url || "");
+          if (matchDataUri) {
+            // Documentos antiguos, guardados en base64 directamente.
+            mimeType = matchDataUri[1];
+            bytes = Uint8Array.from(atob(matchDataUri[2]), (c) => c.charCodeAt(0));
+          } else if (doc.url) {
+            // Documentos nuevos: URL de Firebase Storage — hay que descargarlos.
+            const respuesta = await fetch(doc.url);
+            if (!respuesta.ok) throw new Error(`No se pudo descargar (${respuesta.status})`);
+            mimeType = respuesta.headers.get("content-type") || "";
+            const buffer = await respuesta.arrayBuffer();
+            bytes = new Uint8Array(buffer);
+            // Si el content-type no viene claro, se adivina por la extensión del nombre.
+            if (!mimeType || mimeType === "application/octet-stream") {
+              const ext = (doc.nombre || "").split(".").pop().toLowerCase();
+              mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "";
+            }
+          } else {
+            continue;
+          }
+
           if (mimeType === "application/pdf") {
             const pdfOrigen = await PDFDocument.load(bytes);
             const paginasCopiadas = await pdfDoc.copyPages(pdfOrigen, pdfOrigen.getPageIndices());
@@ -4222,8 +4240,15 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
 
       // El documento se guarda en la ficha del proyecto siempre, tenga o no líneas
-      // de pedido dentro — igual que ya pasa en presupuestos.
-      onInlineUpdate(proyecto.id, { documentos: [...(proyecto.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] });
+      // de pedido dentro — igual que ya pasa en presupuestos. Se sube a Storage (no
+      // en base64 dentro de la base de datos) para que no se quede cortado.
+      try {
+        const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
+        onInlineUpdate(proyecto.id, { documentos: [...(proyecto.documentos || []), { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() }] });
+      } catch (errSubida) {
+        console.error("No se pudo subir el documento a Storage:", errSubida);
+        setErrorPdfMedidas("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
+      }
 
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
@@ -9835,6 +9860,21 @@ function nombreElementoMontaje(el) {
   return `${base} ${el.codigo}${sufijo}`;
 }
 
+// Sube cualquier archivo (PDF, foto...) a Firebase Storage y devuelve su URL pública
+// de descarga. A diferencia de guardarlo en base64 dentro de Firebase Realtime
+// Database (limitado a un tamaño pequeño por campo, por lo que un PDF de varias
+// páginas se queda cortado y termina en blanco), aquí no hay ese límite.
+async function subirArchivoAStorage(file, carpeta) {
+  const bytes = await file.arrayBuffer();
+  const nombreArchivo = `${carpeta}/${Date.now()}-${uid()}-${file.name}`;
+  const subida = await fetch(
+    `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?uploadType=media&name=${encodeURIComponent(nombreArchivo)}`,
+    { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: bytes }
+  );
+  if (!subida.ok) throw new Error("Fallo al subir el archivo a Storage");
+  return `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(nombreArchivo)}?alt=media`;
+}
+
 function comprimirFotoMontaje(file, maxAncho = 1200, calidad = 0.7) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -14605,7 +14645,7 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
   useEffect(() => {
     if (!prefill) return;
     setPrefillPresupuesto({
-      id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
+      id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
       clienteNombre: prefill.clienteNombre || "", telefono: "",
       descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
@@ -14691,7 +14731,7 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
     try {
       const datos = await leerDatosDesdeArchivo(file);
       setPrefillPresupuesto({
-        id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
+        id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
         clienteNombre: datos.clienteNombre, telefono: datos.telefono,
         descripcion: datos.descripcion, importe: datos.importe, estado: "Pendiente",
         motivoRechazo: "", fechaRespuesta: "", comentarios: `Creado a partir de una foto/PDF subida (${datos.nombreArchivo}). Revisa los datos antes de guardar.`,
@@ -17161,7 +17201,15 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
 
       // Igual que en la ficha ya guardada: el documento se añade al presupuesto (aquí,
       // al propio formulario en memoria) siempre, tenga o no líneas de pedido dentro.
-      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] }));
+      // Se sube a Storage (no en base64 dentro de la base de datos) para que no se
+      // quede cortado con documentos grandes.
+      try {
+        const urlStorage = await subirArchivoAStorage(file, "documentos-presupuestos");
+        setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() }] }));
+      } catch (errSubida) {
+        console.error("No se pudo subir el documento a Storage:", errSubida);
+        setErrorPdfMedidasForm("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
+      }
 
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
@@ -17231,14 +17279,9 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       }));
       // Se guarda también como documento del presupuesto — así da igual cuál de los
       // dos botones de subida se use, el archivo siempre queda guardado en la ficha.
-      const base64Data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
-        r.readAsDataURL(file);
-      });
-      const mediaType = file.type === "application/pdf" ? "application/pdf" : (file.type || "image/jpeg");
-      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: `data:${mediaType};base64,${base64Data}`, subidoEn: Date.now() }] }));
+      // Se sube a Storage (no en base64) para que no se quede cortado.
+      const urlStorage = await subirArchivoAStorage(file, "documentos-presupuestos");
+      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() }] }));
     } catch (err) {
       setErrorFotoForm("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
@@ -17627,9 +17670,16 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
 
       // El documento se guarda en la ficha del presupuesto siempre, aunque luego no se
       // consiga sacar ninguna línea de pedido de él (para eso está, para poder volver
-      // a verlo — no depende de si es una hoja de medidas o no).
+      // a verlo — no depende de si es una hoja de medidas o no). Se sube a Storage (no
+      // en base64 dentro de la base de datos) para que no se quede cortado.
       if (onAdjuntarDocumento) {
-        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() });
+        try {
+          const urlStorage = await subirArchivoAStorage(file, `documentos-presupuestos/${presupuesto.id}`);
+          onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() });
+        } catch (errSubida) {
+          console.error("No se pudo subir el documento a Storage:", errSubida);
+          setErrorPdfMedidasPre("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
+        }
       }
 
       const contentBlock = esPdf
