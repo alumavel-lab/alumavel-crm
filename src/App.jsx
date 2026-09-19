@@ -795,6 +795,16 @@ export default function App() {
     return String(max + 1);
   };
 
+  // Sugerencia de número para un presupuesto nuevo (comparte numeración con
+  // proyectos, ya que un presupuesto normalmente termina siendo un proyecto con
+  // el mismo número) — el usuario puede cambiarlo si no le encaja.
+  const nextNumeroPresupuesto = () => {
+    const numsPresupuestos = presupuestos.map((p) => parseInt(String(p.numero).split("-")[0].replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+    const numsProyectos = proyectos.map((p) => parseInt(String(p.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+    const max = Math.max(4189, ...numsPresupuestos, ...numsProyectos);
+    return String(max + 1);
+  };
+
   const saveInstalaciones = (next) => { setInstalaciones(next); persist("instalaciones", next); };
 
   const saveMediciones = (next) => { setMediciones(next); persist("mediciones", next); };
@@ -1823,6 +1833,14 @@ export default function App() {
     savePresupuestos(next);
   };
 
+  // Cancela un envío a firmar pendiente (para poder reenviarlo, p.ej. si se subió
+  // el documento correcto después de haberlo mandado a firmar por error).
+  const cancelarFirmaPresupuesto = (presupuestoId) => {
+    const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, firma: null } : p));
+    savePresupuestos(next);
+    showToast("Envío a firmar cancelado — ya puedes volver a mandarlo");
+  };
+
   const deletePresupuesto = (id) => {
     savePresupuestos(presupuestos.filter((p) => p.id !== id));
     setPresupuestoView("list");
@@ -2788,6 +2806,7 @@ export default function App() {
           <PresupuestosModulo
             presupuestos={presupuestos}
             clientes={clientes}
+            nextNumero={nextNumeroPresupuesto}
             onCrearClienteRapido={crearClienteRapido}
             view={presupuestoView}
             setView={setPresupuestoView}
@@ -2823,6 +2842,7 @@ export default function App() {
             onSubirPdfCondicionesFirma={subirPdfCondicionesFirma}
             onGenerarPedido={enviarAPedido}
             onAdjuntarDocumento={agregarDocumentoPresupuesto}
+            onCancelarFirma={cancelarFirmaPresupuesto}
           />
         )}
         {modulo === "mediciones" && (
@@ -14550,7 +14570,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento }) {
+function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -14794,6 +14814,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         initial={editing ? { ...editing, estado: editing.estado || "Pendiente" } : prefillPresupuesto}
         clientes={clientes}
         presupuestosExistentes={presupuestos}
+        nextNumero={nextNumero}
         onCrearClienteRapido={onCrearClienteRapido}
         onLeerDatos={leerDatosDesdeArchivo}
         onCancel={() => { setView(editId ? "detail" : "list"); setPrefillPresupuesto(null); }}
@@ -14824,6 +14845,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         onEnviarFirma={onEnviarFirma}
         onGenerarPedido={onGenerarPedido}
         onAdjuntarDocumento={onAdjuntarDocumento}
+        onCancelarFirma={onCancelarFirma}
       />
     );
   }
@@ -17056,10 +17078,10 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
   );
 }
 
-function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos, onGenerarPedido }) {
+function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos, onGenerarPedido }) {
   const [f, setF] = useState(
     initial || {
-      id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
+      id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
       descripcion: "", importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
       comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, recoge: false, zona: "",
       proyectoId: "",
@@ -17126,7 +17148,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
-      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
+      const prompt = 'Esto es una medición, presupuesto o pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"numero":"número de presupuesto, propuesta o pedido tal cual aparece en el documento (ej. 4190), vacío si no aparece ninguno","lineas":[{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]}. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
         method: "POST",
@@ -17142,17 +17164,24 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
       if (data.error) throw new Error(data.error.message || "Error de la API");
       const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const inicio = limpio.indexOf("[");
-      const fin = limpio.lastIndexOf("]");
-      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+      const inicio = limpio.indexOf("{");
+      const fin = limpio.lastIndexOf("}");
+      const resultado = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+      const items = resultado.lineas;
 
       const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
         id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
         ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
       })).filter((l) => l.referencia);
 
+      // Si el documento trae su propio número de presupuesto/propuesta, se usa ese
+      // en vez del sugerido automáticamente — es el que de verdad importa.
+      if (resultado.numero && String(resultado.numero).trim()) {
+        setF((prev) => ({ ...prev, numero: String(resultado.numero).trim() }));
+      }
+
       if (nuevas.length === 0) {
-        setErrorPdfMedidasForm("Documento guardado, pero no he encontrado líneas de medidas claras en él.");
+        setErrorPdfMedidasForm(resultado.numero ? `Documento guardado y número ${resultado.numero} detectado, pero no he encontrado líneas de medidas claras.` : "Documento guardado, pero no he encontrado líneas de medidas claras en él.");
         return;
       }
       // A propósito NO se dispara el pedido automático aquí (a diferencia de la
@@ -17415,7 +17444,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
 // solo cambia quién firma. El estado (enviado/firmado) se guarda en Firebase y
 // lo actualiza el webhook de Firma.dev en cuanto se firma — como la app carga
 // los datos una sola vez, hay un botón para refrescar solo este registro.
-function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
+function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma }) {
   const proyectoVinculado = (proyectos || []).find((p) => p.id === (presupuesto.proyectoId || presupuesto.proyectoCreadoId));
   const esAprobacionInterna = !!(proyectoVinculado?.contratoConstructoraFirmado && proyectoVinculado?.responsableAprobacionEmail);
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -17464,6 +17493,15 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
             <MessageCircle size={14} /> Mandar enlace de firma por WhatsApp
           </a>
         )}
+        {onCancelarFirma && (
+          <button
+            type="button"
+            onClick={() => { if (confirm("¿Cancelar este envío a firmar? El enlace que ya se haya compartido dejará de servir, y podrás volver a mandarlo (útil si el documento no era el correcto).")) onCancelarFirma(presupuesto.id); }}
+            className="block text-xs font-semibold text-amber-700 hover:underline"
+          >
+            Cancelar y volver a enviar
+          </button>
+        )}
       </div>
     );
   }
@@ -17505,7 +17543,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
@@ -17708,7 +17746,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         </div>
       )}
 
-      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} />
+      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} />
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
