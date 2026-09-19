@@ -6,7 +6,7 @@ import {
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
   Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send, Printer, Calculator,
-  UserPlus, PhoneCall
+  UserPlus, PhoneCall, Scale
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -90,6 +90,31 @@ const toArray = (val) => {
   return [];
 };
 const escapeHtml = (s) => (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Añade una entrada al histórico de precios de un material/artículo cuando el precio
+// de compra o de venta cambia respecto al último valor registrado (o al dar de alta).
+// Cada entrada representa "desde esta fecha, el precio pasó a ser X" — así se puede
+// pulsar un producto y ver su evolución, y comparar precios entre tarifas/proveedores.
+// Se usa tanto en la edición manual como en la importación masiva de tarifas.
+const registrarHistoricoPrecio = (historicoAnterior, precioCompraAnterior, precioVentaAnterior, nuevoCompra, nuevoVenta, origen) => {
+  const historico = [...(historicoAnterior || [])];
+  const compraNorm = nuevoCompra === undefined || nuevoCompra === "" ? "" : String(nuevoCompra);
+  const ventaNorm = nuevoVenta === undefined || nuevoVenta === "" ? "" : String(nuevoVenta);
+  const compraAnteriorNorm = precioCompraAnterior === undefined || precioCompraAnterior === "" ? "" : String(precioCompraAnterior);
+  const ventaAnteriorNorm = precioVentaAnterior === undefined || precioVentaAnterior === "" ? "" : String(precioVentaAnterior);
+  const esAlta = historico.length === 0;
+  const cambio = compraNorm !== compraAnteriorNorm || ventaNorm !== ventaAnteriorNorm;
+  if (esAlta || cambio) {
+    historico.push({
+      id: uid(),
+      fecha: new Date().toISOString().slice(0, 10),
+      precioCompra: nuevoCompra ?? "",
+      precioVenta: nuevoVenta ?? "",
+      origen: origen || "Manual",
+    });
+  }
+  return historico;
+};
 
 // Lector genérico de Excel/CSV para importaciones masivas (contactos, tarifas...).
 // A diferencia del importador de "control de montaje" (que espera una estructura
@@ -1016,33 +1041,58 @@ export default function App() {
   // Importación masiva de tarifas de materiales: si el código o la descripción
   // ya existen, actualiza el precio; si no, da de alta el material nuevo.
   // Se hace todo en una sola escritura para no perder filas del lote.
-  const importarTarifasMateriales = (filas) => {
+  const importarTarifasMateriales = (filas, origen) => {
     let working = [...materiales];
     let actualizados = 0, creados = 0;
+    const nombreOrigen = origen || "Importación de tarifa";
     filas.forEach((fila) => {
       const idx = working.findIndex((m) =>
         (fila.codigo && m.codigo && m.codigo.toLowerCase() === String(fila.codigo).toLowerCase()) ||
         (fila.descripcion && m.descripcion && m.descripcion.toLowerCase() === String(fila.descripcion).toLowerCase())
       );
       if (idx >= 0) {
+        const actual = working[idx];
+        const nuevoCompra = fila.precioCompra !== "" && fila.precioCompra != null ? fila.precioCompra : actual.precioCompra;
+        const nuevoVenta = fila.precioVenta !== "" && fila.precioVenta != null ? fila.precioVenta : actual.precioVenta;
+        const historicoPrecios = registrarHistoricoPrecio(actual.historicoPrecios, actual.precioCompra, actual.precioVenta, nuevoCompra, nuevoVenta, nombreOrigen);
         working[idx] = {
-          ...working[idx],
-          ...(fila.precioVenta !== "" && fila.precioVenta != null ? { precioVenta: fila.precioVenta } : {}),
-          ...(fila.precioCompra !== "" && fila.precioCompra != null ? { precioCompra: fila.precioCompra } : {}),
+          ...actual,
+          ...(fila.foto ? { foto: fila.foto } : {}),
+          precioVenta: nuevoVenta, precioCompra: nuevoCompra, historicoPrecios,
         };
         actualizados++;
       } else if (fila.codigo || fila.descripcion) {
+        const historicoPrecios = registrarHistoricoPrecio([], "", "", fila.precioCompra || "", fila.precioVenta || "", nombreOrigen);
         working = [{
           id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: "",
           stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
           longitud: "", ancho: "", alto: "", grueso: "",
           precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: "",
+          foto: fila.foto || "", historicoPrecios,
         }, ...working];
         creados++;
       }
     });
     saveMateriales(working);
     showToast(`${actualizados} tarifa(s) actualizada(s), ${creados} material(es) nuevo(s)`);
+  };
+
+  // Importación masiva de fotos: cada archivo se empareja con un material por su
+  // nombre de fichero (código o descripción) — así se pueden subir de golpe todas las
+  // fotos de un catálogo, en vez de una a una desde la ficha de cada material.
+  const importarFotosMateriales = (fotos) => {
+    let asignadas = 0, sinMatch = 0;
+    const working = materiales.map((m) => {
+      const match = fotos.find((f) =>
+        (m.codigo && f.clave.toLowerCase() === m.codigo.toLowerCase()) ||
+        (m.descripcion && f.clave.toLowerCase() === m.descripcion.toLowerCase())
+      );
+      if (match) { asignadas++; return { ...m, foto: match.dataUrl }; }
+      return m;
+    });
+    sinMatch = fotos.length - asignadas;
+    saveMateriales(working);
+    showToast(`${asignadas} foto(s) asignada(s)${sinMatch > 0 ? `, ${sinMatch} sin material coincidente` : ""}`);
   };
 
   const upsertProveedor = (data) => {
@@ -1075,10 +1125,15 @@ export default function App() {
   const upsertMaterial = (data) => {
     let next;
     if (data.id) {
-      next = materiales.map((m) => (m.id === data.id ? { ...m, ...data } : m));
+      next = materiales.map((m) => {
+        if (m.id !== data.id) return m;
+        const historicoPrecios = registrarHistoricoPrecio(m.historicoPrecios, m.precioCompra, m.precioVenta, data.precioCompra, data.precioVenta, "Edición manual");
+        return { ...m, ...data, historicoPrecios };
+      });
       showToast("Material actualizado");
     } else {
-      next = [{ ...data, id: uid(), movimientos: [] }, ...materiales];
+      const historicoPrecios = registrarHistoricoPrecio([], "", "", data.precioCompra, data.precioVenta, "Alta inicial");
+      next = [{ ...data, id: uid(), movimientos: [], historicoPrecios }, ...materiales];
       showToast("Material dado de alta");
     }
     saveMateriales(next);
@@ -1511,24 +1566,42 @@ export default function App() {
 
   const saveArticulos = (next) => { setArticulos(next); persist("articulos", next); };
 
-  const importarTarifasArticulos = (filas) => {
+  const importarTarifasArticulos = (filas, origen) => {
     let working = [...articulos];
     let actualizados = 0, creados = 0;
+    const nombreOrigen = origen || "Importación de tarifa";
     filas.forEach((fila) => {
       const idx = working.findIndex((a) => fila.nombre && a.nombre && a.nombre.toLowerCase() === String(fila.nombre).toLowerCase());
       if (idx >= 0) {
-        working[idx] = { ...working[idx], ...(fila.precioVenta !== "" && fila.precioVenta != null ? { precioVenta: fila.precioVenta } : {}) };
+        const actual = working[idx];
+        const nuevoVenta = fila.precioVenta !== "" && fila.precioVenta != null ? fila.precioVenta : actual.precioVenta;
+        const historicoPrecios = registrarHistoricoPrecio(actual.historicoPrecios, "", actual.precioVenta, "", nuevoVenta, nombreOrigen);
+        working[idx] = { ...actual, ...(fila.foto ? { foto: fila.foto } : {}), precioVenta: nuevoVenta, historicoPrecios };
         actualizados++;
       } else if (fila.nombre) {
+        const historicoPrecios = registrarHistoricoPrecio([], "", "", "", fila.precioVenta || "", nombreOrigen);
         working = [{
           id: uid(), nombre: fila.nombre, descripcion: "", proveedorId: "", precioVenta: fila.precioVenta || "",
           materiales: [], fases: [], tamano: "", medidas: "", volumen: "", importeEnvio: "", importeMontaje: "",
+          foto: fila.foto || "", historicoPrecios,
         }, ...working];
         creados++;
       }
     });
     saveArticulos(working);
     showToast(`${actualizados} tarifa(s) actualizada(s), ${creados} artículo(s) nuevo(s)`);
+  };
+
+  const importarFotosArticulos = (fotos) => {
+    let asignadas = 0;
+    const working = articulos.map((a) => {
+      const match = fotos.find((f) => a.nombre && f.clave.toLowerCase() === a.nombre.toLowerCase());
+      if (match) { asignadas++; return { ...a, foto: match.dataUrl }; }
+      return a;
+    });
+    const sinMatch = fotos.length - asignadas;
+    saveArticulos(working);
+    showToast(`${asignadas} foto(s) asignada(s)${sinMatch > 0 ? `, ${sinMatch} sin artículo coincidente` : ""}`);
   };
 
   const nextNumeroArticulo = () => {
@@ -1540,10 +1613,15 @@ export default function App() {
   const upsertArticulo = (data) => {
     let next;
     if (data.id) {
-      next = articulos.map((a) => (a.id === data.id ? { ...a, ...data } : a));
+      next = articulos.map((a) => {
+        if (a.id !== data.id) return a;
+        const historicoPrecios = registrarHistoricoPrecio(a.historicoPrecios, "", a.precioVenta, "", data.precioVenta, "Edición manual");
+        return { ...a, ...data, historicoPrecios };
+      });
       showToast("Artículo actualizado");
     } else {
-      next = [{ ...data, id: uid(), numero: nextNumeroArticulo(), gastos: [] }, ...articulos];
+      const historicoPrecios = registrarHistoricoPrecio([], "", "", "", data.precioVenta, "Alta inicial");
+      next = [{ ...data, id: uid(), numero: nextNumeroArticulo(), gastos: [], historicoPrecios }, ...articulos];
       showToast("Artículo dado de alta");
     }
     saveArticulos(next);
@@ -2470,6 +2548,7 @@ export default function App() {
             onRemoveMovimiento={removeMovimiento}
             onEnviarAPedido={enviarAPedido}
             onImportarTarifas={importarTarifasMateriales}
+            onImportarFotos={importarFotosMateriales}
           />
         )}
         {modulo === "pedidos" && (
@@ -2477,6 +2556,7 @@ export default function App() {
             pedidos={pedidos}
             proveedores={proveedores}
             materiales={materiales}
+            articulos={articulos}
             proyectos={proyectos}
             view={pedidoView}
             setView={setPedidoView}
@@ -2575,6 +2655,7 @@ export default function App() {
             nextNumero={nextNumeroArticulo}
             onSolicitarArticulo={() => irASolicitarArticulo()}
             onImportarTarifas={importarTarifasArticulos}
+            onImportarFotos={importarFotosArticulos}
           />
         )}
         {modulo === "facturas" && (
@@ -4946,10 +5027,28 @@ function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onIn
 
 /* ================= STOCK ================= */
 
-function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido, onImportarTarifas }) {
+function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido, onImportarTarifas, onImportarFotos }) {
   const [q, setQ] = useState("");
   const [subview, setSubview] = useState("catalogo"); // catalogo | reponer
   const inputTarifasRef = useRef(null);
+  const inputFotosRef = useRef(null);
+  const [importandoFotos, setImportandoFotos] = useState(false);
+
+  const manejarImportarFotos = async (files) => {
+    if (!files || files.length === 0) return;
+    setImportandoFotos(true);
+    try {
+      const fotos = [];
+      for (const file of Array.from(files)) {
+        const dataUrl = await comprimirFotoMontaje(file, 800, 0.7);
+        const clave = file.name.replace(/\.[^.]+$/, "");
+        fotos.push({ clave, dataUrl });
+      }
+      onImportarFotos(fotos);
+    } finally {
+      setImportandoFotos(false);
+    }
+  };
 
   const manejarImportarTarifas = async (file) => {
     if (!file) return;
@@ -4960,12 +5059,13 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       descripcion: String(valorPorCabeceras(fila, ["descripcion", "nombre", "material"])).trim(),
       precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
       precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
+      foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
     })).filter((f) => f.codigo || f.descripcion);
     if (filas.length === 0) {
       alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
       return;
     }
-    onImportarTarifas(filas);
+    onImportarTarifas(filas, `Tarifa: ${file.name}`);
   };
 
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
@@ -4990,6 +5090,23 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
     });
     return map;
   }, [necesitaReponer]);
+
+  // Agrupa materiales por descripción (normalizada) para poder comparar el mismo
+  // producto ofrecido por distintos proveedores — solo se muestran los grupos donde
+  // hay más de un proveedor distinto, ordenados de más barato a más caro.
+  const gruposComparables = useMemo(() => {
+    const map = {};
+    materiales.forEach((m) => {
+      const clave = (m.descripcion || "").trim().toLowerCase();
+      if (!clave) return;
+      if (!map[clave]) map[clave] = [];
+      map[clave].push(m);
+    });
+    return Object.entries(map)
+      .map(([clave, mats]) => ({ clave, mats: [...mats].sort((a, b) => (parseFloat(a.precioCompra) || 0) - (parseFloat(b.precioCompra) || 0)) }))
+      .filter(({ mats }) => new Set(mats.map((m) => m.proveedorId || "sin-proveedor")).size > 1)
+      .sort((a, b) => a.clave.localeCompare(b.clave));
+  }, [materiales]);
 
   const cantidadSugerida = (m) => {
     const objetivo = m.stockOptimo && m.stockOptimo > m.stockMinimo ? m.stockOptimo : m.stockMinimo;
@@ -5074,9 +5191,25 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       />
       <button
         onClick={() => inputTarifasRef.current?.click()}
-        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-3 hover:bg-slate-50"
       >
         Importar tarifas desde Excel (masivo) — actualiza precios existentes o da de alta materiales nuevos
+      </button>
+
+      <input
+        ref={inputFotosRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => { manejarImportarFotos(e.target.files); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputFotosRef.current?.click()}
+        disabled={importandoFotos}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50 disabled:opacity-60"
+      >
+        <ImageIcon size={15} /> {importandoFotos ? "Subiendo fotos…" : "Importar fotos en bloque — nombra cada archivo con el código o la descripción exacta del material"}
       </button>
 
       {proveedores.length === 0 && (
@@ -5091,6 +5224,9 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
         </button>
         <button onClick={() => setSubview("reponer")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${subview === "reponer" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           <AlertTriangle size={14} /> A reponer {bajoMinimoCount > 0 && `(${bajoMinimoCount})`}
+        </button>
+        <button onClick={() => setSubview("comparar")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${subview === "comparar" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <Scale size={14} /> Comparar proveedores {gruposComparables.length > 0 && `(${gruposComparables.length})`}
         </button>
       </div>
 
@@ -5141,6 +5277,49 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
             </table>
           </div>
         </>
+      )}
+
+      {subview === "comparar" && (
+        <div className="space-y-6">
+          <p className="text-sm text-slate-500">Materiales con la misma descripción dados de alta en más de un proveedor — ordenados del más barato al más caro. Útil para ver a quién le compensa pedir cada cosa.</p>
+          {gruposComparables.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-sm text-slate-400">
+              Todavía no hay dos materiales con la misma descripción en proveedores distintos.
+            </div>
+          ) : (
+            gruposComparables.map(({ clave, mats }) => {
+              const masBarato = mats[0];
+              return (
+                <div key={clave} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 font-semibold text-slate-800 text-sm capitalize">{mats[0].descripcion}</div>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                        <th className="px-4 py-2.5 font-semibold">Proveedor</th>
+                        <th className="px-4 py-2.5 font-semibold">Código</th>
+                        <th className="px-4 py-2.5 font-semibold text-right">Precio compra</th>
+                        <th className="px-4 py-2.5 font-semibold text-right">Diferencia vs. más barato</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mats.map((m) => {
+                        const diff = (parseFloat(m.precioCompra) || 0) - (parseFloat(masBarato.precioCompra) || 0);
+                        return (
+                          <tr key={m.id} onClick={() => { setDetailId(m.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
+                            <td className="px-4 py-2.5 font-medium text-slate-800">{proveedorNombre(m.proveedorId)}</td>
+                            <td className="px-4 py-2.5 font-mono-num text-slate-500">{m.codigo}</td>
+                            <td className={`px-4 py-2.5 text-right font-mono-num font-semibold ${m.id === masBarato.id ? "text-[#2E8B57]" : "text-slate-700"}`}>{money(m.precioCompra)}</td>
+                            <td className="px-4 py-2.5 text-right font-mono-num text-slate-500">{diff === 0 ? "— más barato" : `+${money(diff)}`}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })
+          )}
+        </div>
       )}
 
       {subview === "reponer" && (
@@ -5208,11 +5387,22 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
       id: null, codigo: "", descripcion: "", proveedorId: proveedores[0]?.id || "",
       stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
       longitud: "", ancho: "", alto: "", grueso: "",
-      precioCompra: "", precioVenta: "", unidadCompra: "Unidad", categoria: "", familia: "",
+      precioCompra: "", precioVenta: "", unidadCompra: "Unidad", categoria: "", familia: "", foto: "",
     }
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const manejarFoto = async (file) => {
+    if (!file) return;
+    setSubiendoFoto(true);
+    try {
+      const dataUrl = await comprimirFotoMontaje(file, 800, 0.7);
+      setF((prev) => ({ ...prev, foto: dataUrl }));
+    } finally {
+      setSubiendoFoto(false);
+    }
+  };
   const submit = (e) => {
     e.preventDefault();
     if (!f.codigo.trim() || !f.descripcion.trim()) {
@@ -5278,6 +5468,24 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
           </div>
         </div>
 
+        <div>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Foto del producto</span>
+          <div className="flex items-center gap-3">
+            {f.foto ? (
+              <img src={f.foto} alt="" className="w-20 h-20 object-cover rounded-md border border-slate-200" />
+            ) : (
+              <div className="w-20 h-20 rounded-md border border-dashed border-slate-300 flex items-center justify-center text-slate-300"><ImageIcon size={22} /></div>
+            )}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-[#2E8B57] cursor-pointer hover:underline">
+                {subiendoFoto ? "Subiendo…" : f.foto ? "Cambiar foto" : "Subir foto"}
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => manejarFoto(e.target.files[0])} />
+              </label>
+              {f.foto && <button type="button" onClick={() => setF({ ...f, foto: "" })} className="text-xs font-semibold text-rose-600 hover:underline text-left">Quitar foto</button>}
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-3 gap-4">
           <Field label="Precio compra (€)"><TextInput type="number" step="0.01" value={f.precioCompra} onChange={set("precioCompra")} /></Field>
           <Field label="Precio venta (€)"><TextInput type="number" step="0.01" value={f.precioVenta} onChange={set("precioVenta")} /></Field>
@@ -5303,6 +5511,7 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
 function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemoveMovimiento, isAdmin }) {
   const [tab, setTab] = useState("datos");
   const movimientos = material.movimientos || [];
+  const historicoPrecios = material.historicoPrecios || [];
   const bajo = material.stockReal <= material.stockMinimo;
 
   return (
@@ -5310,12 +5519,19 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver al listado</button>
 
       <div className="flex items-start justify-between mb-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono-num text-sm text-[#2E8B57] font-bold">{material.codigo}</span>
-            <h1 className="font-display text-2xl font-extrabold text-slate-900">{material.descripcion}</h1>
+        <div className="flex items-start gap-4">
+          {material.foto ? (
+            <img src={material.foto} alt="" className="w-16 h-16 object-cover rounded-md border border-slate-200 shrink-0" />
+          ) : (
+            <div className="w-16 h-16 rounded-md border border-dashed border-slate-300 flex items-center justify-center text-slate-300 shrink-0"><ImageIcon size={20} /></div>
+          )}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono-num text-sm text-[#2E8B57] font-bold">{material.codigo}</span>
+              <h1 className="font-display text-2xl font-extrabold text-slate-900">{material.descripcion}</h1>
+            </div>
+            <p className="text-sm text-slate-500 mt-1">{proveedor?.nombre || "Proveedor no encontrado"} {material.categoria && `· ${material.categoria}`}</p>
           </div>
-          <p className="text-sm text-slate-500 mt-1">{proveedor?.nombre || "Proveedor no encontrado"} {material.categoria && `· ${material.categoria}`}</p>
         </div>
         <div className="flex gap-2 shrink-0">
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
@@ -5342,12 +5558,56 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
         {[
           { id: "datos", label: "Datos", icon: FileText },
           { id: "movimientos", label: `Histórico de movimientos (${movimientos.length})`, icon: Package },
+          { id: "precios", label: `Histórico de precios (${historicoPrecios.length})`, icon: Euro },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
       </div>
+
+      {tab === "precios" && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {historicoPrecios.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-slate-400">Sin histórico registrado todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="px-4 py-2.5 font-semibold">Fecha</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Precio compra</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Precio venta</th>
+                  <th className="px-4 py-2.5 font-semibold">Origen</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Variación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...historicoPrecios].reverse().map((h, i, arr) => {
+                  const anterior = arr[i + 1];
+                  const actual = parseFloat(h.precioCompra) || 0;
+                  const previo = anterior ? (parseFloat(anterior.precioCompra) || 0) : null;
+                  const variacion = previo !== null && previo !== 0 ? ((actual - previo) / previo) * 100 : null;
+                  return (
+                    <tr key={h.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5 text-slate-600">{h.fecha}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num font-semibold text-slate-800">{money(h.precioCompra)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num text-slate-600">{money(h.precioVenta)}</td>
+                      <td className="px-4 py-2.5 text-slate-500">{h.origen}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num">
+                        {variacion === null ? "—" : (
+                          <span className={variacion > 0 ? "text-rose-600" : variacion < 0 ? "text-[#2E8B57]" : "text-slate-400"}>
+                            {variacion > 0 ? "▲" : variacion < 0 ? "▼" : "—"} {Math.abs(variacion).toFixed(1)}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
@@ -5411,7 +5671,7 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
 
 /* ================= PEDIDOS ================= */
 
-function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
@@ -5510,6 +5770,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, proyectos, view, setV
         initial={editing}
         proveedores={proveedores}
         materiales={materiales}
+        articulos={articulos}
         proyectos={proyectos}
         nextNumero={nextNumero}
         currentUser={currentUser}
@@ -5805,7 +6066,7 @@ function GenerarPedidoDesdeObrasPanel({ proyectos, materiales, onGenerar, onClos
   );
 }
 
-function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
+function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
   const blankLinea = () => ({ id: uid(), modo: "catalogo", materialId: materiales[0]?.id || "", referencia: "", ancho: "", alto: "", cantidad: "", precio: "", estado: "Solicitado" });
   const avisosPorDefecto = () => ({
     llegada: true, retraso: true,
@@ -5917,6 +6178,28 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
   const setLinea = (id, patch) => setF({ ...f, lineas: f.lineas.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
   const addLinea = (modo = "catalogo") => setF({ ...f, lineas: [...f.lineas, { ...blankLinea(), modo }] });
   const removeLinea = (id) => setF({ ...f, lineas: f.lineas.filter((l) => l.id !== id) });
+
+  // Coger un artículo del catálogo (Fase II) y volcar de golpe, como líneas de
+  // pedido normales (modo "catalogo"), cada material que lo compone — multiplicando
+  // la cantidad de cada material por el número de artículos que se van a pedir.
+  const [articuloSel, setArticuloSel] = useState(articulos?.[0]?.id || "");
+  const [cantidadArticuloSel, setCantidadArticuloSel] = useState("1");
+  const agregarLineasDeArticulo = () => {
+    const articulo = (articulos || []).find((a) => a.id === articuloSel);
+    const cantidadArt = parseFloat(cantidadArticuloSel) || 0;
+    if (!articulo || cantidadArt <= 0) return;
+    const materialesArticulo = articulo.materiales || [];
+    if (materialesArticulo.length === 0) {
+      setErrorMsg(`El artículo "${articulo.nombre}" no tiene materiales asociados en su ficha.`);
+      return;
+    }
+    const nuevas = materialesArticulo.map((l) => ({
+      id: uid(), modo: "catalogo", materialId: l.materialId, referencia: `De artículo: ${articulo.nombre}`,
+      ancho: "", alto: "", cantidad: (parseFloat(l.cantidad) || 0) * cantidadArt, precio: l.precio || "", estado: "Solicitado",
+    }));
+    setF((prev) => ({ ...prev, lineas: [...prev.lineas, ...nuevas] }));
+    setErrorMsg("");
+  };
 
   const convertirPegado = () => {
     if (!pasteText.trim()) return;
@@ -6051,6 +6334,28 @@ function PedidoForm({ initial, proveedores, materiales, proyectos, nextNumero, c
             </button>
           </div>
         </div>
+
+        {articulos && articulos.length > 0 && (
+          <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
+            <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Coger un artículo completo</span>
+            <p className="text-xs text-slate-400 mb-2">Elige un artículo del catálogo y se añadirán de golpe todos los materiales que lo componen (multiplicados por la cantidad de artículos), listos para pedir.</p>
+            <div className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-7">
+                <Select value={articuloSel} onChange={(e) => setArticuloSel(e.target.value)}>
+                  {articulos.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+                </Select>
+              </div>
+              <div className="col-span-2">
+                <TextInput type="number" placeholder="Cantidad" value={cantidadArticuloSel} onChange={(e) => setCantidadArticuloSel(e.target.value)} />
+              </div>
+              <div className="col-span-3">
+                <button type="button" onClick={agregarLineasDeArticulo} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold text-white bg-[#2E8B57] hover:bg-[#256E46] px-3 py-2 rounded-md">
+                  <Plus size={14} /> Añadir materiales
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
           <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pegar varias medidas de golpe (desde Excel)</span>
@@ -12029,10 +12334,28 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
 
 /* ================= ARTÍCULOS (Fase II) ================= */
 
-function ArticulosModulo({ articulos, proveedores, materiales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onSolicitarArticulo, onImportarTarifas }) {
+function ArticulosModulo({ articulos, proveedores, materiales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onSolicitarArticulo, onImportarTarifas, onImportarFotos }) {
   const [q, setQ] = useState("");
   const inputTarifasArticulosRef = useRef(null);
+  const inputFotosArticulosRef = useRef(null);
+  const [importandoFotos, setImportandoFotos] = useState(false);
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
+
+  const manejarImportarFotosArticulos = async (files) => {
+    if (!files || files.length === 0) return;
+    setImportandoFotos(true);
+    try {
+      const fotos = [];
+      for (const file of Array.from(files)) {
+        const dataUrl = await comprimirFotoMontaje(file, 800, 0.7);
+        const clave = file.name.replace(/\.[^.]+$/, "");
+        fotos.push({ clave, dataUrl });
+      }
+      onImportarFotos(fotos);
+    } finally {
+      setImportandoFotos(false);
+    }
+  };
 
   const manejarImportarTarifasArticulos = async (file) => {
     if (!file) return;
@@ -12041,12 +12364,13 @@ function ArticulosModulo({ articulos, proveedores, materiales, view, setView, ed
     const filas = filasExcel.map((fila) => ({
       nombre: String(valorPorCabeceras(fila, ["nombre", "articulo", "producto"])).trim(),
       precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
+      foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
     })).filter((f) => f.nombre);
     if (filas.length === 0) {
       alert("No se ha encontrado ninguna fila con nombre. Revisa las cabeceras del Excel.");
       return;
     }
-    onImportarTarifas(filas);
+    onImportarTarifas(filas, `Tarifa: ${file.name}`);
   };
 
   const precioMateriales = (a) => (a.materiales || []).reduce((s, l) => s + (parseFloat(l.cantidad) || 0) * (parseFloat(l.precio) || 0), 0);
@@ -12117,9 +12441,25 @@ function ArticulosModulo({ articulos, proveedores, materiales, view, setView, ed
       />
       <button
         onClick={() => inputTarifasArticulosRef.current?.click()}
-        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50"
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-3 hover:bg-slate-50"
       >
         Importar tarifas desde Excel (masivo) — actualiza precios existentes o da de alta artículos nuevos
+      </button>
+
+      <input
+        ref={inputFotosArticulosRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => { manejarImportarFotosArticulos(e.target.files); e.target.value = ""; }}
+      />
+      <button
+        onClick={() => inputFotosArticulosRef.current?.click()}
+        disabled={importandoFotos}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md mb-6 hover:bg-slate-50 disabled:opacity-60"
+      >
+        <ImageIcon size={15} /> {importandoFotos ? "Subiendo fotos…" : "Importar fotos en bloque — nombra cada archivo con el nombre exacto del artículo"}
       </button>
 
       <button
@@ -12180,10 +12520,21 @@ function ArticuloForm({ initial, proveedores, materiales, nextNumero, onCancel, 
     initial || {
       id: null, nombre: "", descripcion: "", proveedorId: proveedores[0]?.id || "", precioVenta: "",
       materiales: [], fases: [{ id: uid(), nombre: "", tiempoEstimado: "", materialesNecesarios: "" }],
-      tamano: "", medidas: "", volumen: "", importeEnvio: "", importeMontaje: "",
+      tamano: "", medidas: "", volumen: "", importeEnvio: "", importeMontaje: "", foto: "",
     }
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const manejarFoto = async (file) => {
+    if (!file) return;
+    setSubiendoFoto(true);
+    try {
+      const dataUrl = await comprimirFotoMontaje(file, 800, 0.7);
+      setF((prev) => ({ ...prev, foto: dataUrl }));
+    } finally {
+      setSubiendoFoto(false);
+    }
+  };
 
   const setMaterialLinea = (id, patch) => setF({ ...f, materiales: f.materiales.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
   const addMaterialLinea = () => setF({ ...f, materiales: [...f.materiales, { id: uid(), materialId: materiales[0]?.id || "", cantidad: "", precio: "" }] });
@@ -12238,6 +12589,24 @@ function ArticuloForm({ initial, proveedores, materiales, nextNumero, onCancel, 
           </Field>
         </div>
         <Field label="Descripción"><TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} /></Field>
+
+        <div>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Foto del producto</span>
+          <div className="flex items-center gap-3">
+            {f.foto ? (
+              <img src={f.foto} alt="" className="w-20 h-20 object-cover rounded-md border border-slate-200" />
+            ) : (
+              <div className="w-20 h-20 rounded-md border border-dashed border-slate-300 flex items-center justify-center text-slate-300"><ImageIcon size={22} /></div>
+            )}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-[#2E8B57] cursor-pointer hover:underline">
+                {subiendoFoto ? "Subiendo…" : f.foto ? "Cambiar foto" : "Subir foto"}
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => manejarFoto(e.target.files[0])} />
+              </label>
+              {f.foto && <button type="button" onClick={() => setF({ ...f, foto: "" })} className="text-xs font-semibold text-rose-600 hover:underline text-left">Quitar foto</button>}
+            </div>
+          </div>
+        </div>
 
         {/* Materiales */}
         <div>
@@ -12326,13 +12695,20 @@ function ArticuloDetail({ articulo, proveedor, materiales, onBack, onEdit, onDel
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver al listado</button>
 
       <div className="flex items-start justify-between mb-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono-num text-sm text-[#2E8B57] font-bold">Artículo {articulo.numero}</span>
-            <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Fase II</Badge>
+        <div className="flex items-start gap-4">
+          {articulo.foto ? (
+            <img src={articulo.foto} alt="" className="w-16 h-16 object-cover rounded-md border border-slate-200 shrink-0" />
+          ) : (
+            <div className="w-16 h-16 rounded-md border border-dashed border-slate-300 flex items-center justify-center text-slate-300 shrink-0"><ImageIcon size={20} /></div>
+          )}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono-num text-sm text-[#2E8B57] font-bold">Artículo {articulo.numero}</span>
+              <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Fase II</Badge>
+            </div>
+            <h1 className="font-display text-2xl font-extrabold text-slate-900 mt-0.5">{articulo.nombre}</h1>
+            <p className="text-sm text-slate-500 mt-1">{proveedor?.nombre || "Sin proveedor"}</p>
           </div>
-          <h1 className="font-display text-2xl font-extrabold text-slate-900 mt-0.5">{articulo.nombre}</h1>
-          <p className="text-sm text-slate-500 mt-1">{proveedor?.nombre || "Sin proveedor"}</p>
         </div>
         <div className="flex gap-2 shrink-0">
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
@@ -12355,12 +12731,54 @@ function ArticuloDetail({ articulo, proveedor, materiales, onBack, onEdit, onDel
           { id: "materiales", label: `Materiales (${(articulo.materiales || []).length})`, icon: Package },
           { id: "fases", label: `Fases de composición (${(articulo.fases || []).length})`, icon: Ruler },
           { id: "gastos", label: `Gastos asociados (${gastos.length})`, icon: Receipt },
+          { id: "precios", label: `Histórico de precios (${(articulo.historicoPrecios || []).length})`, icon: Euro },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
       </div>
+
+      {tab === "precios" && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {(articulo.historicoPrecios || []).length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-slate-400">Sin histórico registrado todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="px-4 py-2.5 font-semibold">Fecha</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Precio venta</th>
+                  <th className="px-4 py-2.5 font-semibold">Origen</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Variación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...(articulo.historicoPrecios || [])].reverse().map((h, i, arr) => {
+                  const anterior = arr[i + 1];
+                  const actual = parseFloat(h.precioVenta) || 0;
+                  const previo = anterior ? (parseFloat(anterior.precioVenta) || 0) : null;
+                  const variacion = previo !== null && previo !== 0 ? ((actual - previo) / previo) * 100 : null;
+                  return (
+                    <tr key={h.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5 text-slate-600">{h.fecha}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num font-semibold text-slate-800">{money(h.precioVenta)}</td>
+                      <td className="px-4 py-2.5 text-slate-500">{h.origen}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num">
+                        {variacion === null ? "—" : (
+                          <span className={variacion > 0 ? "text-rose-600" : variacion < 0 ? "text-[#2E8B57]" : "text-slate-400"}>
+                            {variacion > 0 ? "▲" : variacion < 0 ? "▼" : "—"} {Math.abs(variacion).toFixed(1)}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
