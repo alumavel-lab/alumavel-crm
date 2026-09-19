@@ -1562,8 +1562,8 @@ export default function App() {
     savePedidos(pedidos.map((p) => (ids.has(p.id) ? { ...p, avisoLlegadaVisto: true } : p)));
   };
 
-  const enviarAPedido = (proveedorId, lineas, proyectoId, comentarios) => {
-    setPedidoPrefill({ proveedorId, lineas, proyectoId, comentarios });
+  const enviarAPedido = (proveedorId, lineas, proyectoId, comentarios, adjuntos) => {
+    setPedidoPrefill({ proveedorId, lineas, proyectoId, comentarios, adjuntos: adjuntos || [] });
     setPedidoEditId(null);
     setPedidoView("form");
     setModulo("pedidos");
@@ -4119,6 +4119,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   // (o si se pulsa "Crear pedido ahora"), se abre el pedido ya relleno en Pedidos,
   // listo para elegir proveedor y revisar antes de guardar.
   const [lineasPedidoAuto, setLineasPedidoAuto] = useState([]);
+  const [adjuntosPedidoAuto, setAdjuntosPedidoAuto] = useState([]);
   const [leyendoPdfMedidas, setLeyendoPdfMedidas] = useState(false);
   const [erroPdfMedidas, setErrorPdfMedidas] = useState("");
   const [segundosParaPedido, setSegundosParaPedido] = useState(null);
@@ -4126,16 +4127,17 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   const intervaloCuentaRef = useRef(null);
   const inputPdfMedidasRef = useRef(null);
 
-  const dispararPedidoAuto = (lineasFinales) => {
+  const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
     clearTimeout(timerPedidoAutoRef.current);
     clearInterval(intervaloCuentaRef.current);
     setSegundosParaPedido(null);
     if (lineasFinales.length === 0) return;
     setLineasPedidoAuto([]);
-    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`);
+    setAdjuntosPedidoAuto([]);
+    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
   };
 
-  const reiniciarCuentaAtras = (lineasAcumuladas) => {
+  const reiniciarCuentaAtras = (lineasAcumuladas, adjuntosAcumulados) => {
     clearTimeout(timerPedidoAutoRef.current);
     clearInterval(intervaloCuentaRef.current);
     let restantes = 30;
@@ -4144,7 +4146,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       restantes -= 1;
       setSegundosParaPedido(restantes > 0 ? restantes : 0);
     }, 1000);
-    timerPedidoAutoRef.current = setTimeout(() => dispararPedidoAuto(lineasAcumuladas), 30000);
+    timerPedidoAutoRef.current = setTimeout(() => dispararPedidoAuto(lineasAcumuladas, adjuntosAcumulados), 30000);
   };
 
   const manejarSubidaPdfMedidas = async (file) => {
@@ -4159,9 +4161,10 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         r.readAsDataURL(file);
       });
       const esPdf = file.type === "application/pdf";
+      const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
-        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+        : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
       const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
 
       const response = await fetch("/.netlify/functions/anthropic-proxy", {
@@ -4191,9 +4194,14 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         setErrorPdfMedidas("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
         return;
       }
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
       setLineasPedidoAuto((prev) => {
         const combinadas = [...prev, ...nuevas];
-        reiniciarCuentaAtras(combinadas);
+        setAdjuntosPedidoAuto((prevAdj) => {
+          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
+          reiniciarCuentaAtras(combinadas, adjuntosCombinados);
+          return adjuntosCombinados;
+        });
         return combinadas;
       });
     } catch (err) {
@@ -4327,10 +4335,10 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           {lineasPedidoAuto.length > 0 && (
             <>
               <span className="text-sm text-slate-600">{lineasPedidoAuto.length} línea(s) leídas{segundosParaPedido !== null ? ` — pedido en ${segundosParaPedido}s` : ""}</span>
-              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
+              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
                 Crear pedido ahora
               </button>
-              <button type="button" onClick={() => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); setLineasPedidoAuto([]); setSegundosParaPedido(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+              <button type="button" onClick={() => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setSegundosParaPedido(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
                 Cancelar
               </button>
             </>
@@ -6573,6 +6581,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
         comentarios: prefill.comentarios || "Generado automáticamente desde Stock (materiales por debajo del mínimo).",
         lineas: prefill.lineas && prefill.lineas.length ? prefill.lineas : [blankLinea()],
         avisos: avisosPorDefecto(),
+        adjuntosPdf: prefill.adjuntos || [],
       };
     }
     return {
@@ -6580,6 +6589,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       fechaEntregaPrevista: "", estado: "Pendiente", comentarios: "",
       lineas: [blankLinea()],
       avisos: avisosPorDefecto(),
+      adjuntosPdf: [],
     };
   });
   const setAviso = (clave, valor) => {
@@ -6944,6 +6954,13 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           {errorPdfPedido && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfPedido}</p>}
         </div>
 
+        {f.adjuntosPdf && f.adjuntosPdf.length > 0 && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-slate-50 border border-slate-200 text-sm text-slate-600">
+            <FileText size={14} className="text-slate-400 shrink-0" />
+            {f.adjuntosPdf.length === 1 ? `Se adjuntará "${f.adjuntosPdf[0].nombre}" al enviar el pedido por correo.` : `Se adjuntarán ${f.adjuntosPdf.length} PDF/fotos al enviar el pedido por correo.`}
+          </div>
+        )}
+
         <Field label="Comentarios"><TextArea rows={2} value={f.comentarios} onChange={set("comentarios")} /></Field>
 
         <Field label="Avisos">
@@ -7093,12 +7110,20 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
     setErrorEnvioEmail("");
     setEmailEnviadoOk(false);
     try {
-      const lineasTexto = pedido.lineas.map((l) => {
-        const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
-        return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
-      }).join("\n");
+      const tieneAdjuntos = pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0;
       const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
-      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+      let cuerpo;
+      if (tieneAdjuntos) {
+        // Con PDF adjunto no hace falta repetir el desglose por escrito: el propio
+        // documento ya trae las medidas, solo hace falta un texto breve dirigido al proveedor.
+        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido${proyecto ? ` de la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""} en el documento adjunto.\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+      } else {
+        const lineasTexto = pedido.lineas.map((l) => {
+          const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
+          return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
+        }).join("\n");
+        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+      }
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
@@ -7108,6 +7133,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
           asunto: `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`,
           cuerpo,
           replyTo: currentUser?.email || "",
+          adjuntos: tieneAdjuntos ? pedido.adjuntosPdf : [],
         }),
       });
       const data = await response.json();
@@ -7164,6 +7190,9 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
           </div>
           <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}{pedido.creadoPor && ` · Pedido por ${pedido.creadoPor}`}</p>
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
+          {pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0 && (
+            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1"><FileText size={12} /> {pedido.adjuntosPdf.length === 1 ? `Con "${pedido.adjuntosPdf[0].nombre}" adjunto (solo al enviar por email)` : `Con ${pedido.adjuntosPdf.length} PDF/fotos adjuntos (solo al enviar por email)`}</p>
+          )}
         </div>
         <div className="flex gap-2 shrink-0">
           {proveedor?.email ? (

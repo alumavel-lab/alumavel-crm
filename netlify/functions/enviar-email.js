@@ -16,7 +16,7 @@ import nodemailer from "nodemailer";
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
-    const { destinatario, asunto, cuerpo, replyTo } = body;
+    const { destinatario, asunto, cuerpo, replyTo, adjuntos } = body;
 
     if (!destinatario || !asunto || !cuerpo) {
       return { statusCode: 400, body: JSON.stringify({ error: "Faltan datos: destinatario, asunto o cuerpo." }) };
@@ -35,12 +35,26 @@ export const handler = async (event) => {
       auth: { user, pass },
     });
 
+    // adjuntos: [{ nombre, dataUrl }] — dataUrl tipo "data:application/pdf;base64,...."
+    const attachments = (adjuntos || [])
+      .filter((a) => a && a.dataUrl)
+      .map((a) => {
+        const match = /^data:([^;]+);base64,(.*)$/.exec(a.dataUrl);
+        return {
+          filename: a.nombre || "adjunto",
+          content: match ? match[2] : a.dataUrl,
+          encoding: "base64",
+          contentType: match ? match[1] : undefined,
+        };
+      });
+
     await transporter.sendMail({
       from: `"ALUMAVEL" <${user}>`,
       to: destinatario,
       replyTo: replyTo || user,
       subject: asunto,
       text: cuerpo,
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
 
     return { statusCode: 200, body: JSON.stringify({ ok: true }) };
