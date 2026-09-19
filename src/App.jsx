@@ -3918,8 +3918,24 @@ function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, 
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
                   <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
-                  <td className="px-4 py-3"><Badge className={ESTADO_PRESUPUESTO_STYLE[p.estadoPresupuesto]}>{p.estadoPresupuesto}</Badge></td>
-                  <td className="px-4 py-3"><Badge className={ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}>{p.estadoTrabajo}</Badge></td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={p.estadoPresupuesto}
+                      onChange={(e) => onUpsert({ ...p, estadoPresupuesto: e.target.value })}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_PRESUPUESTO_STYLE[p.estadoPresupuesto]}`}
+                    >
+                      {Object.keys(ESTADO_PRESUPUESTO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={p.estadoTrabajo}
+                      onChange={(e) => onUpsert({ ...p, estadoTrabajo: e.target.value })}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}`}
+                    >
+                      {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : "—")}</td>
                   <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
                   <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
@@ -6654,7 +6670,15 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
                   <td className="px-4 py-3 text-slate-500">{p.creadoPor || "—"}</td>
                   <td className={`px-4 py-3 ${vencido ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
-                  <td className="px-4 py-3"><Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge></td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={p.estado}
+                      onChange={(e) => { if (e.target.value === "Recibido") { onRecibir(p.id); } else { onUpsert({ ...p, estado: e.target.value }); } }}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_PEDIDO_STYLE[p.estado]}`}
+                    >
+                      {Object.keys(ESTADO_PEDIDO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </td>
                   <td className="px-4 py-3 text-right">
                     {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
@@ -12403,8 +12427,24 @@ function IncidenciasModulo({ incidencias, proyectos, clientes, pedidos, proveedo
                   <td className="px-4 py-3 font-medium text-slate-800">{p ? `#${p.numero} — ${p.nombre}` : "Proyecto eliminado"}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(i.proyectoId) || "—"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(i.fecha)}</td>
-                  <td className="px-4 py-3"><Badge className={ESTADO_TRABAJO_INCIDENCIA_STYLE[i.estadoTrabajo]}>{i.estadoTrabajo}</Badge></td>
-                  <td className="px-4 py-3"><Badge className={ESTADO_INCIDENCIA_STYLE[i.estadoIncidencia]}>{i.estadoIncidencia}</Badge></td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={i.estadoTrabajo}
+                      onChange={(e) => onUpsert({ ...i, estadoTrabajo: e.target.value })}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_INCIDENCIA_STYLE[i.estadoTrabajo]}`}
+                    >
+                      {Object.keys(ESTADO_TRABAJO_INCIDENCIA_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      value={i.estadoIncidencia}
+                      onChange={(e) => onUpsert({ ...i, estadoIncidencia: e.target.value })}
+                      className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_INCIDENCIA_STYLE[i.estadoIncidencia]}`}
+                    >
+                      {Object.keys(ESTADO_INCIDENCIA_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </td>
                   <td className="px-4 py-3 text-right">
                     {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar la incidencia #${i.numero}?`)) onDelete(i.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
@@ -15042,7 +15082,14 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
                       <td className="px-4 py-3 text-right font-mono-num">{money(p.importe)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[p.estado || "Pendiente"]}>{p.estado || "Pendiente"}</Badge>
+                          <select
+                            value={p.estado || "Pendiente"}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => onUpsert({ ...p, estado: e.target.value })}
+                            className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_PRESUPUESTO_TRACKER_STYLE[p.estado || "Pendiente"]}`}
+                          >
+                            {Object.keys(ESTADO_PRESUPUESTO_TRACKER_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                          </select>
                           {p.proyectoCreadoId && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">✓ Ya tiene proyecto</Badge>}
                         </div>
                       </td>
