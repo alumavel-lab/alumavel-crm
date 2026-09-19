@@ -14693,6 +14693,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         isAdmin={isAdmin}
         proyectos={proyectos}
         onEnviarFirma={onEnviarFirma}
+        onGenerarPedido={onGenerarPedido}
       />
     );
   }
@@ -17240,7 +17241,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
@@ -17256,6 +17257,105 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   };
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), notas: "", enlaceGrabacion: "" });
   const [errorLlamada, setErrorLlamada] = useState("");
+
+  // Subir PDF/foto de medidas (cristales, persianas...) desde el propio presupuesto,
+  // igual que ya funciona dentro de un proyecto — se acumulan las líneas de varios
+  // archivos y, a los 30s sin subir ninguno más, se abre el pedido ya relleno.
+  const [lineasPedidoAutoPre, setLineasPedidoAutoPre] = useState([]);
+  const [adjuntosPedidoAutoPre, setAdjuntosPedidoAutoPre] = useState([]);
+  const [leyendoPdfMedidasPre, setLeyendoPdfMedidasPre] = useState(false);
+  const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
+  const [segundosParaPedidoPre, setSegundosParaPedidoPre] = useState(null);
+  const timerPedidoAutoPreRef = useRef(null);
+  const intervaloCuentaPreRef = useRef(null);
+  const inputPdfMedidasPreRef = useRef(null);
+
+  const dispararPedidoAutoPre = (lineasFinales, adjuntosFinales) => {
+    clearTimeout(timerPedidoAutoPreRef.current);
+    clearInterval(intervaloCuentaPreRef.current);
+    setSegundosParaPedidoPre(null);
+    if (lineasFinales.length === 0) return;
+    setLineasPedidoAutoPre([]);
+    setAdjuntosPedidoAutoPre([]);
+    onGenerarPedido(null, lineasFinales, null, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el presupuesto #${presupuesto.numero}${presupuesto.clienteNombre ? ` (${presupuesto.clienteNombre})` : ""}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
+  };
+
+  const reiniciarCuentaAtrasPre = (lineasAcumuladas, adjuntosAcumulados) => {
+    clearTimeout(timerPedidoAutoPreRef.current);
+    clearInterval(intervaloCuentaPreRef.current);
+    let restantes = 30;
+    setSegundosParaPedidoPre(restantes);
+    intervaloCuentaPreRef.current = setInterval(() => {
+      restantes -= 1;
+      setSegundosParaPedidoPre(restantes > 0 ? restantes : 0);
+    }, 1000);
+    timerPedidoAutoPreRef.current = setTimeout(() => dispararPedidoAutoPre(lineasAcumuladas, adjuntosAcumulados), 30000);
+  };
+
+  const manejarSubidaPdfMedidasPre = async (file) => {
+    if (!file) return;
+    setLeyendoPdfMedidasPre(true);
+    setErrorPdfMedidasPre("");
+    try {
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const esPdf = file.type === "application/pdf";
+      const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
+      const contentBlock = esPdf
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+        : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
+      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
+
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+      const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
+        id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
+        ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
+      })).filter((l) => l.referencia);
+
+      if (nuevas.length === 0) {
+        setErrorPdfMedidasPre("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        return;
+      }
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+      setLineasPedidoAutoPre((prev) => {
+        const combinadas = [...prev, ...nuevas];
+        setAdjuntosPedidoAutoPre((prevAdj) => {
+          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
+          reiniciarCuentaAtrasPre(combinadas, adjuntosCombinados);
+          return adjuntosCombinados;
+        });
+        return combinadas;
+      });
+    } catch (err) {
+      setErrorPdfMedidasPre("No se pudo leer el archivo: " + err.message);
+    } finally {
+      setLeyendoPdfMedidasPre(false);
+    }
+  };
+
+  useEffect(() => () => { clearTimeout(timerPedidoAutoPreRef.current); clearInterval(intervaloCuentaPreRef.current); }, []);
+
   const registrarLlamada = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!lForm.notas.trim() && !lForm.enlaceGrabacion.trim()) {
@@ -17296,6 +17396,43 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           )}
         </div>
       </div>
+
+      {onGenerarPedido && (
+        <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este presupuesto</span>
+          <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; a los 30 segundos sin subir ninguno más, se abre el pedido ya relleno para que elijas proveedor y lo revises.</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={inputPdfMedidasPreRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasPre(e.target.files[0]); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => inputPdfMedidasPreRef.current?.click()}
+              disabled={leyendoPdfMedidasPre}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
+            >
+              <ImageIcon size={15} /> {leyendoPdfMedidasPre ? "Leyendo..." : "Subir PDF/foto de medidas"}
+            </button>
+            {lineasPedidoAutoPre.length > 0 && (
+              <>
+                <span className="text-sm text-slate-600">{lineasPedidoAutoPre.length} línea(s) leídas{segundosParaPedidoPre !== null ? ` — pedido en ${segundosParaPedidoPre}s` : ""}</span>
+                <button type="button" onClick={() => dispararPedidoAutoPre(lineasPedidoAutoPre, adjuntosPedidoAutoPre)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
+                  Crear pedido ahora
+                </button>
+                <button type="button" onClick={() => { clearTimeout(timerPedidoAutoPreRef.current); clearInterval(intervaloCuentaPreRef.current); setLineasPedidoAutoPre([]); setAdjuntosPedidoAutoPre([]); setSegundosParaPedidoPre(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                  Cancelar
+                </button>
+              </>
+            )}
+          </div>
+          {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
+        </div>
+      )}
 
       {dias !== null && dias > 7 && (
         <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
