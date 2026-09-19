@@ -16,3 +16,7 @@
 [functions."avisos-material-proceso-externo"]
   # Todos los días a las 07:00 UTC, igual que el aviso de leads.
   schedule = "0 7 * * *"
+
+[functions."avisos-stock-minimo"]
+  # Todos los días a las 07:00 UTC, igual que los demás avisos.
+  schedule = "0 7 * * *"
