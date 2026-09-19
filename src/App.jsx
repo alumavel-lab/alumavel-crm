@@ -17100,6 +17100,12 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
       });
       const esPdf = file.type === "application/pdf";
       const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+
+      // Igual que en la ficha ya guardada: el documento se añade al presupuesto (aquí,
+      // al propio formulario en memoria) siempre, tenga o no líneas de pedido dentro.
+      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] }));
+
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
@@ -17129,11 +17135,9 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
       })).filter((l) => l.referencia);
 
       if (nuevas.length === 0) {
-        setErrorPdfMedidasForm("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        setErrorPdfMedidasForm("Documento guardado, pero no he encontrado líneas de medidas claras para generar un pedido a partir de él.");
         return;
       }
-      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
-      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] }));
       setLineasPedidoAutoForm((prev) => {
         const combinadas = [...prev, ...nuevas];
         setAdjuntosPedidoAutoForm((prevAdj) => {
@@ -17556,6 +17560,15 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       });
       const esPdf = file.type === "application/pdf";
       const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+
+      // El documento se guarda en la ficha del presupuesto siempre, aunque luego no se
+      // consiga sacar ninguna línea de pedido de él (para eso está, para poder volver
+      // a verlo — no depende de si es una hoja de medidas o no).
+      if (onAdjuntarDocumento) {
+        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() });
+      }
+
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
@@ -17585,12 +17598,8 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       })).filter((l) => l.referencia);
 
       if (nuevas.length === 0) {
-        setErrorPdfMedidasPre("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        setErrorPdfMedidasPre("Documento guardado, pero no he encontrado líneas de medidas claras para generar un pedido a partir de él.");
         return;
-      }
-      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
-      if (onAdjuntarDocumento) {
-        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() });
       }
       setLineasPedidoAutoPre((prev) => {
         const combinadas = [...prev, ...nuevas];
