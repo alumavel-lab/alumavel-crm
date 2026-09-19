@@ -1919,6 +1919,7 @@ export default function App() {
       techos: presupuesto.techos || [],
       persianas: presupuesto.persianas || [],
       persianasControl: persianasControlInicial,
+      documentos: presupuesto.documentos || [],
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
@@ -4218,6 +4219,12 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       });
       const esPdf = file.type === "application/pdf";
       const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+
+      // El documento se guarda en la ficha del proyecto siempre, tenga o no líneas
+      // de pedido dentro — igual que ya pasa en presupuestos.
+      onInlineUpdate(proyecto.id, { documentos: [...(proyecto.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] });
+
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
@@ -4247,10 +4254,9 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       })).filter((l) => l.referencia);
 
       if (nuevas.length === 0) {
-        setErrorPdfMedidas("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        setErrorPdfMedidas("Documento guardado, pero no he encontrado líneas de medidas claras en él.");
         return;
       }
-      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
       setLineasPedidoAuto((prev) => {
         const combinadas = [...prev, ...nuevas];
         setAdjuntosPedidoAuto((prevAdj) => [...prevAdj, nuevoAdjunto]);
@@ -4397,6 +4403,18 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           )}
         </div>
         {erroPdfMedidas && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {erroPdfMedidas}</p>}
+        {(proyecto.documentos || []).length > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-200">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
+            <div className="flex flex-wrap gap-2">
+              {proyecto.documentos.map((d) => (
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
+                  <FileText size={14} className="text-slate-400" /> {d.nombre}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* KPI strip */}
@@ -17211,6 +17229,16 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         importe: datos.importe || prev.importe,
         zona: datos.zona || prev.zona,
       }));
+      // Se guarda también como documento del presupuesto — así da igual cuál de los
+      // dos botones de subida se use, el archivo siempre queda guardado en la ficha.
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const mediaType = file.type === "application/pdf" ? "application/pdf" : (file.type || "image/jpeg");
+      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: `data:${mediaType};base64,${base64Data}`, subidoEn: Date.now() }] }));
     } catch (err) {
       setErrorFotoForm("No se pudo leer el archivo. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
     } finally {
@@ -17277,6 +17305,9 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             {leyendoFotoForm ? "Leyendo el archivo..." : "📷 Rellenar (o completar) desde foto/PDF"}
           </button>
           <p className="text-xs text-slate-400 mt-1">Rellena los campos vacíos con lo que encuentre en la foto/PDF, sin borrar lo que ya tengas escrito. Útil también al duplicar un presupuesto.</p>
+          {f.documentos && f.documentos.length > 0 && (
+            <p className="text-xs text-emerald-700 font-semibold mt-1">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</p>
+          )}
           {errorFotoForm && <p className="text-xs text-rose-600 font-semibold mt-1">⚠ {errorFotoForm}</p>}
         </div>
       )}
