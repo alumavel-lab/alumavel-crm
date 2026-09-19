@@ -1778,6 +1778,16 @@ export default function App() {
     setPresupuestoView("list");
   };
 
+  // Guarda un PDF/foto directamente en la ficha del presupuesto (sin pasar por el
+  // formulario), para poder volver a verlo luego — p.ej. antes de llamar al cliente
+  // para saber exactamente qué se le presupuestó, sin tener que buscarlo.
+  const agregarDocumentoPresupuesto = (presupuestoId, documento) => {
+    const next = presupuestos.map((p) =>
+      p.id === presupuestoId ? { ...p, documentos: [...(p.documentos || []), documento] } : p
+    );
+    savePresupuestos(next);
+  };
+
   const deletePresupuesto = (id) => {
     savePresupuestos(presupuestos.filter((p) => p.id !== id));
     setPresupuestoView("list");
@@ -2548,6 +2558,8 @@ export default function App() {
             pedidos={pedidos}
             proveedores={proveedores}
             openPedido={openPedidoFromCalendar}
+            incidencias={incidencias}
+            openIncidenciaFromCalendar={openIncidenciaFromCalendar}
             view={proyectoView}
             setView={setProyectoView}
             editId={proyectoEditId}
@@ -2775,6 +2787,7 @@ export default function App() {
             configuracionFirma={configuracionFirma}
             onSubirPdfCondicionesFirma={subirPdfCondicionesFirma}
             onGenerarPedido={enviarAPedido}
+            onAdjuntarDocumento={agregarDocumentoPresupuesto}
           />
         )}
         {modulo === "mediciones" && (
@@ -3658,7 +3671,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana }) {
+function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -3711,6 +3724,8 @@ function ProyectosModulo({ proyectos, clientes, facturas, ingresos, materiales, 
         materiales={materiales}
         articulos={articulos}
         pedidos={pedidos.filter((pd) => pd.proyectoId === proyecto.id)}
+        incidencias={incidencias.filter((i) => i.proyectoId === proyecto.id)}
+        openIncidencia={openIncidenciaFromCalendar}
         proveedores={proveedores}
         openPedido={openPedido}
         onBack={() => setView("list")}
@@ -4084,7 +4099,7 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
   );
 }
 
-function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana }) {
+function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -4222,8 +4237,8 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     onInlineUpdate(proyecto.id, { checklistMateriales: next });
   };
 
-  const [gForm, setGForm] = useState({ proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
-  const [hForm, setHForm] = useState({ tarea: "", tiempo: "", empleado: "", costeHora: "" });
+  const [gForm, setGForm] = useState({ fecha: new Date().toISOString().slice(0, 10), proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
+  const [hForm, setHForm] = useState({ fecha: new Date().toISOString().slice(0, 10), tarea: "", tiempo: "", empleado: "", costeHora: "" });
   const [pForm, setPForm] = useState({ importe: "", fecha: new Date().toISOString().slice(0, 10), formaPago: "Transferencia", tipo: "Definitiva" });
 
   const totalFacturado = facturas.reduce((s, f) => s + (parseFloat(f.total) || 0), 0);
@@ -4243,7 +4258,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     if (!gForm.proveedor.trim()) return;
     const next = [...gastos, { ...gForm, id: uid(), importe: parseFloat(gForm.importe) || 0 }];
     onInlineUpdate(proyecto.id, { gastos: next });
-    setGForm({ proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
+    setGForm({ fecha: new Date().toISOString().slice(0, 10), proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
   };
   const removeGasto = (id) => onInlineUpdate(proyecto.id, { gastos: gastos.filter((g) => g.id !== id) });
 
@@ -4252,7 +4267,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     if (!hForm.tarea.trim()) return;
     const next = [...horas, { ...hForm, id: uid(), tiempo: parseFloat(hForm.tiempo) || 0, costeHora: parseFloat(hForm.costeHora) || 0 }];
     onInlineUpdate(proyecto.id, { registroHorario: next });
-    setHForm({ tarea: "", tiempo: "", empleado: "", costeHora: "" });
+    setHForm({ fecha: new Date().toISOString().slice(0, 10), tarea: "", tiempo: "", empleado: "", costeHora: "" });
   };
   const removeHora = (id) => onInlineUpdate(proyecto.id, { registroHorario: horas.filter((h) => h.id !== id) });
   const costeManoObra = horas.reduce((s, h) => s + (parseFloat(h.tiempo) || 0) * (parseFloat(h.costeHora) || 0), 0);
@@ -4404,6 +4419,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           { id: "checklist", label: `Qué lleva la obra (${checklist.filter((c) => c.estado).length}/${checklist.length})`, icon: CheckCircle2 },
           { id: "despiece", label: `Despiece de techos (${(proyecto.techos || []).length})`, icon: Ruler },
           { id: "persianas", label: `Control de persianas (${(proyecto.persianasControl || []).length})`, icon: Ruler },
+          { id: "historial", label: `Historial (${pedidos.length + incidencias.length + ingresos.length + articulosUsados.length + gastos.length + horas.length + (instalacion ? 1 : 0)})`, icon: Clock },
         ].map((t) => (
           <button
             key={t.id}
@@ -4416,6 +4432,94 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           </button>
         ))}
       </div>
+
+      {tab === "historial" && (
+        <div className="space-y-5">
+          {(() => {
+            const eventos = [
+              ...pedidos.map((p) => ({
+                tipo: "pedido", id: p.id, fecha: p.fechaCompra || p.fechaCreado || "",
+                titulo: `Pedido #${p.numero}${p.creadoPor ? ` — pedido por ${p.creadoPor}` : ""}`,
+                sub: `${(p.lineas || []).length} línea(s) · ${p.estado}`,
+                onClick: () => openPedido(p.id),
+              })),
+              ...incidencias.map((i) => ({
+                tipo: "incidencia", id: i.id, fecha: i.fecha || "",
+                titulo: `Incidencia ${i.numero ? `#${i.numero}` : ""} — ${i.estadoIncidencia || i.estadoTrabajo || "Sin estado"}`,
+                sub: i.especificaciones || i.observaciones || "",
+                onClick: () => openIncidencia && openIncidencia(i.id),
+              })),
+              ...ingresos.map((ing) => ({
+                tipo: "ingreso", id: ing.id, fecha: ing.fecha || "",
+                titulo: `Entrada de dinero — ${money(ing.importe)}`,
+                sub: ing.formaPago || "",
+                onClick: () => setTab("pagos"),
+              })),
+              ...articulosUsados.map((a) => ({
+                tipo: "articulo", id: a.id, fecha: a.fecha || "",
+                titulo: `Artículo usado — ${a.articuloNombre}`,
+                sub: `Cantidad: ${a.cantidad}`,
+                onClick: () => setTab("articulos"),
+              })),
+              ...(instalacion ? [{
+                tipo: "instalacion", id: instalacion.id, fecha: instalacion.fechaMontaje || "",
+                titulo: `Instalación — ${instalacion.estado}`,
+                sub: instalacion.fechaMontaje ? `Montaje: ${fmtDate(instalacion.fechaMontaje)}` : "Sin fecha de montaje fijada",
+                onClick: () => onVerInstalacion(instalacion.id),
+              }] : []),
+              ...gastos.map((g) => ({
+                tipo: "gasto", id: g.id, fecha: g.fecha || "",
+                titulo: `Gasto — ${g.proveedor}${g.producto ? ` (${g.producto})` : ""} — ${money(g.importe)}`,
+                sub: g.estadoFactura,
+                onClick: () => setTab("gastos"),
+              })),
+              ...horas.map((h) => ({
+                tipo: "hora", id: h.id, fecha: h.fecha || "",
+                titulo: `Registro horario — ${h.tarea} (${h.tiempo}h)`,
+                sub: h.empleado || "",
+                onClick: () => setTab("horas"),
+              })),
+            ].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+            const iconoPorTipo = { pedido: ClipboardList, incidencia: AlertOctagon, ingreso: Wallet, articulo: Layers, instalacion: Wrench, gasto: Receipt, hora: Timer };
+            const colorPorTipo = {
+              pedido: "bg-emerald-50 text-[#2E8B57]", incidencia: "bg-amber-50 text-amber-600",
+              ingreso: "bg-sky-50 text-sky-600", articulo: "bg-violet-50 text-violet-600", instalacion: "bg-fuchsia-50 text-fuchsia-600",
+              gasto: "bg-orange-50 text-orange-600", hora: "bg-cyan-50 text-cyan-600",
+            };
+
+            return (
+              <>
+                <div className="space-y-2">
+                  {eventos.length === 0 ? (
+                    <p className="px-4 py-8 text-center text-sm text-slate-400 bg-white border border-slate-200 rounded-lg">Todavía no hay actividad registrada en este proyecto.</p>
+                  ) : eventos.map((e) => {
+                    const Icono = iconoPorTipo[e.tipo];
+                    return (
+                      <button
+                        key={`${e.tipo}-${e.id}`}
+                        onClick={e.onClick}
+                        className="w-full flex items-start gap-3 text-left bg-white border border-slate-200 rounded-lg px-4 py-3 hover:bg-slate-50 transition"
+                      >
+                        <div className={`mt-0.5 shrink-0 w-7 h-7 rounded-full flex items-center justify-center ${colorPorTipo[e.tipo]}`}>
+                          <Icono size={14} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-slate-800 truncate">{e.titulo}</span>
+                            <span className="text-xs text-slate-400 shrink-0">{fmtDate(e.fecha)}</span>
+                          </div>
+                          {e.sub && <p className="text-xs text-slate-500 mt-0.5 truncate">{e.sub}</p>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
@@ -4545,6 +4649,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="px-4 py-2.5 font-semibold">Fecha</th>
                     <th className="px-4 py-2.5 font-semibold">Proveedor</th>
                     <th className="px-4 py-2.5 font-semibold">Producto / Tarea</th>
                     <th className="px-4 py-2.5 font-semibold">Factura</th>
@@ -4556,6 +4661,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                 <tbody>
                   {gastos.map((g) => (
                     <tr key={g.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5 text-slate-500">{fmtDate(g.fecha)}</td>
                       <td className="px-4 py-2.5 font-medium text-slate-800">{g.proveedor}</td>
                       <td className="px-4 py-2.5 text-slate-600">{g.producto || "—"}</td>
                       <td className="px-4 py-2.5 text-slate-600">{g.facturaAsociada || "—"}</td>
@@ -4569,7 +4675,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                 </tbody>
                 <tfoot>
                   <tr className="bg-slate-50 font-semibold">
-                    <td className="px-4 py-2.5" colSpan={4}>Total gastos asociados</td>
+                    <td className="px-4 py-2.5" colSpan={5}>Total gastos asociados</td>
                     <td className="px-4 py-2.5 text-right font-mono-num">{money(totalGastos)}</td>
                     <td></td>
                   </tr>
@@ -4578,7 +4684,8 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
             )}
           </div>
 
-          <form onSubmit={addGasto} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-6 gap-2 items-end">
+          <form onSubmit={addGasto} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-7 gap-2 items-end">
+            <Field label="Fecha"><TextInput type="date" value={gForm.fecha} onChange={(e) => setGForm({ ...gForm, fecha: e.target.value })} /></Field>
             <Field label="Proveedor"><TextInput value={gForm.proveedor} onChange={(e) => setGForm({ ...gForm, proveedor: e.target.value })} /></Field>
             <Field label="Producto / Tarea"><TextInput value={gForm.producto} onChange={(e) => setGForm({ ...gForm, producto: e.target.value })} /></Field>
             <Field label="Factura asociada"><TextInput value={gForm.facturaAsociada} onChange={(e) => setGForm({ ...gForm, facturaAsociada: e.target.value })} /></Field>
@@ -4604,6 +4711,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="px-4 py-2.5 font-semibold">Fecha</th>
                     <th className="px-4 py-2.5 font-semibold">Tarea</th>
                     <th className="px-4 py-2.5 font-semibold">Empleado</th>
                     <th className="px-4 py-2.5 font-semibold text-right">Tiempo (h)</th>
@@ -4615,6 +4723,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                 <tbody>
                   {horas.map((h) => (
                     <tr key={h.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5 text-slate-500">{fmtDate(h.fecha)}</td>
                       <td className="px-4 py-2.5 font-medium text-slate-800">{h.tarea}</td>
                       <td className="px-4 py-2.5 text-slate-600">{h.empleado || "—"}</td>
                       <td className="px-4 py-2.5 text-right font-mono-num">{Number(h.tiempo).toFixed(1)}</td>
@@ -4630,6 +4739,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                   <tr className="bg-slate-50 font-semibold">
                     <td className="px-4 py-2.5">Total</td>
                     <td></td>
+                    <td></td>
                     <td className="px-4 py-2.5 text-right font-mono-num">{totalHoras.toFixed(1)}</td>
                     <td></td>
                     <td className="px-4 py-2.5 text-right font-mono-num">{money(costeManoObra)}</td>
@@ -4640,7 +4750,8 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
             )}
           </div>
 
-          <form onSubmit={addHora} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-5 gap-2 items-end">
+          <form onSubmit={addHora} className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-6 gap-2 items-end">
+            <Field label="Fecha"><TextInput type="date" value={hForm.fecha} onChange={(e) => setHForm({ ...hForm, fecha: e.target.value })} /></Field>
             <Field label="Tarea"><TextInput value={hForm.tarea} onChange={(e) => setHForm({ ...hForm, tarea: e.target.value })} /></Field>
             <Field label="Empleado"><TextInput value={hForm.empleado} onChange={(e) => setHForm({ ...hForm, empleado: e.target.value })} /></Field>
             <Field label="Tiempo (horas)"><TextInput type="number" step="0.25" value={hForm.tiempo} onChange={(e) => setHForm({ ...hForm, tiempo: e.target.value })} /></Field>
@@ -14422,7 +14533,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido }) {
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -14443,7 +14554,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       clienteNombre: prefill.clienteNombre || "", telefono: "",
       descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
-      fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, zona: "",
+      fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, recoge: false, zona: "",
       techos: prefill.techos || [],
       persianas: prefill.persianas || [],
     });
@@ -14529,7 +14640,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         clienteNombre: datos.clienteNombre, telefono: datos.telefono,
         descripcion: datos.descripcion, importe: datos.importe, estado: "Pendiente",
         motivoRechazo: "", fechaRespuesta: "", comentarios: `Creado a partir de una foto/PDF subida (${datos.nombreArchivo}). Revisa los datos antes de guardar.`,
-        fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: datos.zona,
+        fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, recoge: false, zona: datos.zona,
       });
       setEditId(null);
       setView("form");
@@ -14584,7 +14695,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
       "Motivo rechazo": p.motivoRechazo || "", "Fecha respuesta": p.fechaRespuesta || "",
       "Días respuesta": diasEntre(p.fechaEnvio, p.fechaRespuesta), Comentarios: p.comentarios || "",
       "Días sin respuesta": diasSinRespuestaDe(p) ?? "", "¿Envío?": p.envio ? "sí" : "no",
-      "Dirección de envío": p.direccionEnvio || "", "¿Montaje?": p.montaje ? "sí" : "no", Zona: p.zona || "",
+      "Dirección de envío": p.direccionEnvio || "", "¿Montaje?": p.montaje ? "sí" : "no", "¿Recoge el cliente?": p.recoge ? "sí" : "no", Zona: p.zona || "",
     }));
 
     const total = presupuestos.length;
@@ -14671,6 +14782,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         onCancel={() => { setView(editId ? "detail" : "list"); setPrefillPresupuesto(null); }}
         onSave={(data) => { onUpsert(data); setPrefillPresupuesto(null); }}
         proyectos={proyectos}
+        onGenerarPedido={onGenerarPedido}
       />
     );
   }
@@ -14694,6 +14806,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
         proyectos={proyectos}
         onEnviarFirma={onEnviarFirma}
         onGenerarPedido={onGenerarPedido}
+        onAdjuntarDocumento={onAdjuntarDocumento}
       />
     );
   }
@@ -16926,12 +17039,12 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
   );
 }
 
-function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos }) {
+function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos, onGenerarPedido }) {
   const [f, setF] = useState(
     initial || {
       id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
       descripcion: "", importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
-      comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, zona: "",
+      comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, recoge: false, zona: "",
       proyectoId: "",
     }
   );
@@ -16940,6 +17053,104 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
   const [leyendoFotoForm, setLeyendoFotoForm] = useState(false);
   const [errorFotoForm, setErrorFotoForm] = useState("");
   const inputFotoFormRef = useRef(null);
+
+  // Igual que en la ficha ya guardada: subir PDF/foto de medidas también mientras
+  // se está creando o editando el presupuesto (no hace falta guardarlo antes).
+  const [lineasPedidoAutoForm, setLineasPedidoAutoForm] = useState([]);
+  const [adjuntosPedidoAutoForm, setAdjuntosPedidoAutoForm] = useState([]);
+  const [leyendoPdfMedidasForm, setLeyendoPdfMedidasForm] = useState(false);
+  const [errorPdfMedidasForm, setErrorPdfMedidasForm] = useState("");
+  const [segundosParaPedidoForm, setSegundosParaPedidoForm] = useState(null);
+  const timerPedidoAutoFormRef = useRef(null);
+  const intervaloCuentaFormRef = useRef(null);
+  const inputPdfMedidasFormRef = useRef(null);
+
+  const dispararPedidoAutoForm = (lineasFinales, adjuntosFinales) => {
+    clearTimeout(timerPedidoAutoFormRef.current);
+    clearInterval(intervaloCuentaFormRef.current);
+    setSegundosParaPedidoForm(null);
+    if (lineasFinales.length === 0) return;
+    setLineasPedidoAutoForm([]);
+    setAdjuntosPedidoAutoForm([]);
+    onGenerarPedido(null, lineasFinales, null, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos al crear el presupuesto${f.clienteNombre ? ` (${f.clienteNombre})` : ""}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
+  };
+
+  const reiniciarCuentaAtrasForm = (lineasAcumuladas, adjuntosAcumulados) => {
+    clearTimeout(timerPedidoAutoFormRef.current);
+    clearInterval(intervaloCuentaFormRef.current);
+    let restantes = 30;
+    setSegundosParaPedidoForm(restantes);
+    intervaloCuentaFormRef.current = setInterval(() => {
+      restantes -= 1;
+      setSegundosParaPedidoForm(restantes > 0 ? restantes : 0);
+    }, 1000);
+    timerPedidoAutoFormRef.current = setTimeout(() => dispararPedidoAutoForm(lineasAcumuladas, adjuntosAcumulados), 30000);
+  };
+
+  const manejarSubidaPdfMedidasForm = async (file) => {
+    if (!file) return;
+    setLeyendoPdfMedidasForm(true);
+    setErrorPdfMedidasForm("");
+    try {
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const esPdf = file.type === "application/pdf";
+      const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
+      const contentBlock = esPdf
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+        : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
+      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
+
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+      const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
+        id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
+        ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
+      })).filter((l) => l.referencia);
+
+      if (nuevas.length === 0) {
+        setErrorPdfMedidasForm("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        return;
+      }
+      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+      setF((prev) => ({ ...prev, documentos: [...(prev.documentos || []), { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() }] }));
+      setLineasPedidoAutoForm((prev) => {
+        const combinadas = [...prev, ...nuevas];
+        setAdjuntosPedidoAutoForm((prevAdj) => {
+          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
+          reiniciarCuentaAtrasForm(combinadas, adjuntosCombinados);
+          return adjuntosCombinados;
+        });
+        return combinadas;
+      });
+    } catch (err) {
+      setErrorPdfMedidasForm("No se pudo leer el archivo: " + err.message);
+    } finally {
+      setLeyendoPdfMedidasForm(false);
+    }
+  };
+
+  useEffect(() => () => { clearTimeout(timerPedidoAutoFormRef.current); clearInterval(intervaloCuentaFormRef.current); }, []);
 
   const rellenarDesdeArchivo = async (file) => {
     if (!file || !onLeerDatos) return;
@@ -17022,6 +17233,43 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
           </button>
           <p className="text-xs text-slate-400 mt-1">Rellena los campos vacíos con lo que encuentre en la foto/PDF, sin borrar lo que ya tengas escrito. Útil también al duplicar un presupuesto.</p>
           {errorFotoForm && <p className="text-xs text-rose-600 font-semibold mt-1">⚠ {errorFotoForm}</p>}
+        </div>
+      )}
+
+      {onGenerarPedido && (
+        <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-5">
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este presupuesto</span>
+          <p className="text-xs text-slate-500 mb-2">No hace falta guardar el presupuesto antes. Sube el PDF o foto de las medidas; si subes varios de golpe se van juntando en el mismo pedido, y a los 30 segundos sin subir ninguno más se abre el pedido ya relleno.</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={inputPdfMedidasFormRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasForm(e.target.files[0]); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => inputPdfMedidasFormRef.current?.click()}
+              disabled={leyendoPdfMedidasForm}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
+            >
+              <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Leyendo..." : "Subir PDF/foto de medidas"}
+            </button>
+            {lineasPedidoAutoForm.length > 0 && (
+              <>
+                <span className="text-sm text-slate-600">{lineasPedidoAutoForm.length} línea(s) leídas{segundosParaPedidoForm !== null ? ` — pedido en ${segundosParaPedidoForm}s` : ""}</span>
+                <button type="button" onClick={() => dispararPedidoAutoForm(lineasPedidoAutoForm, adjuntosPedidoAutoForm)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
+                  Crear pedido ahora
+                </button>
+                <button type="button" onClick={() => { clearTimeout(timerPedidoAutoFormRef.current); clearInterval(intervaloCuentaFormRef.current); setLineasPedidoAutoForm([]); setAdjuntosPedidoAutoForm([]); setSegundosParaPedidoForm(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                  Cancelar
+                </button>
+              </>
+            )}
+          </div>
+          {errorPdfMedidasForm && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasForm}</p>}
         </div>
       )}
 
@@ -17115,12 +17363,15 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4 items-end">
+        <div className="grid grid-cols-3 gap-4 items-end">
           <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
             <input type="checkbox" checked={f.envio} onChange={set("envio")} className="w-4 h-4" /> ¿Envío?
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
             <input type="checkbox" checked={f.montaje} onChange={set("montaje")} className="w-4 h-4" /> ¿Montaje?
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
+            <input type="checkbox" checked={f.recoge} onChange={set("recoge")} className="w-4 h-4" /> ¿Recoge el cliente?
           </label>
         </div>
         {f.envio && (
@@ -17241,7 +17492,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
@@ -17338,6 +17589,9 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         return;
       }
       const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
+      if (onAdjuntarDocumento) {
+        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: nuevoAdjunto.dataUrl, subidoEn: Date.now() });
+      }
       setLineasPedidoAutoPre((prev) => {
         const combinadas = [...prev, ...nuevas];
         setAdjuntosPedidoAutoPre((prevAdj) => {
@@ -17469,11 +17723,24 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           <InfoRow icon={<CheckCircle2 size={14} />} label="¿Envío?" value={presupuesto.envio ? "Sí" : "No"} />
           {presupuesto.envio && <InfoRow icon={<MapPin size={14} />} label="Dirección de envío" value={presupuesto.direccionEnvio || "—"} />}
           <InfoRow icon={<CheckCircle2 size={14} />} label="¿Montaje?" value={presupuesto.montaje ? "Sí" : "No"} />
+          <InfoRow icon={<CheckCircle2 size={14} />} label="¿Recoge el cliente?" value={presupuesto.recoge ? "Sí" : "No"} />
         </div>
         {presupuesto.comentarios && (
           <div className="mt-4 pt-4 border-t border-slate-100 text-sm text-slate-600">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-1">Comentarios</span>
             {presupuesto.comentarios}
+          </div>
+        )}
+        {(presupuesto.documentos || []).length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-2">Documentos guardados ({presupuesto.documentos.length})</span>
+            <div className="flex flex-wrap gap-2">
+              {presupuesto.documentos.map((d) => (
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
+                  <FileText size={14} className="text-slate-400" /> {d.nombre}
+                </a>
+              ))}
+            </div>
           </div>
         )}
       </CornerFrame>
