@@ -1,0 +1,22 @@
+# Este archivo añade las tareas programadas: la copia de seguridad diaria y
+# el informe semanal de instalaciones (viernes). No toca la configuración de
+# build/publish (esa sigue gestionada desde el panel de Netlify, como hasta ahora).
+
+[functions."backup-diario"]
+  schedule = "@daily"
+
+[functions."informe-semanal-instalaciones"]
+  # Todos los viernes a las 16:00 UTC (18:00 hora española en verano, 17:00 en invierno).
+  schedule = "0 16 * * 5"
+
+[functions."avisos-leads-vencidos"]
+  # Todos los días a las 07:00 UTC (9:00 hora española en verano, 8:00 en invierno).
+  schedule = "0 7 * * *"
+
+[functions."avisos-material-proceso-externo"]
+  # Todos los días a las 07:00 UTC, igual que el aviso de leads.
+  schedule = "0 7 * * *"
+
+[functions."avisos-stock-minimo"]
+  # Todos los días a las 07:00 UTC, igual que los demás avisos.
+  schedule = "0 7 * * *"
