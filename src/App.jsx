@@ -4143,26 +4143,12 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   const inputPdfMedidasRef = useRef(null);
 
   const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
-    clearTimeout(timerPedidoAutoRef.current);
-    clearInterval(intervaloCuentaRef.current);
-    setSegundosParaPedido(null);
     if (lineasFinales.length === 0) return;
     setLineasPedidoAuto([]);
     setAdjuntosPedidoAuto([]);
-    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
+    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
   };
 
-  const reiniciarCuentaAtras = (lineasAcumuladas, adjuntosAcumulados) => {
-    clearTimeout(timerPedidoAutoRef.current);
-    clearInterval(intervaloCuentaRef.current);
-    let restantes = 30;
-    setSegundosParaPedido(restantes);
-    intervaloCuentaRef.current = setInterval(() => {
-      restantes -= 1;
-      setSegundosParaPedido(restantes > 0 ? restantes : 0);
-    }, 1000);
-    timerPedidoAutoRef.current = setTimeout(() => dispararPedidoAuto(lineasAcumuladas, adjuntosAcumulados), 30000);
-  };
 
   const manejarSubidaPdfMedidas = async (file) => {
     if (!file) return;
@@ -4212,11 +4198,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
       setLineasPedidoAuto((prev) => {
         const combinadas = [...prev, ...nuevas];
-        setAdjuntosPedidoAuto((prevAdj) => {
-          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
-          reiniciarCuentaAtras(combinadas, adjuntosCombinados);
-          return adjuntosCombinados;
-        });
+        setAdjuntosPedidoAuto((prevAdj) => [...prevAdj, nuevoAdjunto]);
         return combinadas;
       });
     } catch (err) {
@@ -4329,7 +4311,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
       <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
         <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este proyecto</span>
-        <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; a los 30 segundos sin subir ninguno más, se abre el pedido ya relleno para que elijas proveedor y lo revises.</p>
+        <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; cuando termines, pulsa "Crear pedido" para abrirlo ya relleno y elegir proveedor.</p>
         <div className="flex flex-wrap items-center gap-3">
           <input
             ref={inputPdfMedidasRef}
@@ -4349,11 +4331,11 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           </button>
           {lineasPedidoAuto.length > 0 && (
             <>
-              <span className="text-sm text-slate-600">{lineasPedidoAuto.length} línea(s) leídas{segundosParaPedido !== null ? ` — pedido en ${segundosParaPedido}s` : ""}</span>
+              <span className="text-sm text-slate-600">{lineasPedidoAuto.length} línea(s) leídas</span>
               <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
-                Crear pedido ahora
+                Crear pedido
               </button>
-              <button type="button" onClick={() => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setSegundosParaPedido(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+              <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
                 Cancelar
               </button>
             </>
@@ -17135,18 +17117,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
       })).filter((l) => l.referencia);
 
       if (nuevas.length === 0) {
-        setErrorPdfMedidasForm("Documento guardado, pero no he encontrado líneas de medidas claras para generar un pedido a partir de él.");
+        setErrorPdfMedidasForm("Documento guardado, pero no he encontrado líneas de medidas claras en él.");
         return;
       }
-      setLineasPedidoAutoForm((prev) => {
-        const combinadas = [...prev, ...nuevas];
-        setAdjuntosPedidoAutoForm((prevAdj) => {
-          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
-          reiniciarCuentaAtrasForm(combinadas, adjuntosCombinados);
-          return adjuntosCombinados;
-        });
-        return combinadas;
-      });
+      // A propósito NO se dispara el pedido automático aquí (a diferencia de la
+      // ficha ya guardada): navegar a Pedidos abandonaría este formulario sin
+      // guardar. El documento ya ha quedado guardado arriba; el pedido se genera
+      // después, desde la ficha del presupuesto una vez guardado.
     } catch (err) {
       setErrorPdfMedidasForm("No se pudo leer el archivo: " + err.message);
     } finally {
@@ -17242,8 +17219,8 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
 
       {onGenerarPedido && (
         <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-5">
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este presupuesto</span>
-          <p className="text-xs text-slate-500 mb-2">No hace falta guardar el presupuesto antes. Sube el PDF o foto de las medidas; si subes varios de golpe se van juntando en el mismo pedido, y a los 30 segundos sin subir ninguno más se abre el pedido ya relleno.</p>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Guardar PDF/foto de medidas (cristales, persianas...) en este presupuesto</span>
+          <p className="text-xs text-slate-500 mb-2">Se guarda en el presupuesto en cuanto lo subas — no hace falta guardar el presupuesto antes. Para generar el pedido a partir de él, hazlo después desde la ficha del presupuesto ya guardado (ahí no hay riesgo de perder lo que estás escribiendo aquí).</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={inputPdfMedidasFormRef}
@@ -17261,16 +17238,8 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, onCrearCli
             >
               <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Leyendo..." : "Subir PDF/foto de medidas"}
             </button>
-            {lineasPedidoAutoForm.length > 0 && (
-              <>
-                <span className="text-sm text-slate-600">{lineasPedidoAutoForm.length} línea(s) leídas{segundosParaPedidoForm !== null ? ` — pedido en ${segundosParaPedidoForm}s` : ""}</span>
-                <button type="button" onClick={() => dispararPedidoAutoForm(lineasPedidoAutoForm, adjuntosPedidoAutoForm)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
-                  Crear pedido ahora
-                </button>
-                <button type="button" onClick={() => { clearTimeout(timerPedidoAutoFormRef.current); clearInterval(intervaloCuentaFormRef.current); setLineasPedidoAutoForm([]); setAdjuntosPedidoAutoForm([]); setSegundosParaPedidoForm(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
-                  Cancelar
-                </button>
-              </>
+            {f.documentos && f.documentos.length > 0 && (
+              <span className="text-sm text-emerald-700 font-semibold">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</span>
             )}
           </div>
           {errorPdfMedidasForm && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasForm}</p>}
@@ -17526,25 +17495,10 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   const inputPdfMedidasPreRef = useRef(null);
 
   const dispararPedidoAutoPre = (lineasFinales, adjuntosFinales) => {
-    clearTimeout(timerPedidoAutoPreRef.current);
-    clearInterval(intervaloCuentaPreRef.current);
-    setSegundosParaPedidoPre(null);
     if (lineasFinales.length === 0) return;
     setLineasPedidoAutoPre([]);
     setAdjuntosPedidoAutoPre([]);
-    onGenerarPedido(null, lineasFinales, null, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el presupuesto #${presupuesto.numero}${presupuesto.clienteNombre ? ` (${presupuesto.clienteNombre})` : ""}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
-  };
-
-  const reiniciarCuentaAtrasPre = (lineasAcumuladas, adjuntosAcumulados) => {
-    clearTimeout(timerPedidoAutoPreRef.current);
-    clearInterval(intervaloCuentaPreRef.current);
-    let restantes = 30;
-    setSegundosParaPedidoPre(restantes);
-    intervaloCuentaPreRef.current = setInterval(() => {
-      restantes -= 1;
-      setSegundosParaPedidoPre(restantes > 0 ? restantes : 0);
-    }, 1000);
-    timerPedidoAutoPreRef.current = setTimeout(() => dispararPedidoAutoPre(lineasAcumuladas, adjuntosAcumulados), 30000);
+    onGenerarPedido(null, lineasFinales, null, `Pedido generado a partir de los PDF/fotos de medidas subidos en el presupuesto #${presupuesto.numero}${presupuesto.clienteNombre ? ` (${presupuesto.clienteNombre})` : ""}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
   };
 
   const manejarSubidaPdfMedidasPre = async (file) => {
@@ -17603,11 +17557,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       }
       setLineasPedidoAutoPre((prev) => {
         const combinadas = [...prev, ...nuevas];
-        setAdjuntosPedidoAutoPre((prevAdj) => {
-          const adjuntosCombinados = [...prevAdj, nuevoAdjunto];
-          reiniciarCuentaAtrasPre(combinadas, adjuntosCombinados);
-          return adjuntosCombinados;
-        });
+        setAdjuntosPedidoAutoPre((prevAdj) => [...prevAdj, nuevoAdjunto]);
         return combinadas;
       });
     } catch (err) {
@@ -17663,7 +17613,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       {onGenerarPedido && (
         <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
           <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este presupuesto</span>
-          <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; a los 30 segundos sin subir ninguno más, se abre el pedido ya relleno para que elijas proveedor y lo revises.</p>
+          <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; cuando termines, pulsa "Crear pedido" para abrirlo ya relleno y elegir proveedor.</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={inputPdfMedidasPreRef}
@@ -17683,11 +17633,11 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </button>
             {lineasPedidoAutoPre.length > 0 && (
               <>
-                <span className="text-sm text-slate-600">{lineasPedidoAutoPre.length} línea(s) leídas{segundosParaPedidoPre !== null ? ` — pedido en ${segundosParaPedidoPre}s` : ""}</span>
+                <span className="text-sm text-slate-600">{lineasPedidoAutoPre.length} línea(s) leídas</span>
                 <button type="button" onClick={() => dispararPedidoAutoPre(lineasPedidoAutoPre, adjuntosPedidoAutoPre)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
-                  Crear pedido ahora
+                  Crear pedido
                 </button>
-                <button type="button" onClick={() => { clearTimeout(timerPedidoAutoPreRef.current); clearInterval(intervaloCuentaPreRef.current); setLineasPedidoAutoPre([]); setAdjuntosPedidoAutoPre([]); setSegundosParaPedidoPre(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                <button type="button" onClick={() => { setLineasPedidoAutoPre([]); setAdjuntosPedidoAutoPre([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
                   Cancelar
                 </button>
               </>
