@@ -598,40 +598,75 @@ export default function App() {
   // de condiciones/contrato subido en "Configurar documento de firma" (si hay
   // uno configurado). Si no hay ninguno subido, se manda solo la portada.
   // Devuelve el PDF en base64 (sin el prefijo "data:application/pdf;base64,").
+  // Construye el PDF que se envía a firmar. Si el presupuesto tiene documentos
+  // guardados (el PDF/foto de medidas real que se subió), es ESO lo que se firma —
+  // tal cual, página a página — en vez de un resumen genérico. Las fotos se meten
+  // como página de imagen. Si no hay ningún documento guardado, se genera un
+  // resumen básico como respaldo para que el envío nunca se quede sin nada que firmar.
   const generarPdfBase64Presupuesto = async (presupuesto) => {
     const pdfDoc = await PDFDocument.create();
-    const fuente = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fuenteNegrita = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const pagina = pdfDoc.addPage([595.28, 841.89]); // A4
-    const margen = 50;
-    let y = 800;
-    const negro = rgb(0.12, 0.16, 0.22);
-    const gris = rgb(0.45, 0.45, 0.45);
+    const documentos = presupuesto.documentos || [];
 
-    pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
-    y -= 28;
-    pagina.drawText(`Nº presupuesto: ${presupuesto.numero}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
-    pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
-    pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
-    pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
-    pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
-
-    const anchoUtil = 495;
-    const palabras = (presupuesto.descripcion || "—").split(/\s+/);
-    let linea = "";
-    for (const palabra of palabras) {
-      const pruebaLinea = linea ? `${linea} ${palabra}` : palabra;
-      if (fuente.widthOfTextAtSize(pruebaLinea, 11) > anchoUtil) {
-        pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro });
-        y -= 15;
-        linea = palabra;
-      } else {
-        linea = pruebaLinea;
+    if (documentos.length > 0) {
+      for (const doc of documentos) {
+        const match = /^data:([^;]+);base64,(.*)$/.exec(doc.url || "");
+        if (!match) continue;
+        const [, mimeType, base64] = match;
+        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+        try {
+          if (mimeType === "application/pdf") {
+            const pdfOrigen = await PDFDocument.load(bytes);
+            const paginasCopiadas = await pdfDoc.copyPages(pdfOrigen, pdfOrigen.getPageIndices());
+            paginasCopiadas.forEach((p) => pdfDoc.addPage(p));
+          } else if (mimeType === "image/png" || mimeType === "image/jpeg" || mimeType === "image/jpg") {
+            const imagen = mimeType === "image/png" ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+            const pagina = pdfDoc.addPage([595.28, 841.89]); // A4
+            const escala = Math.min((595.28 - 40) / imagen.width, (841.89 - 40) / imagen.height, 1);
+            const w = imagen.width * escala, h = imagen.height * escala;
+            pagina.drawImage(imagen, { x: (595.28 - w) / 2, y: (841.89 - h) / 2, width: w, height: h });
+          }
+        } catch (err) {
+          console.error(`No se pudo añadir el documento "${doc.nombre}" al PDF de firma:`, err);
+        }
       }
     }
-    if (linea) { pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 15; }
-    y -= 15;
-    pagina.drawText("Documento generado desde el CRM de Alumavel para firma electrónica.", { x: margen, y, size: 9, font: fuente, color: gris });
+
+    // Si no hay documentos guardados (o ninguno se pudo cargar), se genera un
+    // resumen básico como respaldo — mejor eso que un PDF completamente vacío.
+    if (pdfDoc.getPageCount() === 0) {
+      const fuente = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fuenteNegrita = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const pagina = pdfDoc.addPage([595.28, 841.89]);
+      const margen = 50;
+      let y = 800;
+      const negro = rgb(0.12, 0.16, 0.22);
+      const gris = rgb(0.45, 0.45, 0.45);
+
+      pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
+      y -= 28;
+      pagina.drawText(`Nº presupuesto: ${presupuesto.numero}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+      pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+      pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+      pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
+      pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
+
+      const anchoUtil = 495;
+      const palabras = (presupuesto.descripcion || "—").split(/\s+/);
+      let linea = "";
+      for (const palabra of palabras) {
+        const pruebaLinea = linea ? `${linea} ${palabra}` : palabra;
+        if (fuente.widthOfTextAtSize(pruebaLinea, 11) > anchoUtil) {
+          pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro });
+          y -= 15;
+          linea = palabra;
+        } else {
+          linea = pruebaLinea;
+        }
+      }
+      if (linea) { pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 15; }
+      y -= 15;
+      pagina.drawText("Documento generado desde el CRM de Alumavel para firma electrónica.", { x: margen, y, size: 9, font: fuente, color: gris });
+    }
 
     // Si hay un PDF de condiciones configurado, se añaden sus páginas a continuación
     if (configuracionFirma.condicionesPdfUrl) {
@@ -17441,6 +17476,11 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma }) {
         </button>
       ) : (
         <form onSubmit={enviar} className="space-y-2">
+          <p className="text-xs text-slate-500">
+            {(presupuesto.documentos || []).length > 0
+              ? `Se firmará: ${presupuesto.documentos.map((d) => d.nombre).join(", ")}.`
+              : "Este presupuesto no tiene ningún PDF/foto guardado — se enviará un resumen básico. Si quieres que se firme el documento real, súbelo antes en 'Documentos guardados'."}
+          </p>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Nombre del firmante">
               <TextInput value={firmante.nombre} onChange={(e) => setFirmante({ ...firmante, nombre: e.target.value })} />
