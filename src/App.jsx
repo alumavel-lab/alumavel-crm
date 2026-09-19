@@ -1041,7 +1041,7 @@ export default function App() {
   // Importación masiva de tarifas de materiales: si el código o la descripción
   // ya existen, actualiza el precio; si no, da de alta el material nuevo.
   // Se hace todo en una sola escritura para no perder filas del lote.
-  const importarTarifasMateriales = (filas, origen) => {
+  const importarTarifasMateriales = (filas, origen, proveedorIdForzado) => {
     let working = [...materiales];
     let actualizados = 0, creados = 0;
     const nombreOrigen = origen || "Importación de tarifa";
@@ -1058,13 +1058,14 @@ export default function App() {
         working[idx] = {
           ...actual,
           ...(fila.foto ? { foto: fila.foto } : {}),
+          ...(proveedorIdForzado ? { proveedorId: proveedorIdForzado } : {}),
           precioVenta: nuevoVenta, precioCompra: nuevoCompra, historicoPrecios,
         };
         actualizados++;
       } else if (fila.codigo || fila.descripcion) {
         const historicoPrecios = registrarHistoricoPrecio([], "", "", fila.precioCompra || "", fila.precioVenta || "", nombreOrigen);
         working = [{
-          id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: "",
+          id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: proveedorIdForzado || "",
           stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
           longitud: "", ancho: "", alto: "", grueso: "",
           precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: "",
@@ -1196,7 +1197,7 @@ export default function App() {
           return;
         }
       }
-      next = [{ ...data, id: uid(), numero: nextNumeroPedido() }, ...pedidos];
+      next = [{ ...data, id: uid(), numero: nextNumeroPedido(), creadoPor: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "", fechaCreado: new Date().toISOString().slice(0, 10) }, ...pedidos];
       showToast("Pedido dado de alta");
     }
     savePedidos(next);
@@ -2519,6 +2520,8 @@ export default function App() {
           <ProveedoresModulo
             proveedores={proveedores}
             materiales={materiales}
+            pedidos={pedidos}
+            proyectos={proyectos}
             view={proveedorView}
             setView={setProveedorView}
             editId={proveedorEditId}
@@ -2529,6 +2532,7 @@ export default function App() {
             onDelete={deleteProveedor}
             isAdmin={isAdmin}
             onInlineUpdate={updateProveedorInline}
+            onImportarTarifas={importarTarifasMateriales}
           />
         )}
         {modulo === "stock" && (
@@ -4051,6 +4055,99 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     }));
     onGenerarPedidoFaltante(null, lineas, proyecto.id, `Pedido de faltantes generado desde el despiece conjunto del proyecto #${proyecto.numero}. Revisa proveedor y precios antes de enviarlo.`);
   };
+
+  // Subir PDF/foto de medidas (cristales, persianas, etc.) dentro del proyecto y que
+  // se genere el pedido solo, sin tener que ir a Pedidos y pegar/rehacer las líneas.
+  // Cada PDF que se sube se lee y se va acumulando; si pasan 30s sin subir uno nuevo
+  // (o si se pulsa "Crear pedido ahora"), se abre el pedido ya relleno en Pedidos,
+  // listo para elegir proveedor y revisar antes de guardar.
+  const [lineasPedidoAuto, setLineasPedidoAuto] = useState([]);
+  const [leyendoPdfMedidas, setLeyendoPdfMedidas] = useState(false);
+  const [erroPdfMedidas, setErrorPdfMedidas] = useState("");
+  const [segundosParaPedido, setSegundosParaPedido] = useState(null);
+  const timerPedidoAutoRef = useRef(null);
+  const intervaloCuentaRef = useRef(null);
+  const inputPdfMedidasRef = useRef(null);
+
+  const dispararPedidoAuto = (lineasFinales) => {
+    clearTimeout(timerPedidoAutoRef.current);
+    clearInterval(intervaloCuentaRef.current);
+    setSegundosParaPedido(null);
+    if (lineasFinales.length === 0) return;
+    setLineasPedidoAuto([]);
+    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado automáticamente a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`);
+  };
+
+  const reiniciarCuentaAtras = (lineasAcumuladas) => {
+    clearTimeout(timerPedidoAutoRef.current);
+    clearInterval(intervaloCuentaRef.current);
+    let restantes = 30;
+    setSegundosParaPedido(restantes);
+    intervaloCuentaRef.current = setInterval(() => {
+      restantes -= 1;
+      setSegundosParaPedido(restantes > 0 ? restantes : 0);
+    }, 1000);
+    timerPedidoAutoRef.current = setTimeout(() => dispararPedidoAuto(lineasAcumuladas), 30000);
+  };
+
+  const manejarSubidaPdfMedidas = async (file) => {
+    if (!file) return;
+    setLeyendoPdfMedidas(true);
+    setErrorPdfMedidas("");
+    try {
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const esPdf = file.type === "application/pdf";
+      const contentBlock = esPdf
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
+
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8000,
+          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+      const inicio = limpio.indexOf("[");
+      const fin = limpio.lastIndexOf("]");
+      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+      const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
+        id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
+        ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
+      })).filter((l) => l.referencia);
+
+      if (nuevas.length === 0) {
+        setErrorPdfMedidas("No he podido leer ninguna línea clara en el archivo. Prueba con una foto más nítida.");
+        return;
+      }
+      setLineasPedidoAuto((prev) => {
+        const combinadas = [...prev, ...nuevas];
+        reiniciarCuentaAtras(combinadas);
+        return combinadas;
+      });
+    } catch (err) {
+      setErrorPdfMedidas("No se pudo leer el archivo: " + err.message);
+    } finally {
+      setLeyendoPdfMedidas(false);
+    }
+  };
+
+  useEffect(() => () => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); }, []);
+
   const totalRecibido = (ingresos || []).reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
   const importePresupuesto = parseFloat(proyecto.importePresupuesto) || 0;
   const saldoPendiente = importePresupuesto - totalRecibido;
@@ -4148,6 +4245,41 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
         {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
         {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
+      </div>
+
+      <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
+        <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este proyecto</span>
+        <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; a los 30 segundos sin subir ninguno más, se abre el pedido ya relleno para que elijas proveedor y lo revises.</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            ref={inputPdfMedidasRef}
+            type="file"
+            accept="image/*,application/pdf"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidas(e.target.files[0]); e.target.value = ""; }}
+          />
+          <button
+            type="button"
+            onClick={() => inputPdfMedidasRef.current?.click()}
+            disabled={leyendoPdfMedidas}
+            style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+            className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
+          >
+            <ImageIcon size={15} /> {leyendoPdfMedidas ? "Leyendo..." : "Subir PDF/foto de medidas"}
+          </button>
+          {lineasPedidoAuto.length > 0 && (
+            <>
+              <span className="text-sm text-slate-600">{lineasPedidoAuto.length} línea(s) leídas{segundosParaPedido !== null ? ` — pedido en ${segundosParaPedido}s` : ""}</span>
+              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
+                Crear pedido ahora
+              </button>
+              <button type="button" onClick={() => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); setLineasPedidoAuto([]); setSegundosParaPedido(null); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                Cancelar
+              </button>
+            </>
+          )}
+        </div>
+        {erroPdfMedidas && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {erroPdfMedidas}</p>}
       </div>
 
       {/* KPI strip */}
@@ -4743,7 +4875,7 @@ function Kpi({ label, value, sub, tone = "neutral" }) {
 
 /* ================= PROVEEDORES ================= */
 
-function ProveedoresModulo({ proveedores, materiales, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, isAdmin }) {
+function ProveedoresModulo({ proveedores, materiales, pedidos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, isAdmin, onImportarTarifas }) {
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -4765,11 +4897,14 @@ function ProveedoresModulo({ proveedores, materiales, view, setView, editId, set
       <ProveedorDetail
         proveedor={proveedor}
         materiales={mats}
+        pedidos={pedidos.filter((p) => p.proveedorId === proveedor.id)}
+        proyectos={proyectos}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(proveedor.id); setView("form"); }}
         onDelete={() => onDelete(proveedor.id)}
         isAdmin={isAdmin}
         onInlineUpdate={onInlineUpdate}
+        onImportarTarifas={onImportarTarifas}
       />
     );
   }
@@ -4892,10 +5027,29 @@ function ProveedorForm({ initial, onCancel, onSave }) {
   );
 }
 
-function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onInlineUpdate, isAdmin }) {
+function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onImportarTarifas }) {
   const [tab, setTab] = useState("datos");
   const historico = proveedor.historico || [];
   const [hForm, setHForm] = useState({ articulo: "", cantidad: "", fecha: new Date().toISOString().slice(0, 10), precio: "", comentarios: "" });
+  const inputTarifaProveedorRef = useRef(null);
+
+  const manejarImportarTarifaProveedor = async (file) => {
+    if (!file || !onImportarTarifas) return;
+    const buffer = await file.arrayBuffer();
+    const filasExcel = leerFilasExcel(buffer);
+    const filas = filasExcel.map((fila) => ({
+      codigo: String(valorPorCabeceras(fila, ["codigo", "cod", "referencia", "ref"])).trim(),
+      descripcion: String(valorPorCabeceras(fila, ["descripcion", "nombre", "material"])).trim(),
+      precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
+      precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
+      foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
+    })).filter((f) => f.codigo || f.descripcion);
+    if (filas.length === 0) {
+      alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
+      return;
+    }
+    onImportarTarifas(filas, `Tarifa proveedor: ${proveedor.nombre} (${file.name})`, proveedor.id);
+  };
 
   const addHistorico = (e) => {
     e.preventDefault();
@@ -4925,7 +5079,8 @@ function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onIn
       <div className="flex gap-1 mb-4 border-b border-slate-200">
         {[
           { id: "datos", label: "Datos proveedor", icon: FileText },
-          { id: "materiales", label: `Materiales suministrados (${materiales.length})`, icon: Package },
+          { id: "materiales", label: `Tarifa (${materiales.length})`, icon: Package },
+          { id: "pedidos", label: `Pedidos (${pedidos.length})`, icon: ClipboardList },
           { id: "historico", label: `Histórico artículos/servicios (${historico.length})`, icon: ClipboardList },
         ].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -4933,6 +5088,88 @@ function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onIn
           </button>
         ))}
       </div>
+
+      {tab === "materiales" && (
+        <div className="space-y-3">
+          <input
+            ref={inputTarifaProveedorRef}
+            type="file"
+            accept=".xlsx,.xls,.ods,.csv"
+            className="hidden"
+            onChange={(e) => { manejarImportarTarifaProveedor(e.target.files[0]); e.target.value = ""; }}
+          />
+          <button
+            onClick={() => inputTarifaProveedorRef.current?.click()}
+            className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-slate-600 border border-slate-300 py-2.5 rounded-md hover:bg-slate-50"
+          >
+            <FileSpreadsheet size={15} /> Importar tarifa de {proveedor.nombre} desde Excel — se asigna automáticamente a este proveedor
+          </button>
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            {materiales.length === 0 ? (
+              <p className="px-4 py-8 text-center text-sm text-slate-400">Este proveedor aún no tiene materiales en su tarifa.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="px-4 py-2.5 font-semibold">Foto</th>
+                    <th className="px-4 py-2.5 font-semibold">Código</th>
+                    <th className="px-4 py-2.5 font-semibold">Descripción</th>
+                    <th className="px-4 py-2.5 font-semibold text-right">Stock</th>
+                    <th className="px-4 py-2.5 font-semibold text-right">Precio compra</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {materiales.map((m) => (
+                    <tr key={m.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5">
+                        {m.foto ? <img src={m.foto} alt="" className="w-9 h-9 object-cover rounded border border-slate-200" /> : <div className="w-9 h-9 rounded border border-dashed border-slate-200" />}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono-num text-slate-500">{m.codigo}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-800">{m.descripcion}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num">{m.stockReal ?? 0}</td>
+                      <td className="px-4 py-2.5 text-right font-mono-num">{money(m.precioCompra)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === "pedidos" && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {pedidos.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-slate-400">Todavía no se le ha hecho ningún pedido a este proveedor.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="px-4 py-2.5 font-semibold">Nº pedido</th>
+                  <th className="px-4 py-2.5 font-semibold">Fecha</th>
+                  <th className="px-4 py-2.5 font-semibold">Pedido por</th>
+                  <th className="px-4 py-2.5 font-semibold">Proyecto</th>
+                  <th className="px-4 py-2.5 font-semibold">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...pedidos].sort((a, b) => (b.fechaCompra || "").localeCompare(a.fechaCompra || "")).map((p) => {
+                  const proy = proyectos.find((pr) => pr.id === p.proyectoId);
+                  return (
+                    <tr key={p.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2.5 font-mono-num text-slate-500">#{p.numero}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{p.fechaCompra || "—"}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{p.creadoPor || "—"}</td>
+                      <td className="px-4 py-2.5 text-slate-800 font-medium">{proy ? `#${proy.numero} — ${proy.nombre}` : "Stock (sin proyecto)"}</td>
+                      <td className="px-4 py-2.5"><Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
@@ -4950,34 +5187,6 @@ function ProveedorDetail({ proveedor, materiales, onBack, onEdit, onDelete, onIn
         </CornerFrame>
       )}
 
-      {tab === "materiales" && (
-        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          {materiales.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-slate-400">Este proveedor aún no suministra materiales en el catálogo.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                  <th className="px-4 py-2.5 font-semibold">Código</th>
-                  <th className="px-4 py-2.5 font-semibold">Descripción</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Stock</th>
-                  <th className="px-4 py-2.5 font-semibold text-right">Precio compra</th>
-                </tr>
-              </thead>
-              <tbody>
-                {materiales.map((m) => (
-                  <tr key={m.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-4 py-2.5 font-mono-num text-slate-500">{m.codigo}</td>
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{m.descripcion}</td>
-                    <td className="px-4 py-2.5 text-right font-mono-num">{m.stockReal ?? 0}</td>
-                    <td className="px-4 py-2.5 text-right font-mono-num">{money(m.precioCompra)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
 
       {tab === "historico" && (
         <div className="space-y-4">
@@ -5745,6 +5954,77 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
     }
   };
 
+  // Lee la foto de un albarán que acaba de llegar a fábrica y busca, entre los
+  // pedidos que aún están en marcha (no Recibidos ni Cancelados), cuál coincide —
+  // primero por número de pedido si el albarán lo trae, si no por el nombre del
+  // proveedor — para poder confirmar la entrada con un solo toque, sin buscarlo a mano.
+  const [leyendoAlbaran, setLeyendoAlbaran] = useState(false);
+  const [errorAlbaran, setErrorAlbaran] = useState("");
+  const [candidatosAlbaran, setCandidatosAlbaran] = useState(null);
+  const [datosAlbaran, setDatosAlbaran] = useState(null);
+  const inputAlbaranRef = useRef(null);
+
+  const leerAlbaranEntrada = async (file) => {
+    setLeyendoAlbaran(true);
+    setErrorAlbaran("");
+    setCandidatosAlbaran(null);
+    setDatosAlbaran(null);
+    try {
+      const base64Data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(",")[1]);
+        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
+        r.readAsDataURL(file);
+      });
+      const esPdf = file.type === "application/pdf";
+      const contentBlock = esPdf
+        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+
+      const prompt = 'Esto es un albarán de entrega de un proveedor (material que acaba de llegar a un almacén/fábrica). Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"proveedor":"nombre de la empresa que entrega, tal cual aparece","numeroPedido":"número de pedido o referencia de pedido si aparece en el albarán, si no vacío","numeroAlbaran":"número del propio albarán si aparece, si no vacío","lineas":[{"referencia":"descripción o código de la línea","cantidad":numero}]}. Revisa el documento entero y no omitas líneas.';
+
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 4000,
+          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
+        }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
+      const inicio = limpio.indexOf("{");
+      const fin = limpio.lastIndexOf("}");
+      const info = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+
+      const enMarcha = pedidos.filter((p) => p.estado !== "Recibido" && p.estado !== "Cancelado");
+      const numDetectado = (info.numeroPedido || "").toString().trim().toLowerCase();
+      const provDetectado = (info.proveedor || "").toString().trim().toLowerCase();
+
+      let candidatos = [];
+      if (numDetectado) {
+        candidatos = enMarcha.filter((p) => (p.numero || "").toString().trim().toLowerCase() === numDetectado);
+      }
+      if (candidatos.length === 0 && provDetectado) {
+        candidatos = enMarcha.filter((p) => {
+          const nombreProv = proveedorNombre(p.proveedorId).toLowerCase();
+          return nombreProv && (nombreProv.includes(provDetectado) || provDetectado.includes(nombreProv));
+        });
+      }
+      setDatosAlbaran(info);
+      setCandidatosAlbaran(candidatos);
+    } catch (err) {
+      console.error("Error leyendo albarán:", err);
+      setErrorAlbaran("No se pudo leer el albarán. Prueba con una foto más clara, con más luz, o inténtalo de nuevo. (" + err.message + ")");
+    } finally {
+      setLeyendoAlbaran(false);
+    }
+  };
+
   const [estado, setEstado] = useState("");
   const [proveedorFiltro, setProveedorFiltro] = useState("");
 
@@ -5885,6 +6165,58 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
 
       <button
         type="button"
+        onClick={() => inputAlbaranRef.current?.click()}
+        disabled={leyendoAlbaran}
+        style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+        className="w-full flex items-center justify-center gap-2 border-2 hover:bg-slate-50 disabled:opacity-50 text-sm font-semibold py-3 rounded-lg mb-3 cursor-pointer select-none"
+      >
+        <ImageIcon size={16} /> {leyendoAlbaran ? "Leyendo el albarán..." : "Confirmar entrada por foto de albarán"}
+      </button>
+      <input
+        ref={inputAlbaranRef}
+        type="file"
+        accept="image/*,application/pdf"
+        className="hidden"
+        onChange={(e) => { if (e.target.files?.[0]) leerAlbaranEntrada(e.target.files[0]); e.target.value = ""; }}
+      />
+      {errorAlbaran && (
+        <div className="mb-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorAlbaran}</div>
+      )}
+      {candidatosAlbaran !== null && (
+        <div className="mb-6 border border-slate-200 rounded-lg bg-white p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold text-slate-700">
+              Albarán leído{datosAlbaran?.proveedor ? ` — proveedor detectado: ${datosAlbaran.proveedor}` : ""}{datosAlbaran?.numeroPedido ? ` · nº pedido: ${datosAlbaran.numeroPedido}` : ""}
+            </span>
+            <button onClick={() => { setCandidatosAlbaran(null); setDatosAlbaran(null); }} className="text-slate-300 hover:text-rose-500"><X size={16} /></button>
+          </div>
+          {candidatosAlbaran.length === 0 ? (
+            <p className="text-sm text-slate-500">No he encontrado ningún pedido en marcha que coincida por número o proveedor. Búscalo a mano en "Control de pedidos", o crea un pedido nuevo a partir de esta misma foto con el botón de arriba.</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-400 mb-1">{candidatosAlbaran.length === 1 ? "He encontrado este pedido en marcha que coincide:" : "He encontrado varios pedidos en marcha que podrían coincidir — elige el correcto:"}</p>
+              {candidatosAlbaran.map((p) => (
+                <div key={p.id} className="flex items-center justify-between px-3 py-2.5 rounded-md border border-slate-200 bg-slate-50">
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-800">Pedido #{p.numero}</span>
+                    <span className="text-slate-500"> — {proveedorNombre(p.proveedorId)} · {p.fechaCompra || "sin fecha"} · {p.estado}</span>
+                  </div>
+                  <button
+                    onClick={() => { onRecibir(p.id); setCandidatosAlbaran(null); setDatosAlbaran(null); }}
+                    style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                    className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90"
+                  >
+                    <CheckCircle2 size={13} /> Confirmar entrada
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <button
+        type="button"
         onClick={() => setMostrarAgrupador((v) => !v)}
         style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
         className="w-full flex items-center justify-center gap-2 border-2 hover:bg-slate-50 text-sm font-semibold py-3 rounded-lg mb-6 cursor-pointer select-none"
@@ -5944,8 +6276,10 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
             <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
               <th className="px-4 py-3 font-semibold">Nº Pedido</th>
               <th className="px-4 py-3 font-semibold">Proveedor</th>
+              <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Materiales</th>
               <th className="px-4 py-3 font-semibold">Fecha compra</th>
+              <th className="px-4 py-3 font-semibold">Pedido por</th>
               <th className="px-4 py-3 font-semibold">Entrega prevista</th>
               <th className="px-4 py-3 font-semibold">Estado</th>
               <th className="px-4 py-3"></th>
@@ -5953,7 +6287,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">No hay pedidos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400 text-sm">No hay pedidos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const vencido = p.estado !== "Recibido" && p.estado !== "Cancelado" && p.fechaEntregaPrevista && new Date(p.fechaEntregaPrevista) < new Date();
@@ -5961,8 +6295,10 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
                   <td className="px-4 py-3 font-medium text-slate-800">{proveedorNombre(p.proveedorId)}</td>
+                  <td className="px-4 py-3 text-slate-600">{proyectoNombre(p.proyectoId)}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
+                  <td className="px-4 py-3 text-slate-500">{p.creadoPor || "—"}</td>
                   <td className={`px-4 py-3 ${vencido ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
                   <td className="px-4 py-3"><Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge></td>
                   <td className="px-4 py-3 text-right">
@@ -6179,9 +6515,36 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
   const addLinea = (modo = "catalogo") => setF({ ...f, lineas: [...f.lineas, { ...blankLinea(), modo }] });
   const removeLinea = (id) => setF({ ...f, lineas: f.lineas.filter((l) => l.id !== id) });
 
+  // Elegir un material y la cantidad que se necesita: si el stock actual ya la cubre,
+  // no se añade nada al pedido (ya hay de sobra); si no, solo se añade al pedido lo
+  // que falta (necesaria - stock real), no la cantidad completa.
+  const [materialNecesitadoId, setMaterialNecesitadoId] = useState(materiales?.[0]?.id || "");
+  const [cantidadNecesitada, setCantidadNecesitada] = useState("");
+  const agregarSegunStock = () => {
+    const material = (materiales || []).find((m) => m.id === materialNecesitadoId);
+    const necesaria = parseFloat(cantidadNecesitada) || 0;
+    if (!material || necesaria <= 0) return;
+    const disponible = parseFloat(material.stockReal) || 0;
+    if (disponible >= necesaria) {
+      setErrorMsg(`Ya tienes stock suficiente de "${material.descripcion}" (${disponible} disponibles) — no hace falta pedir nada.`);
+      setCantidadNecesitada("");
+      return;
+    }
+    const falta = necesaria - disponible;
+    const nueva = {
+      id: uid(), modo: "catalogo", materialId: material.id,
+      referencia: `Necesarios ${necesaria} — tenías ${disponible} en stock`,
+      ancho: "", alto: "", cantidad: falta, precio: material.precioCompra || "", estado: "Solicitado",
+    };
+    setF((prev) => ({ ...prev, lineas: [...prev.lineas, nueva] }));
+    setErrorMsg("");
+    setCantidadNecesitada("");
+  };
+
   // Coger un artículo del catálogo (Fase II) y volcar de golpe, como líneas de
   // pedido normales (modo "catalogo"), cada material que lo compone — multiplicando
-  // la cantidad de cada material por el número de artículos que se van a pedir.
+  // la cantidad de cada material por el número de artículos que se van a pedir, y
+  // descontando de cada uno el stock que ya haya disponible (solo se pide lo que falta).
   const [articuloSel, setArticuloSel] = useState(articulos?.[0]?.id || "");
   const [cantidadArticuloSel, setCantidadArticuloSel] = useState("1");
   const agregarLineasDeArticulo = () => {
@@ -6193,12 +6556,29 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       setErrorMsg(`El artículo "${articulo.nombre}" no tiene materiales asociados en su ficha.`);
       return;
     }
-    const nuevas = materialesArticulo.map((l) => ({
-      id: uid(), modo: "catalogo", materialId: l.materialId, referencia: `De artículo: ${articulo.nombre}`,
-      ancho: "", alto: "", cantidad: (parseFloat(l.cantidad) || 0) * cantidadArt, precio: l.precio || "", estado: "Solicitado",
-    }));
+    const cubiertos = [];
+    const nuevas = [];
+    materialesArticulo.forEach((l) => {
+      const material = (materiales || []).find((m) => m.id === l.materialId);
+      const necesaria = (parseFloat(l.cantidad) || 0) * cantidadArt;
+      const disponible = material ? (parseFloat(material.stockReal) || 0) : 0;
+      if (disponible >= necesaria) {
+        cubiertos.push(material?.descripcion || l.materialId);
+        return;
+      }
+      const falta = necesaria - disponible;
+      nuevas.push({
+        id: uid(), modo: "catalogo", materialId: l.materialId,
+        referencia: `De artículo: ${articulo.nombre}${disponible > 0 ? ` (tenías ${disponible} en stock)` : ""}`,
+        ancho: "", alto: "", cantidad: falta, precio: l.precio || "", estado: "Solicitado",
+      });
+    });
+    if (nuevas.length === 0) {
+      setErrorMsg(`Ya tienes stock suficiente de todos los materiales de "${articulo.nombre}" — no hace falta pedir nada.`);
+      return;
+    }
     setF((prev) => ({ ...prev, lineas: [...prev.lineas, ...nuevas] }));
-    setErrorMsg("");
+    setErrorMsg(cubiertos.length > 0 ? `Cubiertos por stock (no añadidos): ${cubiertos.join(", ")}.` : "");
   };
 
   const convertirPegado = () => {
@@ -6334,6 +6714,28 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             </button>
           </div>
         </div>
+
+        {materiales && materiales.length > 0 && (
+          <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
+            <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Necesito un material (comprueba el stock)</span>
+            <p className="text-xs text-slate-400 mb-2">Eliges el material y cuánto necesitas; si ya hay stock suficiente no se añade nada, y si falta, solo se añade al pedido la cantidad que falta.</p>
+            <div className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-7">
+                <Select value={materialNecesitadoId} onChange={(e) => setMaterialNecesitadoId(e.target.value)}>
+                  {materiales.map((m) => <option key={m.id} value={m.id}>{m.codigo} — {m.descripcion} (stock: {m.stockReal ?? 0})</option>)}
+                </Select>
+              </div>
+              <div className="col-span-2">
+                <TextInput type="number" placeholder="Necesito" value={cantidadNecesitada} onChange={(e) => setCantidadNecesitada(e.target.value)} />
+              </div>
+              <div className="col-span-3">
+                <button type="button" onClick={agregarSegunStock} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold text-white bg-[#2E8B57] hover:bg-[#256E46] px-3 py-2 rounded-md">
+                  <Plus size={14} /> Comprobar y añadir
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {articulos && articulos.length > 0 && (
           <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
@@ -6525,8 +6927,9 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const asunto = `Pedido ${pedido.numero} — ALUMAVEL`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+    const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
+    const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
+    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -6540,14 +6943,15 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
         const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
         return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
       }).join("\n");
-      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+      const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
+      const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           destinatario: proveedor.email,
-          asunto: `Pedido ${pedido.numero} — ALUMAVEL`,
+          asunto: `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`,
           cuerpo,
           replyTo: currentUser?.email || "",
         }),
@@ -6572,7 +6976,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (proyecto #${proyecto.numero})` : ""}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -6604,7 +7008,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
             <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{pedido.numero}</span>
             <h1 className="font-display text-2xl font-extrabold text-slate-900">{proveedor?.nombre || "Proveedor no encontrado"}</h1>
           </div>
-          <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}</p>
+          <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}{pedido.creadoPor && ` · Pedido por ${pedido.creadoPor}`}</p>
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
         </div>
         <div className="flex gap-2 shrink-0">
