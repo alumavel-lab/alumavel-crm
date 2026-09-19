@@ -315,6 +315,60 @@ const inputCls =
 
 function TextInput(props) { return <input {...props} className={inputCls + " " + (props.className || "")} />; }
 function Select({ children, ...props }) { return <select {...props} className={inputCls + " " + (props.className || "")}>{children}</select>; }
+
+// Selector con buscador para listas largas (materiales, artículos...) donde un <select>
+// normal se vuelve inmanejable con cientos o miles de opciones. Escribes y filtra por
+// label o sublabel (código); al elegir una opción, se comporta como un <select> normal
+// (llama a onChange con el value elegido).
+function SelectorBuscable({ options, value, onChange, placeholder }) {
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(false);
+  const wrapRef = useRef(null);
+  const seleccionado = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    const fuera = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setAbierto(false); };
+    document.addEventListener("mousedown", fuera);
+    return () => document.removeEventListener("mousedown", fuera);
+  }, []);
+
+  const filtradas = useMemo(() => {
+    if (!q.trim()) return options.slice(0, 50);
+    const s = q.toLowerCase();
+    return options.filter((o) => `${o.label} ${o.sublabel || ""}`.toLowerCase().includes(s)).slice(0, 50);
+  }, [options, q]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        value={abierto ? q : (seleccionado ? `${seleccionado.sublabel ? seleccionado.sublabel + " — " : ""}${seleccionado.label}` : "")}
+        onChange={(e) => { setQ(e.target.value); setAbierto(true); }}
+        onFocus={() => { setQ(""); setAbierto(true); }}
+        placeholder={placeholder || "Buscar…"}
+        className={inputCls}
+      />
+      {abierto && (
+        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-md shadow-lg">
+          {filtradas.length === 0 && <div className="px-3 py-2 text-sm text-slate-400">Sin resultados.</div>}
+          {filtradas.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => { onChange(o.value); setAbierto(false); setQ(""); }}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center justify-between gap-2"
+            >
+              <span className="text-slate-800">{o.label}</span>
+              {o.sublabel && <span className="font-mono-num text-xs text-slate-400 shrink-0">{o.sublabel}</span>}
+            </button>
+          ))}
+          {options.length > 50 && filtradas.length === 50 && (
+            <div className="px-3 py-1.5 text-[11px] text-slate-400 border-t border-slate-100">Sigue escribiendo para afinar — hay más de 50 resultados.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function TextArea(props) { return <textarea {...props} className={inputCls + " " + (props.className || "")} />; }
 
 /* ================= APP ================= */
@@ -1058,6 +1112,7 @@ export default function App() {
         working[idx] = {
           ...actual,
           ...(fila.foto ? { foto: fila.foto } : {}),
+          ...(fila.familia ? { familia: fila.familia } : {}),
           ...(proveedorIdForzado ? { proveedorId: proveedorIdForzado } : {}),
           precioVenta: nuevoVenta, precioCompra: nuevoCompra, historicoPrecios,
         };
@@ -1068,7 +1123,7 @@ export default function App() {
           id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: proveedorIdForzado || "",
           stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
           longitud: "", ancho: "", alto: "", grueso: "",
-          precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: "",
+          precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: fila.familia || "",
           foto: fila.foto || "", historicoPrecios,
         }, ...working];
         creados++;
@@ -2533,6 +2588,7 @@ export default function App() {
             isAdmin={isAdmin}
             onInlineUpdate={updateProveedorInline}
             onImportarTarifas={importarTarifasMateriales}
+            onGenerarPedido={enviarAPedido}
           />
         )}
         {modulo === "stock" && (
@@ -2718,6 +2774,7 @@ export default function App() {
             onEnviarFirma={enviarPresupuestoAFirmar}
             configuracionFirma={configuracionFirma}
             onSubirPdfCondicionesFirma={subirPdfCondicionesFirma}
+            onGenerarPedido={enviarAPedido}
           />
         )}
         {modulo === "mediciones" && (
@@ -2839,13 +2896,10 @@ export default function App() {
             isAdmin={isAdmin}
             incidencias={incidencias}
             onUpsertIncidencia={upsertIncidencia}
-<<<<<<< HEAD
-=======
             materiales={materiales}
             usuarios={usuarios}
             onCrearTarea={crearTarea}
             currentUser={currentUser}
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
           />
         )}
         {modulo === "fichajes" && (
@@ -4878,7 +4932,7 @@ function Kpi({ label, value, sub, tone = "neutral" }) {
 
 /* ================= PROVEEDORES ================= */
 
-function ProveedoresModulo({ proveedores, materiales, pedidos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, isAdmin, onImportarTarifas }) {
+function ProveedoresModulo({ proveedores, materiales, pedidos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, isAdmin, onImportarTarifas, onGenerarPedido }) {
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -4908,6 +4962,7 @@ function ProveedoresModulo({ proveedores, materiales, pedidos, proyectos, view, 
         isAdmin={isAdmin}
         onInlineUpdate={onInlineUpdate}
         onImportarTarifas={onImportarTarifas}
+        onGenerarPedido={onGenerarPedido}
       />
     );
   }
@@ -5030,7 +5085,7 @@ function ProveedorForm({ initial, onCancel, onSave }) {
   );
 }
 
-function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onImportarTarifas }) {
+function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onImportarTarifas, onGenerarPedido }) {
   const [tab, setTab] = useState("datos");
   const historico = proveedor.historico || [];
   const [hForm, setHForm] = useState({ articulo: "", cantidad: "", fecha: new Date().toISOString().slice(0, 10), precio: "", comentarios: "" });
@@ -5046,12 +5101,55 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
       precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
       precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
       foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
+      familia: String(valorPorCabeceras(fila, ["familia", "serie", "grupo", "categoria"]) || "").trim(),
     })).filter((f) => f.codigo || f.descripcion);
     if (filas.length === 0) {
       alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
       return;
     }
     onImportarTarifas(filas, `Tarifa proveedor: ${proveedor.nombre} (${file.name})`, proveedor.id);
+  };
+
+  // Buscador + pestañas por serie/familia dentro de la tarifa, y selección múltiple
+  // para poder pedir varias referencias de golpe sin salir de la ficha del proveedor.
+  const [qTarifa, setQTarifa] = useState("");
+  const [serieFiltro, setSerieFiltro] = useState("");
+  const [seleccionados, setSeleccionados] = useState(() => new Set());
+  const [cantidadesSeleccion, setCantidadesSeleccion] = useState({});
+
+  const series = useMemo(() => {
+    const set = new Set(materiales.map((m) => (m.familia || "").trim()).filter(Boolean));
+    return Array.from(set).sort();
+  }, [materiales]);
+
+  const materialesFiltrados = useMemo(() => {
+    return materiales.filter((m) => {
+      if (serieFiltro && (m.familia || "") !== serieFiltro) return false;
+      if (!qTarifa) return true;
+      const s = `${m.codigo} ${m.descripcion}`.toLowerCase();
+      return s.includes(qTarifa.toLowerCase());
+    });
+  }, [materiales, qTarifa, serieFiltro]);
+
+  const toggleSeleccion = (id) => {
+    setSeleccionados((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const generarPedidoConSeleccion = () => {
+    const lineas = materiales
+      .filter((m) => seleccionados.has(m.id))
+      .map((m) => ({
+        id: uid(), modo: "catalogo", materialId: m.id, referencia: "", ancho: "", alto: "",
+        cantidad: parseFloat(cantidadesSeleccion[m.id]) || 1, precio: m.precioCompra || "", estado: "Solicitado",
+      }));
+    if (lineas.length === 0) return;
+    onGenerarPedido(proveedor.id, lineas, "", `Pedido generado desde la tarifa de ${proveedor.nombre}.`);
+    setSeleccionados(new Set());
+    setCantidadesSeleccion({});
   };
 
   const addHistorico = (e) => {
@@ -5107,23 +5205,67 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
           >
             <FileSpreadsheet size={15} /> Importar tarifa de {proveedor.nombre} desde Excel — se asigna automáticamente a este proveedor
           </button>
+
+          {series.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setSerieFiltro("")}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${serieFiltro === "" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}
+              >
+                Todas las series
+              </button>
+              {series.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSerieFiltro(s)}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${serieFiltro === s ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="relative max-w-sm">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={qTarifa} onChange={(e) => setQTarifa(e.target.value)} placeholder="Buscar por código o descripción…"
+              className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]" />
+          </div>
+
+          {seleccionados.size > 0 && (
+            <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-md bg-emerald-50 border border-emerald-200">
+              <span className="text-sm font-semibold text-emerald-800">{seleccionados.size} referencia(s) seleccionada(s)</span>
+              <div className="flex gap-2">
+                <button onClick={() => { setSeleccionados(new Set()); setCantidadesSeleccion({}); }} className="text-sm font-semibold text-slate-500 hover:underline">Quitar selección</button>
+                <button onClick={generarPedidoConSeleccion} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-1.5 rounded-md hover:opacity-90">
+                  <ClipboardList size={14} /> Generar pedido con la selección
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            {materiales.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-slate-400">Este proveedor aún no tiene materiales en su tarifa.</p>
+            {materialesFiltrados.length === 0 ? (
+              <p className="px-4 py-8 text-center text-sm text-slate-400">{materiales.length === 0 ? "Este proveedor aún no tiene materiales en su tarifa." : "Ningún material coincide con la búsqueda."}</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="px-4 py-2.5 w-8"></th>
                     <th className="px-4 py-2.5 font-semibold">Foto</th>
                     <th className="px-4 py-2.5 font-semibold">Código</th>
                     <th className="px-4 py-2.5 font-semibold">Descripción</th>
                     <th className="px-4 py-2.5 font-semibold text-right">Stock</th>
                     <th className="px-4 py-2.5 font-semibold text-right">Precio compra</th>
+                    <th className="px-4 py-2.5 font-semibold text-right">Cantidad a pedir</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {materiales.map((m) => (
-                    <tr key={m.id} className="border-b border-slate-100 last:border-0">
+                  {materialesFiltrados.map((m) => (
+                    <tr key={m.id} className={`border-b border-slate-100 last:border-0 ${seleccionados.has(m.id) ? "bg-emerald-50/50" : ""}`}>
+                      <td className="px-4 py-2.5">
+                        <input type="checkbox" checked={seleccionados.has(m.id)} onChange={() => toggleSeleccion(m.id)} className="w-4 h-4" />
+                      </td>
                       <td className="px-4 py-2.5">
                         {m.foto ? <img src={m.foto} alt="" className="w-9 h-9 object-cover rounded border border-slate-200" /> : <div className="w-9 h-9 rounded border border-dashed border-slate-200" />}
                       </td>
@@ -5131,6 +5273,15 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
                       <td className="px-4 py-2.5 font-medium text-slate-800">{m.descripcion}</td>
                       <td className="px-4 py-2.5 text-right font-mono-num">{m.stockReal ?? 0}</td>
                       <td className="px-4 py-2.5 text-right font-mono-num">{money(m.precioCompra)}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <TextInput
+                          type="number"
+                          placeholder="1"
+                          value={cantidadesSeleccion[m.id] ?? ""}
+                          onChange={(e) => { setCantidadesSeleccion((prev) => ({ ...prev, [m.id]: e.target.value })); if (e.target.value) setSeleccionados((prev) => new Set(prev).add(m.id)); }}
+                          className="!w-20 text-right"
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -5272,6 +5423,7 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       precioVenta: valorPorCabeceras(fila, ["precioventa", "pventa", "pvp", "precio", "tarifa"]),
       precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
       foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
+      familia: String(valorPorCabeceras(fila, ["familia", "serie", "grupo", "categoria"]) || "").trim(),
     })).filter((f) => f.codigo || f.descripcion);
     if (filas.length === 0) {
       alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
@@ -6674,10 +6826,12 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
                 {l.modo === "catalogo" ? (
                   <div className="grid grid-cols-12 gap-2 items-center">
                     <div className="col-span-6">
-                      <Select value={l.materialId} onChange={(e) => setLinea(l.id, { materialId: e.target.value })}>
-                        <option value="">Selecciona material…</option>
-                        {materiales.map((m) => <option key={m.id} value={m.id}>{m.codigo} — {m.descripcion}</option>)}
-                      </Select>
+                      <SelectorBuscable
+                        value={l.materialId}
+                        onChange={(val) => setLinea(l.id, { materialId: val })}
+                        placeholder="Buscar material por código o descripción…"
+                        options={materiales.map((m) => ({ value: m.id, label: m.descripcion, sublabel: m.codigo }))}
+                      />
                     </div>
                     <div className="col-span-3">
                       <TextInput type="number" placeholder="Cantidad" value={l.cantidad} onChange={(e) => setLinea(l.id, { cantidad: e.target.value })} />
@@ -6724,9 +6878,12 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             <p className="text-xs text-slate-400 mb-2">Eliges el material y cuánto necesitas; si ya hay stock suficiente no se añade nada, y si falta, solo se añade al pedido la cantidad que falta.</p>
             <div className="grid grid-cols-12 gap-2 items-end">
               <div className="col-span-7">
-                <Select value={materialNecesitadoId} onChange={(e) => setMaterialNecesitadoId(e.target.value)}>
-                  {materiales.map((m) => <option key={m.id} value={m.id}>{m.codigo} — {m.descripcion} (stock: {m.stockReal ?? 0})</option>)}
-                </Select>
+                <SelectorBuscable
+                  value={materialNecesitadoId}
+                  onChange={setMaterialNecesitadoId}
+                  placeholder="Buscar material por código o descripción…"
+                  options={materiales.map((m) => ({ value: m.id, label: `${m.descripcion} (stock: ${m.stockReal ?? 0})`, sublabel: m.codigo }))}
+                />
               </div>
               <div className="col-span-2">
                 <TextInput type="number" placeholder="Necesito" value={cantidadNecesitada} onChange={(e) => setCantidadNecesitada(e.target.value)} />
@@ -6746,9 +6903,12 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             <p className="text-xs text-slate-400 mb-2">Elige un artículo del catálogo y se añadirán de golpe todos los materiales que lo componen (multiplicados por la cantidad de artículos), listos para pedir.</p>
             <div className="grid grid-cols-12 gap-2 items-end">
               <div className="col-span-7">
-                <Select value={articuloSel} onChange={(e) => setArticuloSel(e.target.value)}>
-                  {articulos.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
-                </Select>
+                <SelectorBuscable
+                  value={articuloSel}
+                  onChange={setArticuloSel}
+                  placeholder="Buscar artículo por nombre…"
+                  options={articulos.map((a) => ({ value: a.id, label: a.nombre }))}
+                />
               </div>
               <div className="col-span-2">
                 <TextInput type="number" placeholder="Cantidad" value={cantidadArticuloSel} onChange={(e) => setCantidadArticuloSel(e.target.value)} />
@@ -6761,15 +6921,6 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             </div>
           </div>
         )}
-
-        <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pegar varias medidas de golpe (desde Excel)</span>
-          <p className="text-xs text-slate-400 mb-2">Copia y pega filas con columnas: Referencia, Ancho, Alto, Cantidad, Precio ud. (€) (opcional). Cada fila se convertirá en una línea "a medida".</p>
-          <TextArea rows={3} placeholder={"FL1\t548\t863\t6\t12.50\nFL2\t526\t863\t2\t9.80"} value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
-          <button type="button" onClick={convertirPegado} className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-700 hover:bg-slate-800 px-3.5 py-2 rounded-md">
-            <Plus size={14} /> Convertir en líneas
-          </button>
-        </div>
 
         <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
           <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Importar directamente desde un PDF (Listado de cajas)</span>
@@ -7591,22 +7742,6 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
       const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
-<<<<<<< HEAD
-      // Lanzamos el job, y luego sondeamos Firebase cada pocos segundos hasta que
-      // el resultado esté listo (o hasta 3 minutos, que es más que suficiente para
-      // un packing list con el modelo rápido).
-      const jobId = uid();
-      await fetch("/.netlify/functions/anthropic-proxy-background", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobId,
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          contentBlock,
-          prompt,
-        }),
-=======
       // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
       // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
       // archivo directamente en Firebase (sin ese límite) y a la función solo
@@ -7622,7 +7757,6 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId }),
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
       });
 
       let resultado = null;
@@ -7636,10 +7770,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         }
       }
       fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
-<<<<<<< HEAD
-=======
       fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
 
       if (!resultado) {
         throw new Error("La lectura está tardando demasiado (más de 3 minutos). Prueba de nuevo o con un documento más corto.");
@@ -8617,11 +8748,7 @@ const ESTADO_INSTALACION_STYLE = {
   "Finalizada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
-<<<<<<< HEAD
-function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia }) {
-=======
 function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, onUpsertVehiculo, onDeleteVehiculo, view, setView, detailId, setDetailId, onUpdate, onCrearManual, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea, currentUser }) {
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
   const [tabPrincipal, setTabPrincipal] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -8689,12 +8816,9 @@ function InstalacionesModulo({ instalaciones, proyectos, clientes, vehiculos, on
         isAdmin={isAdmin}
         incidencias={incidencias}
         onUpsertIncidencia={onUpsertIncidencia}
-<<<<<<< HEAD
-=======
         materiales={materiales}
         usuarios={usuarios}
         onCrearTarea={onCrearTarea}
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
       />
     );
   }
@@ -9043,11 +9167,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
   );
 }
 
-<<<<<<< HEAD
-function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia }) {
-=======
 function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, onAddHora, onDeleteHora, onAddGasto, onDeleteGasto, onAddMaterialFurgoneta, onCicloMaterialFurgoneta, onDeleteMaterialFurgoneta, vehiculos, otrasInstalaciones, proyectos, isAdmin, incidencias, onUpsertIncidencia, materiales, usuarios, onCrearTarea }) {
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
   const [nuevoMaterial, setNuevoMaterial] = useState("");
   const [errorMaterial, setErrorMaterial] = useState("");
   const [fechaMontajeInput, setFechaMontajeInput] = useState(instalacion.fechaMontaje || "");
@@ -9390,12 +9510,9 @@ function InstalacionDetail({ instalacion, proyecto, cliente, onBack, onUpdate, o
           proyectoId={instalacion.proyectoId}
           incidencias={incidencias}
           onUpsertIncidencia={onUpsertIncidencia}
-<<<<<<< HEAD
-=======
           instalacion={instalacion}
           proyecto={proyecto}
           cliente={cliente}
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
         />
       </div>
     </div>
@@ -9486,9 +9603,6 @@ function parsearExcelMontaje(arrayBuffer) {
   return viviendas;
 }
 
-<<<<<<< HEAD
-function nombreElementoMontaje(el) {
-=======
 // Lista de componentes que se controlan por defecto en cada puerta/ventana.
 // El usuario puede añadir más componentes personalizados con el botón "+".
 const COMPONENTES_DEFECTO_ELEMENTO = ["Marco", "Hoja izquierda", "Hoja derecha", "Persiana", "Mosquitera", "Cajón de obra", "Montaje", "Tapajuntas", "Postigo", "Silicona"];
@@ -9516,7 +9630,6 @@ function agruparDocumentosPorCategoria(documentos) {
 
 function nombreElementoMontaje(el) {
   if (el.nombre) return el.nombre;
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
   const base = el.tipo === "puerta" ? "Puerta" : el.tipo === "ventana" ? "Ventana" : el.codigo;
   const sufijo =
     el.tipo === "puerta" && el.ladoApertura
@@ -9564,9 +9677,6 @@ function leerDocumentoMontaje(file) {
 // reutiliza fbDb, uid y toArray que ya están definidos arriba en el archivo.
 // Para las incidencias sí usa las funciones reales de la app (onUpsertIncidencia,
 // y el array "incidencias" ya cargado), para no crear un sistema paralelo.
-<<<<<<< HEAD
-function ControlMontajeVivienda({ instalacionId, proyectoId, incidencias, onUpsertIncidencia }) {
-=======
 // Componente genérico: la lista de "viviendas" con su checklist de elementos,
 // fotos, documentos por categoría, extras e incidencias. Lo usa tanto
 // "Control de montaje" (dentro de cada instalación, basePath=controlMontaje/<id>)
@@ -9671,7 +9781,6 @@ function abrirInformeDiaMontaje(v, { proyecto, cliente, instalacion, jefeDeObra 
 }
 
 function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpsertIncidencia, accionPrincipal, instalacion, proyecto, cliente }) {
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
   const [viviendas, setViviendas] = useState([]);
   const [jefeDeObra, setJefeDeObra] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -9685,10 +9794,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   const [nuevaIncidenciaTexto, setNuevaIncidenciaTexto] = useState({});
   const [vinculandoEn, setVinculandoEn] = useState(null);
   const [mostrarManual, setMostrarManual] = useState(false);
-<<<<<<< HEAD
-  const fileInputRef = useRef(null);
-  const basePath = `controlMontaje/${instalacionId}`;
-=======
   const [anadiendoComponente, setAnadiendoComponente] = useState(null);
   const [nuevoComponenteTexto, setNuevoComponenteTexto] = useState({});
   const [docCategoria, setDocCategoria] = useState({});
@@ -9696,7 +9801,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   const [nuevoElementoNombre, setNuevoElementoNombre] = useState({});
   const [nuevoElementoMedida, setNuevoElementoMedida] = useState({});
   const fileInputRef = useRef(null);
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
 
   const descargarPlantilla = () => {
     const datosLeeme = [
@@ -9741,11 +9845,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   };
 
   useEffect(() => {
-<<<<<<< HEAD
-    if (!instalacionId) return;
-=======
     if (!basePath) return;
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     (async () => {
       setCargando(true);
       try {
@@ -9761,11 +9861,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
         setCargando(false);
       }
     })();
-<<<<<<< HEAD
-  }, [instalacionId]);
-=======
   }, [basePath]);
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
 
   const guardarViviendas = async (next) => {
     setViviendas(next);
@@ -9829,11 +9925,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
     guardarViviendas(viviendas.map((v) => (v.id === viviendaId ? { ...v, ...cambios } : v)));
   };
 
-<<<<<<< HEAD
-  const toggleInstalado = (v, elId) => {
-    actualizarVivienda(v.id, {
-      elementos: v.elementos.map((el) => (el.id === elId ? { ...el, instalado: !el.instalado } : el)),
-=======
   const agregarViviendaAMano = (nombre) => {
     const limpio = (nombre || "").trim();
     if (!limpio) return;
@@ -9851,7 +9942,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   const toggleInstalado = (v, elId) => {
     actualizarVivienda(v.id, {
       elementos: v.elementos.map((el) => (el.id === elId ? { ...el, instalado: !el.instalado, instaladoEn: !el.instalado ? Date.now() : null } : el)),
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     });
   };
 
@@ -9863,8 +9953,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
     });
   };
 
-<<<<<<< HEAD
-=======
   const toggleComponente = (v, elId, compId) => {
     actualizarVivienda(v.id, {
       elementos: v.elementos.map((el) => {
@@ -9897,7 +9985,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
     });
   };
 
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
   const agregarExtra = (v) => {
     const texto = (extraTexto[v.id] || "").trim();
     if (!texto) return;
@@ -9911,11 +9998,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
     actualizarVivienda(v.id, { fotos: [...(v.fotos || []), { id: uid(), url: dataUrl, subidaEn: Date.now() }] });
   };
 
-<<<<<<< HEAD
-  const subirDocumento = async (v, file) => {
-=======
   const subirDocumento = async (v, file, categoria) => {
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
       alert("El archivo pesa más de 8 MB. Prueba a comprimirlo o súbelo a Dropbox y enlázalo aparte.");
@@ -9923,11 +10006,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
     }
     const dataUrl = await leerDocumentoMontaje(file);
     actualizarVivienda(v.id, {
-<<<<<<< HEAD
-      documentos: [...(v.documentos || []), { id: uid(), nombre: file.name, url: dataUrl, subidoEn: Date.now() }],
-=======
       documentos: [...(v.documentos || []), { id: uid(), nombre: file.name, categoria: categoria || "Otros", url: dataUrl, subidoEn: Date.now() }],
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     });
   };
 
@@ -9967,16 +10046,10 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
   const resumenVivienda = (v) => {
     const instalados = v.elementos.filter((el) => el.instalado).length;
     const lineas = v.elementos.map((el) => {
-<<<<<<< HEAD
-      const t = el.tapajuntas || {};
-      const estado = el.instalado ? "Instalado" : "Pendiente";
-      return `- ${nombreElementoMontaje(el)}: ${estado} | Tapajuntas izq:${t.izquierda ? "SI" : "NO"} der:${t.derecha ? "SI" : "NO"} arriba:${t.arriba ? "SI" : "NO"}`;
-=======
       const comps = componentesDeElemento(el);
       const estado = el.instalado ? "Instalado" : "Pendiente";
       const detalleComp = comps.map((c) => `${c.nombre}:${c.hecho ? "SI" : "NO"}`).join(" | ");
       return `- ${nombreElementoMontaje(el)}: ${estado} (${detalleComp})`;
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     });
     const incs = v.incidenciasVinculadas || [];
     const lineasInc = incs.length ? `\nIncidencias vinculadas:\n${incs.map((i) => `- ${i.descripcion}`).join("\n")}` : "";
@@ -10017,8 +10090,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
         </div>
       </div>
 
-<<<<<<< HEAD
-=======
       <div className="flex gap-2 mb-4">
         <TextInput
           value={nuevaViviendaTexto}
@@ -10034,7 +10105,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
         </button>
       </div>
 
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
       <button onClick={() => setMostrarManual((v) => !v)} className="text-xs font-semibold text-emerald-700 mb-4">
         {mostrarManual ? "Ocultar instrucciones ▲" : "¿Cómo relleno el Excel? ▼"}
       </button>
@@ -10085,8 +10155,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
         </div>
       )}
 
-<<<<<<< HEAD
-=======
       {accionPrincipal && (
         <button
           onClick={() => accionPrincipal.onClick(listaOrdenada.map(resumenVivienda).join("\n\n"), listaOrdenada)}
@@ -10097,7 +10165,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
         </button>
       )}
 
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
       {listaFiltrada.length === 0 && (
         <p className="text-sm text-slate-400">Todavía no hay viviendas importadas. Pulsa "Importar Excel/ODS" y sube el archivo de cálculo de montaje.</p>
       )}
@@ -10121,26 +10188,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
               {abierta && (
                 <div className="px-4 pb-4 border-t border-slate-100">
-<<<<<<< HEAD
-                  <div className="space-y-2 mt-3">
-                    {elementos.map((el) => (
-                      <div key={el.id} className="border border-slate-200 rounded-md p-2">
-                        <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                          <input type="checkbox" checked={!!el.instalado} onChange={() => toggleInstalado(v, el.id)} />
-                          {nombreElementoMontaje(el)}
-                          {el.medida && <span className="text-xs text-slate-400 font-normal">({el.medida})</span>}
-                        </label>
-                        <div className="flex gap-3 mt-2 ml-6 text-xs text-slate-600">
-                          {["izquierda", "derecha", "arriba"].map((lado) => (
-                            <label key={lado} className="flex items-center gap-1">
-                              <input type="checkbox" checked={!!(el.tapajuntas && el.tapajuntas[lado])} onChange={() => toggleTapajuntas(v, el.id, lado)} />
-                              Tapajuntas {lado}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-=======
                   <button
                     type="button"
                     onClick={() => abrirInformeDiaMontaje(v, { proyecto, cliente, instalacion, jefeDeObra })}
@@ -10245,7 +10292,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                     >
                       + Añadir habitación/elemento
                     </button>
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
                   </div>
 
                   <div className="mt-4">
@@ -10269,12 +10315,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
 
                   <div className="mt-4">
                     <div className="text-sm font-semibold text-slate-700 mb-1">Documentos ({(v.documentos || []).length})</div>
-<<<<<<< HEAD
-                    {(v.documentos || []).map((d) => (
-                      <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
-                    ))}
-                    <input type="file" accept="application/pdf" onChange={(e) => subirDocumento(v, e.target.files[0])} className="text-sm mt-1" />
-=======
                     {Object.entries(agruparDocumentosPorCategoria(v.documentos)).map(([cat, docs]) => (
                       <div key={cat} className="mb-2">
                         <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 ml-2">{cat}</div>
@@ -10298,7 +10338,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                         className="text-sm flex-1"
                       />
                     </div>
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
                   </div>
 
                   <div className="mt-4">
@@ -10338,8 +10377,6 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
           );
         })}
       </div>
-<<<<<<< HEAD
-=======
     </div>
   );
 }
@@ -11963,7 +12000,6 @@ function ArchivosModulo({ archivos, onSubir, onDelete }) {
           </div>
         </div>
       ))}
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
     </div>
   );
 }
@@ -14357,7 +14393,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma }) {
+function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido }) {
   const [tab, setTab] = useState("lista");
   const [q, setQ] = useState("");
   const [estadoFiltro, setEstadoFiltro] = useState("");
@@ -14458,66 +14494,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
     setLeyendoFoto(true);
     setErrorFoto("");
     try {
-<<<<<<< HEAD
-      const base64Data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
-        r.readAsDataURL(file);
-      });
-      const esPdf = file.type === "application/pdf";
-      const contentBlock = esPdf
-        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
-        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-
-      const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
-        }),
-      });
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error("anthropic-proxy respuesta no válida:", response.status, errBody);
-        throw new Error("Respuesta no válida de la API: " + response.status);
-      }
-      const data = await response.json();
-      if (data.error) {
-        console.error("Error devuelto por la API:", data.error);
-        throw new Error(data.error.message || "Error de la API");
-      }
-      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
-      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const inicioP = limpio.indexOf("{");
-      const finP = limpio.lastIndexOf("}");
-      const jsonCandidatoP = inicioP !== -1 && finP !== -1 ? limpio.slice(inicioP, finP + 1) : limpio;
-      let info;
-      try {
-        info = JSON.parse(jsonCandidatoP);
-      } catch (parseErr) {
-        console.error("No se pudo parsear el JSON del presupuesto. Texto recibido:", textoRespuesta);
-        throw new Error("La respuesta de la IA no tenía formato válido");
-      }
-
-      const medidas = Array.isArray(info.medidas) ? info.medidas.filter((m) => m && (m.ancho || m.alto)) : [];
-      const textoMedidas = medidas.length > 0
-        ? "\n\nMedidas:\n" + medidas.map((m) => `- ${m.referencia || "Pieza"}: ${m.ancho || "—"} x ${m.alto || "—"} mm${m.cantidad ? ` (x${m.cantidad})` : ""}`).join("\n")
-        : "";
-      const descripcionCompleta = `${info.descripcionGeneral || ""}${textoMedidas}`.trim();
-
-      if (!info.clienteNombre && !descripcionCompleta && !info.importe) {
-        setErrorFoto("No he podido leer datos claros en la imagen. Prueba con una foto más nítida.");
-        setLeyendoFoto(false);
-        return;
-      }
-=======
       const datos = await leerDatosDesdeArchivo(file);
->>>>>>> 3afb6d7c88f34fd3689b24f84c8a51bb9ef7078d
       setPrefillPresupuesto({
         id: null, numero: "", fechaEnvio: new Date().toISOString().slice(0, 10),
         clienteNombre: datos.clienteNombre, telefono: datos.telefono,
@@ -14849,6 +14826,7 @@ function PresupuestosModulo({ presupuestos, clientes, onCrearClienteRapido, view
           tarifasPersianas={tarifasPersianas}
           onSaveTarifasPersianas={onSaveTarifasPersianas}
           onPasarAPresupuesto={onPasarPersianasAPresupuesto}
+          onGenerarPedido={onGenerarPedido}
         />
       )}
       {tab === "stats" && <PresupuestosEstadisticas presupuestos={presupuestos} />}
@@ -14867,7 +14845,7 @@ const CALCULADORA_PRODUCTOS = [
   { id: "techos", label: "Techos", icon: Wrench, disponible: false, nota: "Ya disponible en Mediciones → sección Techos" },
 ];
 
-function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPersianas, onPasarAPresupuesto }) {
+function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPersianas, onPasarAPresupuesto, onGenerarPedido }) {
   const [producto, setProducto] = useState("persianas");
 
   return (
@@ -14896,6 +14874,7 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
           tarifas={tarifasPersianas || {}}
           onSaveTarifas={onSaveTarifasPersianas}
           onPasarAPresupuesto={onPasarAPresupuesto}
+          onGenerarPedido={onGenerarPedido}
         />
       )}
     </div>
@@ -14962,7 +14941,7 @@ async function leerListadoCajasPersianas(file) {
   }));
 }
 
-function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresupuesto }) {
+function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresupuesto, onGenerarPedido }) {
   const [clienteNombre, setClienteNombre] = useState("");
   const [direccionObra, setDireccionObra] = useState("");
   const [filas, setFilas] = useState([filaPersianaVacia()]);
@@ -15024,6 +15003,17 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
     () => calcularPresupuestoConGastos(presupuestoFinal.total, horasFabricacion, precioHora, pctGastos),
     [presupuestoFinal.total, horasFabricacion, precioHora, pctGastos]
   );
+
+  // Pide directamente, sin salir de la calculadora, los materiales que hacen falta
+  // para fabricar lo que se acaba de calcular (cajón, lama, eje, guías, herrajes...).
+  const generarPedidoDespiece = () => {
+    if (!onGenerarPedido || presupuestoCalc.detalle.length === 0) return;
+    const lineas = presupuestoCalc.detalle.map((d) => ({
+      id: uid(), modo: "libre", materialId: "", referencia: d.nombre, ancho: "", alto: "",
+      cantidad: d.cantidad, precio: d.precio || "", estado: "Solicitado",
+    }));
+    onGenerarPedido(null, lineas, "", `Pedido de materiales para fabricar persianas${clienteNombre ? ` — ${clienteNombre}` : ""}${direccionObra ? ` (${direccionObra})` : ""}. Generado desde la calculadora.`);
+  };
 
   const cambiarTarifa = (key, valor) => {
     onSaveTarifas && onSaveTarifas({ ...tarifas, [key]: valor });
@@ -15419,6 +15409,11 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
             <button onClick={handlePasarAPresupuesto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2.5 rounded-md hover:opacity-90">
               Pasar a presupuesto →
             </button>
+            {onGenerarPedido && (
+              <button onClick={generarPedidoDespiece} className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] border-2 border-[#2E8B57] px-4 py-2.5 rounded-md hover:bg-[#2E8B57]/5">
+                <ClipboardList size={15} /> Pedir materiales de este despiece
+              </button>
+            )}
           </div>
           <p className="text-xs text-slate-400">Desde el presupuesto, el botón "Crear proyecto" ya existente se lleva también este despiece al proyecto.</p>
         </>
