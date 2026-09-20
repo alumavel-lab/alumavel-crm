@@ -17921,6 +17921,8 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), notas: "", enlaceGrabacion: "" });
   const [errorLlamada, setErrorLlamada] = useState("");
   const [generandoPdf, setGenerandoPdf] = useState(false);
+  const [pdfGuardadoUrl, setPdfGuardadoUrl] = useState("");
+  const [errorGenerarPdf, setErrorGenerarPdf] = useState("");
   const [enviandoEmail, setEnviandoEmail] = useState(false);
   const [emailEnviadoOk, setEmailEnviadoOk] = useState(false);
   const [errorEnvioEmail, setErrorEnvioEmail] = useState("");
@@ -17970,32 +17972,27 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     }
   };
 
-  // Genera el PDF real del presupuesto, lo descarga al momento Y lo guarda
-  // directamente en "Documentos guardados" — sin tener que imprimir, guardar
-  // en el ordenador y volver a subirlo a mano.
+  // Genera el PDF real del presupuesto y lo guarda directamente en "Documentos
+  // guardados" — sin descarga automática (en Safari eso abre una pestaña con el
+  // PDF en vez de guardarlo, y confunde). Si luego quieres el archivo en tu
+  // ordenador, usa el enlace "Ver/descargar" que aparece tras guardarlo.
   const generarYGuardarPdf = async () => {
     setGenerandoPdf(true);
+    setPdfGuardadoUrl("");
+    setErrorGenerarPdf("");
     try {
       const bytes = await generarPdfBytesPresupuesto(presupuesto);
       const blob = new Blob([bytes], { type: "application/pdf" });
       const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
-      const enlaceDescarga = document.createElement("a");
-      const urlLocal = URL.createObjectURL(blob);
-      enlaceDescarga.href = urlLocal;
-      enlaceDescarga.download = nombreArchivo;
-      document.body.appendChild(enlaceDescarga);
-      enlaceDescarga.click();
-      document.body.removeChild(enlaceDescarga);
-      URL.revokeObjectURL(urlLocal);
-
+      const archivo = new File([blob], nombreArchivo, { type: "application/pdf" });
+      const urlStorage = await subirArchivoAStorage(archivo, `documentos-presupuestos/${presupuesto.id}`);
       if (onAdjuntarDocumento) {
-        const archivo = new File([blob], nombreArchivo, { type: "application/pdf" });
-        const urlStorage = await subirArchivoAStorage(archivo, `documentos-presupuestos/${presupuesto.id}`);
         onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: nombreArchivo, url: urlStorage, subidoEn: Date.now() });
       }
+      setPdfGuardadoUrl(urlStorage);
     } catch (err) {
       console.error("No se pudo generar/guardar el PDF del presupuesto:", err);
-      alert("No se pudo generar el PDF. Inténtalo de nuevo.");
+      setErrorGenerarPdf("No se pudo generar el PDF. Inténtalo de nuevo.");
     } finally {
       setGenerandoPdf(false);
     }
@@ -18148,15 +18145,23 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </div>
           )}
           <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
-          <button
-            onClick={generarYGuardarPdf}
-            disabled={generandoPdf}
-            title="Genera el PDF, lo descarga y lo deja guardado aquí mismo como documento — así ya está listo para 'Enviar a firmar' sin tener que subirlo a mano"
-            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-            className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90 disabled:opacity-60"
-          >
-            <FileText size={14} /> {generandoPdf ? "Generando..." : "Generar PDF y guardarlo aquí"}
-          </button>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={generarYGuardarPdf}
+              disabled={generandoPdf}
+              title="Genera el PDF y lo deja guardado aquí mismo como documento — así ya está listo para 'Enviar a firmar' sin tener que subirlo a mano"
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90 disabled:opacity-60"
+            >
+              <FileText size={14} /> {generandoPdf ? "Generando..." : "Generar PDF y guardarlo aquí"}
+            </button>
+            {pdfGuardadoUrl && (
+              <span className="text-xs text-emerald-600 font-semibold">
+                ✓ Guardado — <a href={pdfGuardadoUrl} target="_blank" rel="noopener noreferrer" className="underline">Ver/descargar</a>
+              </span>
+            )}
+            {errorGenerarPdf && <span className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">⚠ {errorGenerarPdf}</span>}
+          </div>
           <button onClick={onDuplicar} title="Crea una réplica de este presupuesto con su propio número (ej. 4192 → 4192-1), lista para modificar" className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Copy size={14} /> Duplicar (nueva réplica)</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
