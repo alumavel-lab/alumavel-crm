@@ -3264,10 +3264,20 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
 // Texto de ayuda para cada pestaña. Se muestra al pulsar el botón "?" que
 // aparece junto al título de cada sección (ver componente Header más abajo).
 const MANUALES = {
+  leads: {
+    puntos: [
+      "Aquí llevas la prospección: contactos que todavía no son clientes, organizados en un tablero por estado (Pendiente, Contactado, Presupuesto enviado, Aceptado, Descartado).",
+      "El estado no se cambia con un desplegable: se cambia registrando una llamada (dentro de la ficha del lead) y eligiendo el resultado — por ejemplo \"Contactado — interesado, seguir\" mueve el lead a Contactado, \"Presupuesto enviado\" lo mueve a esa columna, etc.",
+      "Puedes adjuntar el PDF del presupuesto que le mandaste directamente en la ficha del lead, sin tener que crearlo como presupuesto formal en el CRM.",
+      "Cuando el lead se convierte en negocio real, pulsa \"CONVERTIR EN CLIENTE\" para darlo de alta como cliente sin volver a escribir sus datos.",
+      "Si no eres administrador, solo ves los leads que tienes asignados a ti como comercial.",
+    ],
+  },
   clientes: {
     puntos: [
       "Aquí tienes el listado de todos tus clientes. Usa el buscador para filtrar por nombre, CIF, email o teléfono.",
       "Pulsa \"NUEVO CLIENTE\" para dar de alta uno.",
+      "También puedes importar varios clientes de golpe con \"Importar contactos desde Excel (masivo)\".",
       "Haz clic en una fila para abrir el detalle: sus proyectos, sus pagos y sus datos de contacto.",
       "Desde el detalle puedes editar sus datos o borrarlo.",
       "La columna \"Riesgo\" muestra qué porcentaje de su límite de crédito tiene pendiente de pagar. Si sale en rojo, ese cliente ya ha superado el límite que le pusiste.",
@@ -3277,7 +3287,7 @@ const MANUALES = {
     puntos: [
       "Aquí ves todos los proyectos/obras, con su cliente, importe y estado.",
       "Un proyecto normalmente nace de un presupuesto aceptado (desde la pestaña Presupuestos), pero también puedes crear uno directamente con el botón de nuevo proyecto.",
-      "Dentro de cada proyecto puedes registrar los pagos que te van llegando, los materiales/artículos usados, y ver los pedidos e instalaciones relacionados con esa obra.",
+      "Dentro de la ficha de un proyecto tienes varias pestañas: Datos, Artículos usados, Presupuesto vs Real (compara lo presupuestado con lo gastado), Gastos asociados, Registro horario, Pagos/Facturas, Pedidos de materiales, \"Qué lleva la obra\" (checklist), \"Despiece de techos\" (si la obra tiene techos calculados), \"Control de persianas\" (si tiene persianas) e Historial.",
       "Desde aquí también puedes generar el pedido de materiales de un proyecto directamente hacia Pedidos.",
     ],
   },
@@ -3285,22 +3295,24 @@ const MANUALES = {
     puntos: [
       "Listado de tus proveedores de materiales.",
       "Pulsa para añadir uno nuevo con sus datos de contacto.",
-      "Al entrar en el detalle de un proveedor puedes ver qué materiales le compras y editar sus datos.",
+      "Al entrar en el detalle de un proveedor puedes ver qué materiales le compras, editar sus datos, importarle su tarifa por Excel (solo para él) y generarle un pedido directamente.",
     ],
   },
   stock: {
     puntos: [
-      "Catálogo de todos los materiales (perfiles, herrajes, cristal, etc.) que manejas, con su stock actual.",
-      "Puedes registrar entradas (cuando llega material) y salidas (cuando se usa) de cada material, y el historial de movimientos queda guardado.",
+      "Catálogo de todos los materiales (perfiles, herrajes, cristal, etc.) que manejas, con su stock actual, organizado en tres pestañas: Catálogo, \"A reponer\" (lo que está bajo mínimos) y \"Comparar proveedores\" (compara precio del mismo material entre distintos proveedores).",
+      "Puedes registrar entradas (cuando llega material) y salidas (cuando se usa) de cada material, y el historial de movimientos queda guardado. También se guarda un historial de cambios de precio.",
+      "Puedes importar tarifas por Excel (masivo) y fotos en bloque (nombrando cada archivo con el código o la descripción del material).",
       "Si un material se queda corto, puedes enviarlo directamente a un pedido a proveedor desde aquí.",
     ],
   },
   pedidos: {
     puntos: [
       "Aquí gestionas los pedidos que haces a tus proveedores.",
-      "Puedes crear un pedido a mano, o generarlo automáticamente desde una foto de un albarán/presupuesto de proveedor.",
+      "Puedes crear un pedido a mano (con \"Necesito un material\", que comprueba el stock, o \"Coger un artículo completo\"), o generarlo automáticamente desde una foto de un albarán/presupuesto de proveedor.",
+      "\"Generar pedido agrupando varias obras\": marca varias obras a la vez y te junta en un único pedido lo que falta de todas ellas comparado con Stock.",
       "Cuando el proveedor confirma o envía el pedido, marca esos estados aquí para llevar el seguimiento.",
-      "Cuando llega el material, usa \"Recibir\" para meterlo en el stock automáticamente.",
+      "Cuando llega el material, usa \"Recibir\" para meterlo en el stock automáticamente, o \"Confirmar entrada por foto de albarán\" para que lo reconozca solo comparándolo con el pedido.",
       "La pestaña \"Solicitudes\" (si la ves) es donde tus empleados piden materiales y tú, como administrador, las apruebas o rechazas.",
     ],
   },
@@ -3318,6 +3330,9 @@ const MANUALES = {
       "\"Materiales pendientes\": lo que aún falta para poder fabricar.",
       "\"En fabricación\": lo que ya se está fabricando.",
       "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre.",
+      "\"Material fuera (proceso externo)\": material que se ha enviado a un proceso externo (p.ej. tratamiento) y todavía no ha vuelto.",
+      "\"Reparto\": obras ya listas para repartir o recoger.",
+      "En la mayoría de pestañas puedes descargar esa vista como documento Word.",
     ],
   },
   instalaciones: {
@@ -3358,6 +3373,7 @@ const MANUALES = {
     puntos: [
       "Catálogo de artículos que fabricas (por ejemplo, un tipo de ventana concreto), compuestos a partir de los materiales de Stock.",
       "Cuando usas un artículo en un proyecto, se descuentan automáticamente los materiales que lo componen.",
+      "Puedes importar precios por Excel (masivo) y fotos en bloque, igual que en Stock.",
     ],
   },
   facturas: {
@@ -3369,8 +3385,12 @@ const MANUALES = {
   presupuestos: {
     puntos: [
       "Aquí creas y gestionas los presupuestos que envías a clientes (nuevos o ya existentes).",
+      "La pestaña \"Calculadora\" tiene la calculadora de persianas: calcula el despiece y el precio a partir de las medidas y, al pulsar \"Pasar a presupuesto →\", abre el formulario ya relleno — solo falta revisarlo y pulsar Guardar.",
+      "Al guardar un presupuesto (nuevo o editado) se abre directamente su ficha, para tenerlo a mano al momento.",
+      "Si un presupuesto de persianas ya guardado necesita más persianas, pulsa \"Añadir más persianas\" en su ficha: te lleva a la Calculadora en modo \"sumar a este presupuesto\" en vez de crear uno nuevo (solo disponible si el presupuesto aún no se ha pasado a proyecto).",
+      "En la ficha del presupuesto ya guardado tienes un botón \"Imprimir\" para sacarlo en PDF o papel y dárselo al cliente.",
       "Puedes registrar las llamadas de seguimiento que haces a un cliente sobre su presupuesto.",
-      "Cuando el cliente lo acepta, pulsa \"Crear proyecto\" para convertir ese presupuesto en un proyecto/obra real.",
+      "Cuando el cliente lo acepta, cambia el estado a \"Aceptado\" y pulsa \"CREAR PROYECTO DESDE ESTE PRESUPUESTO\" para convertirlo en un proyecto/obra real (ese botón solo aparece en ese estado).",
       "También puedes duplicar un presupuesto para no escribirlo todo de nuevo si es parecido a otro.",
       "Si vienes de la pestaña Mediciones y pulsaste \"Pasar a presupuesto\", el formulario se abre aquí ya con el cliente y una descripción con el resumen de las medidas — solo te falta poner el número y el importe.",
     ],
@@ -3381,6 +3401,7 @@ const MANUALES = {
       "Puedes importar un Excel/ODS con la plantilla, o pulsar \"+ Añadir a mano (sin Excel)\" para crear una vivienda/habitación escribiendo su nombre directamente.",
       "Dentro de cada vivienda, además de lo que venga del Excel, puedes añadir una habitación o elemento a mano poniéndole un nombre (ej: \"Cocina\") y su medida.",
       "En cada elemento marcas qué lleva: marco, hojas, persiana, mosquitera, cajón de obra, montaje, tapajuntas, postigo, silicona... y puedes añadir cualquier otro con el \"+\".",
+      "Dentro de la ficha de la medición también puedes añadir Techos (abatible o corredero): calcula el presupuesto y el despiece de corte automáticamente a partir de las medidas.",
       "Puedes añadir foto por elemento y documentos (planos, Excel, PDF...) clasificados por categoría.",
       "Cuando termines de medir, pulsa \"Pasar a presupuesto\" dentro de la medición: se abre un presupuesto nuevo con el cliente puesto y una descripción con el resumen de todo lo medido.",
     ],
@@ -11341,6 +11362,70 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
   ventana.document.close();
 }
 
+// Imprime un presupuesto ya guardado (cualquiera, no solo de persianas) con sus
+// datos principales — para poder dárselo al cliente en papel o como PDF desde la
+// propia ficha, sin tener que volver a la Calculadora.
+function imprimirPresupuesto(presupuesto) {
+  const e = escaparHtmlInforme;
+  const totalPersianas = (presupuesto.persianas || []).reduce((s, tanda) => s + (tanda.filas || []).length, 0);
+
+  const filasPersianasHtml = totalPersianas > 0 ? `
+  <h2>Persianas incluidas (${totalPersianas})</h2>
+  <table>
+    <thead><tr><th>#</th><th>Cajón</th><th>Ancho</th><th>Alto</th><th>Uds</th><th>Motor</th><th>Lado</th></tr></thead>
+    <tbody>
+      ${(presupuesto.persianas || []).flatMap((tanda) => tanda.filas || []).map((p, i) => `<tr>
+        <td>${i + 1}</td><td>${e(p.cajon)}mm</td><td>${e(p.ancho)}</td><td>${e(p.alto)}</td>
+        <td>${e(p.ud || 1)}</td><td>${p.motor ? "Sí" : "No"}</td><td>${e(p.lado || "")}</td>
+      </tr>`).join("")}
+    </tbody>
+  </table>` : "";
+
+  const html = `<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8" />
+<title>Presupuesto ${e(presupuesto.numero || "")} — ${e(presupuesto.clienteNombre || "")}</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; color: #1e293b; margin: 24px; max-width: 850px; }
+  h1 { font-size: 18px; margin-bottom: 2px; }
+  h2 { font-size: 14px; margin: 20px 0 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 16px; }
+  .campo { margin-bottom: 8px; font-size: 13px; }
+  .campo b { display: inline-block; min-width: 130px; color: #475569; }
+  .descripcion { white-space: pre-wrap; font-size: 13px; margin: 6px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 6px; }
+  th, td { padding: 6px 4px; border-bottom: 1px solid #f1f5f9; text-align: left; }
+  th { color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .total { text-align: right; font-size: 18px; font-weight: 700; margin-top: 14px; }
+  .btn-print { background: #2E8B57; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+  @media print { .btn-print { display: none; } }
+</style></head>
+<body>
+  <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <h1>Presupuesto ${e(presupuesto.numero || "")}</h1>
+  <p class="sub">${e(presupuesto.clienteNombre || "Sin cliente")} · ${new Date().toLocaleDateString("es-ES")}</p>
+
+  <div class="campo"><b>Cliente:</b> ${e(presupuesto.clienteNombre || "—")}</div>
+  ${presupuesto.telefono ? `<div class="campo"><b>Teléfono:</b> ${e(presupuesto.telefono)}</div>` : ""}
+  ${presupuesto.direccionEnvio ? `<div class="campo"><b>Dirección / Obra:</b> ${e(presupuesto.direccionEnvio)}</div>` : ""}
+  ${presupuesto.fechaEnvio ? `<div class="campo"><b>Fecha:</b> ${e(presupuesto.fechaEnvio)}</div>` : ""}
+
+  <h2>Descripción</h2>
+  <div class="descripcion">${e(presupuesto.descripcion || "—")}</div>
+
+  ${filasPersianasHtml}
+
+  <div class="total">Total: ${(parseFloat(presupuesto.importe) || 0).toFixed(2)} €</div>
+</body></html>`;
+
+  const ventana = window.open("", "_blank");
+  if (!ventana) {
+    alert("El navegador ha bloqueado la ventana emergente. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+    return;
+  }
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
 /* ================= PEDIDOS AGRUPANDO VARIAS OBRAS =================
    Junta el despiece pendiente (techos + persianas, comparado con Stock) de VARIAS obras
    a la vez, para poder generar un único pedido a partir de lo que falte en todas ellas. */
@@ -14235,7 +14320,7 @@ function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, edi
   const filtered = useMemo(() => {
     if (!q) return visibles;
     const ql = q.toLowerCase();
-    return visibles.filter((l) => `${l.nombre} ${l.telefono} ${l.email} ${l.codigoPostal}`.toLowerCase().includes(ql));
+    return visibles.filter((l) => `${l.nombre} ${l.telefono} ${l.email} ${l.codigoPostal} ${l.poblacion || ""}`.toLowerCase().includes(ql));
   }, [visibles, q]);
 
   const nombreComercial = (l) => {
@@ -14269,22 +14354,24 @@ function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, edi
 
   return (
     <div className="p-8">
-      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
-        <div>
-          <h1 className="font-display text-2xl font-extrabold text-slate-900">Leads / Prospección</h1>
-          <p className="text-slate-500 text-sm">{filtered.length} lead{filtered.length === 1 ? "" : "s"}{!isAdmin ? " tuyo(s)" : ""}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <TextInput placeholder="Buscar..." value={q} onChange={(e) => setQ(e.target.value)} className="!w-52" />
-          <button
-            onClick={() => { setEditId(null); setView("form"); }}
-            style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }}
-            className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"
-          >
-            <Plus size={15} /> Nuevo lead
-          </button>
-        </div>
-      </div>
+      <Header
+        icon={<UserPlus size={20} className="text-[#2E8B57]" />}
+        title="Leads / Prospección"
+        manualKey="leads"
+        subtitle={`${filtered.length} lead${filtered.length === 1 ? "" : "s"}${!isAdmin ? " tuyo(s)" : ""}`}
+        action={
+          <div className="flex items-center gap-2">
+            <TextInput placeholder="Buscar..." value={q} onChange={(e) => setQ(e.target.value)} className="!w-52" />
+            <button
+              onClick={() => { setEditId(null); setView("form"); }}
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }}
+              className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"
+            >
+              <Plus size={15} /> Nuevo lead
+            </button>
+          </div>
+        }
+      />
 
       <div className="flex gap-4 overflow-x-auto pb-4">
         {LEAD_KANBAN_COLUMNAS.map((col) => {
@@ -14332,7 +14419,7 @@ function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, edi
 function LeadForm({ initial, usuarios, onCancel, onSave }) {
   const [f, setF] = useState(
     initial || {
-      id: null, nombre: "", telefono: "", email: "", codigoPostal: "",
+      id: null, nombre: "", telefono: "", email: "", codigoPostal: "", poblacion: "",
       productoInteres: LEAD_PRODUCTO[0], tipoLead: LEAD_TIPO[0], comercialId: "", notas: "", estado: "Pendiente",
     }
   );
@@ -14363,6 +14450,7 @@ function LeadForm({ initial, usuarios, onCancel, onSave }) {
           <Field label="Email"><TextInput type="email" value={f.email} onChange={set("email")} /></Field>
           <Field label="Código postal"><TextInput value={f.codigoPostal} onChange={set("codigoPostal")} /></Field>
         </div>
+        <Field label="Población / Ciudad"><TextInput value={f.poblacion || ""} onChange={set("poblacion")} placeholder="Ej: Almería" /></Field>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Producto de interés">
             <Select value={f.productoInteres} onChange={set("productoInteres")}>
@@ -14515,6 +14603,7 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
           <InfoRow icon={<Phone size={14} />} label="Teléfono" value={lead.telefono || "—"} />
           <InfoRow icon={<Mail size={14} />} label="Email" value={lead.email || "—"} />
           <InfoRow icon={<MapPin size={14} />} label="Código postal" value={lead.codigoPostal || "—"} />
+          <InfoRow icon={<MapPin size={14} />} label="Población" value={lead.poblacion || "—"} />
           <InfoRow icon={<Layers size={14} />} label="Tipo de lead" value={lead.tipoLead || "—"} />
         </div>
         {lead.notas && (
@@ -17890,6 +17979,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
               <MessageCircle size={14} /> WhatsApp
             </a>
           )}
+          <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
           <button onClick={onDuplicar} title="Crea una réplica de este presupuesto con su propio número (ej. 4192 → 4192-1), lista para modificar" className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Copy size={14} /> Duplicar (nueva réplica)</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
