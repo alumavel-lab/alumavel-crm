@@ -1818,6 +1818,7 @@ export default function App() {
 
   const upsertPresupuesto = (data) => {
     let next;
+    let idParaAbrir = null;
     if (data.id) {
       const anterior = presupuestos.find((p) => p.id === data.id);
       const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
@@ -1832,13 +1833,19 @@ export default function App() {
         fusionarPersianasEnProyecto(dataNormalizada.proyectoId, dataNormalizada);
         next = next.map((p) => (p.id === data.id ? { ...p, proyectoCreadoId: dataNormalizada.proyectoId } : p));
       }
+      idParaAbrir = data.id;
     } else {
       const np = { estado: "Pendiente", ...data, id: uid() };
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
+      idParaAbrir = np.id;
     }
     savePresupuestos(next);
-    setPresupuestoView("list");
+    // Al guardar (crear o editar), se abre directamente la ficha de ese
+    // presupuesto en vez de volver a la lista, para tener acceso inmediato
+    // (p.ej. poder marcarlo Aceptado y pasar a proyecto sin tener que buscarlo).
+    setPresupuestoDetailId(idParaAbrir);
+    setPresupuestoView("detail");
   };
 
   // Guarda un PDF/foto directamente en la ficha del presupuesto (sin pasar por el
