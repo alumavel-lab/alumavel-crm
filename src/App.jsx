@@ -387,6 +387,10 @@ export default function App() {
   const [ingresos, setIngresos] = useState([]);
   const [solicitudesPedido, setSolicitudesPedido] = useState([]);
   const [instalaciones, setInstalaciones] = useState([]);
+  // Registro de actividad: quién ha creado/editado/cambiado el estado de cada
+  // presupuesto, proyecto, instalación, pedido o factura, y cuándo. Se consulta
+  // desde la pestaña "Actividad" de Informes.
+  const [actividad, setActividad] = useState([]);
   const [mediciones, setMediciones] = useState([]);
   const [tareas, setTareas] = useState([]);
   const [archivosEmpresa, setArchivosEmpresa] = useState([]);
@@ -495,7 +499,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "actividad"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -513,6 +517,7 @@ export default function App() {
         if (resultados.ingresos) setIngresos(toArray(resultados.ingresos));
         if (resultados.solicitudes_pedido) setSolicitudesPedido(toArray(resultados.solicitudes_pedido));
         if (resultados.instalaciones) setInstalaciones(toArray(resultados.instalaciones));
+        if (resultados.actividad) setActividad(toArray(resultados.actividad));
         if (resultados.vehiculos) {
           setVehiculos(toArray(resultados.vehiculos));
         } else {
@@ -591,6 +596,39 @@ export default function App() {
   const showToast = (msg, kind = "ok") => {
     setToast({ msg, kind });
     setTimeout(() => setToast(null), 2600);
+  };
+
+  // ---------- Registro de actividad (quién tocó cada presupuesto/proyecto/instalación/pedido/factura, y cuándo) ----------
+  const saveActividad = (next) => { setActividad(next); persist("actividad", next); };
+
+  // Añade una entrada al registro de actividad. Se usa la referencia MÁS RECIENTE
+  // del array (actividadRef) en vez del estado "actividad" capturado por closure,
+  // para no perder entradas cuando se registran varias acciones seguidas en el
+  // mismo instante (p.ej. crear un presupuesto y fusionarlo en un proyecto).
+  // Se guarda solo un número razonable de entradas más recientes por módulo para
+  // que el nodo de Firebase no crezca sin límite.
+  const actividadRef = useRef([]);
+  useEffect(() => { actividadRef.current = actividad; }, [actividad]);
+  const MAX_ACTIVIDAD_POR_MODULO = 1000;
+  const registrarActividad = (modulo, entidadId, entidadNumero, accion, detalle = "") => {
+    const entrada = {
+      id: uid(),
+      modulo, // "presupuestos" | "proyectos" | "instalaciones" | "pedidos" | "facturas"
+      entidadId,
+      entidadNumero: entidadNumero || "",
+      accion, // "Creado" | "Editado" | "Cambio de estado" | ...
+      detalle,
+      usuarioId: currentUser?.id || null,
+      usuarioNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Desconocido",
+      fecha: Date.now(),
+    };
+    const actual = actividadRef.current;
+    const delMismoModulo = actual.filter((a) => a.modulo === modulo);
+    const otros = actual.filter((a) => a.modulo !== modulo);
+    const nuevoModulo = [entrada, ...delMismoModulo].slice(0, MAX_ACTIVIDAD_POR_MODULO);
+    const next = [...otros, ...nuevoModulo];
+    actividadRef.current = next;
+    saveActividad(next);
   };
 
   // Genera el PDF que se manda a firmar: una portada con los datos del
@@ -975,10 +1013,18 @@ export default function App() {
       persist("instalaciones", updated);
       return updated;
     });
+    registrarActividad("instalaciones", nueva.id, proyecto.numero, "Creado");
   };
 
   const updateInstalacion = (id, patch) => {
     saveInstalaciones(instalaciones.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+    const inst = instalaciones.find((i) => i.id === id);
+    const proyectoRef = inst ? proyectos.find((p) => p.id === inst.proyectoId) : null;
+    if (patch.estado && inst && patch.estado !== inst.estado) {
+      registrarActividad("instalaciones", id, proyectoRef?.numero || inst?.nombre, "Cambio de estado", `${inst.estado || "—"} → ${patch.estado}`);
+    } else {
+      registrarActividad("instalaciones", id, proyectoRef?.numero || inst?.nombre, "Editado");
+    }
   };
 
   const crearInstalacionManual = (data) => {
@@ -989,6 +1035,7 @@ export default function App() {
       fechaMontaje: "", vehiculoId: null,
     };
     saveInstalaciones([nueva, ...instalaciones]);
+    registrarActividad("instalaciones", nueva.id, nueva.nombre, "Creado");
     showToast("Instalación creada");
     setInstalacionDetailId(nueva.id);
     setInstalacionView("detail");
@@ -1071,6 +1118,11 @@ export default function App() {
         showToast("Ficha de instalación creada — pendiente de instalación");
       }
 
+      if (anterior && anterior.estadoPresupuesto !== data.estadoPresupuesto) {
+        registrarActividad("proyectos", data.id, data.numero || anterior.numero, "Cambio de estado", `${anterior.estadoPresupuesto || "—"} → ${data.estadoPresupuesto || "—"}`);
+      } else {
+        registrarActividad("proyectos", data.id, data.numero || anterior?.numero, "Editado");
+      }
     } else {
       const np = {
         ...data,
@@ -1085,6 +1137,7 @@ export default function App() {
       if (np.llevaInstalacion) {
         crearInstalacionParaProyecto(np);
       }
+      registrarActividad("proyectos", np.id, np.numero, "Creado");
     }
     saveProyectos(next);
     setProyectoView("list");
@@ -1305,6 +1358,7 @@ export default function App() {
     if (data.id) {
       next = pedidos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
       showToast("Pedido actualizado");
+      registrarActividad("pedidos", data.id, data.numero, "Editado");
     } else {
       if (data.proyectoId) {
         const proyectoDestino = proyectos.find((p) => p.id === data.proyectoId);
@@ -1315,8 +1369,10 @@ export default function App() {
           return;
         }
       }
-      next = [{ ...data, id: uid(), numero: nextNumeroPedido(), creadoPor: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "", fechaCreado: new Date().toISOString().slice(0, 10) }, ...pedidos];
+      const nuevoPedido = { ...data, id: uid(), numero: nextNumeroPedido(), creadoPor: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "", fechaCreado: new Date().toISOString().slice(0, 10) };
+      next = [nuevoPedido, ...pedidos];
       showToast("Pedido dado de alta");
+      registrarActividad("pedidos", nuevoPedido.id, nuevoPedido.numero, "Creado");
     }
     savePedidos(next);
     setPedidoView("list");
@@ -1357,6 +1413,7 @@ export default function App() {
         : p
     );
     savePedidos(pedidosNext);
+    registrarActividad("pedidos", pedidoId, pedido.numero, "Cambio de estado", `${pedido.estado || "—"} → Recibido`);
     showToast("Pedido recibido: stock actualizado automáticamente");
 
   };
@@ -1374,6 +1431,8 @@ export default function App() {
   // que en realidad nunca se llegó a pedir.
   const marcarPedidoEnviado = (pedidoId, metodo) => {
     savePedidos(pedidos.map((p) => (p.id === pedidoId ? { ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString() } : p)));
+    const pedidoRef = pedidos.find((p) => p.id === pedidoId);
+    registrarActividad("pedidos", pedidoId, pedidoRef?.numero, "Editado", metodo === "email" ? "Marcado como enviado por email" : "Marcado como pedido realizado");
     showToast(metodo === "email" ? "Marcado como enviado por email" : "Marcado como pedido realizado");
   };
 
@@ -1770,9 +1829,12 @@ export default function App() {
     if (data.id) {
       next = facturas.map((f) => (f.id === data.id ? { ...f, ...data } : f));
       showToast("Factura actualizada");
+      registrarActividad("facturas", data.id, data.numero, "Editado");
     } else {
-      next = [{ ...data, id: uid(), numero: nextNumeroFactura(), pagos: [] }, ...facturas];
+      const nuevaFactura = { ...data, id: uid(), numero: nextNumeroFactura(), pagos: [] };
+      next = [nuevaFactura, ...facturas];
       showToast("Factura emitida");
+      registrarActividad("facturas", nuevaFactura.id, nuevaFactura.numero, "Creado");
     }
     saveFacturas(next);
     setFacturaView("list");
@@ -1811,6 +1873,7 @@ export default function App() {
       pagos: [pago],
     };
     saveFacturas([nueva, ...facturas]);
+    registrarActividad("facturas", nueva.id, nueva.numero, "Creado", `Pago de proyecto #${proyecto.numero}`);
     showToast(`Factura ${nueva.numero} generada por ${money(importeNum)}`);
   };
 
@@ -1834,11 +1897,17 @@ export default function App() {
         next = next.map((p) => (p.id === data.id ? { ...p, proyectoCreadoId: dataNormalizada.proyectoId } : p));
       }
       idParaAbrir = data.id;
+      if (anterior && anterior.estado !== dataNormalizada.estado) {
+        registrarActividad("presupuestos", data.id, dataNormalizada.numero || anterior.numero, "Cambio de estado", `${anterior.estado || "—"} → ${dataNormalizada.estado}`);
+      } else {
+        registrarActividad("presupuestos", data.id, dataNormalizada.numero || anterior?.numero, "Editado");
+      }
     } else {
       const np = { estado: "Pendiente", ...data, id: uid() };
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
       idParaAbrir = np.id;
+      registrarActividad("presupuestos", np.id, np.numero, "Creado");
     }
     savePresupuestos(next);
     // Al guardar (crear o editar), se abre directamente la ficha de ese
@@ -2937,6 +3006,7 @@ export default function App() {
             usuarios={usuarios}
             sesionesUsuario={sesionesUsuario}
             isAdmin={isAdmin}
+            actividad={actividad}
           />
         )}
         {modulo === "fabrica" && (
@@ -16379,8 +16449,9 @@ const enRango = (fechaStr, rango) => {
   return f >= rango.desde && f <= rango.hasta;
 };
 
-function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin }) {
+function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin, actividad }) {
   const COLOR_ESTADO = { Pendiente: "#f59e0b", Aceptado: "#10b981", Rechazado: "#f43f5e", "En espera": "#94a3b8" };
+  const [tabInformes, setTabInformes] = useState("resumen");
   const [periodo, setPeriodo] = useState("mes");
   const rango = rangoPeriodo(periodo, 0);
   const rangoAnterior = rangoPeriodo(periodo, -1);
@@ -16694,10 +16765,128 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
     URL.revokeObjectURL(url);
   };
 
+  // ---------- Pestaña "Actividad": quién ha tocado cada presupuesto/proyecto/instalación/pedido/factura ----------
+  const MODULOS_ACTIVIDAD = [
+    { id: "presupuestos", label: "Presupuestos" },
+    { id: "proyectos", label: "Proyectos" },
+    { id: "instalaciones", label: "Instalaciones" },
+    { id: "pedidos", label: "Pedidos" },
+    { id: "facturas", label: "Facturas" },
+  ];
+  const [actFiltroModulo, setActFiltroModulo] = useState("todos");
+  const [actFiltroUsuario, setActFiltroUsuario] = useState("todos");
+  const [actFiltroBusqueda, setActFiltroBusqueda] = useState("");
+  const [actFiltroDesde, setActFiltroDesde] = useState("");
+  const [actFiltroHasta, setActFiltroHasta] = useState("");
+
+  const actividadFiltrada = useMemo(() => {
+    return (actividad || [])
+      .filter((a) => actFiltroModulo === "todos" || a.modulo === actFiltroModulo)
+      .filter((a) => actFiltroUsuario === "todos" || a.usuarioId === actFiltroUsuario)
+      .filter((a) => {
+        if (!actFiltroBusqueda.trim()) return true;
+        const s = `${a.entidadNumero || ""} ${a.detalle || ""}`.toLowerCase();
+        return s.includes(actFiltroBusqueda.trim().toLowerCase());
+      })
+      .filter((a) => !actFiltroDesde || a.fecha >= new Date(actFiltroDesde).setHours(0, 0, 0, 0))
+      .filter((a) => !actFiltroHasta || a.fecha <= new Date(actFiltroHasta).setHours(23, 59, 59, 999))
+      .sort((a, b) => b.fecha - a.fecha);
+  }, [actividad, actFiltroModulo, actFiltroUsuario, actFiltroBusqueda, actFiltroDesde, actFiltroHasta]);
+
+  const fmtFechaHora = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    return d.toLocaleDateString("es-ES") + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  };
+
   return (
     <div className="p-8">
       <Header icon={<BarChart3 size={20} className="text-[#2E8B57]" />} title="Informes" manualKey="informes" subtitle="Vista general de proyectos, presupuestos y dinero" />
 
+      <div className="flex items-center gap-2 mb-6 border-b border-slate-200">
+        <button onClick={() => setTabInformes("resumen")}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tabInformes === "resumen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Resumen
+        </button>
+        <button onClick={() => setTabInformes("actividad")}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tabInformes === "actividad" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Actividad
+        </button>
+      </div>
+
+      {tabInformes === "actividad" ? (
+        <div>
+          <div className="flex flex-wrap items-end gap-3 mb-5 bg-white border border-slate-200 rounded-lg p-4">
+            <Field label="Módulo">
+              <Select value={actFiltroModulo} onChange={(e) => setActFiltroModulo(e.target.value)}>
+                <option value="todos">Todos</option>
+                {MODULOS_ACTIVIDAD.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </Select>
+            </Field>
+            <Field label="Usuario">
+              <Select value={actFiltroUsuario} onChange={(e) => setActFiltroUsuario(e.target.value)}>
+                <option value="todos">Todos</option>
+                {(usuarios || []).map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+              </Select>
+            </Field>
+            <Field label="Buscar (nº / detalle)">
+              <TextInput placeholder="ej. 4192" value={actFiltroBusqueda} onChange={(e) => setActFiltroBusqueda(e.target.value)} />
+            </Field>
+            <Field label="Desde">
+              <TextInput type="date" value={actFiltroDesde} onChange={(e) => setActFiltroDesde(e.target.value)} />
+            </Field>
+            <Field label="Hasta">
+              <TextInput type="date" value={actFiltroHasta} onChange={(e) => setActFiltroHasta(e.target.value)} />
+            </Field>
+            {(actFiltroModulo !== "todos" || actFiltroUsuario !== "todos" || actFiltroBusqueda || actFiltroDesde || actFiltroHasta) && (
+              <button
+                onClick={() => { setActFiltroModulo("todos"); setActFiltroUsuario("todos"); setActFiltroBusqueda(""); setActFiltroDesde(""); setActFiltroHasta(""); }}
+                className="text-sm font-semibold text-slate-500 hover:text-slate-700 px-3 py-2.5"
+              >
+                Quitar filtros
+              </button>
+            )}
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="px-4 py-2.5 text-left font-semibold">Fecha</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Módulo</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Nº</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Usuario</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Acción</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Detalle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {actividadFiltrada.slice(0, 500).map((a) => (
+                  <tr key={a.id} className="border-t border-slate-100">
+                    <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fmtFechaHora(a.fecha)}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{MODULOS_ACTIVIDAD.find((m) => m.id === a.modulo)?.label || a.modulo}</td>
+                    <td className="px-4 py-2.5 font-semibold text-slate-800">{a.entidadNumero ? `#${a.entidadNumero}` : "—"}</td>
+                    <td className="px-4 py-2.5 text-slate-700">{a.usuarioNombre}</td>
+                    <td className="px-4 py-2.5">
+                      <Badge className={a.accion === "Creado" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : a.accion === "Cambio de estado" ? "bg-amber-50 text-amber-700 ring-amber-200" : "bg-slate-100 text-slate-600 ring-slate-200"}>
+                        {a.accion}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-500">{a.detalle || "—"}</td>
+                  </tr>
+                ))}
+                {actividadFiltrada.length === 0 && (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Sin actividad registrada con estos filtros.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {actividadFiltrada.length > 500 && (
+            <p className="text-xs text-slate-400 mt-2">Mostrando las 500 entradas más recientes de {actividadFiltrada.length} — afina los filtros para ver el resto.</p>
+          )}
+        </div>
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-2 mb-6">
         {PERIODOS_INFORME.map((p) => (
           <button key={p.id} onClick={() => setPeriodo(p.id)}
@@ -17123,6 +17312,8 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
             </tbody>
           </table>
         </div>
+      )}
+      </>
       )}
     </div>
   );
