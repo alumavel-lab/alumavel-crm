@@ -3388,7 +3388,7 @@ const MANUALES = {
       "La pestaña \"Calculadora\" tiene la calculadora de persianas: calcula el despiece y el precio a partir de las medidas y, al pulsar \"Pasar a presupuesto →\", abre el formulario ya relleno — solo falta revisarlo y pulsar Guardar.",
       "Al guardar un presupuesto (nuevo o editado) se abre directamente su ficha, para tenerlo a mano al momento.",
       "Si un presupuesto de persianas ya guardado necesita más persianas, pulsa \"Añadir más persianas\" en su ficha: te lleva a la Calculadora en modo \"sumar a este presupuesto\" en vez de crear uno nuevo (solo disponible si el presupuesto aún no se ha pasado a proyecto).",
-      "En la ficha del presupuesto ya guardado tienes un botón \"Imprimir\" para sacarlo en PDF o papel y dárselo al cliente.",
+      "En la ficha del presupuesto ya guardado tienes un botón \"Imprimir\" para sacarlo en PDF o papel, \"Generar PDF y guardarlo aquí\" para generarlo y guardarlo de golpe, y — si el presupuesto tiene email — \"Enviar por email\" para mandárselo directamente al cliente con el PDF adjunto.",
       "Puedes registrar las llamadas de seguimiento que haces a un cliente sobre su presupuesto.",
       "Cuando el cliente lo acepta, cambia el estado a \"Aceptado\" y pulsa \"CREAR PROYECTO DESDE ESTE PRESUPUESTO\" para convertirlo en un proyecto/obra real (ese botón solo aparece en ese estado).",
       "También puedes duplicar un presupuesto para no escribirlo todo de nuevo si es parecido a otro.",
@@ -11426,6 +11426,71 @@ function imprimirPresupuesto(presupuesto) {
   ventana.document.close();
 }
 
+// Genera un PDF real del presupuesto (con pdf-lib, igual que el PDF de respaldo
+// que ya se usa para firma) para poder descargarlo y/o guardarlo como documento
+// del presupuesto en un solo paso, sin tener que imprimir y volver a subirlo a mano.
+async function generarPdfBytesPresupuesto(presupuesto) {
+  const pdfDoc = await PDFDocument.create();
+  const fuente = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fuenteNegrita = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const negro = rgb(0.12, 0.16, 0.22);
+  const gris = rgb(0.45, 0.45, 0.45);
+  const margen = 50;
+  const anchoUtil = 495;
+  let pagina = pdfDoc.addPage([595.28, 841.89]);
+  let y = 800;
+
+  const nuevaPaginaSiHaceFalta = (necesario = 20) => {
+    if (y < margen + necesario) {
+      pagina = pdfDoc.addPage([595.28, 841.89]);
+      y = 800;
+    }
+  };
+
+  pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
+  y -= 28;
+  pagina.drawText(`Nº presupuesto: ${presupuesto.numero || ""}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+  pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+  if (presupuesto.direccionEnvio) { pagina.drawText(`Dirección / Obra: ${presupuesto.direccionEnvio}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18; }
+  pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
+  pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
+
+  pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
+  const palabras = (presupuesto.descripcion || "—").split(/\s+/);
+  let linea = "";
+  for (const palabra of palabras) {
+    const pruebaLinea = linea ? `${linea} ${palabra}` : palabra;
+    if (fuente.widthOfTextAtSize(pruebaLinea, 11) > anchoUtil) {
+      nuevaPaginaSiHaceFalta();
+      pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro });
+      y -= 15;
+      linea = palabra;
+    } else {
+      linea = pruebaLinea;
+    }
+  }
+  if (linea) { nuevaPaginaSiHaceFalta(); pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 15; }
+
+  const filasPersianas = (presupuesto.persianas || []).flatMap((tanda) => tanda.filas || []);
+  if (filasPersianas.length > 0) {
+    y -= 15;
+    nuevaPaginaSiHaceFalta(40);
+    pagina.drawText(`Persianas (${filasPersianas.length}):`, { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 16;
+    filasPersianas.forEach((p, i) => {
+      nuevaPaginaSiHaceFalta();
+      const texto = `${i + 1}. Cajón ${p.cajon}mm — ${p.ancho || "—"} x ${p.alto || "—"} mm — ${p.ud || 1} ud — Motor: ${p.motor ? "Sí" : "No"} — ${p.lado || ""}`;
+      pagina.drawText(texto, { x: margen, y, size: 10, font: fuente, color: negro });
+      y -= 14;
+    });
+  }
+
+  y -= 15;
+  nuevaPaginaSiHaceFalta();
+  pagina.drawText("Documento generado desde el CRM de Alumavel.", { x: margen, y, size: 9, font: fuente, color: gris });
+
+  return await pdfDoc.save();
+}
+
 /* ================= PEDIDOS AGRUPANDO VARIAS OBRAS =================
    Junta el despiece pendiente (techos + persianas, comparado con Stock) de VARIAS obras
    a la vez, para poder generar un único pedido a partir de lo que falte en todas ellas. */
@@ -14826,7 +14891,7 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
     if (!prefill) return;
     setPrefillPresupuesto({
       id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
-      clienteNombre: prefill.clienteNombre || "", telefono: "",
+      clienteNombre: prefill.clienteNombre || "", telefono: "", email: "",
       descripcion: prefill.descripcion || "", importe: prefill.importe || "", estado: "Pendiente",
       motivoRechazo: "", fechaRespuesta: "", comentarios: prefill.comentarios || "Creado a partir de una medición. Revisa los datos y añade el importe antes de guardar.",
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, recoge: false, zona: "",
@@ -17357,7 +17422,7 @@ function EnviarAvisoEmailPanel({ llamarHoy, contactarVencidos }) {
 function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero, onCrearClienteRapido, onLeerDatos, onCancel, onSave, proyectos, onGenerarPedido }) {
   const [f, setF] = useState(
     initial || {
-      id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "",
+      id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10), clienteNombre: "", telefono: "", email: "",
       descripcion: "", importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
       comentarios: "", fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, recoge: false, zona: "",
       proyectoId: "",
@@ -17633,6 +17698,10 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           </Field>
         </div>
 
+        <Field label="Email (para poder enviárselo desde aquí)">
+          <TextInput type="email" value={f.email || ""} onChange={set("email")} placeholder="Ej: cliente@email.com" />
+        </Field>
+
         {clienteFaltante && (
           <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 space-y-2">
             <p className="text-sm font-semibold text-amber-800">⚠ "{f.clienteNombre}" no existe todavía en el CRM.</p>
@@ -17851,6 +17920,86 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   };
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), notas: "", enlaceGrabacion: "" });
   const [errorLlamada, setErrorLlamada] = useState("");
+  const [generandoPdf, setGenerandoPdf] = useState(false);
+  const [enviandoEmail, setEnviandoEmail] = useState(false);
+  const [emailEnviadoOk, setEmailEnviadoOk] = useState(false);
+  const [errorEnvioEmail, setErrorEnvioEmail] = useState("");
+
+  const enlaceEmailManual = () => {
+    if (!presupuesto.email) return null;
+    const asunto = `Presupuesto ${presupuesto.numero} — ALUMAVEL`;
+    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nALUMAVEL`;
+    return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+  };
+
+  // Genera el PDF al momento y lo manda por email directamente desde el CRM
+  // (cuenta alumavel@alumavel.es), con el PDF adjunto. Si el envío automático
+  // falla, se deja el enlace de "mailto" como alternativa manual.
+  const enviarPorEmail = async () => {
+    if (!presupuesto.email) return;
+    setEnviandoEmail(true);
+    setErrorEnvioEmail("");
+    setEmailEnviadoOk(false);
+    try {
+      const bytes = await generarPdfBytesPresupuesto(presupuesto);
+      let binario = "";
+      for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
+      const dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
+      const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      const asunto = `Presupuesto ${presupuesto.numero} — ALUMAVEL`;
+      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nALUMAVEL`;
+
+      const response = await fetch("/.netlify/functions/enviar-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destinatario: presupuesto.email,
+          asunto,
+          cuerpo,
+          adjuntos: [{ nombre: nombreArchivo, dataUrl }],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "No se pudo enviar el correo.");
+      setEmailEnviadoOk(true);
+    } catch (err) {
+      console.error("Error enviando el presupuesto por email:", err);
+      setErrorEnvioEmail(err.message + " Puedes usar el enlace de abajo para enviarlo desde tu propio correo mientras tanto.");
+    } finally {
+      setEnviandoEmail(false);
+    }
+  };
+
+  // Genera el PDF real del presupuesto, lo descarga al momento Y lo guarda
+  // directamente en "Documentos guardados" — sin tener que imprimir, guardar
+  // en el ordenador y volver a subirlo a mano.
+  const generarYGuardarPdf = async () => {
+    setGenerandoPdf(true);
+    try {
+      const bytes = await generarPdfBytesPresupuesto(presupuesto);
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      const enlaceDescarga = document.createElement("a");
+      const urlLocal = URL.createObjectURL(blob);
+      enlaceDescarga.href = urlLocal;
+      enlaceDescarga.download = nombreArchivo;
+      document.body.appendChild(enlaceDescarga);
+      enlaceDescarga.click();
+      document.body.removeChild(enlaceDescarga);
+      URL.revokeObjectURL(urlLocal);
+
+      if (onAdjuntarDocumento) {
+        const archivo = new File([blob], nombreArchivo, { type: "application/pdf" });
+        const urlStorage = await subirArchivoAStorage(archivo, `documentos-presupuestos/${presupuesto.id}`);
+        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: nombreArchivo, url: urlStorage, subidoEn: Date.now() });
+      }
+    } catch (err) {
+      console.error("No se pudo generar/guardar el PDF del presupuesto:", err);
+      alert("No se pudo generar el PDF. Inténtalo de nuevo.");
+    } finally {
+      setGenerandoPdf(false);
+    }
+  };
 
   // Subir PDF/foto de medidas (cristales, persianas...) desde el propio presupuesto,
   // igual que ya funciona dentro de un proyecto — se acumulan las líneas de varios
@@ -17979,7 +18128,35 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
               <MessageCircle size={14} /> WhatsApp
             </a>
           )}
+          {presupuesto.email && (
+            <div className="flex flex-col items-end gap-1">
+              <button
+                onClick={enviarPorEmail}
+                disabled={enviandoEmail}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60 px-3.5 py-2 rounded-md"
+              >
+                <Mail size={14} /> {enviandoEmail ? "Enviando..." : "Enviar por email"}
+              </button>
+              {emailEnviadoOk && <span className="text-xs text-emerald-600 font-semibold">✓ Correo enviado</span>}
+              {errorEnvioEmail && (
+                <div className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">
+                  ⚠ {errorEnvioEmail}
+                  <a href={enlaceEmailManual()} className="block underline mt-0.5">Abrir en mi correo</a>
+                </div>
+              )}
+            </div>
+          )}
           <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
+          <button
+            onClick={generarYGuardarPdf}
+            disabled={generandoPdf}
+            title="Genera el PDF, lo descarga y lo deja guardado aquí mismo como documento — así ya está listo para 'Enviar a firmar' sin tener que subirlo a mano"
+            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90 disabled:opacity-60"
+          >
+            <FileText size={14} /> {generandoPdf ? "Generando..." : "Generar PDF y guardarlo aquí"}
+          </button>
           <button onClick={onDuplicar} title="Crea una réplica de este presupuesto con su propio número (ej. 4192 → 4192-1), lista para modificar" className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Copy size={14} /> Duplicar (nueva réplica)</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
@@ -18052,6 +18229,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
           <InfoRow icon={<Euro size={14} />} label="Importe" value={money(presupuesto.importe)} />
           <InfoRow icon={<Phone size={14} />} label="Teléfono" value={presupuesto.telefono || "—"} />
+          <InfoRow icon={<Mail size={14} />} label="Email" value={presupuesto.email || "—"} />
           <InfoRow icon={<MapPin size={14} />} label="Zona" value={presupuesto.zona || "—"} />
           <InfoRow icon={<FileText size={14} />} label="Descripción / Obra" value={presupuesto.descripcion || "—"} />
           {presupuesto.fechaRespuesta && <InfoRow icon={<CalendarDays size={14} />} label="Fecha respuesta" value={`${fmtDate(presupuesto.fechaRespuesta)} (${diasResp}d)`} />}
