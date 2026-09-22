@@ -628,7 +628,7 @@ export default function App() {
 
   const showToast = (msg, kind = "ok") => {
     setToast({ msg, kind });
-    setTimeout(() => setToast(null), 2600);
+    setTimeout(() => setToast(null), kind === "error" ? 6000 : 2600);
   };
 
   // Genera el PDF que se manda a firmar: una portada con los datos del
@@ -3158,7 +3158,7 @@ export default function App() {
 
       {toast && (
         <div
-          className={`fixed bottom-5 right-5 px-4 py-2.5 rounded-md shadow-lg text-sm font-medium text-white flex items-center gap-2 ${
+          className={`fixed top-5 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-md shadow-lg text-sm font-medium text-white flex items-center gap-2 z-50 max-w-[90vw] text-center ${
             toast.kind === "error" ? "bg-rose-600" : "bg-[#256E46]"
           }`}
         >
