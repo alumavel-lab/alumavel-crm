@@ -2080,6 +2080,13 @@ export default function App() {
       if (nuevoEstado === "Enviado") {
         base.fechaEnvio = hoy;
         base.proximaLlamadaFecha = enSieteDias.toISOString().slice(0, 10);
+      } else if (nuevoEstado === "Aceptado" || nuevoEstado === "Rechazado") {
+        // Ya está resuelto, se borra cualquier próxima llamada pendiente.
+        base.proximaLlamadaFecha = "";
+      } else if (llamada.proximaLlamadaFecha) {
+        // La fecha que se haya puesto a mano en el formulario de la llamada es la
+        // que manda — se guarda en el presupuesto, que es de donde lee el aviso.
+        base.proximaLlamadaFecha = llamada.proximaLlamadaFecha;
       }
       return base;
     });
@@ -18032,9 +18039,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
   // tenga fecha puesta) y deja de mostrarse en cuanto el presupuesto queda resuelto
   // (Aceptado o Rechazado) — a partir de ahí ya no hay que seguir llamando por esto.
-  const proximaLlamadaActiva = estadoActual !== "Aceptado" && estadoActual !== "Rechazado"
-    ? (presupuesto.llamadas || []).find((l) => l.proximaLlamadaFecha)?.proximaLlamadaFecha
-    : null;
+  const proximaLlamadaActiva = estadoActual !== "Aceptado" && estadoActual !== "Rechazado" ? presupuesto.proximaLlamadaFecha : null;
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
   const llamadas = presupuesto.llamadas || [];
   const versiones = presupuesto.versiones || [];
