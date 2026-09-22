@@ -2069,7 +2069,20 @@ export default function App() {
   };
 
   const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
-    const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, llamadas: [llamada, ...(p.llamadas || [])], estado: nuevoEstado || p.estado } : p));
+    const hoy = new Date().toISOString().slice(0, 10);
+    const enSieteDias = new Date();
+    enSieteDias.setDate(enSieteDias.getDate() + 7);
+    const next = presupuestos.map((p) => {
+      if (p.id !== presupuestoId) return p;
+      const base = { ...p, llamadas: [llamada, ...(p.llamadas || [])], estado: nuevoEstado || p.estado };
+      // Si por la llamada se marca como "Enviado", se comporta igual que al enviarlo
+      // por WhatsApp/email: se guarda la fecha y se calcula la próxima llamada a 7 días.
+      if (nuevoEstado === "Enviado") {
+        base.fechaEnvio = hoy;
+        base.proximaLlamadaFecha = enSieteDias.toISOString().slice(0, 10);
+      }
+      return base;
+    });
     savePresupuestos(next);
     showToast("Llamada registrada");
   };
@@ -14847,10 +14860,11 @@ const ESTADO_PRESUPUESTO_TRACKER_STYLE = {
 // sin tener que ir aparte a cambiar el desplegable de estado.
 const PRESUPUESTO_RESULTADOS_LLAMADA = [
   { value: "sin_cambios", label: "Sin cambios de estado", estado: null },
-  { value: "respondio", label: "Cliente respondió — pendiente de decidir", estado: "Pendiente" },
-  { value: "en_espera", label: "En espera de confirmación", estado: "En espera" },
-  { value: "aceptado", label: "Aceptado — quiere seguir adelante", estado: "Aceptado" },
-  { value: "rechazado", label: "Rechazado / No interesado", estado: "Rechazado" },
+  { value: "pendiente", label: "Pendiente", estado: "Pendiente" },
+  { value: "enviado", label: "Enviado", estado: "Enviado" },
+  { value: "en_espera", label: "En espera", estado: "En espera" },
+  { value: "aceptado", label: "Aceptado", estado: "Aceptado" },
+  { value: "rechazado", label: "Rechazado", estado: "Rechazado" },
 ];
 
 const diasEntre = (a, b) => {
@@ -17697,7 +17711,15 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       return;
     }
     setErrorMsg("");
-    onSave({ ...f, importe: parseFloat(f.importe) || 0 });
+    let extra = {};
+    // Si se pasa a "Enviado" a mano aquí (y no lo estaba ya), se calcula la próxima
+    // llamada a 7 días — igual que al enviarlo por WhatsApp, email o desde una llamada.
+    if (f.estado === "Enviado" && initial?.estado !== "Enviado") {
+      const enSieteDias = new Date(f.fechaEnvio);
+      enSieteDias.setDate(enSieteDias.getDate() + 7);
+      extra.proximaLlamadaFecha = enSieteDias.toISOString().slice(0, 10);
+    }
+    onSave({ ...f, ...extra, importe: parseFloat(f.importe) || 0 });
   };
 
   return (
