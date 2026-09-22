@@ -641,9 +641,11 @@ export default function App() {
   // tal cual, página a página — en vez de un resumen genérico. Las fotos se meten
   // como página de imagen. Si no hay ningún documento guardado, se genera un
   // resumen básico como respaldo para que el envío nunca se quede sin nada que firmar.
-  const generarPdfBase64Presupuesto = async (presupuesto) => {
+  const generarPdfBase64Presupuesto = async (presupuesto, documentoId) => {
     const pdfDoc = await PDFDocument.create();
-    const documentos = presupuesto.documentos || [];
+    const documentos = documentoId
+      ? (presupuesto.documentos || []).filter((d) => d.id === documentoId)
+      : (presupuesto.documentos || []);
 
     if (documentos.length > 0) {
       for (const doc of documentos) {
@@ -768,9 +770,9 @@ export default function App() {
   // responsable interno de aprobación de la obra vinculada (si la tiene) o el
   // propio cliente del presupuesto. Actualiza el estado de firma en Firebase
   // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
-  const enviarPresupuestoAFirmar = async (presupuesto, firmante) => {
+  const enviarPresupuestoAFirmar = async (presupuesto, firmante, documentoId) => {
     try {
-      const pdfBase64 = await generarPdfBase64Presupuesto(presupuesto);
+      const pdfBase64 = await generarPdfBase64Presupuesto(presupuesto, documentoId);
       const response = await fetch("/.netlify/functions/firma-enviar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -17969,7 +17971,9 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     telefono: esAprobacionInterna ? "" : (presupuesto.telefono || ""),
   });
   const firma = presupuesto.firma;
-  const sinDocumento = (presupuesto.documentos || []).length === 0;
+  const documentos = presupuesto.documentos || [];
+  const [documentoElegidoId, setDocumentoElegidoId] = useState(documentos.length > 0 ? documentos[documentos.length - 1].id : "");
+  const sinDocumento = documentos.length === 0;
   const [mostrarFormManual, setMostrarFormManual] = useState(false);
   const [usuarioConfirmaId, setUsuarioConfirmaId] = useState("");
   const [passwordConfirma, setPasswordConfirma] = useState("");
@@ -18008,7 +18012,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     const firmanteAEnviar = firmante.email.trim()
       ? firmante
       : { ...firmante, email: `${presupuesto.id}@sinemail.alumavel.es` };
-    await onEnviarFirma(presupuesto, firmanteAEnviar);
+    await onEnviarFirma(presupuesto, firmanteAEnviar, documentoElegidoId || null);
     setEnviando(false);
     setMostrarForm(false);
   };
@@ -18054,11 +18058,19 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
         </button>
       ) : (
         <form onSubmit={enviar} className="space-y-2">
-          <p className="text-xs text-slate-500">
-            {(presupuesto.documentos || []).length > 0
-              ? `Se firmará: ${presupuesto.documentos.map((d) => d.nombre).join(", ")}.`
-              : "Este presupuesto no tiene ningún PDF/foto guardado — se enviará un resumen básico. Si quieres que se firme el documento real, súbelo antes en 'Documentos guardados'."}
-          </p>
+          {documentos.length > 1 ? (
+            <Field label="Qué documento firmar (tiene varios guardados)">
+              <Select value={documentoElegidoId} onChange={(e) => setDocumentoElegidoId(e.target.value)}>
+                {documentos.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+              </Select>
+            </Field>
+          ) : (
+            <p className="text-xs text-slate-500">
+              {documentos.length === 1
+                ? `Se firmará: ${documentos[0].nombre}.`
+                : "Este presupuesto no tiene ningún PDF/foto guardado — se enviará un resumen básico. Si quieres que se firme el documento real, súbelo antes en 'Documentos guardados'."}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Nombre del firmante">
               <TextInput value={firmante.nombre} onChange={(e) => setFirmante({ ...firmante, nombre: e.target.value })} />
