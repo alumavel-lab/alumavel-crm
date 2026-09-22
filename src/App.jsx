@@ -17719,6 +17719,11 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       enSieteDias.setDate(enSieteDias.getDate() + 7);
       extra.proximaLlamadaFecha = enSieteDias.toISOString().slice(0, 10);
     }
+    // Si se pasa a "Aceptado" o "Rechazado" aquí, ya está resuelto — se borra la
+    // próxima llamada pendiente, igual que al elegir ese resultado en una llamada.
+    if (f.estado === "Aceptado" || f.estado === "Rechazado") {
+      extra.proximaLlamadaFecha = "";
+    }
     onSave({ ...f, ...extra, importe: parseFloat(f.importe) || 0 });
   };
 
@@ -18146,6 +18151,17 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     }
   };
 
+  // Al elegir "Aceptado" o "Rechazado" ya no hace falta seguir llamando, así que se
+  // borra sola la fecha de próxima llamada que se hubiera puesto — para no dejar un
+  // recordatorio de seguimiento sin sentido en un presupuesto ya resuelto.
+  const onChangeResultadoLlamada = (value) => {
+    setLForm((prev) => ({
+      ...prev,
+      resultado: value,
+      proximaLlamadaFecha: (value === "aceptado" || value === "rechazado") ? "" : prev.proximaLlamadaFecha,
+    }));
+  };
+
   const registrarLlamada = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!lForm.notas.trim()) {
@@ -18464,12 +18480,12 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             <TextInput type="date" value={lForm.fecha} onChange={(e) => setLForm({ ...lForm, fecha: e.target.value })} />
           </Field>
           <Field label="Resultado — actualiza el estado del presupuesto">
-            <Select value={lForm.resultado} onChange={(e) => setLForm({ ...lForm, resultado: e.target.value })}>
+            <Select value={lForm.resultado} onChange={(e) => onChangeResultadoLlamada(e.target.value)}>
               {PRESUPUESTO_RESULTADOS_LLAMADA.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </Select>
           </Field>
-          <Field label="Próxima llamada (opcional)">
-            <TextInput type="date" value={lForm.proximaLlamadaFecha} onChange={(e) => setLForm({ ...lForm, proximaLlamadaFecha: e.target.value })} />
+          <Field label={lForm.resultado === "aceptado" || lForm.resultado === "rechazado" ? "Próxima llamada (no hace falta, ya está resuelto)" : "Próxima llamada (opcional)"}>
+            <TextInput type="date" disabled={lForm.resultado === "aceptado" || lForm.resultado === "rechazado"} value={lForm.proximaLlamadaFecha} onChange={(e) => setLForm({ ...lForm, proximaLlamadaFecha: e.target.value })} />
           </Field>
           <Field label="Enlace a la grabación (si tu centralita lo da)">
             <TextInput value={lForm.enlaceGrabacion} onChange={(e) => setLForm({ ...lForm, enlaceGrabacion: e.target.value })} placeholder="https://..." />
