@@ -18256,7 +18256,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     <div className="p-8 max-w-3xl">
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver</button>
 
-      <div className="flex items-start justify-between mb-6 gap-4">
+      <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <h1 className="font-display text-2xl font-extrabold text-slate-900">{presupuesto.numero}</h1>
@@ -18264,7 +18264,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           </div>
           <p className="text-slate-500 text-sm">{presupuesto.clienteNombre} · {fmtDate(presupuesto.fechaEnvio)}</p>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap justify-end gap-2">
           {enlaceLlamar(presupuesto) && (
             <a href={enlaceLlamar(presupuesto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-3.5 py-2 rounded-md">
               <Phone size={14} /> Llamar
