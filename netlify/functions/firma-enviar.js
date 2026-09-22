@@ -72,6 +72,10 @@ export const handler = async (event) => {
       console.error("Firma.dev no devolvió un id de solicitud:", JSON.stringify(dataFirma));
       return { statusCode: 502, body: JSON.stringify({ error: "Firma.dev no devolvió un id de solicitud", detalle: dataFirma }) };
     }
+    // El enlace real de firma (para poder compartirlo por WhatsApp) viene en
+    // first_signer.signing_link — si Firma.dev cambia el formato, se prueban un
+    // par de sitios más por si acaso, en vez de fallar en silencio.
+    const signingLink = dataFirma.first_signer?.signing_link || dataFirma.signing_link || dataFirma.recipients?.[0]?.signing_link || "";
 
     // Comprueba que el registro existe antes de escribir en él. OJO: el CRM guarda
     // presupuestos/proyectos como una lista (índices 0,1,2...), no con el id de cada
@@ -90,6 +94,7 @@ export const handler = async (event) => {
       enviadoEn: Date.now(),
       firmanteNombre: firmante.nombre || "",
       firmanteEmail: firmante.email,
+      signingLink,
     };
 
     await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json`, {
@@ -101,7 +106,7 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: true, signingRequestId }),
+      body: JSON.stringify({ ok: true, signingRequestId, signingLink }),
     };
   } catch (err) {
     console.error("Excepción en firma-enviar:", err.message);
