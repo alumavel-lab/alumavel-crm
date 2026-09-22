@@ -2034,6 +2034,23 @@ export default function App() {
     showToast("Llamada registrada");
   };
 
+  // Se llama al pulsar "Enviar por email" (tras confirmar el envío) o el botón de
+  // WhatsApp. Marca el presupuesto como "Enviado" con la fecha de hoy y calcula la
+  // próxima llamada a los 7 días — así se sabe siempre cuándo hay que volver a
+  // llamar. Solo actúa si el presupuesto seguía en "Pendiente" o "Enviado" (no toca
+  // uno que ya esté En espera / Aceptado / Rechazado, para no desandar ese estado).
+  const marcarPresupuestoEnviado = (presupuestoId, metodo) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const enSieteDias = new Date();
+    enSieteDias.setDate(enSieteDias.getDate() + 7);
+    const next = presupuestos.map((p) => {
+      if (p.id !== presupuestoId || (p.estado && p.estado !== "Pendiente" && p.estado !== "Enviado")) return p;
+      return { ...p, estado: "Enviado", fechaEnvio: hoy, proximaLlamadaFecha: enSieteDias.toISOString().slice(0, 10) };
+    });
+    savePresupuestos(next);
+    showToast(metodo === "email" ? "Marcado como enviado por email — próxima llamada en 7 días" : "Marcado como enviado por WhatsApp — próxima llamada en 7 días");
+  };
+
   const deleteLlamadaPresupuesto = (presupuestoId, llamadaId) => {
     const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, llamadas: (p.llamadas || []).filter((l) => l.id !== llamadaId) } : p));
     savePresupuestos(next);
@@ -2878,6 +2895,7 @@ export default function App() {
             onDelete={deletePresupuesto}
             onAddLlamada={addLlamadaPresupuesto}
             onDeleteLlamada={deleteLlamadaPresupuesto}
+            onMarcarEnviado={marcarPresupuestoEnviado}
             onCrearProyecto={(presupuesto) => {
               const proyectoId = crearProyectoDesdePresupuesto(presupuesto);
               setModulo("proyectos");
@@ -14772,6 +14790,7 @@ const ESTADO_PRESUPUESTO_TRACKER = ["Pendiente", "Aceptado", "Rechazado", "En es
 const MOTIVO_RECHAZO = ["Precio", "Competencia", "Plazo", "Otro"];
 const ESTADO_PRESUPUESTO_TRACKER_STYLE = {
   Pendiente: "bg-amber-50 text-amber-700 ring-amber-200",
+  Enviado: "bg-sky-50 text-sky-700 ring-sky-200",
   Aceptado: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   Rechazado: "bg-rose-50 text-rose-700 ring-rose-200",
   "En espera": "bg-slate-100 text-slate-600 ring-slate-200",
@@ -14782,6 +14801,7 @@ const ESTADO_PRESUPUESTO_TRACKER_STYLE = {
 // sin tener que ir aparte a cambiar el desplegable de estado.
 const PRESUPUESTO_RESULTADOS_LLAMADA = [
   { value: "sin_cambios", label: "Sin cambios de estado", estado: null },
+  { value: "respondio", label: "Cliente respondió — pendiente de decidir", estado: "Pendiente" },
   { value: "en_espera", label: "En espera de confirmación", estado: "En espera" },
   { value: "aceptado", label: "Aceptado — quiere seguir adelante", estado: "Aceptado" },
   { value: "rechazado", label: "Rechazado / No interesado", estado: "Rechazado" },
@@ -14794,8 +14814,13 @@ const diasEntre = (a, b) => {
 };
 
 const diasSinRespuestaDe = (p) => {
-  if (p.estado !== "Pendiente" || !p.fechaEnvio) return null;
-  return diasEntre(p.fechaEnvio, new Date().toISOString().slice(0, 10));
+  if (p.estado !== "Enviado" || !p.fechaEnvio) return null;
+  // El contador se reinicia con cada llamada registrada (aunque no cambie el estado)
+  // — así, para "quitar" un presupuesto de la lista de atrasados basta con anotarle
+  // una llamada; no hace falta cambiar el estado a mano.
+  const ultimaLlamada = (p.llamadas || []).reduce((max, l) => (l.fecha && l.fecha > max ? l.fecha : max), "");
+  const desde = ultimaLlamada && ultimaLlamada > p.fechaEnvio ? ultimaLlamada : p.fechaEnvio;
+  return diasEntre(desde, new Date().toISOString().slice(0, 10));
 };
 
 const mensajeWhatsappPresupuesto = (p) => {
@@ -14877,7 +14902,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -15149,6 +15174,7 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
         onDelete={() => onDelete(presupuesto.id)}
         onAddLlamada={(llamada, nuevoEstado) => onAddLlamada(presupuesto.id, llamada, nuevoEstado)}
         onDeleteLlamada={(llamadaId) => onDeleteLlamada(presupuesto.id, llamadaId)}
+        onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
         onCrearProyecto={() => onCrearProyecto(presupuesto)}
         onDuplicar={() => onDuplicar(presupuesto)}
         replicas={replicasDe(presupuesto)}
@@ -17489,6 +17515,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         r.readAsDataURL(file);
       });
       const esPdf = file.type === "application/pdf";
+      const esImagen = file.type.startsWith("image/");
       const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
       const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
 
@@ -17503,6 +17530,11 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         console.error("No se pudo subir el documento a Storage:", errSubida);
         setErrorPdfMedidasForm("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
       }
+
+      // La lectura por IA (líneas de medidas y número de presupuesto) solo tiene
+      // sentido con PDF o foto — con Excel/Word el documento ya ha quedado guardado
+      // arriba, así que aquí simplemente se termina sin intentar leerlo.
+      if (!esPdf && !esImagen) return;
 
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
@@ -17650,13 +17682,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
 
       {onGenerarPedido && (
         <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-5">
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Guardar PDF/foto de medidas (cristales, persianas...) en este presupuesto</span>
-          <p className="text-xs text-slate-500 mb-2">Se guarda en el presupuesto en cuanto lo subas — no hace falta guardar el presupuesto antes. Para generar el pedido a partir de él, hazlo después desde la ficha del presupuesto ya guardado (ahí no hay riesgo de perder lo que estás escribiendo aquí).</p>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Subir documento</span>
+          <p className="text-xs text-slate-500 mb-2">PDF, foto, Excel (.xlsx, .xls, .ods) o Word (.doc, .docx). Se guarda en cuanto lo subas — no hace falta guardar el presupuesto antes.</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={inputPdfMedidasFormRef}
               type="file"
-              accept="image/*,application/pdf"
+              accept="application/pdf,image/*,.xlsx,.xls,.ods,.doc,.docx"
               className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasForm(e.target.files[0]); e.target.value = ""; }}
             />
@@ -17667,7 +17699,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
               style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
-              <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Leyendo..." : "Subir PDF/foto de medidas"}
+              <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Subiendo..." : "Subir documento"}
             </button>
             {f.documentos && f.documentos.length > 0 && (
               <span className="text-sm text-emerald-700 font-semibold">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</span>
@@ -17914,7 +17946,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnadirMasPersianas }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
@@ -17980,6 +18012,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "No se pudo enviar el correo.");
       setEmailEnviadoOk(true);
+      onMarcarEnviado("email");
     } catch (err) {
       console.error("Error enviando el presupuesto por email:", err);
       setErrorEnvioEmail(err.message + " Puedes usar el enlace de abajo para enviarlo desde tu propio correo mientras tanto.");
@@ -18069,7 +18102,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </a>
           )}
           {enlaceWhatsapp(presupuesto) && (
-            <a href={enlaceWhatsapp(presupuesto)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
+            <a href={enlaceWhatsapp(presupuesto)} target="_blank" rel="noopener noreferrer" onClick={() => onMarcarEnviado("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
               <MessageCircle size={14} /> WhatsApp
             </a>
           )}
