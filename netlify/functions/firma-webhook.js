@@ -51,13 +51,17 @@ function verificarFirmaWebhook(rawBody, headerSignature, secret) {
 
 // Busca en qué colección (presupuestos o proyectos) y qué registro tiene este
 // signingRequestId guardado en su campo "firma" — no lo sabemos de antemano
-// porque el webhook solo trae el id de la solicitud de firma.
+// porque el webhook solo trae el id de la solicitud de firma. OJO: el CRM
+// guarda cada colección como una lista con posiciones (0,1,2...) — la clave
+// real de Firebase NO es el id del registro, así que hay que devolverla aparte
+// para poder escribir luego en el sitio correcto.
 async function buscarRegistroPorSigningRequestId(signingRequestId) {
   for (const coleccion of ["presupuestos", "proyectos"]) {
     const res = await fetch(`${FIREBASE_DB_URL}/${coleccion}.json`);
-    const datos = toArray(await res.json());
-    const encontrado = datos.find((r) => r?.firma?.signingRequestId === signingRequestId);
-    if (encontrado) return { coleccion, registro: encontrado };
+    const datos = await res.json();
+    if (!datos) continue;
+    const clave = Object.keys(datos).find((k) => datos[k]?.firma?.signingRequestId === signingRequestId);
+    if (clave) return { coleccion, clave, registro: datos[clave] };
   }
   return null;
 }
@@ -105,7 +109,7 @@ export const handler = async (event) => {
       console.error("No se encontró ningún registro con signingRequestId:", signingRequestId);
       return { statusCode: 200, body: JSON.stringify({ error: "Registro no encontrado para este signingRequestId" }) };
     }
-    const { coleccion, registro } = encontrado;
+    const { coleccion, clave, registro } = encontrado;
 
     const apiKey = process.env.FIRMA_API_KEY || process.env.FIRMA_API_KEY_TEST;
     if (!apiKey) {
@@ -152,7 +156,7 @@ export const handler = async (event) => {
       firmadoEn: Date.now(),
       pdfUrl,
     };
-    await fetch(`${FIREBASE_DB_URL}/${coleccion}/${registro.id}/firma.json`, {
+    await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(firmaActualizada),
@@ -190,7 +194,7 @@ export const handler = async (event) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(nuevoProyecto),
         });
-        await fetch(`${FIREBASE_DB_URL}/presupuestos/${registro.id}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/presupuestos/${clave}.json`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ estado: "Aceptado", proyectoCreadoId: nuevoProyectoId }),

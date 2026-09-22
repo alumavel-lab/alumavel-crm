@@ -73,10 +73,14 @@ export const handler = async (event) => {
       return { statusCode: 502, body: JSON.stringify({ error: "Firma.dev no devolvió un id de solicitud", detalle: dataFirma }) };
     }
 
-    // Comprueba que el registro existe antes de escribir en él
-    const getRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${registroId}.json`);
-    const registroActual = await getRes.json();
-    if (!registroActual) {
+    // Comprueba que el registro existe antes de escribir en él. OJO: el CRM guarda
+    // presupuestos/proyectos como una lista (índices 0,1,2...), no con el id de cada
+    // uno como clave de Firebase — así que hay que traer toda la colección y buscar
+    // cuál tiene ese id, y escribir luego en su clave real (el índice), no en el id.
+    const getColRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}.json`);
+    const coleccion = await getColRes.json();
+    const claveReal = coleccion ? Object.keys(coleccion).find((k) => coleccion[k]?.id === registroId) : null;
+    if (!claveReal) {
       return { statusCode: 404, body: JSON.stringify({ error: "No se encontró el registro en Firebase." }) };
     }
 
@@ -88,7 +92,7 @@ export const handler = async (event) => {
       firmanteEmail: firmante.email,
     };
 
-    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${registroId}/firma.json`, {
+    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(firmaInfo),
