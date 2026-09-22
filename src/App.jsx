@@ -2028,8 +2028,8 @@ export default function App() {
     return nueva.id;
   };
 
-  const addLlamadaPresupuesto = (presupuestoId, llamada) => {
-    const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, llamadas: [llamada, ...(p.llamadas || [])] } : p));
+  const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
+    const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, llamadas: [llamada, ...(p.llamadas || [])], estado: nuevoEstado || p.estado } : p));
     savePresupuestos(next);
     showToast("Llamada registrada");
   };
@@ -14777,6 +14777,16 @@ const ESTADO_PRESUPUESTO_TRACKER_STYLE = {
   "En espera": "bg-slate-100 text-slate-600 ring-slate-200",
 };
 
+// Resultado de cada llamada de seguimiento a un presupuesto — al elegir uno se
+// actualiza el estado del presupuesto automáticamente (igual que ya pasa en Leads),
+// sin tener que ir aparte a cambiar el desplegable de estado.
+const PRESUPUESTO_RESULTADOS_LLAMADA = [
+  { value: "sin_cambios", label: "Sin cambios de estado", estado: null },
+  { value: "en_espera", label: "En espera de confirmación", estado: "En espera" },
+  { value: "aceptado", label: "Aceptado — quiere seguir adelante", estado: "Aceptado" },
+  { value: "rechazado", label: "Rechazado / No interesado", estado: "Rechazado" },
+];
+
 const diasEntre = (a, b) => {
   if (!a || !b) return null;
   const ms = new Date(b).setHours(0, 0, 0, 0) - new Date(a).setHours(0, 0, 0, 0);
@@ -15137,7 +15147,7 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
         onBack={() => setView("list")}
         onEdit={() => { setEditId(presupuesto.id); setView("form"); }}
         onDelete={() => onDelete(presupuesto.id)}
-        onAddLlamada={(llamada) => onAddLlamada(presupuesto.id, llamada)}
+        onAddLlamada={(llamada, nuevoEstado) => onAddLlamada(presupuesto.id, llamada, nuevoEstado)}
         onDeleteLlamada={(llamadaId) => onDeleteLlamada(presupuesto.id, llamadaId)}
         onCrearProyecto={() => onCrearProyecto(presupuesto)}
         onDuplicar={() => onDuplicar(presupuesto)}
@@ -17907,6 +17917,12 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
 function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
+  // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
+  // tenga fecha puesta) y deja de mostrarse en cuanto el presupuesto queda resuelto
+  // (Aceptado o Rechazado) — a partir de ahí ya no hay que seguir llamando por esto.
+  const proximaLlamadaActiva = estadoActual !== "Aceptado" && estadoActual !== "Rechazado"
+    ? (presupuesto.llamadas || []).find((l) => l.proximaLlamadaFecha)?.proximaLlamadaFecha
+    : null;
   const diasResp = diasEntre(presupuesto.fechaEnvio, presupuesto.fechaRespuesta);
   const llamadas = presupuesto.llamadas || [];
   const versiones = presupuesto.versiones || [];
@@ -17918,7 +17934,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     if (index === 0) return { importe: presupuesto.importe, descripcion: presupuesto.descripcion };
     return { importe: versiones[index - 1].importe, descripcion: versiones[index - 1].descripcion };
   };
-  const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), notas: "", enlaceGrabacion: "" });
+  const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
   const [errorLlamada, setErrorLlamada] = useState("");
   const [generandoPdf, setGenerandoPdf] = useState(false);
   const [pdfGuardadoUrl, setPdfGuardadoUrl] = useState("");
@@ -17998,109 +18014,41 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     }
   };
 
-  // Subir PDF/foto de medidas (cristales, persianas...) desde el propio presupuesto,
-  // igual que ya funciona dentro de un proyecto — se acumulan las líneas de varios
-  // archivos y, a los 30s sin subir ninguno más, se abre el pedido ya relleno.
-  const [lineasPedidoAutoPre, setLineasPedidoAutoPre] = useState([]);
-  const [adjuntosPedidoAutoPre, setAdjuntosPedidoAutoPre] = useState([]);
-  const [leyendoPdfMedidasPre, setLeyendoPdfMedidasPre] = useState(false);
+  // Subir documento (PDF/foto) del presupuesto — solo lo guarda en la ficha, sin
+  // leerlo ni generar ningún pedido a partir de él. Para pedir materiales a partir
+  // de una hoja de medidas, eso se hace ahora desde el Proyecto una vez creado.
+  const [subiendoDocumentoPre, setSubiendoDocumentoPre] = useState(false);
   const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
-  const [segundosParaPedidoPre, setSegundosParaPedidoPre] = useState(null);
-  const timerPedidoAutoPreRef = useRef(null);
-  const intervaloCuentaPreRef = useRef(null);
   const inputPdfMedidasPreRef = useRef(null);
-
-  const dispararPedidoAutoPre = (lineasFinales, adjuntosFinales) => {
-    if (lineasFinales.length === 0) return;
-    setLineasPedidoAutoPre([]);
-    setAdjuntosPedidoAutoPre([]);
-    onGenerarPedido(null, lineasFinales, null, `Pedido generado a partir de los PDF/fotos de medidas subidos en el presupuesto #${presupuesto.numero}${presupuesto.clienteNombre ? ` (${presupuesto.clienteNombre})` : ""}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
-  };
 
   const manejarSubidaPdfMedidasPre = async (file) => {
     if (!file) return;
-    setLeyendoPdfMedidasPre(true);
+    setSubiendoDocumentoPre(true);
     setErrorPdfMedidasPre("");
     try {
-      const base64Data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("No se pudo leer el archivo"));
-        r.readAsDataURL(file);
-      });
-      const esPdf = file.type === "application/pdf";
-      const mediaType = esPdf ? "application/pdf" : (file.type || "image/jpeg");
-      const nuevoAdjunto = { nombre: file.name, dataUrl: `data:${mediaType};base64,${base64Data}` };
-
-      // El documento se guarda en la ficha del presupuesto siempre, aunque luego no se
-      // consiga sacar ninguna línea de pedido de él (para eso está, para poder volver
-      // a verlo — no depende de si es una hoja de medidas o no). Se sube a Storage (no
-      // en base64 dentro de la base de datos) para que no se quede cortado.
+      const urlStorage = await subirArchivoAStorage(file, `documentos-presupuestos/${presupuesto.id}`);
       if (onAdjuntarDocumento) {
-        try {
-          const urlStorage = await subirArchivoAStorage(file, `documentos-presupuestos/${presupuesto.id}`);
-          onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() });
-        } catch (errSubida) {
-          console.error("No se pudo subir el documento a Storage:", errSubida);
-          setErrorPdfMedidasPre("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
-        }
+        onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() });
       }
-
-      const contentBlock = esPdf
-        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
-        : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
-      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
-        }),
-      });
-      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message || "Error de la API");
-      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
-      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const inicio = limpio.indexOf("[");
-      const fin = limpio.lastIndexOf("]");
-      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
-
-      const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
-        id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
-        ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
-      })).filter((l) => l.referencia);
-
-      if (nuevas.length === 0) {
-        setErrorPdfMedidasPre("Documento guardado, pero no he encontrado líneas de medidas claras para generar un pedido a partir de él.");
-        return;
-      }
-      setLineasPedidoAutoPre((prev) => {
-        const combinadas = [...prev, ...nuevas];
-        setAdjuntosPedidoAutoPre((prevAdj) => [...prevAdj, nuevoAdjunto]);
-        return combinadas;
-      });
     } catch (err) {
-      setErrorPdfMedidasPre("No se pudo leer el archivo: " + err.message);
+      console.error("No se pudo subir el documento a Storage:", err);
+      setErrorPdfMedidasPre("No se pudo guardar el documento (fallo al subirlo).");
     } finally {
-      setLeyendoPdfMedidasPre(false);
+      setSubiendoDocumentoPre(false);
     }
   };
 
-  useEffect(() => () => { clearTimeout(timerPedidoAutoPreRef.current); clearInterval(intervaloCuentaPreRef.current); }, []);
-
   const registrarLlamada = (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!lForm.notas.trim() && !lForm.enlaceGrabacion.trim()) {
-      setErrorLlamada("Escribe algo en las notas o pega un enlace a la grabación antes de registrar la llamada.");
+    if (!lForm.notas.trim()) {
+      setErrorLlamada("No se puede registrar la llamada sin escribir qué se ha hablado con el cliente — pon un resumen en \"Notas de la llamada\".");
       return;
     }
     setErrorLlamada("");
-    onAddLlamada({ id: uid(), ...lForm });
-    setLForm({ fecha: new Date().toISOString().slice(0, 10), notas: "", enlaceGrabacion: "" });
+    const opcion = PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === lForm.resultado);
+    const { resultado, ...llamadaSinResultado } = lForm;
+    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "" }, opcion?.estado || null);
+    setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
   };
   return (
     <div className="p-8 max-w-3xl">
@@ -18170,40 +18118,35 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         </div>
       </div>
 
-      {onGenerarPedido && (
+      {onAdjuntarDocumento && (
         <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este presupuesto</span>
-          <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; cuando termines, pulsa "Crear pedido" para abrirlo ya relleno y elegir proveedor.</p>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Subir documento</span>
+          <p className="text-xs text-slate-500 mb-2">PDF, foto, Excel (.xlsx, .xls, .ods) o Word (.doc, .docx).</p>
           <div className="flex flex-wrap items-center gap-3">
             <input
               ref={inputPdfMedidasPreRef}
               type="file"
-              accept="image/*,application/pdf"
+              accept="application/pdf,image/*,.xlsx,.xls,.ods,.doc,.docx"
               className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasPre(e.target.files[0]); e.target.value = ""; }}
             />
             <button
               type="button"
               onClick={() => inputPdfMedidasPreRef.current?.click()}
-              disabled={leyendoPdfMedidasPre}
+              disabled={subiendoDocumentoPre}
               style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
-              <ImageIcon size={15} /> {leyendoPdfMedidasPre ? "Leyendo..." : "Subir PDF/foto de medidas"}
+              <ImageIcon size={15} /> {subiendoDocumentoPre ? "Subiendo..." : "Subir documento"}
             </button>
-            {lineasPedidoAutoPre.length > 0 && (
-              <>
-                <span className="text-sm text-slate-600">{lineasPedidoAutoPre.length} línea(s) leídas</span>
-                <button type="button" onClick={() => dispararPedidoAutoPre(lineasPedidoAutoPre, adjuntosPedidoAutoPre)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
-                  Crear pedido
-                </button>
-                <button type="button" onClick={() => { setLineasPedidoAutoPre([]); setAdjuntosPedidoAutoPre([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
-                  Cancelar
-                </button>
-              </>
-            )}
           </div>
           {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
+        </div>
+      )}
+
+      {proximaLlamadaActiva && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
+          📅 Próxima llamada: {fmtDate(proximaLlamadaActiva)}
         </div>
       )}
 
@@ -18386,8 +18329,14 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           llamadas.map((l) => (
             <div key={l.id} className="flex items-start justify-between gap-3 border-b border-slate-100 last:border-0 pb-3 last:pb-0">
               <div className="text-sm">
-                <div className="font-semibold text-slate-700">{fmtDate(l.fecha)}</div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-slate-700">{fmtDate(l.fecha)}</span>
+                  {l.resultadoLabel && l.resultado !== "sin_cambios" && <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === l.resultado)?.estado] || "bg-slate-100 text-slate-600 ring-slate-200"}>{l.resultadoLabel}</Badge>}
+                </div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
+                {l.proximaLlamadaFecha && (
+                  <div className="text-amber-700 font-semibold text-xs mt-0.5">📅 Próxima llamada: {fmtDate(l.proximaLlamadaFecha)}</div>
+                )}
                 {l.enlaceGrabacion && (
                   <a href={l.enlaceGrabacion} target="_blank" rel="noopener noreferrer" className="text-sky-600 hover:underline text-xs">🎧 Escuchar grabación</a>
                 )}
@@ -18406,11 +18355,19 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           <Field label="Fecha">
             <TextInput type="date" value={lForm.fecha} onChange={(e) => setLForm({ ...lForm, fecha: e.target.value })} />
           </Field>
+          <Field label="Resultado — actualiza el estado del presupuesto">
+            <Select value={lForm.resultado} onChange={(e) => setLForm({ ...lForm, resultado: e.target.value })}>
+              {PRESUPUESTO_RESULTADOS_LLAMADA.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Próxima llamada (opcional)">
+            <TextInput type="date" value={lForm.proximaLlamadaFecha} onChange={(e) => setLForm({ ...lForm, proximaLlamadaFecha: e.target.value })} />
+          </Field>
           <Field label="Enlace a la grabación (si tu centralita lo da)">
             <TextInput value={lForm.enlaceGrabacion} onChange={(e) => setLForm({ ...lForm, enlaceGrabacion: e.target.value })} placeholder="https://..." />
           </Field>
         </div>
-        <Field label="Notas de la llamada">
+        <Field label="Notas de la llamada (obligatorio — qué se ha hablado con el cliente)">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
         <div className="flex justify-end">
