@@ -117,14 +117,32 @@ export const handler = async (event) => {
       return { statusCode: 200, body: JSON.stringify({ error: "Falta FIRMA_API_KEY_TEST en Netlify" }) };
     }
 
-    // Pide la URL de descarga del PDF ya firmado
-    const descargaRes = await fetch(`${FIRMA_API}/signing-requests/${signingRequestId}/download`, {
-      headers: { Authorization: apiKey },
-    });
-    const descargaData = await descargaRes.json();
-    if (!descargaRes.ok || !descargaData.download_url) {
-      console.error("No se pudo obtener el PDF firmado:", JSON.stringify(descargaData));
-      return { statusCode: 200, body: JSON.stringify({ error: "No se pudo descargar el PDF firmado", detalle: descargaData }) };
+    // Pide la URL de descarga del PDF ya firmado. Justo al completarse la firma,
+    // Firma.dev a veces todavía no tiene el documento final listo (da
+    // "no_document_available" o 503) — se reintenta unas cuantas veces antes de
+    // rendirse, en vez de fallar a la primera.
+    let descargaData = null;
+    for (let intento = 1; intento <= 3; intento++) {
+      const descargaRes = await fetch(`${FIRMA_API}/signing-requests/${signingRequestId}/download`, {
+        headers: { Authorization: apiKey },
+      });
+      descargaData = await descargaRes.json();
+      if (descargaRes.ok && descargaData.download_url) break;
+      console.error(`Intento ${intento}: no se pudo obtener el PDF firmado todavía:`, JSON.stringify(descargaData));
+      descargaData = null;
+      if (intento < 3) await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!descargaData) {
+      // No se pudo traer el PDF firmado tras varios intentos, pero la firma en sí
+      // sí se completó — mejor marcarlo como "Firmado" (sin PDF por ahora) que
+      // dejar el presupuesto colgado en "Pendiente de firma" para siempre.
+      const firmaSinPdf = { ...(registro.firma || {}), estado: "firmado", firmadoEn: Date.now() };
+      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(firmaSinPdf),
+      });
+      return { statusCode: 200, body: JSON.stringify({ ok: true, avisoDoc: "Firmado marcado, pero no se pudo guardar el PDF tras varios intentos" }) };
     }
 
     // Descarga el PDF real

@@ -646,6 +646,7 @@ export default function App() {
     const documentos = documentoId
       ? (presupuesto.documentos || []).filter((d) => d.id === documentoId)
       : (presupuesto.documentos || []);
+    const fallos = [];
 
     if (documentos.length > 0) {
       for (const doc of documentos) {
@@ -669,6 +670,7 @@ export default function App() {
               mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : "";
             }
           } else {
+            fallos.push(`${doc.nombre || "documento"}: sin URL guardada`);
             continue;
           }
 
@@ -682,9 +684,12 @@ export default function App() {
             const escala = Math.min((595.28 - 40) / imagen.width, (841.89 - 40) / imagen.height, 1);
             const w = imagen.width * escala, h = imagen.height * escala;
             pagina.drawImage(imagen, { x: (595.28 - w) / 2, y: (841.89 - h) / 2, width: w, height: h });
+          } else {
+            fallos.push(`${doc.nombre || "documento"}: formato "${mimeType || "desconocido"}" no admitido para firmar (solo PDF o foto)`);
           }
         } catch (err) {
           console.error(`No se pudo añadir el documento "${doc.nombre}" al PDF de firma:`, err);
+          fallos.push(`${doc.nombre || "documento"}: ${err.message}`);
         }
       }
     }
@@ -744,7 +749,7 @@ export default function App() {
     const bytesFinales = await pdfDoc.save();
     let binario = "";
     for (let i = 0; i < bytesFinales.length; i++) binario += String.fromCharCode(bytesFinales[i]);
-    return btoa(binario);
+    return { base64: btoa(binario), fallos };
   };
 
   // Sube un nuevo PDF de condiciones/contrato a Firebase Storage y guarda su URL
@@ -772,7 +777,10 @@ export default function App() {
   // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
   const enviarPresupuestoAFirmar = async (presupuesto, firmante, documentoId) => {
     try {
-      const pdfBase64 = await generarPdfBase64Presupuesto(presupuesto, documentoId);
+      const { base64: pdfBase64, fallos } = await generarPdfBase64Presupuesto(presupuesto, documentoId);
+      if (fallos.length > 0) {
+        showToast(`⚠ No se pudo usar el documento real (se manda un resumen en su lugar): ${fallos.join("; ")}`, "error");
+      }
       const response = await fetch("/.netlify/functions/firma-enviar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
