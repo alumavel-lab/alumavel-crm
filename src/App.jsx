@@ -792,7 +792,7 @@ export default function App() {
         firma: { signingRequestId: data.signingRequestId, estado: "enviado", enviadoEn: Date.now(), firmanteNombre: firmante.nombre || "", firmanteEmail: firmante.email || "", firmanteTelefono: firmante.telefono || "", signingLink: data.signingLink || "" },
       } : p));
       savePresupuestos(next);
-      showToast(firmante.email ? `Enviado a firmar a ${firmante.email}` : "Solicitud de firma creada — ya puedes mandarla por WhatsApp");
+      showToast(firmante.email && !firmante.email.endsWith("@sinemail.alumavel.es") ? `Enviado a firmar a ${firmante.email}` : "Solicitud de firma creada — ya puedes mandarla por WhatsApp");
     } catch (err) {
       showToast("No se pudo enviar a firmar (revisa la conexión)", "error");
     }
@@ -18001,7 +18001,14 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     if (e && e.preventDefault) e.preventDefault();
     if (!firmante.email.trim() && !firmante.telefono.trim()) return;
     setEnviando(true);
-    await onEnviarFirma(presupuesto, firmante);
+    // Firma.dev siempre exige un email para crear la solicitud, aunque luego el
+    // enlace se comparta solo por WhatsApp — si no hay email real, se genera uno
+    // de repuesto (no se envía nada a esa dirección, es solo para que la API lo
+    // acepte); la pantalla de "Pendiente de firma" ya sabe detectar este caso.
+    const firmanteAEnviar = firmante.email.trim()
+      ? firmante
+      : { ...firmante, email: `${presupuesto.id}@sinemail.alumavel.es` };
+    await onEnviarFirma(presupuesto, firmanteAEnviar);
     setEnviando(false);
     setMostrarForm(false);
   };
