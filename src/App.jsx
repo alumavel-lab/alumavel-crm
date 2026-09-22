@@ -798,6 +798,19 @@ export default function App() {
     }
   };
 
+  // Confirmación de aceptación SIN pasar por la firma digital de Firma.dev — para
+  // cuando la conformidad llega por otra vía (papel, verbal, WhatsApp) y no hay
+  // documento que mandar a firmar. Deja constancia de quién la confirma y cuándo,
+  // y cuenta igual que una firma real a efectos de poder crear el proyecto.
+  const confirmarFirmaManualPresupuesto = async (presupuesto, nombreConfirma) => {
+    const next = presupuestos.map((p) => (p.id === presupuesto.id ? {
+      ...p,
+      firma: { estado: "firmado", metodo: "manual", firmanteNombre: nombreConfirma, firmadoEn: Date.now() },
+    } : p));
+    savePresupuestos(next);
+    showToast(`Aceptación confirmada por ${nombreConfirma}`);
+  };
+
   const saveClientes = (next) => { setClientes(next); persist("clientes", next); };
 
   const importarContactosMasivo = (nuevosClientes) => {
@@ -2002,6 +2015,12 @@ export default function App() {
 
   // Crea un Proyecto a partir de un Presupuesto ya aceptado.
   const crearProyectoDesdePresupuesto = (presupuesto) => {
+    // Red de seguridad: aunque el botón ya solo aparece con firma confirmada, esto
+    // evita crear un proyecto de un presupuesto sin firmar si se llega por otra vía.
+    if (presupuesto.firma?.estado !== "firmado") {
+      showToast("No se puede crear el proyecto: falta confirmar la firma del presupuesto.", "error");
+      return null;
+    }
     let clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (presupuesto.clienteNombre || "").trim().toLowerCase())?.id || "";
     const persianasControlInicial = (presupuesto.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, presupuesto));
     const np = {
@@ -2943,6 +2962,7 @@ export default function App() {
           <PresupuestosModulo
             presupuestos={presupuestos}
             clientes={clientes}
+            usuarios={usuarios}
             nextNumero={nextNumeroPresupuesto}
             onCrearClienteRapido={crearClienteRapido}
             view={presupuestoView}
@@ -2958,6 +2978,7 @@ export default function App() {
             onMarcarEnviado={marcarPresupuestoEnviado}
             onCrearProyecto={(presupuesto) => {
               const proyectoId = crearProyectoDesdePresupuesto(presupuesto);
+              if (!proyectoId) return;
               setModulo("proyectos");
               setProyectoDetailId(proyectoId);
               setProyectoView("detail");
@@ -2976,6 +2997,7 @@ export default function App() {
             onPasarPersianasAPresupuesto={pasarPersianasAPresupuesto}
             proyectos={proyectos}
             onEnviarFirma={enviarPresupuestoAFirmar}
+            onConfirmarFirmaManual={confirmarFirmaManualPresupuesto}
             configuracionFirma={configuracionFirma}
             onSubirPdfCondicionesFirma={subirPdfCondicionesFirma}
             onGenerarPedido={enviarAPedido}
@@ -14969,7 +14991,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -15249,6 +15271,8 @@ function PresupuestosModulo({ presupuestos, clientes, nextNumero, onCrearCliente
         isAdmin={isAdmin}
         proyectos={proyectos}
         onEnviarFirma={onEnviarFirma}
+        onConfirmarFirmaManual={onConfirmarFirmaManual}
+        usuarios={usuarios}
         onGenerarPedido={onGenerarPedido}
         onAdjuntarDocumento={onAdjuntarDocumento}
         onCancelarFirma={onCancelarFirma}
@@ -17934,7 +17958,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
 // solo cambia quién firma. El estado (enviado/firmado) se guarda en Firebase y
 // lo actualiza el webhook de Firma.dev en cuanto se firma — como la app carga
 // los datos una sola vez, hay un botón para refrescar solo este registro.
-function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma }) {
+function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma, onConfirmarFirmaManual, usuarios }) {
   const proyectoVinculado = (proyectos || []).find((p) => p.id === (presupuesto.proyectoId || presupuesto.proyectoCreadoId));
   const esAprobacionInterna = !!(proyectoVinculado?.contratoConstructoraFirmado && proyectoVinculado?.responsableAprobacionEmail);
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -17945,6 +17969,25 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     telefono: esAprobacionInterna ? "" : (presupuesto.telefono || ""),
   });
   const firma = presupuesto.firma;
+  const sinDocumento = (presupuesto.documentos || []).length === 0;
+  const [mostrarFormManual, setMostrarFormManual] = useState(false);
+  const [usuarioConfirmaId, setUsuarioConfirmaId] = useState("");
+  const [passwordConfirma, setPasswordConfirma] = useState("");
+  const [errorConfirmaManual, setErrorConfirmaManual] = useState("");
+  const [confirmandoManual, setConfirmandoManual] = useState(false);
+
+  const confirmarManual = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const usuario = (usuarios || []).find((u) => u.id === usuarioConfirmaId);
+    if (!usuario) { setErrorConfirmaManual("Elige quién confirma."); return; }
+    if (usuario.password !== passwordConfirma) { setErrorConfirmaManual("Contraseña incorrecta."); return; }
+    setErrorConfirmaManual("");
+    setConfirmandoManual(true);
+    await onConfirmarFirmaManual(presupuesto, `${usuario.nombre} ${usuario.apellidos || ""}`.trim());
+    setConfirmandoManual(false);
+    setMostrarFormManual(false);
+    setPasswordConfirma("");
+  };
 
   const enlaceWhatsappFirma = (tel, link) => {
     const limpio = (tel || "").replace(/[^\d+]/g, "");
@@ -17997,7 +18040,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   }
 
   return (
-    <div className="mb-6 px-4 py-3 rounded-md bg-slate-50 border border-slate-200 text-sm">
+    <div className="mb-6 px-4 py-3 rounded-md bg-slate-50 border border-slate-200 text-sm space-y-2">
       {!mostrarForm ? (
         <button onClick={() => setMostrarForm(true)} className="flex items-center gap-1.5 font-semibold text-slate-700 hover:text-slate-900">
           <Pencil size={14} /> Enviar a firmar {esAprobacionInterna ? `(responsable de la obra: ${proyectoVinculado.responsableAprobacionNombre})` : "(cliente)"}
@@ -18029,11 +18072,41 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
           </div>
         </form>
       )}
+
+      {sinDocumento && onConfirmarFirmaManual && (
+        !mostrarFormManual ? (
+          <button onClick={() => setMostrarFormManual(true)} className="flex items-center gap-1.5 font-semibold text-slate-500 hover:text-slate-800 text-xs">
+            <Pencil size={12} /> No hay documento que firmar — confirmar aceptación sin firma digital (papel, verbal, WhatsApp...)
+          </button>
+        ) : (
+          <form onSubmit={confirmarManual} className="space-y-2 pt-1 border-t border-slate-200">
+            <p className="text-xs text-slate-500">Úsalo solo cuando la aceptación te llegue por otra vía (papel firmado, verbal, WhatsApp) y no vayas a mandarlo a firmar por el CRM. Para confirmarlo hace falta tu usuario y contraseña.</p>
+            {errorConfirmaManual && <p className="text-xs text-rose-600 font-semibold">⚠ {errorConfirmaManual}</p>}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Quién confirma">
+                <Select value={usuarioConfirmaId} onChange={(e) => setUsuarioConfirmaId(e.target.value)}>
+                  <option value="">Selecciona...</option>
+                  {(usuarios || []).map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+                </Select>
+              </Field>
+              <Field label="Contraseña">
+                <TextInput type="password" value={passwordConfirma} onChange={(e) => setPasswordConfirma(e.target.value)} />
+              </Field>
+            </div>
+            <div className="flex gap-2">
+              <button type="submit" disabled={confirmandoManual || !usuarioConfirmaId || !passwordConfirma} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
+                {confirmandoManual ? "Confirmando..." : "Confirmar aceptación"}
+              </button>
+              <button type="button" onClick={() => { setMostrarFormManual(false); setErrorConfirmaManual(""); setPasswordConfirma(""); }} className="text-sm font-semibold text-slate-500 px-3.5 py-2">Cancelar</button>
+            </div>
+          </form>
+        )
+      )}
     </div>
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnadirMasPersianas }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
@@ -18285,7 +18358,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         </div>
       )}
 
-      {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && (
+      {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado === "firmado" && (
         <button
           onClick={onCrearProyecto}
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
@@ -18294,13 +18367,18 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
           <Briefcase size={20} /> CREAR PROYECTO DESDE ESTE PRESUPUESTO
         </button>
       )}
+      {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado !== "firmado" && (
+        <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
+          ⚠ Aceptado, pero todavía no hay firma confirmada — hasta que no esté firmado (arriba, en "Enviar a firmar") no se puede crear el proyecto.
+        </div>
+      )}
       {presupuesto.proyectoCreadoId && (
         <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
           ✓ Ya se creó un proyecto a partir de este presupuesto.
         </div>
       )}
 
-      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} />
+      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
