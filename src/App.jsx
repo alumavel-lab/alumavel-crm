@@ -559,6 +559,40 @@ export default function App() {
     })();
   }, []);
 
+  // Presupuestos se cargaba una sola vez al abrir la página, así que si se tenían
+  // varias pestañas o dispositivos abiertos a la vez, un cambio hecho en una (p.ej.
+  // marcarlo como "Enviado", o una llamada registrada) no se veía en la otra hasta
+  // recargar. Mientras el módulo de Presupuestos esté abierto, se vuelve a comprobar
+  // cada 10s (igual que ya se hace con el chat) y se actualiza solo si hay cambios.
+  useEffect(() => {
+    if (modulo !== "presupuestos") return;
+    let activo = true;
+    const refrescar = async () => {
+      try {
+        const snap = await fbGet(ref(fbDb, "presupuestos"));
+        if (activo && snap.exists()) setPresupuestos(toArray(snap.val()));
+      } catch (e) { /* sin conexión momentánea, se reintenta en el siguiente sondeo */ }
+    };
+    const intervalo = setInterval(refrescar, 10000);
+    return () => { activo = false; clearInterval(intervalo); };
+  }, [modulo]);
+
+  // Igual que Presupuestos: Proyectos también se cargaba una sola vez al abrir la
+  // página. Mientras el módulo de Proyectos esté abierto, se refresca solo cada 10s
+  // para que dos pestañas/dispositivos viendo el mismo proyecto se mantengan al día.
+  useEffect(() => {
+    if (modulo !== "proyectos") return;
+    let activo = true;
+    const refrescar = async () => {
+      try {
+        const snap = await fbGet(ref(fbDb, "proyectos"));
+        if (activo && snap.exists()) setProyectos(toArray(snap.val()));
+      } catch (e) { /* sin conexión momentánea, se reintenta en el siguiente sondeo */ }
+    };
+    const intervalo = setInterval(refrescar, 10000);
+    return () => { activo = false; clearInterval(intervalo); };
+  }, [modulo]);
+
   const persistTimers = useRef({});
   const persistLatest = useRef({});
   const persistInFlight = useRef({});
@@ -796,9 +830,15 @@ export default function App() {
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
   const crearClienteRapido = (nombre, limiteCredito) => {
+    const nombreNormalizado = (nombre || "").trim().toLowerCase();
+    if (clientes.some((c) => (c.nombre || "").trim().toLowerCase() === nombreNormalizado)) {
+      showToast(`Ya existe un cliente llamado "${nombre}" — elígelo del listado en vez de crearlo otra vez.`, "error");
+      return null;
+    }
     const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado" };
     saveClientes([nc, ...clientes]);
     showToast(`Cliente "${nombre}" dado de alta`);
+    return nc.id;
   };
 
   const deleteCliente = (id) => {
@@ -3566,6 +3606,12 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
     if (!f.nombre.trim()) {
       setErrorMsg("Falta el campo Nombre / Empresa (es obligatorio).");
       alert("Falta el campo Nombre / Empresa. Ese campo es obligatorio para guardar el cliente.");
+      return;
+    }
+    const nombreNormalizado = f.nombre.trim().toLowerCase();
+    const duplicado = (clientes || []).some((c) => c.id !== f.id && (c.nombre || "").trim().toLowerCase() === nombreNormalizado);
+    if (duplicado) {
+      setErrorMsg(`Ya existe un cliente llamado "${f.nombre.trim()}". Si es la misma persona o empresa, edítalo desde el listado en vez de darlo de alta otra vez.`);
       return;
     }
     if (!f.limiteCredito || parseFloat(f.limiteCredito) <= 0) {
@@ -14786,7 +14832,7 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
 
 /* ================= PRESUPUESTOS ================= */
 
-const ESTADO_PRESUPUESTO_TRACKER = ["Pendiente", "Aceptado", "Rechazado", "En espera"];
+const ESTADO_PRESUPUESTO_TRACKER = ["Pendiente", "Enviado", "Aceptado", "Rechazado", "En espera"];
 const MOTIVO_RECHAZO = ["Precio", "Competencia", "Plazo", "Otro"];
 const ESTADO_PRESUPUESTO_TRACKER_STYLE = {
   Pendiente: "bg-amber-50 text-amber-700 ring-amber-200",
@@ -17642,6 +17688,10 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       return;
     }
     if (!f.fechaEnvio) { setErrorMsg("Falta la fecha de envío (es obligatoria)."); return; }
+    if (!f.envio && !f.montaje && !f.recoge) {
+      setErrorMsg("Marca al menos una opción de ¿Envío?, ¿Montaje? o ¿Recoge el cliente? antes de guardar.");
+      return;
+    }
     if (duplicado && !confirmarDuplicado) {
       setErrorMsg(`Ya existe un presupuesto con el número "${f.numero}" (cliente: ${duplicado.clienteNombre}). Si de verdad quieres crear otro con el mismo número, cambia el número o marca la casilla de abajo para confirmarlo.`);
       return;
@@ -17803,16 +17853,19 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-4 items-end">
-          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
-            <input type="checkbox" checked={f.envio} onChange={set("envio")} className="w-4 h-4" /> ¿Envío?
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
-            <input type="checkbox" checked={f.montaje} onChange={set("montaje")} className="w-4 h-4" /> ¿Montaje?
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
-            <input type="checkbox" checked={f.recoge} onChange={set("recoge")} className="w-4 h-4" /> ¿Recoge el cliente?
-          </label>
+        <div>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1.5">Obligatorio — elige al menos una opción</span>
+          <div className="grid grid-cols-3 gap-4 items-end">
+            <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
+              <input type="checkbox" checked={f.envio} onChange={set("envio")} className="w-4 h-4" /> ¿Envío?
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
+              <input type="checkbox" checked={f.montaje} onChange={set("montaje")} className="w-4 h-4" /> ¿Montaje?
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-700 font-medium">
+              <input type="checkbox" checked={f.recoge} onChange={set("recoge")} className="w-4 h-4" /> ¿Recoge el cliente?
+            </label>
+          </div>
         </div>
         {f.envio && (
           <Field label="Dirección de envío">
