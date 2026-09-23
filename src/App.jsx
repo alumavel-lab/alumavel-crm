@@ -18109,10 +18109,10 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
         </form>
       )}
 
-      {sinDocumento && onConfirmarFirmaManual && (
+      {onConfirmarFirmaManual && (
         !mostrarFormManual ? (
           <button onClick={() => setMostrarFormManual(true)} className="flex items-center gap-1.5 font-semibold text-slate-500 hover:text-slate-800 text-xs">
-            <Pencil size={12} /> No hay documento que firmar — confirmar aceptación sin firma digital (papel, verbal, WhatsApp...)
+            <Pencil size={12} /> Confirmar aceptación sin firma digital (papel, verbal, WhatsApp...)
           </button>
         ) : (
           <form onSubmit={confirmarManual} className="space-y-2 pt-1 border-t border-slate-200">
