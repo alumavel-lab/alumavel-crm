@@ -647,6 +647,9 @@ export default function App() {
       ? (presupuesto.documentos || []).filter((d) => d.id === documentoId)
       : (presupuesto.documentos || []);
     const fallos = [];
+    if (documentoId && documentos.length === 0) {
+      fallos.push(`No se encontró el documento elegido (id ${documentoId}) entre los guardados en el presupuesto`);
+    }
 
     if (documentos.length > 0) {
       for (const doc of documentos) {
