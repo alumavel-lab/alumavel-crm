@@ -4433,6 +4433,17 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   const intervaloCuentaRef = useRef(null);
   const inputPdfMedidasRef = useRef(null);
 
+  // Botón "Nuevo pedido": abre el formulario de Pedidos ya vinculado a esta obra.
+  // Respeta la norma de que "Qué lleva la obra" tiene que estar completo antes.
+  const crearPedidoDesdeProyecto = () => {
+    if (checklist.some((c) => !c.estado)) {
+      alert('Antes de crear un pedido tienes que completar "Qué lleva la obra". Te llevo a esa sección.');
+      setTab("checklist");
+      return;
+    }
+    onGenerarPedidoFaltante(null, [], proyecto.id, `Pedido para la obra #${proyecto.numero} — ${proyecto.nombre}.`, []);
+  };
+
   const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
     if (lineasFinales.length === 0) return;
     setLineasPedidoAuto([]);
@@ -4607,6 +4618,15 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 disabled:opacity-50 px-3.5 py-2 rounded-lg"
             >
               <ImageIcon size={14} /> {leyendoPdfMedidas ? "Leyendo..." : "Subir medidas"}
+            </button>
+            <button
+              type="button"
+              onClick={crearPedidoDesdeProyecto}
+              title="Crear un pedido de material ya vinculado a esta obra"
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-3.5 py-2 rounded-lg"
+            >
+              <Plus size={14} /> Nuevo pedido
             </button>
             <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
               <Pencil size={14} /> Editar
@@ -5204,8 +5224,16 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
       {tab === "pedidos" && (
         <div className="space-y-4">
-          <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm">
-            Estos son los pedidos de materiales dados de alta en el módulo Pedidos y vinculados a este proyecto. Para crear uno nuevo, ve a Pedidos → Nuevo pedido y selecciona este proyecto.
+          <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-xl bg-white border border-slate-200 text-sm text-slate-600">
+            <span>Pedidos de material vinculados a esta obra.</span>
+            <button
+              type="button"
+              onClick={crearPedidoDesdeProyecto}
+              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-3.5 py-2 rounded-lg"
+            >
+              <Plus size={14} /> Nuevo pedido
+            </button>
           </div>
           {checklist.some((c) => !c.estado) && (
             <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
