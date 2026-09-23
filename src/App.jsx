@@ -2033,6 +2033,12 @@ export default function App() {
     }
     let clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (presupuesto.clienteNombre || "").trim().toLowerCase())?.id || "";
     const persianasControlInicial = (presupuesto.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, presupuesto));
+    // El PDF firmado (si lo hay) se añade también a los documentos del proyecto,
+    // para que se pueda ver ahí sin tener que volver al presupuesto original.
+    const documentosProyecto = [...(presupuesto.documentos || [])];
+    if (presupuesto.firma?.pdfUrl) {
+      documentosProyecto.push({ id: uid(), nombre: `Presupuesto ${presupuesto.numero} — firmado.pdf`, url: presupuesto.firma.pdfUrl, subidoEn: Date.now() });
+    }
     const np = {
       id: uid(),
       numero: nextNumeroProyecto(),
@@ -2047,7 +2053,7 @@ export default function App() {
       techos: presupuesto.techos || [],
       persianas: presupuesto.persianas || [],
       persianasControl: persianasControlInicial,
-      documentos: presupuesto.documentos || [],
+      documentos: documentosProyecto,
     };
     saveProyectos([np, ...proyectos]);
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));

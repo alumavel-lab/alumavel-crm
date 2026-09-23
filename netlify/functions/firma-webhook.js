@@ -1,7 +1,9 @@
-// Recibe el aviso de Firma.dev cuando un documento se termina de firmar,
-// descarga el PDF firmado y lo sube a Firebase Storage. Guarda solo la URL en
-// el registro de Firebase Realtime Database (no el archivo entero), igual que
-// el resto de archivos que ya maneja el CRM.
+// Recibe el aviso de Firma.dev cuando un documento se termina de firmar.
+// Esta función solo verifica la firma del webhook y responde rápido — la
+// parte lenta (descargar el PDF firmado, que a veces tarda unos segundos en
+// estar listo en Firma.dev, subirlo a Storage y actualizar el registro) se
+// delega a firma-webhook-background.js, que puede tardar mucho más sin que
+// Firma.dev llegue a darlo por fallido o a reintentar por su cuenta.
 //
 // CONFIGURACIÓN PENDIENTE (hacer una vez, desde el panel de Firma.dev):
 //   1. Registra este webhook en Firma.dev apuntando a:
@@ -28,12 +30,6 @@
 
 import crypto from "crypto";
 
-const FIRMA_API = "https://api.firma.dev/functions/v1/signing-request-api";
-const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
-const STORAGE_BUCKET = "crmalumavel.firebasestorage.app";
-
-const toArray = (obj) => (obj ? Object.values(obj) : []);
-
 function verificarFirmaWebhook(rawBody, headerSignature, secret) {
   if (!secret || !headerSignature) return false;
   // Formato: "t=1707500000,v1=abc123..."
@@ -47,23 +43,6 @@ function verificarFirmaWebhook(rawBody, headerSignature, secret) {
   } catch {
     return false;
   }
-}
-
-// Busca en qué colección (presupuestos o proyectos) y qué registro tiene este
-// signingRequestId guardado en su campo "firma" — no lo sabemos de antemano
-// porque el webhook solo trae el id de la solicitud de firma. OJO: el CRM
-// guarda cada colección como una lista con posiciones (0,1,2...) — la clave
-// real de Firebase NO es el id del registro, así que hay que devolverla aparte
-// para poder escribir luego en el sitio correcto.
-async function buscarRegistroPorSigningRequestId(signingRequestId) {
-  for (const coleccion of ["presupuestos", "proyectos"]) {
-    const res = await fetch(`${FIREBASE_DB_URL}/${coleccion}.json`);
-    const datos = await res.json();
-    if (!datos) continue;
-    const clave = Object.keys(datos).find((k) => datos[k]?.firma?.signingRequestId === signingRequestId);
-    if (clave) return { coleccion, clave, registro: datos[clave] };
-  }
-  return null;
 }
 
 export const handler = async (event) => {
@@ -104,123 +83,23 @@ export const handler = async (event) => {
       return { statusCode: 200, body: JSON.stringify({ error: "Sin signing_request.id en el payload" }) };
     }
 
-    const encontrado = await buscarRegistroPorSigningRequestId(signingRequestId);
-    if (!encontrado) {
-      console.error("No se encontró ningún registro con signingRequestId:", signingRequestId);
-      return { statusCode: 200, body: JSON.stringify({ error: "Registro no encontrado para este signingRequestId" }) };
-    }
-    const { coleccion, clave, registro } = encontrado;
-
-    const apiKey = process.env.FIRMA_API_KEY || process.env.FIRMA_API_KEY_TEST;
-    if (!apiKey) {
-      console.error("Falta FIRMA_API_KEY_TEST (o FIRMA_API_KEY) en Netlify");
-      return { statusCode: 200, body: JSON.stringify({ error: "Falta FIRMA_API_KEY_TEST en Netlify" }) };
-    }
-
-    // Pide la URL de descarga del PDF ya firmado. Justo al completarse la firma,
-    // Firma.dev a veces todavía no tiene el documento final listo (da
-    // "no_document_available" o 503) — se reintenta unas cuantas veces antes de
-    // rendirse, en vez de fallar a la primera.
-    let descargaData = null;
-    for (let intento = 1; intento <= 3; intento++) {
-      const descargaRes = await fetch(`${FIRMA_API}/signing-requests/${signingRequestId}/download`, {
-        headers: { Authorization: apiKey },
-      });
-      descargaData = await descargaRes.json();
-      if (descargaRes.ok && descargaData.download_url) break;
-      console.error(`Intento ${intento}: no se pudo obtener el PDF firmado todavía:`, JSON.stringify(descargaData));
-      descargaData = null;
-      if (intento < 3) await new Promise((r) => setTimeout(r, 2000));
-    }
-    if (!descargaData) {
-      // No se pudo traer el PDF firmado tras varios intentos, pero la firma en sí
-      // sí se completó — mejor marcarlo como "Firmado" (sin PDF por ahora) que
-      // dejar el presupuesto colgado en "Pendiente de firma" para siempre.
-      const firmaSinPdf = { ...(registro.firma || {}), estado: "firmado", firmadoEn: Date.now() };
-      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(firmaSinPdf),
-      });
-      return { statusCode: 200, body: JSON.stringify({ ok: true, avisoDoc: "Firmado marcado, pero no se pudo guardar el PDF tras varios intentos" }) };
-    }
-
-    // Descarga el PDF real
-    const pdfRes = await fetch(descargaData.download_url);
-    const pdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
-
-    // Sube el PDF a Firebase Storage (carpeta presupuestos-firmados/)
-    const nombreArchivo = `presupuestos-firmados/${coleccion}-${registro.id}-${signingRequestId}.pdf`;
-    const subidaRes = await fetch(
-      `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o?uploadType=media&name=${encodeURIComponent(nombreArchivo)}`,
-      {
+    // Lanza la función de fondo y no espera a que termine (puede tardar bastante
+    // más de lo que Firma.dev espera para dar el webhook por recibido) — solo
+    // espera a que Netlify confirme que la ha aceptado para ejecutarla.
+    try {
+      await fetch(`${process.env.URL || "https://dynamic-eclair-be67a5.netlify.app"}/.netlify/functions/firma-webhook-background`, {
         method: "POST",
-        headers: { "Content-Type": "application/pdf" },
-        body: pdfBuffer,
-      }
-    );
-    if (!subidaRes.ok) {
-      const errorSubida = await subidaRes.text();
-      console.error("Error subiendo el PDF a Firebase Storage:", errorSubida);
-      return { statusCode: 200, body: JSON.stringify({ error: "No se pudo subir el PDF a Storage", detalle: errorSubida }) };
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signingRequestId }),
+      });
+    } catch (err) {
+      // Si ni siquiera se pudo lanzar la función de fondo, se registra pero se
+      // responde 200 igual — no tiene sentido que Firma.dev lo reintente solo
+      // por esto, y queda constancia en los logs para revisarlo a mano.
+      console.error("No se pudo lanzar firma-webhook-background:", err.message);
     }
 
-    const pdfUrl = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(nombreArchivo)}?alt=media`;
-
-    // Actualiza el registro: estado "firmado" + URL del PDF
-    const firmaActualizada = {
-      ...(registro.firma || {}),
-      estado: "firmado",
-      firmadoEn: Date.now(),
-      pdfUrl,
-    };
-    await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(firmaActualizada),
-    });
-
-    // Si el presupuesto firmado pertenece a una obra con contrato ya firmado con
-    // constructora (aprobación interna), pasamos el presupuesto a Proyecto
-    // automáticamente en cuanto el responsable firma — sin que nadie tenga que
-    // entrar a moverlo a mano. Si es un presupuesto normal (firma del cliente),
-    // no se toca nada más: sigue el flujo manual de siempre ("Crear proyecto").
-    if (coleccion === "presupuestos" && !registro.proyectoCreadoId) {
-      const proyectosRes = await fetch(`${FIREBASE_DB_URL}/proyectos.json`);
-      const proyectos = toArray(await proyectosRes.json());
-      const proyectoVinculado = proyectos.find((p) => p.id === registro.proyectoId);
-
-      if (proyectoVinculado?.contratoConstructoraFirmado) {
-        const nums = proyectos.map((p) => parseInt(String(p.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
-        const siguienteNumero = String((nums.length ? Math.max(...nums) : 4189) + 1);
-        const nuevoProyectoId = `${signingRequestId.slice(0, 8)}${Date.now().toString(36)}`;
-
-        const nuevoProyecto = {
-          id: nuevoProyectoId,
-          numero: siguienteNumero,
-          nombre: registro.descripcion || registro.numero,
-          clienteId: proyectoVinculado.clienteId || "",
-          importePresupuesto: registro.importe || 0,
-          estadoPresupuesto: "Presupuesto aceptado",
-          estadoTrabajo: "Pendiente de aceptación",
-          gastos: [],
-          registroHorario: [],
-          checklistMateriales: {}, // simplificado — se puede editar luego desde la ficha del proyecto
-        };
-        await fetch(`${FIREBASE_DB_URL}/proyectos/${nuevoProyectoId}.json`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(nuevoProyecto),
-        });
-        await fetch(`${FIREBASE_DB_URL}/presupuestos/${clave}.json`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ estado: "Aceptado", proyectoCreadoId: nuevoProyectoId }),
-        });
-      }
-    }
-
-    return { statusCode: 200, body: JSON.stringify({ ok: true, coleccion, registroId: registro.id, pdfUrl }) };
+    return { statusCode: 200, body: JSON.stringify({ recibido: true, signingRequestId }) };
   } catch (err) {
     console.error("Excepción en firma-webhook:", err.message);
     console.error("Stack:", err.stack);
