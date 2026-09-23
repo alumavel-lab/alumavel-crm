@@ -14,6 +14,10 @@ import { initializeApp } from "firebase/app";
 import { getDatabase, ref, get as fbGet, set as fbSet } from "firebase/database";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
+// Logos de las dos empresas (incrustados para no depender de archivos externos)
+const LOGO_ALUMAVEL = "data:image/jpeg;base64,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";
+const LOGO_ECOWIN = "data:image/jpeg;base64,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";
+
 // Configuración de tu proyecto de Firebase (crmalumavel). La apiKey de Firebase
 // no es un secreto — el acceso real se controla con las reglas de seguridad de
 // la base de datos, no ocultando esta clave.
@@ -708,7 +712,7 @@ export default function App() {
       const negro = rgb(0.12, 0.16, 0.22);
       const gris = rgb(0.45, 0.45, 0.45);
 
-      pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
+      pagina.drawText("ECOWIN PVC — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
       y -= 28;
       pagina.drawText(`Nº presupuesto: ${presupuesto.numero}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
       pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
@@ -731,7 +735,7 @@ export default function App() {
       }
       if (linea) { pagina.drawText(linea, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 15; }
       y -= 15;
-      pagina.drawText("Documento generado desde el CRM de Alumavel para firma electrónica.", { x: margen, y, size: 9, font: fuente, color: gris });
+      pagina.drawText("Documento de Ecowin PVC para firma electrónica.", { x: margen, y, size: 9, font: fuente, color: gris });
     }
 
     // Si hay un PDF de condiciones configurado, se añaden sus páginas a continuación
@@ -2433,6 +2437,11 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
         .font-mono-num{ font-family:'IBM Plex Mono', monospace; }
         .font-display{ font-family:'Inter', system-ui, sans-serif; letter-spacing:-0.02em; }
+        *:has(> .crm-tab){ border-bottom:0 !important; flex-wrap:wrap; gap:6px; }
+        .crm-tab{ border:1px solid #e2e8f0 !important; border-radius:10px; background:#ffffff; margin-bottom:0 !important; color:#475569 !important; }
+        .crm-tab:hover{ border-color:#94a3b8 !important; color:#0f172a !important; }
+        .crm-tab.border-\\[\\#2E8B57\\]{ background:#0f172a; border-color:#0f172a !important; color:#ffffff !important; }
+        .crm-tab.border-\\[\\#2E8B57\\] svg{ color:#86D325; }
       `}</style>
 
       {/* Fondo oscuro al abrir el menú en móvil */}
@@ -2442,14 +2451,14 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`w-60 shrink-0 bg-[#2A1F3D] text-slate-200 flex flex-col h-full overflow-y-auto fixed md:static inset-y-0 left-0 z-40 transform transition-transform duration-200 ${menuMovilAbierto ? "translate-x-0" : "-translate-x-full"} md:translate-x-0`}>
-        <div className="px-5 py-5 border-b border-white/10">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-[#2E8B57] flex items-center justify-center font-mono-num font-bold text-sm">A</div>
-            <div>
-              <div className="font-display font-bold text-[15px] leading-none">ALUMAVEL</div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 mt-1">Panel de gestión</div>
-            </div>
+        <div className="px-4 py-4 border-b border-white/10 space-y-2">
+          <div className="rounded-lg overflow-hidden bg-[#5A1E78] flex items-center justify-center py-2">
+            <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-16 w-auto" />
           </div>
+          <div className="rounded-lg overflow-hidden bg-[#333645] flex items-center justify-center px-3 py-2">
+            <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-6 w-auto" />
+          </div>
+          <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 text-center pt-1">Panel de gestión</div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1" onClick={() => setMenuMovilAbierto(false)}>
           {tieneAcceso("clientes") && (
@@ -2686,7 +2695,8 @@ export default function App() {
           <button onClick={() => setMenuMovilAbierto(true)} className="p-1.5 -ml-1.5 rounded-md hover:bg-slate-100">
             <Menu size={22} className="text-slate-700" />
           </button>
-          <span className="font-display font-bold text-slate-800">ALUMAVEL</span>
+          <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
+          <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
         {(() => {
           const incidenciasAbiertas = incidencias.filter((i) => i.estadoIncidencia !== "Solucionado");
@@ -3928,7 +3938,7 @@ function ClienteDetail({ cliente, trabajos, ingresos, onBack, onEdit, onDelete, 
 function InfoRow({ icon, label, value }) {
   return (
     <div>
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 flex items-center gap-1.5 mb-1">{icon}{label}</span>
+      <span className="text-xs font-semibold text-slate-500 flex items-center gap-1.5 mb-1">{icon}{label}</span>
       <span className="text-slate-700">{value}</span>
     </div>
   );
@@ -4565,82 +4575,131 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   };
 
   return (
-    <div className="p-8 max-w-4xl">
-      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5">
+    <div className="p-4 md:p-8 max-w-5xl">
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-900 mb-4">
         <ChevronLeft size={16} /> Volver al listado
       </button>
 
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
+      {/* ===== Cabecera de la obra en un recuadro ===== */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
             <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{proyecto.numero}</span>
-            <h1 className="font-display text-2xl font-extrabold text-slate-900">{proyecto.nombre}</h1>
+            <h1 className="font-display text-2xl font-extrabold text-slate-900 leading-tight">{proyecto.nombre}</h1>
+            <p className="text-sm text-slate-500 mt-1 flex items-center gap-3 flex-wrap">
+              <span className="flex items-center gap-1"><Users size={14} /> {cliente?.nombre || "Cliente no encontrado"}</span>
+              {proyecto.ubicacion && <span className="flex items-center gap-1"><MapPin size={14} /> {proyecto.ubicacion}</span>}
+            </p>
           </div>
-          <p className="text-sm text-slate-500 mt-1">
-            {cliente?.nombre || "Cliente no encontrado"} {proyecto.ubicacion && `· ${proyecto.ubicacion}`}
-          </p>
-        </div>
-        <div className="flex gap-2 shrink-0">
-          <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
-            <Pencil size={14} /> Editar
-          </button>
-          {isAdmin && (
-          <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50">
-            <Trash2 size={14} /> Eliminar
-          </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2 mb-6">
-        <Badge className={ESTADO_PRESUPUESTO_STYLE[proyecto.estadoPresupuesto]}>{proyecto.estadoPresupuesto}</Badge>
-        <Badge className={ESTADO_TRABAJO_STYLE[proyecto.estadoTrabajo]}>{proyecto.estadoTrabajo}</Badge>
-        {proyecto.presupuestoFirmado && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Presupuesto firmado</Badge>}
-        {proyecto.contratoConstructoraFirmado && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Contrato con constructora</Badge>}
-        {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
-        {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
-        {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
-      </div>
-
-      <div className="border border-dashed border-slate-300 rounded-lg p-4 bg-slate-50/60 mb-6">
-        <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Pedir cristales, persianas u otro material de este proyecto</span>
-        <p className="text-xs text-slate-500 mb-2">Sube el PDF o foto de las medidas. Si subes varios de golpe se van juntando en el mismo pedido; cuando termines, pulsa "Crear pedido" para abrirlo ya relleno y elegir proveedor.</p>
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            ref={inputPdfMedidasRef}
-            type="file"
-            accept="image/*,application/pdf"
-            className="hidden"
-            onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidas(e.target.files[0]); e.target.value = ""; }}
-          />
-          <button
-            type="button"
-            onClick={() => inputPdfMedidasRef.current?.click()}
-            disabled={leyendoPdfMedidas}
-            style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-            className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
-          >
-            <ImageIcon size={15} /> {leyendoPdfMedidas ? "Leyendo..." : "Subir PDF/foto de medidas"}
-          </button>
-          {lineasPedidoAuto.length > 0 && (
-            <>
-              <span className="text-sm text-slate-600">{lineasPedidoAuto.length} línea(s) leídas</span>
-              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">
-                Crear pedido
+          <div className="flex gap-2 shrink-0 flex-wrap">
+            <input
+              ref={inputPdfMedidasRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidas(e.target.files[0]); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => inputPdfMedidasRef.current?.click()}
+              disabled={leyendoPdfMedidas}
+              title="Sube el PDF o foto de las medidas de cristales, persianas u otro material y se prepara el pedido solo"
+              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 disabled:opacity-50 px-3.5 py-2 rounded-lg"
+            >
+              <ImageIcon size={14} /> {leyendoPdfMedidas ? "Leyendo..." : "Subir medidas"}
+            </button>
+            <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
+              <Pencil size={14} /> Editar
+            </button>
+            {isAdmin && (
+              <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
+                <Trash2 size={14} /> Eliminar
               </button>
-              <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
-                Cancelar
-              </button>
-            </>
-          )}
+            )}
+          </div>
         </div>
-        {erroPdfMedidas && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {erroPdfMedidas}</p>}
+
+        <div className="flex flex-wrap gap-2 mt-3">
+          <Badge className={ESTADO_PRESUPUESTO_STYLE[proyecto.estadoPresupuesto]}>{proyecto.estadoPresupuesto}</Badge>
+          <Badge className={ESTADO_TRABAJO_STYLE[proyecto.estadoTrabajo]}>{proyecto.estadoTrabajo}</Badge>
+          {proyecto.presupuestoFirmado && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Presupuesto firmado</Badge>}
+          {proyecto.contratoConstructoraFirmado && <Badge className="bg-violet-50 text-violet-700 ring-violet-200">Contrato con constructora</Badge>}
+          {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
+          {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
+          {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
+        </div>
+
+        {/* Cifras principales */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">
+          <div className="bg-slate-50 rounded-lg px-3 py-2.5">
+            <div className="text-xs text-slate-500">Presupuesto</div>
+            <div className="font-mono-num text-lg font-bold text-slate-900">{money(proyecto.importePresupuesto)}</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg px-3 py-2.5">
+            <div className="text-xs text-slate-500">Cobrado</div>
+            <div className="font-mono-num text-lg font-bold text-slate-900">{money(totalRecibido)}</div>
+          </div>
+          <div className="bg-slate-50 rounded-lg px-3 py-2.5">
+            <div className="text-xs text-slate-500">Gastos</div>
+            <div className={`font-mono-num text-lg font-bold ${totalGastos > importePresupuesto && importePresupuesto > 0 ? "text-rose-600" : "text-slate-900"}`}>{money(totalGastos)}</div>
+            {totalGastos > importePresupuesto && importePresupuesto > 0 && <div className="text-[11px] text-rose-500">Por encima del presupuesto</div>}
+          </div>
+          <div className="bg-slate-50 rounded-lg px-3 py-2.5">
+            <div className="text-xs text-slate-500">Entrega prevista</div>
+            <div className="font-mono-num text-lg font-bold text-slate-900">{proyecto.fechaEntregaPrevista ? fmtDate(proyecto.fechaEntregaPrevista) : "—"}</div>
+            {diff !== null && (
+              <div className={`text-[11px] font-semibold ${diff > 0 ? "text-rose-500" : "text-emerald-600"}`}>
+                {diff === 0 ? "Entregado a tiempo" : diff < 0 ? `Entregado ${Math.abs(diff)}d antes` : `Entregado ${diff}d tarde`}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Barra de cobro */}
+        {importePresupuesto > 0 && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 flex-wrap">
+              <span className="flex items-center gap-1"><Wallet size={13} /> Cobrado {Math.min(100, Math.round((totalRecibido / importePresupuesto) * 100))} %</span>
+              <span className={`font-semibold ${saldoPendiente > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                {saldoPendiente > 0 ? `Quedan ${money(saldoPendiente)} por cobrar` : "Cobrado por completo"}
+              </span>
+            </div>
+            <div className="h-2 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
+              <div className="h-2 rounded-full bg-[#86D325]" style={{ width: `${Math.min(100, Math.max(0, (totalRecibido / importePresupuesto) * 100))}%` }} />
+            </div>
+            {saldoPendiente > 0 && (
+              <div className="flex justify-end mt-2">
+                <button
+                  onClick={() => onRegistrarIngreso(proyecto, cliente?.nombre, saldoPendiente)}
+                  style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                  className="flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-lg"
+                >
+                  <Plus size={13} /> Meter dinero
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {proyecto.llevaInstalacion && (
+          <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-slate-100 text-sm font-semibold text-violet-700">
+            <Wrench size={16} /> Este proyecto lleva instalación.
+            {instalacion ? (
+              <button onClick={() => onVerInstalacion(instalacion.id)} className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 px-3 py-1.5 rounded-lg shrink-0">
+                Ver ficha de instalación ({instalacion.estado})
+              </button>
+            ) : (
+              <span className="ml-auto text-xs text-violet-500">Creando ficha…</span>
+            )}
+          </div>
+        )}
+
         {(proyecto.documentos || []).length > 0 && (
-          <div className="mt-3 pt-3 border-t border-slate-200">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {proyecto.documentos.map((d) => (
-                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100">
                   <FileText size={14} className="text-slate-400" /> {d.nombre}
                 </a>
               ))}
@@ -4649,76 +4708,94 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
         )}
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
-        <Kpi label="Importe presupuesto" value={money(proyecto.importePresupuesto)} />
-        <Kpi label="Gastos asociados" value={money(totalGastos)} sub={totalGastos > proyecto.importePresupuesto ? "Por encima del presupuesto" : null} />
-        <Kpi label="Horas registradas" value={`${totalHoras.toFixed(1)} h`} />
-        <Kpi
-          label="Diferencia entrega"
-          value={diff === null ? "—" : diff === 0 ? "A tiempo" : diff < 0 ? `${Math.abs(diff)}d antes` : `${diff}d después`}
-          tone={diff !== null && diff > 0 ? "bad" : diff !== null ? "good" : "neutral"}
-        />
-      </div>
-
-      {importePresupuesto > 0 && (
-        <div className={`flex flex-wrap items-center gap-2 px-4 py-3 rounded-md mb-6 text-sm font-semibold ${saldoPendiente > 0 ? "bg-amber-50 border border-amber-300 text-amber-800" : "bg-emerald-50 border border-emerald-200 text-emerald-700"}`}>
-          <Wallet size={16} />
-          {saldoPendiente > 0 ? (
-            <>Recibido {money(totalRecibido)} de {money(importePresupuesto)} — quedan <span className="text-base">{money(saldoPendiente)}</span> por cobrar.</>
-          ) : (
-            <>Presupuesto cobrado por completo ({money(totalRecibido)} de {money(importePresupuesto)}).</>
+      {/* Aviso de medidas leídas (solo aparece mientras se está preparando un pedido) */}
+      {(lineasPedidoAuto.length > 0 || erroPdfMedidas) && (
+        <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-3 text-sm">
+          {lineasPedidoAuto.length > 0 && (
+            <>
+              <span className="font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Puedes subir más o crear ya el pedido.</span>
+              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">
+                Crear pedido
+              </button>
+              <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                Cancelar
+              </button>
+            </>
           )}
-          {saldoPendiente > 0 && (
-            <button
-              onClick={() => onRegistrarIngreso(proyecto, cliente?.nombre, saldoPendiente)}
-              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-              className="ml-auto flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md shrink-0"
-            >
-              <Plus size={13} /> Meter dinero
-            </button>
-          )}
-        </div>
-      )}
-      {proyecto.llevaInstalacion && (
-        <div className="flex flex-wrap items-center gap-2 px-4 py-3 rounded-md mb-6 text-sm font-semibold bg-violet-50 border border-violet-200 text-violet-700">
-          <Wrench size={16} />
-          Este proyecto lleva instalación.
-          {instalacion ? (
-            <button onClick={() => onVerInstalacion(instalacion.id)} className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 px-3 py-1.5 rounded-md shrink-0">
-              Ver ficha de instalación ({instalacion.estado})
-            </button>
-          ) : (
-            <span className="ml-auto text-xs text-violet-500">Creando ficha…</span>
-          )}
+          {erroPdfMedidas && <p className="w-full text-xs text-rose-600 font-semibold">⚠ {erroPdfMedidas}</p>}
         </div>
       )}
 
-      <div className="flex gap-1 mb-4 border-b border-slate-200">
-        {[
-          { id: "datos", label: "Datos", icon: FileText },
-          { id: "articulos", label: `Artículos usados (${articulosUsados.length})`, icon: Layers },
-          { id: "comparativa", label: "Presupuesto vs Real", icon: Wallet },
-          { id: "gastos", label: `Gastos asociados (${gastos.length})`, icon: Receipt },
-          { id: "horas", label: `Registro horario (${horas.length})`, icon: Timer },
-          { id: "pagos", label: `Pagos / Facturas (${facturas.length})`, icon: Wallet },
-          { id: "pedidos", label: `Pedidos de materiales (${pedidos.length})`, icon: ClipboardList },
-          { id: "checklist", label: `Qué lleva la obra (${checklist.filter((c) => c.estado).length}/${checklist.length})`, icon: CheckCircle2 },
-          { id: "despiece", label: `Despiece de techos (${(proyecto.techos || []).length})`, icon: Ruler },
-          { id: "persianas", label: `Control de persianas (${(proyecto.persianasControl || []).length})`, icon: Ruler },
-          { id: "historial", label: `Historial (${pedidos.length + incidencias.length + ingresos.length + articulosUsados.length + gastos.length + horas.length + (instalacion ? 1 : 0)})`, icon: Clock },
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${
-              tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"
-            }`}
-          >
-            <t.icon size={14} /> {t.label}
-          </button>
-        ))}
-      </div>
+      {/* ===== Secciones de la obra en recuadros ===== */}
+      {(() => {
+        const costeRealTotal = totalGastos + totalCosteUsado + costeManoObra;
+        const margenPct = importePresupuesto > 0 ? Math.round(((importePresupuesto - costeRealTotal) / importePresupuesto) * 100) : null;
+        const gastosPendientes = gastos.filter((g) => g.estadoFactura === "Pendiente").length;
+        const pedidosSinRecibir = pedidos.filter((p) => p.estado !== "Recibido" && p.estado !== "Cancelado").length;
+        const faltantesDespiece = despieceConStock.filter((d) => d.falta > 0.01).length;
+        const persianasArr = proyecto.persianasControl || [];
+        const persianasTerminadas = persianasArr.filter((u) => u.estado === "Terminada").length;
+        const totalHistorial = pedidos.length + incidencias.length + ingresos.length + articulosUsados.length + gastos.length + horas.length + (instalacion ? 1 : 0);
+        const grupos = [
+          {
+            titulo: "Dinero",
+            items: [
+              { id: "comparativa", label: "Presupuesto vs real", icon: Scale, sub: margenPct === null ? "Sin importe de presupuesto" : `Margen ${margenPct} %`, alerta: margenPct !== null && margenPct < 0 },
+              { id: "pagos", label: "Pagos y facturas", count: facturas.length, icon: Wallet, sub: `Cobrado ${money(totalRecibido)}` },
+              { id: "gastos", label: "Gastos", count: gastos.length, icon: Receipt, sub: gastosPendientes > 0 ? `${gastosPendientes} factura(s) pendiente(s)` : gastos.length ? "Todo al día" : "Sin gastos" , alerta: gastosPendientes > 0 },
+            ],
+          },
+          {
+            titulo: "Material",
+            items: [
+              { id: "pedidos", label: "Pedidos", count: pedidos.length, icon: ClipboardList, sub: pedidosSinRecibir > 0 ? `${pedidosSinRecibir} sin recibir` : pedidos.length ? "Todo recibido" : "Sin pedidos", alerta: pedidosSinRecibir > 0 },
+              { id: "checklist", label: "Qué lleva la obra", icon: CheckCircle2, sub: checklist.length ? `${checklist.filter((c) => c.estado).length} de ${checklist.length} marcados` : "Sin lista" },
+              { id: "despiece", label: "Despiece de techos", count: (proyecto.techos || []).length, icon: Ruler, sub: (proyecto.techos || []).length === 0 ? "Sin techos" : faltantesDespiece > 0 ? `Faltan ${faltantesDespiece} material(es)` : "Stock cubierto", alerta: faltantesDespiece > 0 },
+              { id: "persianas", label: "Persianas", count: persianasArr.length, icon: Layers, sub: persianasArr.length ? `${persianasTerminadas} de ${persianasArr.length} terminadas` : "Sin persianas" },
+              { id: "articulos", label: "Artículos usados", count: articulosUsados.length, icon: Boxes, sub: articulosUsados.length ? `Coste ${money(totalCosteUsado)}` : "Ninguno" },
+            ],
+          },
+          {
+            titulo: "Seguimiento",
+            items: [
+              { id: "datos", label: "Datos de la obra", icon: FileText, sub: "Fechas y especificaciones" },
+              { id: "horas", label: "Registro horario", count: horas.length, icon: Timer, sub: `${totalHoras.toFixed(1)} h registradas` },
+              { id: "historial", label: "Historial", count: totalHistorial, icon: Clock, sub: "Todo lo que ha pasado" },
+            ],
+          },
+        ];
+        return (
+          <div className="mb-5 space-y-4">
+            {grupos.map((g) => (
+              <div key={g.titulo}>
+                <div className="text-xs font-semibold text-slate-500 mb-2">{g.titulo}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {g.items.map((t) => {
+                    const activo = tab === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => setTab(t.id)}
+                        className={`flex items-start gap-3 text-left rounded-xl px-3.5 py-3 border transition ${activo ? "bg-slate-900 border-slate-900" : "bg-white border-slate-200 hover:border-slate-400"}`}
+                      >
+                        <span className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center ${activo ? "bg-[#86D325] text-slate-900" : "bg-[#EEF7E4] text-[#3B6D11]"}`}>
+                          <t.icon size={17} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className={`block text-sm font-bold ${activo ? "text-white" : "text-slate-900"}`}>
+                            {t.label}{typeof t.count === "number" ? ` · ${t.count}` : ""}
+                          </span>
+                          <span className={`block text-xs mt-0.5 truncate ${activo ? "text-slate-300" : t.alerta ? "text-amber-700 font-semibold" : "text-slate-500"}`}>{t.sub}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {tab === "historial" && (
         <div className="space-y-5">
@@ -5328,8 +5405,8 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 function Kpi({ label, value, sub, tone = "neutral" }) {
   const toneCls = tone === "bad" ? "text-rose-600" : tone === "good" ? "text-emerald-600" : "text-slate-800";
   return (
-    <div className="bg-white border border-slate-200 rounded-lg px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{label}</div>
+    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3">
+      <div className="text-xs font-semibold text-slate-500 mb-1">{label}</div>
       <div className={`font-mono-num text-lg font-bold ${toneCls}`}>{value}</div>
       {sub && <div className="text-[11px] text-rose-500 mt-0.5">{sub}</div>}
     </div>
@@ -5590,7 +5667,7 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
           { id: "pedidos", label: `Pedidos (${pedidos.length})`, icon: ClipboardList },
           { id: "historico", label: `Histórico artículos/servicios (${historico.length})`, icon: ClipboardList },
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
@@ -5989,13 +6066,13 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-200">
-        <button onClick={() => setSubview("catalogo")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${subview === "catalogo" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+        <button onClick={() => setSubview("catalogo")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subview === "catalogo" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           <Boxes size={14} /> Catálogo
         </button>
-        <button onClick={() => setSubview("reponer")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${subview === "reponer" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+        <button onClick={() => setSubview("reponer")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subview === "reponer" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           <AlertTriangle size={14} /> A reponer {bajoMinimoCount > 0 && `(${bajoMinimoCount})`}
         </button>
-        <button onClick={() => setSubview("comparar")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${subview === "comparar" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+        <button onClick={() => setSubview("comparar")} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subview === "comparar" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           <Scale size={14} /> Comparar proveedores {gruposComparables.length > 0 && `(${gruposComparables.length})`}
         </button>
       </div>
@@ -6330,7 +6407,7 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
           { id: "movimientos", label: `Histórico de movimientos (${movimientos.length})`, icon: Package },
           { id: "precios", label: `Histórico de precios (${historicoPrecios.length})`, icon: Euro },
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
@@ -6681,11 +6758,11 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
 
       <div className="flex gap-1 mb-6 border-b border-slate-200">
         <button onClick={() => setTabPrincipal("pedidos")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tabPrincipal === "pedidos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tabPrincipal === "pedidos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Pedidos
         </button>
         <button onClick={() => setTabPrincipal("solicitudes")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tabPrincipal === "solicitudes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tabPrincipal === "solicitudes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Solicitudes de empleados
           {solicitudes.filter((s) => s.estado === "Pendiente").length > 0 && (
             <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{solicitudes.filter((s) => s.estado === "Pendiente").length}</Badge>
@@ -8330,15 +8407,15 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       <div className="flex gap-1 mb-4 border-b border-slate-200">
         <button onClick={() => setSubTab("pendientes")}
-          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${subTab === "pendientes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${subTab === "pendientes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Pendientes de ubicar {pendientes.length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{pendientes.length}</Badge>}
         </button>
         <button onClick={() => setSubTab("mapa")}
-          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition ${subTab === "mapa" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "mapa" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Mapa del almacén
         </button>
         <button onClick={() => setSubTab("estadisticas")}
-          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition ${subTab === "estadisticas" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "estadisticas" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Estadísticas
         </button>
       </div>
@@ -8794,30 +8871,30 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 
       <div className="flex flex-wrap items-center gap-1 mb-6 border-b border-slate-200">
         <button onClick={() => setTab("listo")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "listo" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "listo" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Listo para fabricar
           {listoParaFabricar.length > 0 && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{listoParaFabricar.length}</Badge>}
         </button>
         <button onClick={() => setTab("materiales")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === "materiales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "materiales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Materiales pendientes
         </button>
         <button onClick={() => setTab("enfab")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === "enfab" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "enfab" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           En fabricación
         </button>
         <button onClick={() => setTab("cristales")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "cristales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "cristales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Cristales
           {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
         </button>
         <button onClick={() => setTab("procesoExterno")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "procesoExterno" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "procesoExterno" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Material fuera (proceso externo)
           {enviosProceso.filter((e) => e.estado === "Fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{enviosProceso.filter((e) => e.estado === "Fuera").length}</Badge>}
         </button>
         <button onClick={() => setTab("reparto")}
-          className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "reparto" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "reparto" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Reparto
           {proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length > 0 && (
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length}</Badge>
@@ -11472,6 +11549,7 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
 </style></head>
 <body>
   <button class="btn-print" onclick="window.print()">Imprimir</button>
+  ${esPresupuesto ? `<div style="background:#333645;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:inline-block;-webkit-print-color-adjust:exact;print-color-adjust:exact;"><img src="${LOGO_ECOWIN}" alt="Ecowin PVC" style="height:30px;display:block;" /></div>` : ""}
   <h1>${e(titulo)}</h1>
   <p class="sub">${e(clienteNombre || "Sin cliente")} ${direccionObra ? "· " + e(direccionObra) : ""} · ${new Date().toLocaleDateString("es-ES")}</p>
 
@@ -11526,6 +11604,7 @@ function imprimirPresupuesto(presupuesto) {
 </style></head>
 <body>
   <button class="btn-print" onclick="window.print()">Imprimir</button>
+  <div style="background:#333645;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:inline-block;-webkit-print-color-adjust:exact;print-color-adjust:exact;"><img src="${LOGO_ECOWIN}" alt="Ecowin PVC" style="height:30px;display:block;" /></div>
   <h1>Presupuesto ${e(presupuesto.numero || "")}</h1>
   <p class="sub">${e(presupuesto.clienteNombre || "Sin cliente")} · ${new Date().toLocaleDateString("es-ES")}</p>
 
@@ -11572,7 +11651,7 @@ async function generarPdfBytesPresupuesto(presupuesto) {
     }
   };
 
-  pagina.drawText("ALUMAVEL — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
+  pagina.drawText("ECOWIN PVC — Presupuesto", { x: margen, y, size: 16, font: fuenteNegrita, color: negro });
   y -= 28;
   pagina.drawText(`Nº presupuesto: ${presupuesto.numero || ""}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
   pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
@@ -11611,7 +11690,7 @@ async function generarPdfBytesPresupuesto(presupuesto) {
 
   y -= 15;
   nuevaPaginaSiHaceFalta();
-  pagina.drawText("Documento generado desde el CRM de Alumavel.", { x: margen, y, size: 9, font: fuente, color: gris });
+  pagina.drawText("Documento de Ecowin PVC.", { x: margen, y, size: 9, font: fuente, color: gris });
 
   return await pdfDoc.save();
 }
@@ -12954,8 +13033,8 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
 
   const enlaceEmailCliente = () => {
     if (!cliente?.email) return null;
-    const asunto = `Incidencia #${incidencia.numero} — ALUMAVEL`;
-    const cuerpo = `Hola ${cliente.nombre},\n\nLe escribimos respecto a la incidencia registrada${proyecto ? ` sobre el proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}.\n\n${incidencia.descripcion || ""}\n\nQuedamos a su disposición para cualquier duda.\n\nUn saludo,\nALUMAVEL`;
+    const asunto = `Incidencia #${incidencia.numero} — Ecowin PVC`;
+    const cuerpo = `Hola ${cliente.nombre},\n\nLe escribimos respecto a la incidencia registrada${proyecto ? ` sobre el proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}.\n\n${incidencia.descripcion || ""}\n\nQuedamos a su disposición para cualquier duda.\n\nUn saludo,\nEcowin PVC`;
     return `mailto:${cliente.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -12963,7 +13042,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
     const tel = (cliente?.movil || "").replace(/[^\d+]/g, "");
     if (!tel) return null;
     const telConPrefijo = tel.startsWith("+") ? tel.replace("+", "") : (tel.startsWith("34") ? tel : `34${tel}`);
-    const mensaje = `Hola ${cliente?.nombre || ""}, le escribimos de ALUMAVEL respecto a la incidencia #${incidencia.numero}${proyecto ? ` del proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}. Quedamos a su disposición para cualquier duda. Un saludo.`;
+    const mensaje = `Hola ${cliente?.nombre || ""}, le escribimos de Ecowin PVC respecto a la incidencia #${incidencia.numero}${proyecto ? ` del proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}. Quedamos a su disposición para cualquier duda. Un saludo.`;
     return `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(mensaje)}`;
   };
 
@@ -13019,7 +13098,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
           { id: "pedidos", label: `Pedidos de materiales (${(pedidos || []).length})`, icon: ClipboardList },
           { id: "gastos", label: `Gastos asociados (${gastos.length})`, icon: Receipt },
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
@@ -13369,7 +13448,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
         {CALENDARIO_TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition whitespace-nowrap ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+            className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition whitespace-nowrap ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {t.label}
           </button>
         ))}
@@ -13886,7 +13965,7 @@ function ArticuloDetail({ articulo, proveedor, materiales, onBack, onEdit, onDel
           { id: "gastos", label: `Gastos asociados (${gastos.length})`, icon: Receipt },
           { id: "precios", label: `Histórico de precios (${(articulo.historicoPrecios || []).length})`, icon: Euro },
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
@@ -14493,7 +14572,7 @@ const leadVencido = (lead) => {
   return lead.proximaAccionFecha < new Date().toISOString().slice(0, 10);
 };
 
-const mensajeWhatsappLead = (l) => `Hola ${l.nombre}, le escribimos de ALUMAVEL / Ecowinpvc sobre su consulta de ${l.productoInteres || "ventanas/puertas"}. Quedamos a su disposición. Un saludo.`;
+const mensajeWhatsappLead = (l) => `Hola ${l.nombre}, le escribimos de Ecowin PVC sobre su consulta de ${l.productoInteres || "ventanas/puertas"}. Quedamos a su disposición. Un saludo.`;
 const enlaceWhatsappLead = (l) => {
   const tel = (l.telefono || "").replace(/[^\d+]/g, "");
   if (!tel) return null;
@@ -14932,7 +15011,7 @@ const diasSinRespuestaDe = (p) => {
 };
 
 const mensajeWhatsappPresupuesto = (p) => {
-  return `Hola ${p.clienteNombre}, le escribimos de ALUMAVEL para saber si ha podido revisar el presupuesto ${p.numero}${p.descripcion ? ` (${p.descripcion})` : ""}. Quedamos a su disposición para cualquier duda. Un saludo.`;
+  return `Hola ${p.clienteNombre}, le escribimos de Ecowin PVC para saber si ha podido revisar el presupuesto ${p.numero}${p.descripcion ? ` (${p.descripcion})` : ""}. Quedamos a su disposición para cualquier duda. Un saludo.`;
 };
 
 const enlaceWhatsapp = (p) => {
@@ -15379,7 +15458,7 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
       <div className="flex gap-1 mb-5 border-b border-slate-200">
         {[{ id: "lista", label: "Lista" }, { id: "calculadora", label: "Calculadora" }, { id: "stats", label: "Estadísticas" }, { id: "presentacion", label: "Presentación" }].map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+            className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {t.label}
           </button>
         ))}
@@ -18014,7 +18093,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     const limpio = (tel || "").replace(/[^\d+]/g, "");
     if (!limpio || !link) return null;
     const conPrefijo = limpio.startsWith("+") ? limpio.replace("+", "") : (limpio.startsWith("34") ? limpio : `34${limpio}`);
-    const mensaje = `Hola, te paso el presupuesto ${presupuesto.numero} de Alumavel para que lo confirmes con tu firma: ${link}`;
+    const mensaje = `Hola, te paso el presupuesto ${presupuesto.numero} de Ecowin PVC para que lo confirmes con tu firma: ${link}`;
     return `https://wa.me/${conPrefijo}?text=${encodeURIComponent(mensaje)}`;
   };
 
@@ -18171,8 +18250,8 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
 
   const enlaceEmailManual = () => {
     if (!presupuesto.email) return null;
-    const asunto = `Presupuesto ${presupuesto.numero} — ALUMAVEL`;
-    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nALUMAVEL`;
+    const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
+    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nEcowin PVC`;
     return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -18190,8 +18269,8 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
       const dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
       const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
-      const asunto = `Presupuesto ${presupuesto.numero} — ALUMAVEL`;
-      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nALUMAVEL`;
+      const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
+      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nEcowin PVC`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
@@ -18654,7 +18733,7 @@ function FichajesModulo({ fichajes, empleadoActual, setEmpleadoActual, onFichar,
           { id: "mi_fichaje", label: "Fichajes usuario", icon: LogIn },
           ...(isAdmin ? [{ id: "control", label: "Control de fichajes", icon: FileSpreadsheet }] : []),
         ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             <t.icon size={14} /> {t.label}
           </button>
         ))}
@@ -18875,12 +18954,23 @@ function LoginGate({ usuarios, clientes, onCreateFirstAdmin, onLogin, onLoginCli
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
         .font-mono-num{ font-family:'IBM Plex Mono', monospace; }
         .font-display{ font-family:'Inter', system-ui, sans-serif; letter-spacing:-0.02em; }
+        *:has(> .crm-tab){ border-bottom:0 !important; flex-wrap:wrap; gap:6px; }
+        .crm-tab{ border:1px solid #e2e8f0 !important; border-radius:10px; background:#ffffff; margin-bottom:0 !important; color:#475569 !important; }
+        .crm-tab:hover{ border-color:#94a3b8 !important; color:#0f172a !important; }
+        .crm-tab.border-\\[\\#2E8B57\\]{ background:#0f172a; border-color:#0f172a !important; color:#ffffff !important; }
+        .crm-tab.border-\\[\\#2E8B57\\] svg{ color:#86D325; }
       `}</style>
       <div className="w-full max-w-sm pt-6 pb-24">
-        <div className="flex items-center gap-2 justify-center mb-6">
-          <div className="w-9 h-9 rounded bg-[#2E8B57] flex items-center justify-center font-mono-num font-bold text-white">A</div>
-          <div>
-            <div className="font-display font-extrabold text-lg text-slate-900 leading-none">ALUMAVEL</div>
+        <div className="flex flex-col items-center gap-2 justify-center mb-6">
+          <div className={`rounded-xl overflow-hidden flex items-center justify-center ${modo === "cliente" ? "bg-[#333645] px-5 py-4" : "bg-[#5A1E78] px-4 py-2"}`}>
+            <img src={modo === "cliente" ? LOGO_ECOWIN : LOGO_ALUMAVEL} alt={modo === "cliente" ? "Ecowin PVC" : "Alumavel"} className={modo === "cliente" ? "h-8 w-auto" : "h-16 w-auto"} />
+          </div>
+          {modo !== "cliente" && (
+            <div className="rounded-lg overflow-hidden bg-[#333645] flex items-center justify-center px-4 py-2">
+              <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-6 w-auto" />
+            </div>
+          )}
+          <div className="text-center">
             <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 mt-1">{modo === "cliente" ? "Portal de cliente" : "Panel de gestión"}</div>
           </div>
         </div>
@@ -18954,7 +19044,7 @@ function LoginGate({ usuarios, clientes, onCreateFirstAdmin, onLogin, onLoginCli
             ? "Podrás dar de alta a más usuarios luego, desde Administración."
             : modo === "empleado"
             ? "¿No tienes cuenta? Pídele a un administrador que te dé de alta."
-            : "El acceso al portal lo activa ALUMAVEL desde la ficha de cliente."}
+            : "El acceso al portal lo activa Ecowin PVC desde la ficha de cliente."}
         </p>
       </div>
     </div>
@@ -18972,15 +19062,19 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
         .font-mono-num{ font-family:'IBM Plex Mono', monospace; }
         .font-display{ font-family:'Inter', system-ui, sans-serif; letter-spacing:-0.02em; }
+        *:has(> .crm-tab){ border-bottom:0 !important; flex-wrap:wrap; gap:6px; }
+        .crm-tab{ border:1px solid #e2e8f0 !important; border-radius:10px; background:#ffffff; margin-bottom:0 !important; color:#475569 !important; }
+        .crm-tab:hover{ border-color:#94a3b8 !important; color:#0f172a !important; }
+        .crm-tab.border-\\[\\#2E8B57\\]{ background:#0f172a; border-color:#0f172a !important; color:#ffffff !important; }
+        .crm-tab.border-\\[\\#2E8B57\\] svg{ color:#86D325; }
       `}</style>
 
       <header className="bg-[#2A1F3D] text-slate-200">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-[#2E8B57] flex items-center justify-center font-mono-num font-bold text-sm">A</div>
+            <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-7 w-auto" />
             <div>
-              <div className="font-display font-bold text-[15px] leading-none">ALUMAVEL</div>
-              <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 mt-1 flex items-center gap-1"><Globe size={10} /> Portal de cliente</div>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 flex items-center gap-1"><Globe size={10} /> Portal de cliente</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -19002,7 +19096,7 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
             { id: "facturas", label: `Mis facturas (${facturas.length})`, icon: Receipt },
             { id: "incidencias", label: `Incidencias (${incidencias.length})`, icon: AlertOctagon },
           ].map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+            <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <t.icon size={14} /> {t.label}
             </button>
           ))}
