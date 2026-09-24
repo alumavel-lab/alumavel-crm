@@ -562,8 +562,10 @@ export default function App() {
         if (resultados.modelosVentana) {
           const guardados = toArray(resultados.modelosVentana).map((m) => ({ ...m, perfiles: toArray(m.perfiles || []), accesorios: toArray(m.accesorios || []), variables: toArray(m.variables || []) }));
           // Si todavía no hay ningún techo guardado, se enseñan los de fábrica (no se guardan hasta que se toque algo).
-          setModelosVentana(guardados.some((m) => m.categoria === "techo") ? guardados : [...guardados, ...modelosTechoDeFabrica()]);
-        } else setModelosVentana([...modelosVentanaDeFabrica(), ...modelosTechoDeFabrica()]);
+          let lista = guardados.some((m) => m.categoria === "techo") ? guardados : [...guardados, ...modelosTechoDeFabrica()];
+          if (!lista.some((m) => /E-150/.test(m.serie || ""))) lista = [...lista, ...modelosPrimalumE150()];
+          setModelosVentana(lista);
+        } else setModelosVentana([...modelosVentanaDeFabrica(), ...modelosPrimalumE150(), ...modelosTechoDeFabrica()]);
         if (resultados.configVentanas) setConfigVentanas(resultados.configVentanas);
         if (resultados.tarifasCristal) setTarifasCristal(toArray(resultados.tarifasCristal).map((t) => ({ ...t, items: toArray(t.items || []), recargosSuperficie: toArray(t.recargosSuperficie || []), recargosLado: toArray(t.recargosLado || []), formas: toArray(t.formas || []) })));
         if (resultados.configuracionFirma) setConfiguracionFirma(resultados.configuracionFirma);
@@ -15702,10 +15704,17 @@ const TARIFA_GRUPOS = [
   { id: "aluminio", label: "Aluminio" },
   { id: "goma", label: "Goma" },
   { id: "accesorio", label: "Accesorios" },
+  { id: "panel", label: "Paneles puerta y sándwich" },
+  { id: "chapa", label: "Chapas" },
 ];
-const TARIFA_DESCUENTO_CLAVE = { aluminio: "aluminio", goma: "goma", accesorio: "accesorios" };
+const TARIFA_DESCUENTO_CLAVE = { aluminio: "aluminio", goma: "goma", accesorio: "accesorios", panel: "paneles", chapa: "chapas" };
+// Tarifas ya leídas de los PDF de proveedor (archivos en /public/tarifas)
+const TARIFAS_PRECARGADAS = [
+  { match: /medit/i, archivo: "mediterraneo-2024.json", etiqueta: "Mediterráneo 2024" },
+  { match: /primal/i, archivo: "primalum-2026.json", etiqueta: "Primalum V26.5 (2026)" },
+];
 
-const normRef = (r) => String(r || "").trim().toUpperCase().replace(/^0+(?=\w)/, "");
+const normRef = (r) => String(r || "").trim().toUpperCase().replace(/[.\-\s]/g, "").replace(/^0+(?=\w)/, "");
 
 // Evalúa una fórmula de corte tipo "(A - 48.5) / 2" o "H-74". Solo admite A, H,
 // números y + - * / ( ). Devuelve NaN si la fórmula no es válida.
@@ -16018,6 +16027,22 @@ function DibujoTecho({ modelo, A, L, vars }) {
 }
 
 
+
+// ---- PRIMALUM E-150 Minimalista RPT (hojas de corte del catálogo Extrual 150, versión
+// "marco inferior visto"). Las referencias del catálogo (R-941, 16.347…) son las mismas de
+// la tarifa Primalum sin puntos ni guiones. Los accesorios 04.xx son códigos Extrual que no
+// vienen en la tarifa: se les pone precio a mano en el modelo.
+const DATOS_E150 = [{"nombre": "Balconera 1 hoja + fijo", "hojas": 2, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/2)-23", 4, "90°"], ["16347", "Hoja de cierre", "H-115", 2, "90°"], ["16341", "Cierre lateral", "H-37", 1, "90°"], ["16342", "Tapa canal", "(A/2)-50", 2, "90°"], ["16342", "Tapa canal", "(A/2)-65", 2, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "(A/2)-65", 2, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 2, "90°"], ["10466", "Tapeta tirador", "H-119", 2, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 1, "ud", "accesorio"], ["04.AC.055", "Cerradero", 3, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 3, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 2, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 1, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(2*A+2*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(2*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(4*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "2*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "2*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 2, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 2, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"], ["04.AC.074", "Calzo hoja fija", 2, "ud", "accesorio"], ["04.JA.004", "Junta hoja fija", "(2*A+2*H)/1000", "m", "goma"]], "vid": ["(A/2)-23-40", "H-93", "2"]}, {"nombre": "Balconera 2 hojas", "hojas": 2, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/2)-31", 4, "90°"], ["16347", "Hoja de cierre", "H-115", 2, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["16342", "Tapa canal", "(A/2)-58", 4, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 2, "90°"], ["10466", "Tapeta tirador", "H-119", 2, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 2, "ud", "accesorio"], ["04.AC.055", "Cerradero", 6, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 6, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 1, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 2, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 1, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A+4*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(4*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "4*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "4*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 4, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 2, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"]], "vid": ["(A/2)-31-40", "H-93", "2"]}, {"nombre": "Balconera 2 hojas con llave", "hojas": 2, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/2)-36", 2, "90°"], ["R945", "Hoja sup/inf", "(A/2)-25", 2, "90°"], ["16347", "Hoja de cierre", "H-115", 2, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["16342", "Tapa canal", "(A/2)-52", 2, "90°"], ["16342", "Tapa canal", "(A/2)-63", 2, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 2, "90°"], ["10466", "Tapeta tirador", "H-119", 2, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 1, "ud", "accesorio"], ["04.AC.055", "Cerradero", 6, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 6, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 2, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 1, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A+4*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(2*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(4*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "4*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "4*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 4, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 2, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"], ["04.AC.850", "Cremona 3 puntos con llave", 1, "ud", "accesorio"], ["04.AC.852", "Manilla doble", 1, "ud", "accesorio"]], "vid": ["(A/2)-31-40", "H-93", "2"]}, {"nombre": "Balconera 2 hojas + fijo central", "hojas": 3, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/3)-8", 4, "90°"], ["R945", "Hoja sup/inf", "(A/3)-20", 2, "90°"], ["16347", "Hoja de cierre", "H-115", 4, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["16342", "Tapa canal", "(A/3)-35", 4, "90°"], ["16342", "Tapa canal", "(A/3)-70", 2, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "(A/3)-35", 4, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 4, "90°"], ["10466", "Tapeta tirador", "H-119", 4, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 2, "ud", "accesorio"], ["04.AC.055", "Cerradero", 6, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 6, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 1, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 4, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 2, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A+4*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(2*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "2*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "2*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 4, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 4, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"], ["04.AC.074", "Calzo hoja fija", 2, "ud", "accesorio"], ["04.JA.004", "Junta hoja fija", "(4*(A/3))/1000", "m", "goma"]], "vid": ["(A/3)-8-40", "H-93", "3"]}, {"nombre": "Balconera 2 hojas + 2 fijos laterales", "hojas": 4, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 4, "90°"], ["R945", "Hoja sup/inf", "(A/4)-10", 8, "90°"], ["16347", "Hoja de cierre", "H-115", 4, "90°"], ["R946", "Cierre 4 hojas", "H-69", 1, "90°"], ["16342", "Tapa canal", "(A/4)-51", 4, "90°"], ["16342", "Tapa canal", "(A/2)-38", 2, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "(A/2)-38", 2, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 4, "90°"], ["10466", "Tapeta tirador", "H-119", 4, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 1, "ud", "accesorio"], ["04.AC.055", "Cerradero", 3, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 3, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 4, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 4, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 2, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(2*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "2*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "2*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 4, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 4, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"], ["04.AC.845", "Tirador", 1, "ud", "accesorio"], ["04.JU.004.E", "Junta cierre 4 hojas", "(2*H)/1000", "m", "goma"], ["04.AC.074", "Calzo hoja fija", 4, "ud", "accesorio"], ["04.JA.004", "Junta hoja fija", "(2*A+4*H)/1000", "m", "goma"]], "vid": ["(A/4)-10-40", "H-93", "4"]}, {"nombre": "Balconera 4 hojas marco 2 carriles", "hojas": 4, "perf": [["R941", "Marco", "A", 2, "45°"], ["R941", "Marco", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 4, "90°"], ["R945", "Hoja sup/inf", "(A/4)-17", 8, "90°"], ["16347", "Hoja de cierre", "H-115", 4, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["R946", "Cierre 4 hojas", "H-69", 1, "90°"], ["16342", "Tapa canal", "(A/4)-44", 4, "90°"], ["16342", "Tapa canal", "(A/2)-53", 2, "90°"], ["16342", "Tapa canal", "H-72", 2, "90°"], ["16343", "Tapa marco", "H-36", 2, "90°"], ["R948", "Solera", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 4, "90°"], ["10466", "Tapeta tirador", "H-119", 4, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 3, "ud", "accesorio"], ["04.AC.055", "Cerradero", 9, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 9, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 2, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 4, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 4, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 2, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 8, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(4*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "4*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "4*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 8, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 4, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"], ["04.AC.845", "Tirador", 1, "ud", "accesorio"], ["04.JU.004.E", "Junta cierre 4 hojas", "(2*H)/1000", "m", "goma"]], "vid": ["(A/4)-17-40", "H-93", "4"]}, {"nombre": "Balconera 3 hojas marco 3 carriles", "hojas": 3, "perf": [["R942", "Marco 3 carriles", "A", 2, "45°"], ["R942", "Marco 3 carriles", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/3)-8", 4, "90°"], ["R945", "Hoja sup/inf", "(A/3)-20", 2, "90°"], ["16347", "Hoja de cierre", "H-115", 4, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["16342", "Tapa canal", "(A/3)-35", 4, "90°"], ["16342", "Tapa canal", "(2*A/3)-80", 4, "90°"], ["16342", "Tapa canal", "H-72", 4, "90°"], ["16343", "Tapa marco", "H-36", 4, "90°"], ["R949", "Solera 3 carriles", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 4, "90°"], ["10466", "Tapeta tirador", "H-119", 4, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 2, "ud", "accesorio"], ["04.AC.055", "Cerradero", 6, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 6, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 1, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 4, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 2, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 12, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A+4*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(4*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(6*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "6*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "6*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 6, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 4, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"]], "vid": ["(A/3)-8-40", "H-93", "3"]}, {"nombre": "Balconera 4 hojas marco 4 carriles", "hojas": 4, "perf": [["R952", "Marco 4 carriles", "A", 2, "45°"], ["R952", "Marco 4 carriles", "H", 2, "45°"], ["R943", "Hoja lateral", "H-115", 2, "90°"], ["R945", "Hoja sup/inf", "(A/4)+3", 4, "90°"], ["R945", "Hoja sup/inf", "(A/4)-9", 4, "90°"], ["16347", "Hoja de cierre", "H-115", 6, "90°"], ["16341", "Cierre lateral", "H-37", 2, "90°"], ["16342", "Tapa canal", "(A/4)-24", 4, "90°"], ["16342", "Tapa canal", "(3*A/4)-91", 4, "90°"], ["16342", "Tapa canal", "(A/2)-58", 4, "90°"], ["16342", "Tapa canal", "H-72", 6, "90°"], ["16343", "Tapa marco", "H-36", 6, "90°"], ["R953", "Solera 4 carriles", "A-4", 1, "90°"], ["15686", "Tapa canaleta", "A-94", 1, "90°"], ["16351", "Canaleta drenaje", "A-94", 1, "90°"], ["16348", "Refuerzo tirador", "H-119", 6, "90°"], ["10466", "Tapeta tirador", "H-119", 6, "90°"]], "acc": [["04.AC.848", "Cremona 3 puntos", 2, "ud", "accesorio"], ["04.AC.055", "Cerradero", 6, "ud", "accesorio"], ["04.AC.056", "Embellecedor cerradero", 6, "ud", "accesorio"], ["04.AC.843", "Manilla dcha.", 1, "ud", "accesorio"], ["04.AC.844", "Manilla izda.", 1, "ud", "accesorio"], ["04.AC.067", "Kit hoja lateral", 2, "ud", "accesorio"], ["04.AC.068", "Kit hoja central", 6, "ud", "accesorio"], ["04.AC.071", "Kit cortavientos", 3, "ud", "accesorio"], ["04.ES.083", "Escuadra marco", 16, "ud", "accesorio"], ["04.AC.F10", "Felpudo marco", "(4*A+4*H)/1000", "m", "goma"], ["04.JU.004.D", "Junta cierre lateral", "(4*H)/1000", "m", "goma"], ["04.JU.062", "Junta cruce central", "(6*H)/1000", "m", "goma"], ["04.JU.067", "Junta cruce central", "(6*H)/1000", "m", "goma"], ["04.JU.068", "Junta tapacanal marco", "(8*A)/1000", "m", "goma"], ["04.JU.069", "Junta carril", "8*(A-200)/1000", "m", "goma"], ["04.AC.R150", "Carril acero inox.", "8*(A-200)/1000", "m", "accesorio"], ["04.AC.R151", "Rodamiento", 8, "ud", "accesorio"], ["04.TA.069", "Juego tapas tirador", 6, "ud", "accesorio"], ["04.TA.070", "Tapa para canaleta", 2, "ud", "accesorio"], ["04.TA.071", "Tapa para solera", 2, "ud", "accesorio"]], "vid": ["(A/4)+3-40", "H-93", "4"]}];
+function modelosPrimalumE150() {
+  return DATOS_E150.map((m) => ({
+    id: uid(), categoria: "ventana", serie: "PRIMALUM E-150 Minimalista RPT", nombre: m.nombre,
+    dibujo: { tipo: "corredera", hojas: m.hojas, puerta: true },
+    perfiles: m.perf.map(([ref, desc, formula, cantidad, angulo]) => ({ id: uid(), ref, desc, formula, cantidad: String(cantidad), angulo })),
+    accesorios: m.acc.map(([ref, desc, cantidad, unidad, grupo]) => ({ id: uid(), ref, desc, cantidad: String(cantidad), unidad, grupo, precioManual: "" })),
+    vidrio: { ancho: m.vid[0], alto: m.vid[1], cantidad: m.vid[2] },
+  }));
+}
+
 // Cálculo completo de una ventana.
 function calcularVentana({ modelo, A, H, L = 0, ud, tarifa, acabado, color, vidrioPrecioM2, persiana, tarifasPersianas, vidrioCfg, tarifaCristal }) {
   const unidades = parseFloat(ud) || 1;
@@ -16067,7 +16092,7 @@ function calcularVentana({ modelo, A, H, L = 0, ud, tarifa, acabado, color, vidr
     aluminio: sum(perfiles.filter((p) => (p.item?.tipo || "aluminio") !== "goma"), "importe") + sum(accesorios.filter((a) => a.grupo === "aluminio"), "importe"),
     goma: sum(perfiles.filter((p) => p.item?.tipo === "goma"), "importe") + sum(accesorios.filter((a) => a.grupo === "goma"), "importe"),
     accesorios: sum(accesorios.filter((a) => a.grupo === "accesorio"), "importe"),
-    cubierta: sum(accesorios.filter((a) => a.grupo === "cubierta"), "importe"),
+    cubierta: sum(accesorios.filter((a) => ["cubierta", "panel", "chapa"].includes(a.grupo)), "importe"),
     vidrio: vidrio.importe,
     persiana: persianaCalc ? persianaCalc.total : 0,
   };
@@ -16323,6 +16348,12 @@ function CalculadoraVentanaForm({ ctx, clientes, tarifasPersianas, onPasarAPresu
   const [vista, setVista] = useState("analisis");
 
   useEffect(() => { if (!modelosSerie.find((m) => m.id === modeloId)) setModeloId(modelosSerie[0]?.id || ""); }, [serie, modelos.length]);
+  // al cambiar de tarifa, si el acabado o el color no existen en ella, se coge el primero que tenga
+  useEffect(() => {
+    if (!tarifa) return;
+    if (tarifa.acabados && !tarifa.acabados.includes(acabado)) setAcabado(tarifa.acabados[0]);
+    if (tarifa.colores && !tarifa.colores.includes(color)) setColor(tarifa.colores.includes("blanco_negro") ? "blanco_negro" : tarifa.colores.includes("blanco") ? "blanco" : tarifa.colores[0]);
+  }, [tarifa?.id]);
 
   const nA = parseFloat(A) || 0, nH = parseFloat(H) || 0, nUd = parseFloat(ud) || 1, nL = parseFloat(Lsal) || 0;
   const calc = useMemo(() => modelo ? calcularVentana({ modelo, A: nA, H: nH, L: nL, ud, tarifa, acabado, color, vidrioPrecioM2: vidrioModo === "manual" ? vidrioPrecio : 0, persiana, tarifasPersianas, vidrioCfg, tarifaCristal }) : null,
@@ -16703,7 +16734,7 @@ function ModelosVentanaPanel({ ctx, categoria = "ventana" }) {
   const editando = modelos.find((m) => m.id === editId);
 
   const cargarFabrica = () => {
-    const fab = categoria === "techo" ? modelosTechoDeFabrica() : modelosVentanaDeFabrica();
+    const fab = categoria === "techo" ? modelosTechoDeFabrica() : [...modelosVentanaDeFabrica(), ...modelosPrimalumE150()];
     const existentes = new Set(modelos.map((m) => `${m.serie}|${m.nombre}`));
     const nuevos = fab.filter((m) => !existentes.has(`${m.serie}|${m.nombre}`));
     save([...modelos, ...nuevos]);
@@ -16878,20 +16909,20 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
   const proveedores = ctx.proveedores || [];
   const [selId, setSelId] = useState(tarifas[0]?.id || null);
   const [cargando, setCargando] = useState(false);
-  const mostrarMediterraneo = !proveedor || /medit/i.test(proveedor.nombre || "");
+  const precargadas = TARIFAS_PRECARGADAS.filter((p) => !proveedor || p.match.test(proveedor.nombre || ""));
   const sel = tarifas.find((t) => t.id === selId);
 
   const provIdPorNombre = (nombre) => (proveedores.find((p) => (p.nombre || "").toLowerCase().includes(nombre.toLowerCase())) || {}).id || "";
 
-  const cargarMediterraneo = async () => {
+  const cargarPrecargada = async (pre) => {
     setCargando(true);
     try {
-      const r = await fetch(`/tarifas/mediterraneo-2024.json?t=${Date.now()}`);
+      const r = await fetch(`/tarifas/${pre.archivo}?t=${Date.now()}`);
       if (!r.ok) throw new Error("No se encuentra el archivo de tarifa");
       const d = await r.json();
       const t = {
-        id: uid(), nombre: d.nombre, fecha: d.fecha, proveedorId: proveedor ? proveedor.id : provIdPorNombre("mediterr"), proveedorNombre: proveedor ? proveedor.nombre : d.proveedor,
-        descuentos: { aluminio: 0, goma: 0, accesorios: 0 }, acabados: d.acabados, acabadosNombres: d.acabadosNombres, colores: d.colores,
+        id: uid(), nombre: d.nombre, fecha: d.fecha, proveedorId: proveedor ? proveedor.id : provIdPorNombre(d.proveedor.slice(0, 6)), proveedorNombre: proveedor ? proveedor.nombre : d.proveedor,
+        descuentos: { aluminio: 0, goma: 0, accesorios: 0, paneles: 0, chapas: 0, ...(d.descuentos || {}) }, acabados: d.acabados, acabadosNombres: d.acabadosNombres, colores: d.colores,
         items: d.items.map((it) => ({ ...it, id: uid() })), creada: Date.now(),
       };
       save([...todas, t]); setSelId(t.id);
@@ -16913,7 +16944,8 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
   const completarMediterraneo = async () => {
     if (!sel) return;
     try {
-      const r = await fetch(`/tarifas/mediterraneo-2024.json?t=${Date.now()}`);
+      const pre = TARIFAS_PRECARGADAS.find((p) => p.match.test(sel.nombre || "")) || TARIFAS_PRECARGADAS[0];
+      const r = await fetch(`/tarifas/${pre.archivo}?t=${Date.now()}`);
       const d = await r.json();
       const tiene = new Set((sel.items || []).map((i) => normRef(i.ref)));
       const nuevos = d.items.filter((i) => !tiene.has(normRef(i.ref))).map((i) => ({ ...i, id: uid() }));
@@ -16930,14 +16962,14 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
           <button key={t.id} onClick={() => setSelId(t.id)} className={`px-3 py-1.5 rounded-full text-sm border ${t.id === selId ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "border-slate-300 text-slate-600"}`}>{t.nombre}</button>
         ))}
         <button onClick={nueva} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><Plus size={14} /> Nueva tarifa</button>
-        {sel && /medit/i.test(sel.nombre || "") && (
+        {sel && TARIFAS_PRECARGADAS.some((p) => p.match.test(sel.nombre || "")) && (
           <button onClick={completarMediterraneo} className="px-3 py-1.5 rounded-md border border-slate-300 text-sm">Completar con lo que falte del archivo</button>
         )}
-        {mostrarMediterraneo && (
-          <button onClick={cargarMediterraneo} disabled={cargando} className="px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold">
-            {cargando ? "Cargando…" : "Cargar tarifa Mediterráneo 2024 (ya leída del PDF)"}
+        {precargadas.map((pre) => (
+          <button key={pre.archivo} onClick={() => cargarPrecargada(pre)} disabled={cargando} className="px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold">
+            {cargando ? "Cargando…" : `Cargar tarifa ${pre.etiqueta} (ya leída del PDF)`}
           </button>
-        )}
+        ))}
       </div>
       <p className="text-xs text-slate-500">Las tarifas son las mismas en todos sitios: se ven y se cambian aquí, en la ficha de cada proveedor, y se usan en Pedidos ("Añadir desde tarifa") y en la Calculadora de ventanas.</p>
       {!sel && <p className="text-sm text-slate-500">Elige o crea una tarifa.</p>}
@@ -17014,8 +17046,8 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
 
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
         <h4 className="text-sm font-bold text-slate-700 mb-2">Descuentos de esta tarifa (%)</h4>
-        <div className="grid grid-cols-3 gap-3 max-w-xl">
-          {[["aluminio", "Aluminio"], ["goma", "Goma"], ["accesorios", "Accesorios"]].map(([k, l]) => (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 max-w-3xl">
+          {[["aluminio", "Aluminio"], ["goma", "Goma"], ["accesorios", "Accesorios"], ["paneles", "Paneles puerta y sándwich"], ["chapas", "Chapas"]].map(([k, l]) => (
             <Field key={k} label={l}>
               <TextInput type="number" value={tarifa.descuentos?.[k] ?? 0} onChange={(e) => onChange({ descuentos: { ...(tarifa.descuentos || {}), [k]: e.target.value } })} />
             </Field>
@@ -17064,7 +17096,7 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
           </table>
         </div>
         {filtrados.length > limite && <button onClick={() => setLimite(limite + 150)} className="mt-2 text-sm text-[#2E8B57] font-semibold">Ver más ({filtrados.length - limite} restantes)</button>}
-        <p className="text-xs text-slate-400 mt-2">Columnas de acabado (blanco, varios, bronce, especial, madera) = precio de perfil €/m. Columnas bruto/negro/plata/acero = precio de accesorio por color. Casillas vacías = sin precio en la tarifa.</p>
+        <p className="text-xs text-slate-400 mt-2">Las primeras columnas son los acabados del perfil (precio €/m); las últimas, los colores de accesorio. Casillas vacías = sin precio en la tarifa. El precio neto aplica el descuento del grupo de cada artículo.</p>
       </div>
     </div>
   );
