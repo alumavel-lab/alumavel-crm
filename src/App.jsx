@@ -9341,6 +9341,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           envios={enviosProceso}
           proyectos={proyectos}
           proveedores={proveedores}
+          clientes={clientes}
           usuarios={usuarios}
           onUpsert={onUpsertEnvioProceso}
           onMarcarRecogido={onMarcarRecogidoEnvio}
@@ -9522,10 +9523,123 @@ function imprimirAlbaranSalida(e, { proveedor, proyecto, responsable }) {
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
 }
 
-function ProcesoExternoTab({ envios, proyectos, proveedores, usuarios, onUpsert, onMarcarRecogido, onDelete }) {
+// PDF del albarán de salida (con la firma electrónica del chófer si la tiene), para guardarlo,
+// imprimirlo o mandarlo por correo/WhatsApp como prueba de entrega.
+async function generarPdfAlbaranSalida(e, { proveedor, proyecto, responsable }) {
+  const pdf = await PDFDocument.create();
+  const f = await pdf.embedFont(StandardFonts.Helvetica);
+  const fb = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const negro = rgb(0.07, 0.07, 0.07), gris = rgb(0.4, 0.4, 0.4);
+  const p = pdf.addPage([595.28, 841.89]);
+  const M = 50;
+  const txt = (t, x, y, size = 11, font = f, color = negro) => p.drawText(String(t ?? "").replace(/[^\x20-\xFF€—–·²×]/g, ""), { x, y, size, font, color });
+  try {
+    const logo = await pdf.embedJpg(LOGO_ECOWIN);
+    const h = 26, w = (logo.width / logo.height) * h;
+    p.drawRectangle({ x: M, y: 770, width: w + 20, height: h + 16, color: rgb(0.2, 0.21, 0.27) });
+    p.drawImage(logo, { x: M + 10, y: 778, width: w, height: h });
+  } catch (err) { txt("ECOWIN PVC", M, 785, 16, fb); }
+  txt("ALBARÁN DE SALIDA", 330, 795, 18, fb);
+  txt(`Nº ${e.numeroAlbaran || "—"}`, 330, 775, 13, fb);
+  txt(`Fecha: ${fmtDate(e.fechaSalida)}`, 330, 758);
+  let y = 715;
+  const fila = (k, v) => { txt(k, M, y, 11, fb); txt(v, M + 150, y); y -= 20; };
+  fila("Destino:", proveedor?.nombre || "—");
+  if (proveedor?.direccion) fila("", proveedor.direccion);
+  fila("Obra:", proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Material general");
+  fila("Chófer / transportista:", `${e.chofer || ""}${e.matricula ? `  ·  Matrícula ${e.matricula}` : ""}`);
+  fila("Recogida prevista:", `${fmtDate(e.fechaPrevistaRecogida)}${responsable ? `  ·  Responsable: ${responsable}` : ""}`);
+  y -= 10;
+  p.drawRectangle({ x: M, y: y - 4, width: 495, height: 22, color: rgb(0.94, 0.96, 0.98), borderColor: negro, borderWidth: 1 });
+  txt("Material", M + 8, y + 3, 11, fb); txt("Cantidad", M + 400, y + 3, 11, fb);
+  y -= 70;
+  p.drawRectangle({ x: M, y: y + 4, width: 495, height: 48, borderColor: negro, borderWidth: 1 });
+  const desc = String(e.descripcion || "");
+  const lineas = desc.match(/.{1,70}(\s|$)/g) || [desc];
+  lineas.slice(0, 3).forEach((l, i) => txt(l.trim(), M + 8, y + 36 - i * 13));
+  txt(e.cantidad || "", M + 410, y + 36);
+  y -= 20;
+  if (e.notas) { txt(`Notas: ${e.notas}`.slice(0, 110), M, y, 10, f, gris); y -= 18; }
+  // recuadros de firma
+  const caja = async (x, titulo, firma) => {
+    const top = 330;
+    p.drawRectangle({ x, y: top - 170, width: 235, height: 170, borderColor: negro, borderWidth: 1 });
+    txt(titulo, x + 8, top - 16, 10, fb);
+    if (firma && firma.imagen) {
+      try { const img = await pdf.embedPng(firma.imagen); const w = 200, h = Math.min(90, (img.height / img.width) * 200); p.drawImage(img, { x: x + 15, y: top - 30 - h, width: w, height: h }); } catch (err) { /* sin imagen */ }
+    }
+    txt(`Nombre: ${firma?.nombre || ""}${firma?.dni ? `  DNI: ${firma.dni}` : ""}`, x + 8, top - 140, 9);
+    txt(`Fecha: ${firma?.fecha ? new Date(firma.fecha).toLocaleString("es-ES") : ""}`, x + 8, top - 155, 9);
+  };
+  await caja(M, "Entregado por (fábrica)", e.firmaEntrega);
+  await caja(M + 260, "Recibe — chófer / transportista", e.firmaChofer);
+  txt("El firmante declara recibir el material descrito en buen estado.", M, 140, 9, f, gris);
+  if (e.firmaChofer) {
+    txt(`Firmado electrónicamente en pantalla el ${new Date(e.firmaChofer.fecha).toLocaleString("es-ES")} por ${e.firmaChofer.nombre}${e.firmaChofer.dni ? ` (DNI ${e.firmaChofer.dni})` : ""}.`, M, 122, 8, f, gris);
+    if (e.firmaChofer.dispositivo) txt(`Dispositivo: ${e.firmaChofer.dispositivo}`.slice(0, 120), M, 110, 7, f, gris);
+  }
+  return await pdf.save();
+}
+
+function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
+  const [email, setEmail] = useState(emailInicial || "");
+  const [enviando, setEnviando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const nombreArchivo = `Albaran_salida_${envio.numeroAlbaran || envio.id}.pdf`;
+  const obtenerPdf = async () => new Blob([await generarPdfAlbaranSalida(envio, datos)], { type: "application/pdf" });
+  const aDataUrl = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+  const descargar = async () => {
+    const blob = await obtenerPdf();
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = nombreArchivo; a.click(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  const compartir = async () => {
+    const blob = await obtenerPdf();
+    const file = new File([blob], nombreArchivo, { type: "application/pdf" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: `Albarán de salida ${envio.numeroAlbaran}` }); } catch (err) { /* cancelado */ }
+    } else { await descargar(); setMsg("Este navegador no deja compartir directamente: se ha descargado el PDF para que lo adjuntes tú."); }
+  };
+  const enviarEmail = async () => {
+    if (!email.includes("@")) { setMsg("Escribe un correo válido."); return; }
+    setEnviando(true); setMsg("");
+    try {
+      const dataUrl = await aDataUrl(await obtenerPdf());
+      const r = await fetch("/.netlify/functions/enviar-email", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destinatario: email, asunto: `Albarán de salida ${envio.numeroAlbaran || ""} — Ecowin PVC`,
+          cuerpo: `Buenos días,\n\nLe adjuntamos el albarán de salida ${envio.numeroAlbaran || ""} del ${fmtDate(envio.fechaSalida)}${envio.firmaChofer ? `, firmado por ${envio.firmaChofer.nombre}` : ""}.\n\nMaterial: ${envio.descripcion}${envio.cantidad ? ` (${envio.cantidad})` : ""}\n\nUn saludo,\nEcowin PVC`,
+          adjuntos: [{ nombre: nombreArchivo, dataUrl }] }) });
+      const j = await r.json().catch(() => ({}));
+      if (j.ok) setMsg("✓ Enviado."); else setMsg(`No se pudo enviar: ${j.error || r.status}. Usa "Descargar" o "Compartir" mientras tanto.`);
+    } catch (err) { setMsg("No se pudo enviar: " + err.message); } finally { setEnviando(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-lg p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-800">Albarán {envio.numeroAlbaran} {envio.firmaChofer ? "(firmado)" : "(sin firmar)"}</h3>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={descargar} className="flex items-center gap-1 text-sm font-semibold border border-slate-300 px-3 py-2 rounded-md"><Download size={14} /> Descargar PDF</button>
+          <button onClick={compartir} className="text-sm font-semibold border border-slate-300 px-3 py-2 rounded-md">Compartir (WhatsApp, correo…)</button>
+        </div>
+        <Field label="Enviar por correo a"><TextInput value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@cliente.com" /></Field>
+        <button onClick={enviarEmail} disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="w-full text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-50">{enviando ? "Enviando…" : "Enviar por correo con el PDF adjunto"}</button>
+        {msg && <p className="text-xs text-slate-600">{msg}</p>}
+        <button onClick={onClose} className="w-full text-sm text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cerrar</button>
+      </div>
+    </div>
+  );
+}
+
+function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios, onUpsert, onMarcarRecogido, onDelete }) {
   const blank = { descripcion: "", cantidad: "", proveedorId: "", proyectoId: "", responsableId: "", chofer: "", matricula: "", fechaSalida: new Date().toISOString().slice(0, 10), fechaPrevistaRecogida: "", notas: "" };
   const [f, setF] = useState(blank);
   const [firmando, setFirmando] = useState(null); // { envio, quien: "chofer" | "entrega" }
+  const [enviandoAlb, setEnviandoAlb] = useState(null);
+  const datosDe = (e) => ({ proveedor: proveedores.find((p) => p.id === e.proveedorId), proyecto: proyectos.find((p) => p.id === e.proyectoId), responsable: responsableNombre(e.responsableId) });
+  const emailDe = (e) => {
+    const pr = proyectos.find((p) => p.id === e.proyectoId);
+    const cli = pr ? (clientes || []).find((c) => c.id === pr.clienteId) : null;
+    return cli?.email || proveedores.find((p) => p.id === e.proveedorId)?.email || "";
+  };
   const siguienteNumero = () => {
     const max = envios.reduce((m, x) => Math.max(m, parseInt(String(x.numeroAlbaran || "").replace(/\D/g, "")) || 0), 0);
     return `AS-${String(max + 1).padStart(4, "0")}`;
@@ -9627,6 +9741,7 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, usuarios, onUpsert,
               <div className="flex flex-wrap gap-2 shrink-0">
                 <button onClick={() => imprimir(e)} className="flex items-center gap-1 text-sm font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir albarán</button>
                 <button onClick={() => setFirmando({ envio: conNumero(e), quien: "chofer" })} className="text-sm font-semibold text-sky-700 border border-sky-300 px-3 py-2 rounded-md hover:bg-sky-50">{e.firmaChofer ? "Volver a firmar" : "Firmar aquí"}</button>
+                <button onClick={() => { const x = conNumero(e); if (!e.numeroAlbaran) onUpsert({ id: e.id, numeroAlbaran: x.numeroAlbaran }); setEnviandoAlb(x); }} className="text-sm font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">PDF / Enviar</button>
                 <button onClick={() => onMarcarRecogido(e.id)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Marcar recogido</button>
                 <button onClick={() => { if (confirm("¿Eliminar este registro?")) onDelete(e.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={16} /></button>
               </div>
@@ -9647,6 +9762,7 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, usuarios, onUpsert,
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={() => imprimir(e)} className="flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50"><Printer size={13} /> Albarán</button>
+                  <button onClick={() => setEnviandoAlb(conNumero(e))} className="text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">PDF / Enviar</button>
                   <button onClick={() => { if (confirm("¿Eliminar este registro?")) onDelete(e.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={16} /></button>
                 </div>
               </div>
@@ -9655,13 +9771,21 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, usuarios, onUpsert,
         </>
       )}
 
+      {enviandoAlb && (
+        <EnviarAlbaranModal envio={(() => { const act = envios.find((x) => x.id === enviandoAlb.id) || {}; return { ...enviandoAlb, ...act, numeroAlbaran: act.numeroAlbaran || enviandoAlb.numeroAlbaran, firmaChofer: act.firmaChofer || enviandoAlb.firmaChofer, chofer: act.chofer || enviandoAlb.chofer }; })()}
+          datos={datosDe(enviandoAlb)} emailInicial={emailDe(enviandoAlb)} onClose={() => setEnviandoAlb(null)} />
+      )}
+
       {firmando && (
         <FirmaCanvas
           titulo={`Firma del chófer — albarán ${firmando.envio.numeroAlbaran}`}
           nombreInicial={firmando.envio.chofer || ""}
           onCancel={() => setFirmando(null)}
           onGuardar={(firma) => {
-            onUpsert({ id: firmando.envio.id, numeroAlbaran: firmando.envio.numeroAlbaran, firmaChofer: firma, chofer: firmando.envio.chofer || firma.nombre });
+            const firmaConDatos = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160) };
+            onUpsert({ id: firmando.envio.id, numeroAlbaran: firmando.envio.numeroAlbaran, firmaChofer: firmaConDatos, chofer: firmando.envio.chofer || firma.nombre });
+            // al firmar, se ofrece directamente guardar o mandar el albarán firmado
+            setEnviandoAlb({ ...firmando.envio, firmaChofer: firmaConDatos, chofer: firmando.envio.chofer || firma.nombre });
             setFirmando(null);
           }}
         />
