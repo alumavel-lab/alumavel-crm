@@ -492,6 +492,21 @@ export default function App() {
 
   // tarifas de la Calculadora de Presupuestos (precios editables por producto)
   const [tarifasPersianas, setTarifasPersianas] = useState({});
+  // tarifas de aluminio por proveedor (con descuentos aluminio/goma/accesorios) y
+  // modelos de ventana (hojas de corte) para la Calculadora de Ventanas
+  const [tarifasAluminio, setTarifasAluminio] = useState([]);
+  const [modelosVentana, setModelosVentana] = useState([]);
+  const [configVentanas, setConfigVentanas] = useState({});
+  const [tarifasCristal, setTarifasCristal] = useState([]);
+  // Lista de partidas calculadas (ventanas, persianas...) pendientes de juntar en un
+  // presupuesto. Es de este dispositivo (no se comparte), se guarda en el navegador.
+  const [partidasCalc, setPartidasCalcState] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("alumavel_partidas_calc") || "[]"); } catch (e) { return []; }
+  });
+  const setPartidasCalc = (next) => {
+    setPartidasCalcState(next);
+    try { localStorage.setItem("alumavel_partidas_calc", JSON.stringify(next)); } catch (e) { /* sin espacio: se queda solo en memoria */ }
+  };
 
   // PDF de condiciones/contrato que se adjunta a los presupuestos al enviarlos
   // a firmar (además de los datos del propio presupuesto)
@@ -503,7 +518,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -543,6 +558,14 @@ export default function App() {
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
         if (resultados.archivosEmpresa) setArchivosEmpresa(toArray(resultados.archivosEmpresa));
         if (resultados.tarifasPersianas) setTarifasPersianas(resultados.tarifasPersianas);
+        if (resultados.tarifasAluminio) setTarifasAluminio(toArray(resultados.tarifasAluminio).map((t) => ({ ...t, items: toArray(t.items || []) })));
+        if (resultados.modelosVentana) {
+          const guardados = toArray(resultados.modelosVentana).map((m) => ({ ...m, perfiles: toArray(m.perfiles || []), accesorios: toArray(m.accesorios || []), variables: toArray(m.variables || []) }));
+          // Si todavía no hay ningún techo guardado, se enseñan los de fábrica (no se guardan hasta que se toque algo).
+          setModelosVentana(guardados.some((m) => m.categoria === "techo") ? guardados : [...guardados, ...modelosTechoDeFabrica()]);
+        } else setModelosVentana([...modelosVentanaDeFabrica(), ...modelosTechoDeFabrica()]);
+        if (resultados.configVentanas) setConfigVentanas(resultados.configVentanas);
+        if (resultados.tarifasCristal) setTarifasCristal(toArray(resultados.tarifasCristal).map((t) => ({ ...t, items: toArray(t.items || []), recargosSuperficie: toArray(t.recargosSuperficie || []), recargosLado: toArray(t.recargosLado || []), formas: toArray(t.formas || []) })));
         if (resultados.configuracionFirma) setConfiguracionFirma(resultados.configuracionFirma);
         if (resultados.leads) setLeads(toArray(resultados.leads));
         if (resultados.enviosProceso) setEnviosProceso(toArray(resultados.enviosProceso));
@@ -951,6 +974,25 @@ export default function App() {
   // poner el número y guardar. El despiece calculado viaja con el presupuesto y, si
   // luego se pasa a proyecto, se importa solo (igual que ya pasa con los techos).
   const saveTarifasPersianas = (next) => { setTarifasPersianas(next); persist("tarifasPersianas", next); };
+  const saveTarifasAluminio = (next) => { setTarifasAluminio(next); persist("tarifasAluminio", next); };
+  const saveModelosVentana = (next) => { setModelosVentana(next); persist("modelosVentana", next); };
+  const saveConfigVentanas = (next) => { setConfigVentanas(next); persist("configVentanas", next); };
+  const saveTarifasCristal = (next) => { setTarifasCristal(next); persist("tarifasCristal", next); };
+  // Descuenta varias referencias del stock de una sola vez (una única escritura, para
+  // no pisar cambios como pasaría llamando a addMovimiento en bucle).
+  const descontarStockLote = (lista, motivo) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const porId = {};
+    (lista || []).forEach((x) => { porId[x.materialId] = (porId[x.materialId] || 0) + (parseFloat(x.cantidad) || 0); });
+    const next = materiales.map((m) => {
+      const cant = porId[m.id];
+      if (!cant) return m;
+      const mov = { id: uid(), tipo: "salida", cantidad: cant, contacto: motivo || "Calculadora de ventanas", estado: "Recibido", fecha: hoy };
+      return { ...m, stockReal: (parseFloat(m.stockReal) || 0) - cant, movimientos: [...(m.movimientos || []), mov] };
+    });
+    saveMateriales(next);
+    showToast(`Stock descontado (${Object.keys(porId).length} referencia/s)`);
+  };
 
   const saveConfiguracionFirma = (next) => { setConfiguracionFirma(next); persist("configuracionFirma", next); };
 
@@ -960,8 +1002,9 @@ export default function App() {
       direccionEnvio: datos.direccionObra || "",
       descripcion: datos.descripcion || "",
       importe: datos.importe || "",
-      comentarios: "Creado desde la Calculadora de Presupuestos (Persianas). Revisa los datos y el importe antes de guardar.",
+      comentarios: datos.comentarios || "Creado desde la Calculadora de Presupuestos (Persianas). Revisa los datos y el importe antes de guardar.",
       persianas: datos.persianas || [],
+      ventanas: datos.ventanas || [],
     });
     setModulo("presupuestos");
     setPresupuestoEditId(null);
@@ -988,6 +1031,7 @@ export default function App() {
     const next = presupuestos.map((p) => (p.id === presupuestoId ? {
       ...p,
       persianas: [...(p.persianas || []), ...nuevasPersianas],
+      ventanas: [...(p.ventanas || []), ...(datos.ventanas || [])],
       importe: (parseFloat(p.importe) || 0) + importeNuevo,
       descripcion: `${p.descripcion || ""}\n\n${datos.descripcion || ""}`.trim(),
     } : p));
@@ -1453,7 +1497,33 @@ export default function App() {
       });
       return { ...m, stockReal, movimientos: [...(m.movimientos || []), ...nuevosMovimientos] };
     });
-    saveMateriales(materialesNext);
+    // Líneas que vienen de una tarifa de proveedor (botón "Añadir desde tarifa" o pedido de
+    // la Calculadora de ventanas): al recibirlas entran en Stock. Si el material ya existe
+    // (mismo código y mismo acabado/color) se le suma; si no, se da de alta solo.
+    let materialesFinal = materialesNext;
+    let altasNuevas = 0;
+    pedido.lineas.filter((l) => l.modo === "libre" && l.tarifaRef && l.estado !== "Recibido").forEach((l) => {
+      const t = l.tarifaRef;
+      const cant = parseFloat(l.cantidad) || 0;
+      if (!cant || !t.ref) return;
+      const mov = { id: uid(), tipo: "entrada", cantidad: cant, contacto: proveedorNombre, estado: "Recibido", fecha: hoy, pedidoNumero: pedido.numero };
+      const idx = materialesFinal.findIndex((m) => normRef(m.codigo) === normRef(t.ref) && String(m.color || "").toLowerCase() === String(t.acabado || "").toLowerCase());
+      if (idx >= 0) {
+        const m = materialesFinal[idx];
+        materialesFinal = materialesFinal.map((x, i) => (i === idx ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + cant, movimientos: [...(m.movimientos || []), mov] } : x));
+      } else {
+        altasNuevas++;
+        materialesFinal = [{
+          id: uid(), codigo: t.ref, descripcion: t.desc || t.ref, proveedorId: pedido.proveedorId || "",
+          stockReal: cant, stockMinimo: 0, stockOptimo: 0, color: t.acabado || "", acabadoDescripcion: t.acabado || "",
+          longitud: t.longitudBarra ? String(t.longitudBarra) : "", ancho: "", alto: "", grueso: "",
+          precioCompra: l.precio || "", precioVenta: "", unidadCompra: t.unidadStock || "Unidad",
+          categoria: t.tipo === "aluminio" ? "Perfil aluminio" : t.tipo === "goma" ? "Gomas" : "Accesorios", familia: t.serie || "",
+          foto: "", movimientos: [mov], historicoPrecios: registrarHistoricoPrecio([], "", "", l.precio || "", "", `Alta al recibir pedido #${pedido.numero}`),
+        }, ...materialesFinal];
+      }
+    });
+    saveMateriales(materialesFinal);
 
     const pedidosNext = pedidos.map((p) =>
       p.id === pedidoId
@@ -1461,7 +1531,7 @@ export default function App() {
         : p
     );
     savePedidos(pedidosNext);
-    showToast("Pedido recibido: stock actualizado automáticamente");
+    showToast(altasNuevas ? `Pedido recibido: stock actualizado y ${altasNuevas} material(es) nuevo(s) dados de alta en Stock` : "Pedido recibido: stock actualizado automáticamente");
 
   };
 
@@ -2010,15 +2080,18 @@ export default function App() {
   // de fabricación va creciendo según se van aceptando presupuestos de la obra.
   const fusionarPersianasEnProyecto = (proyectoId, presupuesto) => {
     const proyecto = proyectos.find((p) => p.id === proyectoId);
-    if (!proyecto || !(presupuesto.persianas || []).length) return;
+    const hayPersianas = (presupuesto.persianas || []).length > 0;
+    const hayVentanas = (presupuesto.ventanas || []).length > 0;
+    if (!proyecto || (!hayPersianas && !hayVentanas)) return;
     const nuevasUnidades = (presupuesto.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, presupuesto));
     const proyectoActualizado = {
       ...proyecto,
       persianas: [...(proyecto.persianas || []), ...(presupuesto.persianas || [])],
       persianasControl: [...(proyecto.persianasControl || []), ...nuevasUnidades],
+      ventanas: [...(proyecto.ventanas || []), ...(presupuesto.ventanas || [])],
     };
     saveProyectos(proyectos.map((p) => (p.id === proyectoId ? proyectoActualizado : p)));
-    showToast(`${nuevasUnidades.length} persiana(s) añadida(s) al control de fabricación de la obra`);
+    if (hayPersianas) showToast(`${nuevasUnidades.length} persiana(s) añadida(s) al control de fabricación de la obra`);
   };
 
   // Cambia el estado (Pendiente / En fabricación / Terminada) de una unidad de
@@ -2059,6 +2132,7 @@ export default function App() {
       checklistMateriales: checklistMaterialesPorDefecto(),
       techos: presupuesto.techos || [],
       persianas: presupuesto.persianas || [],
+      ventanas: presupuesto.ventanas || [],
       persianasControl: persianasControlInicial,
       documentos: documentosProyecto,
     };
@@ -2690,6 +2764,7 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 min-w-0 h-full overflow-y-auto">
+       <TarifasVentanasCtx.Provider value={{ tarifasAluminio, saveTarifasAluminio, modelosVentana, saveModelosVentana, proveedores, materiales, descontarStockLote, generarPedido: enviarAPedido, configVentanas, saveConfigVentanas, tarifasCristal, saveTarifasCristal, partidasCalc, setPartidasCalc }}>
         {/* Barra superior con botón de menú, solo visible en móvil */}
         <div className="md:hidden sticky top-0 z-20 bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3">
           <button onClick={() => setMenuMovilAbierto(true)} className="p-1.5 -ml-1.5 rounded-md hover:bg-slate-100">
@@ -3181,6 +3256,7 @@ export default function App() {
             onDelete={deleteUsuario}
           />
         )}
+      </TarifasVentanasCtx.Provider>
       </main>
 
       {toast && (
@@ -5224,6 +5300,11 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
       {tab === "pedidos" && (
         <div className="space-y-4">
+          {(proyecto.ventanas || []).length > 0 && (
+            <div className="px-4 pb-3 rounded-xl bg-white border border-slate-200">
+              <VentanasPresupuestoBloque ventanas={proyecto.ventanas} proyectoId={proyecto.id} titulo="Ventanas y techos de esta obra" />
+            </div>
+          )}
           <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-xl bg-white border border-slate-200 text-sm text-slate-600">
             <span>Pedidos de material vinculados a esta obra.</span>
             <button
@@ -5598,6 +5679,7 @@ function ProveedorForm({ initial, onCancel, onSave }) {
 
 function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onImportarTarifas, onGenerarPedido }) {
   const [tab, setTab] = useState("datos");
+  const ctxTarifas = React.useContext(TarifasVentanasCtx) || {};
   const historico = proveedor.historico || [];
   const [hForm, setHForm] = useState({ articulo: "", cantidad: "", fecha: new Date().toISOString().slice(0, 10), precio: "", comentarios: "" });
   const inputTarifaProveedorRef = useRef(null);
@@ -5691,7 +5773,8 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
       <div className="flex gap-1 mb-4 border-b border-slate-200">
         {[
           { id: "datos", label: "Datos proveedor", icon: FileText },
-          { id: "materiales", label: `Tarifa (${materiales.length})`, icon: Package },
+          { id: "tarifasPrecios", label: "Tarifas y descuentos", icon: Euro },
+          { id: "materiales", label: `Materiales en stock (${materiales.length})`, icon: Package },
           { id: "pedidos", label: `Pedidos (${pedidos.length})`, icon: ClipboardList },
           { id: "historico", label: `Histórico artículos/servicios (${historico.length})`, icon: ClipboardList },
         ].map((t) => (
@@ -5700,6 +5783,10 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
           </button>
         ))}
       </div>
+
+      {tab === "tarifasPrecios" && (
+        <TarifasProveedorTabs ctx={ctxTarifas} proveedor={proveedor} />
+      )}
 
       {tab === "materiales" && (
         <div className="space-y-3">
@@ -7190,6 +7277,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
   const setLinea = (id, patch) => setF({ ...f, lineas: f.lineas.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
   const addLinea = (modo = "catalogo") => setF({ ...f, lineas: [...f.lineas, { ...blankLinea(), modo }] });
   const removeLinea = (id) => setF({ ...f, lineas: f.lineas.filter((l) => l.id !== id) });
+  const [verSelectorTarifa, setVerSelectorTarifa] = useState(false);
 
   // Elegir un material y la cantidad que se necesita: si el stock actual ya la cubre,
   // no se añade nada al pedido (ya hay de sobra); si no, solo se añade al pedido lo
@@ -7390,7 +7478,19 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             <button type="button" onClick={() => addLinea("libre")} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
               <Plus size={14} /> Añadir medida a medida
             </button>
+            <button type="button" onClick={() => setVerSelectorTarifa(!verSelectorTarifa)} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
+              <Plus size={14} /> Añadir desde tarifa de aluminio
+            </button>
           </div>
+          {verSelectorTarifa && (
+            <div className="mt-3">
+              <SelectorTarifaPedido
+                onClose={() => setVerSelectorTarifa(false)}
+                onAdd={({ referencia, cantidad, precio, materialId, tarifaRef }) => setF((prev) => ({ ...prev, lineas: [...prev.lineas.filter((l) => !(l.modo === "catalogo" && !l.cantidad) && !(l.modo === "libre" && !l.referencia && !l.cantidad)),
+                  materialId ? { ...blankLinea(), modo: "catalogo", materialId, cantidad, precio } : { ...blankLinea(), modo: "libre", referencia, cantidad, precio, tarifaRef }] }))}
+              />
+            </div>
+          )}
         </div>
 
         {materiales && materiales.length > 0 && (
@@ -11554,7 +11654,7 @@ function imprimirDespiecePersianas({ clienteNombre, direccionObra, filas, despie
     <tr><td>Subtotal materiales</td><td style="text-align:right;">${presupuestoCalc.total.toFixed(2)} €</td></tr>
     <tr><td>Horas de fabricación (${e(presupuestoGastos.horas || 0)}h × ${(parseFloat(presupuestoGastos.precioHora) || 0).toFixed(2)}€/h)</td><td style="text-align:right;">${presupuestoGastos.importeHoras.toFixed(2)} €</td></tr>
     <tr><td>Subtotal</td><td style="text-align:right;">${presupuestoGastos.subtotal.toFixed(2)} €</td></tr>
-    <tr><td>Gastos (${e(presupuestoGastos.pctGastos || 0)}%)</td><td style="text-align:right;">${presupuestoGastos.gastos.toFixed(2)} €</td></tr>
+    <tr><td>Gastos y margen (${e(presupuestoGastos.pctGastos || 0)}%)</td><td style="text-align:right;">${presupuestoGastos.gastos.toFixed(2)} €</td></tr>
   </table>` : ""}
   <p class="total">Total: ${(presupuestoGastos ? presupuestoGastos.total : presupuestoCalc.total).toFixed(2)} €</p>`;
 
@@ -11941,14 +12041,14 @@ function TechosMedicion({ medicionId }) {
   return (
     <div className="mt-8 pt-8 border-t border-slate-200">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="font-display font-bold text-slate-800">Techos ({techos.length})</h2>
+        <h2 className="font-display font-bold text-slate-800">Techos TM ({techos.length})</h2>
         {!nuevoTipo && (
           <div className="flex gap-2">
             <button onClick={() => setNuevoTipo("abatible")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-2 rounded-md">
-              + Techo abatible
+              + Techo TM abatible
             </button>
             <button onClick={() => setNuevoTipo("corredero")} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">
-              + Techo corredero
+              + Techo TM corredero
             </button>
           </div>
         )}
@@ -11957,7 +12057,7 @@ function TechosMedicion({ medicionId }) {
       {nuevoTipo && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
           <p className="text-sm font-semibold text-slate-700 mb-3">
-            Nuevo techo {nuevoTipo === "abatible" ? "abatible (marco cerrado, con puerta, sin barandilla)" : "corredero"}
+            Nuevo techo TM {nuevoTipo === "abatible" ? "abatible (marco cerrado, con puerta, sin barandilla)" : "corredero"}
           </p>
 
           {nuevoTipo === "corredero" && (
@@ -15147,6 +15247,7 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: prefill.direccionEnvio || "", montaje: false, recoge: false, zona: "",
       techos: prefill.techos || [],
       persianas: prefill.persianas || [],
+      ventanas: prefill.ventanas || [],
     });
     setEditId(null);
     setView("form");
@@ -15584,14 +15685,1758 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
   );
 }
 
+/* ================= TARIFAS DE ALUMINIO + CALCULADORA DE VENTANAS =================
+   - Tarifas de aluminio por proveedor (nodo Firebase "tarifasAluminio"): cada tarifa
+     tiene 3 descuentos editables (aluminio, goma, accesorios), sus acabados (precio de
+     perfil por acabado) y colores de accesorio. El precio neto = tarifa − descuento
+     del grupo al que pertenece el artículo.
+   - Modelos de ventana (nodo "modelosVentana"): cada tipo de ventana de cada serie con
+     sus perfiles + fórmula de corte (A = ancho, H = alto, en mm), sus accesorios y la
+     medida aproximada del cristal. Todo editable desde la pestaña "Modelos".
+   - Calculadora: modelo + medidas + acabado → despiece valorado con la tarifa, con
+     persiana opcional (usa la calculadora de persianas) y cristal. */
+
+const TarifasVentanasCtx = React.createContext(null);
+
+const TARIFA_GRUPOS = [
+  { id: "aluminio", label: "Aluminio" },
+  { id: "goma", label: "Goma" },
+  { id: "accesorio", label: "Accesorios" },
+];
+const TARIFA_DESCUENTO_CLAVE = { aluminio: "aluminio", goma: "goma", accesorio: "accesorios" };
+
+const normRef = (r) => String(r || "").trim().toUpperCase().replace(/^0+(?=\w)/, "");
+
+// Evalúa una fórmula de corte tipo "(A - 48.5) / 2" o "H-74". Solo admite A, H,
+// números y + - * / ( ). Devuelve NaN si la fórmula no es válida.
+// Evaluador genérico de fórmulas: admite las variables que se le pasen (A, H, L,
+// y las variables propias de cada modelo, ej. A1 o U) y las funciones CEIL (redondear
+// arriba), FLOOR, ROUND, MAX y MIN. Todo lo demás se rechaza (devuelve NaN).
+const FORMULA_FUNCIONES = { CEIL: "Math.ceil", ARRIBA: "Math.ceil", FLOOR: "Math.floor", ABAJO: "Math.floor", ROUND: "Math.round", REDONDEAR: "Math.round", MAX: "Math.max", MIN: "Math.min" };
+function evalFormula(expr, vars) {
+  if (expr === undefined || expr === null || String(expr).trim() === "") return 0;
+  const s = String(expr).replace(/(\d),(\d)/g, "$1.$2").replace(/(\d)\s*mm\b/gi, "$1").replace(/\*\s*$/, "").trim();
+  const nombres = Object.keys(vars || {});
+  let ok = true;
+  const js = s.replace(/(?<![0-9.])[A-Za-z_][A-Za-z0-9_]*/g, (id) => {
+    const u = id.toUpperCase();
+    if (FORMULA_FUNCIONES[u]) return FORMULA_FUNCIONES[u];
+    const k = nombres.find((n) => n.toUpperCase() === u);
+    if (k !== undefined) return `v[${JSON.stringify(k)}]`;
+    ok = false; return "0";
+  });
+  if (!ok) return NaN;
+  const sinPermitidos = js.replace(/Math\.(ceil|floor|round|max|min)/g, "").replace(/v\["[^"]*"\]/g, "");
+  if (!/^[0-9eE+\-*/()., ]*$/.test(sinPermitidos)) return NaN;
+  try {
+    // eslint-disable-next-line no-new-func
+    const r = Function("v", `return (${js});`)(vars || {});
+    return typeof r === "number" && isFinite(r) ? r : NaN;
+  } catch (e) { return NaN; }
+}
+function evalFormulaVentana(expr, A, H) { return evalFormula(expr, { A, H }); }
+
+// Variables de cálculo de un modelo: A (ancho), H (alto/altura), L (salida en techos)
+// + las variables propias del modelo, calculadas en orden (cada una puede usar las anteriores).
+function variablesModelo(modelo, base) {
+  const v = { ...base };
+  (modelo?.variables || []).forEach((x) => { if (x && x.nombre) v[x.nombre] = evalFormula(x.formula, v); });
+  return v;
+}
+
+function buscarItemTarifa(tarifa, refArt) {
+  if (!tarifa || !refArt) return null;
+  const k = normRef(refArt);
+  return (tarifa.items || []).find((it) => normRef(it.ref) === k) || null;
+}
+
+// Precio de tarifa de un artículo para un acabado (perfiles) o color (accesorios).
+function precioTarifaItem(item, acabado, color) {
+  const p = (item && item.precios) || {};
+  const val = (k) => (p[k] !== undefined && p[k] !== "" && !isNaN(parseFloat(p[k])) && parseFloat(p[k]) > 0 ? parseFloat(p[k]) : null);
+  if (acabado && val(acabado) !== null) return { precio: val(acabado), clave: acabado };
+  if (color && val(color) !== null) return { precio: val(color), clave: color };
+  if (val("bruto") !== null) return { precio: val("bruto"), clave: "bruto" };
+  const primera = Object.keys(p).find((k) => val(k) !== null);
+  return primera ? { precio: val(primera), clave: primera, aproximado: true } : { precio: 0, clave: "", sinPrecio: true };
+}
+
+function precioNetoItem(tarifa, item, acabado, color) {
+  const base = precioTarifaItem(item, acabado, color);
+  const grupo = TARIFA_DESCUENTO_CLAVE[item?.tipo] || "accesorios";
+  const dto = parseFloat(tarifa?.descuentos?.[grupo]) || 0;
+  return { ...base, dto, neto: base.precio * (1 - dto / 100) };
+}
+
+// ---- Modelos de ventana de fábrica (sacados de las hojas de corte de mediterraneoaluminio.com) ----
+const VP = (ref, desc, formula, cantidad, angulo = "45°") => ({ id: uid(), ref, desc, formula, cantidad, angulo });
+const VAC = (ref, desc, cantidad, unidad = "ud") => ({ id: uid(), ref, desc, cantidad: String(cantidad), unidad });
+
+function modelosVentanaDeFabrica() {
+  const omegaAccV1 = () => [
+    VAC("4910", "Escuadra exterior marco", 4), VAC("82110", "Escuadra hoja ventana RPT", 4),
+    VAC("82114", "Junta central", "2*(A+H)/1000", "m"), VAC("8841", "Ángulo junta central", 4),
+    VAC("41212", "Bisagra C.E.", 2), VAC("7900", "Cremona C.E.", 1), VAC("7201", "Kit 1 hoja C.E.", 1),
+  ];
+  const omegaAccV2 = (tapas) => [
+    VAC("4910", "Escuadra exterior marco", 4), VAC("82110", "Escuadra hoja ventana RPT", 8),
+    VAC("82114", "Junta central", "2*(A+H)/1000", "m"), VAC("8841", "Ángulo junta central", 4),
+    VAC("41212", "Bisagra C.E.", 4), VAC("7900", "Cremona C.E.", 1), VAC("7202", "Kit 2 hojas C.E.", 1),
+    VAC(tapas, "Juego tapas inversor", 1), VAC("82115", "Junta hoja-hoja", "H/1000", "m"),
+  ];
+  const omegaAccP = (hojas) => [
+    VAC("4910", "Escuadra exterior marco", 4), VAC("82111", "Escuadra puerta marco-hoja", 4 * hojas),
+    VAC("82114", "Junta central", "2*(A+H)/1000", "m"), VAC("8841", "Ángulo junta central", 4),
+    VAC("41212", "Bisagra C.E.", 3 * hojas), VAC(hojas > 1 ? "7202" : "7201", `Kit ${hojas} hoja${hojas > 1 ? "s" : ""} C.E.`, 1),
+    ...(hojas > 1 ? [VAC("82116", "Juego tapas inversor", 1), VAC("82115", "Junta hoja-hoja", "H/1000", "m")] : []),
+  ];
+  const teckAcc = (hojas, extra = []) => [
+    VAC("2065", "Escuadra Tecknica marcos", 4), VAC("82110", "Escuadra hoja perimetral", 4 * hojas),
+    VAC("2162", "Rueda Tecknica tándem", 2 * hojas), VAC("9339", "Cierre embutido", hojas >= 4 ? 2 : 1),
+    VAC("2075", "Felpudo Tri-Fin 7x6.5", `${hojas}*2*((A/${hojas})+H)/1000`, "m"),
+    VAC("2061", "Juego cortavientos Tecknica", hojas >= 3 ? 2 : 1),
+    VAC(hojas >= 4 ? "2092" : "2092", "Kit Tecknica 2 hojas perimetral", hojas >= 4 ? 2 : 1),
+    ...extra,
+  ];
+  const teckRectoAcc = (hojas) => [
+    VAC("2090", "Kit Tecknica 2 hojas", hojas >= 4 ? 2 : 1), VAC("2063", "Rueda Tecknica sencilla", 2 * hojas),
+    VAC("9339", "Cierre embutido", hojas >= 4 ? 2 : 1), VAC("2075", "Felpudo Tri-Fin 7x6.5", `${hojas}*2*((A/${hojas})+H)/1000`, "m"),
+    VAC("291003", "Cortavientos marco recto", 1),
+  ];
+  const m40Acc = (hojas, puerta) => [
+    VAC(puerta ? "41217" : "41216", puerta ? "Escuadra puerta (marco-hoja)" : "Escuadra ventana (marco-hoja)", 4 + 4 * hojas),
+    VAC("3570", "Goma abatible 40", "2*(A+H)/1000", "m"),
+    VAC("1259", "Bisagra abatible 40-20", (puerta ? 3 : 2) * hojas),
+    ...(puerta ? [VAC("44620", "Cerradura resbalón 1 punto + bombín", 1), VAC("4457", "Juego manilla recuperable", 1)]
+      : [VAC("7900", "Cremona Sirius C.E.", 1), VAC(hojas > 1 ? "4003" : "4000", `Kit ${hojas} hoja${hojas > 1 ? "s" : ""} 40-20`, 1)]),
+    ...(hojas > 1 ? [VAC(puerta ? "3736" : "3716", "Unión pilastra", 2), VAC("43100", "Juego tacos 2 hojas abatible", 1)] : []),
+  ];
+  return [
+    // ---------------- OMEGA P-52 ----------------
+    { id: uid(), serie: "OMEGA P-52", nombre: "Ventana 1 hoja", dibujo: { tipo: "practicable", hojas: 1 },
+      perfiles: [VP("35005", "Marco perimetral", "A", 2), VP("35005", "Marco perimetral", "H", 2), VP("35007", "Hoja perimetral", "A-43.5", 2), VP("35007", "Hoja perimetral", "H-43.5", 2), VP("16427", "Junquillo 20 mm", "A-130", 2, "90°"), VP("16427", "Junquillo 20 mm", "H-170", 2, "90°")],
+      accesorios: omegaAccV1(), vidrio: { ancho: "A-130", alto: "H-170", cantidad: "1" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Ventana 2 hojas", dibujo: { tipo: "practicable", hojas: 2 },
+      perfiles: [VP("35005", "Marco perimetral", "A", 2), VP("35005", "Marco perimetral", "H", 2), VP("35007", "Hoja perimetral", "(A-48.5)/2", 4), VP("35007", "Hoja perimetral", "H-43.5", 4), VP("35008", "Inversor", "H-114", 1, "90°"), VP("16427", "Junquillo 20 mm", "(A-220)/2", 4, "90°"), VP("16427", "Junquillo 20 mm", "H-170", 4, "90°")],
+      accesorios: omegaAccV2("82116"), vidrio: { ancho: "(A-220)/2", alto: "H-170", cantidad: "2" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Ventana 2 hojas (hoja inversora)", dibujo: { tipo: "practicable", hojas: 2 },
+      perfiles: [VP("35005", "Marco perimetral", "A", 2), VP("35005", "Marco perimetral", "H", 2), VP("35007", "Hoja perimetral", "(A-25.5)/2", 4), VP("35007", "Hoja perimetral", "H-43.5", 3), VP("35009", "Hoja inversora", "H-26", 1), VP("16427", "Junquillo 20 mm", "(A-197)/2", 4, "90°"), VP("16427", "Junquillo 20 mm", "H-170", 4, "90°")],
+      accesorios: omegaAccV2("82117"), vidrio: { ancho: "(A-197)/2", alto: "H-170", cantidad: "2" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Puerta 1 hoja", dibujo: { tipo: "practicable", hojas: 1, puerta: true },
+      perfiles: [VP("35014", "Marco puerta", "A", 2), VP("35014", "Marco puerta", "H", 2), VP("35012", "Hoja puerta", "A-96.5", 2), VP("35012", "Hoja puerta", "H-96.5", 2), VP("16427", "Junquillo 20 mm", "A-244", 2, "90°"), VP("16427", "Junquillo 20 mm", "H-284", 2, "90°")],
+      accesorios: omegaAccP(1), vidrio: { ancho: "A-244", alto: "H-284", cantidad: "1" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Puerta 2 hojas", dibujo: { tipo: "practicable", hojas: 2, puerta: true },
+      perfiles: [VP("35014", "Marco puerta", "A", 2), VP("35014", "Marco puerta", "H", 2), VP("35012", "Hoja puerta", "(A-101.5)/2", 4), VP("35012", "Hoja puerta", "H-97", 4), VP("35008", "Inversor", "H-167", 1, "90°"), VP("16427", "Junquillo 20 mm", "(A-396.5)/2", 4, "90°"), VP("16427", "Junquillo 20 mm", "H-284", 4, "90°")],
+      accesorios: omegaAccP(2), vidrio: { ancho: "(A-396.5)/2", alto: "H-284", cantidad: "2" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Puerta 1 hoja apertura exterior", dibujo: { tipo: "practicable", hojas: 1, puerta: true },
+      perfiles: [VP("35014", "Marco perimetral", "A", 2), VP("35014", "Marco perimetral", "H", 2), VP("35013", "Hoja apertura exterior", "A-96.5", 2), VP("35013", "Hoja apertura exterior", "H-96.5", 2), VP("16427", "Junquillo 20 mm", "A-244", 2, "90°"), VP("16427", "Junquillo 20 mm", "H-284", 2, "90°")],
+      accesorios: omegaAccP(1), vidrio: { ancho: "A-244", alto: "H-284", cantidad: "1" } },
+    { id: uid(), serie: "OMEGA P-52", nombre: "Puerta 2 hojas apertura exterior", dibujo: { tipo: "practicable", hojas: 2, puerta: true },
+      perfiles: [VP("35014", "Marco perimetral", "A", 2), VP("35014", "Marco perimetral", "H", 2), VP("35013", "Hoja apertura exterior", "(A-101.5)/2", 4), VP("35013", "Hoja apertura exterior", "H-97", 4), VP("35008", "Inversor", "H-167", 1, "90°"), VP("16427", "Junquillo 20 mm", "(A-397)/2", 4, "90°"), VP("16427", "Junquillo 20 mm", "H-284", 4, "90°")],
+      accesorios: omegaAccP(2), vidrio: { ancho: "(A-397)/2", alto: "H-284", cantidad: "2" } },
+    // ---------------- TECKNICA C-75 ----------------
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 2 hojas (marco y hojas perimetrales)", dibujo: { tipo: "corredera", hojas: 2 },
+      perfiles: [VP("14652", "Marco perimetral 75 mm", "A", 2), VP("14652", "Marco perimetral 75 mm", "H", 2), VP("14653", "Rail de rodadura", "A-91", 2, "90°"), VP("17940", "Hoja perimetral", "H-74", 4), VP("17940", "Hoja perimetral", "(A-9)/2", 4), VP("17938", "Clip hoja centro perimetral", "H-74", 2, "90°")],
+      accesorios: teckAcc(2), vidrio: { ancho: "(A-9)/2-90", alto: "H-74-90", cantidad: "2" } },
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 3 hojas 3 carriles (perimetral)", dibujo: { tipo: "corredera", hojas: 3 },
+      perfiles: [VP("14652", "Marco perimetral 75 mm", "A", 2), VP("14652", "Marco perimetral 75 mm", "H", 2), VP("14653", "Rail de rodadura", "A-91", 3, "90°"), VP("17940", "Hoja perimetral", "H-74", 6), VP("17940", "Hoja perimetral", "(A+55)/3", 6), VP("17938", "Clip hoja centro perimetral", "H-74", 4, "90°"), VP("14647", "Tercer carril", "A", 2), VP("14647", "Tercer carril", "H", 2)],
+      accesorios: teckAcc(3), vidrio: { ancho: "(A+55)/3-90", alto: "H-74-90", cantidad: "3" } },
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 4 hojas 2 carriles (perimetral)", dibujo: { tipo: "corredera", hojas: 4 },
+      perfiles: [VP("14652", "Marco perimetral 75 mm", "A", 2), VP("14652", "Marco perimetral 75 mm", "H", 2), VP("14653", "Rail de rodadura", "A-91", 2, "90°"), VP("17940", "Hoja perimetral", "H-74", 8), VP("17940", "Hoja perimetral", "(A+50)/4", 8), VP("17938", "Clip hoja centro perimetral", "H-74", 4, "90°"), VP("15854", "Unión cuatro hojas", "H-135", 1, "90°")],
+      accesorios: teckAcc(4, [VAC("2067", "Juego remate cuatro hojas (perfil 15854)", 1)]), vidrio: { ancho: "(A+50)/4-90", alto: "H-74-90", cantidad: "4" } },
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 2 hojas (marco recto + hojas rectas)", dibujo: { tipo: "corredera", hojas: 2 },
+      perfiles: [VP("5931", "Marco lateral", "H", 2, "90°"), VP("5932", "Marco superior", "A-21", 1, "90°"), VP("5933", "Marco inferior", "A-21", 1, "90°"), VP("14648", "Hoja lateral", "H-51", 2, "90°"), VP("15629", "Hoja central", "H-51", 2, "90°"), VP("14649", "Hoja rueda", "(A-41)/2", 4, "90°")],
+      accesorios: teckRectoAcc(2), vidrio: { ancho: "(A-41)/2-60", alto: "H-51-90", cantidad: "2" } },
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 3 hojas (marco recto + hojas rectas)", dibujo: { tipo: "corredera", hojas: 3 },
+      perfiles: [VP("5931", "Marco lateral", "H", 2, "90°"), VP("5932", "Marco superior", "A-21", 1, "90°"), VP("5933", "Marco inferior", "A-21", 1, "90°"), VP("14648", "Hoja lateral", "H-51", 2, "90°"), VP("15629", "Hoja central", "H-51", 4, "90°"), VP("14649", "Hoja rueda", "(A-9)/3", 6, "90°")],
+      accesorios: teckRectoAcc(3), vidrio: { ancho: "(A-9)/3-60", alto: "H-51-90", cantidad: "3" } },
+    { id: uid(), serie: "TECKNICA C-75", nombre: "Corredera 4 hojas (marco recto + hojas rectas)", dibujo: { tipo: "corredera", hojas: 4 },
+      perfiles: [VP("5931", "Marco lateral", "H", 2, "90°"), VP("5932", "Marco superior", "A-21", 1, "90°"), VP("5933", "Marco inferior", "A-21", 1, "90°"), VP("14648", "Hoja lateral", "H-51", 4, "90°"), VP("15629", "Hoja central", "H-51", 4, "90°"), VP("14649", "Hoja rueda", "(A-63)/4", 8, "90°")],
+      accesorios: teckRectoAcc(4), vidrio: { ancho: "(A-63)/4-60", alto: "H-51-90", cantidad: "4" } },
+    // ---------------- 40x20 / 40x40 ----------------
+    { id: uid(), serie: "40x20 / 40x40", nombre: "Ventana 1 hoja", dibujo: { tipo: "practicable", hojas: 1 },
+      perfiles: [VP("11127", "Marco de ventana", "H", 2), VP("11127", "Marco de ventana", "A", 2), VP("11129", "Hoja de ventana", "H-43", 2), VP("11129", "Hoja de ventana", "A-43", 2)],
+      accesorios: m40Acc(1, false), vidrio: { ancho: "A-43-60", alto: "H-43-60", cantidad: "1" } },
+    { id: uid(), serie: "40x20 / 40x40", nombre: "Ventana 2 hojas", dibujo: { tipo: "practicable", hojas: 2 },
+      perfiles: [VP("11127", "Marco de ventana", "H", 2), VP("11127", "Marco de ventana", "A", 2), VP("11129", "Hoja de ventana", "H-43", 4), VP("11129", "Hoja de ventana", "(A-50)/2", 4), VP("11128", "Hoja inversora", "H-92", 1, "90°")],
+      accesorios: m40Acc(2, false), vidrio: { ancho: "(A-50)/2-60", alto: "H-43-60", cantidad: "2" } },
+    { id: uid(), serie: "40x20 / 40x40", nombre: "Puerta 1 hoja", dibujo: { tipo: "practicable", hojas: 1, puerta: true },
+      perfiles: [VP("11125", "Marco de puerta", "H", 2), VP("11125", "Marco de puerta", "A", 2), VP("11098", "Hoja de puerta", "H-83", 2), VP("11098", "Hoja de puerta", "A-83", 2)],
+      accesorios: m40Acc(1, true), vidrio: { ancho: "A-83-80", alto: "H-83-80", cantidad: "1" } },
+    { id: uid(), serie: "40x20 / 40x40", nombre: "Puerta 2 hojas", dibujo: { tipo: "practicable", hojas: 2, puerta: true },
+      perfiles: [VP("11125", "Marco de puerta", "H", 2), VP("11125", "Marco de puerta", "A", 2), VP("11098", "Hoja de puerta", "H-83", 4), VP("11098", "Hoja de puerta", "(A-90)/2", 4), VP("11128", "Hoja inversora", "H-132", 1, "90°")],
+      accesorios: m40Acc(2, true), vidrio: { ancho: "(A-90)/2-80", alto: "H-83-80", cantidad: "2" } },
+  ];
+}
+
+// ---- Modelos de TECHO (carpeta "Techos" de la Calculadora) ----
+// Variables: A = ancho del techo (frente, en mm), L = salida (fondo, en mm), H = altura
+// del bajante/pilar. Cada modelo puede tener variables propias (ej. A1 = hueco entre vigas,
+// U = ancho útil del panel, N = nº de paneles) que se pueden cambiar en "Modelos".
+// Basado en las hojas de corte del catálogo "Techo" de Mediterráneo; los techos de panel
+// usan la misma estructura (viga lateral, canal, cobija, bajante) pero con panel en vez
+// de carriles y hojas.
+function modelosTechoDeFabrica() {
+  const T = (o) => ({ id: uid(), categoria: "techo", vidrio: { ancho: "", alto: "", cantidad: "0" }, ...o });
+  const acc = (ref, desc, cantidad, unidad = "ud", grupo = "accesorio", precioManual = "") => ({ id: uid(), ref, desc, cantidad: String(cantidad), unidad, grupo, precioManual });
+  const estructuraMovil = (viga, carriles) => [
+    VP(viga, `Viga ${carriles} carriles`, "L", 2, "90°"),
+    VP("17783", "Canal", "A", 1, "90°"),
+    VP("17782", "Remate canal", "A", 1, "90°"),
+    VP("17864", "Soporte cobija", "A", 1, "90°"),
+    VP("17785", "Cobija regulable", "A", 1, "90°"),
+    VP("17780", "Bajante", "H", "NB", "90°"),
+    VP("17781", "Tapeta bajante", "H", "NB", "90°"),
+    VP("15654", "Tapeta viga", "L", 2, "90°"),
+  ];
+  const accMovil = (carriles) => [
+    acc(carriles === 4 ? "9698" : "9699", `Tapeta delantera ${carriles} carriles`, 2),
+    acc(carriles === 4 ? "9691" : "9692", `Tapeta cobija ${carriles} carriles`, 2),
+    acc("9690", "Tapeta canal", 2),
+    acc("300012", "Boquilla embudo", "NB"),
+    acc("25166", "Junta canal", "A/1000", "m", "goma"),
+    acc("65000", "Junta caucho cobija", "A/1000", "m", "goma"),
+    acc("22048", "Felpudo Fin-Seal 7x9", `${carriles}*2*L/1000`, "m", "goma"),
+    acc("9697", "Juego topes", carriles),
+    acc("9693", "Tirador techo", 1),
+    acc("9694", "Gancho pértiga techo", 1),
+    acc("91130", "PVC deslizante carril techo (barras de 3 m)", `CEIL(${carriles}*2*L/3000)`, "ud", "goma"),
+  ];
+  const varsMovil = (carriles) => [
+    { nombre: "A1", formula: "A-100", etiqueta: "Hueco entre vigas (mm) — comprobar con el perfil" },
+    { nombre: "NB", formula: "1", etiqueta: "Nº de bajantes" },
+    { nombre: "NH", formula: String(carriles), etiqueta: "Nº de hojas" },
+  ];
+  const estructuraFija = () => [
+    VP("17920", "Viga lateral", "L", 2, "90°"),
+    VP("17783", "Canal", "A", 1, "90°"),
+    VP("17782", "Remate canal", "A", 1, "90°"),
+    VP("17864", "Soporte cobija", "A", 1, "90°"),
+    VP("17786", "Cobija", "A", 1, "90°"),
+    VP("17780", "Bajante", "H", "NB", "90°"),
+    VP("17781", "Tapeta bajante", "H", "NB", "90°"),
+  ];
+  const accFijo = () => [
+    acc("9690", "Tapeta canal", 2),
+    acc("300012", "Boquilla embudo", "NB"),
+    acc("25166", "Junta canal", "A/1000", "m", "goma"),
+    acc("65000", "Junta caucho cobija", "A/1000", "m", "goma"),
+  ];
+  const panel = (nombre, ancho, extra = []) => T({
+    serie: "Techos de panel", nombre, dibujo: { tipo: "techo-panel" },
+    variables: [
+      { nombre: "U", formula: String(ancho), etiqueta: "Ancho útil del panel (mm)" },
+      { nombre: "V", formula: "100", etiqueta: "Vuelo del panel sobre el canal (mm)" },
+      { nombre: "N", formula: "CEIL(A/U)", etiqueta: "Nº de paneles" },
+      { nombre: "NB", formula: "1", etiqueta: "Nº de bajantes" },
+      { nombre: "NC", formula: "CEIL(L/1200)+1", etiqueta: "Nº de apoyos/correas" },
+    ],
+    perfiles: [...estructuraFija(), VP("", "Correa / tubo de apoyo (elegir referencia)", "A", "NC-2", "90°")],
+    accesorios: [
+      acc("", `Panel ${nombre.replace(/^Panel /, "")} (m²)`, "N*U*(L+V)/1000000", "m2", "cubierta"),
+      acc("", "Tornillo autotaladrante con arandela", "N*NC*4", "ud", "accesorio"),
+      acc("", "Remate lateral (babero)", "2*(L+V)/1000", "m", "cubierta"),
+      acc("", "Remate frontal / cumbrera contra pared", "A/1000", "m", "cubierta"),
+      acc("", "Tapajuntas / cierre de onda", "2*A/1000", "m", "cubierta"),
+      ...accFijo(),
+      ...extra,
+    ],
+  });
+  return [
+    // --- Techos móviles (correderos) ---
+    T({ serie: "Techos móviles", nombre: "Techo móvil 3 carriles — policarbonato o sándwich", dibujo: { tipo: "techo-movil", hojas: 3 }, variables: varsMovil(3),
+      perfiles: [...estructuraMovil("17784", 3), VP("17787", "Hoja", "A1-10", 4, "90°"), VP("17788", "Hoja delantera-trasera", "A1-10", 2, "90°")],
+      accesorios: [...accMovil(3), acc("", "Policarbonato / panel de las hojas (m²)", "3*((L/3)+6)*(A1+40)/1000000", "m2", "cubierta")] }),
+    T({ serie: "Techos móviles", nombre: "Techo móvil 4 carriles — policarbonato o sándwich", dibujo: { tipo: "techo-movil", hojas: 4 }, variables: varsMovil(4),
+      perfiles: [...estructuraMovil("17930", 4), VP("17787", "Hoja", "A1-10", 6, "90°"), VP("17788", "Hoja delantera-trasera", "A1-10", 2, "90°")],
+      accesorios: [...accMovil(4), acc("", "Policarbonato / panel de las hojas (m²)", "4*((L/4)+10)*(A1+40)/1000000", "m2", "cubierta")] }),
+    T({ serie: "Techos móviles", nombre: "Techo móvil 3 carriles — cristal (hojas perimetrales)", dibujo: { tipo: "techo-movil", hojas: 3 }, variables: varsMovil(3),
+      perfiles: [...estructuraMovil("17784", 3), VP("16388", "Hoja perimetral (largo)", "(L+22.29)/3+10", 6, "45°"), VP("16388", "Hoja perimetral (ancho)", "A1-14.8", 6, "45°"), VP("16389", "Cierre central hoja perimetral", "A1-53.56", 2, "90°")],
+      accesorios: [...accMovil(3), acc("41310", "Escuadra hoja de techo perimetral", 12), acc("65004", "Tapas guías (juego)", 3), acc("65005", "Juego guiadores hoja techo", 3), acc("63006", "Juego tapa pasadores hoja techo", 3), acc("82115", "Junta hoja de vidrio", "3*2*((L/3)+(A1))/1000", "m", "goma")],
+      vidrio: { ancho: "A1-57", alto: "(L+22.29)/3-40", cantidad: "3" } }),
+    T({ serie: "Techos móviles", nombre: "Techo móvil 4 carriles — cristal (hojas perimetrales)", dibujo: { tipo: "techo-movil", hojas: 4 }, variables: varsMovil(4),
+      perfiles: [...estructuraMovil("17930", 4), VP("16388", "Hoja perimetral (largo)", "(L+107.98)/4+12", 8, "45°"), VP("16388", "Hoja perimetral (ancho)", "A1-14.8", 8, "45°"), VP("16389", "Cierre central hoja perimetral", "A1-53.56", 3, "90°")],
+      accesorios: [...accMovil(4), acc("41310", "Escuadra hoja de techo perimetral", 16), acc("65004", "Tapas guías (juego)", 4), acc("65005", "Juego guiadores hoja techo", 4), acc("63006", "Juego tapa pasadores hoja techo", 4), acc("82115", "Junta hoja de vidrio", "4*2*((L/4)+(A1))/1000", "m", "goma")],
+      vidrio: { ancho: "A1-57", alto: "(L+107.98)/4-40", cantidad: "4" } }),
+    // --- Techo fijo ---
+    T({ serie: "Techos fijos", nombre: "Techo fijo con policarbonato (perfil H)", dibujo: { tipo: "techo-panel" },
+      variables: [{ nombre: "U", formula: "1000", etiqueta: "Ancho de la placa (mm)" }, { nombre: "N", formula: "CEIL(A/U)", etiqueta: "Nº de placas" }, { nombre: "NB", formula: "1", etiqueta: "Nº de bajantes" }],
+      perfiles: [...estructuraFija(), VP("53867", "Perfil H 16 (unión de placas)", "L", "N-1", "90°")],
+      accesorios: [...accFijo(), acc("", "Policarbonato celular 16 mm (m²)", "A*L/1000000", "m2", "cubierta"), acc("", "Perfil U cierre policarbonato", "2*L/1000", "m", "cubierta")] }),
+    T({ serie: "Techos fijos", nombre: "Techo fijo con cristal", dibujo: { tipo: "techo-panel" },
+      variables: [{ nombre: "U", formula: "1000", etiqueta: "Ancho máximo de cada cristal (mm)" }, { nombre: "N", formula: "CEIL(A/U)", etiqueta: "Nº de cristales" }, { nombre: "NB", formula: "1", etiqueta: "Nº de bajantes" }],
+      perfiles: [...estructuraFija(), VP("53867", "Perfil H (unión de cristales)", "L", "N-1", "90°")],
+      accesorios: [...accFijo(), acc("82115", "Junta de vidrio", "2*N*L/1000", "m", "goma")],
+      vidrio: { ancho: "A/N-20", alto: "L-60", cantidad: "N" } }),
+    // --- Techos de panel ---
+    panel("Panel sándwich teja (aluminio)", 1000),
+    panel("Panel greca 30", 1000),
+    panel("Panel greca 60", 1000),
+    panel("Panel greca 80", 1000),
+    panel("Chapa lastra / greca simple", 1000),
+  ];
+}
+
+// Dibujo en planta de un techo: frente A, salida L, con hojas (móvil) o paneles (fijo/panel).
+function DibujoTecho({ modelo, A, L, vars }) {
+  const W = parseFloat(A) || 3000, D = parseFloat(L) || 3000;
+  const esc = Math.min(320 / W, 260 / D);
+  const w = W * esc, d = D * esc, pad = 34;
+  const x0 = pad, y0 = pad;
+  const tipo = modelo?.dibujo?.tipo || "techo-panel";
+  const stroke = "#334155";
+  const lineas = [];
+  if (tipo === "techo-movil") {
+    const n = Math.max(1, parseInt(modelo?.dibujo?.hojas) || 3);
+    for (let i = 0; i < n; i++) {
+      const y = y0 + 10 + (i * (d - 20)) / n;
+      lineas.push(<rect key={i} x={x0 + 10} y={y + 2} width={w - 20} height={(d - 20) / n - 4} fill={i % 2 ? "#e0f2fe" : "#dbeafe"} stroke={stroke} strokeWidth="1" />);
+    }
+    lineas.push(<text key="t" x={x0 + w / 2} y={y0 + d / 2} textAnchor="middle" fontSize="11" fill="#475569">{n} hojas correderas</text>);
+  } else {
+    const n = Math.max(1, Math.round(vars?.N) || Math.ceil(W / (vars?.U || 1000)));
+    for (let i = 1; i < n; i++) {
+      const x = x0 + (i * w) / n;
+      lineas.push(<line key={i} x1={x} x2={x} y1={y0 + 10} y2={y0 + d - 10} stroke={stroke} strokeWidth="1" />);
+    }
+    for (let k = 1; k < 8; k++) lineas.push(<line key={`o${k}`} x1={x0 + 10} x2={x0 + w - 10} y1={y0 + 10 + (k * (d - 20)) / 8} y2={y0 + 10 + (k * (d - 20)) / 8} stroke="#cbd5e1" strokeWidth="0.6" />);
+    lineas.push(<text key="t" x={x0 + w / 2} y={y0 + d / 2} textAnchor="middle" fontSize="11" fill="#475569">{n} {/cristal/i.test(modelo?.nombre || "") ? "cristales" : /policarb/i.test(modelo?.nombre || "") ? "placas" : "paneles"}</text>);
+  }
+  return (
+    <svg viewBox={`0 0 ${w + pad * 2} ${d + pad * 2 + 10}`} className="w-full max-w-sm mx-auto" style={{ maxHeight: 360 }}>
+      <text x={x0 + w / 2} y={y0 - 16} textAnchor="middle" fontSize="10" fill="#64748b">PARED (cobija)</text>
+      <rect x={x0} y={y0 - 8} width={w} height="8" fill="#94a3b8" />
+      <rect x={x0} y={y0} width={w} height={d} fill="#f8fafc" stroke={stroke} strokeWidth="2" />
+      <rect x={x0} y={y0} width="10" height={d} fill="#cbd5e1" stroke={stroke} strokeWidth="1" />
+      <rect x={x0 + w - 10} y={y0} width="10" height={d} fill="#cbd5e1" stroke={stroke} strokeWidth="1" />
+      {lineas}
+      <rect x={x0} y={y0 + d} width={w} height="10" fill="#64748b" />
+      <text x={x0 + w / 2} y={y0 + d + 24} textAnchor="middle" fontSize="10" fill="#64748b">CANAL — ancho {W} mm</text>
+      <text x={12} y={y0 + d / 2} textAnchor="middle" fontSize="11" fill="#0f172a" transform={`rotate(-90 12 ${y0 + d / 2})`}>salida {D} mm</text>
+    </svg>
+  );
+}
+
+
+// Cálculo completo de una ventana.
+function calcularVentana({ modelo, A, H, L = 0, ud, tarifa, acabado, color, vidrioPrecioM2, persiana, tarifasPersianas, vidrioCfg, tarifaCristal }) {
+  const unidades = parseFloat(ud) || 1;
+  const V = variablesModelo(modelo, { A, H, L });
+  const perfiles = (modelo?.perfiles || []).map((p) => {
+    const corte = evalFormula(p.formula, V);
+    const cantBase = evalFormula(p.cantidad, V);
+    const cantidad = (isNaN(cantBase) ? 0 : cantBase) * unidades;
+    const item = buscarItemTarifa(tarifa, p.ref);
+    const pr = item ? precioNetoItem(tarifa, item, acabado, color) : { neto: 0, sinPrecio: true };
+    const totalM = isNaN(corte) ? 0 : (corte * cantidad) / 1000;
+    return { ...p, corte, cantidadTotal: cantidad, totalM, item, precio: pr, importe: totalM * (pr.neto || 0), sinPrecio: !item || pr.sinPrecio };
+  });
+  const accesorios = (modelo?.accesorios || []).map((a) => {
+    const porVentana = evalFormula(a.cantidad, V);
+    const cantidad = (isNaN(porVentana) ? 0 : porVentana) * unidades;
+    const item = a.ref ? buscarItemTarifa(tarifa, a.ref) : null;
+    let pr = item ? precioNetoItem(tarifa, item, acabado, color) : { neto: 0, sinPrecio: true };
+    // Si no está en la tarifa pero el modelo tiene un precio puesto a mano, se usa ese.
+    if ((!item || pr.sinPrecio) && parseFloat(a.precioManual) > 0) pr = { precio: parseFloat(a.precioManual), neto: parseFloat(a.precioManual), dto: 0, clave: "manual", manual: true };
+    const grupo = a.grupo || item?.tipo || "accesorio";
+    return { ...a, grupo, cantidadTotal: cantidad, formulaInvalida: isNaN(porVentana), item, precio: pr, importe: cantidad * (pr.neto || 0), sinPrecio: !pr.manual && (!item || pr.sinPrecio) };
+  });
+  const vAncho = evalFormula(modelo?.vidrio?.ancho, V);
+  const vAlto = evalFormula(modelo?.vidrio?.alto, V);
+  const vCantBase = evalFormula(modelo?.vidrio?.cantidad, V);
+  const vCant = (isNaN(vCantBase) ? 0 : vCantBase) * unidades;
+  const m2 = !isNaN(vAncho) && !isNaN(vAlto) && vAncho > 0 && vAlto > 0 ? (vAncho * vAlto / 1e6) * vCant : 0;
+  let vidrio = { ancho: vAncho, alto: vAlto, cantidad: vCant, m2, precioM2: parseFloat(vidrioPrecioM2) || 0, importe: m2 * (parseFloat(vidrioPrecioM2) || 0) };
+  if (tarifaCristal && vidrioCfg?.baseId && vAncho > 0 && vAlto > 0 && vCant > 0) {
+    const r = calcularCristal({ tarifa: tarifaCristal, anchoMm: Math.round(vAncho), altoMm: Math.round(vAlto), cantidad: vCant, baseId: vidrioCfg.baseId, incrementos: vidrioCfg.incrementos || [], forma: vidrioCfg.forma, plantilla: vidrioCfg.plantilla });
+    vidrio = { ...vidrio, deTarifa: true, detalle: r, precioM2: r.m2Fact ? r.totalPieza / r.m2Fact : 0, importe: r.total };
+  }
+
+  let persianaCalc = null;
+  if (persiana && persiana.activa) {
+    const fila = { ...filaPersianaVacia(), cajon: parseInt(persiana.cajon) || 155, ud: unidades, ancho: A, alto: H, motor: persiana.motor ? 1 : 0, npersianas: 1 };
+    const ajustes = tarifasPersianas?.ajustesCorte || PERSIANAS_AJUSTES_CORTE_DEFECTO;
+    const conjunto = calcularDespiecePersianasConjunto([fila], ajustes);
+    const pres = calcularPresupuestoPersianas(conjunto, tarifasPersianas || {});
+    const cajonReal = A && H ? calcularDespiecePersianaLinea(fila, ajustes).cajon : fila.cajon;
+    persianaCalc = { ...pres, cajon: cajonReal, subioA185: cajonReal !== fila.cajon };
+  }
+
+  const sum = (arr, k) => arr.reduce((s, x) => s + (x[k] || 0), 0);
+  const tot = {
+    aluminio: sum(perfiles.filter((p) => (p.item?.tipo || "aluminio") !== "goma"), "importe") + sum(accesorios.filter((a) => a.grupo === "aluminio"), "importe"),
+    goma: sum(perfiles.filter((p) => p.item?.tipo === "goma"), "importe") + sum(accesorios.filter((a) => a.grupo === "goma"), "importe"),
+    accesorios: sum(accesorios.filter((a) => a.grupo === "accesorio"), "importe"),
+    cubierta: sum(accesorios.filter((a) => a.grupo === "cubierta"), "importe"),
+    vidrio: vidrio.importe,
+    persiana: persianaCalc ? persianaCalc.total : 0,
+  };
+  tot.materiales = tot.aluminio + tot.goma + tot.accesorios + tot.cubierta + tot.vidrio + tot.persiana;
+  const avisos = [...perfiles, ...accesorios].filter((x) => x.sinPrecio).length;
+  return { perfiles, accesorios, vidrio, persiana: persianaCalc, totales: tot, avisos, vars: V };
+}
+
+// Dibujo de la ventana (SVG) a partir del tipo de apertura y nº de hojas, con persiana opcional.
+function DibujoVentana({ modelo, A, H, persiana, acabadoColor = "#e5e7eb" }) {
+  const W = parseFloat(A) || 1000, Hh = parseFloat(H) || 1200;
+  const maxW = 320, maxH = 300;
+  const cajonMm = persiana ? (parseInt(persiana.cajon) || 155) : 0;
+  const totalH = Hh + cajonMm;
+  const esc = Math.min(maxW / W, maxH / totalH);
+  const w = W * esc, h = Hh * esc, cj = cajonMm * esc;
+  const pad = 30, x0 = pad, y0 = pad + cj;
+  const marco = Math.max(6, 50 * esc);
+  const tipo = modelo?.dibujo?.tipo || "practicable";
+  const n = Math.max(1, parseInt(modelo?.dibujo?.hojas) || 1);
+  const puerta = !!modelo?.dibujo?.puerta;
+  const inX = x0 + marco, inY = y0 + marco, inW = w - 2 * marco, inH = h - 2 * marco;
+  const hojaW = inW / n;
+  const stroke = "#334155";
+  const hojas = [];
+  for (let i = 0; i < n; i++) {
+    const hx = inX + i * hojaW;
+    hojas.push(<rect key={`h${i}`} x={hx + 2} y={inY + 2} width={hojaW - 4} height={inH - 4} fill="#dbeafe" stroke={stroke} strokeWidth="1.5" />);
+    if (tipo === "practicable") {
+      // bisagras en el lado exterior de cada hoja; vértice del triángulo hacia la bisagra
+      const bisagraIzq = n === 1 ? false : i < n / 2;
+      const xb = bisagraIzq ? hx + 2 : hx + hojaW - 2;
+      const xm = bisagraIzq ? hx + hojaW - 2 : hx + 2;
+      hojas.push(<polyline key={`t${i}`} points={`${xm},${inY + 2} ${xb},${inY + inH / 2} ${xm},${inY + inH - 2}`} fill="none" stroke={stroke} strokeWidth="1" strokeDasharray="4 3" />);
+      hojas.push(<rect key={`m${i}`} x={xm + (bisagraIzq ? -7 : 3)} y={inY + inH / 2 - 10} width="4" height="20" rx="1.5" fill={stroke} />);
+    } else {
+      const dir = i % 2 === 0 ? 1 : -1;
+      const cy = inY + inH / 2;
+      const cx = hx + hojaW / 2;
+      hojas.push(<line key={`a${i}`} x1={cx - 18 * dir} y1={cy} x2={cx + 18 * dir} y2={cy} stroke={stroke} strokeWidth="1.5" />);
+      hojas.push(<polyline key={`p${i}`} points={`${cx + 10 * dir},${cy - 6} ${cx + 18 * dir},${cy} ${cx + 10 * dir},${cy + 6}`} fill="none" stroke={stroke} strokeWidth="1.5" />);
+    }
+  }
+  const vbW = w + pad * 2, vbH = h + cj + pad * 2;
+  return (
+    <svg viewBox={`0 0 ${vbW} ${vbH}`} className="w-full max-w-sm mx-auto" style={{ maxHeight: 380 }}>
+      {persiana && (
+        <g>
+          <rect x={x0} y={pad} width={w} height={cj} fill="#f1f5f9" stroke={stroke} strokeWidth="1.5" />
+          {Array.from({ length: 5 }).map((_, i) => (
+            <line key={i} x1={x0 + 4} x2={x0 + w - 4} y1={pad + ((i + 1) * cj) / 6} y2={pad + ((i + 1) * cj) / 6} stroke="#94a3b8" strokeWidth="0.8" />
+          ))}
+          <rect x={x0 - 4} y={pad + cj} width="4" height={h} fill="#94a3b8" />
+          <rect x={x0 + w} y={pad + cj} width="4" height={h} fill="#94a3b8" />
+          <text x={x0 + w / 2} y={pad + cj / 2 + 4} textAnchor="middle" fontSize="10" fill="#475569">Persiana · cajón {persiana.cajon}</text>
+        </g>
+      )}
+      <rect x={x0} y={y0} width={w} height={h} fill={acabadoColor} stroke={stroke} strokeWidth="2" />
+      <rect x={inX} y={inY} width={inW} height={inH} fill="#fff" stroke={stroke} strokeWidth="1" />
+      {hojas}
+      {tipo === "corredera" && <line x1={inX} x2={inX + inW} y1={inY + inH + 2} y2={inY + inH + 2} stroke={stroke} strokeWidth="1" />}
+      {puerta && <text x={x0 + w / 2} y={y0 + h - 4} textAnchor="middle" fontSize="9" fill="#475569">puerta</text>}
+      <text x={x0 + w / 2} y={vbH - 8} textAnchor="middle" fontSize="11" fill="#0f172a">{W} mm</text>
+      <text x={12} y={y0 + h / 2} textAnchor="middle" fontSize="11" fill="#0f172a" transform={`rotate(-90 12 ${y0 + h / 2})`}>{Hh} mm</text>
+    </svg>
+  );
+}
+
+const COLOR_ACABADO_DIBUJO = { blanco: "#f8fafc", varios: "#9ca3af", bronce: "#8b6b3e", especial: "#a8a29e", madera: "#a0522d" };
+
+function CalculadoraVentanas({ clientes, tarifasPersianas, onPasarAPresupuesto, categoria = "ventana" }) {
+  const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const [sub, setSub] = useState("calcular");
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 border-b border-slate-200">
+        {[{ id: "calcular", label: categoria === "techo" ? "Calcular techo" : "Calcular ventana" }, { id: "modelos", label: categoria === "techo" ? "Modelos de techo" : "Modelos de ventana" }, { id: "tarifas", label: "Tarifas (aluminio y cristal)" }].map((t) => (
+          <button key={t.id} onClick={() => setSub(t.id)}
+            className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px ${sub === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-800"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {sub === "calcular" && <CalculadoraVentanaForm key={categoria} categoria={categoria} ctx={ctx} clientes={clientes} tarifasPersianas={tarifasPersianas} onPasarAPresupuesto={onPasarAPresupuesto} irA={setSub} />}
+      {sub === "modelos" && <ModelosVentanaPanel key={categoria} ctx={ctx} categoria={categoria} />}
+      {sub === "tarifas" && <TarifasProveedorTabs ctx={ctx} />}
+    </div>
+  );
+}
+
+// ---- Análisis de importes común a toda la Calculadora (ventanas, techos, persianas) ----
+// filasDef: [{ sec, key, label, manual? }]; autos: { key: coste } para las filas que salen
+// del despiece. Las manuales llevan horas (× precio hora) + € fijos por unidad.
+function useAnalisisImportes({ ctx, categoria, filasDef, autos, nUd }) {
+  const cfgAll = ctx?.configVentanas || {};
+  const cfg = cfgAll[categoria] || (categoria === "ventana" && cfgAll.margenGlobal !== undefined ? cfgAll : {});
+  const [margenGlobal, setMargenGlobal] = useState(cfg.margenGlobal ?? "55");
+  const [margenes, setMargenes] = useState(cfg.margenes || {});
+  const [costes, setCostes] = useState(cfg.costes || {});
+  const [horas, setHoras] = useState(cfg.horas || {});
+  const [precioHora, setPrecioHora] = useState(cfg.precioHora ?? "25");
+  const [pctGastos, setPctGastos] = useState(cfg.pctGastos ?? "0");
+  const [ivaPct, setIvaPct] = useState(cfg.ivaPct ?? "21");
+  const pctDe = (k) => { const t = margenes[k]; return t === undefined || t === "" ? (parseFloat(margenGlobal) || 0) : (parseFloat(t) || 0); };
+  const propio = (k) => !(margenes[k] === undefined || margenes[k] === "");
+  const clavesAutos = JSON.stringify(autos);
+  const analisis = useMemo(() => {
+    const filas = (filasDef || []).map((f) => {
+      const h = parseFloat(horas[f.key]) || 0;
+      const coste = f.manual ? (h * (parseFloat(precioHora) || 0) + (parseFloat(costes[f.key]) || 0)) * nUd : ((autos || {})[f.key] || 0);
+      const pct = pctDe(f.key);
+      return { ...f, coste, horasTot: f.manual ? h * nUd : 0, manoObra: f.manual ? h * (parseFloat(precioHora) || 0) * nUd : 0, pct, pctPropio: propio(f.key), venta: coste * (1 + pct / 100) };
+    });
+    const pg = parseFloat(pctGastos) || 0;
+    if (pg > 0) {
+      const coste = filas.reduce((s, f) => s + f.coste, 0) * pg / 100;
+      const pct = pctDe("gastos_pct");
+      filas.push({ sec: "Varios", key: "gastos_pct", label: `Gastos generales (${pg}% del coste)`, coste, pct, pctPropio: propio("gastos_pct"), venta: coste * (1 + pct / 100) });
+    }
+    const compra = filas.reduce((s, f) => s + f.coste, 0);
+    const venta = filas.reduce((s, f) => s + f.venta, 0);
+    const horasTotales = filas.reduce((s, f) => s + (f.horasTot || 0), 0);
+    const manoObra = filas.reduce((s, f) => s + (f.manoObra || 0), 0);
+    const iva = venta * (parseFloat(ivaPct) || 0) / 100;
+    return { filas, compra, venta, horasTotales, manoObra, iva, conIva: venta + iva };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clavesAutos, JSON.stringify(filasDef), costes, horas, precioHora, pctGastos, ivaPct, margenes, margenGlobal, nUd]);
+  const guardarPredeterminados = (nombreQue) => {
+    ctx?.saveConfigVentanas && ctx.saveConfigVentanas({ ...cfgAll, [categoria]: { margenGlobal, margenes, costes, horas, precioHora, pctGastos, ivaPct } });
+    alert(`Guardado: estas horas, costes, gastos y márgenes saldrán por defecto en ${nombreQue}.`);
+  };
+  return { analisis, margenGlobal, setMargenGlobal, margenes, setMargenes, costes, setCostes, horas, setHoras, precioHora, setPrecioHora, pctGastos, setPctGastos, ivaPct, setIvaPct, guardarPredeterminados };
+}
+
+function AnalisisImportesTabla({ an, nombreQue, nota }) {
+  const cellCls = "w-20 border border-slate-200 rounded px-1.5 py-0.5 text-xs text-right";
+  const a = an.analisis;
+  const secciones = [...new Set(a.filas.map((f) => f.sec))];
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span>Margen general</span><input className={cellCls} type="number" value={an.margenGlobal} onChange={(e) => an.setMargenGlobal(e.target.value)} /> %
+        <span className="ml-2">Precio hora</span><input className={cellCls} type="number" value={an.precioHora} onChange={(e) => an.setPrecioHora(e.target.value)} /> €/h
+        <span className="ml-2">Gastos generales</span><input className={cellCls} type="number" value={an.pctGastos} onChange={(e) => an.setPctGastos(e.target.value)} /> %
+        <span className="ml-2">IVA</span><input className={cellCls} type="number" value={an.ivaPct} onChange={(e) => an.setIvaPct(e.target.value)} /> %
+        <div className="flex-1" />
+        <button type="button" onClick={() => an.guardarPredeterminados(nombreQue)} className="px-3 py-1.5 rounded-md border border-slate-300 text-xs">Guardar como valores por defecto</button>
+      </div>
+      <div className="grid md:grid-cols-2 gap-4">
+        {secciones.map((sec) => (
+          <div key={sec}>
+            <h4 className="text-xs font-extrabold uppercase text-rose-700 mb-1">{sec}</h4>
+            <table className="w-full text-xs">
+              <thead><tr className="text-slate-400"><th className="text-left font-normal"></th><th className="text-right font-normal pr-2">{a.filas.some((f) => f.sec === sec && f.manual) ? "Horas + € por ud" : ""}</th><th className="text-right font-normal pr-2">Coste</th><th className="text-right font-normal pr-2">%</th><th className="text-right font-normal">Venta</th></tr></thead>
+              <tbody>
+                {a.filas.filter((f) => f.sec === sec).map((f) => (
+                  <tr key={f.key} className="border-b border-slate-100">
+                    <td className="py-1">{f.label}</td>
+                    <td className="text-right pr-2 whitespace-nowrap">
+                      {f.manual && <>
+                        <input className={cellCls + " w-14"} type="number" value={an.horas[f.key] ?? ""} placeholder="h" title="Horas por unidad" onChange={(e) => an.setHoras({ ...an.horas, [f.key]: e.target.value })} />
+                        <span className="text-slate-300"> + </span>
+                        <input className={cellCls + " w-16"} type="number" value={an.costes[f.key] ?? ""} placeholder="€" title="€ fijos por unidad" onChange={(e) => an.setCostes({ ...an.costes, [f.key]: e.target.value })} />
+                      </>}
+                    </td>
+                    <td className="text-right pr-2">{money(f.coste)}</td>
+                    <td className="text-right pr-2"><input className={cellCls + (f.pctPropio ? " bg-amber-50" : "")} type="number" value={an.margenes[f.key] ?? ""} placeholder={String(an.margenGlobal)} onChange={(e) => an.setMargenes({ ...an.margenes, [f.key]: e.target.value })} /></td>
+                    <td className="text-right">{money(f.venta)}</td>
+                  </tr>
+                ))}
+                <tr className="font-bold"><td className="py-1 text-blue-800">Subtotal</td><td></td>
+                  <td className="text-right pr-2">{money(a.filas.filter((f) => f.sec === sec).reduce((s, f) => s + f.coste, 0))}</td><td></td>
+                  <td className="text-right">{money(a.filas.filter((f) => f.sec === sec).reduce((s, f) => s + f.venta, 0))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap justify-end gap-6 text-sm border-t border-slate-200 pt-3">
+        <span>Horas totales: <b>{Math.round(a.horasTotales * 10) / 10} h</b></span>
+        <span>Total compra: <b>{money(a.compra)}</b></span>
+        <span>Base imponible: <b>{money(a.venta)}</b></span>
+        <span>IVA {an.ivaPct}%: <b>{money(a.iva)}</b></span>
+        <span className="text-[#2E8B57]">Total con IVA: <b>{money(a.conIva)}</b></span>
+      </div>
+      <p className="text-xs text-slate-400">{nota || "Las filas de materiales salen solas del despiece."} En Fabricación, Montaje y Varios pones horas (a precio hora) y/o € fijos por unidad; se multiplican por las unidades. Los gastos generales son un % sobre todo el coste. "Guardar como valores por defecto" lo guarda aparte para {nombreQue}.</p>
+    </div>
+  );
+}
+
+// Filas del análisis para persianas (mismas secciones que ventanas y techos).
+const ANALISIS_PERSIANA_FILAS = [
+  { sec: "Persiana", key: "materiales", label: "Materiales (cajón, lama, guías, herraje…)" },
+  { sec: "Persiana", key: "extras", label: "Extras" },
+  { sec: "Fabricación", key: "fab_persiana", label: "Fabricación persiana", manual: true },
+  { sec: "Fabricación", key: "fab_embalaje", label: "Embalaje", manual: true },
+  { sec: "Montaje", key: "mon_transporte", label: "Transporte", manual: true },
+  { sec: "Montaje", key: "mon_montaje", label: "Montaje en obra", manual: true },
+  { sec: "Montaje", key: "mon_desplaz", label: "Desplazamiento y dietas", manual: true },
+  { sec: "Montaje", key: "mon_medios", label: "Medios auxiliares (grúa, andamio…)", manual: true },
+  { sec: "Varios", key: "varios", label: "Otros gastos", manual: true },
+];
+
+// Filas del "Análisis de importes" (como el presupuestador de Miguel, pero con todo a la vista).
+// Las automáticas salen del despiece valorado; las manuales son € por ventana (se multiplican por uds).
+const ANALISIS_VENTANA_FILAS = [
+  { sec: "Ventana", key: "perfiles", label: "Perfiles" },
+  { sec: "Ventana", key: "juntas", label: "Juntas / gomas" },
+  { sec: "Ventana", key: "accesorios", label: "Herraje y accesorios" },
+  { sec: "Ventana", key: "cubierta", label: "Cubierta (panel, policarbonato…)" },
+  { sec: "Vidrios", key: "vidrio", label: "Vidrio" },
+  { sec: "Persiana", key: "persiana", label: "Persiana" },
+  { sec: "Fabricación", key: "fab_ventana", label: "Fabricación ventana", manual: true },
+  { sec: "Fabricación", key: "fab_herraje", label: "Colocar herraje", manual: true },
+  { sec: "Fabricación", key: "fab_acrist", label: "Acristalamiento", manual: true },
+  { sec: "Fabricación", key: "fab_persiana", label: "Fabricación persiana", manual: true },
+  { sec: "Fabricación", key: "fab_embalaje", label: "Embalaje", manual: true },
+  { sec: "Montaje", key: "mon_transporte", label: "Transporte", manual: true },
+  { sec: "Montaje", key: "mon_montaje", label: "Montaje en obra", manual: true },
+  { sec: "Montaje", key: "mon_espumas", label: "Espumas / sellado", manual: true },
+  { sec: "Montaje", key: "mon_remates", label: "Remates / tapajuntas", manual: true },
+  { sec: "Montaje", key: "mon_desplaz", label: "Desplazamiento y dietas", manual: true },
+  { sec: "Montaje", key: "mon_medios", label: "Medios auxiliares (grúa, andamio…)", manual: true },
+  { sec: "Montaje", key: "mon_escombro", label: "Retirada / escombros", manual: true },
+  { sec: "Varios", key: "varios", label: "Otros gastos", manual: true },
+];
+
+function CalculadoraVentanaForm({ ctx, clientes, tarifasPersianas, onPasarAPresupuesto, irA, categoria = "ventana" }) {
+  const esTecho = categoria === "techo";
+  const modelos = (ctx.modelosVentana || []).filter((m) => (m.categoria || "ventana") === categoria);
+  const tarifas = ctx.tarifasAluminio || [];
+  const series = useMemo(() => [...new Set(modelos.map((m) => m.serie))], [modelos]);
+  const [serie, setSerie] = useState(series[0] || "");
+  const modelosSerie = modelos.filter((m) => m.serie === serie);
+  const [modeloId, setModeloId] = useState(modelosSerie[0]?.id || "");
+  const modelo = modelos.find((m) => m.id === modeloId) || modelosSerie[0] || null;
+  const [tarifaId, setTarifaId] = useState(tarifas[0]?.id || "");
+  const tarifa = tarifas.find((t) => t.id === tarifaId) || tarifas[0] || null;
+  const [acabado, setAcabado] = useState("blanco");
+  const [color, setColor] = useState("blanco");
+  const [A, setA] = useState(esTecho ? "4000" : "1200");
+  const [H, setH] = useState(esTecho ? "2500" : "1200");
+  const [Lsal, setLsal] = useState("3000");
+  const [ud, setUd] = useState("1");
+  const [persiana, setPersiana] = useState({ activa: false, cajon: 155, motor: false });
+  const [vidrioDesc, setVidrioDesc] = useState("");
+  const [vidrioPrecio, setVidrioPrecio] = useState("");
+  const tarifasCr = ctx.tarifasCristal || [];
+  const [vidrioModo, setVidrioModo] = useState(tarifasCr.length ? "tarifa" : "manual");
+  const [vidrioCfg, setVidrioCfg] = useState({ tarifaId: tarifasCr[0]?.id || "", baseId: "", incrementos: [], forma: "Rectangular", plantilla: false });
+  const tarifaCristal = vidrioModo === "tarifa" ? (tarifasCr.find((t) => t.id === vidrioCfg.tarifaId) || tarifasCr[0] || null) : null;
+  const [clienteNombre, setClienteNombre] = useState("");
+  const [vista, setVista] = useState("analisis");
+
+  useEffect(() => { if (!modelosSerie.find((m) => m.id === modeloId)) setModeloId(modelosSerie[0]?.id || ""); }, [serie, modelos.length]);
+
+  const nA = parseFloat(A) || 0, nH = parseFloat(H) || 0, nUd = parseFloat(ud) || 1, nL = parseFloat(Lsal) || 0;
+  const calc = useMemo(() => modelo ? calcularVentana({ modelo, A: nA, H: nH, L: nL, ud, tarifa, acabado, color, vidrioPrecioM2: vidrioModo === "manual" ? vidrioPrecio : 0, persiana, tarifasPersianas, vidrioCfg, tarifaCristal }) : null,
+    [modelo, nA, nH, nL, ud, tarifa, acabado, color, vidrioPrecio, persiana, tarifasPersianas, vidrioCfg, tarifaCristal, vidrioModo]);
+  const nombreCristal = vidrioModo === "tarifa" ? nombreComposicionCristal(tarifaCristal, vidrioCfg) : vidrioDesc;
+
+  // ---- Análisis de importes (común a toda la Calculadora) ----
+  const filasDefVentana = useMemo(() => {
+    if (!calc) return [];
+    return ANALISIS_VENTANA_FILAS
+      .filter((f) => f.key !== "persiana" && f.key !== "fab_persiana" ? true : persiana.activa)
+      .filter((f) => f.key !== "cubierta" || esTecho || calc.totales.cubierta > 0)
+      .map((f) => (esTecho && f.sec === "Ventana" ? { ...f, sec: "Techo" } : f))
+      .map((f) => (esTecho && f.key === "fab_ventana" ? { ...f, label: "Fabricación techo" } : f));
+  }, [calc, persiana.activa, esTecho]);
+  const an = useAnalisisImportes({ ctx, categoria, filasDef: filasDefVentana, nUd,
+    autos: calc ? { perfiles: calc.totales.aluminio, juntas: calc.totales.goma, accesorios: calc.totales.accesorios, cubierta: calc.totales.cubierta, vidrio: calc.totales.vidrio, persiana: calc.totales.persiana } : {} });
+  const analisis = an.analisis;
+  const ivaPct = an.ivaPct;
+  const precioVenta = analisis.venta;
+
+  // ---- Materiales necesarios vs Stock ----
+  const materialesNec = useMemo(() => {
+    if (!calc) return [];
+    const mats = ctx.materiales || [];
+    const acabTxt = String(tarifa?.acabadosNombres?.[acabado] || acabado).toLowerCase();
+    const findMat = (r, esPerfil) => {
+      const mismos = mats.filter((m) => normRef(m.codigo) === normRef(r));
+      const col = esPerfil ? acabTxt : String(color).toLowerCase();
+      return mismos.find((m) => String(m.color || "").toLowerCase() === col) || mismos.find((m) => !m.color) || null;
+    };
+    const out = [];
+    const porRef = {};
+    calc.perfiles.forEach((p) => {
+      if (isNaN(p.corte) || p.corte <= 0 || !p.cantidadTotal) return;
+      const k = normRef(p.ref);
+      if (!porRef[k]) porRef[k] = { ref: p.ref, desc: p.item?.desc || p.desc, item: p.item, precio: p.precio, piezas: [] };
+      for (let i = 0; i < Math.round(p.cantidadTotal); i++) porRef[k].piezas.push(Math.round(p.corte * 10) / 10);
+    });
+    Object.values(porRef).forEach((g) => {
+      const mat = findMat(g.ref, true);
+      const lMat = parseFloat(mat?.longitud) || 0;
+      const longBarra = lMat > 100 ? lMat : lMat > 0 ? lMat * 1000 : (parseFloat(tarifa?.longitudBarra) || 6000);
+      const barras = empaquetarBarras(g.piezas, longBarra);
+      const metros = g.piezas.reduce((s, x) => s + x, 0) / 1000;
+      const enMetros = mat && /metro/i.test(mat.unidadCompra || "");
+      const necesita = enMetros ? Math.ceil(metros * 100) / 100 : barras.length;
+      const unidad = enMetros ? "m" : "barras";
+      const stock = mat ? (parseFloat(mat.stockReal) || 0) : null;
+      const precioUnidad = g.precio?.neto ? (enMetros ? g.precio.neto : g.precio.neto * longBarra / 1000) : 0;
+      out.push({ clave: `p-${g.ref}`, tipo: "perfil", ref: g.ref, desc: g.desc, necesita, unidad, metros, barras, longBarra, mat, stock,
+        falta: stock === null ? necesita : Math.max(0, necesita - stock), precioUnidad });
+    });
+    const porAcc = {};
+    calc.accesorios.forEach((a) => {
+      if (!a.cantidadTotal) return;
+      const k = normRef(a.ref) || a.id;
+      if (!porAcc[k]) porAcc[k] = { ref: a.ref, desc: a.item?.desc || a.desc, unidad: a.unidad || "ud", cantidad: 0, precio: a.precio, grupo: a.item?.tipo || "accesorio" };
+      porAcc[k].cantidad += a.cantidadTotal;
+    });
+    Object.values(porAcc).forEach((g) => {
+      const mat = g.ref ? findMat(g.ref, false) : null;
+      const necesita = g.unidad === "m" ? Math.ceil(g.cantidad * 100) / 100 : Math.ceil(g.cantidad);
+      const stock = mat ? (parseFloat(mat.stockReal) || 0) : null;
+      out.push({ clave: `a-${g.ref}`, tipo: "accesorio", grupo: g.grupo, ref: g.ref, desc: g.desc, necesita, unidad: g.unidad, mat, stock,
+        falta: stock === null ? necesita : Math.max(0, necesita - stock), precioUnidad: g.precio?.neto || 0 });
+    });
+    return out;
+  }, [calc, ctx.materiales, tarifa, acabado, color]);
+
+  if (!modelos.length) return <p className="text-sm text-slate-500">No hay modelos de {esTecho ? "techo" : "ventana"}. Ve a "Modelos de {esTecho ? "techo" : "ventana"}" y pulsa "Cargar modelos de fábrica".</p>;
+
+  const acabados = tarifa?.acabados || ["blanco", "varios", "bronce", "especial", "madera"];
+  const colores = tarifa?.colores || ["bruto", "blanco", "negro", "plata", "acero"];
+  const nombreAcabado = (k) => tarifa?.acabadosNombres?.[k] || k;
+  const etiquetaAcabado = nombreAcabado(acabado);
+
+  const descripcionTexto = () => {
+    const l = [];
+    l.push(`${ud} ud · ${modelo.serie} — ${modelo.nombre}`);
+    l.push(esTecho ? `Medidas: ancho ${nA} x salida ${nL} mm (altura ${nH} mm) · Acabado: ${etiquetaAcabado}` : `Medidas: ${nA} x ${nH} mm · Acabado: ${etiquetaAcabado}`);
+    if (nombreCristal || calc.vidrio.m2) l.push(`Cristal: ${nombreCristal || "(sin especificar)"} — ${calc.vidrio.m2.toFixed(2)} m²`);
+    if (persiana.activa) l.push(`Con persiana (cajón ${calc.persiana?.cajon || persiana.cajon}${persiana.motor ? ", motorizada" : ""})`);
+    return l.join("\n");
+  };
+
+  // Datos de esta ventana que viajan con el presupuesto (y luego al proyecto) para poder
+  // generar el pedido de material cuando se acepte.
+  const datosVentana = () => ({
+    id: uid(), fecha: new Date().toISOString().slice(0, 10), categoria, nombre: `${modelo.serie} — ${modelo.nombre}`, A: nA, H: esTecho ? nL : nH, ud: nUd,
+    acabado: etiquetaAcabado, color, tarifaAluminioId: tarifa?.id || "", proveedorAluminioId: tarifa?.proveedorId || "",
+    persiana: persiana.activa ? { cajon: calc.persiana?.cajon || persiana.cajon, motor: !!persiana.motor } : null,
+    materiales: materialesNec.map((m) => ({
+      tipo: m.tipo, ref: m.ref, desc: m.desc, acabado: m.tipo === "perfil" ? etiquetaAcabado : color, unidad: m.unidad === "barras" ? "barras" : m.unidad,
+      cantidad: m.tipo === "perfil" ? m.metros : m.necesita, piezas: m.tipo === "perfil" ? m.barras.flatMap((b) => b.piezas) : [],
+      longBarra: m.longBarra || "", precioNeto: (m.tipo === "perfil" ? (m.precioUnidad && m.unidad === "barras" ? m.precioUnidad / (m.longBarra / 1000) : m.precioUnidad) : m.precioUnidad) || 0,
+      serie: modelo.serie, grupo: m.grupo || "",
+    })),
+    cristal: calc.vidrio.cantidad > 0 && isFinite(calc.vidrio.ancho) && isFinite(calc.vidrio.alto) && calc.vidrio.ancho > 0 && calc.vidrio.alto > 0 ? { descripcion: nombreCristal || "", ancho: calc.vidrio.ancho, alto: calc.vidrio.alto, cantidad: calc.vidrio.cantidad,
+      proveedorId: vidrioModo === "tarifa" ? (tarifaCristal?.proveedorId || "") : "", precioPieza: calc.vidrio.cantidad ? calc.vidrio.importe / calc.vidrio.cantidad : 0 } : null,
+    total: precioVenta,
+  });
+
+
+
+  const pedirFaltante = (todo) => {
+    const lineas = materialesNec.filter((m) => (todo ? m.necesita : m.falta) > 0).map((m) => {
+      const cantidad = String(todo ? m.necesita : m.falta);
+      const precio = m.precioUnidad ? m.precioUnidad.toFixed(3) : "";
+      if (m.mat) return { id: uid(), modo: "catalogo", materialId: m.mat.id, referencia: "", ancho: "", alto: "", cantidad, precio, estado: "Solicitado" };
+      const txtUd = m.tipo === "perfil" ? (m.unidad === "barras" ? `barras de ${m.longBarra / 1000} m` : "m") : m.unidad;
+      return { id: uid(), modo: "libre", materialId: "", referencia: `${m.ref} · ${m.desc}${m.tipo === "perfil" ? ` (${etiquetaAcabado})` : ""} — ${txtUd}`, ancho: "", alto: "", cantidad, precio, estado: "Solicitado",
+        tarifaRef: { ref: m.ref, desc: m.desc, tipo: m.tipo === "perfil" ? "aluminio" : "accesorio", acabado: m.tipo === "perfil" ? etiquetaAcabado : color, serie: modelo.serie,
+          unidadStock: m.tipo === "perfil" ? (m.unidad === "barras" ? "Barra" : "Metro lineal") : (m.unidad === "m" ? "Metro lineal" : "Unidad"), longitudBarra: m.tipo === "perfil" && m.unidad === "barras" ? m.longBarra : "" } };
+    });
+    if (!lineas.length) { alert("No falta nada: el stock cubre todo el despiece."); return; }
+    ctx.generarPedido && ctx.generarPedido(tarifa?.proveedorId || "", lineas, "",
+      `Pedido generado desde la Calculadora de Ventanas: ${ud} ud ${modelo.serie} — ${modelo.nombre} ${nA}x${nH} (${etiquetaAcabado})${clienteNombre ? ` · ${clienteNombre}` : ""}.`);
+  };
+
+  const descontarStock = () => {
+    const lista = materialesNec.filter((m) => m.mat && m.necesita > 0);
+    if (!lista.length) { alert("Ninguna pieza del despiece está dada de alta en Stock con la misma referencia (código)."); return; }
+    const txt = lista.map((m) => `• ${m.ref} ${m.desc}: −${m.necesita} ${m.unidad}${m.stock < m.necesita ? " (¡no hay suficiente!)" : ""}`).join("\n");
+    if (!window.confirm(`Se va a descontar del stock:\n\n${txt}\n\n¿Seguro? (Hazlo cuando se vaya a fabricar, no al presupuestar.)`)) return;
+    ctx.descontarStockLote && ctx.descontarStockLote(lista.map((m) => ({ materialId: m.mat.id, cantidad: m.necesita })),
+      `Calculadora ventanas — ${modelo.nombre} ${nA}x${nH}${clienteNombre ? ` · ${clienteNombre}` : ""}`);
+  };
+
+  const imprimir = (modo) => {
+    const td = (x, extra = "") => `<td style="border:1px solid #ccc;padding:3px 6px;${extra}">${x ?? ""}</td>`;
+    const tabla = (cab, filas) => `<table style="border-collapse:collapse;width:100%;margin-bottom:12px"><tr>${cab.map((c) => `<th style="border:1px solid #ccc;padding:3px 6px;background:#f1f5f9;text-align:left">${c}</th>`).join("")}</tr>${filas.join("")}</table>`;
+    let cuerpo = "";
+    if (modo === "despiece") {
+      cuerpo += "<h3>Perfiles — hoja de corte</h3>" + tabla(["Ref", "Descripción", "Fórmula", "Corte (mm)", "Cant.", "Ángulo"],
+        calc.perfiles.map((p) => `<tr>${td(p.ref)}${td(p.item?.desc || p.desc)}${td(p.formula)}${td(isNaN(p.corte) ? "¡revisar!" : Math.round(p.corte * 10) / 10)}${td(p.cantidadTotal)}${td(p.angulo)}</tr>`));
+      cuerpo += "<h3>Plan de corte por barra</h3>" + materialesNec.filter((m) => m.tipo === "perfil").map((m) =>
+        `<p style="margin:4px 0"><b>${m.ref} ${m.desc}</b> — ${m.barras.length} barra(s) de ${m.longBarra} mm<br>${m.barras.map((b, i) => `Barra ${i + 1}: ${b.piezas.join(" + ")} → sobra ${Math.round(b.sobraMm)} mm`).join("<br>")}</p>`).join("");
+      cuerpo += "<h3>Accesorios y gomas</h3>" + tabla(["Ref", "Descripción", "Cantidad"],
+        calc.accesorios.map((a) => `<tr>${td(a.ref)}${td(a.item?.desc || a.desc)}${td(`${Math.round(a.cantidadTotal * 100) / 100} ${a.unidad}`)}</tr>`));
+      cuerpo += `<h3>Cristal</h3><p>${nombreCristal || "—"}: ${Math.round(calc.vidrio.ancho)} x ${Math.round(calc.vidrio.alto)} mm × ${calc.vidrio.cantidad} (medida aproximada, comprobar)</p>`;
+    } else if (modo === "analisis") {
+      cuerpo += tabla(["Concepto", "Horas", "Coste", "% margen", "Venta"], analisis.filas.map((f) => `<tr>${td(`${f.sec} · ${f.label}`)}${td(f.horasTot ? Math.round(f.horasTot * 10) / 10 : "", "text-align:right")}${td(money(f.coste), "text-align:right")}${td(f.pct + " %", "text-align:right")}${td(money(f.venta), "text-align:right")}</tr>`)
+        .concat([`<tr>${td("<b>TOTAL</b>")}${td(`<b>${Math.round(analisis.horasTotales * 10) / 10} h</b>`, "text-align:right")}${td(`<b>${money(analisis.compra)}</b>`, "text-align:right")}${td("")}${td(`<b>${money(analisis.venta)}</b>`, "text-align:right")}</tr>`,
+          `<tr>${td("IVA " + ivaPct + " %")}${td("")}${td("")}${td("")}${td(money(analisis.iva), "text-align:right")}</tr>`, `<tr>${td("<b>TOTAL CON IVA</b>")}${td("")}${td("")}${td("")}${td(`<b>${money(analisis.conIva)}</b>`, "text-align:right")}</tr>`]));
+      cuerpo += "<h3>Materiales</h3>" + tabla(["Ref", "Descripción", "Necesita", "Stock", "Falta", "Precio neto"], materialesNec.map((m) => `<tr>${td(m.ref)}${td(m.desc)}${td(`${m.necesita} ${m.unidad}`)}${td(m.stock ?? "—")}${td(m.falta)}${td(m.precioUnidad ? money(m.precioUnidad) : "—")}</tr>`));
+    } else {
+      cuerpo += `<table style="border-collapse:collapse"><tr><td style="padding:4px 12px 4px 0">Precio unitario</td><td style="text-align:right"><b>${money(precioVenta / nUd)}</b></td></tr><tr><td style="padding:4px 12px 4px 0">Base imponible (${ud} ud)</td><td style="text-align:right"><b>${money(precioVenta)}</b></td></tr><tr><td style="padding:4px 12px 4px 0">IVA ${ivaPct}%</td><td style="text-align:right">${money(analisis.iva)}</td></tr><tr><td style="padding:4px 12px 4px 0"><b>TOTAL</b></td><td style="text-align:right"><b>${money(analisis.conIva)}</b></td></tr></table>`;
+    }
+    const titulo = modo === "despiece" ? "Despiece de ventana" : modo === "analisis" ? "Análisis de importes" : "Presupuesto de ventana";
+    const html = `<html><head><meta charset="utf-8"><title>${titulo}</title></head><body style="font-family:Arial;font-size:12px;padding:20px">
+      <h2>${titulo}</h2><p>${clienteNombre ? `Cliente: <b>${clienteNombre}</b><br>` : ""}${descripcionTexto().replace(/\n/g, "<br>")}</p>${cuerpo}</body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); w.focus(); w.print(); }
+  };
+
+
+  return (
+    <div className="space-y-5">
+      {!tarifas.length && (
+        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm">
+          Aún no hay ninguna tarifa de aluminio. <button className="underline font-semibold" onClick={() => irA("tarifas")}>Cárgala aquí</button> para que salgan los precios.
+        </div>
+      )}
+      <div className="grid lg:grid-cols-2 gap-5">
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Serie">
+              <select className={inputCls} value={serie} onChange={(e) => setSerie(e.target.value)}>
+                {series.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label={esTecho ? "Tipo de techo" : "Tipo de ventana"}>
+              <select className={inputCls} value={modelo?.id || ""} onChange={(e) => setModeloId(e.target.value)}>
+                {modelosSerie.map((m) => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+              </select>
+            </Field>
+            <Field label={esTecho ? "Ancho del techo, frente (mm)" : "Ancho (mm)"}><TextInput type="number" value={A} onChange={(e) => setA(e.target.value)} /></Field>
+            {esTecho && <Field label="Salida / fondo (mm)"><TextInput type="number" value={Lsal} onChange={(e) => setLsal(e.target.value)} /></Field>}
+            <Field label={esTecho ? "Altura bajante (mm)" : "Alto (mm)"}><TextInput type="number" value={H} onChange={(e) => setH(e.target.value)} /></Field>
+            <Field label="Unidades"><TextInput type="number" value={ud} onChange={(e) => setUd(e.target.value)} /></Field>
+            <Field label="Tarifa">
+              <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => setTarifaId(e.target.value)}>
+                {!tarifas.length && <option value="">— sin tarifa —</option>}
+                {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+              </select>
+            </Field>
+            <Field label="Acabado del perfil">
+              <select className={inputCls} value={acabado} onChange={(e) => setAcabado(e.target.value)}>
+                {acabados.map((k) => <option key={k} value={k}>{nombreAcabado(k)}</option>)}
+              </select>
+            </Field>
+            <Field label="Color de accesorios">
+              <select className={inputCls} value={color} onChange={(e) => setColor(e.target.value)}>
+                {colores.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          {esTecho && (modelo?.variables || []).length > 0 && (
+            <div className="border-t border-slate-100 pt-3 text-xs text-slate-500">
+              {(modelo.variables || []).map((v) => <span key={v.nombre} className="inline-block mr-3">{v.etiqueta || v.nombre}: <b>{Math.round((calc?.vars?.[v.nombre] ?? 0) * 100) / 100}</b></span>)}
+              <div className="text-slate-400">Se cambian en "Modelos de techo".</div>
+            </div>
+          )}
+          {!esTecho && <div className="border-t border-slate-100 pt-3">
+            <button type="button" onClick={() => setPersiana({ ...persiana, activa: !persiana.activa })}
+              className={`px-3 py-2 rounded-md text-sm font-semibold border-2 ${persiana.activa ? "border-[#2E8B57] bg-emerald-50 text-[#2E8B57]" : "border-slate-200 text-slate-600"}`}>
+              {persiana.activa ? "✓ Con persiana (quitar)" : "+ Añadir persiana"}
+            </button>
+            {persiana.activa && (
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                <Field label="Cajón">
+                  <select className={inputCls} value={persiana.cajon} onChange={(e) => setPersiana({ ...persiana, cajon: parseInt(e.target.value) })}>
+                    <option value={155}>155</option><option value={185}>185</option><option value={200}>200</option>
+                  </select>
+                </Field>
+                <Field label="Motor">
+                  <select className={inputCls} value={persiana.motor ? "1" : "0"} onChange={(e) => setPersiana({ ...persiana, motor: e.target.value === "1" })}>
+                    <option value="0">Manual (cinta)</option><option value="1">Motor</option>
+                  </select>
+                </Field>
+                {calc?.persiana?.subioA185 && <p className="col-span-2 text-xs text-amber-700">Con {nH} mm de alto va obligatoriamente cajón 185 — calculado con 185.</p>}
+              </div>
+            )}
+          </div>}
+
+          {(!esTecho || (parseFloat(calc?.vidrio?.cantidad) || 0) > 0) && <div className="border-t border-slate-100 pt-3 space-y-2">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-slate-700">Cristal</span>
+              <div className="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs">
+                {[["tarifa", "De tarifa"], ["manual", "A mano"]].map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setVidrioModo(k)} className={`px-3 py-1 font-semibold ${vidrioModo === k ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>{l}</button>
+                ))}
+              </div>
+            </div>
+            {vidrioModo === "tarifa" ? (
+              <>
+                <SelectorCristal tarifas={tarifasCr} cfg={vidrioCfg} onChange={setVidrioCfg} />
+                {calc?.vidrio?.detalle && calc.vidrio.detalle.lineas.length > 0 && (
+                  <div className="text-xs bg-slate-50 rounded p-2">
+                    <div className="text-slate-500 mb-1">Cada cristal: {Math.round(calc.vidrio.ancho)} × {Math.round(calc.vidrio.alto)} mm → se factura {calc.vidrio.detalle.anchoFact} × {calc.vidrio.detalle.altoFact} ({calc.vidrio.detalle.m2Fact.toFixed(2)} m², {calc.vidrio.detalle.kg.toFixed(1)} kg) · {calc.vidrio.cantidad} cristal(es)</div>
+                    {calc.vidrio.detalle.lineas.map((l, i) => <div key={i} className="flex justify-between"><span>{l.nombre}{l.dto ? <span className="text-slate-400"> · dto {l.dto}%</span> : ""}</span><span>{money(l.importe)}</span></div>)}
+                    <div className="flex justify-between font-semibold border-t border-slate-200 mt-1 pt-1"><span>Total cristal</span><span>{money(calc.vidrio.importe)}</span></div>
+                    {calc.vidrio.detalle.avisos.map((a, i) => <div key={i} className="text-amber-700">⚠ {a}</div>)}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Cristal (descripción)"><TextInput value={vidrioDesc} onChange={(e) => setVidrioDesc(e.target.value)} placeholder="Ej: 4/16/4 bajo emisivo" /></Field>
+                <Field label="Precio cristal €/m²"><TextInput type="number" value={vidrioPrecio} onChange={(e) => setVidrioPrecio(e.target.value)} /></Field>
+              </div>
+            )}
+          </div>}
+          <Field label="Cliente">
+            <TextInput value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} list="calc-ventana-clientes" placeholder="opcional" />
+            <datalist id="calc-ventana-clientes">{(clientes || []).map((c) => <option key={c.id} value={`${c.nombre || ""} ${c.apellidos || ""}`.trim()} />)}</datalist>
+          </Field>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col">
+          {esTecho
+            ? <DibujoTecho modelo={modelo} A={nA} L={nL} vars={calc?.vars} />
+            : <DibujoVentana modelo={modelo} A={nA} H={nH} persiana={persiana.activa ? { cajon: calc?.persiana?.cajon || persiana.cajon } : null} acabadoColor={COLOR_ACABADO_DIBUJO[acabado] || "#e5e7eb"} />}
+          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+            <div className="bg-slate-50 rounded p-2"><div className="text-[11px] text-slate-500">Total compra</div><div className="font-bold">{money(analisis.compra)}</div></div>
+            <div className="bg-slate-50 rounded p-2"><div className="text-[11px] text-slate-500">Diferencia</div><div className="font-bold">{money(analisis.venta - analisis.compra)}</div><div className="text-[11px] text-slate-400">{analisis.compra ? Math.round(((analisis.venta - analisis.compra) / analisis.compra) * 1000) / 10 : 0} %</div></div>
+            <div className="bg-emerald-50 rounded p-2"><div className="text-[11px] text-slate-500">Total venta</div><div className="font-extrabold text-[#2E8B57]">{money(precioVenta)}</div><div className="text-[11px] text-slate-400">{money(precioVenta / nUd)} / ud · sin IVA</div><div className="text-[11px] text-slate-500">con IVA: {money(analisis.conIva)}</div></div>
+          </div>
+          {calc?.avisos > 0 && <p className="text-xs text-amber-700 mt-2">⚠ {calc.avisos} pieza(s) sin precio en la tarifa (en naranja en el despiece).</p>}
+          <div className="flex flex-wrap gap-2 mt-4">
+            <button onClick={() => imprimir("despiece")} className="flex items-center gap-1 px-3 py-2 rounded-md border border-slate-300 text-sm"><Printer size={14} /> Despiece y cortes</button>
+            <button onClick={() => imprimir("analisis")} className="flex items-center gap-1 px-3 py-2 rounded-md border border-slate-300 text-sm"><Printer size={14} /> Análisis de importes</button>
+            <button onClick={() => imprimir("presupuesto")} className="flex items-center gap-1 px-3 py-2 rounded-md border border-slate-300 text-sm"><Printer size={14} /> Presupuesto cliente</button>
+            {onPasarAPresupuesto && (
+              <button onClick={() => onPasarAPresupuesto({ clienteNombre, descripcion: descripcionTexto(), importe: precioVenta.toFixed(2), persianas: [], ventanas: [datosVentana()], comentarios: `Creado desde la Calculadora de ${esTecho ? "Techos" : "Ventanas"}. Revisa los datos y el importe antes de guardar.` })}
+                className="px-3 py-2 rounded-md bg-[#2E8B57] text-white text-sm font-semibold">Presupuesto solo de {esTecho ? "este techo" : "esta ventana"} →</button>
+            )}
+            <button onClick={() => {
+              ctx.setPartidasCalc && ctx.setPartidasCalc([...(ctx.partidasCalc || []), { id: uid(), tipo: esTecho ? "Techo" : "Ventana", clienteNombre, direccionObra: "", descripcion: descripcionTexto(), importe: precioVenta.toFixed(2), persianas: [], ventanas: [datosVentana()], creada: Date.now() }]);
+              alert(`${esTecho ? "Techo añadido" : "Ventana añadida"} a la lista. Arriba en la Calculadora puedes juntarlo con otras partidas en un solo presupuesto.`);
+            }} className="flex items-center gap-1 px-3 py-2 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold"><Plus size={14} /> Añadir a la lista para juntar</button>
+          </div>
+        </div>
+      </div>
+
+      {calc && (
+        <div className="bg-white border border-slate-200 rounded-lg">
+          <div className="flex flex-wrap gap-1 border-b border-slate-200 px-3 pt-2">
+            {[["analisis", "Análisis de importes"], ["despiece", "Despiece valorado"], ["stock", `Materiales y stock${materialesNec.some((m) => m.falta > 0) ? " ⚠" : ""}`]].map(([k, l]) => (
+              <button key={k} onClick={() => setVista(k)} className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px ${vista === k ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500"}`}>{l}</button>
+            ))}
+          </div>
+
+          {vista === "analisis" && (
+            <div className="p-4">
+              <AnalisisImportesTabla an={an} nombreQue={esTecho ? "los techos" : "las ventanas"} nota={`Las filas de ${esTecho ? "Techo" : "Ventana"}, Vidrios${esTecho ? "" : " y Persiana"} salen solas del despiece.`} />
+            </div>
+          )}
+
+          {vista === "despiece" && (
+            <div className="p-4 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Ref</th><th className="pr-2">Descripción</th><th className="pr-2">Fórmula</th><th className="pr-2">Corte</th><th className="pr-2">Cant.</th><th className="pr-2">Total</th><th className="pr-2">Tarifa</th><th className="pr-2">Dto</th><th className="pr-2">Neto</th><th className="text-right">Importe</th></tr></thead>
+                <tbody>
+                  {calc.perfiles.map((p) => (
+                    <tr key={p.id} className={`border-b border-slate-100 ${p.sinPrecio ? "bg-orange-50" : ""}`}>
+                      <td className="py-1 pr-2 font-mono">{p.ref}</td><td className="pr-2">{p.item?.desc || p.desc}</td><td className="pr-2 font-mono">{p.formula}</td>
+                      <td className="pr-2">{isNaN(p.corte) ? <span className="text-rose-600">fórmula mal</span> : `${Math.round(p.corte * 10) / 10} mm`}</td>
+                      <td className="pr-2">{p.cantidadTotal}</td><td className="pr-2">{p.totalM.toFixed(2)} m</td>
+                      <td className="pr-2">{p.item ? `${p.precio.precio.toFixed(3)} €/m` : "—"}</td><td className="pr-2">{p.item ? `${p.precio.dto}%` : ""}</td>
+                      <td className="pr-2">{p.item ? p.precio.neto.toFixed(3) : ""}</td><td className="text-right">{money(p.importe)}</td>
+                    </tr>
+                  ))}
+                  {calc.accesorios.map((a) => (
+                    <tr key={a.id} className={`border-b border-slate-100 ${a.sinPrecio ? "bg-orange-50" : ""}`}>
+                      <td className="py-1 pr-2 font-mono">{a.ref}</td><td className="pr-2">{a.item?.desc || a.desc}</td><td className="pr-2 font-mono">{a.cantidad}</td>
+                      <td className="pr-2"></td><td className="pr-2">{a.formulaInvalida ? <span className="text-rose-600">fórmula mal</span> : `${Math.round(a.cantidadTotal * 100) / 100} ${a.unidad}`}</td><td className="pr-2"></td>
+                      <td className="pr-2">{a.item ? `${a.precio.precio.toFixed(3)} (${a.precio.clave})` : "—"}</td><td className="pr-2">{a.item ? `${a.precio.dto}%` : ""}</td>
+                      <td className="pr-2">{a.item ? a.precio.neto.toFixed(3) : ""}</td><td className="text-right">{money(a.importe)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-b border-slate-100"><td className="py-1 pr-2">Cristal</td><td className="pr-2">{nombreCristal || "—"}</td><td className="pr-2 font-mono">{modelo.vidrio?.ancho} × {modelo.vidrio?.alto}</td>
+                    <td className="pr-2">{Math.round(calc.vidrio.ancho)} × {Math.round(calc.vidrio.alto)}</td><td className="pr-2">{calc.vidrio.cantidad}</td><td className="pr-2">{calc.vidrio.m2.toFixed(2)} m²</td>
+                    <td className="pr-2">{calc.vidrio.precioM2 ? `${calc.vidrio.precioM2} €/m²` : "—"}</td><td></td><td></td><td className="text-right">{money(calc.vidrio.importe)}</td></tr>
+                  {calc.persiana && (calc.persiana.detalle || []).map((d, i) => (
+                    <tr key={`ps${i}`} className="border-b border-slate-100 text-slate-500"><td className="py-1 pr-2">Persiana</td><td className="pr-2">{d.nombre}</td><td></td><td></td><td className="pr-2">{Math.round(d.cantidad * 100) / 100} {d.unidad}</td><td></td><td className="pr-2">{d.precio}</td><td></td><td></td><td className="text-right">{money(d.importe)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-xs text-slate-400 mt-2">Fórmulas y accesorios: pestaña "Modelos de ventana". Precios y descuentos: "Tarifas de aluminio". El perfil se valora por metro cortado; en "Materiales y stock" ves las barras reales a comprar.</p>
+            </div>
+          )}
+
+          {vista === "stock" && (
+            <div className="p-4 space-y-3 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Ref</th><th className="pr-2">Descripción</th><th className="pr-2">Necesita</th><th className="pr-2">En stock</th><th className="pr-2">Falta</th><th className="pr-2">Precio neto</th><th className="pr-2">Plan de corte</th></tr></thead>
+                <tbody>
+                  {materialesNec.map((m) => (
+                    <tr key={m.clave} className={`border-b border-slate-100 ${m.falta > 0 ? "bg-rose-50/60" : ""}`}>
+                      <td className="py-1 pr-2 font-mono">{m.ref}</td>
+                      <td className="pr-2">{m.desc}{!m.mat && <div className="text-[10px] text-slate-400">no está en Stock con este código</div>}</td>
+                      <td className="pr-2 whitespace-nowrap">{m.necesita} {m.unidad}{m.tipo === "perfil" && <div className="text-[10px] text-slate-400">{m.metros.toFixed(2)} m cortados</div>}</td>
+                      <td className="pr-2">{m.stock === null ? "—" : m.stock}</td>
+                      <td className={`pr-2 font-semibold ${m.falta > 0 ? "text-rose-600" : "text-emerald-600"}`}>{m.falta > 0 ? m.falta : "✓"}</td>
+                      <td className="pr-2 whitespace-nowrap">{m.precioUnidad ? `${money(m.precioUnidad)} / ${m.unidad === "barras" ? "barra" : m.unidad}` : "—"}</td>
+                      <td className="pr-2 text-[10px] text-slate-500">{m.tipo === "perfil" ? m.barras.map((b, i) => <div key={i}>B{i + 1}: {b.piezas.join(" + ")} · sobra {Math.round(b.sobraMm)}</div>) : ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => pedirFaltante(false)} className="flex items-center gap-1 px-3 py-2 rounded-md bg-[#2E8B57] text-white text-sm font-semibold"><Truck size={14} /> Pedir lo que falta</button>
+                <button onClick={() => pedirFaltante(true)} className="flex items-center gap-1 px-3 py-2 rounded-md border border-slate-300 text-sm"><Truck size={14} /> Pedir todo el despiece</button>
+                <button onClick={descontarStock} className="flex items-center gap-1 px-3 py-2 rounded-md border border-rose-300 text-rose-700 text-sm"><ArrowDownCircle size={14} /> Descontar del stock</button>
+              </div>
+              <p className="text-xs text-slate-400">El stock se cruza por referencia: el código del material en Stock tiene que ser igual a la referencia del proveedor (ej. 35005). Los perfiles se piden en barras de {(parseFloat(tarifa?.longitudBarra) || 6000) / 1000} m salvo que el material en Stock tenga otra longitud o se compre por metro. El pedido se abre ya relleno para revisarlo antes de enviarlo.</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModelosVentanaPanel({ ctx, categoria = "ventana" }) {
+  const todos = ctx.modelosVentana || [];
+  const modelos = todos.filter((m) => (m.categoria || "ventana") === categoria);
+  const saveTodos = ctx.saveModelosVentana || (() => {});
+  // guarda la lista de esta categoría sin tocar la de la otra
+  const save = (lista) => saveTodos([...todos.filter((m) => (m.categoria || "ventana") !== categoria), ...lista]);
+  const tarifa = (ctx.tarifasAluminio || [])[0] || null;
+  const [editId, setEditId] = useState(null);
+  const [serieFiltro, setSerieFiltro] = useState("");
+  const series = [...new Set(modelos.map((m) => m.serie))];
+  const editando = modelos.find((m) => m.id === editId);
+
+  const cargarFabrica = () => {
+    const fab = categoria === "techo" ? modelosTechoDeFabrica() : modelosVentanaDeFabrica();
+    const existentes = new Set(modelos.map((m) => `${m.serie}|${m.nombre}`));
+    const nuevos = fab.filter((m) => !existentes.has(`${m.serie}|${m.nombre}`));
+    save([...modelos, ...nuevos]);
+    alert(`${nuevos.length} modelo(s) cargados.${fab.length - nuevos.length ? ` ${fab.length - nuevos.length} ya existían y no se han tocado.` : ""}`);
+  };
+  const nuevo = () => {
+    const m = categoria === "techo"
+      ? { id: uid(), categoria: "techo", serie: serieFiltro || "Techos de panel", nombre: "Nuevo tipo de techo", dibujo: { tipo: "techo-panel" }, variables: [{ nombre: "U", formula: "1000", etiqueta: "Ancho útil del panel (mm)" }, { nombre: "N", formula: "CEIL(A/U)", etiqueta: "Nº de paneles" }], perfiles: [], accesorios: [], vidrio: { ancho: "", alto: "", cantidad: "0" } }
+      : { id: uid(), categoria: "ventana", serie: serieFiltro || "NUEVA SERIE", nombre: "Nuevo tipo de ventana", dibujo: { tipo: "practicable", hojas: 1 }, perfiles: [], accesorios: [], vidrio: { ancho: "", alto: "", cantidad: "1" } };
+    save([...modelos, m]); setEditId(m.id);
+  };
+  const duplicar = (m) => {
+    const copia = JSON.parse(JSON.stringify(m));
+    copia.id = uid(); copia.nombre = `${m.nombre} (copia)`;
+    copia.perfiles = (copia.perfiles || []).map((p) => ({ ...p, id: uid() }));
+    copia.accesorios = (copia.accesorios || []).map((a) => ({ ...a, id: uid() }));
+    save([...modelos, copia]); setEditId(copia.id);
+  };
+  const borrar = (m) => { if (window.confirm(`¿Borrar "${m.serie} — ${m.nombre}"?`)) { save(modelos.filter((x) => x.id !== m.id)); setEditId(null); } };
+  const actualizar = (patch) => save(modelos.map((m) => (m.id === editId ? { ...m, ...patch } : m)));
+
+  if (editando) return <ModeloVentanaEditor esTecho={categoria === "techo"} modelo={editando} tarifa={tarifa} onChange={actualizar} onBack={() => setEditId(null)} onBorrar={() => borrar(editando)} onDuplicar={() => duplicar(editando)} />;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2 items-center">
+        <select className={inputCls + " max-w-xs"} value={serieFiltro} onChange={(e) => setSerieFiltro(e.target.value)}>
+          <option value="">Todas las series</option>
+          {series.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button onClick={nuevo} className="flex items-center gap-1 px-3 py-2 rounded-md bg-[#2E8B57] text-white text-sm font-semibold"><Plus size={14} /> Nuevo tipo</button>
+        <button onClick={cargarFabrica} className="px-3 py-2 rounded-md border border-slate-300 text-sm">Cargar modelos de fábrica{categoria === "techo" ? " (techos)" : " (Mediterráneo)"}</button>
+      </div>
+      {!modelos.length && <p className="text-sm text-slate-500">No hay modelos todavía. Pulsa "Cargar modelos de fábrica".</p>}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {modelos.filter((m) => !serieFiltro || m.serie === serieFiltro).map((m) => (
+          <button key={m.id} onClick={() => setEditId(m.id)} className="text-left bg-white border border-slate-200 rounded-lg p-3 hover:border-[#2E8B57]">
+            <div className="text-xs text-slate-400">{m.serie}</div>
+            <div className="font-semibold text-slate-800 text-sm">{m.nombre}</div>
+            <div className="text-xs text-slate-500 mt-1">{(m.perfiles || []).length} perfiles · {(m.accesorios || []).length} accesorios</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ModeloVentanaEditor({ modelo, tarifa, onChange, onBack, onBorrar, onDuplicar, esTecho = false }) {
+  const setPerfil = (id, patch) => onChange({ perfiles: modelo.perfiles.map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+  const setAcc = (id, patch) => onChange({ accesorios: modelo.accesorios.map((a) => (a.id === id ? { ...a, ...patch } : a)) });
+  const info = (r) => { const it = buscarItemTarifa(tarifa, r); return it ? it.desc : (r ? "no está en la tarifa" : ""); };
+  const cellCls = "w-full border border-slate-200 rounded px-1.5 py-1 text-xs";
+  const [A, setA] = useState(esTecho ? 4000 : 1200), [H, setH] = useState(esTecho ? 2500 : 1200), [Lp, setLp] = useState(3000);
+  const V = variablesModelo(modelo, { A, H, L: Lp });
+  const setVariable = (i, patch) => onChange({ variables: (modelo.variables || []).map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500"><ChevronLeft size={16} /> Volver</button>
+        <div className="flex-1" />
+        <button onClick={onDuplicar} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><Copy size={14} /> Duplicar</button>
+        <button onClick={onBorrar} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-300 text-rose-600 text-sm"><Trash2 size={14} /> Borrar</button>
+      </div>
+      <p className="text-xs text-slate-500">Los cambios se guardan solos. En las fórmulas usa <b>A</b> (ancho){esTecho ? <>, <b>L</b> (salida)</> : null} y <b>H</b> ({esTecho ? "altura" : "alto"}) en mm, las variables del modelo y <b>CEIL()</b> para redondear hacia arriba, por ejemplo <span className="font-mono">(A-48.5)/2</span> o <span className="font-mono">H-74</span>. En la cantidad de accesorios también puedes usar fórmulas, por ejemplo metros de goma <span className="font-mono">2*(A+H)/1000</span>.</p>
+      <div className="grid lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-2 gap-3">
+          <Field label="Serie"><TextInput value={modelo.serie} onChange={(e) => onChange({ serie: e.target.value })} /></Field>
+          <Field label="Nombre del tipo"><TextInput value={modelo.nombre} onChange={(e) => onChange({ nombre: e.target.value })} /></Field>
+          <Field label="Dibujo: apertura">
+            <select className={inputCls} value={modelo.dibujo?.tipo || (esTecho ? "techo-panel" : "practicable")} onChange={(e) => onChange({ dibujo: { ...modelo.dibujo, tipo: e.target.value } })}>
+              {esTecho
+                ? <><option value="techo-panel">Techo fijo / de panel</option><option value="techo-movil">Techo móvil (hojas correderas)</option></>
+                : <><option value="practicable">Practicable / abatible</option><option value="corredera">Corredera</option></>}
+            </select>
+          </Field>
+          <Field label="Nº de hojas"><TextInput type="number" value={modelo.dibujo?.hojas || 1} onChange={(e) => onChange({ dibujo: { ...modelo.dibujo, hojas: parseInt(e.target.value) || 1 } })} /></Field>
+          {!esTecho && <label className="flex items-center gap-2 text-sm col-span-2"><input type="checkbox" checked={!!modelo.dibujo?.puerta} onChange={(e) => onChange({ dibujo: { ...modelo.dibujo, puerta: e.target.checked } })} /> Es puerta</label>}
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          {esTecho ? <DibujoTecho modelo={modelo} A={A} L={Lp} vars={V} /> : <DibujoVentana modelo={modelo} A={A} H={H} />}
+          <div className="flex flex-wrap gap-2 mt-2 text-xs items-center">Probar con A <input className={cellCls + " w-20"} type="number" value={A} onChange={(e) => setA(parseFloat(e.target.value) || 0)} />
+            {esTecho && <>L <input className={cellCls + " w-20"} type="number" value={Lp} onChange={(e) => setLp(parseFloat(e.target.value) || 0)} /></>}
+            H <input className={cellCls + " w-20"} type="number" value={H} onChange={(e) => setH(parseFloat(e.target.value) || 0)} /></div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
+        <h4 className="text-sm font-bold text-slate-700 mb-1">Variables del modelo</h4>
+        <p className="text-xs text-slate-400 mb-2">Medidas o cantidades propias de este tipo que se usan en las fórmulas (ej. U = ancho útil del panel, N = CEIL(A/U) paneles). Se calculan en orden.</p>
+        <table className="w-full text-xs">
+          <tbody>
+            {(modelo.variables || []).map((x, i) => {
+              const v = V[x.nombre];
+              return (
+                <tr key={i}>
+                  <td className="pr-1 py-0.5 w-20"><input className={cellCls + " font-mono"} value={x.nombre} onChange={(e) => setVariable(i, { nombre: e.target.value.replace(/[^A-Za-z0-9_]/g, "") })} /></td>
+                  <td className="pr-1 w-40"><input className={cellCls + " font-mono"} value={x.formula} onChange={(e) => setVariable(i, { formula: e.target.value })} /></td>
+                  <td className="pr-1"><input className={cellCls} value={x.etiqueta || ""} placeholder="qué es" onChange={(e) => setVariable(i, { etiqueta: e.target.value })} /></td>
+                  <td className="pr-1 w-20">{isNaN(v) ? <span className="text-rose-600">error</span> : Math.round(v * 100) / 100}</td>
+                  <td><button onClick={() => onChange({ variables: (modelo.variables || []).filter((_, j) => j !== i) })} className="text-rose-500"><Trash2 size={13} /></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <button onClick={() => onChange({ variables: [...(modelo.variables || []), { nombre: "X", formula: "0", etiqueta: "" }] })} className="mt-2 flex items-center gap-1 text-sm font-semibold text-[#2E8B57]"><Plus size={14} /> Añadir variable</button>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
+        <h4 className="text-sm font-bold text-slate-700 mb-2">Perfiles (hoja de corte)</h4>
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-slate-500"><th className="pr-1">Ref</th><th className="pr-1">Descripción</th><th className="pr-1">Fórmula corte</th><th className="pr-1">Cant.</th><th className="pr-1">Ángulo</th><th className="pr-1">Prueba</th><th></th></tr></thead>
+          <tbody>
+            {modelo.perfiles.map((p) => {
+              const v = evalFormula(p.formula, V);
+              return (
+                <tr key={p.id}>
+                  <td className="pr-1 py-0.5 w-24"><input className={cellCls} value={p.ref} onChange={(e) => setPerfil(p.id, { ref: e.target.value })} title={info(p.ref)} /></td>
+                  <td className="pr-1"><input className={cellCls} value={p.desc} onChange={(e) => setPerfil(p.id, { desc: e.target.value })} /><div className="text-[10px] text-slate-400">{info(p.ref)}</div></td>
+                  <td className="pr-1 w-32"><input className={cellCls + " font-mono"} value={p.formula} onChange={(e) => setPerfil(p.id, { formula: e.target.value })} /></td>
+                  <td className="pr-1 w-16"><input className={cellCls + " font-mono"} value={p.cantidad} onChange={(e) => setPerfil(p.id, { cantidad: e.target.value })} /></td>
+                  <td className="pr-1 w-16"><input className={cellCls} value={p.angulo || ""} onChange={(e) => setPerfil(p.id, { angulo: e.target.value })} /></td>
+                  <td className="pr-1 w-20">{isNaN(v) ? <span className="text-rose-600">error</span> : `${Math.round(v * 10) / 10}`}{(() => { const c = evalFormula(p.cantidad, V); return isNaN(c) ? <span className="text-rose-600"> ×?</span> : ` ×${Math.round(c * 100) / 100}`; })()}</td>
+                  <td><button onClick={() => onChange({ perfiles: modelo.perfiles.filter((x) => x.id !== p.id) })} className="text-rose-500"><Trash2 size={13} /></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <button onClick={() => onChange({ perfiles: [...modelo.perfiles, VP("", "", "A", 2)] })} className="mt-2 flex items-center gap-1 text-sm font-semibold text-[#2E8B57]"><Plus size={14} /> Añadir perfil</button>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
+        <h4 className="text-sm font-bold text-slate-700 mb-2">Accesorios y gomas</h4>
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-slate-500"><th className="pr-1">Ref</th><th className="pr-1">Descripción</th><th className="pr-1">Cantidad (o fórmula)</th><th className="pr-1">Unidad</th><th className="pr-1">Grupo</th><th className="pr-1">€ a mano</th><th className="pr-1">Prueba</th><th></th></tr></thead>
+          <tbody>
+            {modelo.accesorios.map((a) => {
+              const v = evalFormula(a.cantidad, V);
+              return (
+                <tr key={a.id}>
+                  <td className="pr-1 py-0.5 w-24"><input className={cellCls} value={a.ref} onChange={(e) => setAcc(a.id, { ref: e.target.value })} /></td>
+                  <td className="pr-1"><input className={cellCls} value={a.desc} onChange={(e) => setAcc(a.id, { desc: e.target.value })} /><div className="text-[10px] text-slate-400">{info(a.ref)}</div></td>
+                  <td className="pr-1 w-40"><input className={cellCls + " font-mono"} value={a.cantidad} onChange={(e) => setAcc(a.id, { cantidad: e.target.value })} /></td>
+                  <td className="pr-1 w-20"><select className={cellCls} value={a.unidad || "ud"} onChange={(e) => setAcc(a.id, { unidad: e.target.value })}><option value="ud">ud</option><option value="m">m</option><option value="m2">m²</option></select></td>
+                  <td className="pr-1 w-24"><select className={cellCls} value={a.grupo || "accesorio"} onChange={(e) => setAcc(a.id, { grupo: e.target.value })}><option value="accesorio">Accesorio</option><option value="goma">Goma</option><option value="cubierta">Cubierta</option><option value="aluminio">Aluminio</option></select></td>
+                  <td className="pr-1 w-16"><input className={cellCls} value={a.precioManual ?? ""} placeholder="—" title="Se usa si la referencia no está en la tarifa" onChange={(e) => setAcc(a.id, { precioManual: e.target.value })} /></td>
+                  <td className="pr-1 w-20">{isNaN(v) ? <span className="text-rose-600">error</span> : Math.round(v * 100) / 100}</td>
+                  <td><button onClick={() => onChange({ accesorios: modelo.accesorios.filter((x) => x.id !== a.id) })} className="text-rose-500"><Trash2 size={13} /></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <button onClick={() => onChange({ accesorios: [...modelo.accesorios, VAC("", "", 1)] })} className="mt-2 flex items-center gap-1 text-sm font-semibold text-[#2E8B57]"><Plus size={14} /> Añadir accesorio</button>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 grid grid-cols-3 gap-3">
+        <h4 className="col-span-3 text-sm font-bold text-slate-700">Medida del cristal (por hoja, aproximada){esTecho ? " — deja 0 cristales si el techo no lleva" : ""}</h4>
+        <Field label="Ancho cristal (fórmula)"><TextInput value={modelo.vidrio?.ancho || ""} onChange={(e) => onChange({ vidrio: { ...modelo.vidrio, ancho: e.target.value } })} /></Field>
+        <Field label="Alto cristal (fórmula)"><TextInput value={modelo.vidrio?.alto || ""} onChange={(e) => onChange({ vidrio: { ...modelo.vidrio, alto: e.target.value } })} /></Field>
+        <Field label="Nº de cristales (o fórmula)"><TextInput value={modelo.vidrio?.cantidad || ""} onChange={(e) => onChange({ vidrio: { ...modelo.vidrio, cantidad: e.target.value } })} /></Field>
+      </div>
+    </div>
+  );
+}
+
+function TarifasAluminioPanel({ ctx, proveedor }) {
+  const todas = ctx.tarifasAluminio || [];
+  const tarifas = proveedor ? todas.filter((t) => t.proveedorId === proveedor.id) : todas;
+  const save = ctx.saveTarifasAluminio || (() => {});
+  const proveedores = ctx.proveedores || [];
+  const [selId, setSelId] = useState(tarifas[0]?.id || null);
+  const [cargando, setCargando] = useState(false);
+  const mostrarMediterraneo = !proveedor || /medit/i.test(proveedor.nombre || "");
+  const sel = tarifas.find((t) => t.id === selId);
+
+  const provIdPorNombre = (nombre) => (proveedores.find((p) => (p.nombre || "").toLowerCase().includes(nombre.toLowerCase())) || {}).id || "";
+
+  const cargarMediterraneo = async () => {
+    setCargando(true);
+    try {
+      const r = await fetch(`/tarifas/mediterraneo-2024.json?t=${Date.now()}`);
+      if (!r.ok) throw new Error("No se encuentra el archivo de tarifa");
+      const d = await r.json();
+      const t = {
+        id: uid(), nombre: d.nombre, fecha: d.fecha, proveedorId: proveedor ? proveedor.id : provIdPorNombre("mediterr"), proveedorNombre: proveedor ? proveedor.nombre : d.proveedor,
+        descuentos: { aluminio: 0, goma: 0, accesorios: 0 }, acabados: d.acabados, acabadosNombres: d.acabadosNombres, colores: d.colores,
+        items: d.items.map((it) => ({ ...it, id: uid() })), creada: Date.now(),
+      };
+      save([...todas, t]); setSelId(t.id);
+    } catch (e) {
+      alert("No se pudo cargar la tarifa: " + e.message);
+    } finally { setCargando(false); }
+  };
+  const nueva = () => {
+    const t = { id: uid(), nombre: proveedor ? `Tarifa ${proveedor.nombre}` : "Nueva tarifa", fecha: new Date().toISOString().slice(0, 10), proveedorId: proveedor ? proveedor.id : "", proveedorNombre: proveedor ? proveedor.nombre : "",
+      descuentos: { aluminio: 0, goma: 0, accesorios: 0 }, acabados: ["blanco", "varios", "bronce", "especial", "madera"],
+      acabadosNombres: { blanco: "Lacado blanco", varios: "Lacado varios", bronce: "Bronce", especial: "Lacado especial", madera: "Bicolor madera" },
+      colores: ["bruto", "blanco", "negro", "plata", "acero"], items: [], creada: Date.now() };
+    save([...todas, t]); setSelId(t.id);
+  };
+  const actualizar = (patch) => save(todas.map((t) => (t.id === selId ? { ...t, ...patch } : t)));
+  const borrar = () => { if (sel && window.confirm(`¿Borrar la tarifa "${sel.nombre}" entera?`)) { save(todas.filter((t) => t.id !== selId)); setSelId(null); } };
+  // Añade a una tarifa ya cargada los artículos del archivo que le falten (sin tocar
+  // los precios ni descuentos que ya se hayan cambiado a mano).
+  const completarMediterraneo = async () => {
+    if (!sel) return;
+    try {
+      const r = await fetch(`/tarifas/mediterraneo-2024.json?t=${Date.now()}`);
+      const d = await r.json();
+      const tiene = new Set((sel.items || []).map((i) => normRef(i.ref)));
+      const nuevos = d.items.filter((i) => !tiene.has(normRef(i.ref))).map((i) => ({ ...i, id: uid() }));
+      if (!nuevos.length) { alert("La tarifa ya tiene todos los artículos del archivo."); return; }
+      actualizar({ items: [...(sel.items || []), ...nuevos] });
+      alert(`${nuevos.length} artículo(s) añadidos (por ejemplo los accesorios de techo). Lo que ya tenías no se ha tocado.`);
+    } catch (e) { alert("No se pudo leer el archivo de tarifa: " + e.message); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        {tarifas.map((t) => (
+          <button key={t.id} onClick={() => setSelId(t.id)} className={`px-3 py-1.5 rounded-full text-sm border ${t.id === selId ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "border-slate-300 text-slate-600"}`}>{t.nombre}</button>
+        ))}
+        <button onClick={nueva} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><Plus size={14} /> Nueva tarifa</button>
+        {sel && /medit/i.test(sel.nombre || "") && (
+          <button onClick={completarMediterraneo} className="px-3 py-1.5 rounded-md border border-slate-300 text-sm">Completar con lo que falte del archivo</button>
+        )}
+        {mostrarMediterraneo && (
+          <button onClick={cargarMediterraneo} disabled={cargando} className="px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold">
+            {cargando ? "Cargando…" : "Cargar tarifa Mediterráneo 2024 (ya leída del PDF)"}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-slate-500">Las tarifas son las mismas en todos sitios: se ven y se cambian aquí, en la ficha de cada proveedor, y se usan en Pedidos ("Añadir desde tarifa") y en la Calculadora de ventanas.</p>
+      {!sel && <p className="text-sm text-slate-500">Elige o crea una tarifa.</p>}
+      {sel && <TarifaAluminioDetalle tarifa={sel} proveedores={proveedores} onChange={actualizar} onBorrar={borrar} />}
+    </div>
+  );
+}
+
+function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
+  const [q, setQ] = useState("");
+  const [tipoF, setTipoF] = useState("");
+  const [serieF, setSerieF] = useState("");
+  const [limite, setLimite] = useState(80);
+  const inputExcel = useRef(null);
+  const items = tarifa.items || [];
+  const series = useMemo(() => [...new Set(items.flatMap((i) => String(i.serie || "").split(" / ")).filter(Boolean))].sort(), [items]);
+  const filtrados = items.filter((it) => {
+    if (tipoF && it.tipo !== tipoF) return false;
+    if (serieF && !String(it.serie || "").includes(serieF)) return false;
+    if (q && !`${it.ref} ${it.desc}`.toLowerCase().includes(q.toLowerCase())) return false;
+    return true;
+  });
+  const claves = [...(tarifa.acabados || []), ...(tarifa.colores || [])];
+  const setItem = (id, patch) => onChange({ items: items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+  const setPrecio = (it, k, v) => setItem(it.id, { precios: { ...(it.precios || {}), [k]: v === "" ? "" : parseFloat(String(v).replace(",", ".")) } });
+  const cellCls = "w-full border border-slate-200 rounded px-1 py-0.5 text-xs";
+
+  const importarExcel = async (file) => {
+    if (!file) return;
+    const filas = leerFilasExcel(await file.arrayBuffer());
+    const conocidas = ["referencia", "ref", "codigo", "descripcion", "denominacion", "tipo", "grupo", "serie", "familia", "unidad"];
+    let working = [...items]; let nuevos = 0, actualizados = 0;
+    filas.forEach((fila) => {
+      const r = String(valorPorCabeceras(fila, ["referencia", "ref", "codigo"]) || "").trim();
+      if (!r) return;
+      const precios = {};
+      Object.keys(fila).forEach((k) => {
+        const nk = normalizarCabecera(k);
+        if (conocidas.some((c) => nk === c)) return;
+        const v = parseFloat(String(fila[k]).replace(",", "."));
+        if (!isNaN(v) && v > 0) {
+          const clave = claves.find((c) => nk.includes(normalizarCabecera(c))) || (nk.includes("precio") || nk.includes("pvp") ? (tarifa.acabados || ["blanco"])[0] : nk);
+          precios[clave] = v;
+        }
+      });
+      const tipoTxt = normalizarCabecera(valorPorCabeceras(fila, ["tipo", "grupo"]));
+      const tipo = tipoTxt.includes("goma") || tipoTxt.includes("junta") ? "goma" : tipoTxt.includes("acces") ? "accesorio" : tipoTxt ? "aluminio" : null;
+      const idx = working.findIndex((it) => normRef(it.ref) === normRef(r));
+      if (idx >= 0) { working[idx] = { ...working[idx], precios: { ...working[idx].precios, ...precios }, ...(tipo ? { tipo } : {}) }; actualizados++; }
+      else {
+        working.push({ id: uid(), ref: r, desc: String(valorPorCabeceras(fila, ["descripcion", "denominacion"]) || r), tipo: tipo || "aluminio",
+          unidad: String(valorPorCabeceras(fila, ["unidad"]) || "").toLowerCase().startsWith("u") ? "ud" : "m", serie: String(valorPorCabeceras(fila, ["serie", "familia"]) || ""), precios });
+        nuevos++;
+      }
+    });
+    onChange({ items: working });
+    alert(`${actualizados} artículo(s) actualizados y ${nuevos} nuevo(s).`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-lg p-4 grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <Field label="Nombre de la tarifa"><TextInput value={tarifa.nombre} onChange={(e) => onChange({ nombre: e.target.value })} /></Field>
+        <Field label="Proveedor">
+          <select className={inputCls} value={tarifa.proveedorId || ""} onChange={(e) => onChange({ proveedorId: e.target.value })}>
+            <option value="">{tarifa.proveedorNombre ? `${tarifa.proveedorNombre} (sin enlazar)` : "— elegir —"}</option>
+            {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </select>
+        </Field>
+        <Field label="Fecha"><TextInput type="date" value={tarifa.fecha || ""} onChange={(e) => onChange({ fecha: e.target.value })} /></Field>
+        <Field label="Largo de barra (mm)"><TextInput type="number" value={tarifa.longitudBarra ?? 6000} onChange={(e) => onChange({ longitudBarra: e.target.value })} /></Field>
+        <div className="flex items-end"><button onClick={onBorrar} className="flex items-center gap-1 px-3 py-2 rounded-md border border-rose-300 text-rose-600 text-sm"><Trash2 size={14} /> Borrar tarifa</button></div>
+      </div>
+
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+        <h4 className="text-sm font-bold text-slate-700 mb-2">Descuentos de esta tarifa (%)</h4>
+        <div className="grid grid-cols-3 gap-3 max-w-xl">
+          {[["aluminio", "Aluminio"], ["goma", "Goma"], ["accesorios", "Accesorios"]].map(([k, l]) => (
+            <Field key={k} label={l}>
+              <TextInput type="number" value={tarifa.descuentos?.[k] ?? 0} onChange={(e) => onChange({ descuentos: { ...(tarifa.descuentos || {}), [k]: e.target.value } })} />
+            </Field>
+          ))}
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Al cambiarlos, todos los precios netos de esta tarifa (calculadora y pedidos) se recalculan al momento.</p>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="flex flex-wrap gap-2 items-center mb-3">
+          <div className="relative"><Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar ref o descripción…" className="pl-7 pr-2 py-1.5 border border-slate-300 rounded-md text-sm" /></div>
+          <select className="border border-slate-300 rounded-md text-sm px-2 py-1.5" value={tipoF} onChange={(e) => setTipoF(e.target.value)}>
+            <option value="">Todos los grupos</option>{TARIFA_GRUPOS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+          </select>
+          <select className="border border-slate-300 rounded-md text-sm px-2 py-1.5" value={serieF} onChange={(e) => setSerieF(e.target.value)}>
+            <option value="">Todas las series</option>{series.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <span className="text-xs text-slate-500">{filtrados.length} de {items.length}</span>
+          <div className="flex-1" />
+          <input ref={inputExcel} type="file" accept=".xlsx,.xls,.csv,.ods" className="hidden" onChange={(e) => { importarExcel(e.target.files[0]); e.target.value = ""; }} />
+          <button onClick={() => inputExcel.current?.click()} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><FileSpreadsheet size={14} /> Importar Excel</button>
+          <button onClick={() => onChange({ items: [{ id: uid(), ref: "", desc: "", tipo: "aluminio", unidad: "m", serie: serieF, precios: {} }, ...items] })} className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-sm"><Plus size={14} /> Artículo</button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead><tr className="text-left text-slate-500 border-b">
+              <th className="pr-1 py-1">Ref</th><th className="pr-1">Descripción</th><th className="pr-1">Grupo</th><th className="pr-1">Ud</th>
+              {claves.map((k) => <th key={k} className="pr-1 capitalize">{tarifa.acabadosNombres?.[k] ? k : k}</th>)}<th className="pr-1">Serie</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtrados.slice(0, limite).map((it) => (
+                <tr key={it.id} className="border-b border-slate-100">
+                  <td className="pr-1 py-0.5 w-20"><input className={cellCls + " font-mono"} value={it.ref} onChange={(e) => setItem(it.id, { ref: e.target.value })} /></td>
+                  <td className="pr-1 min-w-[180px]"><input className={cellCls} value={it.desc} onChange={(e) => setItem(it.id, { desc: e.target.value })} /></td>
+                  <td className="pr-1 w-24"><select className={cellCls} value={it.tipo} onChange={(e) => setItem(it.id, { tipo: e.target.value })}>{TARIFA_GRUPOS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}</select></td>
+                  <td className="pr-1 w-14"><select className={cellCls} value={it.unidad || "m"} onChange={(e) => setItem(it.id, { unidad: e.target.value })}><option value="m">m</option><option value="ud">ud</option></select></td>
+                  {claves.map((k) => (
+                    <td key={k} className="pr-1 w-16"><input className={cellCls} value={it.precios?.[k] ?? ""} onChange={(e) => setPrecio(it, k, e.target.value)} /></td>
+                  ))}
+                  <td className="pr-1 text-slate-400 whitespace-nowrap">{it.serie}{it.pag ? ` · pág ${it.pag}` : ""}</td>
+                  <td><button onClick={() => { if (window.confirm(`¿Quitar ${it.ref}?`)) onChange({ items: items.filter((x) => x.id !== it.id) }); }} className="text-rose-500"><Trash2 size={13} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {filtrados.length > limite && <button onClick={() => setLimite(limite + 150)} className="mt-2 text-sm text-[#2E8B57] font-semibold">Ver más ({filtrados.length - limite} restantes)</button>}
+        <p className="text-xs text-slate-400 mt-2">Columnas de acabado (blanco, varios, bronce, especial, madera) = precio de perfil €/m. Columnas bruto/negro/plata/acero = precio de accesorio por color. Casillas vacías = sin precio en la tarifa.</p>
+      </div>
+    </div>
+  );
+}
+
+// Selector para añadir un artículo de una tarifa de aluminio como línea de pedido.
+function SelectorTarifaPedido({ onAdd, onClose }) {
+  const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const tarifas = ctx.tarifasAluminio || [];
+  const [tarifaId, setTarifaId] = useState(tarifas[0]?.id || "");
+  const tarifa = tarifas.find((t) => t.id === tarifaId) || tarifas[0];
+  const [q, setQ] = useState("");
+  const [acabado, setAcabado] = useState("blanco");
+  const [color, setColor] = useState("blanco");
+  const [cantidades, setCantidades] = useState({});
+  if (!tarifas.length) return <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm">No hay tarifas de aluminio. Cárgalas en Presupuestos → Calculadora → Ventanas → Tarifas de aluminio. <button type="button" className="underline" onClick={onClose}>Cerrar</button></div>;
+  const lista = (tarifa?.items || []).filter((it) => !q || `${it.ref} ${it.desc}`.toLowerCase().includes(q.toLowerCase())).slice(0, 40);
+  return (
+    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+      <div className="flex flex-wrap gap-2 items-center">
+        <select className="border border-slate-300 rounded text-sm px-2 py-1" value={tarifa?.id} onChange={(e) => setTarifaId(e.target.value)}>{tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}</option>)}</select>
+        <input className="border border-slate-300 rounded text-sm px-2 py-1" placeholder="Buscar ref o descripción…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+        <select className="border border-slate-300 rounded text-sm px-2 py-1" value={acabado} onChange={(e) => setAcabado(e.target.value)}>{(tarifa?.acabados || []).map((k) => <option key={k} value={k}>{tarifa?.acabadosNombres?.[k] || k}</option>)}</select>
+        <select className="border border-slate-300 rounded text-sm px-2 py-1" value={color} onChange={(e) => setColor(e.target.value)}>{(tarifa?.colores || []).map((k) => <option key={k} value={k}>accesorio: {k}</option>)}</select>
+        <button type="button" onClick={onClose} className="ml-auto text-slate-500"><X size={16} /></button>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        <table className="w-full text-xs">
+          <tbody>
+            {lista.map((it) => {
+              const pr = precioNetoItem(tarifa, it, it.tipo === "aluminio" ? acabado : null, color);
+              return (
+                <tr key={it.id} className="border-b border-slate-200">
+                  <td className="py-1 pr-2 font-mono">{it.ref}</td><td className="pr-2">{it.desc}</td>
+                  <td className="pr-2 text-slate-500">{pr.sinPrecio ? "sin precio" : `${pr.neto.toFixed(3)} €/${it.unidad || "m"} (${pr.clave}, dto ${pr.dto}%)`}</td>
+                  <td className="pr-2 w-20"><input className="w-full border border-slate-300 rounded px-1 py-0.5" type="number" placeholder={it.unidad === "ud" ? "uds" : "metros"} value={cantidades[it.id] || ""} onChange={(e) => setCantidades({ ...cantidades, [it.id]: e.target.value })} /></td>
+                  <td><button type="button" className="px-2 py-0.5 rounded bg-[#2E8B57] text-white" onClick={() => {
+                    const acab = it.tipo === "aluminio" ? (tarifa.acabadosNombres?.[acabado] || acabado) : pr.clave;
+                    const enStock = (ctx.materiales || []).find((m) => normRef(m.codigo) === normRef(it.ref) && String(m.color || "").toLowerCase() === String(acab).toLowerCase());
+                    onAdd({
+                      referencia: `${it.ref} · ${it.desc} (${acab}) — ${it.unidad === "ud" ? "ud" : "m"}`, cantidad: cantidades[it.id] || "1", precio: pr.neto ? pr.neto.toFixed(3) : "",
+                      materialId: enStock ? enStock.id : "",
+                      tarifaRef: { ref: it.ref, desc: it.desc, tipo: it.tipo, acabado: acab, serie: it.serie || "", unidadStock: it.unidad === "ud" ? "Unidad" : "Metro lineal" },
+                    });
+                  }}>Añadir</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
+/* ================= TARIFAS DE CRISTAL =================
+   Nodo Firebase "tarifasCristal". Cada tarifa (por proveedor) tiene: descuento % (siempre
+   editable; no se aplica a los artículos marcados "neto"), mínimo facturable (m², manual),
+   múltiplo de medida (ej. 6x6 cm), medidas máximas/mínimas, recargo energético (€/kg,
+   según el peso del cristal), recargos por superficie (tramos de m²), por lado largo,
+   por forma (% con mínimo en €) y plantilla (€ por plantilla).
+   Precio de un cristal = cámara base (o monolítico) + incrementos (sustituir un vidrio,
+   capas, cámara, gas, sellantes...). */
+
+const numOr = (v, d = 0) => { const n = parseFloat(String(v ?? "").replace(",", ".")); return isNaN(n) ? d : n; };
+
+function calcularCristal({ tarifa, anchoMm, altoMm, cantidad = 1, baseId, incrementos = [], forma = "", plantilla = false }) {
+  const res = { lineas: [], avisos: [], total: 0, totalPieza: 0, m2: 0, m2Fact: 0, kg: 0 };
+  if (!tarifa || !baseId || !(anchoMm > 0) || !(altoMm > 0)) return res;
+  const items = tarifa.items || [];
+  const base = items.find((i) => i.id === baseId);
+  if (!base) return res;
+  const mult = numOr(tarifa.multiploMm, 0);
+  const redondear = (v) => (mult > 0 ? Math.ceil(v / mult) * mult : v);
+  const Af = redondear(anchoMm), Hf = redondear(altoMm);
+  const m2 = (Af * Hf) / 1e6;
+  const minFact = numOr(tarifa.minimoFacturableM2, 0);
+  const m2Fact = Math.max(m2, minFact);
+  const dto = numOr(tarifa.descuento, 0);
+  const conDto = (it, importe) => (it.neto ? importe : importe * (1 - dto / 100));
+  const perimetro = (2 * (anchoMm + altoMm)) / 1000;
+  let vidrio = 0, kgM2 = numOr(base.kgM2, 0);
+
+  const añadir = (it, qtyManual) => {
+    let cant, uds;
+    if (it.unidad === "lado") { cant = numOr(qtyManual, 1); uds = "lado(s)"; }
+    else if (it.unidad === "ml") { cant = perimetro; uds = "ml"; }
+    else if (it.unidad === "ud") { cant = numOr(qtyManual, 1); uds = "ud"; }
+    else { cant = Math.max(m2Fact, numOr(it.minimoM2, 0)); uds = "m²"; kgM2 += it === base ? 0 : numOr(it.kgM2, 0); }
+    const bruto = numOr(it.precio, 0) * cant;
+    const neto = conDto(it, bruto);
+    vidrio += neto;
+    res.lineas.push({ nombre: it.nombre, grupo: it.grupo, cant, uds, precio: numOr(it.precio, 0), dto: it.neto ? 0 : dto, importe: neto });
+  };
+  añadir(base);
+  incrementos.forEach((inc) => { const it = items.find((i) => i.id === inc.itemId); if (it) añadir(it, inc.qty); });
+
+  // recargos sobre el importe del cristal
+  const tramo = (tarifa.recargosSuperficie || []).find((t) => m2 >= numOr(t.desde, 0) && (t.hasta === "" || t.hasta === undefined || t.hasta === null || m2 < numOr(t.hasta, Infinity)));
+  const pctSup = tramo ? numOr(tramo.pct, 0) : 0;
+  const ladoMax = Math.max(anchoMm, altoMm);
+  const pctLado = Math.max(0, ...(tarifa.recargosLado || []).filter((r) => ladoMax > numOr(r.mayorQueMm, Infinity)).map((r) => numOr(r.pct, 0)));
+  if (pctSup) res.lineas.push({ nombre: `Recargo por superficie (${m2.toFixed(2)} m²)`, cant: pctSup, uds: "%", importe: vidrio * pctSup / 100 });
+  if (pctLado) res.lineas.push({ nombre: `Recargo por lado largo (${ladoMax} mm)`, cant: pctLado, uds: "%", importe: vidrio * pctLado / 100 });
+  const f = (tarifa.formas || []).find((x) => x.nombre === forma);
+  if (f && numOr(f.pct, 0) > 0) {
+    const imp = Math.max(vidrio * numOr(f.pct, 0) / 100, numOr(f.minimo, 0));
+    res.lineas.push({ nombre: `Recargo forma: ${f.nombre}`, cant: numOr(f.pct, 0), uds: "%", importe: imp });
+  }
+  if (plantilla && numOr(tarifa.plantillaEur, 0) > 0) res.lineas.push({ nombre: "Medición de plantilla", cant: 1, uds: "ud", importe: numOr(tarifa.plantillaEur, 0) });
+  res.kg = kgM2 * m2Fact;
+  const eurKg = numOr(tarifa.recargoEnergeticoEurKg, 0);
+  if (eurKg > 0) res.lineas.push({ nombre: `Recargo energético (${res.kg.toFixed(1)} kg)`, cant: res.kg, uds: "kg", importe: res.kg * eurKg });
+
+  if (numOr(tarifa.medidaMaxAlto, 0) && altoMm > numOr(tarifa.medidaMaxAlto, 0)) res.avisos.push(`Alto ${altoMm} mm supera el máximo de fabricación (${tarifa.medidaMaxAlto} mm)`);
+  if (numOr(tarifa.medidaMaxAncho, 0) && anchoMm > numOr(tarifa.medidaMaxAncho, 0)) res.avisos.push(`Ancho ${anchoMm} mm supera el máximo de fabricación (${tarifa.medidaMaxAncho} mm)`);
+  if (numOr(tarifa.medidaMinAlto, 0) && altoMm < numOr(tarifa.medidaMinAlto, 0)) res.avisos.push(`Alto por debajo del mínimo (${tarifa.medidaMinAlto} mm)`);
+  if (numOr(tarifa.medidaMinAncho, 0) && anchoMm < numOr(tarifa.medidaMinAncho, 0)) res.avisos.push(`Ancho por debajo del mínimo (${tarifa.medidaMinAncho} mm)`);
+  if (minFact > 0 && m2 < minFact) res.avisos.push(`Se factura el mínimo: ${minFact} m² (la pieza mide ${m2.toFixed(2)} m²)`);
+
+  res.m2 = m2; res.m2Fact = m2Fact; res.anchoFact = Af; res.altoFact = Hf;
+  res.totalPieza = res.lineas.reduce((s, l) => s + l.importe, 0);
+  res.total = res.totalPieza * (numOr(cantidad, 1));
+  return res;
+}
+
+function nombreComposicionCristal(tarifa, cfg) {
+  if (!tarifa || !cfg?.baseId) return "";
+  const it = (id) => (tarifa.items || []).find((i) => i.id === id);
+  const partes = [it(cfg.baseId)?.nombre, ...(cfg.incrementos || []).map((x) => it(x.itemId)?.nombre)].filter(Boolean);
+  return partes.join(" + ") + (cfg.forma && cfg.forma !== "Rectangular" ? ` · ${cfg.forma}` : "") + (cfg.plantilla ? " · con plantilla" : "");
+}
+
+// Selector de composición de cristal (se usa en la calculadora de ventanas).
+function SelectorCristal({ tarifas, cfg, onChange }) {
+  const tarifa = tarifas.find((t) => t.id === cfg.tarifaId) || tarifas[0];
+  const items = tarifa?.items || [];
+  const bases = items.filter((i) => i.tipo === "base" || i.tipo === "simple");
+  const incs = items.filter((i) => i.tipo === "incremento");
+  const [nuevoInc, setNuevoInc] = useState("");
+  const grupos = (lista) => [...new Set(lista.map((i) => i.grupo))];
+  if (!tarifas.length) return <p className="text-xs text-slate-500">No hay tarifas de cristal. Cárgalas en Proveedores → ficha del proveedor → "Tarifas y descuentos" → Cristal.</p>;
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => onChange({ ...cfg, tarifaId: e.target.value, baseId: "", incrementos: [] })}>
+          {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+        </select>
+        <select className={inputCls} value={cfg.baseId || ""} onChange={(e) => onChange({ ...cfg, tarifaId: tarifa.id, baseId: e.target.value })}>
+          <option value="">— elegir cristal —</option>
+          {grupos(bases).map((g) => (
+            <optgroup key={g} label={g}>{bases.filter((b) => b.grupo === g).map((b) => <option key={b.id} value={b.id}>{b.nombre} · {numOr(b.precio).toFixed(2)} €/m²</option>)}</optgroup>
+          ))}
+        </select>
+      </div>
+      {(cfg.incrementos || []).map((x, i) => {
+        const it = items.find((k) => k.id === x.itemId);
+        return (
+          <div key={i} className="flex items-center gap-2 text-xs bg-slate-50 rounded px-2 py-1">
+            <span className="flex-1">+ {it?.nombre} <span className="text-slate-400">({numOr(it?.precio).toFixed(2)} €/{it?.unidad === "lado" ? "lado" : "m²"}{it?.neto ? ", neto" : ""})</span></span>
+            {(it?.unidad === "lado" || it?.unidad === "ud") && <input className="w-14 border rounded px-1" type="number" value={x.qty ?? 1} onChange={(e) => onChange({ ...cfg, incrementos: cfg.incrementos.map((y, j) => (j === i ? { ...y, qty: e.target.value } : y)) })} />}
+            <button type="button" className="text-rose-500" onClick={() => onChange({ ...cfg, incrementos: cfg.incrementos.filter((_, j) => j !== i) })}><X size={13} /></button>
+          </div>
+        );
+      })}
+      <div className="flex gap-2">
+        <select className={inputCls} value={nuevoInc} onChange={(e) => setNuevoInc(e.target.value)}>
+          <option value="">+ añadir extra (sustituir vidrio, capa, cámara, gas, sellado…)</option>
+          {grupos(incs).map((g) => (
+            <optgroup key={g} label={g}>{incs.filter((b) => b.grupo === g).map((b) => <option key={b.id} value={b.id}>{b.nombre} · {numOr(b.precio).toFixed(2)} €</option>)}</optgroup>
+          ))}
+        </select>
+        <button type="button" disabled={!nuevoInc} onClick={() => { onChange({ ...cfg, tarifaId: tarifa.id, incrementos: [...(cfg.incrementos || []), { itemId: nuevoInc, qty: 1 }] }); setNuevoInc(""); }}
+          className="px-3 rounded-md bg-slate-700 text-white text-sm disabled:opacity-40">Añadir</button>
+      </div>
+      <div className="grid grid-cols-2 gap-2 items-center">
+        <select className={inputCls} value={cfg.forma || "Rectangular"} onChange={(e) => onChange({ ...cfg, forma: e.target.value })}>
+          {(tarifa?.formas || [{ nombre: "Rectangular" }]).map((f) => <option key={f.nombre} value={f.nombre}>{f.nombre}{numOr(f.pct) ? ` (+${f.pct}%)` : ""}</option>)}
+        </select>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!cfg.plantilla} onChange={(e) => onChange({ ...cfg, plantilla: e.target.checked })} /> Con plantilla</label>
+      </div>
+    </div>
+  );
+}
+
+function TarifasCristalPanel({ ctx, proveedor }) {
+  const todas = ctx.tarifasCristal || [];
+  const tarifas = proveedor ? todas.filter((t) => t.proveedorId === proveedor.id) : todas;
+  const save = ctx.saveTarifasCristal || (() => {});
+  const proveedores = ctx.proveedores || [];
+  const [selId, setSelId] = useState(tarifas[0]?.id || null);
+  const [cargando, setCargando] = useState(false);
+  const sel = tarifas.find((t) => t.id === selId);
+  const mostrarPersimaster = !proveedor || /persim/i.test(proveedor.nombre || "");
+
+  const cargarPersimaster = async () => {
+    setCargando(true);
+    try {
+      const r = await fetch(`/tarifas/persimaster-2025.json?t=${Date.now()}`);
+      if (!r.ok) throw new Error("No se encuentra el archivo de tarifa");
+      const d = await r.json();
+      const provId = proveedor ? proveedor.id : ((proveedores.find((p) => /persim/i.test(p.nombre || "")) || {}).id || "");
+      const { items, proveedor: provNombre, ...resto } = d;
+      const t = { ...resto, id: uid(), proveedorId: provId, proveedorNombre: proveedor ? proveedor.nombre : provNombre, items: items.map((i) => ({ ...i, id: uid() })), creada: Date.now() };
+      save([...todas, t]); setSelId(t.id);
+    } catch (e) { alert("No se pudo cargar la tarifa: " + e.message); } finally { setCargando(false); }
+  };
+  const nueva = () => {
+    const t = { id: uid(), nombre: proveedor ? `Cristal ${proveedor.nombre}` : "Nueva tarifa de cristal", fecha: new Date().toISOString().slice(0, 10),
+      proveedorId: proveedor ? proveedor.id : "", proveedorNombre: proveedor ? proveedor.nombre : "", descuento: 0, minimoFacturableM2: "", multiploMm: 60,
+      medidaMaxAlto: "", medidaMaxAncho: "", medidaMinAlto: "", medidaMinAncho: "", recargoEnergeticoEurKg: "", plantillaEur: "",
+      recargosSuperficie: [], recargosLado: [], formas: [{ nombre: "Rectangular", pct: 0, minimo: 0 }], items: [], creada: Date.now() };
+    save([...todas, t]); setSelId(t.id);
+  };
+  const actualizar = (patch) => save(todas.map((t) => (t.id === selId ? { ...t, ...patch } : t)));
+  const borrar = () => { if (sel && window.confirm(`¿Borrar la tarifa "${sel.nombre}" entera?`)) { save(todas.filter((t) => t.id !== selId)); setSelId(null); } };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        {tarifas.map((t) => (
+          <button key={t.id} onClick={() => setSelId(t.id)} className={`px-3 py-1.5 rounded-full text-sm border ${t.id === selId ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "border-slate-300 text-slate-600"}`}>{t.nombre}</button>
+        ))}
+        <button onClick={nueva} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><Plus size={14} /> Nueva tarifa de cristal</button>
+        {mostrarPersimaster && (
+          <button onClick={cargarPersimaster} disabled={cargando} className="px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold">
+            {cargando ? "Cargando…" : "Cargar tarifa Persimaster 2025 (ya leída del PDF)"}
+          </button>
+        )}
+      </div>
+      {!sel && <p className="text-sm text-slate-500">Elige o crea una tarifa de cristal.</p>}
+      {sel && <TarifaCristalDetalle tarifa={sel} proveedores={proveedores} onChange={actualizar} onBorrar={borrar} />}
+    </div>
+  );
+}
+
+function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
+  const cellCls = "w-full border border-slate-200 rounded px-1 py-0.5 text-xs";
+  const items = tarifa.items || [];
+  const setItem = (id, patch) => onChange({ items: items.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
+  const setLista = (clave, idx, patch) => onChange({ [clave]: (tarifa[clave] || []).map((x, i) => (i === idx ? { ...x, ...patch } : x)) });
+  const quitarDeLista = (clave, idx) => onChange({ [clave]: (tarifa[clave] || []).filter((_, i) => i !== idx) });
+  const [q, setQ] = useState("");
+  // Probador rápido
+  const [pA, setPA] = useState(1000), [pH, setPH] = useState(1000);
+  const [pCfg, setPCfg] = useState({ tarifaId: tarifa.id, baseId: "", incrementos: [], forma: "Rectangular", plantilla: false });
+  const prueba = calcularCristal({ tarifa, anchoMm: pA, altoMm: pH, cantidad: 1, ...pCfg });
+  const campo = (k, label, type = "number") => (
+    <Field key={k} label={label}><TextInput type={type} value={tarifa[k] ?? ""} onChange={(e) => onChange({ [k]: e.target.value })} /></Field>
+  );
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-lg p-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {campo("nombre", "Nombre de la tarifa", "text")}
+        <Field label="Proveedor">
+          <select className={inputCls} value={tarifa.proveedorId || ""} onChange={(e) => onChange({ proveedorId: e.target.value })}>
+            <option value="">{tarifa.proveedorNombre ? `${tarifa.proveedorNombre} (sin enlazar)` : "— elegir —"}</option>
+            {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </select>
+        </Field>
+        {campo("fecha", "Fecha", "date")}
+        <div className="flex items-end"><button onClick={onBorrar} className="flex items-center gap-1 px-3 py-2 rounded-md border border-rose-300 text-rose-600 text-sm"><Trash2 size={14} /> Borrar tarifa</button></div>
+      </div>
+
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <h4 className="sm:col-span-2 lg:col-span-4 text-sm font-bold text-slate-700">Condiciones (todo editable)</h4>
+        {campo("descuento", "Descuento %")}
+        {campo("minimoFacturableM2", "Mínimo facturable (m²)")}
+        {campo("multiploMm", "Múltiplo de medida (mm)")}
+        {campo("recargoEnergeticoEurKg", "Recargo energético (€/kg)")}
+        {campo("plantillaEur", "Plantilla (€ por plantilla)")}
+        {campo("medidaMaxAlto", "Alto máximo (mm)")}
+        {campo("medidaMaxAncho", "Ancho máximo (mm)")}
+        {campo("medidaMinAlto", "Alto mínimo (mm)")}
+        <p className="sm:col-span-2 lg:col-span-4 text-xs text-slate-500">El descuento se aplica a todo menos a lo marcado como "neto". El mínimo facturable y el recargo energético los pones tú cuando te los pase el proveedor (en blanco = no se aplican). El peso se calcula con los kg/m² de cada cristal.</p>
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-4">
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <h4 className="text-sm font-bold text-slate-700 mb-2">Recargo por superficie</h4>
+          {(tarifa.recargosSuperficie || []).map((r, i) => (
+            <div key={i} className="flex gap-1 items-center text-xs mb-1">de <input className={cellCls + " w-14"} value={r.desde} onChange={(e) => setLista("recargosSuperficie", i, { desde: e.target.value })} /> a <input className={cellCls + " w-14"} value={r.hasta} placeholder="∞" onChange={(e) => setLista("recargosSuperficie", i, { hasta: e.target.value })} /> m² → + <input className={cellCls + " w-12"} value={r.pct} onChange={(e) => setLista("recargosSuperficie", i, { pct: e.target.value })} /> % <button onClick={() => quitarDeLista("recargosSuperficie", i)} className="text-rose-500"><X size={12} /></button></div>
+          ))}
+          <button onClick={() => onChange({ recargosSuperficie: [...(tarifa.recargosSuperficie || []), { desde: "", hasta: "", pct: "" }] })} className="text-xs text-[#2E8B57] font-semibold">+ tramo</button>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <h4 className="text-sm font-bold text-slate-700 mb-2">Recargo por lado largo</h4>
+          {(tarifa.recargosLado || []).map((r, i) => (
+            <div key={i} className="flex gap-1 items-center text-xs mb-1">lado mayor de <input className={cellCls + " w-16"} value={r.mayorQueMm} onChange={(e) => setLista("recargosLado", i, { mayorQueMm: e.target.value })} /> mm → + <input className={cellCls + " w-12"} value={r.pct} onChange={(e) => setLista("recargosLado", i, { pct: e.target.value })} /> % <button onClick={() => quitarDeLista("recargosLado", i)} className="text-rose-500"><X size={12} /></button></div>
+          ))}
+          <button onClick={() => onChange({ recargosLado: [...(tarifa.recargosLado || []), { mayorQueMm: "", pct: "" }] })} className="text-xs text-[#2E8B57] font-semibold">+ recargo</button>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <h4 className="text-sm font-bold text-slate-700 mb-2">Recargo por forma</h4>
+          {(tarifa.formas || []).map((r, i) => (
+            <div key={i} className="flex gap-1 items-center text-xs mb-1"><input className={cellCls} value={r.nombre} onChange={(e) => setLista("formas", i, { nombre: e.target.value })} /> + <input className={cellCls + " w-12"} value={r.pct} onChange={(e) => setLista("formas", i, { pct: e.target.value })} /> % mín <input className={cellCls + " w-14"} value={r.minimo} onChange={(e) => setLista("formas", i, { minimo: e.target.value })} /> € <button onClick={() => quitarDeLista("formas", i)} className="text-rose-500"><X size={12} /></button></div>
+          ))}
+          <button onClick={() => onChange({ formas: [...(tarifa.formas || []), { nombre: "", pct: "", minimo: "" }] })} className="text-xs text-[#2E8B57] font-semibold">+ forma</button>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <h4 className="text-sm font-bold text-slate-700 mb-2">Probar un cristal</h4>
+        <div className="grid lg:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <div className="flex gap-2 items-center text-sm">Medida <input className={cellCls + " w-24"} type="number" value={pA} onChange={(e) => setPA(numOr(e.target.value))} /> × <input className={cellCls + " w-24"} type="number" value={pH} onChange={(e) => setPH(numOr(e.target.value))} /> mm</div>
+            <SelectorCristal tarifas={[tarifa]} cfg={{ ...pCfg, tarifaId: tarifa.id }} onChange={setPCfg} />
+          </div>
+          <div className="text-xs">
+            {prueba.lineas.map((l, i) => <div key={i} className="flex justify-between border-b border-slate-100 py-0.5"><span>{l.nombre} <span className="text-slate-400">{l.uds === "%" ? `${l.cant}%` : `${Math.round(l.cant * 100) / 100} ${l.uds}`}{l.dto ? ` · dto ${l.dto}%` : ""}</span></span><span>{money(l.importe)}</span></div>)}
+            {prueba.lineas.length > 0 && <div className="flex justify-between font-bold pt-1"><span>Total ({prueba.m2Fact.toFixed(2)} m² fact. · {prueba.kg.toFixed(1)} kg)</span><span>{money(prueba.totalPieza)}</span></div>}
+            {prueba.avisos.map((a, i) => <div key={i} className="text-amber-700 mt-1">⚠ {a}</div>)}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
+        <div className="flex flex-wrap gap-2 items-center mb-2">
+          <h4 className="text-sm font-bold text-slate-700">Cristales y extras ({items.length})</h4>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar…" className="px-2 py-1 border border-slate-300 rounded-md text-sm" />
+          <div className="flex-1" />
+          <button onClick={() => onChange({ items: [{ id: uid(), grupo: "", nombre: "", precio: "", tipo: "incremento", unidad: "m2", neto: false, minimoM2: 0, kgM2: 0 }, ...items] })} className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-sm"><Plus size={14} /> Línea</button>
+        </div>
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-slate-500 border-b"><th className="pr-1">Grupo</th><th className="pr-1">Nombre</th><th className="pr-1">Tipo</th><th className="pr-1">Precio</th><th className="pr-1">Por</th><th className="pr-1">kg/m²</th><th className="pr-1">Mín m²</th><th className="pr-1">Neto</th><th></th></tr></thead>
+          <tbody>
+            {items.filter((i) => !q || `${i.grupo} ${i.nombre}`.toLowerCase().includes(q.toLowerCase())).map((i) => (
+              <tr key={i.id} className="border-b border-slate-100">
+                <td className="pr-1 py-0.5 w-48"><input className={cellCls} value={i.grupo} onChange={(e) => setItem(i.id, { grupo: e.target.value })} /></td>
+                <td className="pr-1 min-w-[180px]"><input className={cellCls} value={i.nombre} onChange={(e) => setItem(i.id, { nombre: e.target.value })} /></td>
+                <td className="pr-1 w-32"><select className={cellCls} value={i.tipo} onChange={(e) => setItem(i.id, { tipo: e.target.value })}><option value="base">Cámara base</option><option value="simple">Monolítico / completo</option><option value="incremento">Extra / incremento</option></select></td>
+                <td className="pr-1 w-16"><input className={cellCls} value={i.precio} onChange={(e) => setItem(i.id, { precio: e.target.value })} /></td>
+                <td className="pr-1 w-16"><select className={cellCls} value={i.unidad || "m2"} onChange={(e) => setItem(i.id, { unidad: e.target.value })}><option value="m2">m²</option><option value="lado">lado</option><option value="ml">ml</option><option value="ud">ud</option></select></td>
+                <td className="pr-1 w-14"><input className={cellCls} value={i.kgM2 ?? ""} onChange={(e) => setItem(i.id, { kgM2: e.target.value })} /></td>
+                <td className="pr-1 w-14"><input className={cellCls} value={i.minimoM2 ?? ""} onChange={(e) => setItem(i.id, { minimoM2: e.target.value })} /></td>
+                <td className="pr-1 w-10 text-center"><input type="checkbox" checked={!!i.neto} onChange={(e) => setItem(i.id, { neto: e.target.checked })} /></td>
+                <td><button onClick={() => { if (window.confirm(`¿Quitar ${i.nombre}?`)) onChange({ items: items.filter((x) => x.id !== i.id) }); }} className="text-rose-500"><Trash2 size={13} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-xs text-slate-400 mt-2">"Cámara base" y "Monolítico" son el cristal de partida. Los "extras" se suman encima (sustituir un vidrio, capas, cámara más gruesa, gas, sellado…). En los extras de sustituir vidrio, kg/m² es el peso que añade respecto al vidrio de 4 mm que se quita.</p>
+      </div>
+    </div>
+  );
+}
+
+// Pestaña "Tarifas y descuentos": aluminio y cristal (en la ficha del proveedor y en la calculadora).
+function TarifasProveedorTabs({ ctx, proveedor }) {
+  const [tipo, setTipo] = useState("aluminio");
+  return (
+    <div className="space-y-3">
+      <div className="inline-flex rounded-md border border-slate-300 overflow-hidden">
+        {[["aluminio", "Aluminio"], ["cristal", "Cristal"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTipo(k)} className={`px-4 py-1.5 text-sm font-semibold ${tipo === k ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>{l}</button>
+        ))}
+      </div>
+      {tipo === "aluminio" ? <TarifasAluminioPanel ctx={ctx} proveedor={proveedor} /> : <TarifasCristalPanel ctx={ctx} proveedor={proveedor} />}
+    </div>
+  );
+}
+
+
 /* ================= CALCULADORA DE PRESUPUESTOS (dentro de Presupuestos) =================
    Pantalla con un botón por tipo de producto. Cada producto tiene su propio calculador de
    presupuesto + despiece a partir de medidas. Para añadir un producto nuevo en el futuro,
    basta con añadir una entrada aquí y su componente correspondiente. */
 const CALCULADORA_PRODUCTOS = [
   { id: "persianas", label: "Persianas", icon: Ruler, disponible: true },
-  { id: "ventanas", label: "Ventanas", icon: Layers, disponible: false },
-  { id: "techos", label: "Techos", icon: Wrench, disponible: false, nota: "Ya disponible en Mediciones → sección Techos" },
+  { id: "ventanas", label: "Ventanas", icon: Layers, disponible: true },
+  { id: "techos", label: "Techos", icon: Wrench, disponible: true },
 ];
 
 function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPersianas, onPasarAPresupuesto, onGenerarPedido, presupuestoDestino, onAnadirAPresupuestoExistente, onCancelarAnadir }) {
@@ -15599,6 +17444,7 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
 
   return (
     <div className="space-y-5">
+      <PartidasCalculadoraPanel onPasarAPresupuesto={onPasarAPresupuesto} presupuestoDestino={presupuestoDestino} onAnadirAPresupuestoExistente={onAnadirAPresupuestoExistente} />
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {CALCULADORA_PRODUCTOS.map((p) => (
           <button
@@ -15628,6 +17474,179 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
           onAnadirAPresupuestoExistente={onAnadirAPresupuestoExistente}
           onCancelarAnadir={onCancelarAnadir}
         />
+      )}
+      {producto === "ventanas" && (
+        <CalculadoraVentanas clientes={clientes} tarifasPersianas={tarifasPersianas || {}} onPasarAPresupuesto={onPasarAPresupuesto} />
+      )}
+      {producto === "techos" && (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-500">Los techos TM (abatible y corredero de siempre) siguen en Mediciones → sección "Techos TM".</p>
+          <CalculadoraVentanas categoria="techo" clientes={clientes} tarifasPersianas={tarifasPersianas || {}} onPasarAPresupuesto={onPasarAPresupuesto} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Pedido de materiales a partir de las ventanas guardadas en un presupuesto/proyecto ----
+// Junta todas las ventanas: los perfiles se vuelven a empaquetar en barras con TODAS las
+// piezas juntas (se aprovecha mejor que sumar barras de cada ventana), se cruza con el
+// Stock (misma referencia y acabado) y devuelve líneas de pedido por proveedor.
+function pedidoDesdeVentanas(ventanas, materiales, soloFalta = true) {
+  const mats = materiales || [];
+  const buscarMat = (ref, acabado) => {
+    const mismos = mats.filter((m) => normRef(m.codigo) === normRef(ref));
+    return mismos.find((m) => String(m.color || "").toLowerCase() === String(acabado || "").toLowerCase()) || mismos.find((m) => !m.color) || null;
+  };
+  const grupos = {}; // clave proveedor|ref|acabado
+  (ventanas || []).forEach((v) => {
+    (v.materiales || []).forEach((m) => {
+      const prov = v.proveedorAluminioId || "";
+      const k = `${prov}|${normRef(m.ref)}|${m.acabado || ""}|${m.tipo}`;
+      if (!grupos[k]) grupos[k] = { ...m, proveedorId: prov, piezas: [], cantidad: 0 };
+      if (m.tipo === "perfil") grupos[k].piezas.push(...(m.piezas || []));
+      else grupos[k].cantidad += parseFloat(m.cantidad) || 0;
+    });
+  });
+  const aluminio = {};
+  Object.values(grupos).forEach((g) => {
+    const mat = buscarMat(g.ref, g.acabado);
+    let necesita, unidadStock;
+    if (g.tipo === "perfil") {
+      const lMat = parseFloat(mat?.longitud) || 0;
+      const lb = lMat > 100 ? lMat : lMat > 0 ? lMat * 1000 : (parseFloat(g.longBarra) || 6000);
+      const enMetros = mat && /metro/i.test(mat.unidadCompra || "");
+      necesita = enMetros ? Math.ceil(g.piezas.reduce((s, x) => s + x, 0) / 10) / 100 : empaquetarBarras(g.piezas, lb).length;
+      unidadStock = enMetros ? "Metro lineal" : "Barra";
+      g.longBarra = lb;
+    } else {
+      necesita = g.unidad === "m" ? Math.ceil(g.cantidad * 100) / 100 : Math.ceil(g.cantidad);
+      unidadStock = g.unidad === "m" ? "Metro lineal" : "Unidad";
+    }
+    const stock = mat ? (parseFloat(mat.stockReal) || 0) : 0;
+    const cant = soloFalta ? Math.max(0, Math.round((necesita - stock) * 100) / 100) : necesita;
+    if (cant <= 0) return;
+    const precio = g.precioNeto ? (g.tipo === "perfil" && unidadStock === "Barra" ? g.precioNeto * g.longBarra / 1000 : g.precioNeto).toFixed(3) : "";
+    const linea = mat
+      ? { id: uid(), modo: "catalogo", materialId: mat.id, referencia: "", ancho: "", alto: "", cantidad: String(cant), precio, estado: "Solicitado" }
+      : { id: uid(), modo: "libre", materialId: "", referencia: `${g.ref} · ${g.desc} (${g.acabado || ""}) — ${unidadStock === "Barra" ? `barras de ${g.longBarra / 1000} m` : unidadStock === "Metro lineal" ? "m" : "ud"}`,
+          ancho: "", alto: "", cantidad: String(cant), precio, estado: "Solicitado",
+          tarifaRef: { ref: g.ref, desc: g.desc, tipo: g.tipo === "perfil" ? "aluminio" : (g.grupo || "accesorio"), acabado: g.acabado || "", serie: g.serie || "", unidadStock, longitudBarra: g.tipo === "perfil" && unidadStock === "Barra" ? g.longBarra : "" } };
+    if (!aluminio[g.proveedorId]) aluminio[g.proveedorId] = [];
+    aluminio[g.proveedorId].push(linea);
+  });
+  const cristal = {};
+  (ventanas || []).forEach((v) => {
+    const c = v.cristal;
+    if (!c || !(c.cantidad > 0) || !(c.ancho > 0)) return;
+    const prov = c.proveedorId || "";
+    if (!cristal[prov]) cristal[prov] = [];
+    cristal[prov].push({ id: uid(), modo: "libre", materialId: "", referencia: `Cristal ${c.descripcion || ""} — ${v.nombre}`, ancho: String(Math.round(c.ancho)), alto: String(Math.round(c.alto)),
+      cantidad: String(c.cantidad), precio: c.precioPieza ? c.precioPieza.toFixed(2) : "", estado: "Solicitado" });
+  });
+  return { aluminio, cristal };
+}
+
+function VentanasPresupuestoBloque({ ventanas, proyectoId, titulo = "Ventanas y techos" }) {
+  const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const [soloFalta, setSoloFalta] = useState(true);
+  if (!(ventanas || []).length) return null;
+  const prov = (id) => (ctx.proveedores || []).find((p) => p.id === id)?.nombre || "(sin proveedor asignado)";
+  const r = pedidoDesdeVentanas(ventanas, ctx.materiales, soloFalta);
+  const lanzar = (provId, lineas, que) => ctx.generarPedido && ctx.generarPedido(provId, lineas, proyectoId || "",
+    `Pedido de ${que} generado desde las ventanas del presupuesto (${ventanas.length} partida/s de ventana).`);
+  return (
+    <div className="mt-4 pt-4 border-t border-slate-100">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{titulo} ({ventanas.reduce((s, v) => s + (parseFloat(v.ud) || 1), 0)} ud)</span>
+      <ul className="text-sm text-slate-700 mt-1 space-y-0.5">
+        {ventanas.map((v) => <li key={v.id}>• {v.ud} ud · {v.nombre} · {v.A}×{v.H} · {v.acabado}{v.cristal?.descripcion ? ` · ${v.cristal.descripcion}` : ""}{v.persiana ? " · con persiana" : ""}</li>)}
+      </ul>
+      <div className="mt-3 flex flex-wrap gap-2 items-center">
+        <label className="flex items-center gap-1 text-xs text-slate-600"><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Pedir solo lo que falta en stock</label>
+        {Object.entries(r.aluminio).map(([p, lineas]) => (
+          <button key={`a${p}`} onClick={() => lanzar(p, lineas, "aluminio, gomas y accesorios")} className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-sm font-semibold"><Truck size={14} /> Pedido aluminio y accesorios · {prov(p)} ({lineas.length} líneas)</button>
+        ))}
+        {Object.entries(r.cristal).map(([p, lineas]) => (
+          <button key={`c${p}`} onClick={() => lanzar(p, lineas, "cristales")} className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-sky-700 text-white text-sm font-semibold"><Truck size={14} /> Pedido cristales · {prov(p)} ({lineas.length} medidas)</button>
+        ))}
+        {!Object.keys(r.aluminio).length && !Object.keys(r.cristal).length && <span className="text-xs text-emerald-700">✓ El stock cubre todo el material.</span>}
+      </div>
+      <p className="text-xs text-slate-400 mt-1">Se abre el pedido ya relleno para revisarlo antes de enviarlo. Lo que llegue se da de alta en Stock al recibir el pedido.</p>
+    </div>
+  );
+}
+
+// Lista de partidas calculadas (ventanas, persianas...) para juntarlas en un solo
+// presupuesto o imprimirlas juntas. Cada partida también se puede pasar por separado.
+function PartidasCalculadoraPanel({ onPasarAPresupuesto, presupuestoDestino, onAnadirAPresupuestoExistente }) {
+  const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const partidas = ctx.partidasCalc || [];
+  const set = ctx.setPartidasCalc || (() => {});
+  const [marcadas, setMarcadas] = useState({});
+  const [abierta, setAbierta] = useState(true);
+  if (!partidas.length) return null;
+  const esMarcada = (p) => marcadas[p.id] !== false;
+  const sel = partidas.filter(esMarcada);
+  const total = sel.reduce((s, p) => s + (parseFloat(p.importe) || 0), 0);
+  const mover = (i, d) => { const n = [...partidas]; const j = i + d; if (j < 0 || j >= n.length) return; [n[i], n[j]] = [n[j], n[i]]; set(n); };
+  const juntar = () => {
+    if (!sel.length) { alert("Marca al menos una partida."); return; }
+    const descripcion = sel.map((p, i) => `${i + 1}. ${p.tipo.toUpperCase()}\n${p.descripcion}\nImporte: ${money(parseFloat(p.importe) || 0)}`).join("\n\n");
+    return {
+      clienteNombre: sel.find((p) => p.clienteNombre)?.clienteNombre || "",
+      direccionObra: sel.find((p) => p.direccionObra)?.direccionObra || "",
+      descripcion, importe: total.toFixed(2),
+      persianas: sel.flatMap((p) => p.persianas || []),
+      ventanas: sel.flatMap((p) => p.ventanas || []),
+      comentarios: `Presupuesto combinado desde la Calculadora (${sel.length} partida/s). Revisa los datos y el importe antes de guardar.`,
+    };
+  };
+  const quitarUsadas = () => { if (window.confirm("¿Quitar de la lista las partidas que acabas de usar?")) set(partidas.filter((p) => !esMarcada(p))); };
+  const imprimir = () => {
+    if (!sel.length) return;
+    const filas = sel.map((p, i) => `<tr><td style="border:1px solid #ccc;padding:6px;vertical-align:top">${i + 1}</td><td style="border:1px solid #ccc;padding:6px"><b>${p.tipo}</b><br>${String(p.descripcion || "").replace(/\n/g, "<br>")}</td><td style="border:1px solid #ccc;padding:6px;text-align:right;vertical-align:top;white-space:nowrap">${money(parseFloat(p.importe) || 0)}</td></tr>`).join("");
+    const cli = sel.find((p) => p.clienteNombre)?.clienteNombre;
+    const html = `<html><head><meta charset="utf-8"><title>Presupuesto</title></head><body style="font-family:Arial;font-size:12px;padding:20px"><h2>Presupuesto</h2>${cli ? `<p>Cliente: <b>${cli}</b></p>` : ""}
+      <table style="border-collapse:collapse;width:100%"><tr><th style="border:1px solid #ccc;padding:6px">#</th><th style="border:1px solid #ccc;padding:6px;text-align:left">Descripción</th><th style="border:1px solid #ccc;padding:6px">Importe</th></tr>${filas}
+      <tr><td></td><td style="padding:6px;text-align:right"><b>TOTAL</b></td><td style="padding:6px;text-align:right"><b>${money(total)}</b></td></tr></table><p style="color:#666">IVA no incluido.</p></body></html>`;
+    const w = window.open("", "_blank"); if (w) { w.document.write(html); w.document.close(); w.focus(); w.print(); }
+  };
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+      <div className="flex items-center gap-2">
+        <button onClick={() => setAbierta(!abierta)} className="text-sm font-bold text-slate-800">{abierta ? "▾" : "▸"} Lista para juntar ({partidas.length} partida/s) · marcadas: {money(total)}</button>
+        <div className="flex-1" />
+        <button onClick={() => { if (window.confirm("¿Vaciar la lista entera?")) set([]); }} className="text-xs text-rose-600">Vaciar lista</button>
+      </div>
+      {abierta && (
+        <div className="mt-3 space-y-3">
+          <table className="w-full text-sm">
+            <tbody>
+              {partidas.map((p, i) => (
+                <tr key={p.id} className="border-b border-amber-100 align-top">
+                  <td className="py-1.5 pr-2 w-6"><input type="checkbox" checked={esMarcada(p)} onChange={(e) => setMarcadas({ ...marcadas, [p.id]: e.target.checked })} /></td>
+                  <td className="pr-2 w-24 text-xs font-semibold text-slate-600">{p.tipo}</td>
+                  <td className="pr-2 text-xs whitespace-pre-line">{p.descripcion}{p.clienteNombre ? <div className="text-slate-400">Cliente: {p.clienteNombre}</div> : null}</td>
+                  <td className="pr-2 text-right whitespace-nowrap">{money(parseFloat(p.importe) || 0)}</td>
+                  <td className="w-20 text-right whitespace-nowrap">
+                    <button onClick={() => mover(i, -1)} className="px-1 text-slate-500">↑</button>
+                    <button onClick={() => mover(i, 1)} className="px-1 text-slate-500">↓</button>
+                    <button onClick={() => set(partidas.filter((x) => x.id !== p.id))} className="px-1 text-rose-500"><Trash2 size={13} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex flex-wrap gap-2">
+            {presupuestoDestino && onAnadirAPresupuestoExistente ? (
+              <button onClick={() => { const d = juntar(); if (d) { onAnadirAPresupuestoExistente(d); quitarUsadas(); } }} className="px-3 py-2 rounded-md bg-[#2E8B57] text-white text-sm font-semibold">Añadir las marcadas al presupuesto Nº {presupuestoDestino.numero} →</button>
+            ) : (
+              <button onClick={() => { const d = juntar(); if (d && onPasarAPresupuesto) { onPasarAPresupuesto(d); quitarUsadas(); } }} className="px-3 py-2 rounded-md bg-[#2E8B57] text-white text-sm font-semibold">Crear un presupuesto con las marcadas →</button>
+            )}
+            <button onClick={imprimir} className="flex items-center gap-1 px-3 py-2 rounded-md border border-slate-300 text-sm bg-white"><Printer size={14} /> Imprimir las marcadas juntas</button>
+          </div>
+          <p className="text-xs text-slate-500">Cada partida también se puede pasar sola con su propio botón. Esta lista se guarda en este ordenador/móvil hasta que la vacíes.</p>
+        </div>
       )}
     </div>
   );
@@ -15760,9 +17779,17 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
 
   const precioHora = parseFloat(tarifas?.precioHora) || 0;
   // Fórmula final: subtotal (materiales + extras + horas×precio/hora) + % de gastos sobre ese subtotal.
-  const presupuestoGastos = useMemo(
-    () => calcularPresupuestoConGastos(presupuestoFinal.total, horasFabricacion, precioHora, pctGastos),
-    [presupuestoFinal.total, horasFabricacion, precioHora, pctGastos]
+  const ctxAnalisis = React.useContext(TarifasVentanasCtx) || {};
+  const nUdPersianas = filasValidas.reduce((s, f) => s + (parseFloat(f.ud) || 0) * (parseFloat(f.npersianas) || 1), 0) || 1;
+  const anPers = useAnalisisImportes({ ctx: ctxAnalisis, categoria: "persiana", filasDef: ANALISIS_PERSIANA_FILAS, nUd: nUdPersianas,
+    autos: { materiales: presupuestoCalc.total, extras: presupuestoFinal.total - presupuestoCalc.total } });
+  // Mismo formato que antes para impresión/presupuesto, pero con el total del análisis de importes.
+  const presupuestoGastos = useMemo(() => {
+    const a = anPers.analisis;
+    return { importeHoras: a.manoObra, subtotal: a.compra, gastos: a.venta - a.compra, total: a.venta,
+      horas: Math.round(a.horasTotales * 100) / 100, precioHora: parseFloat(anPers.precioHora) || 0,
+      pctGastos: a.compra ? Math.round(((a.venta - a.compra) / a.compra) * 1000) / 10 : 0, iva: a.iva, conIva: a.conIva, ivaPct: anPers.ivaPct };
+  }, [anPers.analisis, anPers.precioHora, anPers.ivaPct]
   );
 
   // Pide directamente, sin salir de la calculadora, los materiales que hacen falta
@@ -15787,24 +17814,32 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
     imprimirDespiecePersianas({
       clienteNombre, direccionObra, filas: filasValidas, despieceConjunto,
       presupuestoCalc: presupuestoFinal,
-      presupuestoGastos: { ...presupuestoGastos, horas: horasFabricacion, precioHora, pctGastos },
+      presupuestoGastos,
       modo,
     });
   };
 
-  const handlePasarAPresupuesto = () => {
-    if (filasValidas.length === 0) { alert("Añade al menos una persiana con ancho y alto."); return; }
-    const datos = {
+  const ctxPartidas = React.useContext(TarifasVentanasCtx) || {};
+  const construirDatosPersianas = () => ({
       clienteNombre,
       direccionObra,
       descripcion: resumenTextoPersianas(filasValidas, despieceConjunto),
       importe: presupuestoGastos.total ? presupuestoGastos.total.toFixed(2) : "",
       persianas: [{
         id: uid(), fecha: new Date().toISOString().slice(0, 10), filas: filasValidas, despiece: despieceConjunto,
-        tarifas, extras: extrasValidos, horasFabricacion, precioHora, pctGastos,
+        tarifas, extras: extrasValidos, horasFabricacion: presupuestoGastos.horas, precioHora: presupuestoGastos.precioHora, pctGastos: presupuestoGastos.pctGastos,
         total: presupuestoGastos.total,
       }],
-    };
+  });
+  const anadirPersianasALista = () => {
+    if (filasValidas.length === 0) { alert("Añade al menos una persiana con ancho y alto."); return; }
+    const d = construirDatosPersianas();
+    ctxPartidas.setPartidasCalc && ctxPartidas.setPartidasCalc([...(ctxPartidas.partidasCalc || []), { id: uid(), tipo: "Persianas", ...d, creada: Date.now() }]);
+    alert("Persianas añadidas a la lista. Arriba en la Calculadora puedes juntarlas con otras partidas en un solo presupuesto.");
+  };
+  const handlePasarAPresupuesto = () => {
+    if (filasValidas.length === 0) { alert("Añade al menos una persiana con ancho y alto."); return; }
+    const datos = construirDatosPersianas();
     if (presupuestoDestino && onAnadirAPresupuestoExistente) {
       onAnadirAPresupuestoExistente(datos);
     } else {
@@ -16115,27 +18150,11 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               </>
             )}
 
-            <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3 grid sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Horas de fabricación</label>
-                <input type="number" step="0.25" min="0" value={horasFabricacion} onChange={(e) => setHorasFabricacion(e.target.value)} placeholder="0" className={inputCls} />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">Precio / hora (€)</label>
-                <input type="number" step="0.01" min="0" value={tarifas.precioHora ?? ""} onChange={(e) => cambiarTarifa("precioHora", e.target.value)} placeholder="0,00" className={inputCls} />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 mb-1">% de gastos (sobre el precio final)</label>
-                <input type="number" step="0.1" min="0" value={pctGastos} onChange={(e) => setPctGastos(e.target.value)} placeholder="0" className={inputCls} />
-              </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-4 mb-3">
+              <h3 className="text-sm font-bold text-slate-700 mb-2">Análisis de importes</h3>
+              <AnalisisImportesTabla an={anPers} nombreQue="las persianas" nota={`Las filas de Persiana salen solas del despiece y los extras. Las horas y € van por persiana (${nUdPersianas} en total).`} />
             </div>
-
-            <div className="text-right text-sm text-slate-500 space-y-0.5">
-              <div>Subtotal materiales + extras: {money(presupuestoFinal.total)}</div>
-              {(parseFloat(horasFabricacion) || 0) > 0 && <div>Horas de fabricación: {money(presupuestoGastos.importeHoras)}</div>}
-              {(parseFloat(pctGastos) || 0) > 0 && <div>Gastos ({pctGastos}%): {money(presupuestoGastos.gastos)}</div>}
-            </div>
-            <div className="text-right text-lg font-bold text-slate-800">Total estimado: {money(presupuestoGastos.total)}</div>
+            <div className="text-right text-lg font-bold text-slate-800">Total (sin IVA): {money(presupuestoGastos.total)} <span className="text-sm font-semibold text-slate-500">· con IVA {money(presupuestoGastos.conIva)}</span></div>
           </div>
 
           <div>
@@ -16178,7 +18197,10 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
               <Printer size={15} /> Imprimir presupuesto
             </button>
             <button onClick={handlePasarAPresupuesto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2.5 rounded-md hover:opacity-90">
-              {presupuestoDestino ? `Añadir al presupuesto Nº ${presupuestoDestino.numero} →` : "Pasar a presupuesto →"}
+              {presupuestoDestino ? `Añadir al presupuesto Nº ${presupuestoDestino.numero} →` : "Presupuesto solo de estas persianas →"}
+            </button>
+            <button type="button" onClick={anadirPersianasALista} className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] border border-[#2E8B57] px-4 py-2.5 rounded-md hover:bg-emerald-50">
+              <Plus size={15} /> Añadir a la lista para juntar
             </button>
             {presupuestoDestino && (
               <button type="button" onClick={onCancelarAnadir} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-4 py-2.5 rounded-md hover:bg-rose-50">
@@ -18544,6 +20566,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             {presupuesto.comentarios}
           </div>
         )}
+        <VentanasPresupuestoBloque ventanas={presupuesto.ventanas || []} proyectoId={presupuesto.proyectoCreadoId || ""} />
         {(presupuesto.persianas || []).length > 0 && (
           <div className="mt-4 pt-4 border-t border-slate-100">
             <div className="flex items-center justify-between mb-2">
