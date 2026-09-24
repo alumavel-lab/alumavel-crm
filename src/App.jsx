@@ -149,6 +149,48 @@ function leerFilasExcel(arrayBuffer) {
   }
   return filas;
 }
+
+// Packing list en Excel (el que manda el proveedor de cristal, p. ej. el de Uxcar): una fila
+// por cristal con Rack (caballete), Order, Qty, Width, Height, Ref Client Order (con el nº de
+// EXPEDIENTE) y M2. Se agrupa por caballete, sin IA: exacto y al momento.
+async function packingDesdeExcel(file) {
+  const filas = leerFilasExcel(await file.arrayBuffer());
+  const grupos = {};
+  const orden = [];
+  filas.forEach((f) => {
+    const rack = String(valorPorCabeceras(f, ["rack", "caballete", "lote"]) || "").trim();
+    if (!rack || /total/i.test(rack)) return;
+    if (!grupos[rack]) { grupos[rack] = []; orden.push(rack); }
+    grupos[rack].push(f);
+  });
+  const expDe = (txt) => {
+    const m = String(txt || "").match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i);
+    return m ? `EXP ${m[1]}` : "";
+  };
+  return orden.map((rack) => {
+    const fs = grupos[rack];
+    const piezas = fs.map((f) => ({
+      pedido: String(valorPorCabeceras(f, ["order", "pedido"]) || ""),
+      pos: String(valorPorCabeceras(f, ["pos"]) || ""),
+      cantidad: parseFloat(valorPorCabeceras(f, ["qty", "cantidad", "uds"])) || 1,
+      ancho: parseFloat(valorPorCabeceras(f, ["width", "ancho"])) || "",
+      alto: parseFloat(valorPorCabeceras(f, ["height", "alto"])) || "",
+      m2: parseFloat(valorPorCabeceras(f, ["m2"])) || 0,
+      ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""),
+      expediente: expDe(valorPorCabeceras(f, ["refclientorder", "expediente", "obra"])),
+    }));
+    const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
+    const pedidos = [...new Set(piezas.map((p) => p.pedido).filter(Boolean))];
+    const cantidad = piezas.reduce((s, p) => s + p.cantidad, 0);
+    const m2 = piezas.reduce((s, p) => s + p.m2, 0);
+    const cliente = String(valorPorCabeceras(fs[0], ["client", "cliente"]) || "").replace(/^\s*\d+\s+/, "").trim();
+    return {
+      lote: rack, secuencia: pedidos.join(", "), cliente, proveedor: "", expediente: exps.join(", "),
+      medida: `${cantidad} cristales · ${Math.round(m2 * 100) / 100} m²`, cantidad, piezas,
+    };
+  });
+}
+
 function normalizarCabecera(s) {
   return (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 }
@@ -8340,7 +8382,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   // libre de la zona que corresponda según el proveedor (dejando la fila reservada, si
   // la hay, para el final, como colchón cuando el resto esté lleno).
   const sugerirUbicacion = (cristal) => {
-    const zonaSugerida = (cristal.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+    const zonaSugerida = `${cristal.proveedor || ""} ${cristal.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
     const ocupado = (zona, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
 
     if (cristal.expediente) {
@@ -8372,6 +8414,17 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     setLeyendoPacking(true);
     setErrorPacking("");
     try {
+      const esExcel = /\.(xlsx|xls|csv|ods)$/i.test(file.name || "");
+      let items;
+      if (esExcel) {
+        items = await packingDesdeExcel(file);
+        // si ya hay un caballete con el mismo nº de rack, no se vuelve a meter
+        const yaEstan = new Set(cristales.map((c) => String(c.lote || "").trim()));
+        const repetidos = items.filter((it) => yaEstan.has(it.lote)).length;
+        items = items.filter((it) => !yaEstan.has(it.lote));
+        if (repetidos) setErrorPacking(`${repetidos} caballete(s) ya estaban en el almacén y no se han duplicado.`);
+        if (!items.length) { setLeyendoPacking(false); if (!repetidos) setErrorPacking("No he encontrado caballetes en el Excel (busco la columna \"Rack\")."); return; }
+      } else {
       const base64Data = await new Promise((resolve, reject) => {
         const r = new FileReader();
         r.onload = () => resolve(r.result.split(",")[1]);
@@ -8426,12 +8479,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const inicio = limpio.indexOf("[");
       const fin = limpio.lastIndexOf("]");
       const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
-      let items;
       try {
         items = JSON.parse(jsonCandidato);
       } catch (parseErr) {
         console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
         throw new Error("La respuesta de la IA no tenía formato válido");
+      }
       }
       if (!Array.isArray(items) || items.length === 0) {
         setErrorPacking("No he podido leer ningún caballete claro en el documento. Prueba con una foto más nítida.");
@@ -8449,7 +8502,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
 
       const calcularUbicacion = (item) => {
-        const zonaSugerida = (item.proveedor || "").toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+        const zonaSugerida = `${item.proveedor || ""} ${item.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
         if (item.expediente) {
           const mismos = ocupadosSimulado.filter((o) => o.expediente === item.expediente);
           for (const m of mismos) {
@@ -8481,6 +8534,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
           proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
           cantidad: it.cantidad || 1,
+          ...(it.piezas ? { piezas: it.piezas } : {}),
         };
         const ubicacion = calcularUbicacion(datosBase);
         if (ubicacion) {
@@ -8516,9 +8570,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         <button type="button" onClick={() => inputPackingRef.current?.click()} disabled={leyendoPacking}
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-3.5 py-2 rounded-md">
-          <ImageIcon size={14} /> {leyendoPacking ? "Leyendo..." : "Importar packing list (foto/PDF)"}
+          <ImageIcon size={14} /> {leyendoPacking ? "Leyendo..." : "Importar packing list (Excel, foto o PDF)"}
         </button>
-        <input ref={inputPackingRef} type="file" accept="image/*,application/pdf" className="hidden"
+        <input ref={inputPackingRef} type="file" accept=".xlsx,.xls,.csv,.ods,image/*,application/pdf" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
         <button type="button" onClick={() => setMostrarNuevo(true)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <Plus size={14} /> Añadir a mano
@@ -17228,8 +17282,148 @@ function nombreComposicionCristal(tarifa, cfg) {
   if (!tarifa || !cfg?.baseId) return "";
   const it = (id) => (tarifa.items || []).find((i) => i.id === id);
   const partes = [it(cfg.baseId)?.nombre, ...(cfg.incrementos || []).map((x) => it(x.itemId)?.nombre)].filter(Boolean);
-  return partes.join(" + ") + (cfg.forma && cfg.forma !== "Rectangular" ? ` · ${cfg.forma}` : "") + (cfg.plantilla ? " · con plantilla" : "");
+  return (cfg.texto ? `${cfg.texto} (${partes.join(" + ")})` : partes.join(" + ")) + (cfg.forma && cfg.forma !== "Rectangular" ? ` · ${cfg.forma}` : "") + (cfg.plantilla ? " · con plantilla" : "");
 }
+
+// ---- Cristal escrito a mano: "4/8/4", "4+4/16/6 bajo emisivo argón", "3+3 acústico / 12 / 4"…
+// Se traduce a la composición de la tarifa (cámara base + incrementos) buscando por nombre,
+// así sigue funcionando aunque se editen precios. Devuelve también una explicación y avisos.
+const sinAcentos = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+function interpretarCristal(texto, tarifa) {
+  const res = { baseId: "", incrementos: [], explicacion: [], avisos: [], ok: false };
+  if (!tarifa || !String(texto || "").trim()) return res;
+  const items = tarifa.items || [];
+  const nombreN = (i) => sinAcentos(i.nombre).replace(/\s+/g, " ").trim();
+  const buscar = (tipos, patron) => items.find((i) => tipos.includes(i.tipo) && patron.test(nombreN(i)));
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
+  let t = sinAcentos(texto).replace(/,/g, ".");
+  // modificadores generales
+  const mod = {
+    be: /\b(be|bajo emisiv\w*|low ?e|climaguard|termico)\b/.test(t),
+    solar: /\b(control solar|solar|guardian sun|sun)\b/.test(t),
+    argon: /\bargon\b/.test(t),
+    negra: /\b(negra|negro)\b/.test(t),
+    acustico: /\b(acustic\w*|silence|sonor\w*)\b/.test(t),
+    opaco: /\b(opac\w*|translucid\w*|butiral mate)\b/.test(t),
+    color: /\b(gris|bronce)\b/.test(t) ? "gris/bronce" : /\bverde\b/.test(t) ? "verde" : "",
+    mate: /\b(mate|matead\w*|masterseda|acido|satinad\w*)\b/.test(t),
+    templado: /\b(templad\w*|temp)\b/.test(t),
+  };
+  // quitar palabras para quedarnos con los números
+  const nums = t.replace(/\b(camara|cam)\b/g, " ").replace(/\s*\+\s*/g, "+").replace(/[a-z]+/g, " ").replace(/-/g, "/");
+  const partes = nums.split(/[\/\s]+/).map((p) => p.trim()).filter((p) => /\d/.test(p));
+  // normaliza laminados: 33.1 / 3+3 / 3+3.1 → {lam:3}
+  const vidrio = (p) => {
+    let m = p.match(/^(\d{1,2})\+(\d{1,2})(\.\d)?$/);
+    if (m && m[1] === m[2]) return { lam: parseInt(m[1]), txt: `${m[1]}+${m[2]}` };
+    m = p.match(/^(\d)(\d)\.\d$/);
+    if (m && m[1] === m[2]) return { lam: parseInt(m[1]), txt: `${m[1]}+${m[2]}` };
+    m = p.match(/^(\d{1,2})(\.\d+)?$/);
+    if (m) return { mm: parseFloat(p), txt: `${p}` };
+    return null;
+  };
+
+  // ---- Monolítico (un solo vidrio) ----
+  if (partes.length === 1) {
+    const v = vidrio(partes[0]);
+    if (!v) { res.avisos.push(`No entiendo "${texto}". Escríbelo como 4/16/4, 3+3/12/6, 4+4…`); return res; }
+    let it = null;
+    if (v.lam) {
+      const fam = mod.opaco ? "opaco" : "incoloro";
+      it = buscar(["simple"], new RegExp(`^laminado ${fam} ${v.lam}\\+${v.lam}`));
+    } else if (mod.templado || v.mm >= 8) {
+      it = buscar(["simple"], new RegExp(`^float ${v.mm} mm .*templad`));
+    }
+    if (!it) { res.avisos.push(`No encuentro "${texto}" como vidrio suelto en esta tarifa. Elígelo en la lista.`); return res; }
+    res.baseId = it.id; res.explicacion.push(`${it.nombre}: ${Number(it.precio).toFixed(2)} €/m²`); res.ok = true;
+    return res;
+  }
+
+  // ---- Doble acristalamiento (vidrio / cámara / vidrio) ----
+  if (partes.length === 5) res.avisos.push("Triple acristalamiento: esta tarifa no lo trae; se calcula solo el primer doble acristalamiento.");
+  if (partes.length !== 3 && partes.length !== 5) { res.avisos.push(`No entiendo "${texto}". Escríbelo como vidrio/cámara/vidrio, por ejemplo 4/16/4.`); return res; }
+  const ext = vidrio(partes[0]), camara = parseFloat(partes[1]), int = vidrio(partes[2]);
+  if (!ext || !int || isNaN(camara)) { res.avisos.push(`No entiendo "${texto}".`); return res; }
+
+  // capa bajo emisivo / control solar: si el vidrio es de 4 va en la base; si no, como incremento
+  const capa = mod.be ? "climaguard" : mod.solar ? "guardian sun" : "";
+  const vidrioCapa = mod.be ? int : mod.solar ? ext : null; // BE en el interior, control solar en el exterior
+  let base = null;
+  if (capa && vidrioCapa && vidrioCapa.mm === 4) base = buscar(["base"], new RegExp(`^float 4/8/${capa} 4`));
+  if (!base) base = buscar(["base"], /^float 4\/8\/float 4/);
+  if (!base) { res.avisos.push("La tarifa no tiene una cámara base 4/8/4."); return res; }
+  res.baseId = base.id; res.explicacion.push(`Base ${base.nombre}: ${Number(base.precio).toFixed(2)} €/m²`);
+  const capaEnBase = base && capa && new RegExp(capa).test(nombreN(base));
+
+  const addInc = (it, porque) => {
+    if (!it) return false;
+    res.incrementos.push({ itemId: it.id, qty: 1 });
+    res.explicacion.push(`+ ${it.nombre}${porque ? ` (${porque})` : ""}: ${Number(it.precio).toFixed(2)} €/m²`);
+    return true;
+  };
+  const sustituir = (v, lado, conCapa) => {
+    if (conCapa) {
+      // vidrio con capa y distinto de 4 mm → capa de su grosor
+      const spec = v.lam ? `${v.lam}\\+${v.lam}` : `${v.mm} mm`;
+      if (addInc(buscar(["incremento"], new RegExp(`^${capa} ${spec}`)), `vidrio ${lado}`)) return;
+      res.avisos.push(`No hay "${capa} ${v.txt}" en la tarifa; se calcula como vidrio normal con capa aparte.`);
+    }
+    if (v.lam) {
+      const fam = mod.acustico ? "acustico" : mod.opaco ? "opaco" : mod.color === "gris/bronce" ? "gris/bronce" : "incoloro";
+      if (!addInc(buscar(["incremento"], new RegExp(`^laminado ${esc(fam)} ${v.lam}\\+${v.lam}`)), `vidrio ${lado}`))
+        res.avisos.push(`No hay laminado ${fam} ${v.txt} en la tarifa.`);
+      return;
+    }
+    if (v.mm === 4) {
+      if (mod.mate && lado === "exterior") { addInc(buscar(["incremento"], /^masterseda 4/), "vidrio exterior mate"); return; }
+      if (mod.color && lado === "exterior") { addInc(buscar(["incremento"], new RegExp(`^parsol ${esc(mod.color)} 4`)), "vidrio exterior de color"); return; }
+      return; // float 4 normal: ya incluido en la base
+    }
+    if (mod.mate && lado === "exterior" && addInc(buscar(["incremento"], new RegExp(`^masterseda ${v.mm} mm`)), "vidrio exterior mate")) return;
+    if (!addInc(buscar(["incremento"], new RegExp(`^float ${v.mm} mm`)), `vidrio ${lado}`))
+      res.avisos.push(`No hay float de ${v.mm} mm en la tarifa.`);
+  };
+  sustituir(ext, "exterior", capa && vidrioCapa === ext && !capaEnBase);
+  sustituir(int, "interior", capa && vidrioCapa === int && !capaEnBase);
+
+  // cámara: hasta 16 incluida en la base
+  if (camara > 16) {
+    const medida = camara <= 18 ? 18 : camara <= 20 ? 20 : 24;
+    if (!addInc(buscar(["incremento"], new RegExp(`^camara ${medida} mm`)), `cámara ${camara}`)) res.avisos.push(`No hay cámara de ${camara} mm en la tarifa.`);
+  } else res.explicacion.push(`Cámara ${camara} mm: incluida en la base`);
+  if (mod.negra) addInc(buscar(["incremento"], /camara negra/), "");
+  if (mod.argon) addInc(buscar(["incremento"], camara <= 16 ? /argon .*8-16/ : /argon .*18-24/), "");
+  res.ok = true;
+  return res;
+}
+
+function EntradaCristalEscrito({ tarifa, onAplicar }) {
+  const [txt, setTxt] = useState("");
+  const [r, setR] = useState(null);
+  const aplicar = () => {
+    const x = interpretarCristal(txt, tarifa);
+    setR(x);
+    if (x.ok) onAplicar({ baseId: x.baseId, incrementos: x.incrementos, texto: txt });
+  };
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-2">
+        <input className={inputCls} value={txt} onChange={(e) => setTxt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); aplicar(); } }}
+          placeholder="Escribe el cristal: 4/16/4 · 4+4/12/6 bajo emisivo argón · 3+3 acústico/16/4" />
+        <button type="button" onClick={aplicar} className="px-3 rounded-md bg-[#2E8B57] text-white text-sm font-semibold whitespace-nowrap">Calcular</button>
+      </div>
+      {r && (
+        <div className="text-xs">
+          {r.explicacion.map((e, i) => <div key={i} className="text-slate-600">{e}</div>)}
+          {r.avisos.map((a, i) => <div key={`a${i}`} className="text-amber-700">⚠ {a}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // Selector de composición de cristal (se usa en la calculadora de ventanas).
 function SelectorCristal({ tarifas, cfg, onChange }) {
@@ -17242,11 +17436,13 @@ function SelectorCristal({ tarifas, cfg, onChange }) {
   if (!tarifas.length) return <p className="text-xs text-slate-500">No hay tarifas de cristal. Cárgalas en Proveedores → ficha del proveedor → "Tarifas y descuentos" → Cristal.</p>;
   return (
     <div className="space-y-2">
+      <EntradaCristalEscrito tarifa={tarifa} onAplicar={(x) => onChange({ ...cfg, tarifaId: tarifa.id, baseId: x.baseId, incrementos: x.incrementos, texto: x.texto })} />
+      <div className="text-[11px] text-slate-400">…o elígelo tú en la lista (lo escrito se puede retocar abajo):</div>
       <div className="grid grid-cols-2 gap-2">
         <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => onChange({ ...cfg, tarifaId: e.target.value, baseId: "", incrementos: [] })}>
           {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}</option>)}
         </select>
-        <select className={inputCls} value={cfg.baseId || ""} onChange={(e) => onChange({ ...cfg, tarifaId: tarifa.id, baseId: e.target.value })}>
+        <select className={inputCls} value={cfg.baseId || ""} onChange={(e) => onChange({ ...cfg, tarifaId: tarifa.id, baseId: e.target.value, texto: "" })}>
           <option value="">— elegir cristal —</option>
           {grupos(bases).map((g) => (
             <optgroup key={g} label={g}>{bases.filter((b) => b.grupo === g).map((b) => <option key={b.id} value={b.id}>{b.nombre} · {numOr(b.precio).toFixed(2)} €/m²</option>)}</optgroup>
@@ -17259,7 +17455,7 @@ function SelectorCristal({ tarifas, cfg, onChange }) {
           <div key={i} className="flex items-center gap-2 text-xs bg-slate-50 rounded px-2 py-1">
             <span className="flex-1">+ {it?.nombre} <span className="text-slate-400">({numOr(it?.precio).toFixed(2)} €/{it?.unidad === "lado" ? "lado" : "m²"}{it?.neto ? ", neto" : ""})</span></span>
             {(it?.unidad === "lado" || it?.unidad === "ud") && <input className="w-14 border rounded px-1" type="number" value={x.qty ?? 1} onChange={(e) => onChange({ ...cfg, incrementos: cfg.incrementos.map((y, j) => (j === i ? { ...y, qty: e.target.value } : y)) })} />}
-            <button type="button" className="text-rose-500" onClick={() => onChange({ ...cfg, incrementos: cfg.incrementos.filter((_, j) => j !== i) })}><X size={13} /></button>
+            <button type="button" className="text-rose-500" onClick={() => onChange({ ...cfg, texto: "", incrementos: cfg.incrementos.filter((_, j) => j !== i) })}><X size={13} /></button>
           </div>
         );
       })}
@@ -17270,7 +17466,7 @@ function SelectorCristal({ tarifas, cfg, onChange }) {
             <optgroup key={g} label={g}>{incs.filter((b) => b.grupo === g).map((b) => <option key={b.id} value={b.id}>{b.nombre} · {numOr(b.precio).toFixed(2)} €</option>)}</optgroup>
           ))}
         </select>
-        <button type="button" disabled={!nuevoInc} onClick={() => { onChange({ ...cfg, tarifaId: tarifa.id, incrementos: [...(cfg.incrementos || []), { itemId: nuevoInc, qty: 1 }] }); setNuevoInc(""); }}
+        <button type="button" disabled={!nuevoInc} onClick={() => { onChange({ ...cfg, tarifaId: tarifa.id, texto: "", incrementos: [...(cfg.incrementos || []), { itemId: nuevoInc, qty: 1 }] }); setNuevoInc(""); }}
           className="px-3 rounded-md bg-slate-700 text-white text-sm disabled:opacity-40">Añadir</button>
       </div>
       <div className="grid grid-cols-2 gap-2 items-center">
