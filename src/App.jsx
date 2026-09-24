@@ -1623,6 +1623,18 @@ export default function App() {
     return nuevo.id;
   };
 
+  // Alta de varios caballetes de una vez (packing list). Llamar a addCristal en bucle solo
+  // guardaba el último, porque cada llamada partía de la misma lista antigua.
+  const addCristalesLote = (lista) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const nuevos = (lista || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
+    saveCristales([...nuevos, ...cristales]);
+  };
+  const deleteCristalesLote = (ids) => {
+    const set = new Set(ids);
+    saveCristales(cristales.filter((c) => !set.has(c.id)));
+  };
+
   const updateCristal = (id, patch) => {
     saveCristales(cristales.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   };
@@ -3239,6 +3251,8 @@ export default function App() {
             }}
             cristales={cristales}
             onAddCristal={addCristal}
+            onAddCristalesLote={addCristalesLote}
+            onDeleteCristalesLote={deleteCristalesLote}
             onUpdateCristal={updateCristal}
             onDeleteCristal={deleteCristal}
             onUbicarCristal={ubicarCristal}
@@ -8357,7 +8371,7 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
 
 /* ================= CRISTALES (almacén de vidrio, dentro de Fábrica) ================= */
 
-function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onUpdate, onDelete, onUbicar, onLiberar }) {
+function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(null); // cristal object being located right now
@@ -8371,7 +8385,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const filtered = useMemo(() => {
     if (!q) return cristales;
     const nq = normalizar(q);
-    return cristales.filter((c) => normalizar(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida}`).includes(nq));
+    return cristales.filter((c) => normalizar(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(nq));
   }, [cristales, q]);
 
   const pendientes = filtered.filter((c) => c.estado === "Pendiente");
@@ -8529,6 +8543,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       let sinHueco = 0;
       const hoy = new Date().toISOString().slice(0, 10);
+      const aGuardar = [];
       items.forEach((it) => {
         const datosBase = {
           lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
@@ -8539,12 +8554,13 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         const ubicacion = calcularUbicacion(datosBase);
         if (ubicacion) {
           ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente });
-          onAdd({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
+          aGuardar.push({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
         } else {
           sinHueco++;
-          onAdd(datosBase);
+          aGuardar.push(datosBase);
         }
       });
+      if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
       if (sinHueco > 0) {
         setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
       }
@@ -8598,6 +8614,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "mapa" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Mapa del almacén
         </button>
+        <button onClick={() => setSubTab("lista")}
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "lista" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Cristales (medidas y viviendas)
+        </button>
         <button onClick={() => setSubTab("estadisticas")}
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "estadisticas" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Estadísticas
@@ -8611,7 +8631,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
               <button
                 onClick={() => {
                   if (window.confirm(`¿Borrar los ${pendientes.length} caballete(s) pendientes que ves ahora en la lista (según el buscador)? Esta acción no se puede deshacer.`)) {
-                    pendientes.forEach((c) => onDelete(c.id));
+                    if (onDeleteMany) onDeleteMany(pendientes.map((c) => c.id)); else pendientes.forEach((c) => onDelete(c.id));
                   }
                 }}
                 className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md hover:bg-rose-50"
@@ -8637,7 +8657,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                   <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} {c.secuencia && `/ ${c.secuencia}`}</td>
                   <td className="px-4 py-2.5 text-slate-600">{c.cliente || "—"}</td>
                   <td className="px-4 py-2.5 text-slate-600">{c.proveedor || "—"}</td>
-                  <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}</td>
+                  <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}{c.expediente ? <div className="text-[11px] text-slate-400">{c.expediente}</div> : null}</td>
                   <td className="px-4 py-2.5 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex gap-1.5 justify-end">
@@ -8666,6 +8686,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         <MapaAlmacenCristales cristales={cristales} q={q} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
       )}
 
+      {subTab === "lista" && (
+        <ListaCristalesSueltos cristales={cristales} q={q} onUpdate={onUpdate} />
+      )}
+
       {subTab === "estadisticas" && (
         <EstadisticasCristales cristales={cristales} />
       )}
@@ -8688,6 +8712,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           onLiberar={(id) => onLiberar(id)}
           onEliminar={(id) => onDelete(id)}
           onMover={(cristal) => { setVerDetalle(null); setAsignando(cristal); }}
+          onUpdate={onUpdate}
         />
       )}
     </div>
@@ -8720,11 +8745,18 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
   const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
   const nq = normalizarMapa(q);
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
+  // texto de búsqueda de un caballete: sus datos + los de cada cristal (vivienda, expediente, medida)
+  const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`);
+  const coincidentes = q ? cristales.filter((x) => textoCaballete(x).includes(nq)) : [];
+  const ubicados = coincidentes.filter((x) => x.ubicacion);
+  const sinUbicar = coincidentes.filter((x) => !x.ubicacion);
   return (
     <div className="space-y-6">
       {q && (
-        <div className="px-4 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
-          Los huecos resaltados en naranja coinciden con "{q}".
+        <div className="px-4 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm">
+          <b>"{q}" está en {coincidentes.length} caballete(s)</b>{coincidentes.length ? ", resaltados en naranja:" : "."}
+          {ubicados.length > 0 && <div className="mt-1 text-xs">{ubicados.map((x) => `${ubicacionTexto(x.ubicacion)} (caballete ${x.lote || "—"})`).join(" · ")}</div>}
+          {sinUbicar.length > 0 && <div className="mt-1 text-xs text-rose-700">+ {sinUbicar.length} todavía sin ubicar (en "Pendientes de ubicar")</div>}
         </div>
       )}
       {Object.entries(ZONAS_CRISTALES).map(([zonaId, cfg]) => (
@@ -8738,7 +8770,7 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
                     const cs = ocupantes(zonaId, fila, hueco);
                     const c = cs[0];
-                    const coincide = q && cs.some((x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida}`).includes(nq));
+                    const coincide = q && cs.some((x) => textoCaballete(x).includes(nq));
                     const clase = coincide
                       ? "bg-amber-500 text-white ring-2 ring-amber-300 cursor-pointer hover:opacity-80"
                       : c
@@ -8833,7 +8865,85 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
   );
 }
 
-function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover }) {
+// Cristales de un caballete (vienen del packing list en Excel): medida, vivienda/referencia,
+// expediente y un tic para marcar cuando está puesto.
+function PiezasCristalTabla({ cristal, onUpdate }) {
+  const piezas = cristal.piezas || [];
+  if (!piezas.length) return null;
+  const puestos = piezas.filter((p) => p.puesto).length;
+  const marcar = (i, v) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
+  return (
+    <div className="mt-2">
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="font-semibold text-slate-600">Cristales ({piezas.length} líneas)</span>
+        <span className={puestos === piezas.length ? "text-emerald-700 font-semibold" : "text-slate-500"}>{puestos} de {piezas.length} puestos</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th></tr></thead>
+          <tbody>
+            {piezas.map((p, i) => (
+              <tr key={i} className={`border-b border-slate-100 ${p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
+                <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
+                <td className="pr-2 font-semibold">{p.ref || "—"}</td>
+                <td className="pr-2">{p.expediente || "—"}</td>
+                <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
+                <td className="pr-2">{p.cantidad}</td>
+                <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Lista de todos los cristales sueltos de todos los caballetes, para buscar por vivienda,
+// expediente o medida y ver en qué caballete/hueco está.
+function ListaCristalesSueltos({ cristales, q, onUpdate }) {
+  const [soloPendientes, setSoloPendientes] = useState(false);
+  const normalizar = (t) => (t || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
+  const nq = normalizar(q || "");
+  const filas = [];
+  cristales.forEach((c) => (c.piezas || []).forEach((p, i) => {
+    if (soloPendientes && p.puesto) return;
+    if (nq && !normalizar(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente}`).includes(nq)) return;
+    filas.push({ c, p, i });
+  }));
+  const marcar = (c, i, v) => onUpdate(c.id, { piezas: c.piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 text-xs text-slate-500">
+        <span>{filas.length} línea(s) de cristal {q ? `que coinciden con "${q}"` : ""}. Usa el buscador de arriba: vivienda (V03.103), expediente (EXP 662) o medida (573).</span>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} /> Solo sin poner</label>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+            <th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Vivienda / ref.</th><th className="px-3 py-2">Expediente</th><th className="px-3 py-2">Medida (mm)</th><th className="px-3 py-2">Uds</th><th className="px-3 py-2">Caballete</th><th className="px-3 py-2">Dónde está</th>
+          </tr></thead>
+          <tbody>
+            {filas.slice(0, 400).map(({ c, p, i }) => (
+              <tr key={`${c.id}-${i}`} className={`border-b border-slate-100 ${p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
+                <td className="px-3 py-1.5"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(c, i, e.target.checked)} /></td>
+                <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}</td>
+                <td className="px-3 py-1.5">{p.expediente || "—"}</td>
+                <td className="px-3 py-1.5 font-mono-num">{p.ancho} × {p.alto}</td>
+                <td className="px-3 py-1.5">{p.cantidad}</td>
+                <td className="px-3 py-1.5 font-mono-num">{c.lote}</td>
+                <td className="px-3 py-1.5">{c.ubicacion ? ubicacionTexto(c.ubicacion) : <span className="text-amber-700">Pendiente de ubicar</span>}</td>
+              </tr>
+            ))}
+            {filas.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No hay cristales con detalle (solo los que vienen de un packing list en Excel).</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onUpdate }) {
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
   }, [cristalesEnHueco.length]);
@@ -8841,7 +8951,7 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
   if (cristalesEnHueco.length === 0) return null;
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg p-5 max-w-md w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-lg p-5 max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display font-bold text-slate-800 mb-1">{ubicacionTexto(ubicacion)}</h3>
         <p className="text-xs text-slate-500 mb-3">
           {cristalesEnHueco.length === 1 ? "1 expediente en este caballete." : `${cristalesEnHueco.length} expedientes juntos en este mismo caballete.`}
@@ -8858,6 +8968,7 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Medida:</b> {cristal.medida || "—"}</p>
                 <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
               </div>
+              {onUpdate && <PiezasCristalTabla cristal={cristal} onUpdate={onUpdate} />}
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => onMover(cristal)} className="flex-1 text-xs font-semibold text-sky-700 border border-sky-300 px-3 py-1.5 rounded-md hover:bg-sky-50">
                   Mover a otro hueco
@@ -8959,7 +9070,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto }) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto }) {
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
@@ -9216,6 +9327,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           proveedores={proveedores}
           clientes={clientes}
           onAdd={onAddCristal}
+          onAddMany={onAddCristalesLote}
+          onDeleteMany={onDeleteCristalesLote}
           onUpdate={onUpdateCristal}
           onDelete={onDeleteCristal}
           onUbicar={onUbicarCristal}
