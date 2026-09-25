@@ -3300,6 +3300,11 @@ export default function App() {
             incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
+            moverCristales: (movs) => {
+              const porId = Object.fromEntries(movs.map((m) => [m.id, m.ubicacion]));
+              saveCristales(cristales.map((c) => (porId[c.id] ? { ...c, ubicacion: porId[c.id], estado: "Colocado" } : c)));
+              showToast(`${movs.length} caballete(s) cambiados de sitio`);
+            },
           }}>
           <FabricaModulo
             proyectos={proyectos}
@@ -8437,6 +8442,7 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
 
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
+  const [verReorganizar, setVerReorganizar] = useState(false);
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(null); // cristal object being located right now
   const [verDetalle, setVerDetalle] = useState(null); // ubicación { zona, fila, hueco } to show contents of
@@ -8463,14 +8469,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     const zonaSugerida = `${cristal.proveedor || ""} ${cristal.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
     const ocupado = (zona, fila, hueco) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
 
-    if (cristal.expediente) {
-      const mismos = cristales.filter((c) => c.id !== cristal.id && c.expediente === cristal.expediente && c.ubicacion);
-      for (const m of mismos) {
-        const { zona, fila } = m.ubicacion;
-        for (let h = 1; h <= ZONAS_CRISTALES[zona].huecos; h++) {
-          if (!ocupado(zona, fila, h)) return { zona, fila, hueco: h };
-        }
-      }
+    {
+      const ocupadosExp = cristales.filter((c) => c.id !== cristal.id && c.ubicacion).map((c) => ({ ...c.ubicacion, exps: expedientesDeCaballete(c) }));
+      const junto = huecoJuntoAExpediente(expedientesDeCaballete(cristal), ocupadosExp);
+      if (junto) return junto;
     }
     const cfg = ZONAS_CRISTALES[zonaSugerida];
     const filaReservada = FILA_RESERVA[zonaSugerida];
@@ -8597,19 +8599,15 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       // packing list también se tengan en cuenta entre sí según se van "colocando".
       const ocupadosSimulado = cristales
         .filter((c) => c.ubicacion)
-        .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente }));
+        .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) }));
 
       const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
 
       const calcularUbicacion = (item) => {
         const zonaSugerida = `${item.proveedor || ""} ${item.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
-        if (item.expediente) {
-          const mismos = ocupadosSimulado.filter((o) => o.expediente === item.expediente);
-          for (const m of mismos) {
-            for (let h = 1; h <= ZONAS_CRISTALES[m.zona].huecos; h++) {
-              if (!estaOcupado(m.zona, m.fila, h)) return { zona: m.zona, fila: m.fila, hueco: h };
-            }
-          }
+        {
+          const junto = huecoJuntoAExpediente(expedientesDeCaballete(item), ocupadosSimulado);
+          if (junto) return junto;
         }
         const cfg = ZONAS_CRISTALES[zonaSugerida];
         const filaReservada = FILA_RESERVA[zonaSugerida];
@@ -8639,7 +8637,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         };
         const ubicacion = calcularUbicacion(datosBase);
         if (ubicacion) {
-          ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente });
+          ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente, exps: expedientesDeCaballete(datosBase) });
           aGuardar.push({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
         } else {
           sinHueco++;
@@ -8772,6 +8770,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         </div>
       )}
 
+      {subTab === "mapa" && !verReorganizar && (
+        <div className="flex justify-end mb-3">
+          <button onClick={() => setVerReorganizar(true)} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
+            <Layers size={14} /> Reorganizar por expediente
+          </button>
+        </div>
+      )}
+      {subTab === "mapa" && verReorganizar && (
+        <ReorganizarCristalesPanel cristales={cristales} onCerrar={() => setVerReorganizar(false)} />
+      )}
       {subTab === "mapa" && (
         <MapaAlmacenCristales cristales={cristales} q={q} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
       )}
@@ -8856,10 +8864,18 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
       {Object.entries(ZONAS_CRISTALES).map(([zonaId, cfg]) => (
         <div key={zonaId} className="bg-white border border-slate-200 rounded-lg p-4">
           <h3 className="font-display font-bold text-slate-800 mb-3">{cfg.label}</h3>
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 overflow-x-auto">
+            <div className="flex items-center gap-2 min-w-[640px]">
+              <span className="text-[10px] text-slate-400 w-14 shrink-0">Hueco</span>
+              <div className="flex gap-1.5 flex-1">
+                {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((h) => (
+                  <span key={h} className="flex-1 text-center text-[11px] font-bold text-slate-500">{h}</span>
+                ))}
+              </div>
+            </div>
             {Array.from({ length: cfg.filas }, (_, i) => i + 1).map((fila) => (
-              <div key={fila} className="flex items-center gap-2">
-                <span className="text-xs text-slate-400 w-14 shrink-0">Fila {fila}</span>
+              <div key={fila} className="flex items-center gap-2 min-w-[640px]">
+                <span className="text-xs font-bold text-slate-600 w-14 shrink-0">Fila {fila}</span>
                 <div className="flex gap-1.5 flex-1">
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
                     const cs = ocupantes(zonaId, fila, hueco);
@@ -8875,9 +8891,11 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                         key={hueco}
                         onClick={() => c && onVerHueco({ zona: zonaId, fila, hueco })}
                         title={c ? cs.map((x) => `${x.lote || ""} ${x.secuencia || ""} — ${x.cliente || ""}`).join(" | ") : "Libre"}
-                        className={`relative flex-1 h-10 rounded-md text-[11px] font-semibold flex items-center justify-center px-1 truncate ${clase}`}
+                        className={`relative flex-1 h-12 rounded-md text-[11px] font-semibold flex flex-col items-center justify-center px-1 overflow-hidden ${clase}`}
                       >
-                        {c ? (c.lote || c.secuencia || "•") : "—"}
+                        <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
+                        <span className="truncate max-w-full">{c ? (c.lote ? String(c.lote).slice(-4) : c.secuencia || "•") : ""}</span>
+                        {c && expedientePrincipal(c) && <span className="text-[9px] font-normal opacity-90 truncate max-w-full">EXP {expedientePrincipal(c)}</span>}
                         {cs.length > 1 && (
                           <span className="absolute -top-1.5 -right-1.5 bg-slate-800 text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
                             {cs.length}
@@ -8915,7 +8933,7 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
       <div className="bg-white rounded-lg p-5 max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display font-bold text-slate-800 mb-1">Ubicar: {cristal.lote || cristal.secuencia || "Caballete"}</h3>
         <p className="text-xs text-slate-500 mb-3">{cristal.cliente} · {cristal.proveedor}</p>
-        <p className="text-xs text-slate-400 mb-3">Los huecos "Ocupado" no están bloqueados: puedes pulsarlos igualmente si quieres juntar varios expedientes en el mismo caballete.</p>
+        <p className="text-xs text-slate-400 mb-3">Cada casilla lleva el número de hueco: verde = libre, naranja = ocupado. Los ocupados no están bloqueados: puedes pulsarlos igualmente si quieres juntar varios expedientes en el mismo caballete.</p>
         {sugerencia && (
           <button
             onClick={() => elegir(sugerencia.zona, sugerencia.fila, sugerencia.hueco)}
@@ -8943,9 +8961,10 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
                     <button
                       key={hueco}
                       onClick={() => elegir(zona, fila, hueco)}
-                      className={`flex-1 h-9 rounded-md text-xs font-semibold ${libre ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer" : "bg-amber-50 text-amber-700 hover:bg-amber-100 cursor-pointer"}`}
+                      title={libre ? `Hueco ${hueco} libre` : `Hueco ${hueco} ocupado (${ocupantes.length})`}
+                      className={`flex-1 h-9 rounded-md text-xs font-bold ${libre ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer" : "bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer"}`}
                     >
-                      {libre ? "Libre" : `Ocupado (${ocupantes.length})`}
+                      {hueco}{!libre && <span className="block text-[9px] font-semibold leading-none">ocup.</span>}
                     </button>
                   );
                 })}
@@ -9532,6 +9551,183 @@ function ControlPedidosCristal({ cristales, proveedores }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---- Agrupar caballetes por expediente en el almacén ----
+// Un caballete puede llevar cristales de varios expedientes ("EXP 662, EXP 663"). Estas
+// funciones sacan los expedientes de cada caballete y buscan un hueco libre en la fila
+// donde ya están los del mismo expediente, lo más cerca posible de ellos.
+const numsExpediente = (txt) => (String(txt || "").match(/\d{2,}/g) || []);
+function expedientesDeCaballete(c) {
+  const set = new Set(numsExpediente(c.expediente));
+  (c.piezas || []).forEach((p) => numsExpediente(p.expediente).forEach((n) => set.add(n)));
+  return set;
+}
+// El expediente "principal" de un caballete: el que más cristales tiene dentro.
+function expedientePrincipal(c) {
+  const cuenta = {};
+  (c.piezas || []).forEach((p) => numsExpediente(p.expediente).forEach((n) => { cuenta[n] = (cuenta[n] || 0) + (parseFloat(p.cantidad) || 1); }));
+  const top = Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0];
+  return top ? top[0] : (numsExpediente(c.expediente)[0] || "");
+}
+// ocupados: [{ zona, fila, hueco, exps: Set }]
+function huecoJuntoAExpediente(exps, ocupados) {
+  if (!exps || exps.size === 0) return null;
+  const libre = (z, f, h) => !ocupados.some((o) => o.zona === z && o.fila === f && o.hueco === h);
+  const filas = {};
+  ocupados.forEach((o) => {
+    const comunes = [...o.exps].filter((n) => exps.has(n)).length;
+    if (!comunes) return;
+    const k = `${o.zona}|${o.fila}`;
+    if (!filas[k]) filas[k] = { zona: o.zona, fila: o.fila, peso: 0, huecos: [] };
+    filas[k].peso += comunes;
+    filas[k].huecos.push(o.hueco);
+  });
+  const candidatas = Object.values(filas).sort((a, b) => b.peso - a.peso);
+  for (const f of candidatas) {
+    const total = ZONAS_CRISTALES[f.zona]?.huecos || 0;
+    const libres = [];
+    for (let h = 1; h <= total; h++) if (libre(f.zona, f.fila, h)) libres.push(h);
+    if (!libres.length) continue;
+    const dist = (h) => Math.min(...f.huecos.map((x) => Math.abs(x - h)));
+    libres.sort((a, b) => dist(a) - dist(b) || a - b);
+    return { zona: f.zona, fila: f.fila, hueco: libres[0] };
+  }
+  return null;
+}
+// Propone los movimientos mínimos para que los caballetes del mismo expediente queden
+// en la misma fila: primero a huecos libres de su fila "casa" (donde ya hay más de ese
+// expediente) y, si está llena, intercambiando con un caballete que tampoco está en su
+// fila casa. No cambia de zona (arriba/abajo).
+function planReorganizarPorExpediente(cristales) {
+  const colocados = cristales.filter((c) => c.ubicacion && ZONAS_CRISTALES[c.ubicacion.zona]);
+  const pos = {};
+  colocados.forEach((c) => { pos[c.id] = { ...c.ubicacion }; });
+  const principal = {};
+  colocados.forEach((c) => { principal[c.id] = expedientePrincipal(c); });
+  const casaDe = {};
+  const grupos = {};
+  colocados.forEach((c) => {
+    const e = principal[c.id];
+    if (!e) return;
+    const k = `${c.ubicacion.zona}|${e}`;
+    (grupos[k] = grupos[k] || []).push(c);
+  });
+  Object.entries(grupos).forEach(([k, lista]) => {
+    const cuenta = {};
+    lista.forEach((c) => { cuenta[c.ubicacion.fila] = (cuenta[c.ubicacion.fila] || 0) + 1; });
+    const fila = Number(Object.entries(cuenta).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]);
+    casaDe[k] = fila;
+  });
+  const enCasa = (c) => {
+    const e = principal[c.id];
+    if (!e) return true;
+    return casaDe[`${pos[c.id].zona}|${e}`] === pos[c.id].fila;
+  };
+  const enHueco = (z, f, h) => colocados.filter((c) => pos[c.id].zona === z && pos[c.id].fila === f && pos[c.id].hueco === h);
+  const bloqueado = new Set();
+  const movimientos = [];
+  const ordenGrupos = Object.entries(grupos).sort((a, b) => b[1].length - a[1].length);
+  for (const [k, lista] of ordenGrupos) {
+    if (lista.length < 2) continue;
+    const [zona] = k.split("|");
+    const filaCasa = casaDe[k];
+    const total = ZONAS_CRISTALES[zona].huecos;
+    for (const c of lista) {
+      if (pos[c.id].fila === filaCasa || bloqueado.has(c.id)) continue;
+      const deCasa = lista.filter((x) => pos[x.id].fila === filaCasa).map((x) => pos[x.id].hueco);
+      const dist = (h) => (deCasa.length ? Math.min(...deCasa.map((x) => Math.abs(x - h))) : h);
+      const huecos = Array.from({ length: total }, (_, i) => i + 1).sort((a, b) => dist(a) - dist(b) || a - b);
+      const libre = huecos.find((h) => enHueco(zona, filaCasa, h).length === 0);
+      const desde = { ...pos[c.id] };
+      if (libre) {
+        pos[c.id] = { zona, fila: filaCasa, hueco: libre };
+        bloqueado.add(c.id);
+        movimientos.push({ id: c.id, lote: c.lote, exp: principal[c.id], desde, hasta: { ...pos[c.id] } });
+        continue;
+      }
+      const intruso = huecos.map((h) => enHueco(zona, filaCasa, h)).find((occ) => occ.length === 1 && !bloqueado.has(occ[0].id) && !enCasa(occ[0]));
+      if (intruso) {
+        const o = intruso[0];
+        const hastaC = { ...pos[o.id] };
+        pos[o.id] = desde;
+        pos[c.id] = hastaC;
+        bloqueado.add(c.id); bloqueado.add(o.id);
+        const par = uid();
+        movimientos.push({ id: c.id, lote: c.lote, exp: principal[c.id], desde, hasta: hastaC, par });
+        movimientos.push({ id: o.id, lote: o.lote, exp: principal[o.id], desde: hastaC, hasta: desde, par });
+      }
+    }
+  }
+  const dispersos = Object.entries(grupos).filter(([, l]) => new Set(l.map((c) => pos[c.id].fila)).size > 1).map(([k]) => k.split("|")[1]);
+  return { movimientos, sinResolver: dispersos };
+}
+
+function ReorganizarCristalesPanel({ cristales, onCerrar }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const plan = useMemo(() => planReorganizarPorExpediente(cristales), [cristales]);
+  const [hechos, setHechos] = useState({});
+  const marcados = plan.movimientos.filter((m) => hechos[m.id]);
+  const aplicar = () => {
+    if (!marcados.length || !ctx.moverCristales) return;
+    ctx.moverCristales(marcados.map((m) => ({ id: m.id, ubicacion: m.hasta })));
+    setHechos({});
+  };
+  const toggle = (m, v) => {
+    const n = { ...hechos, [m.id]: v };
+    if (m.par) plan.movimientos.filter((x) => x.par === m.par).forEach((x) => { n[x.id] = v; });
+    setHechos(n);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+        <div>
+          <h3 className="font-display font-bold text-slate-900">Reorganizar por expediente</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Movimientos mínimos para que los caballetes del mismo expediente queden en la misma fila, lo más juntos posible.
+            Muévelos con la carretilla, marca los que ya estén hechos y pulsa <b>Guardar movimientos</b>.
+          </p>
+        </div>
+        <button onClick={onCerrar} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+      </div>
+      {plan.movimientos.length === 0 ? (
+        <p className="text-sm text-emerald-700 font-semibold">Todo en orden: los caballetes de cada expediente ya están en la misma fila.</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-slate-400 border-b">
+                <th className="py-1 pr-2">Hecho</th><th className="pr-2">Caballete</th><th className="pr-2">Expediente</th><th className="pr-2">Desde</th><th className="pr-2">Hasta</th>
+              </tr></thead>
+              <tbody>
+                {plan.movimientos.map((m) => (
+                  <tr key={m.id} className={`border-b border-slate-100 ${hechos[m.id] ? "bg-emerald-50" : ""}`}>
+                    <td className="py-1.5 pr-2"><input type="checkbox" checked={!!hechos[m.id]} onChange={(e) => toggle(m, e.target.checked)} /></td>
+                    <td className="pr-2 font-mono-num font-semibold">{m.lote || "—"}</td>
+                    <td className="pr-2">{m.exp ? `EXP ${m.exp}` : "—"}{m.par ? <span className="ml-1 text-amber-700 font-semibold">(intercambio)</span> : null}</td>
+                    <td className="pr-2">{ubicacionTexto(m.desde)}</td>
+                    <td className="pr-2 font-semibold text-[#2E8B57]">{ubicacionTexto(m.hasta)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 mt-3 flex-wrap">
+            <span className="text-xs text-slate-500">{plan.movimientos.length} movimiento(s). Los intercambios se marcan por parejas.</span>
+            <button onClick={aplicar} disabled={!marcados.length} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+              className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-40">
+              Guardar movimientos ({marcados.length})
+            </button>
+          </div>
+        </>
+      )}
+      {plan.sinResolver.length > 0 && (
+        <p className="text-xs text-amber-700 mt-3">
+          No hay sitio para juntar del todo: {plan.sinResolver.map((e) => `EXP ${e}`).join(", ")}. Haría falta dejar huecos libres en su fila.
+        </p>
+      )}
     </div>
   );
 }
