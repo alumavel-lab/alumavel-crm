@@ -3326,6 +3326,11 @@ export default function App() {
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen,
+            guardarPackingCaballetes: (nuevos, fusiones) => {
+              const hoy = new Date().toISOString().slice(0, 10);
+              const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
+              saveCristales([...altas, ...cristales.map((c) => (fusiones && fusiones[c.id] ? { ...c, ...fusiones[c.id] } : c))]);
+            },
             moverCristales: (movs) => {
               const porId = Object.fromEntries(movs.map((m) => [m.id, m.ubicacion]));
               saveCristales(cristales.map((c) => (porId[c.id] ? { ...c, ubicacion: porId[c.id], estado: "Colocado" } : c)));
@@ -8469,6 +8474,7 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
+  const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(null); // cristal object being located right now
   const [verDetalle, setVerDetalle] = useState(null); // ubicación { zona, fila, hueco } to show contents of
@@ -8511,12 +8517,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       let items;
       if (esExcel) {
         items = await packingDesdeExcel(file);
-        // si ya hay un caballete con el mismo nº de rack, no se vuelve a meter
-        const yaEstan = new Set(cristales.map((c) => String(c.lote || "").trim()));
-        const repetidos = items.filter((it) => yaEstan.has(it.lote)).length;
-        items = items.filter((it) => !yaEstan.has(it.lote));
-        if (repetidos) setErrorPacking(`${repetidos} caballete(s) ya estaban en el almacén y no se han duplicado.`);
-        if (!items.length) { setLeyendoPacking(false); if (!repetidos) setErrorPacking("No he encontrado caballetes en el Excel (busco la columna \"Rack\")."); return; }
+        // si ya hay un caballete con el mismo nº de rack, sus cristales se juntan con él
+        // (más abajo), no se crea otro caballete
+        if (!items.length) { setLeyendoPacking(false); setErrorPacking("No he encontrado caballetes en el Excel (busco la columna \"Rack\")."); return; }
       } else {
       const base64Data = await new Promise((resolve, reject) => {
         const r = new FileReader();
@@ -8606,6 +8609,30 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         setLeyendoPacking(false);
         return;
       }
+      // Mismo nº de caballete = MISMO caballete, aunque venga en otra hoja u otra foto:
+      // sus cristales se añaden al caballete que ya existe (sin repetir los que ya tenía).
+      const claveLote = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+      const existentes = {};
+      cristales.forEach((c) => { const k = claveLote(c.lote); if (k) existentes[k] = c; });
+      const fusiones = {};
+      const claveP = (p) => `${claveLote(p.pedido)}|${claveLote(p.ref)}|${parseFloat(p.ancho) || ""}|${parseFloat(p.alto) || ""}|${p.pos || ""}`;
+      items = items.filter((it) => {
+        const ex = existentes[claveLote(it.lote)];
+        if (!ex) return true;
+        const base = fusiones[ex.id] || { piezas: [...(ex.piezas || [])], expediente: ex.expediente || "", secuencia: ex.secuencia || "" };
+        const ya = new Set(base.piezas.map(claveP));
+        (it.piezas || []).forEach((p) => { if (!ya.has(claveP(p))) { base.piezas.push(p); ya.add(claveP(p)); } });
+        const unir = (a, b) => [...new Set(`${a}, ${b}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
+        base.expediente = unir(base.expediente, it.expediente || "");
+        base.secuencia = unir(base.secuencia, it.secuencia || "");
+        base.cantidad = base.piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0);
+        const m2 = base.piezas.reduce((a, p) => a + (parseFloat(p.m2) || 0), 0);
+        base.medida = `${base.cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`;
+        fusiones[ex.id] = base;
+        return false;
+      });
+      const nFusionados = Object.keys(fusiones).length;
+
       // Simulamos la colocación de cada caballete nuevo uno a uno, usando la misma lógica
       // de sugerencia (agrupar por expediente en la misma fila, si no el primer hueco libre
       // de la zona). Trabajamos sobre una copia local para que los caballetes del mismo
@@ -8644,7 +8671,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           aGuardar.push(datosBase);
         }
       });
-      if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
+      const ctxPacking = ctxAlmacen?.guardarPackingCaballetes;
+      if (ctxPacking) ctxPacking(aGuardar, fusiones);
+      else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
+      if (nFusionados > 0) {
+        setErrorPacking(`${nFusionados} caballete(s) ya estaban en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro).`);
+      }
       if (sinHueco > 0) {
         setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
       }
