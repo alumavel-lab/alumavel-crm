@@ -8865,18 +8865,18 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
         <div key={zonaId} className="bg-white border border-slate-200 rounded-lg p-4">
           <h3 className="font-display font-bold text-slate-800 mb-3">{cfg.label}</h3>
           <div className="space-y-1.5 overflow-x-auto">
-            <div className="flex items-center gap-2 min-w-[640px]">
-              <span className="text-[10px] text-slate-400 w-14 shrink-0">Hueco</span>
-              <div className="flex gap-1.5 flex-1">
+            <div className="flex items-center gap-2 w-max">
+              <span className="text-[10px] text-slate-400 w-14 shrink-0 sticky left-0 bg-white z-10">Hueco</span>
+              <div className="flex gap-1.5">
                 {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((h) => (
-                  <span key={h} className="flex-1 text-center text-[11px] font-bold text-slate-500">{h}</span>
+                  <span key={h} className="w-[96px] shrink-0 text-center text-xs font-bold text-slate-500">{h}</span>
                 ))}
               </div>
             </div>
             {Array.from({ length: cfg.filas }, (_, i) => i + 1).map((fila) => (
-              <div key={fila} className="flex items-center gap-2 min-w-[640px]">
-                <span className="text-xs font-bold text-slate-600 w-14 shrink-0">Fila {fila}</span>
-                <div className="flex gap-1.5 flex-1">
+              <div key={fila} className="flex items-center gap-2 w-max">
+                <span className="text-xs font-bold text-slate-600 w-14 shrink-0 sticky left-0 bg-white z-10 self-stretch flex items-center">Fila {fila}</span>
+                <div className="flex gap-1.5">
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
                     const cs = ocupantes(zonaId, fila, hueco);
                     const c = cs[0];
@@ -8891,11 +8891,15 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                         key={hueco}
                         onClick={() => c && onVerHueco({ zona: zonaId, fila, hueco })}
                         title={c ? cs.map((x) => `${x.lote || ""} ${x.secuencia || ""} — ${x.cliente || ""}`).join(" | ") : "Libre"}
-                        className={`relative flex-1 h-12 rounded-md text-[11px] font-semibold flex flex-col items-center justify-center px-1 overflow-hidden ${clase}`}
+                        className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
                         <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
-                        <span className="truncate max-w-full">{c ? (c.lote ? String(c.lote).slice(-4) : c.secuencia || "•") : ""}</span>
-                        {c && expedientePrincipal(c) && <span className="text-[9px] font-normal opacity-90 truncate max-w-full">EXP {expedientePrincipal(c)}</span>}
+                        {c ? (
+                          <>
+                            <span className="font-mono-num text-[12px] leading-tight tracking-tight">{c.lote || c.secuencia || "•"}</span>
+                            {expedientePrincipal(c) && <span className="text-[10px] font-normal opacity-90 leading-tight">EXP {expedientePrincipal(c)}</span>}
+                          </>
+                        ) : <span className="text-[11px]">libre</span>}
                         {cs.length > 1 && (
                           <span className="absolute -top-1.5 -right-1.5 bg-slate-800 text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
                             {cs.length}
