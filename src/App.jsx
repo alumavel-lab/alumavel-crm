@@ -97,6 +97,7 @@ const MODULOS_DISPONIBLES = [
   { id: "instalaciones", label: "Instalaciones" },
   { id: "fichajes", label: "Fichajes" },
   { id: "uxcar", label: "Uxcar (portal)" },
+  { id: "albaranes", label: "Albaranes (chófer)" },
 ];
 
 // Configuración física del almacén de cristales dentro de Fábrica. La ubicación se
@@ -327,6 +328,24 @@ const normalizarChecklist = (lista) => {
     estado: item.estado !== undefined ? item.estado : (item.marcado ? "si" : null),
   }));
 };
+// Condiciones de "Qué lleva la obra": cada cosa marcada "Sí" tiene que tener su pedido
+// vinculado y llegado (o estar marcada "en stock") para que la obra pueda ir a fabricar.
+// Devuelve la lista de lo que falta, en texto, para enseñarlo en los avisos.
+const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
+  const faltan = [];
+  normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
+    const nombre = c.nombre || "Sin nombre";
+    if (!c.estado) { faltan.push(`${nombre}: falta decir si lo lleva o no`); return; }
+    if (c.estado !== "si" || c.enStock) return;
+    const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    if (vinculados.length === 0) { faltan.push(`${nombre}: lleva, pero no tiene pedido vinculado`); return; }
+    vinculados.forEach((pd) => {
+      if (pd.estado !== "Recibido") faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
+      else if ((pd.lineas || []).some((l) => !l.confirmadoFabrica)) faltan.push(`${nombre}: el pedido #${pd.numero} está sin confirmar por fábrica`);
+    });
+  });
+  return faltan;
+};
 const ESTADO_LOGISTICA = ["Sin definir", "Reparto (camión)", "Recogida en fábrica"];
 const PROVINCIAS_REPARTO = ["Almería", "Granada", "Málaga", "Murcia", "Valencia", "Alicante", "Otra ciudad..."];
 const TIPO_CLIENTE = ["Cliente", "Distribuidor"];
@@ -371,6 +390,22 @@ const ESTADO_FACTURA_STYLE = {
   "Parcial": "bg-amber-50 text-amber-700 ring-amber-200",
   "Pagada": "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
+// Lo ya facturado de un proyecto: facturas definitivas (las proformas no cuentan y los
+// abonos restan). Si una factura junta varios proyectos, a cada uno se le cuenta su importe.
+const facturadoProyecto = (p, facturas) => (facturas || []).reduce((s, f) => {
+  const ids = f.proyectosIds || [];
+  if (!ids.includes(p.id) || f.tipo === "Proforma") return s;
+  const parte = ids.length === 1 ? (parseFloat(f.total) || 0) : (parseFloat(p.importePresupuesto) || 0);
+  return s + (f.tipo === "Abono" ? -Math.abs(parte) : parte);
+}, 0);
+// Obras entregadas (albarán firmado por el cliente o estado Entregado) con algo por facturar
+const pendientesDeFacturar = (proyectos, facturas) => (proyectos || []).filter((p) => {
+  if (p.facturacionDescartada || p.estadoTrabajo === "Cancelado") return false;
+  const entregado = (p.albaranEntrega && p.albaranEntrega.firmaCliente) || p.estadoTrabajo === "Entregado";
+  if (!entregado) return false;
+  return (parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas) > 0.005;
+});
+
 const estadoFacturaCalc = (factura) => {
   const total = parseFloat(factura.total) || 0;
   const pagado = (factura.pagos || []).reduce((s, p) => s + (parseFloat(p.importe) || 0), 0);
@@ -1352,6 +1387,16 @@ export default function App() {
     if (data.id) {
       const anterior = proyectos.find((p) => p.id === data.id);
 
+      // No se puede pasar a fabricar si falta material de lo que "lleva" la obra
+      if (data.estadoTrabajo === "En proceso" && anterior && anterior.estadoTrabajo !== "En proceso" && anterior.origen !== "portalUxcar") {
+        const faltan = condicionesPendientesChecklist({ ...anterior, ...data }, pedidos);
+        if (faltan.length > 0) {
+          const texto = `No se puede pasar a fabricar #${anterior.numero} todavía:\n\n- ${faltan.join("\n- ")}`;
+          if (!isAdmin) { alert(texto + "\n\nRevísalo en la ficha del proyecto, en \"Qué lleva la obra\"."); return; }
+          if (!confirm(texto + "\n\nEres administrador: ¿pasarlo a fabricar igualmente?")) return;
+        }
+      }
+
       // Al aceptar el presupuesto por primera vez, sugerimos la fecha de fabricación
       // según los días de plazo de materiales indicados, si todavía no se ha puesto a mano.
       if (
@@ -2136,6 +2181,25 @@ export default function App() {
     setFacturaView("list");
   };
 
+  // Factura de una obra entregada, desde "Pendiente de facturar" (un solo botón)
+  const emitirFacturaPendiente = (proyecto, importe) => {
+    const total = Math.round((parseFloat(importe) || 0) * 100) / 100;
+    if (total <= 0) { showToast("El importe tiene que ser mayor que 0", "error"); return; }
+    const a = proyecto.albaranEntrega || {};
+    const nueva = {
+      id: uid(), numero: nextNumeroFactura(), clienteId: proyecto.clienteId, tipo: "Definitiva",
+      fecha: new Date().toISOString().slice(0, 10), proyectosIds: [proyecto.id], total, pagos: [],
+      observaciones: `Obra entregada${a.numero ? ` · albarán ${a.numero}` : ""}${a.firmaCliente ? ` firmado por ${a.firmaCliente.nombre} el ${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")}` : ""}.`,
+      origen: "entrega",
+    };
+    saveFacturas([nueva, ...facturas]);
+    showToast(`Factura ${nueva.numero} emitida por ${money(total)}`);
+  };
+  const descartarFacturacion = (proyectoId) => {
+    updateProyectoInline(proyectoId, { facturacionDescartada: true });
+    showToast("Quitado de pendientes de facturar");
+  };
+
   const deleteFactura = (id) => {
     saveFacturas(facturas.filter((f) => f.id !== id));
     setFacturaView("list");
@@ -2897,6 +2961,40 @@ export default function App() {
     catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
   };
   const uxCambiarMaterial = (exp, clave, estado) => uxActualizar(exp, { [`materiales/${clave}/estado`]: estado });
+
+  // Cambia el estado de trabajo de un proyecto desde Fábrica/Reparto. Si el proyecto es
+  // de un expediente de Uxcar, también mueve el expediente (terminado / entregado).
+  const moverEstadoProyecto = (proyectoId, estado, extra = {}) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const p = proyectos.find((x) => x.id === proyectoId);
+    if (!p) return;
+    const patch = { ...extra, estadoTrabajo: estado };
+    if (estado === "Listo para reparto/recogida") patch.fechaTerminadoFabrica = hoy;
+    if (estado === "Entregado") patch.fechaEntregado = hoy;
+    updateProyectoInline(proyectoId, patch);
+    if (p.origen === "portalUxcar" && p.uxcarExpedienteId) {
+      const exp = uxExpedientes.find((e) => e.id === p.uxcarExpedienteId);
+      const est = estado === "Entregado" ? "entregado" : estado === "Listo para reparto/recogida" ? "terminado" : null;
+      if (exp && est && exp.estado !== est) uxActualizar(exp, est === "entregado" ? { estado: est, fechaEntregado: hoy } : { estado: est, fechaTerminado: hoy });
+    }
+    showToast(`#${p.numero}: ${estado}`);
+  };
+
+  // Cuando TODAS las instalaciones de un proyecto están "Finalizada", el proyecto pasa
+  // solo a "Entregado" (una sola vez: si luego se cambia a mano, se respeta).
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const ids = new Set(proyectos.filter((p) => {
+      if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.entregadoAutoInstalacion) return false;
+      const ins = instalaciones.filter((i) => i.proyectoId === p.id);
+      return ins.length > 0 && ins.every((i) => i.estado === "Finalizada");
+    }).map((p) => p.id));
+    if (ids.size === 0) return;
+    saveProyectos(proyectos.map((p) => (ids.has(p.id) ? { ...p, estadoTrabajo: "Entregado", fechaEntregado: p.fechaEntregado || hoy, entregadoAutoInstalacion: true } : p)));
+    showToast(ids.size === 1 ? "Instalación finalizada: proyecto pasado a Entregado" : `${ids.size} proyectos pasados a Entregado (instalaciones finalizadas)`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instalaciones, proyectos, currentUser?.id, loading]);
   const uxPasarProduccion = async (exp) => {
     const hoy = uxHoy();
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
@@ -3235,6 +3333,9 @@ export default function App() {
             }`}
           >
             <Receipt size={16} /> Facturas
+            {pendientesDeFacturar(proyectos, facturas).length > 0 && (
+              <span className="ml-auto text-[10px] font-bold bg-amber-400 text-slate-900 rounded px-1.5 py-0.5" title="Obras entregadas pendientes de facturar">{pendientesDeFacturar(proyectos, facturas).length}</span>
+            )}
           </button>
           )}
           {tieneAcceso("fabrica") && (
@@ -3265,6 +3366,16 @@ export default function App() {
             }`}
           >
             <Timer size={16} /> Fichajes
+          </button>
+          )}
+          {tieneAcceso("albaranes") && (
+          <button
+            onClick={() => setModulo("albaranes")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "albaranes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Truck size={16} /> Albaranes
           </button>
           )}
           {tieneAcceso("uxcar") && (
@@ -3634,6 +3745,8 @@ export default function App() {
             onAddPago={addPago}
             onRemovePago={removePago}
             nextNumero={nextNumeroFactura}
+            onEmitirPendiente={emitirFacturaPendiente}
+            onDescartarPendiente={descartarFacturacion}
           />
         )}
         {modulo === "presupuestos" && (
@@ -3800,6 +3913,7 @@ export default function App() {
             onCambiarFechaReparto={(id, fecha) => cambiarFechaProyecto(id, "fechaReparto", fecha)}
             uxPedidos={uxPedidos}
             onGuardarRecepcionUx={uxGuardarRecepcion}
+            onMoverEstado={moverEstadoProyecto}
             nombreUsuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
           />
           </IncidenciasCristalCtx.Provider>
@@ -3842,6 +3956,20 @@ export default function App() {
             onFichar={registrarFichaje}
             onDeleteFichaje={deleteFichaje}
             isAdmin={isAdmin}
+          />
+        )}
+        {modulo === "albaranes" && (
+          <AlbaranesChofer
+            proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
+            currentUser={currentUser} isAdmin={isAdmin}
+            onGuardarAlbaranEntrega={(id, albaran, entregar) => {
+              const albaranEntrega = JSON.parse(JSON.stringify(albaran));
+              // un solo guardado: el albarán firmado y (si toca) el paso a Entregado
+              if (entregar) moverEstadoProyecto(id, "Entregado", { albaranEntrega });
+              else updateProyectoInline(id, { albaranEntrega });
+            }}
+            onGuardarDocumentoEntrega={async (id, doc) => { updateProyectoInline(id, { documentoEntrega: doc }); showToast("Documento de entrega guardado"); }}
+            onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
         {modulo === "uxcar" && (
@@ -5221,10 +5349,16 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   const importePresupuesto = parseFloat(proyecto.importePresupuesto) || 0;
   const saldoPendiente = importePresupuesto - totalRecibido;
   const pedidosMarcados = checklist.filter((c) => c.estado === "si").length;
+  const guardarChecklist = (next) => onInlineUpdate(proyecto.id, { checklistMateriales: JSON.parse(JSON.stringify(next)) });
   const setChecklistEstado = (itemId, valor) => {
     const next = checklist.map((c) => (c.id === itemId ? { ...c, estado: c.estado === valor ? null : valor } : c));
-    onInlineUpdate(proyecto.id, { checklistMateriales: next });
+    guardarChecklist(next);
+    const it = checklist.find((c) => c.id === itemId);
+    if (it && valor === "si" && it.estado !== "si") setTimeout(() => alert(`"${it.nombre}" queda como condición: la obra no podrá pasar a fabricar hasta que tenga su pedido vinculado y haya llegado (o marques que está en stock).`), 50);
   };
+  const setChecklistItem = (itemId, patch) => guardarChecklist(checklist.map((c) => (c.id === itemId ? { ...c, ...patch } : c)));
+  const [nombreEditando, setNombreEditando] = useState({});
+  const faltanChecklist = condicionesPendientesChecklist(proyecto, pedidos);
 
   const [gForm, setGForm] = useState({ fecha: new Date().toISOString().slice(0, 10), proveedor: "", producto: "", importe: "", facturaAsociada: "", estadoFactura: "Pendiente" });
   const [hForm, setHForm] = useState({ fecha: new Date().toISOString().slice(0, 10), tarea: "", tiempo: "", empleado: "", costeHora: "" });
@@ -5972,29 +6106,64 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       {tab === "checklist" && (
         <div className="space-y-4">
           <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm">
-            Marca "Sí" si esta obra lleva esa categoría, o "No" si no la lleva — así no hay confusión entre "no decidido todavía" y "no lleva".
+            Marca "Sí" si esta obra lleva esa cosa, o "No" si no la lleva. Todo lo que lleva ("Sí") queda como <b>condición</b>: la obra no pasa a fabricar hasta que tenga su pedido vinculado y haya llegado, o esté en stock. Puedes cambiar los nombres y añadir más cosas.
           </div>
+          {faltanChecklist.length > 0 ? (
+            <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm">
+              <div className="font-semibold mb-1">⚠ Todavía no puede pasar a fabricar:</div>
+              <ul className="list-disc pl-5 text-xs space-y-0.5">{faltanChecklist.map((t, k) => <li key={k}>{t}</li>)}</ul>
+            </div>
+          ) : (
+            <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">✓ Todo lo que lleva la obra está pedido y ha llegado.</div>
+          )}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
-            {checklist.map((item) => (
-              <div key={item.id} className="flex items-center gap-3 px-4 py-3.5">
-                <span className="text-sm font-medium text-slate-800 flex-1">{item.nombre}</span>
-                <button
-                  type="button"
-                  onClick={() => setChecklistEstado(item.id, "si")}
-                  className={`px-4 py-1.5 rounded-md text-sm font-semibold border transition cursor-pointer select-none ${item.estado === "si" ? "bg-emerald-600 border-emerald-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:bg-slate-50"}`}
-                >
-                  Sí
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChecklistEstado(item.id, "no")}
-                  className={`px-4 py-1.5 rounded-md text-sm font-semibold border transition cursor-pointer select-none ${item.estado === "no" ? "bg-rose-600 border-rose-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:bg-slate-50"}`}
-                >
-                  No
-                </button>
-              </div>
-            ))}
+            {checklist.map((item) => {
+              const vinculados = pedidos.filter((pd) => (item.pedidoIds || []).includes(pd.id));
+              const libres = pedidos.filter((pd) => !(item.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+              return (
+                <div key={item.id} className="px-4 py-3 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <input
+                      value={nombreEditando[item.id] ?? item.nombre}
+                      onChange={(e) => setNombreEditando({ ...nombreEditando, [item.id]: e.target.value })}
+                      onBlur={() => { const n = (nombreEditando[item.id] ?? item.nombre).trim(); if (n && n !== item.nombre) setChecklistItem(item.id, { nombre: n }); setNombreEditando((x) => { const y = { ...x }; delete y[item.id]; return y; }); }}
+                      className="text-sm font-medium text-slate-800 flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#2E8B57] focus:outline-none py-0.5"
+                      title="Pulsa para cambiar el nombre"
+                    />
+                    <button type="button" onClick={() => setChecklistEstado(item.id, "si")}
+                      className={`px-4 py-1.5 rounded-md text-sm font-semibold border transition cursor-pointer select-none ${item.estado === "si" ? "bg-emerald-600 border-emerald-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:bg-slate-50"}`}>Sí</button>
+                    <button type="button" onClick={() => setChecklistEstado(item.id, "no")}
+                      className={`px-4 py-1.5 rounded-md text-sm font-semibold border transition cursor-pointer select-none ${item.estado === "no" ? "bg-rose-600 border-rose-600 text-white" : "bg-white border-slate-300 text-slate-500 hover:bg-slate-50"}`}>No</button>
+                    <button type="button" onClick={() => { if (confirm(`¿Quitar "${item.nombre}" de esta obra?`)) guardarChecklist(checklist.filter((c) => c.id !== item.id)); }} className="text-slate-300 hover:text-rose-500" title="Quitar"><Trash2 size={15} /></button>
+                  </div>
+                  {item.estado === "si" && (
+                    <div className="ml-1 pl-3 border-l-2 border-emerald-200 flex flex-wrap items-center gap-2 text-xs">
+                      {item.enStock ? (
+                        <span className="font-semibold text-emerald-700">✓ En stock, no hace falta pedir</span>
+                      ) : vinculados.length === 0 ? (
+                        <span className="font-semibold text-rose-600">✗ Sin pedido vinculado</span>
+                      ) : vinculados.map((pd) => (
+                        <span key={pd.id} className="inline-flex items-center gap-1">
+                          <button type="button" onClick={() => openPedido(pd.id)} className="font-semibold hover:underline">#{pd.numero}</button>
+                          <Badge className={ESTADO_PEDIDO_STYLE[pd.estado]}>{pd.estado}</Badge>
+                          <button type="button" onClick={() => setChecklistItem(item.id, { pedidoIds: (item.pedidoIds || []).filter((x) => x !== pd.id) })} className="text-slate-300 hover:text-rose-500" title="Desvincular">×</button>
+                        </span>
+                      ))}
+                      {!item.enStock && libres.length > 0 && (
+                        <Select value="" onChange={(e) => { if (e.target.value) setChecklistItem(item.id, { pedidoIds: [...(item.pedidoIds || []), e.target.value] }); }} className="!w-auto text-xs">
+                          <option value="">+ Vincular pedido…</option>
+                          {libres.map((pd) => <option key={pd.id} value={pd.id}>#{pd.numero} · {proveedores.find((pr) => pr.id === pd.proveedorId)?.nombre || pd.proveedorExterno || "—"} · {pd.estado}</option>)}
+                        </Select>
+                      )}
+                      {!item.enStock && <button type="button" onClick={crearPedidoDesdeProyecto} className="font-semibold text-[#2E8B57] hover:underline">+ Nuevo pedido</button>}
+                      <label className="inline-flex items-center gap-1 ml-auto text-slate-500 cursor-pointer"><input type="checkbox" checked={!!item.enStock} onChange={(e) => setChecklistItem(item.id, { enStock: e.target.checked })} /> En stock</label>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
+          <button type="button" onClick={() => guardarChecklist([...checklist, { id: uid(), nombre: "Nueva cosa (cambia el nombre)", estado: null, personalizado: true }])} className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir otra cosa que lleve la obra</button>
         </div>
       )}
 
@@ -10850,7 +11019,8 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario }) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado }) {
+  const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
@@ -10878,11 +11048,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       if (misPedidos.length === 0) return false;
       const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
-      const checklist = normalizarChecklist(p.checklistMateriales);
-      const checklistOk = checklist.length > 0 && checklist.every((c) => c.estado);
+      const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
       return oficinaOk && fabricaOk && checklistOk;
     });
   }, [proyectos, pedidos]);
+  // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
+  const bloqueadosMaterial = useMemo(() => proyectos.filter((p) => {
+    if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) || p.origen === "portalUxcar") return false;
+    if (listoParaFabricar.some((x) => x.id === p.id)) return false;
+    return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
+  }).map((p) => ({ p, faltan: condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
 
   const descargarWord = () => {
     const titulos = { listo: "Listo para fabricar", materiales: "Materiales pendientes", enfab: "En fabricación" };
@@ -11000,6 +11175,19 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm mb-6">
             Aquí solo aparecen los proyectos donde coincide todo: oficina ha recibido los pedidos, fábrica ha confirmado que ha llegado el material, y el checklist "Qué lleva la obra" está completo. Nada más entrar aquí, ya se puede empezar a fabricar.
           </div>
+          {bloqueadosMaterial.length > 0 && (
+            <details className="mb-5 bg-white border border-amber-300 rounded-lg">
+              <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
+              <div className="divide-y divide-slate-100">
+                {bloqueadosMaterial.map(({ p, faltan }) => (
+                  <div key={p.id} className="px-4 py-2.5">
+                    <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
+                    <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}</ul>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
           <div className="space-y-3">
             {listoParaFabricar.map((p) => (
               <div key={p.id} className="bg-white border border-emerald-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
@@ -11028,6 +11216,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       {tab === "enfab" && (
         <>
           <h2 className="font-display font-bold text-slate-800 mb-3">Proyectos en fabricación ({proyectosEnFabricacion.length})</h2>
+          {terminandoId && proyectos.find((x) => x.id === terminandoId) && (
+            <SubirDocumentoEntrega proyecto={proyectos.find((x) => x.id === terminandoId)} textoBoton="Guardar y dar por terminada"
+              onCancel={() => setTerminandoId(null)}
+              onGuardar={async (doc) => { onMoverEstado(terminandoId, "Listo para reparto/recogida", { documentoEntrega: doc }); setTerminandoId(null); }} />
+          )}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <table className="w-full text-sm">
               <thead>
@@ -11035,6 +11228,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <th className="px-4 py-2.5 font-semibold">Proyecto</th>
                   <th className="px-4 py-2.5 font-semibold">Estado</th>
                   <th className="px-4 py-2.5 font-semibold">Entrega prevista</th>
+                  <th className="px-4 py-2.5"></th>
                 </tr>
               </thead>
               <tbody>
@@ -11043,10 +11237,19 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                     <td className="px-4 py-2.5 font-medium text-slate-800">#{p.numero} — {p.nombre}</td>
                     <td className="px-4 py-2.5"><Badge className={ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}>{p.estadoTrabajo}</Badge></td>
                     <td className="px-4 py-2.5 text-slate-500">{fmtDate(p.fechaEntregaPrevista)}</td>
+                    <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      {onMoverEstado && p.estadoTrabajo !== "Listo para reparto/recogida" && (
+                        <button onClick={() => { if (!p.documentoEntrega) { setTerminandoId(p.id); return; } if (confirm(`¿Fabricación terminada de #${p.numero}? Pasará a "Listo para reparto/recogida".`)) onMoverEstado(p.id, "Listo para reparto/recogida"); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Fabricación terminada</button>
+                      )}
+                      {onMoverEstado && p.estadoTrabajo === "Listo para reparto/recogida" && !p.llevaInstalacion && (
+                        <button onClick={() => { if (confirm(`¿#${p.numero} entregado o recogido por el cliente?`)) onMoverEstado(p.id, "Entregado"); }} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50">Entregado / recogido</button>
+                      )}
+                      {p.estadoTrabajo === "Listo para reparto/recogida" && p.llevaInstalacion && <span className="text-xs text-slate-400">Pasa a Entregado al finalizar la instalación</span>}
+                    </td>
                   </tr>
                 ))}
                 {proyectosEnFabricacion.length === 0 && (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400 text-sm">No hay proyectos en fabricación ahora mismo.</td></tr>
+                  <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400 text-sm">No hay proyectos en fabricación ahora mismo.</td></tr>
                 )}
               </tbody>
             </table>
@@ -11147,7 +11350,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       )}
 
       {tab === "reparto" && (
-        <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} />
+        <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} onMoverEstado={onMoverEstado} />
       )}
     </div>
   );
@@ -11160,7 +11363,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 // no hace falta ningún paso manual aparte de fabricarlo y aceptar la obra.
 // Se agrupa por zona para que sea fácil planear la ruta, y la fecha que se
 // ponga aquí también aparece en el Calendario (pestaña "Reparto").
-function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha }) {
+function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMoverEstado }) {
   // Se ve desde que se acepta la obra (en cuanto tiene "Reparto (camión)"
   // marcado), no solo cuando ya está fabricada — así se puede agrupar por
   // zona y fecha con antelación. Dentro de cada zona se distingue lo que ya
@@ -11211,9 +11414,14 @@ function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha }) {
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">{clienteNombre(p)} · Entrega prevista {fmtDate(p.fechaEntregaPrevista) || "—"}</div>
                   </button>
-                  <Field label="Fecha reparto">
-                    <TextInput type="date" value={p.fechaReparto || ""} onChange={(e) => onCambiarFecha(p.id, e.target.value)} className="!w-40" />
-                  </Field>
+                  <div className="flex items-end gap-2">
+                    <Field label="Fecha reparto">
+                      <TextInput type="date" value={p.fechaReparto || ""} onChange={(e) => onCambiarFecha(p.id, e.target.value)} className="!w-40" />
+                    </Field>
+                    {listo && onMoverEstado && !p.llevaInstalacion && (
+                      <button onClick={() => { if (confirm(`¿#${p.numero} entregado?`)) onMoverEstado(p.id, "Entregado"); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-2 rounded-md mb-0.5">Entregado</button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -11586,6 +11794,356 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
             setFirmando(null);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/* ================= ALBARANES (CHÓFER) ================= */
+// Sitio para el chófer: todos los albaranes de fábrica en un solo sitio para firmarlos
+// en el móvil. Repartos de obras (albarán de entrega: firma el chófer al cargar y el
+// cliente al recibir) y albaranes de salida a procesos externos.
+function imprimirAlbaranEntrega(p, { cliente, direccion }) {
+  const a = p.albaranEntrega || {};
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const firmaBox = (titulo, f) => `
+    <div style="flex:1;border:1px solid #333;border-radius:6px;padding:8px;min-height:130px">
+      <div style="font-size:11px;font-weight:bold;margin-bottom:4px">${titulo}</div>
+      ${f && f.imagen ? `<img src="${f.imagen}" style="max-height:80px;max-width:100%;display:block" />` : `<div style="height:80px"></div>`}
+      <div style="font-size:11px;border-top:1px solid #999;padding-top:4px">Nombre: ${esc(f?.nombre || "")} ${f?.dni ? ` · DNI: ${esc(f.dni)}` : ""}<br/>Fecha: ${f?.fecha ? new Date(f.fecha).toLocaleString("es-ES") : ""}</div>
+    </div>`;
+  const html = `<html><head><meta charset="utf-8"><title>Albarán de entrega ${esc(a.numero || "")}</title></head>
+  <body style="font-family:Arial;font-size:13px;padding:24px;color:#111">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="background:#333645;border-radius:8px;padding:10px 14px;-webkit-print-color-adjust:exact;print-color-adjust:exact"><img src="${LOGO_ECOWIN}" style="height:28px;display:block" /></div>
+      <div style="text-align:right"><div style="font-size:20px;font-weight:bold">ALBARÁN DE ENTREGA</div><div style="font-size:15px">Nº ${esc(a.numero || "—")}</div><div>Fecha: ${fmtDate(p.fechaReparto || new Date().toISOString().slice(0, 10))}</div></div>
+    </div>
+    <table style="width:100%;margin-top:18px;border-collapse:collapse">
+      <tr><td style="padding:4px 0;width:150px"><b>Cliente</b></td><td>${esc(cliente?.nombre || "—")}</td></tr>
+      <tr><td style="padding:4px 0"><b>Dirección de entrega</b></td><td>${esc(direccion || "—")}</td></tr>
+      <tr><td style="padding:4px 0"><b>Obra</b></td><td>${esc(`#${p.numero} — ${p.nombre}`)}</td></tr>
+      <tr><td style="padding:4px 0"><b>Chófer</b></td><td>${esc(a.chofer || "")}${a.matricula ? ` · Matrícula ${esc(a.matricula)}` : ""}</td></tr>
+    </table>
+    <table style="width:100%;margin-top:18px;border-collapse:collapse">
+      <tr><th style="border:1px solid #333;padding:6px;text-align:left;background:#f1f5f9">Material</th><th style="border:1px solid #333;padding:6px;width:120px;background:#f1f5f9">Bultos</th></tr>
+      <tr><td style="border:1px solid #333;padding:8px;height:60px;vertical-align:top;white-space:pre-wrap">${esc(a.contenido || p.nombre)}</td><td style="border:1px solid #333;padding:8px;text-align:center;vertical-align:top">${esc(a.bultos || "")}</td></tr>
+    </table>
+    ${a.notas ? `<p style="margin-top:10px"><b>Notas:</b> ${esc(a.notas)}</p>` : ""}
+    <div style="display:flex;gap:16px;margin-top:28px">
+      ${firmaBox("Carga — chófer", a.firmaCarga)}
+      ${firmaBox("Recibe — cliente", a.firmaCliente)}
+    </div>
+    <p style="font-size:10px;color:#666;margin-top:14px">El cliente declara recibir el material descrito en buen estado, salvo lo indicado en notas.</p>
+  </body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
+}
+
+// PDF del albarán de entrega: primera hoja con los datos, la FECHA DEL DÍA y las firmas,
+// y detrás el "tipo plano" (o el documento de entrega) de la obra, sin precios.
+const dataUrlABytes = (dataUrl) => Uint8Array.from(atob(String(dataUrl).split(",")[1] || ""), (c) => c.charCodeAt(0));
+async function generarPdfAlbaranEntrega(p, { cliente, direccion }) {
+  const a = p.albaranEntrega || {};
+  const pdf = await PDFDocument.create();
+  const f = await pdf.embedFont(StandardFonts.Helvetica);
+  const fb = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const negro = rgb(0.1, 0.1, 0.12), gris = rgb(0.45, 0.45, 0.45);
+  const W = 595.28, H = 841.89, M = 45;
+  const pag = pdf.addPage([W, H]);
+  const limpio = (t) => String(t ?? "").replace(/[^\x20-\x7E\u00A0-\u00FF€]/g, " ");
+  const txt = (t, x, y, size = 10, font = f, color = negro) => pag.drawText(limpio(t), { x, y, size, font, color });
+  const fechaDia = a.firmaCliente && a.firmaCliente.fecha ? new Date(a.firmaCliente.fecha) : new Date();
+  try {
+    const logo = await pdf.embedJpg(dataUrlABytes(LOGO_ECOWIN));
+    const lw = 130, lh = (logo.height / logo.width) * lw;
+    pag.drawRectangle({ x: M, y: H - M - lh - 12, width: lw + 20, height: lh + 12, color: rgb(0.2, 0.21, 0.27) });
+    pag.drawImage(logo, { x: M + 10, y: H - M - lh - 6, width: lw, height: lh });
+  } catch (e) { txt("ECOWIN PVC", M, H - M - 20, 16, fb); }
+  txt("ALBARÁN DE ENTREGA", W - M - fb.widthOfTextAtSize("ALBARÁN DE ENTREGA", 18), H - M - 18, 18, fb);
+  txt(`Nº ${a.numero || "—"}`, W - M - fb.widthOfTextAtSize(`Nº ${a.numero || "—"}`, 13), H - M - 38, 13, fb);
+  const fechaTxt = `Fecha: ${fechaDia.toLocaleDateString("es-ES")}`;
+  txt(fechaTxt, W - M - f.widthOfTextAtSize(fechaTxt, 12), H - M - 56, 12);
+  let y = H - M - 110;
+  const fila = (etq, val) => {
+    txt(etq, M, y, 10, fb);
+    const palabras = limpio(val || "—").split(/\s+/);
+    let linea = "";
+    for (const w of palabras) {
+      const prueba = linea ? `${linea} ${w}` : w;
+      if (f.widthOfTextAtSize(prueba, 10) > W - M * 2 - 130) { txt(linea, M + 130, y, 10); y -= 14; linea = w; } else linea = prueba;
+    }
+    txt(linea, M + 130, y, 10); y -= 18;
+  };
+  fila("Cliente", cliente ? cliente.nombre : "");
+  fila("Dirección de entrega", direccion);
+  fila("Obra", `#${p.numero} — ${p.nombre}`);
+  fila("Chófer", `${a.chofer || ""}${a.matricula ? `  ·  Matrícula ${a.matricula}` : ""}`);
+  fila("Material", (a.contenido || p.nombre || "").replace(/\n/g, " · "));
+  if (a.bultos) fila("Bultos", a.bultos);
+  if (a.notas) fila("Notas", a.notas);
+  if (p.documentoEntrega) fila("Detalle", p.documentoEntrega.tipo === "tipo_plano" ? "Ver tipo plano adjunto (hojas siguientes)" : "Ver documento adjunto (hojas siguientes)");
+  y -= 10;
+  const caja = async (x, titulo, fir) => {
+    const w = (W - M * 2 - 20) / 2, h = 140, yb = y - h;
+    pag.drawRectangle({ x, y: yb, width: w, height: h, borderColor: negro, borderWidth: 1 });
+    pag.drawText(limpio(titulo), { x: x + 8, y: y - 16, size: 10, font: fb, color: negro });
+    if (fir && fir.imagen) {
+      try {
+        const img = await pdf.embedPng(dataUrlABytes(fir.imagen));
+        const esc = Math.min((w - 16) / img.width, 70 / img.height, 1);
+        pag.drawImage(img, { x: x + 8, y: yb + 42, width: img.width * esc, height: img.height * esc });
+      } catch (e) { /* firma no legible */ }
+    }
+    pag.drawLine({ start: { x: x + 8, y: yb + 36 }, end: { x: x + w - 8, y: yb + 36 }, thickness: 0.5, color: gris });
+    pag.drawText(limpio(`Nombre: ${fir ? fir.nombre || "" : ""}${fir && fir.dni ? `  DNI: ${fir.dni}` : ""}`), { x: x + 8, y: yb + 22, size: 9, font: f, color: negro });
+    pag.drawText(limpio(`Fecha: ${fir && fir.fecha ? new Date(fir.fecha).toLocaleString("es-ES") : ""}`), { x: x + 8, y: yb + 9, size: 9, font: f, color: negro });
+  };
+  await caja(M, "Carga — chófer", a.firmaCarga);
+  await caja(M + (W - M * 2 - 20) / 2 + 20, "Recibido conforme — cliente", a.firmaCliente);
+  txt("El cliente declara recibir el material descrito en buen estado, salvo lo indicado en notas.", M, y - 160, 8, f, gris);
+
+  // Detrás, el tipo plano o el documento de entrega
+  const d = p.documentoEntrega;
+  if (d && d.url) {
+    const r = await fetch(d.url);
+    if (!r.ok) throw new Error("no se pudo descargar el documento de entrega");
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const tipo = r.headers.get("content-type") || (String(d.nombre || "").toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+    const pie = `Albarán ${a.numero || ""} · ${fechaDia.toLocaleDateString("es-ES")} · #${p.numero}`;
+    if (tipo.includes("pdf")) {
+      const origen = await PDFDocument.load(bytes, { ignoreEncryption: true });
+      const copias = await pdf.copyPages(origen, origen.getPageIndices());
+      copias.forEach((pg) => { pdf.addPage(pg); pg.drawText(limpio(pie), { x: 20, y: 10, size: 8, font: f, color: gris }); });
+    } else {
+      const img = tipo.includes("png") ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+      const pg = pdf.addPage([W, H]);
+      const esc = Math.min((W - 40) / img.width, (H - 60) / img.height, 1);
+      pg.drawImage(img, { x: (W - img.width * esc) / 2, y: (H - img.height * esc) / 2, width: img.width * esc, height: img.height * esc });
+      pg.drawText(limpio(pie), { x: 20, y: 10, size: 8, font: f, color: gris });
+    }
+  }
+  return await pdf.save();
+}
+async function descargarPdfAlbaranEntrega(p, datos) {
+  try {
+    const bytes = await generarPdfAlbaranEntrega(p, datos);
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const enlace = document.createElement("a");
+    enlace.href = url;
+    enlace.download = `Albaran-${(p.albaranEntrega && p.albaranEntrega.numero) || p.numero}.pdf`;
+    document.body.appendChild(enlace);
+    enlace.click();
+    enlace.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    alert("No se pudo generar el PDF del albarán: " + e.message);
+  }
+}
+
+// Subir el documento que va con la entrega: el "tipo plano" si son ventanas (obligatorio),
+// u otro documento si no son ventanas.
+function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Guardar" }) {
+  const [tipo, setTipo] = useState((proyecto.documentoEntrega && proyecto.documentoEntrega.tipo) || "tipo_plano");
+  const [archivo, setArchivo] = useState(null);
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState("");
+  const guardar = async () => {
+    if (!archivo) { setError(tipo === "tipo_plano" ? "Sube el tipo plano de la obra." : "Sube el documento de entrega."); return; }
+    setSubiendo(true); setError("");
+    try {
+      const url = await subirArchivoAStorage(archivo, `documentos-entrega/${proyecto.id}`);
+      await onGuardar({ nombre: archivo.name, url, tipo, fecha: new Date().toISOString().slice(0, 10) });
+    } catch (e) { setError("No se pudo subir: " + e.message); setSubiendo(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg p-5 w-full max-w-md space-y-4">
+        <div>
+          <div className="text-lg font-bold text-slate-900">Documento de entrega</div>
+          <div className="text-sm text-slate-500">#{proyecto.numero} — {proyecto.nombre}</div>
+        </div>
+        <div className="space-y-2">
+          <label className="flex items-start gap-2 text-sm cursor-pointer"><input type="radio" checked={tipo === "tipo_plano"} onChange={() => setTipo("tipo_plano")} className="mt-1" /> <span><b>Son ventanas:</b> sube el <b>tipo plano</b> (sin precios). Es obligatorio.</span></label>
+          <label className="flex items-start gap-2 text-sm cursor-pointer"><input type="radio" checked={tipo === "otro"} onChange={() => setTipo("otro")} className="mt-1" /> <span><b>No son ventanas:</b> sube el documento con lo que se entrega.</span></label>
+        </div>
+        <input type="file" accept="application/pdf,image/*" onChange={(e) => setArchivo(e.target.files && e.target.files[0])} className="block w-full text-sm" />
+        <p className="text-xs text-slate-400">Irá detrás del albarán de entrega, para que el cliente lo firme al recibirlo.</p>
+        {error && <p className="text-sm text-rose-600">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          <button disabled={subiendo} onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-semibold disabled:opacity-60">{subiendo && <Loader2 size={14} className="animate-spin" />} {textoBoton}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
+  const [tab, setTab] = useState("repartos");
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [firmando, setFirmando] = useState(null); // "carga" | "cliente"
+  const [borrador, setBorrador] = useState(null);
+  const [subiendoDoc, setSubiendoDoc] = useState(false);
+  const [generando, setGenerando] = useState(false);
+  const nombreYo = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
+  const clienteDe = (p) => (clientes || []).find((c) => c.id === p.clienteId);
+  const direccionDe = (p) => {
+    const c = clienteDe(p);
+    const ciudad = p.provinciaReparto === "Otra ciudad..." ? p.ciudadRepartoManual : p.provinciaReparto;
+    return [p.ubicacion || (c && c.direccion) || "", ciudad || (c && c.provincia) || ""].filter(Boolean).join(", ");
+  };
+  const repartos = proyectos.filter((p) => p.estadoLogistica === "Reparto (camión)" && !["Entregado", "Cancelado"].includes(p.estadoTrabajo))
+    .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
+  const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente))
+    .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
+  const siguienteNumero = () => {
+    const max = proyectos.reduce((m, x) => Math.max(m, parseInt(String((x.albaranEntrega && x.albaranEntrega.numero) || "").replace(/\D/g, ""), 10) || 0), 0);
+    return `AE-${String(max + 1).padStart(4, "0")}`;
+  };
+  const abierto = proyectos.find((p) => p.id === abiertoId);
+  const abrir = (p) => {
+    const a = p.albaranEntrega || {};
+    setBorrador({ numero: a.numero || siguienteNumero(), chofer: a.chofer || nombreYo, matricula: a.matricula || "", contenido: a.contenido || [p.nombre, p.especificaciones].filter(Boolean).join("\n"), bultos: a.bultos || "", notas: a.notas || "" });
+    setAbiertoId(p.id);
+  };
+  const guardar = (extra = {}, entregar = false) => onGuardarAlbaranEntrega(abierto.id, { ...(abierto.albaranEntrega || {}), ...borrador, ...extra }, entregar);
+  const tabBtn = (id, label, n) => (
+    <button onClick={() => { setTab(id); setAbiertoId(null); }} className={`crm-tab px-3 py-2 text-sm font-semibold flex items-center gap-1.5 ${tab === id ? "border-[#2E8B57]" : ""}`}>
+      {label}{n > 0 && <span className="text-[10px] font-bold bg-amber-100 text-amber-800 rounded px-1.5">{n}</span>}
+    </button>
+  );
+
+  if (tab === "repartos" && abierto && borrador) {
+    const a = abierto.albaranEntrega || {};
+    const listo = abierto.estadoTrabajo === "Listo para reparto/recogida";
+    const cli = clienteDe(abierto);
+    return (
+      <div className="p-4 sm:p-8 max-w-2xl space-y-4">
+        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+        <div>
+          <div className="text-xs text-slate-400">Albarán de entrega {borrador.numero}</div>
+          <h2 className="text-xl font-extrabold text-slate-900">#{abierto.numero} — {abierto.nombre}</h2>
+          <div className="text-sm text-slate-600 mt-1">{cli ? cli.nombre : "—"}{cli && (cli.movil || cli.telefono) ? <> · <a href={`tel:${cli.movil || cli.telefono}`} className="text-[#2E8B57] font-semibold">{cli.movil || cli.telefono}</a></> : null}</div>
+          <div className="text-sm text-slate-600">{direccionDe(abierto) || "Sin dirección"}{direccionDe(abierto) && <> · <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(direccionDe(abierto))}`} target="_blank" rel="noreferrer" className="text-[#2E8B57] font-semibold">Cómo llegar</a></>}</div>
+          <div className="text-xs mt-1">{listo ? <span className="font-semibold text-emerald-700">✓ Listo para cargar</span> : <span className="font-semibold text-amber-700">Todavía en fábrica: {abierto.estadoTrabajo}</span>} · Reparto {fmtDate(abierto.fechaReparto) || "sin fecha"}</div>
+        </div>
+        {abierto.documentoEntrega ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+            <FileText size={15} className="text-[#2E8B57]" />
+            <a href={abierto.documentoEntrega.url} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57] hover:underline">{abierto.documentoEntrega.tipo === "tipo_plano" ? "Tipo plano" : "Documento de entrega"}: {abierto.documentoEntrega.nombre}</a>
+            <button onClick={() => setSubiendoDoc(true)} className="ml-auto text-xs text-slate-500 hover:underline">Cambiar</button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 text-sm bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 text-amber-800">
+            <span className="font-semibold">Falta el tipo plano (o el documento de entrega) de esta obra.</span>
+            <button onClick={() => setSubiendoDoc(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Subirlo</button>
+          </div>
+        )}
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Chófer"><TextInput value={borrador.chofer} onChange={(e) => setBorrador({ ...borrador, chofer: e.target.value })} /></Field>
+            <Field label="Matrícula"><TextInput value={borrador.matricula} onChange={(e) => setBorrador({ ...borrador, matricula: e.target.value })} /></Field>
+          </div>
+          <Field label="Material que se entrega"><TextArea rows={3} value={borrador.contenido} onChange={(e) => setBorrador({ ...borrador, contenido: e.target.value })} /></Field>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Bultos"><TextInput value={borrador.bultos} onChange={(e) => setBorrador({ ...borrador, bultos: e.target.value })} /></Field>
+            <div className="col-span-2"><Field label="Notas (daños, falta algo…)"><TextInput value={borrador.notas} onChange={(e) => setBorrador({ ...borrador, notas: e.target.value })} /></Field></div>
+          </div>
+          <button onClick={() => guardar()} className="text-xs font-semibold text-slate-600 hover:underline">Guardar cambios</button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="bg-white border border-slate-200 rounded-lg p-4">
+            <div className="text-sm font-bold text-slate-800 mb-1">1. Carga (chófer)</div>
+            {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
+            <button onClick={() => setFirmando("carga")} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg p-4">
+            <div className="text-sm font-bold text-slate-800 mb-1">2. Entrega (firma el cliente)</div>
+            {a.firmaCliente ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCliente.nombre} el {new Date(a.firmaCliente.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Dale el móvil al cliente para que firme al recibirlo.</div>}
+            <button onClick={() => setFirmando("cliente")} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
+          </div>
+        </div>
+        <button disabled={generando} onClick={async () => { guardar(); setGenerando(true); await descargarPdfAlbaranEntrega({ ...abierto, albaranEntrega: { ...a, ...borrador } }, { cliente: cli, direccion: direccionDe(abierto) }); setGenerando(false); }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-3 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-60">{generando ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Descargar albarán en PDF (con la fecha de hoy{abierto.documentoEntrega ? " y el tipo plano" : ""})</button>
+        {subiendoDoc && <SubirDocumentoEntrega proyecto={abierto} onCancel={() => setSubiendoDoc(false)} onGuardar={async (doc) => { await onGuardarDocumentoEntrega(abierto.id, doc); setSubiendoDoc(false); }} />}
+        {firmando && (
+          <FirmaCanvas
+            titulo={firmando === "carga" ? `Firma del chófer — ${borrador.numero}` : `Firma del cliente — ${borrador.numero}`}
+            nombreInicial={firmando === "carga" ? borrador.chofer : (cli ? cli.nombre : "")}
+            onCancel={() => setFirmando(null)}
+            onGuardar={(firma) => {
+              const f = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160) };
+              if (firmando === "carga") guardar({ firmaCarga: f, chofer: borrador.chofer || firma.nombre });
+              else guardar({ firmaCliente: f }, !abierto.llevaInstalacion);
+              setFirmando(null);
+            }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 sm:p-8 max-w-5xl">
+      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
+      <div className="flex gap-2 mb-5 flex-wrap">
+        {tabBtn("repartos", "Repartos (entrega)", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
+        {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
+        {tabBtn("firmados", "Firmados", 0)}
+      </div>
+      {tab === "repartos" && (
+        <div className="space-y-2">
+          {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos pendientes.</p>}
+          {repartos.map((p) => {
+            const a = p.albaranEntrega || {};
+            const listo = p.estadoTrabajo === "Listo para reparto/recogida";
+            return (
+              <button key={p.id} onClick={() => abrir(p)} className="w-full text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-[#2E8B57]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
+                  {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Listo para cargar</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {direccionDe(p) || "Sin dirección"} · Reparto {fmtDate(p.fechaReparto) || "sin fecha"}</div>
+                <div className="text-xs mt-1 flex gap-3">
+                  <span className={a.firmaCarga ? "text-emerald-700 font-semibold" : "text-slate-400"}>{a.firmaCarga ? "✓ Carga firmada" : "Carga sin firmar"}</span>
+                  <span className={a.firmaCliente ? "text-emerald-700 font-semibold" : "text-slate-400"}>{a.firmaCliente ? "✓ Cliente firmado" : "Cliente sin firmar"}</span>
+                  {!p.documentoEntrega && <span className="text-amber-700 font-semibold">⚠ Falta tipo plano</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {tab === "salida" && (
+        <ProcesoExternoTab envios={envios} proyectos={proyectos} proveedores={proveedores} clientes={clientes} usuarios={usuarios}
+          onUpsert={onUpsertEnvio} onMarcarRecogido={onMarcarRecogido}
+          onDelete={(id) => { if (isAdmin) onDeleteEnvio(id); else alert("Solo un administrador puede borrar albaranes."); }} />
+      )}
+      {tab === "firmados" && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Albarán</th><th className="text-left px-3 py-2">Obra / destino</th><th className="text-left px-3 py-2">Firmas</th><th /></tr></thead>
+            <tbody>
+              {firmados.length === 0 && toArray(envios).filter((e) => e.firmaChofer).length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">Todavía no hay albaranes firmados.</td></tr>}
+              {firmados.map((p) => { const a = p.albaranEntrega; return (
+                <tr key={p.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-semibold whitespace-nowrap">{a.numero || "—"} <span className="text-xs font-normal text-slate-400">entrega</span></td>
+                  <td className="px-3 py-2">#{p.numero} — {p.nombre}</td>
+                  <td className="px-3 py-2 text-xs">{a.firmaCarga ? `Carga: ${a.firmaCarga.nombre}` : "Carga: —"}<br />{a.firmaCliente ? `Cliente: ${a.firmaCliente.nombre} (${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")})` : "Cliente: —"}</td>
+                  <td className="px-3 py-2 text-right"><button onClick={() => descargarPdfAlbaranEntrega(p, { cliente: clienteDe(p), direccion: direccionDe(p) })} className="text-xs font-semibold text-[#2E8B57] hover:underline">Descargar PDF</button></td>
+                </tr>
+              ); })}
+              {toArray(envios).filter((e) => e.firmaChofer).map((e) => (
+                <tr key={e.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-semibold whitespace-nowrap">{e.numeroAlbaran || "—"} <span className="text-xs font-normal text-slate-400">salida</span></td>
+                  <td className="px-3 py-2">{(proveedores.find((x) => x.id === e.proveedorId) || {}).nombre || "—"} · {e.descripcion}</td>
+                  <td className="px-3 py-2 text-xs">Chófer: {e.firmaChofer.nombre} ({new Date(e.firmaChofer.fecha).toLocaleDateString("es-ES")})</td>
+                  <td className="px-3 py-2 text-right"><button onClick={() => imprimirAlbaranSalida(e, { proveedor: proveedores.find((x) => x.id === e.proveedorId), proyecto: proyectos.find((x) => x.id === e.proyectoId), responsable: "" })} className="text-xs font-semibold text-[#2E8B57] hover:underline">Ver / imprimir</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -16497,7 +17055,47 @@ function ArticuloDetail({ articulo, proveedor, materiales, onBack, onEdit, onDel
 
 /* ================= FACTURAS ================= */
 
-function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin }) {
+// Obras entregadas pendientes de facturar: sale lo que falta (presupuesto − ya facturado)
+// y se emite con un botón. El importe se puede tocar antes por si hay extras o cambios.
+function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescartar }) {
+  const lista = pendientesDeFacturar(proyectos, facturas);
+  const [importes, setImportes] = useState({});
+  if (lista.length === 0) return null;
+  const clienteDe = (p) => clientes.find((c) => c.id === p.clienteId);
+  return (
+    <div className="mb-6 border-2 border-amber-300 bg-amber-50 rounded-lg p-4">
+      <div className="font-bold text-amber-900 mb-1">Pendiente de facturar ({lista.length})</div>
+      <p className="text-xs text-amber-800 mb-3">Obras ya entregadas (el cliente ha firmado el albarán) con importe sin facturar. Revisa el importe y pulsa "Emitir factura".</p>
+      <div className="space-y-2">
+        {lista.map((p) => {
+          const presu = parseFloat(p.importePresupuesto) || 0;
+          const ya = facturadoProyecto(p, facturas);
+          const pend = Math.round((presu - ya) * 100) / 100;
+          const a = p.albaranEntrega || {};
+          const valor = importes[p.id] ?? String(pend);
+          return (
+            <div key={p.id} className="bg-white border border-amber-200 rounded-md p-3 flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-[220px]">
+                <div className="font-semibold text-slate-800 text-sm">#{p.numero} — {p.nombre}</div>
+                <div className="text-xs text-slate-500">{(clienteDe(p) || {}).nombre || "Sin cliente"} · Entregado {a.firmaCliente ? new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES") : fmtDate(p.fechaEntregado) || ""}{a.numero ? ` · Albarán ${a.numero}` : ""}</div>
+                <div className="text-xs text-slate-500 mt-0.5">Presupuesto {money(presu)} · Ya facturado {money(ya)} · <b className="text-slate-800">Falta {money(pend)}</b></div>
+                {!p.clienteId && <div className="text-xs text-rose-600 font-semibold mt-0.5">Esta obra no tiene cliente: ponlo en el proyecto antes de facturar.</div>}
+              </div>
+              <div className="flex items-center gap-2">
+                <TextInput type="number" step="0.01" value={valor} onChange={(e) => setImportes({ ...importes, [p.id]: e.target.value })} className="w-28 text-right" />
+                <span className="text-sm text-slate-500">€</span>
+                <button disabled={!p.clienteId} onClick={() => { const imp = parseFloat(valor) || 0; if (confirm(`¿Emitir factura de ${money(imp)} a ${(clienteDe(p) || {}).nombre || "—"} por la obra #${p.numero}?`)) onEmitir(p, imp); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-50">Emitir factura</button>
+                <button onClick={() => { if (confirm(`¿Quitar #${p.numero} de pendientes de facturar? (por ejemplo, si ya se facturó por otro lado)`)) onDescartar(p.id); }} className="text-xs text-slate-400 hover:text-rose-600 hover:underline">No facturar</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin, onEmitirPendiente, onDescartarPendiente }) {
   const [q, setQ] = useState("");
   const [tipo, setTipo] = useState("");
   const [estado, setEstado] = useState("");
@@ -16559,6 +17157,7 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
         subtitle={`${facturas.length} factura${facturas.length === 1 ? "" : "s"} emitida${facturas.length === 1 ? "" : "s"}`}
       />
 
+      {onEmitirPendiente && <PendientesFacturar proyectos={proyectos} facturas={facturas} clientes={clientes} onEmitir={onEmitirPendiente} onDescartar={onDescartarPendiente} />}
       {clientes.length === 0 && (
         <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
           ⚠ No puedes crear una factura todavía: primero da de alta al menos un cliente en la pestaña Clientes.
