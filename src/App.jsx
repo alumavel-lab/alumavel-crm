@@ -12,6 +12,7 @@ import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, get as fbGet, set as fbSet } from "firebase/database";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // Logos de las dos empresas (incrustados para no depender de archivos externos)
@@ -33,6 +34,30 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const fbDb = getDatabase(fbApp);
+
+// ACCESO SEGURO (Firebase Authentication): cada persona entra con su email y
+// contraseña de verdad; la contraseña ya NO se guarda en la base de datos.
+// La base de datos solo deja leer/escribir a quien esté en "equipo/{uid}"
+// (el equipo) — una vez puestas las reglas de reglas-firebase.json.
+const fbAuth = getAuth(fbApp);
+fbAuth.languageCode = "es";
+// Segunda instancia solo para dar de alta usuarios y comprobar contraseñas
+// sin cerrar la sesión del administrador que está usando el CRM.
+const fbAppAltas = initializeApp(firebaseConfig, "altas");
+const fbAuthAltas = getAuth(fbAppAltas);
+fbAuthAltas.languageCode = "es";
+const emailKey = (email) => (email || "").trim().toLowerCase().replace(/\./g, ",");
+const traducirErrorAuth = (err) => {
+  const c = (err && err.code) || "";
+  if (c === "auth/invalid-credential" || c === "auth/wrong-password" || c === "auth/user-not-found" || c === "auth/invalid-login-credentials") return "Email o contraseña incorrectos.";
+  if (c === "auth/invalid-email") return "El email no es válido.";
+  if (c === "auth/weak-password") return "La contraseña tiene que tener al menos 6 caracteres.";
+  if (c === "auth/email-already-in-use") return "Ya existe una cuenta con ese email.";
+  if (c === "auth/too-many-requests") return "Demasiados intentos. Espera unos minutos y vuelve a probar.";
+  if (c === "auth/network-request-failed") return "Sin conexión. Revisa internet y vuelve a probar.";
+  if (c === "auth/operation-not-allowed") return "El acceso con email y contraseña no está activado en Firebase (Authentication → Sign-in method).";
+  return "No se pudo completar: " + ((err && err.message) || "error desconocido");
+};
 
 /* ---------------------------------------------------------------
    ALUMAVEL · CRM — Núcleo Fase I: Clientes + Proyectos/Obras
@@ -462,6 +487,16 @@ function TextArea(props) { return <textarea {...props} className={inputCls + " "
 
 export default function App() {
   const [loading, setLoading] = useState(true);
+  // undefined = comprobando si hay sesión; null = nadie ha entrado; objeto = usuario de Firebase
+  const [authUser, setAuthUser] = useState(undefined);
+  // Lista de usuarios leída ANTES de entrar, solo para saber si hay que crear el
+  // primer administrador. Con la base de datos cerrada esta lectura falla (null) y
+  // se enseña el acceso normal.
+  const [usuariosPrevios, setUsuariosPrevios] = useState(null);
+  const primerAdminRef = useRef(null);
+  // true solo si la lista de usuarios se ha podido leer (si la base de datos no deja, no es del equipo)
+  const [usuariosLeidosOk, setUsuariosLeidosOk] = useState(false);
+  useEffect(() => onAuthStateChanged(fbAuth, (u) => setAuthUser(u || null)), []);
   const [clientes, setClientes] = useState([]);
   const [proyectos, setProyectos] = useState([]);
   const [proveedores, setProveedores] = useState([]);
@@ -599,6 +634,22 @@ export default function App() {
   const [configuracionFirma, setConfiguracionFirma] = useState({});
 
   useEffect(() => {
+    if (authUser === undefined) return;
+    if (!authUser) {
+      setLoading(true);
+      (async () => {
+        try {
+          const snap = await fbGet(ref(fbDb, "usuarios"));
+          setUsuariosPrevios(snap.exists() ? toArray(snap.val()) : []);
+        } catch (e) {
+          setUsuariosPrevios(null);
+        } finally {
+          setLoading(false);
+        }
+      })();
+      return;
+    }
+    setLoading(true);
     (async () => {
       try {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
@@ -606,8 +657,9 @@ export default function App() {
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
           "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen"];
         const resultados = {};
+        const fallos = [];
         await Promise.all(claves.map(async (k) => {
-          const snap = await fbGet(ref(fbDb, k)).catch(() => null);
+          const snap = await fbGet(ref(fbDb, k)).catch(() => { fallos.push(k); return null; });
           resultados[k] = snap && snap.exists() ? snap.val() : null;
         }));
         if (resultados.clientes) setClientes(toArray(resultados.clientes));
@@ -638,6 +690,7 @@ export default function App() {
         }
         if (resultados.fichajes) setFichajes(toArray(resultados.fichajes));
         if (resultados.usuarios) setUsuarios(toArray(resultados.usuarios));
+        setUsuariosLeidosOk(!fallos.includes("usuarios"));
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
@@ -665,17 +718,14 @@ export default function App() {
         // mantiene su propia sesión iniciada en su propio ordenador o móvil.
         const empLocal = localStorage.getItem("alumavel_empleado_actual");
         if (empLocal) setEmpleadoActual(empLocal);
-        const sesLocal = localStorage.getItem("alumavel_sesion_usuario_id");
-        if (sesLocal) setSesionUsuarioId(sesLocal);
-        const sesCliLocal = localStorage.getItem("alumavel_sesion_cliente_id");
-        if (sesCliLocal) setSesionClienteId(sesCliLocal);
       } catch (e) {
         console.error(e);
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser === undefined ? "?" : (authUser ? authUser.uid : "")]);
 
   // Presupuestos se cargaba una sola vez al abrir la página, así que si se tenían
   // varias pestañas o dispositivos abiertos a la vez, un cambio hecho en una (p.ej.
@@ -2520,38 +2570,120 @@ export default function App() {
 
   const saveUsuarios = (next) => { setUsuarios(next); persist("usuarios", next); };
 
-  const upsertUsuario = (data) => {
-    let next;
+  // Alta/edición de usuarios. Al dar de alta se crea también su cuenta de acceso en
+  // Firebase Authentication y se le mete en "equipo" (lo que le da permiso en la base
+  // de datos). La contraseña NUNCA se guarda en la base de datos. Devuelve true si ha ido bien.
+  const upsertUsuario = async (data) => {
+    const { password, ...resto } = data;
     if (data.id) {
-      next = usuarios.map((u) => (u.id === data.id ? { ...u, ...data } : u));
+      const actual = usuarios.find((u) => u.id === data.id);
+      saveUsuarios(usuarios.map((u) => (u.id === data.id ? { ...u, ...resto, email: actual ? actual.email : resto.email } : u)));
       showToast("Usuario actualizado");
-    } else {
-      if (usuarios.some((u) => u.email.toLowerCase() === data.email.toLowerCase())) {
-        showToast("Ya existe un usuario con ese email", "error");
-        return;
+      return true;
+    }
+    const email = (data.email || "").trim().toLowerCase();
+    if (usuarios.some((u) => (u.email || "").toLowerCase() === email)) {
+      showToast("Ya existe un usuario con ese email", "error");
+      return false;
+    }
+    let authUid = null;
+    let reactivado = false;
+    try {
+      const cred = await createUserWithEmailAndPassword(fbAuthAltas, email, password);
+      authUid = cred.user.uid;
+      await signOut(fbAuthAltas).catch(() => {});
+    } catch (err) {
+      if (err && err.code === "auth/email-already-in-use") {
+        // Ese email ya tuvo cuenta (se le dio de baja): se reactiva la misma cuenta.
+        const snap = await fbGet(ref(fbDb, `authCuentas/${emailKey(email)}`)).catch(() => null);
+        if (snap && snap.exists()) {
+          authUid = snap.val();
+          reactivado = true;
+        } else {
+          showToast("Ese email ya tiene una cuenta de acceso creada por otra vía. Usa otro email.", "error");
+          return false;
+        }
+      } else {
+        showToast(traducirErrorAuth(err), "error");
+        return false;
       }
-      next = [{ ...data, id: uid() }, ...usuarios];
+    }
+    try {
+      await fbSet(ref(fbDb, `equipo/${authUid}`), true);
+      await fbSet(ref(fbDb, `authCuentas/${emailKey(email)}`), authUid);
+    } catch (e) {
+      showToast("No se pudo guardar el permiso de acceso: " + e.message, "error");
+      return false;
+    }
+    saveUsuarios([{ ...resto, email, id: uid(), authUid }, ...usuarios]);
+    if (reactivado) {
+      sendPasswordResetEmail(fbAuth, email).catch(() => {});
+      showToast("Usuario reactivado. Le ha llegado un correo para poner su contraseña.");
+    } else {
       showToast("Usuario dado de alta");
     }
-    saveUsuarios(next);
+    return true;
   };
 
   const deleteUsuario = (id) => {
     if (id === sesionUsuarioId) { showToast("No puedes eliminar tu propio usuario", "error"); return; }
-    saveUsuarios(usuarios.filter((u) => u.id !== id));
+    const u = usuarios.find((x) => x.id === id);
+    // Quitarle de "equipo" es lo que le corta el acceso a la base de datos.
+    if (u && u.authUid) fbSet(ref(fbDb, `equipo/${u.authUid}`), null).catch(() => {});
+    saveUsuarios(usuarios.filter((x) => x.id !== id));
     showToast("Usuario eliminado");
   };
 
-  const iniciarSesion = (id) => {
-    setSesionUsuarioId(id);
-    localStorage.setItem("alumavel_sesion_usuario_id", id);
-  };
-  const cerrarSesion = () => {
-    setSesionUsuarioId(null);
-    localStorage.removeItem("alumavel_sesion_usuario_id");
+  const enviarCambioPassword = async (email) => {
+    try {
+      await sendPasswordResetEmail(fbAuth, email);
+      showToast(`Correo enviado a ${email} para cambiar la contraseña`);
+    } catch (err) {
+      showToast(traducirErrorAuth(err), "error");
+    }
   };
 
-  const currentUser = usuarios.find((u) => u.id === sesionUsuarioId) || null;
+  const cerrarSesion = () => {
+    localStorage.removeItem("alumavel_sesion_usuario_id");
+    signOut(fbAuth).finally(() => window.location.reload());
+  };
+
+  // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
+  const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
+  // Si todavía no hay ningún usuario con el sistema nuevo, el primero en entrar es el administrador.
+  const hayUsuariosNuevos = usuarios.some((u) => u.authUid);
+  useEffect(() => {
+    setSesionUsuarioId(currentUser ? currentUser.id : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  useEffect(() => {
+    if (!authUser || loading) return;
+    if (currentUser) {
+      // Se asegura de que su permiso de equipo esté puesto (no hace nada si ya lo está).
+      fbSet(ref(fbDb, `equipo/${authUser.uid}`), true).catch(() => {});
+      return;
+    }
+    if (hayUsuariosNuevos || !usuariosLeidosOk) return;
+    // Primer administrador: se borran los usuarios antiguos (tenían la contraseña
+    // guardada a la vista) y se crea el administrador con esta cuenta.
+    const datos = primerAdminRef.current || {};
+    const email = (authUser.email || "").toLowerCase();
+    const admin = {
+      id: uid(), authUid: authUser.uid, email,
+      nombre: datos.nombre || email.split("@")[0], apellidos: datos.apellidos || "", telefono: datos.telefono || "",
+      rol: "Administrador", modulos: MODULOS_DISPONIBLES.map((m) => m.id),
+    };
+    (async () => {
+      try {
+        await fbSet(ref(fbDb, `equipo/${authUser.uid}`), true);
+        await fbSet(ref(fbDb, `authCuentas/${emailKey(email)}`), authUser.uid);
+        saveUsuarios([admin]);
+      } catch (e) {
+        showToast("No se pudo crear el administrador: " + e.message, "error");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.uid, loading, currentUser?.id, hayUsuariosNuevos, usuariosLeidosOk]);
 
   // Seguimiento de tiempo conectado por usuario: mientras haya un usuario con
   // sesión iniciada (currentUser), guardamos una "sesión" en Firebase con hora
@@ -2620,27 +2752,34 @@ export default function App() {
     );
   }
 
-  if (!currentUser && !currentCliente) {
+  if (!authUser) {
     return (
       <LoginGate
-        usuarios={usuarios}
-        clientes={clientes}
-        onCreateFirstAdmin={(data) => { const u = { ...data, id: uid(), rol: "Administrador" }; saveUsuarios([u, ...usuarios]); iniciarSesion(u.id); }}
-        onLogin={(id) => iniciarSesion(id)}
-        onLoginCliente={(id) => iniciarSesionCliente(id)}
+        primeraVez={Array.isArray(usuariosPrevios) && !usuariosPrevios.some((u) => u && u.authUid)}
+        onAntesDeCrearAdmin={(datos) => { primerAdminRef.current = datos; }}
       />
     );
   }
 
-  if (!currentUser && currentCliente) {
+  if (!currentUser) {
+    if (!hayUsuariosNuevos && usuariosLeidosOk) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-[#F4F5F3]">
+          <div className="flex items-center gap-2 text-slate-500 text-sm">
+            <Loader2 className="animate-spin" size={18} /> Preparando tu usuario de administrador…
+          </div>
+        </div>
+      );
+    }
     return (
-      <ClientePortal
-        cliente={currentCliente}
-        proyectos={proyectos.filter((p) => p.clienteId === currentCliente.id)}
-        facturas={facturas.filter((f) => f.clienteId === currentCliente.id)}
-        incidencias={incidencias.filter((i) => proyectos.find((p) => p.id === i.proyectoId && p.clienteId === currentCliente.id))}
-        onLogout={cerrarSesionCliente}
-      />
+      <div className="min-h-screen flex items-center justify-center bg-[#F4F5F3] p-6" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+        <div className="bg-white border border-slate-200 rounded-lg p-6 max-w-sm text-center">
+          <Lock size={20} className="text-slate-400 mx-auto mb-2" />
+          <h1 className="font-bold text-slate-900 mb-1">Sin acceso al CRM</h1>
+          <p className="text-sm text-slate-500 mb-4">La cuenta {authUser.email} no está dada de alta como usuario. Pídele a un administrador que te dé de alta.</p>
+          <button onClick={cerrarSesion} className="text-sm font-semibold text-[#2E8B57] hover:underline">Salir</button>
+        </div>
+      </div>
     );
   }
 
@@ -3412,6 +3551,7 @@ export default function App() {
             currentUser={currentUser}
             onUpsert={upsertUsuario}
             onDelete={deleteUsuario}
+            onEnviarCambioPassword={enviarCambioPassword}
           />
         )}
       </TarifasVentanasCtx.Provider>
@@ -22040,9 +22180,17 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     if (e && e.preventDefault) e.preventDefault();
     const usuario = (usuarios || []).find((u) => u.id === usuarioConfirmaId);
     if (!usuario) { setErrorConfirmaManual("Elige quién confirma."); return; }
-    if (usuario.password !== passwordConfirma) { setErrorConfirmaManual("Contraseña incorrecta."); return; }
     setErrorConfirmaManual("");
     setConfirmandoManual(true);
+    try {
+      // Se comprueba la contraseña contra su cuenta de acceso, sin cerrar la sesión actual.
+      await signInWithEmailAndPassword(fbAuthAltas, usuario.email, passwordConfirma);
+      await signOut(fbAuthAltas).catch(() => {});
+    } catch (err) {
+      setConfirmandoManual(false);
+      setErrorConfirmaManual("Contraseña incorrecta.");
+      return;
+    }
     await onConfirmarFirmaManual(presupuesto, `${usuario.nombre} ${usuario.apellidos || ""}`.trim());
     setConfirmandoManual(false);
     setMostrarFormManual(false);
@@ -22871,42 +23019,50 @@ function ControlFichajes({ fichajes, onDeleteFichaje }) {
 
 /* ================= LOGIN / ADMINISTRACIÓN ================= */
 
-function LoginGate({ usuarios, clientes, onCreateFirstAdmin, onLogin, onLoginCliente }) {
-  const primeraVez = usuarios.length === 0;
-  const [modo, setModo] = useState("empleado"); // empleado | cliente
+function LoginGate({ primeraVez, onAntesDeCrearAdmin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [aviso, setAviso] = useState("");
+  const [enviando, setEnviando] = useState(false);
 
   const [f, setF] = useState({ nombre: "", apellidos: "", email: "", password: "", telefono: "" });
   const setField = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-  const submitLogin = (e) => {
-    e.preventDefault();
-    const user = usuarios.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
-    if (!user || user.password !== password) {
-      setError("Email o contraseña incorrectos.");
-      return;
+  const submitLogin = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (enviando) return;
+    setError(""); setAviso(""); setEnviando(true);
+    try {
+      await signInWithEmailAndPassword(fbAuth, email.trim().toLowerCase(), password);
+    } catch (err) {
+      setError(traducirErrorAuth(err));
+      setEnviando(false);
     }
-    setError("");
-    onLogin(user.id);
   };
 
-  const submitLoginCliente = (e) => {
-    e.preventDefault();
-    const cliente = clientes.find((c) => c.portalActivo && c.email && c.email.toLowerCase() === email.trim().toLowerCase());
-    if (!cliente || cliente.portalPassword !== password) {
-      setError("Email o contraseña incorrectos, o el portal no está activado para este cliente.");
-      return;
-    }
-    setError("");
-    onLoginCliente(cliente.id);
+  const olvidada = async () => {
+    setError(""); setAviso("");
+    if (!email.trim()) { setError("Escribe tu email arriba y vuelve a pulsar."); return; }
+    try {
+      await sendPasswordResetEmail(fbAuth, email.trim().toLowerCase());
+    } catch (err) { /* no se dice si el email existe o no */ }
+    setAviso("Si ese email tiene cuenta, le llegará un correo para poner una contraseña nueva (mira también en spam).");
   };
 
-  const submitFirstAdmin = (e) => {
-    e.preventDefault();
-    if (!f.nombre.trim() || !f.email.trim() || !f.password.trim()) return;
-    onCreateFirstAdmin(f);
+  const submitFirstAdmin = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (enviando) return;
+    if (!f.nombre.trim() || !f.email.trim() || !f.password.trim()) { setError("Rellena nombre, email y contraseña."); return; }
+    if (f.password.trim().length < 6) { setError("La contraseña tiene que tener al menos 6 caracteres."); return; }
+    setError(""); setEnviando(true);
+    onAntesDeCrearAdmin({ nombre: f.nombre.trim(), apellidos: f.apellidos.trim(), telefono: f.telefono.trim() });
+    try {
+      await createUserWithEmailAndPassword(fbAuth, f.email.trim().toLowerCase(), f.password);
+    } catch (err) {
+      setError(traducirErrorAuth(err));
+      setEnviando(false);
+    }
   };
 
   return (
@@ -22923,29 +23079,16 @@ function LoginGate({ usuarios, clientes, onCreateFirstAdmin, onLogin, onLoginCli
       `}</style>
       <div className="w-full max-w-sm pt-6 pb-24">
         <div className="flex flex-col items-center gap-2 justify-center mb-6">
-          <div className={`rounded-xl overflow-hidden flex items-center justify-center ${modo === "cliente" ? "bg-[#333645] px-5 py-4" : "bg-[#5A1E78] px-4 py-2"}`}>
-            <img src={modo === "cliente" ? LOGO_ECOWIN : LOGO_ALUMAVEL} alt={modo === "cliente" ? "Ecowin PVC" : "Alumavel"} className={modo === "cliente" ? "h-8 w-auto" : "h-16 w-auto"} />
+          <div className="rounded-xl overflow-hidden flex items-center justify-center bg-[#5A1E78] px-4 py-2">
+            <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-16 w-auto" />
           </div>
-          {modo !== "cliente" && (
-            <div className="rounded-lg overflow-hidden bg-[#333645] flex items-center justify-center px-4 py-2">
-              <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-6 w-auto" />
-            </div>
-          )}
+          <div className="rounded-lg overflow-hidden bg-[#333645] flex items-center justify-center px-4 py-2">
+            <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-6 w-auto" />
+          </div>
           <div className="text-center">
-            <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 mt-1">{modo === "cliente" ? "Portal de cliente" : "Panel de gestión"}</div>
+            <div className="text-[10px] tracking-[0.15em] uppercase text-slate-400 mt-1">Panel de gestión</div>
           </div>
         </div>
-
-        {!primeraVez && (
-          <div className="flex gap-1 mb-4 bg-slate-200/60 rounded-md p-1">
-            <button onClick={() => { setModo("empleado"); setError(""); }} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-2 rounded transition ${modo === "empleado" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
-              <UserCog size={13} /> Empleado
-            </button>
-            <button onClick={() => { setModo("cliente"); setError(""); }} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-2 rounded transition ${modo === "cliente" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500"}`}>
-              <Globe size={13} /> Cliente
-            </button>
-          </div>
-        )}
 
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
           {primeraVez ? (
@@ -22954,58 +23097,42 @@ function LoginGate({ usuarios, clientes, onCreateFirstAdmin, onLogin, onLoginCli
                 <Lock size={16} className="text-[#2E8B57]" />
                 <h1 className="font-display font-bold text-lg text-slate-900">Crear administrador</h1>
               </div>
-              <p className="text-xs text-slate-400 mb-5">Es la primera vez que se abre este CRM. Crea el usuario administrador para empezar.</p>
+              <p className="text-xs text-slate-400 mb-5">Todavía no hay ningún usuario con el acceso nuevo. Crea el administrador para empezar (los usuarios antiguos se borran).</p>
               <form onSubmit={submitFirstAdmin} className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Nombre" required><TextInput value={f.nombre} onChange={setField("nombre")} required /></Field>
                   <Field label="Apellidos"><TextInput value={f.apellidos} onChange={setField("apellidos")} /></Field>
                 </div>
                 <Field label="Email" required><TextInput type="email" value={f.email} onChange={setField("email")} required /></Field>
-                <Field label="Contraseña" required><TextInput type="password" value={f.password} onChange={setField("password")} required /></Field>
-                <Field label="Teléfono"><TextInput value={f.telefono} onChange={setField("telefono")} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitFirstAdmin(e); } }} /></Field>
-                <button type="submit" onClick={submitFirstAdmin} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="w-full flex items-center justify-center gap-2 hover:opacity-90 text-base font-bold py-4 rounded-md mt-2 cursor-pointer select-none">
-                  <ShieldCheck size={18} /> Crear administrador y entrar
-                </button>
-              </form>
-            </>
-          ) : modo === "empleado" ? (
-            <>
-              <div className="flex items-center gap-2 mb-5">
-                <Lock size={16} className="text-[#2E8B57]" />
-                <h1 className="font-display font-bold text-lg text-slate-900">Acceso empleados</h1>
-              </div>
-              <form onSubmit={submitLogin} className="space-y-3">
-                <Field label="Email" required><TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus /></Field>
-                <Field label="Contraseña" required><TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
+                <Field label="Contraseña (mín. 6 caracteres)" required><TextInput type="password" value={f.password} onChange={setField("password")} required /></Field>
+                <Field label="Teléfono"><TextInput value={f.telefono} onChange={setField("telefono")} /></Field>
                 {error && <p className="text-xs text-rose-600">{error}</p>}
-                <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold py-2.5 rounded-md mt-2">
-                  <LogIn size={15} /> Entrar
+                <button type="submit" disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="w-full flex items-center justify-center gap-2 hover:opacity-90 text-base font-bold py-4 rounded-md mt-2 cursor-pointer select-none disabled:opacity-60">
+                  {enviando ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />} Crear administrador y entrar
                 </button>
               </form>
             </>
           ) : (
             <>
               <div className="flex items-center gap-2 mb-5">
-                <Globe size={16} className="text-[#2E8B57]" />
-                <h1 className="font-display font-bold text-lg text-slate-900">Portal de cliente</h1>
+                <Lock size={16} className="text-[#2E8B57]" />
+                <h1 className="font-display font-bold text-lg text-slate-900">Acceso</h1>
               </div>
-              <form onSubmit={submitLoginCliente} className="space-y-3">
+              <form onSubmit={submitLogin} className="space-y-3">
                 <Field label="Email" required><TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus /></Field>
                 <Field label="Contraseña" required><TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
                 {error && <p className="text-xs text-rose-600">{error}</p>}
-                <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold py-2.5 rounded-md mt-2">
-                  <LogIn size={15} /> Entrar
+                {aviso && <p className="text-xs text-[#2E8B57]">{aviso}</p>}
+                <button type="submit" disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold py-2.5 rounded-md mt-2 disabled:opacity-60">
+                  {enviando ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} Entrar
                 </button>
+                <button type="button" onClick={olvidada} className="w-full text-xs text-slate-400 hover:text-slate-600 hover:underline mt-1">¿Has olvidado tu contraseña?</button>
               </form>
             </>
           )}
         </CornerFrame>
         <p className="text-center text-[11px] text-slate-400 mt-4">
-          {primeraVez
-            ? "Podrás dar de alta a más usuarios luego, desde Administración."
-            : modo === "empleado"
-            ? "¿No tienes cuenta? Pídele a un administrador que te dé de alta."
-            : "El acceso al portal lo activa Ecowin PVC desde la ficha de cliente."}
+          {primeraVez ? "Podrás dar de alta a más usuarios luego, desde Administración." : "¿No tienes cuenta? Pídele a un administrador que te dé de alta."}
         </p>
       </div>
     </div>
@@ -23166,7 +23293,7 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
   );
 }
 
-function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
+function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword }) {
   const [view, setView] = useState("list");
   const [editId, setEditId] = useState(null);
   const [descargandoBackup, setDescargandoBackup] = useState(false);
@@ -23198,7 +23325,8 @@ function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
       <UsuarioForm
         initial={editing}
         onCancel={() => setView("list")}
-        onSave={(data) => { onUpsert(data); setView("list"); }}
+        onSave={async (data) => { const ok = await onUpsert(data); if (ok) setView("list"); return ok; }}
+        onEnviarCambioPassword={onEnviarCambioPassword}
       />
     );
   }
@@ -23274,10 +23402,11 @@ function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete }) {
   );
 }
 
-function UsuarioForm({ initial, onCancel, onSave }) {
+function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
   const [f, setF] = useState(
-    initial || { id: null, nombre: "", apellidos: "", email: "", password: "", telefono: "", rol: "Usuario", modulos: MODULOS_DISPONIBLES.map((m) => m.id) }
+    initial ? { ...initial, password: "" } : { id: null, nombre: "", apellidos: "", email: "", password: "", telefono: "", rol: "Usuario", modulos: MODULOS_DISPONIBLES.map((m) => m.id) }
   );
+  const [guardando, setGuardando] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
   const modulosActuales = f.modulos || MODULOS_DISPONIBLES.map((m) => m.id);
@@ -23286,12 +23415,18 @@ function UsuarioForm({ initial, onCancel, onSave }) {
   };
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!f.nombre.trim() || !f.email.trim() || !f.password.trim()) {
-      setErrorMsg("Faltan campos obligatorios: Nombre, Email y Contraseña.");
+    if (!f.nombre.trim() || !f.email.trim() || (!initial && !f.password.trim())) {
+      setErrorMsg(initial ? "Faltan campos obligatorios: Nombre y Email." : "Faltan campos obligatorios: Nombre, Email y Contraseña.");
       return;
     }
+    if (!initial && f.password.trim().length < 6) {
+      setErrorMsg("La contraseña tiene que tener al menos 6 caracteres.");
+      return;
+    }
+    if (guardando) return;
     setErrorMsg("");
-    onSave({ ...f, modulos: modulosActuales });
+    setGuardando(true);
+    Promise.resolve(onSave({ ...f, modulos: modulosActuales })).finally(() => setGuardando(false));
   };
 
   return (
@@ -23309,11 +23444,17 @@ function UsuarioForm({ initial, onCancel, onSave }) {
           <Field label="Apellidos"><TextInput value={f.apellidos} onChange={set("apellidos")} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Email" required><TextInput type="email" value={f.email} onChange={set("email")} required /></Field>
+          <Field label="Email" required><TextInput type="email" value={f.email} onChange={set("email")} required disabled={!!initial} /></Field>
           <Field label="Teléfono"><TextInput value={f.telefono} onChange={set("telefono")} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Contraseña" required><TextInput type="password" value={f.password} onChange={set("password")} required /></Field>
+          {initial ? (
+            <Field label="Contraseña">
+              <button type="button" onClick={() => onEnviarCambioPassword && onEnviarCambioPassword(f.email)} className="w-full text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50">Enviarle un correo para cambiarla</button>
+            </Field>
+          ) : (
+            <Field label="Contraseña (mín. 6 caracteres)" required><TextInput type="password" value={f.password} onChange={set("password")} required /></Field>
+          )}
           <Field label="Rol">
             <Select value={f.rol} onChange={set("rol")}>
               {ROLES.map((r) => <option key={r}>{r}</option>)}
@@ -23342,7 +23483,7 @@ function UsuarioForm({ initial, onCancel, onSave }) {
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
           <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
-          <button type="submit" onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md"><Save size={15} /> Guardar usuario</button>
+          <button type="submit" onClick={submit} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} disabled={guardando} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md disabled:opacity-60">{guardando ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Guardar usuario</button>
         </div>
       </form>
     </div>

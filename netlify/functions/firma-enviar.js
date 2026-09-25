@@ -17,6 +17,10 @@
 
 const FIRMA_API = "https://api.firma.dev/functions/v1/signing-request-api";
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+// Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
+// para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
+// las reglas sigan abiertas.
+const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
 
 export const handler = async (event) => {
   if (event.httpMethod !== "POST") {
@@ -81,7 +85,7 @@ export const handler = async (event) => {
     // presupuestos/proyectos como una lista (índices 0,1,2...), no con el id de cada
     // uno como clave de Firebase — así que hay que traer toda la colección y buscar
     // cuál tiene ese id, y escribir luego en su clave real (el índice), no en el id.
-    const getColRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}.json`);
+    const getColRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}.json${FB_AUTH}`);
     const coleccion = await getColRes.json();
     const claveReal = coleccion ? Object.keys(coleccion).find((k) => coleccion[k]?.id === registroId) : null;
     if (!claveReal) {
@@ -97,7 +101,7 @@ export const handler = async (event) => {
       signingLink,
     };
 
-    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json`, {
+    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json${FB_AUTH}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(firmaInfo),

@@ -11,6 +11,10 @@
 
 const FIRMA_API = "https://api.firma.dev/functions/v1/signing-request-api";
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+// Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
+// para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
+// las reglas sigan abiertas.
+const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
 const STORAGE_BUCKET = "crmalumavel.firebasestorage.app";
 
 const toArray = (obj) => (obj ? Object.values(obj) : []);
@@ -23,7 +27,7 @@ const toArray = (obj) => (obj ? Object.values(obj) : []);
 // para poder escribir luego en el sitio correcto.
 async function buscarRegistroPorSigningRequestId(signingRequestId) {
   for (const coleccion of ["presupuestos", "proyectos"]) {
-    const res = await fetch(`${FIREBASE_DB_URL}/${coleccion}.json`);
+    const res = await fetch(`${FIREBASE_DB_URL}/${coleccion}.json${FB_AUTH}`);
     const datos = await res.json();
     if (!datos) continue;
     const clave = Object.keys(datos).find((k) => datos[k]?.firma?.signingRequestId === signingRequestId);
@@ -75,7 +79,7 @@ export const handler = async (event) => {
       // pero queda registrado en los logs para revisarlo a mano si hace falta.
       console.error(`No se pudo obtener el PDF firmado tras 12 intentos para signingRequestId ${signingRequestId}`);
       const firmaSinPdf = { ...(registro.firma || {}), estado: "firmado", firmadoEn: Date.now() };
-      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
+      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json${FB_AUTH}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(firmaSinPdf),
@@ -102,7 +106,7 @@ export const handler = async (event) => {
       console.error("Error subiendo el PDF a Firebase Storage:", errorSubida);
       // Aun sin PDF guardado, se marca como firmado para no dejarlo colgado.
       const firmaSinPdf = { ...(registro.firma || {}), estado: "firmado", firmadoEn: Date.now() };
-      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
+      await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json${FB_AUTH}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(firmaSinPdf),
@@ -119,7 +123,7 @@ export const handler = async (event) => {
       firmadoEn: Date.now(),
       pdfUrl,
     };
-    await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json`, {
+    await fetch(`${FIREBASE_DB_URL}/${coleccion}/${clave}/firma.json${FB_AUTH}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(firmaActualizada),
@@ -131,7 +135,7 @@ export const handler = async (event) => {
     // entrar a moverlo a mano. Si es un presupuesto normal (firma del cliente),
     // no se toca nada más: sigue el flujo manual de siempre ("Crear proyecto").
     if (coleccion === "presupuestos" && !registro.proyectoCreadoId) {
-      const proyectosRes = await fetch(`${FIREBASE_DB_URL}/proyectos.json`);
+      const proyectosRes = await fetch(`${FIREBASE_DB_URL}/proyectos.json${FB_AUTH}`);
       const proyectos = toArray(await proyectosRes.json());
       const proyectoVinculado = proyectos.find((p) => p.id === registro.proyectoId);
 
@@ -157,12 +161,12 @@ export const handler = async (event) => {
           checklistMateriales: {}, // simplificado — se puede editar luego desde la ficha del proyecto
           documentos: documentosProyecto,
         };
-        await fetch(`${FIREBASE_DB_URL}/proyectos/${nuevoProyectoId}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/proyectos/${nuevoProyectoId}.json${FB_AUTH}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(nuevoProyecto),
         });
-        await fetch(`${FIREBASE_DB_URL}/presupuestos/${clave}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/presupuestos/${clave}.json${FB_AUTH}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ estado: "Aceptado", proyectoCreadoId: nuevoProyectoId }),

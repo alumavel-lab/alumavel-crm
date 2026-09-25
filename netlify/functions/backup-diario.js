@@ -10,6 +10,10 @@
 import nodemailer from "nodemailer";
 
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+// Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
+// para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
+// las reglas sigan abiertas.
+const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
 
 export const handler = async () => {
   try {
@@ -23,7 +27,7 @@ export const handler = async () => {
     }
 
     // Descarga toda la base de datos de un golpe.
-    const respuesta = await fetch(`${FIREBASE_DB_URL}/.json`);
+    const respuesta = await fetch(`${FIREBASE_DB_URL}/.json${FB_AUTH}`);
     if (!respuesta.ok) {
       throw new Error("No se pudo descargar la base de datos (status " + respuesta.status + ")");
     }

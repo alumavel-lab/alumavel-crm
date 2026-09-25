@@ -7,10 +7,14 @@
 // para que Netlify la trate como función en segundo plano.
 
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+// Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
+// para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
+// las reglas sigan abiertas.
+const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
 
 async function guardarResultado(jobId, payload) {
   try {
-    await fetch(`${FIREBASE_DB_URL}/packingListJobs/${jobId}.json`, {
+    await fetch(`${FIREBASE_DB_URL}/packingListJobs/${jobId}.json${FB_AUTH}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...payload, ts: Date.now() }),
@@ -26,7 +30,7 @@ async function guardarResultado(jobId, payload) {
 // (que no tiene ese límite), y aquí solo recibimos el jobId y vamos a
 // buscarlo nosotros mismos.
 async function leerEntrada(jobId) {
-  const res = await fetch(`${FIREBASE_DB_URL}/packingListJobsInput/${jobId}.json`);
+  const res = await fetch(`${FIREBASE_DB_URL}/packingListJobsInput/${jobId}.json${FB_AUTH}`);
   if (!res.ok) throw new Error("No se pudo leer la entrada del trabajo desde Firebase (status " + res.status + ")");
   const data = await res.json();
   if (!data) throw new Error("No se encontró la entrada del trabajo en Firebase (jobId: " + jobId + ")");

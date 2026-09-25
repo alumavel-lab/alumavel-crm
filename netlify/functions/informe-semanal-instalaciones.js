@@ -11,6 +11,10 @@
 import nodemailer from "nodemailer";
 
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+// Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
+// para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
+// las reglas sigan abiertas.
+const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
 const SIETE_DIAS_MS = 7 * 24 * 60 * 60 * 1000;
 
 const toArray = (obj) => (obj ? Object.values(obj) : []);
@@ -30,9 +34,9 @@ export const handler = async () => {
     const desde = ahora - SIETE_DIAS_MS;
 
     const [instalacionesRes, proyectosRes, controlMontajeRes] = await Promise.all([
-      fetch(`${FIREBASE_DB_URL}/instalaciones.json`),
-      fetch(`${FIREBASE_DB_URL}/proyectos.json`),
-      fetch(`${FIREBASE_DB_URL}/controlMontaje.json`),
+      fetch(`${FIREBASE_DB_URL}/instalaciones.json${FB_AUTH}`),
+      fetch(`${FIREBASE_DB_URL}/proyectos.json${FB_AUTH}`),
+      fetch(`${FIREBASE_DB_URL}/controlMontaje.json${FB_AUTH}`),
     ]);
     const instalaciones = toArray(await instalacionesRes.json());
     const proyectos = toArray(await proyectosRes.json());
