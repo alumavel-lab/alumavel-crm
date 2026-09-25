@@ -8864,14 +8864,14 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                       <button
                         key={hueco}
                         onClick={() => c && onVerHueco({ zona: zonaId, fila, hueco })}
-                        title={c ? cs.map((x) => `${x.lote || ""} ${x.secuencia || ""} — ${x.cliente || ""}`).join(" | ") : "Libre"}
+                        title={c ? cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)} — ${x.cliente || ""}`).join(" | ") : "Libre"}
                         className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
                         <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
                         {c ? (
                           <>
                             <span className="font-mono-num text-[12px] leading-tight tracking-tight">{c.lote || c.secuencia || "•"}</span>
-                            {expedientePrincipal(c) && <span className="text-[10px] font-normal opacity-90 leading-tight">EXP {expedientePrincipal(c)}</span>}
+                            {textoExpedientes(c) && <span className="text-[10px] font-normal opacity-90 leading-tight">{textoExpedientes(c)}</span>}
                           </>
                         ) : <span className="text-[11px]">libre</span>}
                         {cs.length > 1 && (
@@ -9575,6 +9575,15 @@ function expedientePrincipal(c) {
   const top = Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0];
   return top ? top[0] : (numsExpediente(c.expediente)[0] || "");
 }
+// Todos los expedientes de un caballete, el principal primero: "962/963".
+function textoExpedientes(c, max = 2) {
+  const principal = expedientePrincipal(c);
+  const todos = [...expedientesDeCaballete(c)].sort((a, b) => (a === principal ? -1 : b === principal ? 1 : a.localeCompare(b)));
+  if (!todos.length) return "";
+  const vis = todos.slice(0, max).join("/");
+  return `EXP ${vis}${todos.length > max ? ` +${todos.length - max}` : ""}`;
+}
+
 // ocupados: [{ zona, fila, hueco, exps: Set }]
 // Hueco libre lo más pegado posible a los caballetes que ya hay de esos expedientes
 // (primero justo detrás de ellos en el orden por columnas).
@@ -9679,7 +9688,7 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
                   <tr key={m.id} className={`border-b border-slate-100 ${hechos[m.id] ? "bg-emerald-50" : ""}`}>
                     <td className="py-1.5 pr-2"><input type="checkbox" checked={!!hechos[m.id]} onChange={(e) => toggle(m, e.target.checked)} /></td>
                     <td className="pr-2 font-mono-num font-semibold">{m.lote || "—"}</td>
-                    <td className="pr-2">{m.exp ? `EXP ${m.exp}` : "—"}</td>
+                    <td className="pr-2">{textoExpedientes(cristales.find((x) => x.id === m.id) || {}, 5) || "—"}</td>
                     <td className="pr-2">{ubicacionTexto(m.desde)}</td>
                     <td className="pr-2 font-semibold text-[#2E8B57]">{ubicacionTexto(m.hasta)}</td>
                   </tr>
