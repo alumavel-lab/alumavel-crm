@@ -478,6 +478,7 @@ export default function App() {
   const [archivosEmpresa, setArchivosEmpresa] = useState([]);
   const [vehiculos, setVehiculos] = useState([]);
   const [cristales, setCristales] = useState([]);
+  const [confirmacionesCristal, setConfirmacionesCristal] = useState([]);
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionesUsuario, setSesionesUsuario] = useState({});
@@ -600,7 +601,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -635,6 +636,7 @@ export default function App() {
         if (resultados.fichajes) setFichajes(toArray(resultados.fichajes));
         if (resultados.usuarios) setUsuarios(toArray(resultados.usuarios));
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
+        if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
@@ -1656,6 +1658,7 @@ export default function App() {
 
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
   const saveCristales = (next) => { setCristales(next); persist("cristales", next); };
+  const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
 
   const addCristal = (data) => {
     const nuevo = { id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: new Date().toISOString().slice(0, 10), ...data };
@@ -3293,7 +3296,11 @@ export default function App() {
           />
         )}
         {modulo === "fabrica" && (
-          <IncidenciasCristalCtx.Provider value={{ incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal }}>
+          <IncidenciasCristalCtx.Provider value={{
+            incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal,
+            confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
+            pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
+          }}>
           <FabricaModulo
             proyectos={proyectos}
             pedidos={pedidos}
@@ -8506,7 +8513,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es una etiqueta, packing list o albarán de caballetes de cristal (puede ser la foto de UN SOLO caballete suelto). MUY IMPORTANTE: distingue bien el NÚMERO DE CABALLETE (puede aparecer como Rack, Caballete, Nº caballete, Bastidor, Lote o Rack Nº) del NÚMERO DE PEDIDO (Order, Pedido, Nº pedido, Albarán). Son cosas distintas: el número de caballete va en "caballete" y el de pedido en "pedido"; nunca pongas el número de pedido como caballete. Si en la foto solo aparece un número de caballete, todas las filas pertenecen a ese caballete: repite ese mismo número en todas. Revisa el documento entero de arriba a abajo y devuelve TODAS las filas de cristales, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array, una línea por cada fila de cristal: [{"caballete":"","pedido":"","cliente":"","proveedor":"","expediente":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]. En "expediente" pon el número de expediente/obra si aparece (por ejemplo EXP 1234). Deja en blanco (o 0) lo que no encuentres.';
+      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","filas":[{"caballete":"","pedido":"","expediente":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
       // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
       // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
@@ -8514,7 +8521,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       // le mandamos el jobId; ella misma va a buscar el archivo a Firebase.
       const jobId = uid();
       await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), {
-        model: "claude-haiku-4-5-20251001",
+        model: "claude-sonnet-5",
         max_tokens: 8000,
         contentBlock,
         prompt,
@@ -8550,7 +8557,26 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const inicio = limpio.indexOf("[");
       const fin = limpio.lastIndexOf("]");
       const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
+      // Formato nuevo: { caballete, cliente, proveedor, filas: [...] }. El nº de caballete
+      // de la cabecera se aplica a todas las filas que no traigan otro.
+      let objetoCabecera = null;
       try {
+        const oi = limpio.indexOf("{");
+        const of = limpio.lastIndexOf("}");
+        if (oi !== -1 && of !== -1 && (inicio === -1 || oi < inicio)) {
+          const o = JSON.parse(limpio.slice(oi, of + 1));
+          if (o && Array.isArray(o.filas)) objetoCabecera = o;
+        }
+      } catch (e) { objetoCabecera = null; }
+      if (objetoCabecera) {
+        const cab = String(objetoCabecera.caballete || "").replace(/\s/g, "");
+        items = objetoCabecera.filas.map((f) => ({
+          ...f,
+          caballete: String(f.caballete || "").replace(/\s/g, "") || cab,
+          cliente: f.cliente || objetoCabecera.cliente || "",
+          proveedor: f.proveedor || objetoCabecera.proveedor || "",
+        }));
+      } else try {
         items = JSON.parse(jsonCandidato);
       } catch (parseErr) {
         console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
@@ -8678,6 +8704,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "lista" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Cristales (medidas y viviendas)
         </button>
+        <button onClick={() => setSubTab("control")}
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${subTab === "control" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          <ClipboardList size={14} /> Control de pedidos
+        </button>
         <button onClick={() => setSubTab("estadisticas")}
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "estadisticas" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Estadísticas
@@ -8752,6 +8782,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       {subTab === "estadisticas" && (
         <EstadisticasCristales cristales={cristales} />
+      )}
+
+      {subTab === "control" && (
+        <ControlPedidosCristal cristales={cristales} proveedores={proveedores} />
       )}
 
       {asignando && (
@@ -9032,6 +9066,18 @@ function IncidenciaCristal({ pieza, cristal, onGuardar }) {
           className="flex-1 min-w-[110px] text-xs border border-slate-200 rounded px-1.5 py-0.5"
         />
       </div>
+      {conIncidencia && (parseFloat(pieza.cantidad) || 1) > 1 && (
+        <label className="flex items-center gap-1 text-[11px] text-rose-700 mt-0.5">
+          Uds afectadas:
+          <input
+            type="number" min="1" max={parseFloat(pieza.cantidad) || 1}
+            value={pieza.udsAfectadas ?? (parseFloat(pieza.cantidad) || 1)}
+            onChange={(e) => onGuardar({ udsAfectadas: Math.max(1, Math.min(parseFloat(pieza.cantidad) || 1, parseInt(e.target.value, 10) || 1)) })}
+            className="w-12 text-xs border border-rose-200 rounded px-1 py-0"
+          />
+          de {pieza.cantidad}
+        </label>
+      )}
       {pieza.incidenciaId ? (
         <div className="text-[11px] mt-0.5 text-rose-700 font-semibold">
           Incidencia #{pieza.incidenciaNumero || incVinculada?.numero}
@@ -9190,6 +9236,302 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
         </div>
         <button onClick={onClose} className="w-full mt-4 text-sm font-semibold text-slate-600 px-4 py-2 rounded-md hover:bg-slate-100">Cerrar</button>
       </div>
+    </div>
+  );
+}
+
+// =================== CONTROL DE PEDIDOS DE CRISTAL ===================
+// Los cristales se piden por fuera. Se sube aquí la CONFIRMACIÓN del pedido que manda el
+// proveedor (Excel, PDF o foto) y el CRM la compara con lo que va llegando en los
+// caballetes (packing list / fotos): cuántos han llegado bien, cuántos rotos o con
+// incidencia y cuántos no han llegado. Desde aquí se pide la reposición de lo que falta.
+
+const normPedidoCristal = (v) => String(v || "").replace(/[^0-9a-z]/gi, "").toLowerCase();
+const mismoPedidoCristal = (a, b) => {
+  const x = normPedidoCristal(a), y = normPedidoCristal(b);
+  if (!x || !y) return false;
+  return x === y || (x.length >= 4 && y.includes(x)) || (y.length >= 4 && x.includes(y));
+};
+const mismaMedidaCristal = (a1, h1, a2, h2) => {
+  const A1 = parseFloat(a1), H1 = parseFloat(h1), A2 = parseFloat(a2), H2 = parseFloat(h2);
+  if (!A1 || !H1 || !A2 || !H2) return false;
+  const tol = 3;
+  return (Math.abs(A1 - A2) <= tol && Math.abs(H1 - H2) <= tol) || (Math.abs(A1 - H2) <= tol && Math.abs(H1 - A2) <= tol);
+};
+
+// Lee con IA un PDF o foto usando la misma función en segundo plano que el packing list.
+async function leerDocumentoCristalConIA(file, prompt) {
+  const base64Data = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+  const esPdf = file.type === "application/pdf";
+  const contentBlock = esPdf
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
+    : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
+  const jobId = uid();
+  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: 8000, contentBlock, prompt });
+  await fetch("/.netlify/functions/anthropic-proxy-background", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),
+  });
+  let resultado = null;
+  for (let intento = 0; intento < 60; intento++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
+    const val = snap && snap.exists && snap.exists() ? snap.val() : null;
+    if (val && (val.status === "done" || val.status === "error")) { resultado = val; break; }
+  }
+  fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
+  fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
+  if (!resultado) throw new Error("La lectura está tardando demasiado. Prueba de nuevo.");
+  if (resultado.status === "error") throw new Error(resultado.error || "Error al leer el documento");
+  const limpio = String(resultado.texto || "").replace(/```json|```/g, "").trim();
+  const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
+  return JSON.parse(limpio.slice(oi, of + 1));
+}
+
+async function leerConfirmacionCristal(file) {
+  const esExcel = /\.(xlsx|xls|csv)$/i.test(file.name || "");
+  if (esExcel) {
+    const filas = leerFilasExcel(await file.arrayBuffer());
+    const lineas = filas.map((f) => ({
+      pedido: String(valorPorCabeceras(f, ["order", "pedido", "npedido"]) || "").trim(),
+      ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia", "ref", "vivienda"]) || "").trim(),
+      expediente: (() => { const m = String(valorPorCabeceras(f, ["refclientorder", "expediente", "obra"]) || "").match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i); return m ? `EXP ${m[1]}` : String(valorPorCabeceras(f, ["expediente"]) || "").trim(); })(),
+      ancho: parseFloat(valorPorCabeceras(f, ["width", "ancho"])) || "",
+      alto: parseFloat(valorPorCabeceras(f, ["height", "alto"])) || "",
+      cantidad: parseFloat(valorPorCabeceras(f, ["qty", "cantidad", "uds", "unidades"])) || 1,
+      descripcion: String(valorPorCabeceras(f, ["description", "descripcion", "composicion", "vidrio"]) || "").trim(),
+    })).filter((l) => l.ancho && l.alto);
+    const pedidos = [...new Set(lineas.map((l) => l.pedido).filter(Boolean))];
+    return { numeroPedido: pedidos.join(", "), proveedor: "", expediente: [...new Set(lineas.map((l) => l.expediente).filter(Boolean))].join(", "), lineas };
+  }
+  const prompt = 'Esto es la CONFIRMACIÓN DE PEDIDO de cristales que manda el proveedor (lo que se ha pedido, no lo que ha llegado). Revisa el documento entero y devuelve TODAS las líneas de cristal, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"numeroPedido":"","proveedor":"","expediente":"","lineas":[{"pedido":"","ref":"","expediente":"","ancho":numero,"alto":numero,"cantidad":numero,"descripcion":""}]}. "numeroPedido" es el número de pedido del proveedor (Order, Pedido, Nº pedido, Confirmación). "ref" es la vivienda o referencia de cada cristal si aparece. "ancho" y "alto" en milímetros. "descripcion" es la composición del vidrio si aparece. Deja en blanco (o 0) lo que no encuentres.';
+  const o = await leerDocumentoCristalConIA(file, prompt);
+  const lineas = (o.lineas || []).map((l) => ({
+    pedido: String(l.pedido || "").trim(), ref: String(l.ref || "").trim(), expediente: String(l.expediente || "").trim(),
+    ancho: parseFloat(l.ancho) || "", alto: parseFloat(l.alto) || "", cantidad: parseFloat(l.cantidad) || 1,
+    descripcion: String(l.descripcion || "").trim(),
+  })).filter((l) => l.ancho && l.alto);
+  return { numeroPedido: String(o.numeroPedido || "").trim(), proveedor: String(o.proveedor || "").trim(), expediente: String(o.expediente || "").trim(), lineas };
+}
+
+// Cruza una confirmación con los cristales que han llegado.
+function calcularControlCristal(conf, cristales) {
+  const piezas = [];
+  cristales.forEach((c) => (c.piezas || []).forEach((p, i) => piezas.push({ c, p, i, usadas: 0 })));
+  const exps = String(conf.expediente || "").split(",").map((x) => x.replace(/\D/g, "")).filter(Boolean);
+  const candidatas = piezas.filter(({ c, p }) => {
+    const ped = p.pedido || c.secuencia;
+    if (conf.numeroPedido && String(conf.numeroPedido).split(",").some((n) => String(ped).split(",").some((m) => mismoPedidoCristal(n, m)))) return true;
+    const e = String(p.expediente || c.expediente || "").replace(/\D/g, "");
+    return !conf.numeroPedido && exps.length > 0 && e && exps.some((x) => e.includes(x));
+  });
+  const lineas = (conf.lineas || []).map((l, idx) => {
+    let llegadas = 0, conProblema = 0, faltaMarcada = 0;
+    const encontradas = [];
+    let restante = parseFloat(l.cantidad) || 1;
+    // primero las que coinciden también en referencia, luego solo por medida
+    const orden = [...candidatas].sort((a, b) => (l.ref && b.p.ref === l.ref ? 1 : 0) - (l.ref && a.p.ref === l.ref ? 1 : 0));
+    for (const it of orden) {
+      if (restante <= 0) break;
+      if (!mismaMedidaCristal(l.ancho, l.alto, it.p.ancho, it.p.alto)) continue;
+      if (l.ref && it.p.ref && normPedidoCristal(l.ref) !== normPedidoCristal(it.p.ref)) continue;
+      const disponible = (parseFloat(it.p.cantidad) || 1) - it.usadas;
+      if (disponible <= 0) continue;
+      const toma = Math.min(disponible, restante);
+      it.usadas += toma;
+      restante -= toma;
+      llegadas += toma;
+      encontradas.push(it);
+      if (it.p.incidencia) {
+        const af = Math.min(toma, parseFloat(it.p.udsAfectadas ?? it.p.cantidad) || toma);
+        if (it.p.incidencia === "Falta") faltaMarcada += af; else conProblema += af;
+      }
+    }
+    const pedidas = parseFloat(l.cantidad) || 1;
+    const repuestas = parseFloat((conf.repuestas || {})[idx]) || 0;
+    const noLlegadas = Math.max(0, pedidas - llegadas) + faltaMarcada;
+    const bien = Math.max(0, llegadas - conProblema - faltaMarcada);
+    const pendientes = Math.max(0, conProblema + noLlegadas - repuestas);
+    const cabs = [...new Set(encontradas.map((x) => x.c.lote).filter(Boolean))];
+    return { ...l, idx, pedidas, bien, conProblema, noLlegadas, repuestas, pendientes, caballetes: cabs };
+  });
+  const tot = (k) => lineas.reduce((a, l) => a + l[k], 0);
+  return { lineas, pedidas: tot("pedidas"), bien: tot("bien"), conProblema: tot("conProblema"), noLlegadas: tot("noLlegadas"), repuestas: tot("repuestas"), pendientes: tot("pendientes") };
+}
+
+function ControlPedidosCristal({ cristales, proveedores }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const confirmaciones = ctx.confirmaciones || [];
+  const guardar = ctx.saveConfirmaciones || (() => {});
+  const [leyendo, setLeyendo] = useState(false);
+  const [error, setError] = useState("");
+  const [borrador, setBorrador] = useState(null);
+  const [abierta, setAbierta] = useState(null);
+  const [soloProblemas, setSoloProblemas] = useState(false);
+  const inputRef = useRef(null);
+
+  const subir = async (file) => {
+    setLeyendo(true); setError("");
+    try {
+      const r = await leerConfirmacionCristal(file);
+      if (!r.lineas.length) throw new Error("No he encontrado líneas de cristal con medidas en el documento.");
+      setBorrador({ ...r, fecha: new Date().toISOString().slice(0, 10), archivo: file.name || "" });
+    } catch (e) {
+      setError(e.message || "No he podido leer el documento.");
+    } finally {
+      setLeyendo(false);
+    }
+  };
+
+  const guardarBorrador = () => {
+    if (!borrador.numeroPedido && !borrador.expediente) { setError("Pon al menos el nº de pedido o el expediente para poder cruzarlo con lo que llega."); return; }
+    guardar([{ ...borrador, id: uid(), repuestas: {}, reposiciones: [] }, ...confirmaciones]);
+    setBorrador(null); setError("");
+  };
+
+  const actualizar = (id, patch) => guardar(confirmaciones.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+
+  const pedirReposicion = (conf, ctrl) => {
+    const lineas = ctrl.lineas.filter((l) => l.pendientes > 0).map((l) => ({
+      id: uid(), modo: "libre", materialId: "",
+      referencia: `Reposición cristal ${l.descripcion || ""} ${l.ref ? `· ${l.ref}` : ""}`.replace(/\s+/g, " ").trim(),
+      ancho: l.ancho, alto: l.alto, cantidad: l.pendientes, precio: "", estado: "Solicitado",
+    }));
+    if (!lineas.length) return;
+    actualizar(conf.id, { reposiciones: [...(conf.reposiciones || []), { fecha: new Date().toISOString().slice(0, 10), uds: ctrl.pendientes }] });
+    if (ctx.pedirReposicion) ctx.pedirReposicion(lineas, `Reposición del pedido de cristal ${conf.numeroPedido || ""} ${conf.expediente ? `(${conf.expediente})` : ""}: cristales rotos o que no llegaron.`.trim());
+  };
+
+  const marcarRepuesto = (conf, idx, valor) => actualizar(conf.id, { repuestas: { ...(conf.repuestas || {}), [idx]: valor } });
+
+  const datos = confirmaciones.map((conf) => ({ conf, ctrl: calcularControlCristal(conf, cristales) }))
+    .filter(({ ctrl }) => !soloProblemas || ctrl.pendientes > 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[240px] text-sm text-slate-600">
+          Sube la <b>confirmación del pedido</b> que os manda el proveedor (Excel, PDF o foto). El CRM la compara con los caballetes que van llegando y te dice qué ha llegado bien, qué está roto y qué no ha llegado.
+        </div>
+        <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,application/pdf,image/*" className="hidden"
+          onChange={(e) => { if (e.target.files?.[0]) subir(e.target.files[0]); e.target.value = ""; }} />
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current?.click()}
+          style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+          className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
+          <Plus size={14} /> {leyendo ? "Leyendo…" : "Subir confirmación de pedido"}
+        </button>
+        <label className="flex items-center gap-1 text-xs text-rose-600 font-semibold">
+          <input type="checkbox" checked={soloProblemas} onChange={(e) => setSoloProblemas(e.target.checked)} /> Solo con cristales pendientes
+        </label>
+        {error && <p className="w-full text-xs font-semibold text-rose-600">⚠ {error}</p>}
+      </div>
+
+      {borrador && (
+        <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
+          <h3 className="font-display font-bold text-slate-900 mb-2">Revisa la confirmación antes de guardarla</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            <Field label="Nº de pedido del proveedor"><TextInput value={borrador.numeroPedido} onChange={(e) => setBorrador({ ...borrador, numeroPedido: e.target.value })} /></Field>
+            <Field label="Proveedor">
+              <TextInput list="proveedores-cristal" value={borrador.proveedor} onChange={(e) => setBorrador({ ...borrador, proveedor: e.target.value })} />
+              <datalist id="proveedores-cristal">{(proveedores || []).map((p) => <option key={p.id} value={p.nombre} />)}</datalist>
+            </Field>
+            <Field label="Expediente / obra"><TextInput value={borrador.expediente} onChange={(e) => setBorrador({ ...borrador, expediente: e.target.value })} /></Field>
+          </div>
+          <p className="text-sm text-slate-700 mt-2">
+            <b>{borrador.lineas.length}</b> líneas · <b>{borrador.lineas.reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0)}</b> cristales pedidos.
+          </p>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => setBorrador(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
+            <button onClick={guardarBorrador} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Guardar confirmación</button>
+          </div>
+        </div>
+      )}
+
+      {datos.length === 0 && !borrador && (
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-10 text-center text-sm text-slate-400">
+          {confirmaciones.length ? "No hay pedidos con cristales pendientes." : "Todavía no has subido ninguna confirmación de pedido."}
+        </div>
+      )}
+
+      {datos.map(({ conf, ctrl }) => {
+        const completo = ctrl.pendientes === 0 && ctrl.bien + ctrl.repuestas >= ctrl.pedidas;
+        const pct = ctrl.pedidas ? Math.round(((ctrl.bien + Math.min(ctrl.repuestas, ctrl.conProblema + ctrl.noLlegadas)) / ctrl.pedidas) * 100) : 0;
+        const abiertaEsta = abierta === conf.id;
+        return (
+          <div key={conf.id} className={`bg-white border rounded-xl p-4 ${ctrl.pendientes > 0 ? "border-rose-200" : "border-slate-200"}`}>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <div className="font-display font-bold text-slate-900">Pedido {conf.numeroPedido || "—"}{conf.proveedor ? ` · ${conf.proveedor}` : ""}</div>
+                <div className="text-xs text-slate-500">{conf.expediente || "Sin expediente"} · confirmación del {fmtDate(conf.fecha)}</div>
+              </div>
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg ${completo ? "bg-emerald-50 text-emerald-700" : ctrl.pendientes > 0 ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>
+                {completo ? "Completo" : ctrl.pendientes > 0 ? `Faltan ${ctrl.pendientes}` : "En camino"}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+              <div className="bg-slate-50 rounded-lg px-3 py-2"><div className="text-xs text-slate-500">Pedidos</div><div className="font-mono-num text-lg font-bold">{ctrl.pedidas}</div></div>
+              <div className="bg-slate-50 rounded-lg px-3 py-2"><div className="text-xs text-slate-500">Llegados bien</div><div className="font-mono-num text-lg font-bold text-emerald-700">{ctrl.bien}</div></div>
+              <div className="bg-slate-50 rounded-lg px-3 py-2"><div className="text-xs text-slate-500">Rotos / defecto</div><div className={`font-mono-num text-lg font-bold ${ctrl.conProblema ? "text-rose-600" : ""}`}>{ctrl.conProblema}</div></div>
+              <div className="bg-slate-50 rounded-lg px-3 py-2"><div className="text-xs text-slate-500">No llegados</div><div className={`font-mono-num text-lg font-bold ${ctrl.noLlegadas ? "text-amber-700" : ""}`}>{ctrl.noLlegadas}</div></div>
+              <div className="bg-slate-50 rounded-lg px-3 py-2"><div className="text-xs text-slate-500">Repuestos</div><div className="font-mono-num text-lg font-bold">{ctrl.repuestas}</div></div>
+            </div>
+            <div className="h-2 bg-slate-100 rounded-full mt-3 overflow-hidden">
+              <div className="h-2 rounded-full bg-[#86D325]" style={{ width: `${Math.min(100, pct)}%` }} />
+            </div>
+            {(conf.reposiciones || []).length > 0 && (
+              <p className="text-xs text-slate-500 mt-2">Reposición pedida: {conf.reposiciones.map((r) => `${fmtDate(r.fecha)} (${r.uds} uds)`).join(" · ")}</p>
+            )}
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button onClick={() => setAbierta(abiertaEsta ? null : conf.id)} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50">
+                {abiertaEsta ? "Ocultar cristales" : `Ver los ${ctrl.lineas.length} cristales`}
+              </button>
+              {ctrl.pendientes > 0 && (
+                <button onClick={() => pedirReposicion(conf, ctrl)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90">
+                  Pedir reposición ({ctrl.pendientes})
+                </button>
+              )}
+              <button onClick={() => { if (window.confirm("¿Borrar esta confirmación de pedido? Los caballetes no se tocan.")) guardar(confirmaciones.filter((c) => c.id !== conf.id)); }}
+                className="ml-auto text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-lg hover:bg-rose-50">
+                Borrar
+              </button>
+            </div>
+            {abiertaEsta && (
+              <div className="overflow-x-auto mt-3">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left text-slate-400 border-b">
+                    <th className="py-1 pr-2">Vivienda / ref.</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Pedidos</th>
+                    <th className="pr-2">Bien</th><th className="pr-2">Rotos</th><th className="pr-2">No llegados</th><th className="pr-2">Repuestos</th><th className="pr-2">Caballete</th>
+                  </tr></thead>
+                  <tbody>
+                    {ctrl.lineas.map((l) => (
+                      <tr key={l.idx} className={`border-b border-slate-100 ${l.pendientes > 0 ? "bg-rose-50" : l.bien + l.repuestas >= l.pedidas ? "" : "bg-amber-50"}`}>
+                        <td className="py-1 pr-2 font-semibold">{l.ref || "—"}{l.descripcion ? <span className="block font-normal text-slate-400">{l.descripcion}</span> : null}</td>
+                        <td className="pr-2 font-mono-num">{l.ancho} × {l.alto}</td>
+                        <td className="pr-2">{l.pedidas}</td>
+                        <td className="pr-2 text-emerald-700 font-semibold">{l.bien}</td>
+                        <td className="pr-2 text-rose-600 font-semibold">{l.conProblema || ""}</td>
+                        <td className="pr-2 text-amber-700 font-semibold">{l.noLlegadas || ""}</td>
+                        <td className="pr-2">
+                          {l.conProblema + l.noLlegadas > 0 ? (
+                            <input type="number" min="0" max={l.conProblema + l.noLlegadas} value={l.repuestas}
+                              onChange={(e) => marcarRepuesto(conf, l.idx, Math.max(0, Math.min(l.conProblema + l.noLlegadas, parseInt(e.target.value, 10) || 0)))}
+                              className="w-12 border border-slate-200 rounded px-1" title="Cristales de reposición ya recibidos" />
+                          ) : ""}
+                        </td>
+                        <td className="pr-2 font-mono-num">{l.caballetes.join(", ") || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
