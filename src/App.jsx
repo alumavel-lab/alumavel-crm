@@ -3847,11 +3847,13 @@ export default function App() {
         {modulo === "uxcar" && (
           <UxcarModulo
             expedientes={uxExpedientes}
+            uxPedidos={uxPedidos}
             config={uxConfig}
             portalUsuarios={uxPortalUsuarios}
             proyectos={proyectos}
             isAdmin={isAdmin}
             onCambiarMaterial={uxCambiarMaterial}
+            onCambiarControlOtros={(exp, v) => uxActualizar(exp, { controlOtros: v })}
             onPasarProduccion={uxPasarProduccion}
             onCambiarEstado={uxCambiarEstado}
             onCambiarEntrega={uxCambiarEntrega}
@@ -23490,9 +23492,25 @@ const uxHoy = () => new Date().toISOString().slice(0, 10);
 const uxSumarDias = (fecha, n) => { const d = new Date((fecha || uxHoy()) + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
 const uxNum = (v) => parseInt(v, 10) || 0;
-// Semáforo de material: verde = todo en fábrica, amarillo = falta algo, rojo = falta todo
+// Lo que se controla de cada expediente: las ventanas (recuento) y el material que hay
+// que pedir para ellas: persianas (se guarda en "compactos") y cristales ("vidrios").
+const UX_CONTROL = [["compactos", "Persianas", "Persianas"], ["vidrios", "Cristales", "Cristales"]];
+// PVC, herrajes, refuerzos y accesorios: opcionales. Solo cuentan en el expediente que
+// tenga activado "controlOtros" (más adelante se descontarán del stock con el listado de perfiles).
+const UX_OTROS = [["pvc", "PVC"], ["herrajes", "Herrajes"], ["refuerzos", "Refuerzos"], ["accesorios", "Accesorios"]];
+// ¿Lleva persianas? Si hay recuento de ventanas, se sabe; si no, null (no se sabe)
+const uxLlevaPersiana = (exp) => {
+  const r = toArray(exp && exp.recuento);
+  if (r.length === 0) return null;
+  return r.some((l) => l.persiana);
+};
+const uxEstadoMat = (exp, k) => {
+  if (k === "compactos" && uxLlevaPersiana(exp) === false) return "no_lleva";
+  return (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente";
+};
+// Semáforo de material: verde = persianas y cristales en fábrica, amarillo = falta algo, rojo = falta todo
 const uxSemaforo = (exp) => {
-  const mats = UX_MATERIALES.map(([k]) => (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente").filter((e) => e !== "no_lleva");
+  const mats = [...UX_CONTROL, ...(exp.controlOtros ? UX_OTROS : [])].map(([k]) => uxEstadoMat(exp, k)).filter((e) => e !== "no_lleva");
   if (mats.length === 0) return "verde";
   const rec = mats.filter((e) => e === "recibido").length;
   if (rec === mats.length) return "verde";
@@ -23505,6 +23523,87 @@ const UX_SEMAFORO = {
   rojo: { color: "#dc2626", label: "Falta todo el material" },
 };
 const uxOrdenar = (lista) => [...lista].sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+// Cómo va la persiana o el cristal de un expediente, mirando sus pedidos
+const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
+  const peds = toArray(pedidos).filter((p) => p.tipo === tipoPedido && toArray(p.expedientes).some((x) => x.expedienteId === exp.id));
+  const est = uxEstadoMat(exp, clave);
+  const enviado = (p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual;
+  let r;
+  if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
+  else if (est === "recibido") r = { t: "✓ Ha llegado todo", c: "text-emerald-700" };
+  else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
+  else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
+  else if (peds.length > 0) r = { t: "Pedido hecho · falta mandarlo al proveedor", c: "text-amber-700" };
+  else if (est === "pedido") r = { t: "Pedido (hecho fuera del portal)", c: "text-sky-700" };
+  else r = { t: "✗ Sin pedir", c: "text-rose-600" };
+  return { ...r, peds };
+};
+
+// Las tres cosas de un expediente: ventanas, persianas y cristales
+function UxControl3({ exp, pedidos, onAbrirPedido, onCambiarMaterial, onCambiarControlOtros }) {
+  const total = uxNum(exp.ventanas) + uxNum(exp.puertas) + uxNum(exp.osciloParalelas);
+  const fila = (titulo, contenido, derecha) => (
+    <div className="px-4 py-3 flex flex-wrap items-start gap-3">
+      <div className="w-24 shrink-0 text-sm font-bold text-slate-800">{titulo}</div>
+      <div className="flex-1 min-w-[200px] space-y-1.5">{contenido}</div>
+      {derecha}
+    </div>
+  );
+  return (
+    <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 bg-white">
+      {fila("Ventanas",
+        <>
+          <div className="text-sm"><span className="font-extrabold text-slate-900">{total}</span> <span className="text-slate-500">({uxNum(exp.ventanas)} ventanas · {uxNum(exp.puertas)} puertas{uxNum(exp.osciloParalelas) ? ` · ${uxNum(exp.osciloParalelas)} oscilo-paralelas` : ""})</span></div>
+          {toArray(exp.recuento).length > 0 ? <UxRecuentoChips lineas={exp.recuento} /> : <div className="text-xs text-slate-400">Sin listado de ventanas: edita el expediente y pulsa "Contar desde el PDF".</div>}
+        </>
+      )}
+      {UX_CONTROL.map(([clave, titulo, tipoPedido]) => {
+        const e = uxEstadoControl(exp, pedidos, clave, tipoPedido);
+        return (
+          <React.Fragment key={clave}>
+            {fila(titulo,
+              <>
+                <div className={`text-sm font-semibold ${e.c}`}>{e.t}</div>
+                {e.peds.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {e.peds.map((p) => { const ep = uxEstadoPedido(p); const cont = <><span className="font-semibold">{p.numero}</span> · {p.proveedorNombre} · <span className={`px-1.5 rounded border ${ep.cls}`}>{ep.label}</span></>; return onAbrirPedido
+                      ? <button key={p.id} type="button" onClick={() => onAbrirPedido(p.id)} className="text-xs text-left hover:underline">{cont}</button>
+                      : <span key={p.id} className="text-xs">{cont}</span>; })}
+                  </div>
+                )}
+              </>,
+              onCambiarMaterial ? (
+                <Select value={(exp.materiales && exp.materiales[clave] && exp.materiales[clave].estado) || "pendiente"} onChange={(ev) => onCambiarMaterial(exp, clave, ev.target.value)} className="max-w-[190px] text-xs">
+                  {Object.entries(UX_MAT_ESTADOS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </Select>
+              ) : null
+            )}
+          </React.Fragment>
+        );
+      })}
+      {exp.controlOtros ? fila("Otros",
+        <div className="space-y-1">
+          {UX_OTROS.map(([k, label]) => {
+            const st = uxEstadoMat(exp, k);
+            return (
+              <div key={k} className="flex items-center gap-2 text-sm">
+                <span className="w-24 text-slate-600">{label}</span>
+                {onCambiarMaterial ? (
+                  <Select value={st} onChange={(ev) => onCambiarMaterial(exp, k, ev.target.value)} className="max-w-[190px] text-xs">
+                    {Object.entries(UX_MAT_ESTADOS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </Select>
+                ) : <span className={`font-semibold ${st === "recibido" ? "text-emerald-700" : st === "no_lleva" ? "text-slate-400" : st === "pedido" ? "text-sky-700" : "text-rose-600"}`}>{UX_MAT_ESTADOS[st]}</span>}
+              </div>
+            );
+          })}
+          {onCambiarControlOtros && <button type="button" onClick={() => onCambiarControlOtros(exp, false)} className="text-xs text-slate-400 hover:text-slate-700 hover:underline">Dejar de controlar PVC, herrajes, refuerzos y accesorios</button>}
+        </div>
+      ) : onCambiarControlOtros ? (
+        <div className="px-4 py-2"><button type="button" onClick={() => onCambiarControlOtros(exp, true)} className="text-xs font-semibold text-slate-500 hover:text-slate-800 hover:underline">+ Controlar también PVC, herrajes, refuerzos y accesorios (opcional)</button></div>
+      ) : null}
+    </div>
+  );
+}
 
 function UxSemaforo({ exp, conTexto }) {
   const s = UX_SEMAFORO[uxSemaforo(exp)];
@@ -23629,12 +23728,12 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
             <tr>
               <th className="text-left px-3 py-2">Material</th><th className="text-left px-3 py-2">Expediente</th><th className="text-left px-3 py-2">Tipo</th>
-              <th className="text-right px-3 py-2">Vent.</th><th className="text-right px-3 py-2">Puert.</th><th className="text-right px-3 py-2">O-P</th>
+              <th className="text-right px-3 py-2">Vent.</th><th className="text-right px-3 py-2">Puert.</th><th className="text-left px-3 py-2">Persianas</th><th className="text-left px-3 py-2">Cristales</th>
               <th className="text-left px-3 py-2">Alta</th><th className="text-left px-3 py-2">Estado</th><th className="text-left px-3 py-2">Entrega</th>
             </tr>
           </thead>
           <tbody>
-            {lista.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No hay expedientes.</td></tr>}
+            {lista.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No hay expedientes.</td></tr>}
             {lista.map((e) => (
               <tr key={e.id} onClick={() => onAbrir(e.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2"><UxSemaforo exp={e} /></td>
@@ -23642,7 +23741,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
                 <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
                 <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
                 <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
-                <td className="px-3 py-2 text-right">{uxNum(e.osciloParalelas)}</td>
+                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`}>{st === "recibido" ? "✓ Llegado" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(e.fechaAlta)}</td>
                 <td className="px-3 py-2"><UxEstado estado={e.estado} /></td>
                 <td className="px-3 py-2 whitespace-nowrap font-semibold">{uxFecha(e.fechaEntrega)}</td>
@@ -23863,15 +23962,16 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
           </Select>
         </Field>
       </div>
+      <UxRecuentoEditor lineas={f.recuento} onChange={setRecuento} />
       <div className="grid grid-cols-3 gap-3">
         <Field label="Nº ventanas"><TextInput type="number" min="0" inputMode="numeric" value={f.ventanas} onChange={set("ventanas")} /></Field>
         <Field label="Nº puertas"><TextInput type="number" min="0" inputMode="numeric" value={f.puertas} onChange={set("puertas")} /></Field>
         <Field label="Oscilo-paralelas"><TextInput type="number" min="0" inputMode="numeric" value={f.osciloParalelas} onChange={set("osciloParalelas")} /></Field>
       </div>
-      <UxRecuentoEditor lineas={f.recuento} onChange={setRecuento} />
-      <Field label="Material">
+      <Field label="Persianas y cristales">
         <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
-          {UX_MATERIALES.map(([k, label]) => {
+          {UX_CONTROL.map(([k, label]) => {
+            if (k === "compactos" && uxLlevaPersiana(f) === false) return <div key={k} className="flex items-center justify-between gap-3 px-3 py-2"><span className="text-sm font-medium text-slate-700">{label}</span><span className="text-xs text-slate-400">No lleva (ninguna ventana con persiana)</span></div>;
             const estado = f.materiales[k].estado;
             return (
               <div key={k} className="flex items-center justify-between gap-3 px-3 py-2">
@@ -23889,8 +23989,33 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
             );
           })}
         </div>
-        <p className="text-[11px] text-slate-400 mt-1">"Recibido en fábrica" lo marca Ecowin PVC cuando llega el material.</p>
+        <p className="text-[11px] text-slate-400 mt-1">Se ponen solos al hacer el pedido en "Pedidos" y al subir el albarán cuando llega.</p>
       </Field>
+      <div className="border border-slate-200 rounded-md">
+        <label className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700 cursor-pointer">
+          <input type="checkbox" checked={!!f.controlOtros} onChange={(e) => setF({ ...f, controlOtros: e.target.checked })} />
+          Controlar también PVC, herrajes, refuerzos y accesorios <span className="text-xs font-normal text-slate-400">(opcional)</span>
+        </label>
+        {f.controlOtros && (
+          <div className="border-t border-slate-100 divide-y divide-slate-100">
+            {UX_OTROS.map(([k, label]) => {
+              const estado = f.materiales[k].estado;
+              return (
+                <div key={k} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <span className="text-sm font-medium text-slate-700">{label}</span>
+                  {estado === "recibido" ? <span className="text-xs font-semibold text-emerald-700">✓ Recibido en fábrica</span> : (
+                    <Select value={estado} onChange={(e) => setMat(k, e.target.value)} className="max-w-[190px]">
+                      <option value="pendiente">{UX_MAT_ESTADOS.pendiente}</option>
+                      <option value="pedido">{UX_MAT_ESTADOS.pedido}</option>
+                      <option value="no_lleva">{UX_MAT_ESTADOS.no_lleva}</option>
+                    </Select>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
       <Field label="Observaciones"><TextArea rows={3} value={f.observaciones || ""} onChange={set("observaciones")} /></Field>
       {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
       <div className="flex justify-end gap-2">
@@ -24675,7 +24800,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
       if (g.destino === "nuevo") {
         const id = uid();
         const materiales = {};
-        UX_MATERIALES.forEach(([k]) => { materiales[k] = { estado: k === "vidrios" && tipo === "Cristales" ? "pedido" : "pendiente" }; });
+        UX_MATERIALES.forEach(([k]) => { materiales[k] = { estado: k === uxMatAlbaran(tipo) ? "pedido" : "pendiente" }; });
         exp = {
           id, numero: g.numeroNuevo.trim().replace(/\s+/g, " ").toUpperCase(), tipo: tipoExp || "", ventanas: uxVentanasDeLineas(g.lineas), puertas: 0, osciloParalelas: 0,
           observaciones: g.nombre || "", materiales, estado: "virtual", fechaAlta: hoy, creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenPedidoId: pedidoId,
@@ -24683,7 +24808,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         patch[`expedientes/${id}`] = exp;
       } else {
         exp = expedientes.find((x) => x.id === g.destino);
-        if (exp && tipo === "Cristales" && (!exp.materiales || !exp.materiales.vidrios || exp.materiales.vidrios.estado === "pendiente")) patch[`expedientes/${exp.id}/materiales/vidrios/estado`] = "pedido";
+        const matPed = uxMatAlbaran(tipo);
+        if (exp && matPed && (!exp.materiales || !exp.materiales[matPed] || exp.materiales[matPed].estado === "pendiente")) patch[`expedientes/${exp.id}/materiales/${matPed}/estado`] = "pedido";
       }
       if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas });
     });
@@ -24707,7 +24833,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     const id = uid();
     const exp = {
       id, numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas,
-      recuento: f.recuento || [],
+      recuento: f.recuento || [], controlOtros: !!f.controlOtros,
       observaciones: f.observaciones || "", materiales: f.materiales, estado: "virtual",
       fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
     };
@@ -24717,7 +24843,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return true;
   };
   const guardarEdicion = async (f) => {
-    const patch = { numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas, recuento: f.recuento && f.recuento.length ? f.recuento : null, observaciones: f.observaciones || "", editadoAt: Date.now(), estado: "virtual" };
+    const patch = { numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas, recuento: f.recuento && f.recuento.length ? f.recuento : null, controlOtros: !!f.controlOtros, observaciones: f.observaciones || "", editadoAt: Date.now(), estado: "virtual" };
     const actual = expedientes.find((x) => x.id === abiertoId);
     UX_MATERIALES.forEach(([k]) => {
       const antes = actual && actual.materiales && actual.materiales[k] && actual.materiales[k].estado;
@@ -24794,26 +24920,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
               <UxEstado estado={abierto.estado} />
               <UxSemaforo exp={abierto} conTexto />
             </div>
-            <UxFichaDatos exp={abierto} />
-            <div className="mt-4 border border-slate-200 rounded-md divide-y divide-slate-100">
-              {UX_MATERIALES.map(([k, label]) => {
-                const est = (abierto.materiales && abierto.materiales[k] && abierto.materiales[k].estado) || "pendiente";
-                return <div key={k} className="flex justify-between px-3 py-2 text-sm"><span>{label}</span><span className={est === "recibido" ? "font-semibold text-emerald-700" : est === "no_lleva" ? "text-slate-400" : "text-slate-700"}>{UX_MAT_ESTADOS[est]}</span></div>;
-              })}
-            </div>
-            {pedidosUx.some((p) => toArray(p.expedientes).some((x) => x.expedienteId === abierto.id)) && (
-              <div className="mt-4">
-                <div className="text-sm font-semibold text-slate-700 mb-2">Pedidos de este expediente</div>
-                <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
-                  {pedidosUx.filter((p) => toArray(p.expedientes).some((x) => x.expedienteId === abierto.id)).map((p) => { const e = uxEstadoPedido(p); return (
-                    <button key={p.id} onClick={() => { setPedidoAbiertoId(p.id); setVista("fichaPedido"); }} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm hover:bg-slate-50 text-left">
-                      <span><span className="font-semibold">{p.numero}</span> · {p.tipo} · {p.proveedorNombre}</span>
-                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span>
-                    </button>
-                  ); })}
-                </div>
-              </div>
-            )}
+            <UxControl3 exp={abierto} pedidos={pedidosUx} onAbrirPedido={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
+            <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
             {abierto.estado === "virtual" ? (
               <button onClick={() => setVista("editar")} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Editar</button>
             ) : (
@@ -24830,7 +24938,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
 }
 
 // Módulo "Uxcar" dentro del CRM (lo usa el equipo)
-function UxcarModulo({ expedientes, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+function UxcarModulo({ expedientes, uxPedidos = [], onCambiarControlOtros, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
   const [vista, setVista] = useState("lista");
   const [abiertoId, setAbiertoId] = useState(null);
   const tipos = config && config.tipos ? toArray(config.tipos) : [];
@@ -24844,6 +24952,7 @@ function UxcarModulo({ expedientes, config, portalUsuarios, proyectos, isAdmin, 
     <button onClick={() => setVista(id)} className={`crm-tab px-3 py-2 text-sm font-semibold ${vista === id || (id === "lista" && vista === "ficha") ? "border-[#2E8B57]" : ""}`}>{label}</button>
   );
   const pendientesProduccion = expedientes.filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").length;
+  // (persianas y cristales ya en fábrica)
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl">
@@ -24912,27 +25021,12 @@ function UxcarModulo({ expedientes, config, portalUsuarios, proyectos, isAdmin, 
             <UxEstado estado={abierto.estado} />
             <UxSemaforo exp={abierto} conTexto />
           </div>
-          <UxFichaDatos exp={abierto} />
-          <div className="mt-4">
-            <div className="text-sm font-semibold text-slate-700 mb-2">Material (pulsa para marcar como recibido en fábrica)</div>
-            <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
-              {UX_MATERIALES.map(([k, label]) => {
-                const est = (abierto.materiales && abierto.materiales[k] && abierto.materiales[k].estado) || "pendiente";
-                return (
-                  <div key={k} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                    <span className="font-medium">{label}</span>
-                    <Select value={est} onChange={(e) => onCambiarMaterial(abierto, k, e.target.value)} className="max-w-[200px]">
-                      {Object.entries(UX_MAT_ESTADOS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                    </Select>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <UxControl3 exp={abierto} pedidos={uxPedidos} onCambiarMaterial={onCambiarMaterial} onCambiarControlOtros={onCambiarControlOtros} />
+          <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
           <div className="mt-5 flex flex-wrap items-end gap-3">
             {abierto.estado === "virtual" && (
               <button onClick={() => {
-                if (uxSemaforo(abierto) !== "verde" && !confirm("Todavía falta material de este expediente. ¿Pasarlo a producción igualmente?")) return;
+                if (uxSemaforo(abierto) !== "verde" && !confirm("Todavía faltan persianas o cristales de este expediente. ¿Pasarlo a producción igualmente?")) return;
                 onPasarProduccion(abierto);
               }} className="text-sm font-semibold px-4 py-2 rounded-md text-white" style={{ backgroundColor: "#7c3aed" }}>Pasar a producción (entrega +{UX_DIAS_ENTREGA} días)</button>
             )}
