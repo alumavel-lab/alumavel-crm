@@ -11,7 +11,7 @@ import {
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, get as fbGet, set as fbSet } from "firebase/database";
+import { getDatabase, ref, get as fbGet, set as fbSet, update as fbUpdate, onValue, runTransaction } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -96,6 +96,7 @@ const MODULOS_DISPONIBLES = [
   { id: "fabrica", label: "Fábrica" },
   { id: "instalaciones", label: "Instalaciones" },
   { id: "fichajes", label: "Fichajes" },
+  { id: "uxcar", label: "Uxcar (portal)" },
 ];
 
 // Configuración física del almacén de cristales dentro de Fábrica. La ubicación se
@@ -496,6 +497,11 @@ export default function App() {
   const primerAdminRef = useRef(null);
   // true solo si la lista de usuarios se ha podido leer (si la base de datos no deja, no es del equipo)
   const [usuariosLeidosOk, setUsuariosLeidosOk] = useState(false);
+  // Si quien entra es un usuario del portal de Uxcar, aquí va su ficha (y solo ve el portal)
+  const [portalPerfil, setPortalPerfil] = useState(null);
+  const [uxExpedientes, setUxExpedientes] = useState([]);
+  const [uxConfig, setUxConfig] = useState({});
+  const [uxPortalUsuarios, setUxPortalUsuarios] = useState([]);
   useEffect(() => onAuthStateChanged(fbAuth, (u) => setAuthUser(u || null)), []);
   const [clientes, setClientes] = useState([]);
   const [proyectos, setProyectos] = useState([]);
@@ -652,6 +658,12 @@ export default function App() {
     setLoading(true);
     (async () => {
       try {
+        // ¿Es un usuario del portal de Uxcar? Entonces NO se carga nada del CRM.
+        const perfilSnap = await fbGet(ref(fbDb, `portalUsuarios/${authUser.uid}`)).catch(() => null);
+        if (perfilSnap && perfilSnap.exists()) {
+          setPortalPerfil(perfilSnap.val());
+          return;
+        }
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
@@ -2685,6 +2697,139 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUser?.uid, loading, currentUser?.id, hayUsuariosNuevos, usuariosLeidosOk]);
 
+  // ---- Uxcar: el equipo escucha en tiempo real los expedientes del portal ----
+  useEffect(() => {
+    if (!currentUser) return;
+    const off1 = onValue(ref(fbDb, "portalUxcar"), (snap) => {
+      const v = snap.val() || {};
+      setUxExpedientes(toArray(v.expedientes));
+      setUxConfig(v.config || {});
+    }, () => {});
+    const off2 = onValue(ref(fbDb, "portalUsuarios"), (snap) => {
+      const v = snap.val() || {};
+      setUxPortalUsuarios(Object.entries(v).map(([k, u]) => ({ ...u, uid: k })));
+    }, () => {});
+    return () => { off1(); off2(); };
+  }, [currentUser?.id]);
+
+  // Cada expediente nuevo de Uxcar crea su Proyecto en el CRM (cliente Uxcar). Se
+  // "reserva" el expediente con una transacción para que, si hay dos personas con el
+  // CRM abierto a la vez, solo una de ellas cree el proyecto.
+  const uxCreandoRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || uxCreandoRef.current) return;
+    const sinProyecto = uxExpedientes.filter((e) => e && e.id && !e.proyectoId);
+    if (sinProyecto.length === 0) return;
+    uxCreandoRef.current = true;
+    (async () => {
+      try {
+        let cliente = clientes.find((c) => /uxcar/i.test(c.nombre || ""));
+        let clientesNuevos = null;
+        if (!cliente) {
+          cliente = { id: uid(), nombre: "Uxcar", email: "", telefono: "", notas: "Cliente creado automáticamente por el portal Uxcar" };
+          clientesNuevos = [cliente, ...clientes];
+        }
+        let numero = parseInt(nextNumeroProyecto(), 10);
+        const nuevos = [];
+        for (const exp of sinProyecto) {
+          const nuevoId = uid();
+          const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (actual ? undefined : nuevoId)).catch(() => null);
+          if (!res || !res.committed) continue;
+          const piezas = [exp.ventanas ? `${exp.ventanas} ventanas` : "", exp.puertas ? `${exp.puertas} puertas` : "", exp.osciloParalelas ? `${exp.osciloParalelas} oscilo-paralelas` : ""].filter(Boolean).join(", ");
+          nuevos.push({
+            id: nuevoId, numero: String(numero++), nombre: `Uxcar · ${exp.numero}${piezas ? " · " + piezas : ""}`,
+            clienteId: cliente.id, tipoVenta: "Venta", especificaciones: `Expediente ${exp.numero} (${exp.tipo || "sin tipo"}) metido por Uxcar desde su portal.${exp.observaciones ? "\n" + exp.observaciones : ""}`,
+            estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
+            estadoTrabajo: "Pendiente de aceptación", ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: "", fechaEntregado: "",
+            provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
+            gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
+            origen: "portalUxcar", uxcarExpedienteId: exp.id,
+          });
+        }
+        if (clientesNuevos && nuevos.length > 0) saveClientes(clientesNuevos);
+        if (nuevos.length > 0) {
+          saveProyectos([...nuevos, ...proyectos]);
+          showToast(nuevos.length === 1 ? `Nuevo expediente de Uxcar: ${nuevos[0].nombre}` : `${nuevos.length} expedientes nuevos de Uxcar`);
+        }
+      } finally {
+        uxCreandoRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxExpedientes, currentUser?.id, loading]);
+
+  const uxActualizar = async (exp, patch) => {
+    try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), patch); return true; }
+    catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
+  };
+  const uxCambiarMaterial = (exp, clave, estado) => uxActualizar(exp, { [`materiales/${clave}/estado`]: estado });
+  const uxPasarProduccion = async (exp) => {
+    const hoy = uxHoy();
+    const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
+    if (!(await uxActualizar(exp, { estado: "produccion", fechaProduccion: hoy, fechaEntrega: entrega }))) return;
+    if (exp.proyectoId && proyectos.some((p) => p.id === exp.proyectoId)) {
+      updateProyectoInline(exp.proyectoId, { estadoTrabajo: "En proceso", fechaFabricacion: hoy, fechaEntregaPrevista: entrega });
+    }
+    showToast(`${exp.numero} pasa a producción · entrega ${uxFecha(entrega)}`);
+  };
+  const uxCambiarEstado = async (exp, estado) => {
+    const hoy = uxHoy();
+    const patch = { estado };
+    if (estado === "terminado") patch.fechaTerminado = hoy;
+    if (estado === "entregado") patch.fechaEntregado = hoy;
+    if (!(await uxActualizar(exp, patch))) return;
+    const p = exp.proyectoId && proyectos.find((x) => x.id === exp.proyectoId);
+    if (p) {
+      if (estado === "terminado") updateProyectoInline(p.id, { estadoTrabajo: "Listo para reparto/recogida" });
+      if (estado === "entregado") updateProyectoInline(p.id, { estadoTrabajo: "Entregado", fechaEntregado: hoy });
+      if (estado === "virtual") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación" });
+    }
+    showToast(`${exp.numero}: ${UX_ESTADOS[estado].label}`);
+  };
+  const uxCambiarEntrega = async (exp, fecha) => {
+    if (!(await uxActualizar(exp, { fechaEntrega: fecha }))) return;
+    if (exp.proyectoId && proyectos.some((p) => p.id === exp.proyectoId)) updateProyectoInline(exp.proyectoId, { fechaEntregaPrevista: fecha });
+  };
+  const uxGuardarTipos = async (tipos) => {
+    try { await fbSet(ref(fbDb, "portalUxcar/config/tipos"), tipos); showToast("Tipos de expediente guardados"); }
+    catch (e) { showToast("No se pudo guardar: " + e.message, "error"); }
+  };
+  const uxBorrar = async (exp) => {
+    try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), null); showToast(`Expediente ${exp.numero} borrado`); }
+    catch (e) { showToast("No se pudo borrar: " + e.message, "error"); }
+  };
+  // Alta de un usuario del portal: cuenta de acceso + ficha en portalUsuarios (lo que
+  // le deja ver SOLO la zona de Uxcar). Nunca se le mete en "equipo".
+  const uxAltaPortal = async ({ nombre, email, password }) => {
+    const e = (email || "").trim().toLowerCase();
+    if (usuarios.some((u) => (u.email || "").toLowerCase() === e)) { showToast("Ese email es de un usuario del equipo. Usa otro.", "error"); return false; }
+    let authUid = null;
+    try {
+      const cred = await createUserWithEmailAndPassword(fbAuthAltas, e, password);
+      authUid = cred.user.uid;
+      await signOut(fbAuthAltas).catch(() => {});
+    } catch (err) {
+      if (err && err.code === "auth/email-already-in-use") {
+        const snap = await fbGet(ref(fbDb, `authCuentas/${emailKey(e)}`)).catch(() => null);
+        const eq = snap && snap.exists() ? await fbGet(ref(fbDb, `equipo/${snap.val()}`)).catch(() => null) : null;
+        if (snap && snap.exists() && !(eq && eq.exists() && eq.val())) {
+          authUid = snap.val();
+          sendPasswordResetEmail(fbAuth, e).catch(() => {});
+        } else { showToast("Ese email ya tiene una cuenta de acceso. Usa otro.", "error"); return false; }
+      } else { showToast(traducirErrorAuth(err), "error"); return false; }
+    }
+    try {
+      await fbSet(ref(fbDb, `portalUsuarios/${authUid}`), { nombre: nombre.trim(), email: e, empresa: "Uxcar", fechaAlta: uxHoy() });
+      await fbSet(ref(fbDb, `authCuentas/${emailKey(e)}`), authUid);
+    } catch (err2) { showToast("No se pudo guardar el acceso: " + err2.message, "error"); return false; }
+    showToast(`${nombre.trim()} ya puede entrar al portal de Uxcar`);
+    return true;
+  };
+  const uxBajaPortal = async (portalUid) => {
+    try { await fbSet(ref(fbDb, `portalUsuarios/${portalUid}`), null); showToast("Acceso quitado"); }
+    catch (e) { showToast("No se pudo quitar: " + e.message, "error"); }
+  };
+
   // Seguimiento de tiempo conectado por usuario: mientras haya un usuario con
   // sesión iniciada (currentUser), guardamos una "sesión" en Firebase con hora
   // de inicio y hora de fin. La hora de fin se va actualizando cada 2 minutos
@@ -2759,6 +2904,10 @@ export default function App() {
         onAntesDeCrearAdmin={(datos) => { primerAdminRef.current = datos; }}
       />
     );
+  }
+
+  if (portalPerfil) {
+    return <PortalUxcar authUser={authUser} perfil={portalPerfil} onLogout={cerrarSesion} />;
   }
 
   if (!currentUser) {
@@ -2982,6 +3131,19 @@ export default function App() {
             }`}
           >
             <Timer size={16} /> Fichajes
+          </button>
+          )}
+          {tieneAcceso("uxcar") && (
+          <button
+            onClick={() => setModulo("uxcar")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "uxcar" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Globe size={16} /> Uxcar
+            {uxExpedientes.filter((e) => e.estado === "virtual").length > 0 && (
+              <span className="ml-auto text-[10px] font-bold bg-white/15 rounded px-1.5 py-0.5">{uxExpedientes.filter((e) => e.estado === "virtual").length}</span>
+            )}
           </button>
           )}
           <div className="pt-2 mt-2 border-t border-white/10" />
@@ -3543,6 +3705,24 @@ export default function App() {
             onFichar={registrarFichaje}
             onDeleteFichaje={deleteFichaje}
             isAdmin={isAdmin}
+          />
+        )}
+        {modulo === "uxcar" && (
+          <UxcarModulo
+            expedientes={uxExpedientes}
+            config={uxConfig}
+            portalUsuarios={uxPortalUsuarios}
+            proyectos={proyectos}
+            isAdmin={isAdmin}
+            onCambiarMaterial={uxCambiarMaterial}
+            onPasarProduccion={uxPasarProduccion}
+            onCambiarEstado={uxCambiarEstado}
+            onCambiarEntrega={uxCambiarEntrega}
+            onGuardarTipos={uxGuardarTipos}
+            onAltaPortal={uxAltaPortal}
+            onBajaPortal={uxBajaPortal}
+            onBorrar={uxBorrar}
+            onVerProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
           />
         )}
         {modulo === "administracion" && isAdmin && (
@@ -23135,6 +23315,507 @@ function LoginGate({ primeraVez, onAntesDeCrearAdmin }) {
           {primeraVez ? "Podrás dar de alta a más usuarios luego, desde Administración." : "¿No tienes cuenta? Pídele a un administrador que te dé de alta."}
         </p>
       </div>
+    </div>
+  );
+}
+
+/* ================= PORTAL UXCAR ================= */
+// Uxcar mete sus expedientes en su propio portal (portalUxcar/expedientes en la base
+// de datos). Cada expediente se guarda en su propia ruta (no en una lista completa),
+// así Uxcar y el equipo pueden escribir a la vez sin pisarse. Uxcar solo puede crear
+// y editar mientras el expediente está en "Planificación virtual"; el resto de estados
+// los mueve el equipo desde el módulo Uxcar del CRM.
+const UX_ESTADOS = {
+  virtual: { label: "Planificación virtual", cls: "bg-slate-100 text-slate-700 border-slate-300" },
+  produccion: { label: "En producción", cls: "bg-violet-100 text-violet-800 border-violet-300" },
+  terminado: { label: "Terminado", cls: "bg-sky-100 text-sky-800 border-sky-300" },
+  entregado: { label: "Entregado", cls: "bg-emerald-100 text-emerald-800 border-emerald-300" },
+};
+const UX_MATERIALES = [["pvc", "PVC"], ["herrajes", "Herrajes"], ["refuerzos", "Refuerzos"], ["accesorios", "Accesorios"], ["vidrios", "Vidrios"], ["compactos", "Compactos"]];
+const UX_MAT_ESTADOS = { no_lleva: "No lleva", pendiente: "Pendiente de pedir", pedido: "Pedido", recibido: "Recibido en fábrica" };
+const UX_DIAS_ENTREGA = 6;
+const uxHoy = () => new Date().toISOString().slice(0, 10);
+const uxSumarDias = (fecha, n) => { const d = new Date((fecha || uxHoy()) + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
+const uxNum = (v) => parseInt(v, 10) || 0;
+// Semáforo de material: verde = todo en fábrica, amarillo = falta algo, rojo = falta todo
+const uxSemaforo = (exp) => {
+  const mats = UX_MATERIALES.map(([k]) => (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente").filter((e) => e !== "no_lleva");
+  if (mats.length === 0) return "verde";
+  const rec = mats.filter((e) => e === "recibido").length;
+  if (rec === mats.length) return "verde";
+  if (rec === 0) return "rojo";
+  return "amarillo";
+};
+const UX_SEMAFORO = {
+  verde: { color: "#16a34a", label: "Todo el material en fábrica" },
+  amarillo: { color: "#eab308", label: "Falta algún material" },
+  rojo: { color: "#dc2626", label: "Falta todo el material" },
+};
+const uxOrdenar = (lista) => [...lista].sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+
+function UxSemaforo({ exp, conTexto }) {
+  const s = UX_SEMAFORO[uxSemaforo(exp)];
+  return (
+    <span className="inline-flex items-center gap-1.5" title={s.label}>
+      <span className="w-3 h-3 rounded-full inline-block shrink-0" style={{ backgroundColor: s.color }} />
+      {conTexto && <span className="text-xs text-slate-600">{s.label}</span>}
+    </span>
+  );
+}
+
+function UxEstado({ estado }) {
+  const e = UX_ESTADOS[estado] || UX_ESTADOS.virtual;
+  return <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border whitespace-nowrap ${e.cls}`}>{e.label}</span>;
+}
+
+// Resumen de ventanas (y puertas) por día, semana, mes y tipo de expediente.
+function UxResumen({ expedientes }) {
+  const hoy = uxHoy();
+  const d = new Date(hoy + "T12:00:00");
+  const diaSemana = (d.getDay() + 6) % 7; // lunes = 0
+  const inicioSemana = uxSumarDias(hoy, -diaSemana);
+  const inicioMes = hoy.slice(0, 8) + "01";
+  const suma = (lista, k) => lista.reduce((s, e) => s + uxNum(e[k]), 0);
+  const deSemana = expedientes.filter((e) => (e.fechaAlta || "") >= inicioSemana);
+  const deMes = expedientes.filter((e) => (e.fechaAlta || "") >= inicioMes);
+  const dias = [];
+  for (let i = 13; i >= 0; i--) {
+    const f = uxSumarDias(hoy, -i);
+    const delDia = expedientes.filter((e) => e.fechaAlta === f);
+    dias.push({ dia: f.slice(8, 10) + "/" + f.slice(5, 7), ventanas: suma(delDia, "ventanas"), expedientes: delDia.length });
+  }
+  const porTipo = {};
+  deMes.forEach((e) => {
+    const t = e.tipo || "Sin tipo";
+    porTipo[t] = porTipo[t] || { expedientes: 0, ventanas: 0, puertas: 0, osciloParalelas: 0 };
+    porTipo[t].expedientes += 1;
+    porTipo[t].ventanas += uxNum(e.ventanas);
+    porTipo[t].puertas += uxNum(e.puertas);
+    porTipo[t].osciloParalelas += uxNum(e.osciloParalelas);
+  });
+  const tarjeta = (titulo, lista) => (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold">{titulo}</div>
+      <div className="text-3xl font-extrabold text-slate-900 mt-1">{suma(lista, "ventanas")} <span className="text-sm font-semibold text-slate-500">ventanas</span></div>
+      <div className="text-xs text-slate-500 mt-1">{lista.length} expedientes · {suma(lista, "puertas")} puertas · {suma(lista, "osciloParalelas")} oscilo-paralelas</div>
+    </div>
+  );
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {tarjeta("Hoy", expedientes.filter((e) => e.fechaAlta === hoy))}
+        {tarjeta("Esta semana", deSemana)}
+        {tarjeta("Este mes", deMes)}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="text-sm font-semibold text-slate-700 mb-3">Ventanas metidas por día (últimos 14 días)</div>
+        <div style={{ width: "100%", height: 220 }}>
+          <ResponsiveContainer>
+            <BarChart data={dias}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="dia" tick={{ fontSize: 11 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="ventanas" name="Ventanas" fill="#2E8B57" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <div className="text-sm font-semibold text-slate-700 px-4 pt-4 pb-2">Este mes por tipo de expediente</div>
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
+            <tr><th className="text-left px-4 py-2">Tipo</th><th className="text-right px-4 py-2">Expedientes</th><th className="text-right px-4 py-2">Ventanas</th><th className="text-right px-4 py-2">Puertas</th><th className="text-right px-4 py-2">Oscilo-paralelas</th></tr>
+          </thead>
+          <tbody>
+            {Object.keys(porTipo).length === 0 && <tr><td colSpan={5} className="px-4 py-4 text-slate-400">Todavía no hay expedientes este mes.</td></tr>}
+            {Object.entries(porTipo).map(([t, v]) => (
+              <tr key={t} className="border-t border-slate-100"><td className="px-4 py-2 font-medium">{t}</td><td className="px-4 py-2 text-right">{v.expedientes}</td><td className="px-4 py-2 text-right font-semibold">{v.ventanas}</td><td className="px-4 py-2 text-right">{v.puertas}</td><td className="px-4 py-2 text-right">{v.osciloParalelas}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Tabla de expedientes (la usan el portal y el módulo del CRM)
+function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
+  const [filtro, setFiltro] = useState(filtroInicial);
+  const [busca, setBusca] = useState("");
+  const lista = uxOrdenar(expedientes).filter((e) => {
+    if (filtro === "activos" && e.estado === "entregado") return false;
+    if (filtro !== "activos" && filtro !== "todos" && e.estado !== filtro) return false;
+    if (busca.trim() && !`${e.numero} ${e.tipo} ${e.observaciones || ""}`.toLowerCase().includes(busca.trim().toLowerCase())) return false;
+    return true;
+  });
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-3">
+        <TextInput placeholder="Buscar EXP, tipo…" value={busca} onChange={(e) => setBusca(e.target.value)} className="max-w-xs" />
+        <Select value={filtro} onChange={(e) => setFiltro(e.target.value)} className="max-w-xs">
+          <option value="activos">Activos (sin entregados)</option>
+          <option value="todos">Todos</option>
+          {Object.entries(UX_ESTADOS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </Select>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
+            <tr>
+              <th className="text-left px-3 py-2">Material</th><th className="text-left px-3 py-2">Expediente</th><th className="text-left px-3 py-2">Tipo</th>
+              <th className="text-right px-3 py-2">Vent.</th><th className="text-right px-3 py-2">Puert.</th><th className="text-right px-3 py-2">O-P</th>
+              <th className="text-left px-3 py-2">Alta</th><th className="text-left px-3 py-2">Estado</th><th className="text-left px-3 py-2">Entrega</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lista.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No hay expedientes.</td></tr>}
+            {lista.map((e) => (
+              <tr key={e.id} onClick={() => onAbrir(e.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
+                <td className="px-3 py-2"><UxSemaforo exp={e} /></td>
+                <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{e.numero}</td>
+                <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
+                <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
+                <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
+                <td className="px-3 py-2 text-right">{uxNum(e.osciloParalelas)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{uxFecha(e.fechaAlta)}</td>
+                <td className="px-3 py-2"><UxEstado estado={e.estado} /></td>
+                <td className="px-3 py-2 whitespace-nowrap font-semibold">{uxFecha(e.fechaEntrega)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap gap-4 mt-2 text-xs text-slate-500">
+        {Object.entries(UX_SEMAFORO).map(([k, v]) => <span key={k} className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: v.color }} />{v.label}</span>)}
+      </div>
+    </div>
+  );
+}
+
+// Formulario de expediente para el portal (Uxcar). Solo campos que Uxcar puede tocar.
+function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
+  const [f, setF] = useState(() => {
+    const base = initial || { numero: "EXP ", tipo: tipos[0] || "", ventanas: "", puertas: "", osciloParalelas: "", observaciones: "", materiales: {} };
+    const materiales = {};
+    UX_MATERIALES.forEach(([k]) => { materiales[k] = { estado: (base.materiales && base.materiales[k] && base.materiales[k].estado) || "pendiente" }; });
+    return { ...base, materiales };
+  });
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const setMat = (k, estado) => setF({ ...f, materiales: { ...f.materiales, [k]: { estado } } });
+  const submit = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const numero = (f.numero || "").trim().replace(/\s+/g, " ").toUpperCase();
+    if (!numero || numero === "EXP") { setError("Pon el número de expediente."); return; }
+    if (expedientes.some((x) => x.id !== (initial && initial.id) && (x.numero || "").toUpperCase() === numero)) { setError(`Ya existe el expediente ${numero}.`); return; }
+    if (!f.tipo) { setError("Elige el tipo de expediente."); return; }
+    if (uxNum(f.ventanas) + uxNum(f.puertas) + uxNum(f.osciloParalelas) === 0) { setError("Pon cuántas ventanas, puertas u oscilo-paralelas lleva."); return; }
+    setError(""); setGuardando(true);
+    const ok = await onSave({ ...f, numero, ventanas: uxNum(f.ventanas), puertas: uxNum(f.puertas), osciloParalelas: uxNum(f.osciloParalelas) });
+    setGuardando(false);
+    if (ok === false) setError("No se pudo guardar. Revisa la conexión y vuelve a probar.");
+  };
+  return (
+    <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 max-w-2xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Field label="Nº de expediente" required><TextInput value={f.numero} onChange={set("numero")} placeholder="EXP 1234" required /></Field>
+        <Field label="Tipo de expediente" required>
+          <Select value={f.tipo} onChange={set("tipo")}>
+            <option value="">— Elegir —</option>
+            {tipos.map((t) => <option key={t} value={t}>{t}</option>)}
+          </Select>
+        </Field>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Nº ventanas"><TextInput type="number" min="0" inputMode="numeric" value={f.ventanas} onChange={set("ventanas")} /></Field>
+        <Field label="Nº puertas"><TextInput type="number" min="0" inputMode="numeric" value={f.puertas} onChange={set("puertas")} /></Field>
+        <Field label="Oscilo-paralelas"><TextInput type="number" min="0" inputMode="numeric" value={f.osciloParalelas} onChange={set("osciloParalelas")} /></Field>
+      </div>
+      <Field label="Material">
+        <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
+          {UX_MATERIALES.map(([k, label]) => {
+            const estado = f.materiales[k].estado;
+            return (
+              <div key={k} className="flex items-center justify-between gap-3 px-3 py-2">
+                <span className="text-sm font-medium text-slate-700">{label}</span>
+                {estado === "recibido" ? (
+                  <span className="text-xs font-semibold text-emerald-700">✓ Recibido en fábrica</span>
+                ) : (
+                  <Select value={estado} onChange={(e) => setMat(k, e.target.value)} className="max-w-[190px]">
+                    <option value="pendiente">{UX_MAT_ESTADOS.pendiente}</option>
+                    <option value="pedido">{UX_MAT_ESTADOS.pedido}</option>
+                    <option value="no_lleva">{UX_MAT_ESTADOS.no_lleva}</option>
+                  </Select>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-slate-400 mt-1">"Recibido en fábrica" lo marca Ecowin PVC cuando llega el material.</p>
+      </Field>
+      <Field label="Observaciones"><TextArea rows={3} value={f.observaciones || ""} onChange={set("observaciones")} /></Field>
+      {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+        <button type="submit" disabled={guardando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md disabled:opacity-60">
+          {guardando ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Guardar expediente
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// Ficha de un expediente (solo lectura) con materiales y fechas
+function UxFichaDatos({ exp }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+        <div><div className="text-xs text-slate-400">Tipo</div><div className="font-semibold">{exp.tipo || "—"}</div></div>
+        <div><div className="text-xs text-slate-400">Ventanas</div><div className="font-semibold">{uxNum(exp.ventanas)}</div></div>
+        <div><div className="text-xs text-slate-400">Puertas</div><div className="font-semibold">{uxNum(exp.puertas)}</div></div>
+        <div><div className="text-xs text-slate-400">Oscilo-paralelas</div><div className="font-semibold">{uxNum(exp.osciloParalelas)}</div></div>
+        <div><div className="text-xs text-slate-400">Alta</div><div className="font-semibold">{uxFecha(exp.fechaAlta)}</div></div>
+        <div><div className="text-xs text-slate-400">Entra en producción</div><div className="font-semibold">{uxFecha(exp.fechaProduccion)}</div></div>
+        <div><div className="text-xs text-slate-400">Entrega prevista</div><div className="font-semibold">{uxFecha(exp.fechaEntrega)}</div></div>
+        <div><div className="text-xs text-slate-400">Metido por</div><div className="font-semibold">{exp.creadoPor || "—"}</div></div>
+      </div>
+      {exp.observaciones && <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-md p-3 whitespace-pre-wrap">{exp.observaciones}</div>}
+    </div>
+  );
+}
+
+function PortalUxcar({ authUser, perfil, onLogout }) {
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState("");
+  const [vista, setVista] = useState("lista"); // lista | nuevo | resumen | ficha | editar
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [toast, setToastPortal] = useState("");
+  useEffect(() => onValue(ref(fbDb, "portalUxcar"), (snap) => { setDatos(snap.val() || {}); setError(""); }, (err) => setError("No se pudieron cargar los datos: " + err.message)), []);
+  const expedientes = datos ? toArray(datos.expedientes) : [];
+  const tipos = datos && datos.config && datos.config.tipos ? toArray(datos.config.tipos) : [];
+  const aviso = (m) => { setToastPortal(m); setTimeout(() => setToastPortal(""), 2600); };
+  const nombre = perfil.nombre || authUser.email;
+
+  const guardarNuevo = async (f) => {
+    const id = uid();
+    const exp = {
+      id, numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas,
+      observaciones: f.observaciones || "", materiales: f.materiales, estado: "virtual",
+      fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
+    };
+    try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${id}`), exp); } catch (e) { return false; }
+    aviso(`Expediente ${f.numero} guardado`);
+    setVista("lista");
+    return true;
+  };
+  const guardarEdicion = async (f) => {
+    const patch = { numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas, observaciones: f.observaciones || "", editadoAt: Date.now(), estado: "virtual" };
+    const actual = expedientes.find((x) => x.id === abiertoId);
+    UX_MATERIALES.forEach(([k]) => {
+      const antes = actual && actual.materiales && actual.materiales[k] && actual.materiales[k].estado;
+      if (antes !== "recibido") patch[`materiales/${k}/estado`] = f.materiales[k].estado;
+    });
+    try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${abiertoId}`), patch); } catch (e) { return false; }
+    aviso("Cambios guardados");
+    setVista("ficha");
+    return true;
+  };
+
+  const abierto = expedientes.find((x) => x.id === abiertoId);
+  const tab = (id, label) => (
+    <button onClick={() => setVista(id)} className={`px-3 py-2 rounded-md text-sm font-semibold ${vista === id || (id === "lista" && (vista === "ficha" || vista === "editar")) ? "bg-[#333645] text-white" : "text-slate-600 hover:bg-slate-200"}`}>{label}</button>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#F4F5F3]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <header className="bg-[#333645] text-white">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-7 w-auto" />
+          <div className="flex items-center gap-3 text-sm">
+            <span className="hidden sm:inline text-white/70">{nombre}</span>
+            <button onClick={onLogout} className="flex items-center gap-1 text-white/80 hover:text-white"><LogOut size={15} /> Salir</button>
+          </div>
+        </div>
+      </header>
+      <main className="max-w-5xl mx-auto px-4 py-6">
+        <h1 className="font-display text-2xl font-extrabold text-slate-900">Expedientes Uxcar</h1>
+        <p className="text-sm text-slate-500 mb-4">Mete aquí cada expediente y sigue cómo va: material, producción y fecha de entrega.</p>
+        <div className="flex flex-wrap gap-1 mb-5">
+          {tab("lista", "Mis expedientes")}
+          {tab("nuevo", "+ Nuevo expediente")}
+          {tab("resumen", "Resumen")}
+        </div>
+        {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
+        {!datos ? (
+          <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
+        ) : vista === "nuevo" ? (
+          tipos.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay tipos de expediente configurados. Avisa a Ecowin PVC.</p>
+            : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
+        ) : vista === "resumen" ? (
+          <UxResumen expedientes={expedientes} />
+        ) : vista === "editar" && abierto ? (
+          <UxFormExpediente initial={abierto} tipos={tipos} expedientes={expedientes} onCancel={() => setVista("ficha")} onSave={guardarEdicion} />
+        ) : vista === "ficha" && abierto ? (
+          <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-3xl">
+            <button onClick={() => setVista("lista")} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-3"><ChevronLeft size={16} /> Volver</button>
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <h2 className="text-xl font-extrabold text-slate-900">{abierto.numero}</h2>
+              <UxEstado estado={abierto.estado} />
+              <UxSemaforo exp={abierto} conTexto />
+            </div>
+            <UxFichaDatos exp={abierto} />
+            <div className="mt-4 border border-slate-200 rounded-md divide-y divide-slate-100">
+              {UX_MATERIALES.map(([k, label]) => {
+                const est = (abierto.materiales && abierto.materiales[k] && abierto.materiales[k].estado) || "pendiente";
+                return <div key={k} className="flex justify-between px-3 py-2 text-sm"><span>{label}</span><span className={est === "recibido" ? "font-semibold text-emerald-700" : est === "no_lleva" ? "text-slate-400" : "text-slate-700"}>{UX_MAT_ESTADOS[est]}</span></div>;
+              })}
+            </div>
+            {abierto.estado === "virtual" ? (
+              <button onClick={() => setVista("editar")} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Editar</button>
+            ) : (
+              <p className="mt-4 text-xs text-slate-400">Este expediente ya está en producción: para cualquier cambio, avisa a Ecowin PVC.</p>
+            )}
+          </div>
+        ) : (
+          <UxTabla expedientes={expedientes} onAbrir={(id) => { setAbiertoId(id); setVista("ficha"); }} />
+        )}
+      </main>
+      {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-md shadow-lg">{toast}</div>}
+    </div>
+  );
+}
+
+// Módulo "Uxcar" dentro del CRM (lo usa el equipo)
+function UxcarModulo({ expedientes, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+  const [vista, setVista] = useState("lista");
+  const [abiertoId, setAbiertoId] = useState(null);
+  const tipos = config && config.tipos ? toArray(config.tipos) : [];
+  const [tiposTexto, setTiposTexto] = useState(tipos.join("\n"));
+  useEffect(() => { setTiposTexto(tipos.join("\n")); /* eslint-disable-next-line */ }, [tipos.join("|")]);
+  const [nu, setNu] = useState({ nombre: "", email: "", password: "" });
+  const [guardandoUsuario, setGuardandoUsuario] = useState(false);
+  const abierto = expedientes.find((x) => x.id === abiertoId);
+  const proyecto = abierto && abierto.proyectoId ? proyectos.find((p) => p.id === abierto.proyectoId) : null;
+  const tab = (id, label) => (
+    <button onClick={() => setVista(id)} className={`crm-tab px-3 py-2 text-sm font-semibold ${vista === id || (id === "lista" && vista === "ficha") ? "border-[#2E8B57]" : ""}`}>{label}</button>
+  );
+  const pendientesProduccion = expedientes.filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").length;
+
+  return (
+    <div className="p-4 sm:p-8 max-w-6xl">
+      <Header icon={<Globe size={20} className="text-[#2E8B57]" />} title="Uxcar" subtitle="Expedientes que mete Uxcar desde su portal" />
+      <div className="flex gap-2 mb-5 border-b border-slate-200">
+        {tab("lista", "Expedientes")}
+        {tab("resumen", "Resumen")}
+        {isAdmin && tab("config", "Tipos de expediente")}
+        {isAdmin && tab("usuarios", "Usuarios del portal")}
+      </div>
+      {pendientesProduccion > 0 && vista === "lista" && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
+          {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
+        </div>
+      )}
+      {vista === "resumen" ? (
+        <UxResumen expedientes={expedientes} />
+      ) : vista === "config" && isAdmin ? (
+        <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-lg">
+          <Field label="Tipos de expediente (uno por línea)">
+            <TextArea rows={8} value={tiposTexto} onChange={(e) => setTiposTexto(e.target.value)} />
+          </Field>
+          <p className="text-xs text-slate-400 mt-1">Es la lista que le sale a Uxcar al meter un expediente.</p>
+          <button onClick={() => onGuardarTipos(tiposTexto.split("\n").map((t) => t.trim()).filter(Boolean))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-3 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar tipos</button>
+        </div>
+      ) : vista === "usuarios" && isAdmin ? (
+        <div className="space-y-4 max-w-2xl">
+          <div className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="text-sm font-semibold text-slate-700 mb-3">Dar de alta un usuario de Uxcar</div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="Nombre" required><TextInput value={nu.nombre} onChange={(e) => setNu({ ...nu, nombre: e.target.value })} /></Field>
+              <Field label="Email" required><TextInput type="email" value={nu.email} onChange={(e) => setNu({ ...nu, email: e.target.value })} /></Field>
+              <Field label="Contraseña (mín. 6)" required><TextInput type="password" value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} /></Field>
+            </div>
+            <button disabled={guardandoUsuario} onClick={async () => {
+              if (!nu.nombre.trim() || !nu.email.trim() || nu.password.length < 6) { alert("Pon nombre, email y una contraseña de al menos 6 caracteres."); return; }
+              setGuardandoUsuario(true);
+              const ok = await onAltaPortal(nu);
+              setGuardandoUsuario(false);
+              if (ok) setNu({ nombre: "", email: "", password: "" });
+            }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-3 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
+              {guardandoUsuario ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />} Dar de alta
+            </button>
+            <p className="text-xs text-slate-400 mt-2">Solo podrá ver y meter expedientes de Uxcar. No ve nada más del CRM.</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-4 py-2">Nombre</th><th className="text-left px-4 py-2">Email</th><th className="text-left px-4 py-2">Alta</th><th /></tr></thead>
+              <tbody>
+                {portalUsuarios.length === 0 && <tr><td colSpan={4} className="px-4 py-4 text-slate-400">Todavía no hay usuarios del portal.</td></tr>}
+                {portalUsuarios.map((u) => (
+                  <tr key={u.uid} className="border-t border-slate-100">
+                    <td className="px-4 py-2 font-medium">{u.nombre}</td><td className="px-4 py-2">{u.email}</td><td className="px-4 py-2">{uxFecha(u.fechaAlta)}</td>
+                    <td className="px-4 py-2 text-right"><button onClick={() => { if (confirm(`¿Quitar el acceso a ${u.nombre}?`)) onBajaPortal(u.uid); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : vista === "ficha" && abierto ? (
+        <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-3xl">
+          <button onClick={() => setVista("lista")} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-3"><ChevronLeft size={16} /> Volver</button>
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <h2 className="text-xl font-extrabold text-slate-900">{abierto.numero}</h2>
+            <UxEstado estado={abierto.estado} />
+            <UxSemaforo exp={abierto} conTexto />
+          </div>
+          <UxFichaDatos exp={abierto} />
+          <div className="mt-4">
+            <div className="text-sm font-semibold text-slate-700 mb-2">Material (pulsa para marcar como recibido en fábrica)</div>
+            <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
+              {UX_MATERIALES.map(([k, label]) => {
+                const est = (abierto.materiales && abierto.materiales[k] && abierto.materiales[k].estado) || "pendiente";
+                return (
+                  <div key={k} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                    <span className="font-medium">{label}</span>
+                    <Select value={est} onChange={(e) => onCambiarMaterial(abierto, k, e.target.value)} className="max-w-[200px]">
+                      {Object.entries(UX_MAT_ESTADOS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </Select>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="mt-5 flex flex-wrap items-end gap-3">
+            {abierto.estado === "virtual" && (
+              <button onClick={() => {
+                if (uxSemaforo(abierto) !== "verde" && !confirm("Todavía falta material de este expediente. ¿Pasarlo a producción igualmente?")) return;
+                onPasarProduccion(abierto);
+              }} className="text-sm font-semibold px-4 py-2 rounded-md text-white" style={{ backgroundColor: "#7c3aed" }}>Pasar a producción (entrega +{UX_DIAS_ENTREGA} días)</button>
+            )}
+            {abierto.estado === "produccion" && <button onClick={() => onCambiarEstado(abierto, "terminado")} className="text-sm font-semibold px-4 py-2 rounded-md text-white bg-sky-600">Marcar terminado</button>}
+            {abierto.estado === "terminado" && <button onClick={() => onCambiarEstado(abierto, "entregado")} className="text-sm font-semibold px-4 py-2 rounded-md text-white bg-emerald-600">Marcar entregado</button>}
+            {abierto.estado !== "virtual" && abierto.estado !== "entregado" && (
+              <Field label="Fecha de entrega">
+                <TextInput type="date" value={abierto.fechaEntrega || ""} onChange={(e) => onCambiarEntrega(abierto, e.target.value)} />
+              </Field>
+            )}
+            {abierto.estado !== "virtual" && (
+              <button onClick={() => { if (confirm("¿Devolver este expediente a Planificación virtual? Uxcar podrá volver a editarlo.")) onCambiarEstado(abierto, "virtual"); }} className="text-xs font-semibold text-slate-400 hover:text-slate-600 hover:underline">Volver a planificación virtual</button>
+            )}
+          </div>
+          <div className="mt-5 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-sm">
+            {proyecto ? (
+              <button onClick={() => onVerProyecto(proyecto.id)} className="font-semibold text-[#2E8B57] hover:underline">Ver proyecto #{proyecto.numero} en el CRM →</button>
+            ) : <span className="text-slate-400">El proyecto se está creando…</span>}
+            {isAdmin && <button onClick={() => { if (confirm(`¿Borrar el expediente ${abierto.numero}? (el proyecto del CRM no se borra)`)) { onBorrar(abierto); setVista("lista"); } }} className="text-xs text-slate-300 hover:text-rose-500">Borrar expediente</button>}
+          </div>
+        </div>
+      ) : (
+        <UxTabla expedientes={expedientes} onAbrir={(id) => { setAbiertoId(id); setVista("ficha"); }} />
+      )}
     </div>
   );
 }
