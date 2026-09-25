@@ -16,7 +16,7 @@ import nodemailer from "nodemailer";
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
-    const { destinatario, asunto, cuerpo, replyTo, adjuntos } = body;
+    const { destinatario, asunto, cuerpo, replyTo, adjuntos, nombreRemitente } = body;
 
     if (!destinatario || !asunto || !cuerpo) {
       return { statusCode: 400, body: JSON.stringify({ error: "Faltan datos: destinatario, asunto o cuerpo." }) };
@@ -36,8 +36,20 @@ export const handler = async (event) => {
     });
 
     // adjuntos: [{ nombre, dataUrl }] — dataUrl tipo "data:application/pdf;base64,...."
-    const attachments = (adjuntos || [])
-      .filter((a) => a && a.dataUrl)
+    // o bien [{ nombre, url }] — un archivo ya subido (p.ej. el PDF de un pedido de
+    // Uxcar); se descarga aquí, en el servidor, y se adjunta.
+    const lista = [];
+    for (const a of adjuntos || []) {
+      if (a && a.dataUrl) { lista.push(a); continue; }
+      if (a && a.url) {
+        const r = await fetch(a.url);
+        if (!r.ok) throw new Error("no se pudo descargar el adjunto " + (a.nombre || ""));
+        const buf = Buffer.from(await r.arrayBuffer());
+        const tipo = r.headers.get("content-type") || "application/octet-stream";
+        lista.push({ nombre: a.nombre, dataUrl: `data:${tipo};base64,${buf.toString("base64")}` });
+      }
+    }
+    const attachments = lista
       .map((a) => {
         const match = /^data:([^;]+);base64,(.*)$/.exec(a.dataUrl);
         return {
@@ -49,7 +61,10 @@ export const handler = async (event) => {
       });
 
     await transporter.sendMail({
-      from: `"ALUMAVEL" <${user}>`,
+      // nombreRemitente: p.ej. "Uxcar" cuando el pedido lo manda Uxcar desde su portal.
+      // La dirección sigue siendo la de la empresa, pero se ve su nombre y las
+      // respuestas le llegan a su correo (replyTo).
+      from: `"${String(nombreRemitente || "ALUMAVEL").replace(/["\r\n]/g, "")}" <${user}>`,
       to: destinatario,
       replyTo: replyTo || user,
       subject: asunto,

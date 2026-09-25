@@ -2849,6 +2849,49 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxPedidos, pedidos, currentUser?.id, loading]);
 
+  // Entrada de material de un pedido de Uxcar hecha desde Fábrica
+  const uxGuardarRecepcion = async (pedidoUx, recepcion) => {
+    try { await fbUpdate(ref(fbDb, "portalUxcar"), uxPatchRecepcion(pedidoUx, recepcion, uxExpedientes)); }
+    catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
+    showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
+    return true;
+  };
+  // Lo que se confirma con el albarán (en el portal o en Fábrica) pasa al pedido del CRM:
+  // líneas llegadas = confirmadas por fábrica; si ha llegado todo, pedido "Recibido".
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    let cambio = false;
+    const next = pedidos.map((pd) => {
+      if (!pd.uxcarPedidoId || pd.estado === "Cancelado") return pd;
+      const p = uxPedidos.find((x) => x.id === pd.uxcarPedidoId);
+      if (!p || !p.recepcion) return pd;
+      const grupos = toArray(p.expedientes);
+      let gi = grupos.findIndex((e) => (e.expedienteId || "") === (pd.uxcarExpedienteId || ""));
+      if (gi < 0) gi = 0;
+      const lleg = p.recepcion.lineas || {};
+      const esperado = grupos[gi] ? Math.max(1, toArray(grupos[gi].lineas).length) : 1;
+      let cambiado = false;
+      const lineas = toArray(pd.lineas).map((l, li) => {
+        const key = `${gi}-${li}`;
+        const llegado = parseFloat(lleg[key]) || 0;
+        const ok = li < esperado && llegado >= (parseFloat(l.cantidad) || 1);
+        if (ok && !l.confirmadoFabrica) {
+          cambiado = true;
+          return { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: p.recepcion.fecha || hoy, confirmadoPorFabrica: p.recepcion.por || "Albarán Uxcar", estado: "Recibido" };
+        }
+        return l;
+      });
+      const todo = lineas.length > 0 && lineas.every((l) => l.confirmadoFabrica);
+      const nuevoEstado = todo && pd.estado !== "Recibido" ? "Recibido" : pd.estado;
+      if (!cambiado && nuevoEstado === pd.estado) return pd;
+      cambio = true;
+      return { ...pd, lineas, estado: nuevoEstado, ...(nuevoEstado === "Recibido" && pd.estado !== "Recibido" ? { fechaRecibido: p.recepcion.fecha || hoy } : {}) };
+    });
+    if (cambio) savePedidos(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxPedidos, pedidos, currentUser?.id, loading]);
+
   const uxActualizar = async (exp, patch) => {
     try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), patch); return true; }
     catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
@@ -3755,6 +3798,9 @@ export default function App() {
             usuarios={usuarios}
             onVerProyecto={openProyectoFromCalendar}
             onCambiarFechaReparto={(id, fecha) => cambiarFechaProyecto(id, "fechaReparto", fecha)}
+            uxPedidos={uxPedidos}
+            onGuardarRecepcionUx={uxGuardarRecepcion}
+            nombreUsuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
           />
           </IncidenciasCristalCtx.Provider>
         )}
@@ -10802,7 +10848,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto }) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario }) {
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
@@ -10924,6 +10970,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Albarán de salida
           {enviosProceso.filter((e) => e.estado === "Fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{enviosProceso.filter((e) => e.estado === "Fuera").length}</Badge>}
         </button>
+        <button onClick={() => setTab("entradasUx")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "entradasUx" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Entradas Uxcar
+          {toArray(uxPedidos).filter((p) => !p.recibido && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual)).length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{toArray(uxPedidos).filter((p) => !p.recibido && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual)).length}</Badge>}
+        </button>
         <button onClick={() => setTab("reparto")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "reparto" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Reparto
@@ -10931,12 +10982,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length}</Badge>
           )}
         </button>
-        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && (
+        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
         )}
       </div>
+
+      {tab === "entradasUx" && (
+        <UxEntradasFabrica pedidos={uxPedidos} onGuardarRecepcion={onGuardarRecepcionUx} quien={nombreUsuario || "Fábrica"} />
+      )}
 
       {tab === "listo" && (
         <>
@@ -23491,6 +23546,7 @@ function UxResumen({ expedientes }) {
     porTipo[t].puertas += uxNum(e.puertas);
     porTipo[t].osciloParalelas += uxNum(e.osciloParalelas);
   });
+  const recuentoMes = uxAgruparRecuento(deMes.flatMap((e) => toArray(e.recuento)));
   const tarjeta = (titulo, lista) => (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
       <div className="text-xs uppercase tracking-wide text-slate-400 font-semibold">{titulo}</div>
@@ -23518,6 +23574,17 @@ function UxResumen({ expedientes }) {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <div className="text-sm font-semibold text-slate-700 px-4 pt-4 pb-2">Este mes por tipo de ventana</div>
+        <table className="w-full text-sm">
+          <tbody>
+            {recuentoMes.length === 0 && <tr><td className="px-4 py-4 text-slate-400">Todavía no hay expedientes con recuento este mes (se hace con "Contar desde el PDF" al meter el expediente).</td></tr>}
+            {recuentoMes.map(([k, n]) => (
+              <tr key={k} className="border-t border-slate-100"><td className="px-4 py-2 font-medium">{k}</td><td className="px-4 py-2 text-right font-semibold">{n}</td></tr>
+            ))}
+          </tbody>
+        </table>
       </div>
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <div className="text-sm font-semibold text-slate-700 px-4 pt-4 pb-2">Este mes por tipo de expediente</div>
@@ -23591,6 +23658,170 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
   );
 }
 
+/* ---------- Recuento de ventanas por tipo (desde el listado de dibujos / montaje) ---------- */
+// Cada línea: { modelo, uds, tipo, hojas, persiana, cerradura }. El recuento se guarda en
+// el expediente (exp.recuento) y con él se rellenan solos Nº ventanas / puertas / O-P.
+const UX_CARP_TIPOS = [
+  ["ventana", "Ventana / balconera"], ["corredera", "Corredera"], ["puerta", "Puerta"],
+  ["fijo", "Fijo"], ["osciloparalela", "Oscilo-paralela"], ["mosquitera", "Mosquitera"], ["otro", "Otro"],
+];
+const uxCarpLabel = (t) => (UX_CARP_TIPOS.find(([k]) => k === t) || [t, t])[1];
+// Nombre del grupo en el que se cuenta cada línea (p.ej. "Ventana de 2 hojas · con persiana")
+const uxGrupoCarp = (l) => {
+  const t = l.tipo || "otro";
+  if (t === "mosquitera" || t === "otro") return uxCarpLabel(t);
+  const h = parseInt(l.hojas, 10) || 0;
+  let nombre = t === "ventana" ? "Ventana" : t === "puerta" ? "Puerta" : uxCarpLabel(t);
+  if (t !== "fijo" && h > 0) nombre += ` de ${h} hoja${h === 1 ? "" : "s"}`;
+  if (t !== "puerta" || l.persiana) nombre += l.persiana ? " · con persiana" : " · sin persiana";
+  if (l.cerradura) nombre += " · con cerradura";
+  return nombre;
+};
+const uxAgruparRecuento = (lineas) => {
+  const g = {};
+  toArray(lineas).forEach((l) => { const k = uxGrupoCarp(l); g[k] = (g[k] || 0) + (parseFloat(l.uds) || 0); });
+  return Object.entries(g).sort((a, b) => b[1] - a[1]);
+};
+// Totales para los campos del expediente
+const uxTotalesRecuento = (lineas) => {
+  let ventanas = 0, puertas = 0, osciloParalelas = 0, mosquiteras = 0;
+  toArray(lineas).forEach((l) => {
+    const u = parseFloat(l.uds) || 0;
+    if (l.tipo === "puerta") puertas += u;
+    else if (l.tipo === "osciloparalela") osciloParalelas += u;
+    else if (l.tipo === "mosquitera") mosquiteras += u;
+    else if (l.tipo !== "otro") ventanas += u;
+  });
+  return { ventanas, puertas, osciloParalelas, mosquiteras };
+};
+
+async function uxContarVentanasConClaude(dataUrl, mediaType) {
+  const base64 = String(dataUrl).split(",")[1];
+  const contentBlock = mediaType === "application/pdf"
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+    : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
+  const prompt = [
+    "Esto es un listado de carpintería de PVC/aluminio (\"Listado dibujos\" o \"Listado de montaje\") con un dibujo por cada modelo. Mira el TEXTO y también los DIBUJOS de cada recuadro.",
+    "Para cada modelo/recuadro saca:",
+    "- modelo: el texto de \"Modelo:\" o, si no hay, el de la columna TIPO (p.ej. \"Dormitorio\", \"Baño\").",
+    "- uds: las unidades (\"Uds:\" o columna UDS).",
+    "- tipo, uno de: ventana, corredera, puerta, fijo, osciloparalela, mosquitera, otro.",
+    "  · corredera: la serie (Pos) empieza por CORR, o el dibujo tiene flechas horizontales de desplazamiento (1 → ← 2).",
+    "  · puerta: la serie es de puerta (p.ej. LINEAR-P), el modelo lleva P de puerta (p.ej. B2-P01D) o el tipo dice Puerta / Puerta Entrada.",
+    "  · fijo: ningún cristal tiene líneas en diagonal (nada abre).",
+    "  · mosquitera: el dibujo es una malla/rejilla de cuadritos.",
+    "  · osciloparalela: solo si lo indica claramente.",
+    "  · ventana: el resto de practicables/oscilobatientes (incluye balconeras).",
+    "- hojas: nº de hojas que ABREN. Una hoja que abre tiene líneas en diagonal (triángulo o X) o es una hoja corredera. Los cristales sin líneas son fijos y NO cuentan como hoja. El nº de cristales (Vid ud:) NO siempre es el nº de hojas. En un fijo, hojas = 0.",
+    "- persiana: true si encima de la ventana hay una franja de cajón de persiana (normalmente acotada como 185 en lo alto), false si no.",
+    "- cerradura: true SOLO en puertas cuya manilla tiene bombín/cerradura (cuadradito de llave en la manilla). El cuadradito que sale al lado de una ventana es el recogedor de la persiana: eso NO es cerradura.",
+    "Responde SOLO con JSON, sin texto ni ```: {\"lineas\":[{\"modelo\":\"\",\"uds\":1,\"tipo\":\"ventana\",\"hojas\":1,\"persiana\":false,\"cerradura\":false}]}",
+  ].join("\n");
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{");
+  const fin = limpio.lastIndexOf("}");
+  const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const validos = UX_CARP_TIPOS.map(([k]) => k);
+  return (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({
+    id: uid(),
+    modelo: String(l.modelo || "").trim(),
+    uds: parseFloat(l.uds) || 1,
+    tipo: validos.includes(l.tipo) ? l.tipo : "otro",
+    hojas: parseInt(l.hojas, 10) || 0,
+    persiana: !!l.persiana,
+    cerradura: !!l.cerradura,
+  }));
+}
+
+// Resumen del recuento en chips (lo usan la ficha y el formulario)
+function UxRecuentoChips({ lineas }) {
+  const grupos = uxAgruparRecuento(lineas);
+  if (grupos.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {grupos.map(([k, n]) => (
+        <span key={k} className="inline-flex items-center gap-1.5 text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 rounded-full px-2.5 py-1">
+          <span className="text-slate-900">{n}</span> {k}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Bloque del formulario: subir el listado, que lo cuente solo y poder corregirlo
+function UxRecuentoEditor({ lineas, onChange }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const inputRef = useRef(null);
+  const lista = toArray(lineas);
+  const setLinea = (i, patch) => onChange(lista.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const subir = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setLeyendo(true); setAviso("");
+    const nuevas = [];
+    const fallos = [];
+    for (const file of files) {
+      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+      if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) { fallos.push(file.name); continue; }
+      try {
+        const dataUrl = await uxLeerComoDataUrl(file);
+        const leidas = await uxContarVentanasConClaude(dataUrl, mediaType);
+        if (leidas.length === 0) fallos.push(file.name); else nuevas.push(...leidas);
+      } catch (e) { fallos.push(file.name); }
+    }
+    if (nuevas.length > 0) onChange([...lista, ...nuevas]);
+    setAviso(fallos.length ? `No he podido contar: ${fallos.join(", ")}. Añade esas líneas a mano.` : nuevas.length ? "Revisa que cada línea está bien y corrige lo que haga falta." : "");
+    setLeyendo(false);
+  };
+  return (
+    <div className="border border-slate-200 rounded-md p-3 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm font-semibold text-slate-700 mr-auto">Recuento de ventanas por tipo</div>
+        <input ref={inputRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md disabled:opacity-60">
+          {leyendo ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />} {leyendo ? "Contando…" : "Contar desde el PDF"}
+        </button>
+        <button type="button" onClick={() => onChange([...lista, { id: uid(), modelo: "", uds: 1, tipo: "ventana", hojas: 1, persiana: false, cerradura: false }])} className="flex items-center gap-1 text-xs font-semibold px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100"><Plus size={13} /> Añadir a mano</button>
+      </div>
+      <p className="text-[11px] text-slate-400">Sube el listado de dibujos o de montaje y se cuentan solas: con o sin persiana, nº de hojas, corredera, puerta, cerradura… Los totales de arriba se rellenan solos.</p>
+      {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
+      {lista.length > 0 && (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Modelo</th><th className="text-right py-1 px-1">Uds</th><th className="text-left py-1 px-1">Tipo</th><th className="text-right py-1 px-1">Hojas</th><th className="py-1 px-1">Persiana</th><th className="py-1 px-1">Cerradura</th><th /></tr></thead>
+              <tbody>
+                {lista.map((l, i) => (
+                  <tr key={l.id || i} className="border-t border-slate-100">
+                    <td className="py-1 pr-2"><TextInput value={l.modelo} onChange={(e) => setLinea(i, { modelo: e.target.value })} className="min-w-[110px]" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.uds} onChange={(e) => setLinea(i, { uds: e.target.value })} className="w-16 text-right" /></td>
+                    <td className="py-1 px-1"><Select value={l.tipo} onChange={(e) => setLinea(i, { tipo: e.target.value })} className="min-w-[140px]">{UX_CARP_TIPOS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.hojas} onChange={(e) => setLinea(i, { hojas: e.target.value })} className="w-14 text-right" /></td>
+                    <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.persiana} onChange={(e) => setLinea(i, { persiana: e.target.checked })} /></td>
+                    <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.cerradura} onChange={(e) => setLinea(i, { cerradura: e.target.checked })} /></td>
+                    <td className="py-1 pl-1 text-right"><button type="button" onClick={() => onChange(lista.filter((_, j) => j !== i))} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <UxRecuentoChips lineas={lista} />
+        </>
+      )}
+    </div>
+  );
+}
+
 // Formulario de expediente para el portal (Uxcar). Solo campos que Uxcar puede tocar.
 function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
   const [f, setF] = useState(() => {
@@ -23603,6 +23834,11 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
   const [guardando, setGuardando] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const setMat = (k, estado) => setF({ ...f, materiales: { ...f.materiales, [k]: { estado } } });
+  // Al cambiar el recuento, los totales se rellenan solos
+  const setRecuento = (lineas) => {
+    const t = uxTotalesRecuento(lineas);
+    setF((prev) => (lineas.length === 0 ? { ...prev, recuento: [] } : { ...prev, recuento: lineas, ventanas: t.ventanas, puertas: t.puertas, osciloParalelas: t.osciloParalelas }));
+  };
   const submit = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     const numero = (f.numero || "").trim().replace(/\s+/g, " ").toUpperCase();
@@ -23611,7 +23847,8 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
     if (!f.tipo) { setError("Elige el tipo de expediente."); return; }
     if (uxNum(f.ventanas) + uxNum(f.puertas) + uxNum(f.osciloParalelas) === 0) { setError("Pon cuántas ventanas, puertas u oscilo-paralelas lleva."); return; }
     setError(""); setGuardando(true);
-    const ok = await onSave({ ...f, numero, ventanas: uxNum(f.ventanas), puertas: uxNum(f.puertas), osciloParalelas: uxNum(f.osciloParalelas) });
+    const recuento = toArray(f.recuento).map((l) => ({ id: l.id || uid(), modelo: String(l.modelo || "").trim(), uds: parseFloat(l.uds) || 0, tipo: l.tipo || "otro", hojas: parseInt(l.hojas, 10) || 0, persiana: !!l.persiana, cerradura: !!l.cerradura }));
+    const ok = await onSave({ ...f, numero, recuento, ventanas: uxNum(f.ventanas), puertas: uxNum(f.puertas), osciloParalelas: uxNum(f.osciloParalelas) });
     setGuardando(false);
     if (ok === false) setError("No se pudo guardar. Revisa la conexión y vuelve a probar.");
   };
@@ -23631,6 +23868,7 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
         <Field label="Nº puertas"><TextInput type="number" min="0" inputMode="numeric" value={f.puertas} onChange={set("puertas")} /></Field>
         <Field label="Oscilo-paralelas"><TextInput type="number" min="0" inputMode="numeric" value={f.osciloParalelas} onChange={set("osciloParalelas")} /></Field>
       </div>
+      <UxRecuentoEditor lineas={f.recuento} onChange={setRecuento} />
       <Field label="Material">
         <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
           {UX_MATERIALES.map(([k, label]) => {
@@ -23679,6 +23917,12 @@ function UxFichaDatos({ exp }) {
         <div><div className="text-xs text-slate-400">Entrega prevista</div><div className="font-semibold">{uxFecha(exp.fechaEntrega)}</div></div>
         <div><div className="text-xs text-slate-400">Metido por</div><div className="font-semibold">{exp.creadoPor || "—"}</div></div>
       </div>
+      {toArray(exp.recuento).length > 0 && (
+        <div>
+          <div className="text-xs text-slate-400 mb-1.5">Recuento por tipo{uxTotalesRecuento(exp.recuento).mosquiteras ? ` · ${uxTotalesRecuento(exp.recuento).mosquiteras} mosquiteras aparte` : ""}</div>
+          <UxRecuentoChips lineas={exp.recuento} />
+        </div>
+      )}
       {exp.observaciones && <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-md p-3 whitespace-pre-wrap">{exp.observaciones}</div>}
     </div>
   );
@@ -24002,6 +24246,7 @@ function UxFormPedido({ proveedores, expedientes, tipos, onGuardarProveedor, onC
 
 const uxEstadoPedido = (p) => {
   if (p.recibido) return { label: `Recibido en fábrica ${uxFecha(p.recibido)}`, cls: "bg-emerald-100 text-emerald-800 border-emerald-300" };
+  if (p.recepcion && !p.recepcion.completo) return { label: "Llegado en parte (falta material)", cls: "bg-orange-100 text-orange-800 border-orange-300" };
   if (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual) return { label: "Enviado al proveedor", cls: "bg-sky-100 text-sky-800 border-sky-300" };
   return { label: "Sin enviar al proveedor", cls: "bg-amber-100 text-amber-800 border-amber-300" };
 };
@@ -24035,7 +24280,259 @@ function UxListaPedidos({ pedidos, onAbrir, onNuevo }) {
   );
 }
 
-function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar }) {
+/* ---------- Albarán de entrada de un pedido de Uxcar ---------- */
+// Se sube el albarán del proveedor (PDF o foto), se lee solo y se compara con lo que se
+// pidió: qué ha llegado, qué falta y qué ha venido sin pedirlo. Lo pueden hacer Uxcar
+// (portal) y el equipo (Fábrica). Se guarda en portalUxcar/pedidos/<id>/recepcion y el
+// CRM pasa solo el pedido a "Recibido" y el material del expediente a "Recibido en fábrica".
+// Clave de cada línea pedida: "<nº de grupo/expediente>-<nº de línea>"
+const uxLineasPedidas = (pedido) => {
+  const out = [];
+  toArray(pedido && pedido.expedientes).forEach((e, gi) => {
+    const ls = toArray(e.lineas);
+    if (ls.length === 0) out.push({ key: `${gi}-0`, exp: e.numero || "", modelo: "", codigo: "", descripcion: `${(pedido && pedido.tipo) || "Material"} según documento`, ancho: 0, alto: 0, color: "", pedido: 1 });
+    ls.forEach((l, li) => out.push({ key: `${gi}-${li}`, exp: e.numero || "", modelo: l.modelo || "", codigo: l.codigo || "", descripcion: l.descripcion || "", ancho: uxNum(l.ancho), alto: uxNum(l.alto), color: l.color || "", pedido: parseFloat(l.uds) || 1 }));
+  });
+  return out;
+};
+const uxMatAlbaran = (tipo) => (tipo === "Cristales" ? "vidrios" : tipo === "Persianas" ? "compactos" : null);
+// Lo que hay que escribir en portalUxcar al guardar la entrada
+const uxPatchRecepcion = (pedido, recepcion, expedientes) => {
+  const patch = { [`pedidos/${pedido.id}/recepcion`]: recepcion, [`pedidos/${pedido.id}/recibido`]: recepcion.completo ? recepcion.fecha : null };
+  const mat = uxMatAlbaran(pedido.tipo);
+  if (mat) {
+    const lineas = uxLineasPedidas(pedido);
+    toArray(pedido.expedientes).forEach((e, gi) => {
+      const suyas = lineas.filter((l) => l.key.startsWith(`${gi}-`));
+      const completo = suyas.length > 0 && suyas.every((l) => (parseFloat(recepcion.lineas && recepcion.lineas[l.key]) || 0) >= l.pedido);
+      const x = toArray(expedientes).find((y) => y.id === e.expedienteId);
+      if (x && completo) patch[`expedientes/${x.id}/materiales/${mat}/estado`] = "recibido";
+    });
+  }
+  return patch;
+};
+
+async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
+  const base64 = String(dataUrl).split(",")[1];
+  const contentBlock = mediaType === "application/pdf"
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+    : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5"), ponlo. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":""}]}';
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{");
+  const fin = limpio.lastIndexOf("}");
+  const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
+  return {
+    proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""),
+    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || "") })),
+  };
+}
+
+// Reparte lo que trae el albarán entre lo pedido: por medidas (±3 mm) y, si no hay
+// medidas, por código. Lo que no encaja queda como "ha venido sin pedirlo".
+const uxCasarAlbaran = (pedidas, llegadoActual, lineasAlbaran) => {
+  const llegado = { ...llegadoActual };
+  const extras = [];
+  const cerca = (a, b) => Math.abs(a - b) <= 3;
+  lineasAlbaran.forEach((a) => {
+    let resto = a.cantidad;
+    const encaja = (l) => {
+      if (a.ancho && a.alto && l.ancho && l.alto) return (cerca(a.ancho, l.ancho) && cerca(a.alto, l.alto)) || (cerca(a.ancho, l.alto) && cerca(a.alto, l.ancho));
+      const ca = a.codigo.replace(/\s/g, "").toUpperCase();
+      return !!ca && ca === String(l.codigo || "").replace(/\s/g, "").toUpperCase();
+    };
+    pedidas.filter(encaja).forEach((l) => {
+      if (resto <= 0) return;
+      const hueco = l.pedido - (llegado[l.key] || 0);
+      if (hueco <= 0) return;
+      const pon = Math.min(hueco, resto);
+      llegado[l.key] = (llegado[l.key] || 0) + pon;
+      resto -= pon;
+    });
+    if (resto > 0) extras.push({ ...a, cantidad: resto });
+  });
+  return { llegado, extras };
+};
+
+function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
+  const pedidas = uxLineasPedidas(pedido);
+  const previa = pedido.recepcion || {};
+  const [llegado, setLlegado] = useState(() => ({ ...(previa.lineas || {}) }));
+  const [extras, setExtras] = useState(() => toArray(previa.extras));
+  const [archivos, setArchivos] = useState([]); // albaranes nuevos de esta vez
+  const [comentario, setComentario] = useState(previa.comentario || "");
+  const [leyendo, setLeyendo] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const [ok, setOk] = useState("");
+  const inputRef = useRef(null);
+
+  const subir = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setLeyendo(true); setAviso(""); setOk("");
+    let ll = { ...llegado };
+    let ex = [...extras];
+    const nuevos = [];
+    const fallos = [];
+    for (const file of files) {
+      const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+      if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) { fallos.push(file.name); continue; }
+      nuevos.push({ file, nombre: file.name });
+      try {
+        const dataUrl = await uxLeerComoDataUrl(file);
+        const info = await uxLeerAlbaranConClaude(dataUrl, mediaType);
+        if (info.lineas.length === 0) { fallos.push(file.name); continue; }
+        const r = uxCasarAlbaran(pedidas, ll, info.lineas);
+        ll = r.llegado;
+        ex = [...ex, ...r.extras];
+      } catch (e) { fallos.push(file.name); }
+    }
+    setLlegado(ll); setExtras(ex); setArchivos((a) => [...a, ...nuevos]);
+    setAviso(fallos.length ? `No he podido leer bien: ${fallos.join(", ")}. Pon a mano lo que ha llegado.` : "Revisa la comparación y corrige lo que haga falta antes de confirmar.");
+    setLeyendo(false);
+  };
+
+  const faltan = pedidas.filter((l) => (parseFloat(llegado[l.key]) || 0) < l.pedido);
+  const completo = pedidas.length > 0 && faltan.length === 0;
+
+  const guardar = async () => {
+    setGuardando(true); setAviso(""); setOk("");
+    try {
+      const docs = [...toArray(previa.documentos)];
+      for (const a of archivos) docs.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-albaranes") });
+      const lineas = {};
+      pedidas.forEach((l) => { lineas[l.key] = Math.max(0, parseFloat(llegado[l.key]) || 0); });
+      const recepcion = JSON.parse(JSON.stringify({
+        fecha: uxHoy(), por: quien || "", documentos: docs, lineas, extras, completo, comentario: comentario.trim(),
+        historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: quien || "", completo }],
+      }));
+      const r = await onGuardar(recepcion);
+      if (r === false) throw new Error("no se pudo guardar");
+      setArchivos([]);
+      setOk(completo ? "✓ Entrada confirmada: ha llegado todo. El material queda como recibido en fábrica." : `✓ Entrada guardada. Faltan ${faltan.length} línea${faltan.length === 1 ? "" : "s"}; cuando llegue el resto, sube el siguiente albarán aquí mismo.`);
+    } catch (e) {
+      setAviso("No se pudo guardar la entrada: " + e.message);
+    } finally { setGuardando(false); }
+  };
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm font-semibold text-slate-800 mr-auto">Albarán de entrada</div>
+        <input ref={inputRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
+        <button type="button" disabled={leyendo || guardando} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
+          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo el albarán…" : "Subir albarán (PDF o foto)"}
+        </button>
+        <button type="button" disabled={leyendo || guardando} onClick={() => { const t = {}; pedidas.forEach((l) => { t[l.key] = l.pedido; }); setLlegado(t); }} className="text-sm font-semibold px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100">Ha llegado todo</button>
+      </div>
+      <p className="text-xs text-slate-500">Sube el albarán que trae el camión y se compara solo con lo pedido. Si llega en varias veces, sube cada albarán cuando llegue: se va sumando.</p>
+      {archivos.length > 0 && <div className="text-xs text-slate-600">Albaranes nuevos: {archivos.map((a) => a.nombre).join(", ")}</div>}
+      {toArray(previa.documentos).length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1">{toArray(previa.documentos).map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-[#2E8B57] hover:underline"><FileText size={13} /> {d.nombre}</a>)}</div>
+      )}
+      {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Exp.</th><th className="text-left py-1 px-2">Material</th><th className="text-left py-1 px-2">Medidas</th><th className="text-right py-1 px-2">Pedido</th><th className="text-right py-1 px-2">Llegado</th><th className="text-left py-1 pl-2">Estado</th></tr></thead>
+          <tbody>
+            {pedidas.map((l) => {
+              const v = parseFloat(llegado[l.key]) || 0;
+              const est = v >= l.pedido ? { t: "✓ Llegado", c: "text-emerald-700" } : v > 0 ? { t: `Faltan ${l.pedido - v}`, c: "text-orange-700" } : { t: "No ha llegado", c: "text-rose-600" };
+              return (
+                <tr key={l.key} className="border-t border-slate-100">
+                  <td className="py-1.5 pr-2 font-semibold whitespace-nowrap">{l.exp || "—"}</td>
+                  <td className="py-1.5 px-2">{[l.modelo, l.codigo, l.descripcion, l.color].filter(Boolean).join(" · ")}</td>
+                  <td className="py-1.5 px-2 whitespace-nowrap">{l.ancho || l.alto ? `${l.ancho} × ${l.alto}` : "—"}</td>
+                  <td className="py-1.5 px-2 text-right">{l.pedido}</td>
+                  <td className="py-1.5 px-2 text-right"><TextInput type="number" min="0" value={llegado[l.key] ?? 0} onChange={(e) => setLlegado({ ...llegado, [l.key]: e.target.value })} className="w-16 text-right" /></td>
+                  <td className={`py-1.5 pl-2 font-semibold whitespace-nowrap ${est.c}`}>{est.t}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {extras.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-md p-3">
+          <div className="text-xs font-semibold text-amber-800 mb-1">Ha venido en el albarán y no estaba en el pedido:</div>
+          {extras.map((a, i) => (
+            <div key={i} className="flex items-center gap-2 text-xs text-amber-900">
+              <span>{a.cantidad} × {[a.codigo, a.descripcion].filter(Boolean).join(" · ")}{a.ancho || a.alto ? ` (${a.ancho} × ${a.alto})` : ""}{a.expediente ? ` · exp. ${a.expediente}` : ""}</span>
+              <button type="button" onClick={() => setExtras(extras.filter((_, j) => j !== i))} className="ml-auto text-amber-400 hover:text-rose-500" title="Quitar"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      <Field label="Comentario (roturas, lo que falta…)"><TextArea rows={2} value={comentario} onChange={(e) => setComentario(e.target.value)} /></Field>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className={`text-sm font-semibold ${completo ? "text-emerald-700" : "text-orange-700"}`}>{completo ? "Ha llegado todo lo pedido." : `Faltan ${faltan.length} de ${pedidas.length} línea${pedidas.length === 1 ? "" : "s"}.`}</div>
+        <button type="button" disabled={guardando || leyendo} onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
+          {guardando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} {completo ? "Confirmar entrada y ponerlo en marcha" : "Guardar entrada (falta material)"}
+        </button>
+      </div>
+      {ok && <p className="text-sm font-semibold text-emerald-700">{ok}</p>}
+      {previa.fecha && !ok && <p className="text-[11px] text-slate-400">Última entrada guardada el {uxFecha(previa.fecha)}{previa.por ? ` por ${previa.por}` : ""}.</p>}
+    </div>
+  );
+}
+
+// Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
+function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [verTodos, setVerTodos] = useState(false);
+  const lista = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  const abierto = toArray(pedidos).find((p) => p.id === abiertoId);
+  if (abierto) {
+    return (
+      <div className="space-y-3 max-w-4xl">
+        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-lg font-extrabold text-slate-900">Pedido {abierto.numero} de Uxcar</h2>
+          <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${uxEstadoPedido(abierto).cls}`}>{uxEstadoPedido(abierto).label}</span>
+        </div>
+        <div className="text-sm text-slate-600">{abierto.tipo} · {abierto.proveedorNombre} · {uxFecha(abierto.fecha)} · Exp. {toArray(abierto.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</div>
+        {uxDocsPedido(abierto).length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{uxDocsPedido(abierto).map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-[#2E8B57] hover:underline"><FileText size={13} /> Pedido: {d.nombre}</a>)}</div>}
+        <UxAlbaranEntrada key={abierto.id} pedido={abierto} quien={quien} onGuardar={(r) => onGuardarRecepcion(abierto, r)} />
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm text-slate-600 mr-auto">Pedidos que Uxcar ha hecho a sus proveedores. Cuando llegue el camión, abre el pedido y sube el albarán para comprobar lo que ha llegado.</p>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} /> Ver también los ya recibidos</label>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
+          <tbody>
+            {lista.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No hay pedidos de Uxcar pendientes de llegar.</td></tr>}
+            {lista.map((p) => { const e = uxEstadoPedido(p); return (
+              <tr key={p.id} onClick={() => setAbiertoId(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
+                <td className="px-3 py-2 font-semibold">{p.numero}</td><td className="px-3 py-2">{p.tipo}</td><td className="px-3 py-2">{p.proveedorNombre}</td>
+                <td className="px-3 py-2">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</td><td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
+                <td className="px-3 py-2"><span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span></td>
+              </tr>
+            ); })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar, onRecepcion }) {
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -24108,6 +24605,10 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
           <p className="text-xs text-slate-500">{pedido.enviadoEmail ? `Mandado por correo el ${uxFecha(pedido.enviadoEmail.slice(0, 10))}. ` : ""}{pedido.enviadoWhatsapp ? `Mandado por WhatsApp el ${uxFecha(pedido.enviadoWhatsapp.slice(0, 10))}. ` : ""}{pedido.enviadoManual ? `Pedido de otra forma el ${uxFecha(pedido.enviadoManual.slice(0, 10))}.` : ""}</p>
         )}
       </div>
+
+      {onRecepcion && (pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual || pedido.recepcion) && (
+        <UxAlbaranEntrada key={pedido.id} pedido={pedido} quien={(perfil && perfil.nombre) || authUser.email} onGuardar={onRecepcion} />
+      )}
 
       {exps.map((x, i) => (
         <div key={i} className="border border-slate-200 rounded-md">
@@ -24206,6 +24707,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     const id = uid();
     const exp = {
       id, numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas,
+      recuento: f.recuento || [],
       observaciones: f.observaciones || "", materiales: f.materiales, estado: "virtual",
       fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
     };
@@ -24215,7 +24717,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return true;
   };
   const guardarEdicion = async (f) => {
-    const patch = { numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas, observaciones: f.observaciones || "", editadoAt: Date.now(), estado: "virtual" };
+    const patch = { numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas, recuento: f.recuento && f.recuento.length ? f.recuento : null, observaciones: f.observaciones || "", editadoAt: Date.now(), estado: "virtual" };
     const actual = expedientes.find((x) => x.id === abiertoId);
     UX_MATERIALES.forEach(([k]) => {
       const antes = actual && actual.materiales && actual.materiales[k] && actual.materiales[k].estado;
@@ -24272,6 +24774,13 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             perfil={perfil} authUser={authUser}
             onVolver={() => setVista("pedidos")}
             onMarcar={(d) => marcarPedido(pedidoAbiertoId, d)}
+            onRecepcion={async (recepcion) => {
+              const ped = pedidosUx.find((p) => p.id === pedidoAbiertoId);
+              if (!ped) return false;
+              try { await fbUpdate(ref(fbDb, "portalUxcar"), uxPatchRecepcion(ped, recepcion, expedientes)); } catch (e) { return false; }
+              aviso(recepcion.completo ? "Entrada confirmada" : "Entrada guardada (falta material)");
+              return true;
+            }}
           />
         ) : vista === "pedidos" || vista === "fichaPedido" ? (
           <UxListaPedidos pedidos={pedidosUx} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
