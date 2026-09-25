@@ -191,6 +191,46 @@ async function packingDesdeExcel(file) {
   });
 }
 
+// Las fotos/PDF de caballetes se leen como una fila por cristal. Aquí se juntan todas
+// las filas del mismo Nº DE CABALLETE en un solo caballete (con sus cristales dentro),
+// igual que se hace con el Excel. Si solo hay un nº de caballete en la foto, las filas
+// que vengan sin él se asignan a ese mismo caballete.
+function agruparFilasPorCaballete(filas) {
+  const limpio = (v) => String(v ?? "").trim();
+  const numeros = [...new Set(filas.map((f) => limpio(f.caballete)).filter(Boolean))];
+  const unico = numeros.length === 1 ? numeros[0] : "";
+  const grupos = {};
+  const orden = [];
+  filas.forEach((f) => {
+    const cab = limpio(f.caballete) || unico || "SIN Nº";
+    if (!grupos[cab]) { grupos[cab] = []; orden.push(cab); }
+    grupos[cab].push(f);
+  });
+  return orden.map((cab) => {
+    const fs = grupos[cab];
+    const piezas = fs.map((f) => ({
+      pedido: limpio(f.pedido), pos: "",
+      cantidad: parseFloat(f.cantidad) || 1,
+      ancho: parseFloat(f.ancho) || "", alto: parseFloat(f.alto) || "",
+      m2: parseFloat(f.m2) || 0,
+      ref: limpio(f.ref), expediente: limpio(f.expediente),
+    }));
+    const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
+    const pedidos = [...new Set(piezas.map((p) => p.pedido).filter(Boolean))];
+    const cantidad = piezas.reduce((acc, p) => acc + p.cantidad, 0);
+    const m2 = piezas.reduce((acc, p) => acc + p.m2, 0);
+    return {
+      lote: cab === "SIN Nº" ? "" : cab,
+      secuencia: pedidos.join(", "),
+      cliente: limpio(fs.find((f) => limpio(f.cliente))?.cliente),
+      proveedor: limpio(fs.find((f) => limpio(f.proveedor))?.proveedor),
+      expediente: exps.join(", "),
+      medida: `${cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`,
+      cantidad, piezas,
+    };
+  });
+}
+
 function normalizarCabecera(s) {
   return (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 }
@@ -1710,6 +1750,21 @@ export default function App() {
       }
       alert(resumen);
     }
+  };
+
+  // Crea una incidencia desde un cristal del almacén (roto, falta…) sin salir de la pantalla.
+  const crearIncidenciaDesdeCristal = (data) => {
+    const nueva = {
+      proyectoId: "", fecha: new Date().toISOString().slice(0, 10),
+      especificaciones: "", observaciones: "", responsableInicial: "", comercialAsociado: "",
+      responsableActual: "", estadoTrabajo: "Pendiente revisión", estadoIncidencia: "Pendiente revisión",
+      fechaEntregaPrevista: "", fechaEntregado: "",
+      ...data,
+      id: uid(), numero: nextNumeroIncidencia(), gastos: [], origen: "cristal",
+    };
+    saveIncidencias([nueva, ...incidencias]);
+    showToast(`Incidencia #${nueva.numero} creada`);
+    return nueva;
   };
 
   const nextNumeroIncidencia = () => {
@@ -3238,6 +3293,7 @@ export default function App() {
           />
         )}
         {modulo === "fabrica" && (
+          <IncidenciasCristalCtx.Provider value={{ incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal }}>
           <FabricaModulo
             proyectos={proyectos}
             pedidos={pedidos}
@@ -3265,6 +3321,7 @@ export default function App() {
             onVerProyecto={openProyectoFromCalendar}
             onCambiarFechaReparto={(id, fecha) => cambiarFechaProyecto(id, "fechaReparto", fecha)}
           />
+          </IncidenciasCristalCtx.Provider>
         )}
         {modulo === "instalaciones" && (
           <InstalacionesModulo
@@ -8449,7 +8506,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es un packing list / albarán de entrega de caballetes de cristal. Puede tener muchas filas (a veces 10, 15 o más). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las filas, sin saltarte ninguna ni resumir. Antes de responder, cuenta cuántas filas de datos hay en el documento y asegúrate de que tu respuesta tiene exactamente ese número de elementos. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks, sin explicación) como un array: [{"lote":"","secuencia":"","cliente":"","proveedor":"","expediente":"","medida":"","cantidad":numero}]. Una línea por cada caballete o referencia distinta que aparezca en el documento. Deja en blanco lo que no encuentres, pero no omitas ninguna fila.';
+      const prompt = 'Esto es una etiqueta, packing list o albarán de caballetes de cristal (puede ser la foto de UN SOLO caballete suelto). MUY IMPORTANTE: distingue bien el NÚMERO DE CABALLETE (puede aparecer como Rack, Caballete, Nº caballete, Bastidor, Lote o Rack Nº) del NÚMERO DE PEDIDO (Order, Pedido, Nº pedido, Albarán). Son cosas distintas: el número de caballete va en "caballete" y el de pedido en "pedido"; nunca pongas el número de pedido como caballete. Si en la foto solo aparece un número de caballete, todas las filas pertenecen a ese caballete: repite ese mismo número en todas. Revisa el documento entero de arriba a abajo y devuelve TODAS las filas de cristales, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array, una línea por cada fila de cristal: [{"caballete":"","pedido":"","cliente":"","proveedor":"","expediente":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]. En "expediente" pon el número de expediente/obra si aparece (por ejemplo EXP 1234). Deja en blanco (o 0) lo que no encuentres.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
       // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
       // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
@@ -8498,6 +8555,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       } catch (parseErr) {
         console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
         throw new Error("La respuesta de la IA no tenía formato válido");
+      }
+      if (Array.isArray(items) && items.length && items.some((it) => it && ("caballete" in it || "pedido" in it))) {
+        items = agruparFilasPorCaballete(items);
       }
       }
       if (!Array.isArray(items) || items.length === 0) {
@@ -8643,7 +8703,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                <th className="px-4 py-2.5 font-semibold">Lote / Secuencia</th>
+                <th className="px-4 py-2.5 font-semibold">Nº caballete / Nº pedido</th>
                 <th className="px-4 py-2.5 font-semibold">Cliente</th>
                 <th className="px-4 py-2.5 font-semibold">Proveedor</th>
                 <th className="px-4 py-2.5 font-semibold">Medida</th>
@@ -8726,8 +8786,8 @@ function NuevoCristalForm({ onCancel, onSave }) {
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
       <h3 className="font-display font-bold text-slate-800 mb-3">Nuevo caballete</h3>
       <div className="grid grid-cols-3 gap-3 mb-3">
-        <Field label="Lote"><TextInput value={f.lote} onChange={set("lote")} /></Field>
-        <Field label="Secuencia"><TextInput value={f.secuencia} onChange={set("secuencia")} /></Field>
+        <Field label="Nº caballete"><TextInput value={f.lote} onChange={set("lote")} /></Field>
+        <Field label="Nº pedido"><TextInput value={f.secuencia} onChange={set("secuencia")} /></Field>
         <Field label="Expediente"><TextInput value={f.expediente} onChange={set("expediente")} /></Field>
         <Field label="Cliente"><TextInput value={f.cliente} onChange={set("cliente")} /></Field>
         <Field label="Proveedor"><TextInput value={f.proveedor} onChange={set("proveedor")} placeholder="Ej: Uxcar" /></Field>
@@ -8865,6 +8925,136 @@ function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar 
   );
 }
 
+// Incidencia de un cristal suelto (falta, roto…) con un comentario libre. Si se quiere,
+// se crea también una incidencia en el módulo de Incidencias para que el encargado la
+// gestione (pedir reposición, etc.) y el cristal queda enlazado a ella.
+const IncidenciasCristalCtx = React.createContext(null);
+const TIPOS_INCIDENCIA_CRISTAL = ["", "Falta", "Roto", "Defectuoso", "Medida mal", "Otro"];
+const CLAVE_RESPONSABLE_INC_CRISTAL = "crm_responsable_incidencias_cristal";
+
+function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const proyectos = ctx.proyectos || [];
+  const digitos = String(pieza.expediente || cristal.expediente || "").replace(/\D/g, "");
+  const sugerido = digitos
+    ? proyectos.find((p) => `${p.numero} ${p.nombre} ${p.expediente || ""} ${p.referencia || ""}`.replace(/\s/g, "").includes(digitos))
+    : null;
+  const [proyectoId, setProyectoId] = useState(sugerido?.id || "");
+  const [comentario, setComentario] = useState(pieza.comentario || "");
+  const [responsable, setResponsable] = useState(() => {
+    try { return localStorage.getItem(CLAVE_RESPONSABLE_INC_CRISTAL) || ""; } catch { return ""; }
+  });
+  const [error, setError] = useState("");
+  const crear = () => {
+    if (!proyectoId) { setError("Elige la obra a la que pertenece este cristal."); return; }
+    try { localStorage.setItem(CLAVE_RESPONSABLE_INC_CRISTAL, responsable); } catch {}
+    const medida = pieza.ancho || pieza.alto ? `${pieza.ancho} × ${pieza.alto} mm` : "";
+    const especificaciones = [
+      `Cristal ${String(tipo).toUpperCase()}`,
+      medida && `Medida: ${medida}`,
+      pieza.cantidad && `Uds: ${pieza.cantidad}`,
+      pieza.ref && `Vivienda / ref.: ${pieza.ref}`,
+      (pieza.expediente || cristal.expediente) && `Expediente: ${pieza.expediente || cristal.expediente}`,
+      `Caballete: ${cristal.lote || "—"}`,
+      (pieza.pedido || cristal.secuencia) && `Nº pedido: ${pieza.pedido || cristal.secuencia}`,
+      comentario && `Comentario: ${comentario}`,
+    ].filter(Boolean).join(" · ");
+    const nueva = ctx.crear({
+      proyectoId, especificaciones,
+      observaciones: "Creada desde el almacén de cristales. Hay que pedir la reposición del cristal.",
+      responsableInicial: responsable, responsableActual: responsable,
+    });
+    onHecho({ comentario, incidenciaId: nueva.id, incidenciaNumero: nueva.numero });
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4" onClick={onCerrar}>
+      <div className="bg-white rounded-xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-900 mb-1">¿Crear también una incidencia?</h3>
+        <p className="text-xs text-slate-500 mb-3">
+          Cristal <b>{tipo}</b>{pieza.ref ? ` · ${pieza.ref}` : ""}{pieza.ancho ? ` · ${pieza.ancho} × ${pieza.alto}` : ""} · caballete {cristal.lote || "—"}.
+          Le llegará al encargado de incidencias para que pida la reposición.
+        </p>
+        <div className="space-y-3">
+          <Field label="Obra" required>
+            <Select value={proyectoId} onChange={(e) => setProyectoId(e.target.value)}>
+              <option value="">— Elige la obra —</option>
+              {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            </Select>
+          </Field>
+          <Field label="Responsable (encargado de incidencias)">
+            <TextInput value={responsable} onChange={(e) => setResponsable(e.target.value)} placeholder="Nombre del encargado" />
+          </Field>
+          <Field label="Comentario">
+            <TextArea rows={2} value={comentario} onChange={(e) => setComentario(e.target.value)} placeholder="Ej: se rompió al montarlo" />
+          </Field>
+          {error && <p className="text-xs font-semibold text-rose-600">{error}</p>}
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button onClick={() => onHecho({ comentario })} className="flex-1 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">
+            Solo apuntar
+          </button>
+          <button onClick={crear} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-semibold px-3 py-2 rounded-lg hover:opacity-90">
+            Crear incidencia
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IncidenciaCristal({ pieza, cristal, onGuardar }) {
+  const ctx = React.useContext(IncidenciasCristalCtx);
+  const [texto, setTexto] = useState(pieza.comentario || "");
+  const [modalTipo, setModalTipo] = useState(null);
+  useEffect(() => { setTexto(pieza.comentario || ""); }, [pieza.comentario]);
+  const conIncidencia = !!pieza.incidencia;
+  const incVinculada = pieza.incidenciaId && ctx ? (ctx.incidencias || []).find((i) => i.id === pieza.incidenciaId) : null;
+  const cambiarTipo = (valor) => {
+    onGuardar({ incidencia: valor, fechaIncidencia: valor ? new Date().toISOString().slice(0, 10) : "" });
+    if (valor && ctx && cristal && !pieza.incidenciaId) setModalTipo(valor);
+  };
+  return (
+    <div className="min-w-[230px]">
+      <div className="flex items-center gap-1">
+        <select
+          value={pieza.incidencia || ""}
+          onChange={(e) => cambiarTipo(e.target.value)}
+          className={`text-xs border rounded px-1 py-0.5 ${conIncidencia ? "border-rose-300 bg-rose-50 text-rose-700 font-semibold" : "border-slate-200 text-slate-500"}`}
+        >
+          {TIPOS_INCIDENCIA_CRISTAL.map((t) => <option key={t} value={t}>{t || "Sin incidencia"}</option>)}
+        </select>
+        <input
+          value={texto}
+          onChange={(e) => setTexto(e.target.value)}
+          onBlur={() => { if (texto !== (pieza.comentario || "")) onGuardar({ comentario: texto }); }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          placeholder="Comentario…"
+          className="flex-1 min-w-[110px] text-xs border border-slate-200 rounded px-1.5 py-0.5"
+        />
+      </div>
+      {pieza.incidenciaId ? (
+        <div className="text-[11px] mt-0.5 text-rose-700 font-semibold">
+          Incidencia #{pieza.incidenciaNumero || incVinculada?.numero}
+          {incVinculada ? ` · ${incVinculada.estadoIncidencia}` : " · (borrada)"}
+        </div>
+      ) : conIncidencia && ctx && cristal ? (
+        <button type="button" onClick={() => setModalTipo(pieza.incidencia)} className="text-[11px] mt-0.5 text-sky-700 font-semibold hover:underline">
+          + Pasar a incidencias
+        </button>
+      ) : null}
+      {modalTipo && (
+        <CrearIncidenciaCristalModal
+          pieza={{ ...pieza, comentario: texto }}
+          cristal={cristal}
+          tipo={modalTipo}
+          onCerrar={() => setModalTipo(null)}
+          onHecho={(cambios) => { setModalTipo(null); onGuardar({ ...cambios, incidencia: modalTipo }); }}
+        />
+      )}
+    </div>
+  );
+}
+
 // Cristales de un caballete (vienen del packing list en Excel): medida, vivienda/referencia,
 // expediente y un tic para marcar cuando está puesto.
 function PiezasCristalTabla({ cristal, onUpdate }) {
@@ -8872,24 +9062,29 @@ function PiezasCristalTabla({ cristal, onUpdate }) {
   if (!piezas.length) return null;
   const puestos = piezas.filter((p) => p.puesto).length;
   const marcar = (i, v) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
+  const guardarIncidencia = (i, cambios) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, ...cambios } : p)) });
+  const conIncidencia = piezas.filter((p) => p.incidencia).length;
   return (
     <div className="mt-2">
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="font-semibold text-slate-600">Cristales ({piezas.length} líneas)</span>
-        <span className={puestos === piezas.length ? "text-emerald-700 font-semibold" : "text-slate-500"}>{puestos} de {piezas.length} puestos</span>
+        <span className={puestos === piezas.length ? "text-emerald-700 font-semibold" : "text-slate-500"}>
+          {puestos} de {piezas.length} puestos{conIncidencia > 0 && <b className="text-rose-600"> · {conIncidencia} con incidencia</b>}
+        </span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th></tr></thead>
+          <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th></tr></thead>
           <tbody>
             {piezas.map((p, i) => (
-              <tr key={i} className={`border-b border-slate-100 ${p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
+              <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                 <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
                 <td className="pr-2 font-semibold">{p.ref || "—"}</td>
                 <td className="pr-2">{p.expediente || "—"}</td>
                 <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
                 <td className="pr-2">{p.cantidad}</td>
                 <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
+                <td className="pr-2 py-1"><IncidenciaCristal pieza={p} cristal={cristal} onGuardar={(cambios) => guardarIncidencia(i, cambios)} /></td>
               </tr>
             ))}
           </tbody>
@@ -8903,29 +9098,35 @@ function PiezasCristalTabla({ cristal, onUpdate }) {
 // expediente o medida y ver en qué caballete/hueco está.
 function ListaCristalesSueltos({ cristales, q, onUpdate }) {
   const [soloPendientes, setSoloPendientes] = useState(false);
+  const [soloIncidencias, setSoloIncidencias] = useState(false);
   const normalizar = (t) => (t || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
   const nq = normalizar(q || "");
   const filas = [];
   cristales.forEach((c) => (c.piezas || []).forEach((p, i) => {
     if (soloPendientes && p.puesto) return;
-    if (nq && !normalizar(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente}`).includes(nq)) return;
+    if (soloIncidencias && !p.incidencia) return;
+    if (nq && !normalizar(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(nq)) return;
     filas.push({ c, p, i });
   }));
   const marcar = (c, i, v) => onUpdate(c.id, { piezas: c.piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
+  const guardarIncidencia = (c, i, cambios) => onUpdate(c.id, { piezas: c.piezas.map((p, j) => (j === i ? { ...p, ...cambios } : p)) });
   return (
     <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 text-xs text-slate-500">
         <span>{filas.length} línea(s) de cristal {q ? `que coinciden con "${q}"` : ""}. Usa el buscador de arriba: vivienda (V03.103), expediente (EXP 662) o medida (573).</span>
-        <label className="flex items-center gap-1"><input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} /> Solo sin poner</label>
+        <span className="flex items-center gap-3 shrink-0">
+          <label className="flex items-center gap-1"><input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} /> Solo sin poner</label>
+          <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencias} onChange={(e) => setSoloIncidencias(e.target.checked)} /> Solo con incidencia</label>
+        </span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-            <th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Vivienda / ref.</th><th className="px-3 py-2">Expediente</th><th className="px-3 py-2">Medida (mm)</th><th className="px-3 py-2">Uds</th><th className="px-3 py-2">Caballete</th><th className="px-3 py-2">Dónde está</th>
+            <th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Vivienda / ref.</th><th className="px-3 py-2">Expediente</th><th className="px-3 py-2">Medida (mm)</th><th className="px-3 py-2">Uds</th><th className="px-3 py-2">Caballete</th><th className="px-3 py-2">Dónde está</th><th className="px-3 py-2">Incidencia / comentario</th>
           </tr></thead>
           <tbody>
             {filas.slice(0, 400).map(({ c, p, i }) => (
-              <tr key={`${c.id}-${i}`} className={`border-b border-slate-100 ${p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
+              <tr key={`${c.id}-${i}`} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                 <td className="px-3 py-1.5"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(c, i, e.target.checked)} /></td>
                 <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}</td>
                 <td className="px-3 py-1.5">{p.expediente || "—"}</td>
@@ -8933,9 +9134,10 @@ function ListaCristalesSueltos({ cristales, q, onUpdate }) {
                 <td className="px-3 py-1.5">{p.cantidad}</td>
                 <td className="px-3 py-1.5 font-mono-num">{c.lote}</td>
                 <td className="px-3 py-1.5">{c.ubicacion ? ubicacionTexto(c.ubicacion) : <span className="text-amber-700">Pendiente de ubicar</span>}</td>
+                <td className="px-3 py-1.5"><IncidenciaCristal pieza={p} cristal={c} onGuardar={(cambios) => guardarIncidencia(c, i, cambios)} /></td>
               </tr>
             ))}
-            {filas.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No hay cristales con detalle (solo los que vienen de un packing list en Excel).</td></tr>}
+            {filas.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No hay cristales con detalle (solo los que vienen de un packing list en Excel).</td></tr>}
           </tbody>
         </table>
       </div>
@@ -8960,8 +9162,8 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
           {cristalesEnHueco.map((cristal) => (
             <div key={cristal.id} className="border border-slate-200 rounded-md p-3">
               <div className="text-sm text-slate-600 space-y-1 mb-2">
-                <p><b>Lote:</b> {cristal.lote || "—"}</p>
-                <p><b>Secuencia:</b> {cristal.secuencia || "—"}</p>
+                <p><b>Nº caballete:</b> {cristal.lote || "—"}</p>
+                <p><b>Nº pedido:</b> {cristal.secuencia || "—"}</p>
                 <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
                 <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
                 <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
@@ -8976,8 +9178,11 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <button onClick={() => onLiberar(cristal.id)} className="flex-1 text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md hover:bg-amber-50">
                   Liberar (vuelve a pendiente)
                 </button>
-                <button onClick={() => onEliminar(cristal.id)} className="flex-1 text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md hover:bg-rose-50">
-                  Dar de baja este expediente
+                <button
+                  onClick={() => { if (window.confirm(`¿Borrar el caballete ${cristal.lote || ""} del almacén? Se borra con todos sus cristales y no se puede deshacer.`)) onEliminar(cristal.id); }}
+                  className="flex-1 flex items-center justify-center gap-1 text-xs font-semibold text-white bg-rose-600 px-3 py-1.5 rounded-md hover:bg-rose-700"
+                >
+                  <Trash2 size={13} /> Borrar caballete
                 </button>
               </div>
             </div>
