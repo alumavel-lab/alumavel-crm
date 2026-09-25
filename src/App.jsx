@@ -479,6 +479,8 @@ export default function App() {
   const [vehiculos, setVehiculos] = useState([]);
   const [cristales, setCristales] = useState([]);
   const [confirmacionesCristal, setConfirmacionesCristal] = useState([]);
+  const [carrosPersianas, setCarrosPersianas] = useState([]);
+  const [persianasAlmacen, setPersianasAlmacen] = useState([]);
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionesUsuario, setSesionesUsuario] = useState({});
@@ -601,7 +603,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen"];
         const resultados = {};
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => null);
@@ -637,6 +639,8 @@ export default function App() {
         if (resultados.usuarios) setUsuarios(toArray(resultados.usuarios));
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
+        setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
+        if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
@@ -1659,6 +1663,8 @@ export default function App() {
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
   const saveCristales = (next) => { setCristales(next); persist("cristales", next); };
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
+  const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
+  const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
 
   const addCristal = (data) => {
     const nuevo = { id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: new Date().toISOString().slice(0, 10), ...data };
@@ -2210,6 +2216,24 @@ export default function App() {
 
   // Cambia el estado (Pendiente / En fabricación / Terminada) de una unidad de
   // persiana dentro del control de una obra, y quién la ha dado por terminada.
+  // Mete / saca / mueve varias persianas de golpe a un carro del almacén de persianas.
+  // movs: [{ proyectoId, unidadId, carro }]  (carro = número de carro, o null para sacarla)
+  const moverPersianasACarro = (movs) => {
+    const porProyecto = {};
+    movs.forEach((m) => { (porProyecto[m.proyectoId] = porProyecto[m.proyectoId] || {})[m.unidadId] = m; });
+    saveProyectos(proyectos.map((p) => {
+      const cambios = porProyecto[p.id];
+      if (!cambios) return p;
+      return {
+        ...p,
+        persianasControl: (p.persianasControl || []).map((u) => (u.id in cambios
+          ? { ...u, carro: cambios[u.id].carro, fechaCarro: cambios[u.id].carro ? new Date().toISOString().slice(0, 10) : "", ...(cambios[u.id].extra || {}) }
+          : u)),
+      };
+    }));
+    showToast(`${movs.length} persiana(s) actualizada(s) en el almacén`);
+  };
+
   const actualizarUnidadPersiana = (proyectoId, unidadId, cambios) => {
     const proyecto = proyectos.find((p) => p.id === proyectoId);
     if (!proyecto) return;
@@ -3300,6 +3324,7 @@ export default function App() {
             incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
+            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen,
             moverCristales: (movs) => {
               const porId = Object.fromEntries(movs.map((m) => [m.id, m.ubicacion]));
               saveCristales(cristales.map((c) => (porId[c.id] ? { ...c, ubicacion: porId[c.id], estado: "Colocado" } : c)));
@@ -9714,6 +9739,463 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
   );
 }
 
+// =================== ALMACÉN DE PERSIANAS (carros móviles) ===================
+// Carros con ruedas de ~2 m de largo, con estantes a los DOS lados (lado A y lado B).
+// - Carro amarillo (soportes cortos): 4 estantes por lado. Admite persianas desde 40 cm.
+// - Carro gris (soportes largos): admite persianas desde 60 cm.
+// Lo que cabe en un estante depende del LARGO de las persianas que entran (packing list):
+// en un estante de 2 m caben, por ejemplo, 4 persianas de 40 cm o 2 de 90 cm.
+// Cada carro tiene un sitio fijo en la nave (se pintan en filas de 5); si se mueve, se apunta.
+const TIPOS_CARRO_PERSIANA = {
+  amarillo: { label: "Soporte corto (desde 40 cm)", corto: "40 cm", color: "#F2C230", texto: "#5B4300", minimoMm: 400, nivelesDefecto: 4 },
+  gris: { label: "Soporte largo (desde 60 cm)", corto: "60 cm", color: "#94A3B8", texto: "#1E293B", minimoMm: 600, nivelesDefecto: 4 },
+};
+const CARROS_POR_FILA = 5;
+const LARGO_ESTANTE_MM = 2000;
+const HOLGURA_PERSIANA_MM = 20; // separación entre una persiana y otra en el estante
+const LADOS_CARRO = ["A", "B"];
+
+function carrosPersianasPorDefecto() {
+  return Array.from({ length: 30 }, (_, i) => {
+    const numero = i + 1;
+    const tipo = numero > 23 ? "amarillo" : "gris";
+    return { id: `carro-${numero}`, numero, tipo, niveles: TIPOS_CARRO_PERSIANA[tipo].nivelesDefecto, largo: LARGO_ESTANTE_MM, sitio: numero, movido: false, notaSitio: "" };
+  });
+}
+const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
+const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}` : "Sin sitio");
+
+// Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
+function estantesAlmacenPersianas(carros) {
+  const lista = [];
+  [...carros].sort((a, b) => (a.sitio || a.numero) - (b.sitio || b.numero)).forEach((c) => {
+    const niveles = parseInt(c.niveles, 10) || TIPOS_CARRO_PERSIANA[c.tipo]?.nivelesDefecto || 4;
+    LADOS_CARRO.forEach((lado) => {
+      for (let nivel = 1; nivel <= niveles; nivel++) {
+        lista.push({ key: `${c.numero}|${lado}|${nivel}`, carro: c.numero, lado, nivel, tipo: c.tipo, largo: parseFloat(c.largo) || LARGO_ESTANTE_MM });
+      }
+    });
+  });
+  return lista;
+}
+
+// Coloca un grupo de persianas (del mismo expediente) en los estantes. "estado" lleva lo
+// ya ocupado: { usado: {key: mm}, exps: {key: Set} }. Devuelve { id: estante } o null si no cabe.
+function colocarGrupoPersianas(items, exp, estantes, estado) {
+  const res = {};
+  const idx = Object.fromEntries(estantes.map((e, i) => [e.key, i]));
+  const cabe = (e, L) => {
+    const min = TIPOS_CARRO_PERSIANA[e.tipo]?.minimoMm || 0;
+    if (L < min) return false;
+    const usado = estado.usado[e.key] || 0;
+    if (L > e.largo) return usado === 0; // más larga que el estante: va sola
+    return usado + L + (usado ? HOLGURA_PERSIANA_MM : 0) <= e.largo;
+  };
+  const poner = (e, L, id) => {
+    estado.usado[e.key] = (estado.usado[e.key] || 0) + L + ((estado.usado[e.key] || 0) ? HOLGURA_PERSIANA_MM : 0);
+    (estado.exps[e.key] = estado.exps[e.key] || new Set()).add(exp);
+    res[id] = { carro: e.carro, lado: e.lado, nivel: e.nivel };
+  };
+  const ordenados = [...items].sort((a, b) => largoPersiana(b) - largoPersiana(a));
+  for (const it of ordenados) {
+    const L = largoPersiana(it);
+    // las de 60 cm o más van preferentemente a carro de soporte largo, para dejar
+    // los de soporte corto a las pequeñas
+    const preferido = L >= TIPOS_CARRO_PERSIANA.gris.minimoMm ? "gris" : "amarillo";
+    const mios = estantes.filter((e) => (estado.exps[e.key] || new Set()).has(exp));
+    const ultMio = mios.length ? Math.max(...mios.map((e) => idx[e.key])) : -1;
+    const vacio = (e) => !(estado.usado[e.key] > 0);
+    let ultimoOcupado = -1;
+    estantes.forEach((e, i) => { if (!vacio(e) && e.tipo === preferido) ultimoOcupado = i; });
+    const candidatos = [
+      // 1) en un estante donde ya hay de este expediente
+      mios.find((e) => cabe(e, L)),
+      // 2) en el siguiente estante vacío pegado a los suyos (mismo carro)
+      ultMio >= 0 ? estantes.slice(ultMio + 1).find((e) => e.carro === estantes[ultMio].carro && vacio(e) && cabe(e, L)) : null,
+      // 3) estante vacío del tipo preferido, a continuación de lo ya ocupado
+      estantes.slice(ultimoOcupado + 1).find((e) => e.tipo === preferido && vacio(e) && cabe(e, L)),
+      estantes.find((e) => e.tipo === preferido && vacio(e) && cabe(e, L)),
+      // 4) cualquier estante vacío donde quepa
+      estantes.find((e) => vacio(e) && cabe(e, L)),
+      // 5) compartir estante con otro expediente
+      estantes.find((e) => cabe(e, L)),
+    ].find(Boolean);
+    if (!candidatos) return { res, fallo: true };
+    poner(candidatos, L, it.id);
+  }
+  return { res, fallo: false };
+}
+
+function estadoOcupacionPersianas(items) {
+  const estado = { usado: {}, exps: {} };
+  items.filter((x) => x.estante && !x.entregada).forEach((x) => {
+    const k = `${x.estante.carro}|${x.estante.lado}|${x.estante.nivel}`;
+    estado.usado[k] = (estado.usado[k] || 0) + largoPersiana(x) + (estado.usado[k] ? HOLGURA_PERSIANA_MM : 0);
+    (estado.exps[k] = estado.exps[k] || new Set()).add(x.expediente || "—");
+  });
+  return estado;
+}
+
+// Reorganizar: se vuelve a colocar todo desde cero, expediente a expediente (en el orden
+// en que ya están), y se listan las persianas que cambian de sitio, agrupadas.
+function planReorganizarPersianas(items, carros) {
+  const estantes = estantesAlmacenPersianas(carros);
+  const idx = Object.fromEntries(estantes.map((e, i) => [e.key, i]));
+  const pos = (x) => (x.estante ? idx[`${x.estante.carro}|${x.estante.lado}|${x.estante.nivel}`] ?? 9999 : 9999);
+  const colocadas = items.filter((x) => x.estante && !x.entregada);
+  const grupos = {};
+  colocadas.forEach((x) => { (grupos[x.expediente || "—"] = grupos[x.expediente || "—"] || []).push(x); });
+  const orden = Object.entries(grupos).sort((a, b) => Math.min(...a[1].map(pos)) - Math.min(...b[1].map(pos)));
+  const estado = { usado: {}, exps: {} };
+  const destino = {};
+  let sinSitio = 0;
+  orden.forEach(([exp, xs]) => {
+    const r = colocarGrupoPersianas(xs, exp, estantes, estado);
+    Object.assign(destino, r.res);
+    if (r.fallo) sinSitio += xs.length - Object.keys(r.res).length;
+  });
+  const movs = {};
+  colocadas.forEach((x) => {
+    const d = destino[x.id];
+    if (!d) return;
+    if (d.carro === x.estante.carro && d.lado === x.estante.lado && d.nivel === x.estante.nivel) return;
+    const k = `${x.expediente}|${textoEstante(x.estante)}|${textoEstante(d)}`;
+    if (!movs[k]) movs[k] = { expediente: x.expediente, desde: x.estante, hasta: d, items: [] };
+    movs[k].items.push(x);
+  });
+  return { movimientos: Object.values(movs).sort((a, b) => a.hasta.carro - b.hasta.carro), sinSitio };
+}
+
+async function leerPackingPersianas(file) {
+  const esExcel = /\.(xlsx|xls|csv|ods)$/i.test(file.name || "");
+  let filas = [];
+  if (esExcel) {
+    filas = leerFilasExcel(await file.arrayBuffer()).map((f) => ({
+      expediente: String(valorPorCabeceras(f, ["expediente", "obra", "refclientorder", "refcliente", "pedidocliente", "cliente"]) || "").trim(),
+      ref: String(valorPorCabeceras(f, ["vivienda", "referencia", "ref", "tag", "posicion"]) || "").trim(),
+      largo: parseFloat(valorPorCabeceras(f, ["ancho", "largo", "longitud", "width", "anchura"])) || 0,
+      alto: parseFloat(valorPorCabeceras(f, ["alto", "altura", "height"])) || 0,
+      cantidad: parseFloat(valorPorCabeceras(f, ["cantidad", "uds", "unidades", "qty"])) || 1,
+      pedido: String(valorPorCabeceras(f, ["pedido", "order", "albaran"]) || "").trim(),
+    }));
+  } else {
+    const prompt = 'Esto es un packing list, albarán o etiquetas de PERSIANAS (cajones de persiana embalados, por ejemplo de Dealux). Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","filas":[{"expediente":"","ref":"","largo":numero,"alto":numero,"cantidad":numero,"pedido":""}]}. "largo" es el ANCHO / LARGO de la persiana (lo que mide el cajón a lo largo) en MILÍMETROS; si viene en cm o m, pásalo a mm. "alto" en mm. "expediente" es el número de obra / expediente / referencia de cliente. "ref" es la vivienda o posición. Deja en blanco (o 0) lo que no encuentres.';
+    const o = await leerDocumentoCristalConIA(file, prompt);
+    filas = (o.filas || []).map((f) => ({ ...f, proveedor: o.proveedor || "" }));
+  }
+  const unidades = [];
+  filas.filter((f) => parseFloat(f.largo) > 0).forEach((f) => {
+    const n = Math.max(1, parseInt(f.cantidad, 10) || 1);
+    const m = String(f.expediente || "").match(/\d{2,}/);
+    for (let k = 0; k < n; k++) {
+      unidades.push({
+        id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+        largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
+        proveedor: String(f.proveedor || "").trim(), fechaEntrada: new Date().toISOString().slice(0, 10),
+        estante: null, entregada: false,
+      });
+    }
+  });
+  return unidades;
+}
+
+function AlmacenPersianas() {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const carros = ctx.carrosPersianas || [];
+  const guardarCarros = ctx.saveCarrosPersianas || (() => {});
+  const items = ctx.persianasAlmacen || [];
+  const guardarItems = ctx.savePersianasAlmacen || (() => {});
+  const [vista, setVista] = useState("mapa");
+  const [carroAbierto, setCarroAbierto] = useState(null);
+  const [q, setQ] = useState("");
+  const [hechos, setHechos] = useState({});
+  const [leyendo, setLeyendo] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const [borrador, setBorrador] = useState(null);
+  const inputRef = useRef(null);
+
+  const activos = items.filter((x) => !x.entregada);
+  const sinSitio = activos.filter((x) => !x.estante);
+  const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
+  const ocup = useMemo(() => estadoOcupacionPersianas(items), [items]);
+  const nq = q.trim().toLowerCase();
+
+  const subir = async (file) => {
+    setLeyendo(true); setAviso("");
+    try {
+      const nuevas = await leerPackingPersianas(file);
+      if (!nuevas.length) throw new Error("No he encontrado persianas con medidas en el documento.");
+      setBorrador(nuevas);
+    } catch (e) { setAviso(e.message || "No he podido leer el documento."); }
+    finally { setLeyendo(false); }
+  };
+
+  const colocar = (lista) => {
+    const estado = estadoOcupacionPersianas(items);
+    const porExp = {};
+    lista.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+    const sitio = {};
+    let fallan = 0;
+    Object.entries(porExp).forEach(([exp, xs]) => {
+      const r = colocarGrupoPersianas(xs, exp, estantes, estado);
+      Object.assign(sitio, r.res);
+      fallan += xs.length - Object.keys(r.res).length;
+    });
+    return { sitio, fallan };
+  };
+
+  const confirmarEntrada = () => {
+    const { sitio, fallan } = colocar(borrador);
+    const nuevas = borrador.map((x) => ({ ...x, estante: sitio[x.id] || null }));
+    guardarItems([...items, ...nuevas]);
+    setBorrador(null);
+    const cortas = nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
+    setAviso(fallan ? `${fallan} persiana(s) sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} persianas colocadas.`);
+    setVista(fallan ? "sinsitio" : "mapa");
+  };
+
+  const recolocarSinSitio = () => {
+    const { sitio, fallan } = colocar(sinSitio);
+    guardarItems(items.map((x) => (sitio[x.id] ? { ...x, estante: sitio[x.id] } : x)));
+    setAviso(fallan ? `Siguen ${fallan} sin sitio.` : "Todas colocadas.");
+  };
+
+  const actualizarCarro = (numero, patch) => guardarCarros(carros.map((c) => (c.numero === numero ? { ...c, ...patch } : c)));
+  const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
+  const aplicarPlan = () => {
+    const destino = {};
+    plan.movimientos.forEach((m, i) => { if (hechos[i]) m.items.forEach((x) => { destino[x.id] = m.hasta; }); });
+    if (Object.keys(destino).length) guardarItems(items.map((x) => (destino[x.id] ? { ...x, estante: destino[x.id] } : x)));
+    setHechos({});
+  };
+
+  const ordenados = [...carros].sort((a, b) => (a.sitio || a.numero) - (b.sitio || b.numero));
+  const filas = [];
+  for (let i = 0; i < ordenados.length; i += CARROS_POR_FILA) filas.push(ordenados.slice(i, i + CARROS_POR_FILA));
+  const carroSel = carros.find((c) => c.numero === carroAbierto);
+
+  const resumenCarro = (c) => {
+    const es = estantes.filter((e) => e.carro === c.numero);
+    const total = es.reduce((a, e) => a + e.largo, 0);
+    const usado = es.reduce((a, e) => a + Math.min(e.largo, ocup.usado[e.key] || 0), 0);
+    const exps = new Set();
+    es.forEach((e) => (ocup.exps[e.key] || new Set()).forEach((x) => exps.add(x)));
+    const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
+    return { pct: total ? usado / total : 0, exps: [...exps], n };
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {[["mapa", "Mapa de carros"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
+          <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
+        ))}
+        <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
+          onChange={(e) => { if (e.target.files?.[0]) subir(e.target.files[0]); e.target.value = ""; }} />
+        <button onClick={() => inputRef.current?.click()} disabled={leyendo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+          className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
+          <Plus size={14} /> {leyendo ? "Leyendo…" : "Subir packing list de persianas"}
+        </button>
+      </div>
+      {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
+
+      {borrador && (
+        <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
+          <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las persianas antes de colocarlas</h3>
+          <p className="text-xs text-slate-600 mb-2">{borrador.length} persianas. Corrige el expediente o el largo si algo está mal leído.</p>
+          <div className="overflow-x-auto max-h-72 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th></th></tr></thead>
+              <tbody>
+                {borrador.map((x, i) => (
+                  <tr key={x.id} className={`border-b border-white ${largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
+                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
+                    <td className="pr-2">{x.ref || "—"}</td>
+                    <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
+                    <td className="pr-2">{x.alto || "—"}</td>
+                    <td><button onClick={() => setBorrador(borrador.filter((_, j) => j !== i))} className="text-rose-500"><Trash2 size={12} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => setBorrador(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
+            <button onClick={confirmarEntrada} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Colocar en los carros</button>
+          </div>
+        </div>
+      )}
+
+      {vista === "mapa" && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
+            {Object.entries(TIPOS_CARRO_PERSIANA).map(([id, t]) => (
+              <span key={id} className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: t.color }} /> {t.label} ({carros.filter((c) => c.tipo === id).length})</span>
+            ))}
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border-2 border-dashed border-rose-400" /> Movido de su sitio</span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
+          </div>
+          <div className="space-y-2 overflow-x-auto">
+            {filas.map((fila, fi) => (
+              <div key={fi} className="flex items-stretch gap-2 w-max">
+                <span className="text-xs font-bold text-slate-600 w-14 shrink-0 self-center sticky left-0 bg-white">Fila {fi + 1}</span>
+                {fila.map((c) => {
+                  const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
+                  const r = resumenCarro(c);
+                  const resaltado = nq && r.exps.some((e) => String(e).toLowerCase().includes(nq));
+                  return (
+                    <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
+                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 bg-white hover:shadow ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : "border-slate-200"}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
+                      </div>
+                      <div className="h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
+                        <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, r.pct * 100)}%`, background: r.pct >= 0.95 ? "#E11D48" : "#86D325" }} />
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">{r.n} persianas · {Math.round(r.pct * 100)} %</div>
+                      <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
+                        {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-300 font-normal">vacío</span>}
+                      </div>
+                      {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {vista === "sinsitio" && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          {sinSitio.length === 0 ? <p className="text-sm text-slate-400">Todas las persianas tienen sitio.</p> : (
+            <>
+              <p className="text-sm text-slate-600 mb-2">Persianas que no han cabido en ningún estante (o miden menos de 40 cm). Libera sitio o cambia la configuración de algún carro y pulsa <b>Volver a colocar</b>.</p>
+              <table className="w-full text-xs mb-3">
+                <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo</th><th></th></tr></thead>
+                <tbody>{sinSitio.map((x) => (
+                  <tr key={x.id} className="border-b border-slate-100">
+                    <td className="py-1 pr-2 font-semibold">EXP {x.expediente || "—"}</td><td className="pr-2">{x.ref || "—"}</td><td className="pr-2">{largoPersiana(x)} mm</td>
+                    <td><button onClick={() => { if (window.confirm("¿Borrar esta persiana del almacén?")) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
+                  </tr>))}
+                </tbody>
+              </table>
+              <button onClick={recolocarSinSitio} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Volver a colocar</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {vista === "reorganizar" && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <p className="text-xs text-slate-500 mb-3">
+            Cada expediente junto, en estantes seguidos del mismo carro, y las persianas de 60 cm o más en carros de soporte largo para dejar
+            los de soporte corto a las pequeñas. Muévelas, marca lo que ya esté hecho y pulsa <b>Guardar movimientos</b>.
+          </p>
+          {plan.movimientos.length === 0 ? (
+            <p className="text-sm text-emerald-700 font-semibold">Todo en orden: cada expediente está junto.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 pr-2">Hecho</th><th className="pr-2">Expediente</th><th className="pr-2">Persianas</th><th className="pr-2">Desde</th><th className="pr-2">Hasta</th></tr></thead>
+                  <tbody>
+                    {plan.movimientos.map((m, i) => (
+                      <tr key={i} className={`border-b border-slate-100 ${hechos[i] ? "bg-emerald-50" : ""}`}>
+                        <td className="py-1.5 pr-2"><input type="checkbox" checked={!!hechos[i]} onChange={(e) => setHechos({ ...hechos, [i]: e.target.checked })} /></td>
+                        <td className="pr-2 font-semibold">EXP {m.expediente || "—"}</td>
+                        <td className="pr-2">{m.items.length} ({m.items.map((x) => `${Math.round(largoPersiana(x) / 10)} cm`).join(", ")})</td>
+                        <td className="pr-2 text-xs">{textoEstante(m.desde)}</td>
+                        <td className="pr-2 text-xs font-semibold text-[#2E8B57]">{textoEstante(m.hasta)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex justify-end mt-3">
+                <button onClick={aplicarPlan} disabled={!Object.values(hechos).some(Boolean)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-40">
+                  Guardar movimientos
+                </button>
+              </div>
+            </>
+          )}
+          {plan.sinSitio > 0 && <p className="text-xs text-amber-700 mt-2">No hay sitio suficiente para ordenar {plan.sinSitio} persiana(s).</p>}
+        </div>
+      )}
+
+      {carroSel && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setCarroAbierto(null)}>
+          <div className="bg-white rounded-xl p-5 max-w-2xl w-full max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-display font-bold text-slate-900 text-lg">Carro {carroSel.numero}</h3>
+              <button onClick={() => setCarroAbierto(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <Field label="Tipo de carro">
+                <Select value={carroSel.tipo} onChange={(e) => actualizarCarro(carroSel.numero, { tipo: e.target.value })}>
+                  {Object.entries(TIPOS_CARRO_PERSIANA).map(([id, t]) => <option key={id} value={id}>{t.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Estantes por lado">
+                <TextInput type="number" value={carroSel.niveles} onChange={(e) => actualizarCarro(carroSel.numero, { niveles: parseInt(e.target.value, 10) || 1 })} />
+              </Field>
+              <Field label="Largo del estante (mm)">
+                <TextInput type="number" value={carroSel.largo} onChange={(e) => actualizarCarro(carroSel.numero, { largo: parseInt(e.target.value, 10) || LARGO_ESTANTE_MM })} />
+              </Field>
+            </div>
+            <label className="flex items-center gap-2 text-sm mb-2">
+              <input type="checkbox" checked={!!carroSel.movido} onChange={(e) => actualizarCarro(carroSel.numero, { movido: e.target.checked, notaSitio: e.target.checked ? carroSel.notaSitio : "" })} />
+              Este carro no está en su sitio
+            </label>
+            {carroSel.movido && <TextInput value={carroSel.notaSitio || ""} onChange={(e) => actualizarCarro(carroSel.numero, { notaSitio: e.target.value })} placeholder="¿Dónde está? Ej: en la zona de carga" />}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+              {LADOS_CARRO.map((lado) => (
+                <div key={lado}>
+                  <div className="text-xs font-bold text-slate-600 mb-1">Lado {lado}</div>
+                  {estantes.filter((e) => e.carro === carroSel.numero && e.lado === lado).map((e) => {
+                    const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel);
+                    return (
+                      <div key={e.key} className="mb-1.5">
+                        <div className="text-[10px] text-slate-400">Estante {e.nivel}</div>
+                        <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
+                          {dentro.map((x) => (
+                            <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                              className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
+                              style={{ width: `${Math.min(100, (largoPersiana(x) / e.largo) * 100)}%` }}>
+                              {x.expediente}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4">
+              {(() => {
+                const dentro = activos.filter((x) => x.estante && x.estante.carro === carroSel.numero);
+                const porExp = {};
+                dentro.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+                return Object.entries(porExp).map(([exp, xs]) => (
+                  <div key={exp} className="flex items-center justify-between gap-2 border border-slate-200 rounded-lg px-3 py-2 mb-1.5">
+                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} persiana(s)</span>
+                    <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} persianas del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
+                      className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EstadisticasCristales({ cristales }) {
   const porDia = useMemo(() => {
     const map = {};
@@ -9908,6 +10390,10 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Cristales
           {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
         </button>
+        <button onClick={() => setTab("persianasAlmacen")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "persianasAlmacen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Almacén persianas
+        </button>
         <button onClick={() => setTab("procesoExterno")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "procesoExterno" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Albarán de salida
@@ -9920,7 +10406,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length}</Badge>
           )}
         </button>
-        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && (
+        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
@@ -10043,6 +10529,10 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             )}
           </div>
         </>
+      )}
+
+      {tab === "persianasAlmacen" && (
+        <AlmacenPersianas />
       )}
 
       {tab === "cristales" && (
