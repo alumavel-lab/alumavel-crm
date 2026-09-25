@@ -501,6 +501,7 @@ export default function App() {
   const [portalPerfil, setPortalPerfil] = useState(null);
   const [uxExpedientes, setUxExpedientes] = useState([]);
   const [uxConfig, setUxConfig] = useState({});
+  const [uxPedidos, setUxPedidos] = useState([]);
   const [uxPortalUsuarios, setUxPortalUsuarios] = useState([]);
   useEffect(() => onAuthStateChanged(fbAuth, (u) => setAuthUser(u || null)), []);
   const [clientes, setClientes] = useState([]);
@@ -1634,7 +1635,7 @@ export default function App() {
   const recibirPedido = (pedidoId) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
-    const proveedorNombre = proveedores.find((pr) => pr.id === pedido.proveedorId)?.nombre || "Proveedor";
+    const proveedorNombre = proveedores.find((pr) => pr.id === pedido.proveedorId)?.nombre || pedido.proveedorExterno || "Proveedor";
     const hoy = new Date().toISOString().slice(0, 10);
 
     const materialesNext = materiales.map((m) => {
@@ -2704,6 +2705,7 @@ export default function App() {
       const v = snap.val() || {};
       setUxExpedientes(toArray(v.expedientes));
       setUxConfig(v.config || {});
+      setUxPedidos(toArray(v.pedidos));
     }, () => {});
     const off2 = onValue(ref(fbDb, "portalUsuarios"), (snap) => {
       const v = snap.val() || {};
@@ -2757,6 +2759,95 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, currentUser?.id, loading]);
+
+  // Cada pedido que Uxcar hace a SU proveedor desde el portal entra solo en Pedidos
+  // del CRM: un pedido por expediente, unido al Proyecto de ese expediente. Se espera
+  // a que el Proyecto exista (lo crea el efecto de arriba) y se "reserva" el pedido
+  // con una transacción para que no se duplique si hay varios CRM abiertos.
+  const uxPedidosCreandoRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || uxPedidosCreandoRef.current) return;
+    const listos = uxPedidos.filter((p) => p && p.id && !p.crmCreado && toArray(p.expedientes).every((e) => {
+      const x = uxExpedientes.find((y) => y.id === e.expedienteId);
+      return !x || (x.proyectoId && proyectos.some((pr) => pr.id === x.proyectoId));
+    }));
+    if (listos.length === 0) return;
+    uxPedidosCreandoRef.current = true;
+    (async () => {
+      try {
+        let numero = parseInt(nextNumeroPedido(), 10);
+        const hoy = new Date().toISOString().slice(0, 10);
+        const nuevos = [];
+        for (const p of listos) {
+          const res = await runTransaction(ref(fbDb, `portalUxcar/pedidos/${p.id}/crmCreado`), (actual) => (actual ? undefined : true)).catch(() => null);
+          if (!res || !res.committed) continue;
+          const enviado = p.enviadoEmail ? "email" : p.enviadoWhatsapp ? "whatsapp" : p.enviadoManual ? "manual" : "";
+          const ids = [];
+          const grupos = toArray(p.expedientes).length ? toArray(p.expedientes) : [{ expedienteId: "", numero: "", lineas: [] }];
+          for (const e of grupos) {
+            const x = uxExpedientes.find((y) => y.id === e.expedienteId);
+            let lineas = toArray(e.lineas).map((l) => ({
+              id: uid(), modo: "libre", materialId: "",
+              referencia: [l.modelo, l.codigo, l.descripcion, l.color].filter(Boolean).join(" · "),
+              ancho: l.ancho || "", alto: l.alto || "", cantidad: parseFloat(l.uds) || 1, precio: "", estado: "Solicitado",
+            }));
+            if (lineas.length === 0) lineas = [{ id: uid(), modo: "libre", materialId: "", referencia: `${p.tipo || "Material"} según documento adjunto`, ancho: "", alto: "", cantidad: 1, precio: "", estado: "Solicitado" }];
+            const id = uid();
+            ids.push(id);
+            nuevos.push({
+              id, numero: String(numero++), proveedorId: "", proveedorExterno: `${p.proveedorNombre || "Proveedor"} (de Uxcar)`,
+              proyectoId: (x && x.proyectoId) || "", fechaCompra: p.fecha || hoy, fechaEntregaPrevista: "", estado: "Pendiente",
+              comentarios: `Pedido ${p.numero} de Uxcar (${p.tipo || "material"}) hecho desde su portal${e.numero ? ` · expediente ${e.numero}` : ""}.${p.comentarios ? "\n" + p.comentarios : ""}`,
+              lineas, adjuntosPdf: [], documentosUxcar: uxDocsPedido(p),
+              avisos: { llegada: true, retraso: true, usuarioId: currentUser?.id || null, usuarioNombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
+              creadoPor: `Uxcar (${p.creadoPor || "portal"})`, fechaCreado: hoy, origen: "portalUxcar", uxcarPedidoId: p.id, uxcarExpedienteId: e.expedienteId || "", tipoUxcar: p.tipo || "",
+              envioConfirmado: !!enviado, envioMetodo: enviado || undefined, fechaEnvioConfirmado: enviado ? new Date().toISOString() : undefined,
+            });
+          }
+          fbUpdate(ref(fbDb, `portalUxcar/pedidos/${p.id}`), { crmPedidoIds: ids }).catch(() => {});
+        }
+        if (nuevos.length > 0) {
+          savePedidos([...nuevos.map((n) => JSON.parse(JSON.stringify(n))), ...pedidos]);
+          showToast(nuevos.length === 1 ? `Nuevo pedido de Uxcar: #${nuevos[0].numero}` : `${nuevos.length} pedidos nuevos de Uxcar en Pedidos`);
+        }
+      } finally {
+        uxPedidosCreandoRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxPedidos, uxExpedientes, proyectos, currentUser?.id, loading]);
+
+  // Ida y vuelta entre el portal y el CRM: cuando Uxcar marca el pedido como enviado al
+  // proveedor, el pedido del CRM queda "enviado" (y ya se puede recibir); cuando el
+  // equipo lo recibe en el CRM, Uxcar lo ve como recibido en su portal (y, si son
+  // cristales, el vidrio del expediente pasa a "Recibido en fábrica").
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const porId = new Map(uxPedidos.map((p) => [p.id, p]));
+    const aEnviar = pedidos.filter((pd) => pd.uxcarPedidoId && !pd.envioConfirmado && (() => { const p = porId.get(pd.uxcarPedidoId); return p && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual); })());
+    if (aEnviar.length > 0) {
+      const ids = new Set(aEnviar.map((x) => x.id));
+      savePedidos(pedidos.map((pd) => {
+        if (!ids.has(pd.id)) return pd;
+        const p = porId.get(pd.uxcarPedidoId);
+        return { ...pd, envioConfirmado: true, envioMetodo: p.enviadoEmail ? "email" : p.enviadoWhatsapp ? "whatsapp" : "manual", fechaEnvioConfirmado: new Date().toISOString() };
+      }));
+    }
+    uxPedidos.forEach((p) => {
+      if (!p.crmCreado || p.recibido) return;
+      const delCrm = pedidos.filter((pd) => pd.uxcarPedidoId === p.id);
+      if (delCrm.length === 0 || !delCrm.every((pd) => pd.estado === "Recibido")) return;
+      const patch = { [`pedidos/${p.id}/recibido`]: new Date().toISOString().slice(0, 10) };
+      if (p.tipo === "Cristales") {
+        toArray(p.expedientes).forEach((e) => {
+          const x = uxExpedientes.find((y) => y.id === e.expedienteId);
+          if (x && (!x.materiales || !x.materiales.vidrios || x.materiales.vidrios.estado !== "recibido")) patch[`expedientes/${x.id}/materiales/vidrios/estado`] = "recibido";
+        });
+      }
+      fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxPedidos, pedidos, currentUser?.id, loading]);
 
   const uxActualizar = async (exp, patch) => {
     try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), patch); return true; }
@@ -5817,7 +5908,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
                   {pedidos.map((p) => (
                     <tr key={p.id} onClick={() => openPedido(p.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                       <td className="px-4 py-2.5 font-mono-num text-slate-500">#{p.numero}</td>
-                      <td className="px-4 py-2.5 font-medium text-slate-800">{proveedores.find((pr) => pr.id === p.proveedorId)?.nombre || "—"}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-800">{proveedores.find((pr) => pr.id === p.proveedorId)?.nombre || p.proveedorExterno || "—"}</td>
                       <td className="px-4 py-2.5 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                       <td className="px-4 py-2.5 text-slate-500">{fmtDate(p.fechaEntregaPrevista)}</td>
                       <td className="px-4 py-2.5"><Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge></td>
@@ -7242,7 +7333,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
       }
       if (candidatos.length === 0 && provDetectado) {
         candidatos = enMarcha.filter((p) => {
-          const nombreProv = proveedorNombre(p.proveedorId).toLowerCase();
+          const nombreProv = (p.proveedorExterno || proveedorNombre(p.proveedorId)).toLowerCase();
           return nombreProv && (nombreProv.includes(provDetectado) || provDetectado.includes(nombreProv));
         });
       }
@@ -7269,7 +7360,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
       if (estado && p.estado !== estado) return false;
       if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
-      const s = `${p.numero} ${proveedorNombre(p.proveedorId)} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
   }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales]);
@@ -7430,7 +7521,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
                 <div key={p.id} className="flex items-center justify-between px-3 py-2.5 rounded-md border border-slate-200 bg-slate-50">
                   <div className="text-sm">
                     <span className="font-semibold text-slate-800">Pedido #{p.numero}</span>
-                    <span className="text-slate-500"> — {proveedorNombre(p.proveedorId)} · {p.fechaCompra || "sin fecha"} · {p.estado}</span>
+                    <span className="text-slate-500"> — {(p.proveedorExterno || proveedorNombre(p.proveedorId))} · {p.fechaCompra || "sin fecha"} · {p.estado}</span>
                   </div>
                   <button
                     onClick={() => { onRecibir(p.id); setCandidatosAlbaran(null); setDatosAlbaran(null); }}
@@ -7490,7 +7581,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
           onClick={() => descargarListaComoWord(
             "Pedidos",
             ["Nº", "Proveedor", "Líneas", "Estado", "Entrega prevista"],
-            filtered.map((p) => [String(p.numero), proveedorNombre(p.proveedorId), String((p.lineas || []).length), p.estado, fmtDate(p.fechaEntregaPrevista)])
+            filtered.map((p) => [String(p.numero), (p.proveedorExterno || proveedorNombre(p.proveedorId)), String((p.lineas || []).length), p.estado, fmtDate(p.fechaEntregaPrevista)])
           )}
           className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"
         >
@@ -7525,7 +7616,7 @@ function PedidosModulo({ pedidos, proveedores, materiales, articulos, proyectos,
               return (
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{proveedorNombre(p.proveedorId)}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{(p.proveedorExterno || proveedorNombre(p.proveedorId))}</td>
                   <td className="px-4 py-3 text-slate-600">{proyectoNombre(p.proyectoId)}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
@@ -8275,8 +8366,14 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
         <div>
           <div className="flex items-center gap-2">
             <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{pedido.numero}</span>
-            <h1 className="font-display text-2xl font-extrabold text-slate-900">{proveedor?.nombre || "Proveedor no encontrado"}</h1>
+            <h1 className="font-display text-2xl font-extrabold text-slate-900">{proveedor?.nombre || pedido.proveedorExterno || "Proveedor no encontrado"}</h1>
           </div>
+          {pedido.origen === "portalUxcar" && (
+            <p className="text-xs font-semibold text-[#2E8B57] mt-1">Pedido hecho por Uxcar desde su portal{pedido.envioConfirmado ? " · ya enviado al proveedor" : " · todavía sin enviar al proveedor"}</p>
+          )}
+          {toArray(pedido.documentosUxcar).map((d, i) => (
+            <a key={i} href={d.url} target="_blank" rel="noreferrer" className="text-xs text-[#2E8B57] underline mt-1 inline-flex items-center gap-1"><FileText size={12} /> Ver documento del pedido ({d.nombre})</a>
+          ))}
           <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}{pedido.creadoPor && ` · Pedido por ${pedido.creadoPor}`}</p>
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
           {pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0 && (
@@ -10718,7 +10815,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
   const filtered = useMemo(() => {
     if (!q) return pedidosEnCurso;
     return pedidosEnCurso.filter((p) => {
-      const s = `${p.numero} ${proveedorNombre(p.proveedorId)} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
   }, [pedidosEnCurso, q]);
@@ -10760,7 +10857,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           const nombre = esLibre ? (l.referencia || "Sin referencia") : (mat ? `${mat.codigo} — ${mat.descripcion}` : "Material eliminado");
           return filaTabla([nombre, l.cantidad, l.confirmadoFabrica ? `Ha llegado (${fmtDate(l.fechaConfirmadoFabrica)})` : "Pendiente"]);
         }).join("");
-        return `<h3>Pedido #${pedido.numero} — ${proveedorNombre(pedido.proveedorId)}${proyecto ? ` · Proyecto #${proyecto.numero} ${proyecto.nombre}` : ""}</h3>
+        return `<h3>Pedido #${pedido.numero} — ${(pedido.proveedorExterno || proveedorNombre(pedido.proveedorId))}${proyecto ? ` · Proyecto #${proyecto.numero} ${proyecto.nombre}` : ""}</h3>
           <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
             ${cabeceraTabla(["Material", "Cantidad", "Estado en fábrica"])}
             ${filasLineas}
@@ -10919,7 +11016,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{pedido.numero}</span>
-                      <span className="ml-2 font-semibold text-slate-700">{proveedorNombre(pedido.proveedorId)}</span>
+                      <span className="ml-2 font-semibold text-slate-700">{(pedido.proveedorExterno || proveedorNombre(pedido.proveedorId))}</span>
                       {proyecto && <span className="ml-2 text-xs text-slate-500">Proyecto #{proyecto.numero} — {proyecto.nombre}</span>}
                     </div>
                     <span className="text-xs text-slate-400">Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}</span>
@@ -15403,7 +15500,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
                   {(pedidos || []).map((p) => (
                     <tr key={p.id} onClick={() => openPedido(p.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                       <td className="px-4 py-2.5 font-mono-num text-slate-500">#{p.numero}</td>
-                      <td className="px-4 py-2.5 font-medium text-slate-800">{proveedores.find((pr) => pr.id === p.proveedorId)?.nombre || "—"}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-800">{proveedores.find((pr) => pr.id === p.proveedorId)?.nombre || p.proveedorExterno || "—"}</td>
                       <td className="px-4 py-2.5 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                       <td className="px-4 py-2.5 text-slate-500">{fmtDate(p.fechaEntregaPrevista)}</td>
                       <td className="px-4 py-2.5"><Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge></td>
@@ -23587,6 +23684,452 @@ function UxFichaDatos({ exp }) {
   );
 }
 
+/* ---------- Pedidos de Uxcar a SUS proveedores (desde el portal) ---------- */
+// Uxcar sube el mismo PDF/foto que mandaría por correo o WhatsApp (listado de cajas,
+// pedido de cristales…). Se lee solo, se une a sus expedientes (o se crean) y desde
+// aquí lo mandan a su proveedor. En el CRM entra solo como Pedido del proyecto.
+const UX_TIPOS_PEDIDO = ["Persianas", "Cristales", "Otro material"];
+const uxNormExp = (s) => String(s || "").toUpperCase().replace(/^EXP\.?\s*/, "").replace(/\s+/g, "");
+// Documentos de un pedido de Uxcar (puede llevar varios PDF/fotos; los antiguos solo uno)
+const uxDocsPedido = (p) => (p && toArray(p.documentos).length ? toArray(p.documentos) : p && p.documento ? [p.documento] : []);
+
+const uxLeerComoDataUrl = (file) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(r.result);
+  r.onerror = () => reject(new Error("No se pudo leer el archivo"));
+  r.readAsDataURL(file);
+});
+
+async function uxLeerPedidoConClaude(dataUrl, mediaType) {
+  const base64 = String(dataUrl).split(",")[1];
+  const contentBlock = mediaType === "application/pdf"
+    ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+    : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
+  const prompt = 'Esto es un pedido de material de carpintería de PVC/aluminio (listado de cajas o cajones de persiana, pedido de cristales u otro material). Puede traer varios expedientes u obras: cada uno con una cabecera tipo "6.276-5 Alhendin - para pedir material" y sus líneas debajo. Revisa TODAS las páginas; si un mismo expediente sale en varias páginas, junta todas sus líneas en uno solo. Devuelve ÚNICAMENTE un JSON, sin texto antes ni después, con esta forma: {"numeroDocumento":"6.184","expedientes":[{"codigo":"6.276-5","nombre":"Alhendin - para pedir material y fabricacion","lineas":[{"modelo":"V3","codigo":"CJ_DECOR_S/G","descripcion":"Compacto decorativo - guia aparte","ancho":"1445","alto":"2285","color":"CJ_BLANCO","uds":1}]}]}. Medidas en milímetros y sin puntos de miles. "uds" es un número. Si el documento no separa por expedientes, devuelve un único expediente con codigo "" y todas las líneas.';
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{");
+  const fin = limpio.lastIndexOf("}");
+  const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  return (Array.isArray(res.expedientes) ? res.expedientes : []).map((e) => ({
+    codigo: String(e.codigo || "").trim(),
+    nombre: String(e.nombre || "").trim(),
+    lineas: (Array.isArray(e.lineas) ? e.lineas : []).map((l) => ({
+      modelo: String(l.modelo || ""), codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""),
+      ancho: String(l.ancho || "").replace(/\./g, ""), alto: String(l.alto || "").replace(/\./g, ""), color: String(l.color || ""), uds: parseFloat(l.uds) || 1,
+    })),
+  }));
+}
+
+// Ventanas que lleva un expediente según las líneas del pedido (las líneas sin medidas,
+// como accesorios o cajones sueltos, no cuentan como ventana).
+const uxVentanasDeLineas = (lineas) => {
+  const conMedida = lineas.filter((l) => uxNum(l.ancho) > 0 && uxNum(l.alto) > 0);
+  return (conMedida.length ? conMedida : lineas).reduce((s, l) => s + (parseFloat(l.uds) || 0), 0);
+};
+
+function UxProveedorForm({ initial, onCancel, onSave }) {
+  const [f, setF] = useState(initial || { nombre: "", email: "", movil: "" });
+  const [error, setError] = useState("");
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Field label="Nombre" required><TextInput value={f.nombre} onChange={set("nombre")} autoFocus /></Field>
+        <Field label="Correo"><TextInput type="email" value={f.email} onChange={set("email")} placeholder="Para mandarle el pedido" /></Field>
+        <Field label="Móvil / WhatsApp"><TextInput value={f.movil} onChange={set("movil")} placeholder="Ej: 600123456" /></Field>
+      </div>
+      {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+        <button type="button" onClick={async () => {
+          if (!f.nombre.trim()) { setError("Pon el nombre del proveedor."); return; }
+          if (!f.email.trim() && !f.movil.trim()) { setError("Pon al menos el correo o el móvil, si no no se le puede mandar el pedido."); return; }
+          setError("");
+          const ok = await onSave({ ...f, nombre: f.nombre.trim(), email: f.email.trim(), movil: f.movil.trim() });
+          if (ok === false) setError("No se pudo guardar. Vuelve a probar.");
+        }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar proveedor</button>
+      </div>
+    </div>
+  );
+}
+
+function UxProveedores({ proveedores, onGuardar, onBorrar }) {
+  const [editando, setEditando] = useState(null); // null | "nuevo" | id
+  return (
+    <div className="space-y-3 max-w-3xl">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-500">Los proveedores a los que pedís el material. Solo hace falta el nombre y el correo o el móvil.</p>
+        {editando === null && <button onClick={() => setEditando("nuevo")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md shrink-0"><Plus size={14} /> Añadir</button>}
+      </div>
+      {editando === "nuevo" && <UxProveedorForm onCancel={() => setEditando(null)} onSave={async (f) => { const ok = await onGuardar(f); if (ok !== false) setEditando(null); return ok; }} />}
+      <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+        {proveedores.length === 0 && <div className="px-4 py-5 text-sm text-slate-400">Todavía no hay proveedores.</div>}
+        {proveedores.map((pr) => editando === pr.id ? (
+          <div key={pr.id} className="p-2"><UxProveedorForm initial={pr} onCancel={() => setEditando(null)} onSave={async (f) => { const ok = await onGuardar(f); if (ok !== false) setEditando(null); return ok; }} /></div>
+        ) : (
+          <div key={pr.id} className="flex items-center justify-between gap-3 px-4 py-3">
+            <div>
+              <div className="font-semibold text-slate-900">{pr.nombre}</div>
+              <div className="text-xs text-slate-500">{[pr.email, pr.movil].filter(Boolean).join("  ·  ") || "Sin datos de contacto"}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setEditando(pr.id)} className="text-slate-400 hover:text-slate-700"><Pencil size={15} /></button>
+              <button onClick={() => { if (confirm(`¿Borrar el proveedor ${pr.nombre}?`)) onBorrar(pr.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UxFormPedido({ proveedores, expedientes, tipos, onGuardarProveedor, onCancel, onGuardar }) {
+  const [tipo, setTipo] = useState(UX_TIPOS_PEDIDO[0]);
+  const [proveedorId, setProveedorId] = useState(proveedores[0]?.id || "");
+  const [nuevoProv, setNuevoProv] = useState(proveedores.length === 0);
+  const [archivos, setArchivos] = useState([]); // [{ file, nombre, dataUrl, mediaType, leidos, fallo }]
+  const [leyendo, setLeyendo] = useState(false);
+  const [grupos, setGrupos] = useState(null); // [{ codigo, nombre, lineas, destino: "nuevo"|expId, numeroNuevo }]
+  const [aviso, setAviso] = useState("");
+  const [tipoExp, setTipoExp] = useState(tipos[0] || "");
+  const [comentarios, setComentarios] = useState("");
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const inputRef = useRef(null);
+
+  const buscarExpediente = (codigo) => {
+    const c = uxNormExp(codigo);
+    if (!c) return null;
+    return expedientes.find((x) => uxNormExp(x.numero) === c) || null;
+  };
+  const grupoManual = () => ({ codigo: "", nombre: "", lineas: [], destino: expedientes[0] ? expedientes[0].id : "nuevo", numeroNuevo: "EXP " });
+
+  // Junta lo leído de todos los documentos: si el mismo expediente sale en dos PDF,
+  // sus líneas se suman en un solo grupo. Se respeta lo que ya se eligió a mano.
+  const combinar = (lista, previos) => {
+    const mapa = new Map();
+    const orden = [];
+    lista.forEach((a) => (a.leidos || []).forEach((g) => {
+      const k = uxNormExp(g.codigo) || `sin-codigo-${orden.length}`;
+      if (!mapa.has(k)) { mapa.set(k, { codigo: g.codigo, nombre: g.nombre, lineas: [] }); orden.push(k); }
+      const m = mapa.get(k);
+      m.lineas = [...m.lineas, ...(g.lineas || [])];
+      if (!m.nombre && g.nombre) m.nombre = g.nombre;
+    }));
+    if (lista.length === 0) return null;
+    if (orden.length === 0) return previos && previos.length ? previos : [grupoManual()];
+    return orden.map((k) => {
+      const g = mapa.get(k);
+      const prev = g.codigo ? (previos || []).find((x) => x.codigo && uxNormExp(x.codigo) === uxNormExp(g.codigo)) : null;
+      if (prev) return { ...g, destino: prev.destino, numeroNuevo: prev.numeroNuevo };
+      const ex = buscarExpediente(g.codigo);
+      return { ...g, destino: ex ? ex.id : "nuevo", numeroNuevo: g.codigo ? g.codigo.toUpperCase() : "EXP " };
+    });
+  };
+  const avisoDe = (lista) => {
+    const malos = lista.filter((a) => a.fallo || (a.leidos || []).length === 0);
+    if (malos.length === 0) return "";
+    return `No he podido sacar las líneas de: ${malos.map((a) => a.nombre).join(", ")}. Se mandará${malos.length === 1 ? "" : "n"} igual adjunto${malos.length === 1 ? "" : "s"}; revisa abajo a qué expediente va.`;
+  };
+  const elegirArchivos = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setError(""); setLeyendo(true);
+    const nuevos = [];
+    try {
+      for (const file of files) {
+        const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+        if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) { setError(`${file.name} no es un PDF ni una foto; no se ha añadido.`); continue; }
+        const dataUrl = await uxLeerComoDataUrl(file);
+        let leidos = [];
+        let fallo = false;
+        try { leidos = await uxLeerPedidoConClaude(dataUrl, mediaType); } catch (e) { fallo = true; }
+        nuevos.push({ file, nombre: file.name, dataUrl, mediaType, leidos, fallo });
+      }
+    } catch (e) {
+      setError("No se pudo abrir el archivo: " + e.message);
+    } finally {
+      const lista = [...archivos, ...nuevos];
+      setArchivos(lista);
+      setGrupos((prev) => combinar(lista, prev));
+      setAviso(avisoDe(lista));
+      setLeyendo(false);
+    }
+  };
+  const quitarArchivo = (i) => {
+    const lista = archivos.filter((_, j) => j !== i);
+    setArchivos(lista);
+    setGrupos(combinar(lista, grupos));
+    setAviso(avisoDe(lista));
+  };
+  const setGrupo = (i, patch) => setGrupos((gs) => gs.map((g, j) => (j === i ? { ...g, ...patch } : g)));
+
+  const guardar = async () => {
+    if (!proveedorId) { setError("Elige el proveedor (o añádelo)."); return; }
+    if (archivos.length === 0) { setError("Sube el PDF o la foto del pedido."); return; }
+    const lista = grupos || [];
+    if (lista.length === 0) { setError("Falta a qué expediente va el pedido."); return; }
+    const numerosNuevos = [];
+    for (const g of lista) {
+      if (g.destino !== "nuevo") continue;
+      const n = (g.numeroNuevo || "").trim().replace(/\s+/g, " ").toUpperCase();
+      if (!n || n === "EXP") { setError("Pon el número de cada expediente nuevo."); return; }
+      if (expedientes.some((x) => uxNormExp(x.numero) === uxNormExp(n)) || numerosNuevos.includes(uxNormExp(n))) { setError(`El expediente ${n} ya existe: elígelo en la lista en vez de crearlo nuevo.`); return; }
+      numerosNuevos.push(uxNormExp(n));
+    }
+    setError(""); setGuardando(true);
+    const ok = await onGuardar({ tipo, proveedorId, archivos, grupos: lista, tipoExp, comentarios: comentarios.trim() });
+    setGuardando(false);
+    if (ok === false) setError("No se pudo guardar el pedido. Revisa la conexión y vuelve a probar.");
+  };
+
+  const totalLineas = (grupos || []).reduce((s, g) => s + g.lineas.length, 0);
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-5 max-w-4xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Field label="Qué pides" required>
+          <Select value={tipo} onChange={(e) => setTipo(e.target.value)}>
+            {UX_TIPOS_PEDIDO.map((t) => <option key={t} value={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="A qué proveedor" required>
+          {nuevoProv ? (
+            <p className="text-xs text-slate-500 pt-2">Añade el proveedor aquí abajo.</p>
+          ) : (
+            <div className="flex gap-2">
+              <Select value={proveedorId} onChange={(e) => setProveedorId(e.target.value)}>
+                {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
+              </Select>
+              <button type="button" onClick={() => setNuevoProv(true)} className="shrink-0 px-3 rounded-md border border-slate-300 text-sm font-semibold hover:bg-slate-50" title="Añadir proveedor"><Plus size={14} /></button>
+            </div>
+          )}
+        </Field>
+      </div>
+      {nuevoProv && (
+        <UxProveedorForm
+          onCancel={() => setNuevoProv(false)}
+          onSave={async (f) => { const id = await onGuardarProveedor(f); if (!id) return false; setProveedorId(id); setNuevoProv(false); return true; }}
+        />
+      )}
+
+      <div>
+        <div className="text-sm font-semibold text-slate-700 mb-2">Documento del pedido <span className="text-rose-500">*</span></div>
+        <input ref={inputRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { elegirArchivos(e.target.files); e.target.value = ""; }} />
+        {archivos.length > 0 && (
+          <div className="mb-2 border border-slate-200 rounded-lg divide-y divide-slate-100">
+            {archivos.map((a, i) => (
+              <div key={i} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <FileText size={16} className="text-[#2E8B57] shrink-0" />
+                <span className="font-semibold text-slate-800 truncate">{a.nombre}</span>
+                <span className="text-xs text-slate-400 shrink-0">{a.fallo || (a.leidos || []).length === 0 ? "sin leer" : `${(a.leidos || []).reduce((n, g) => n + (g.lineas || []).length, 0)} líneas`}</span>
+                <button type="button" disabled={leyendo} onClick={() => quitarArchivo(i)} className="ml-auto text-slate-300 hover:text-rose-500" title="Quitar este documento"><Trash2 size={15} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} className="w-full border-2 border-dashed border-slate-300 hover:border-[#2E8B57] rounded-lg px-4 py-6 text-sm text-slate-600 flex flex-col items-center gap-1 disabled:opacity-60">
+          {leyendo ? <><Loader2 size={20} className="animate-spin text-[#2E8B57]" /> Leyendo los documentos…</>
+            : archivos.length > 0 ? <><Plus size={20} className="text-[#2E8B57]" /><span className="font-semibold">Añadir otro PDF o foto</span><span className="text-xs text-slate-400">Todo irá en el mismo pedido</span></>
+            : <><FileText size={20} className="text-slate-400" /><span className="font-semibold">Sube el PDF o la foto del pedido</span><span className="text-xs text-slate-400">Puedes elegir varios a la vez. Irán todos en el mismo pedido</span></>}
+        </button>
+        {aviso && <p className="text-xs text-amber-700 mt-2">{aviso}</p>}
+      </div>
+
+      {grupos && (
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-slate-700">{totalLineas > 0 ? `He leído ${totalLineas} línea${totalLineas === 1 ? "" : "s"} en ${grupos.length} expediente${grupos.length === 1 ? "" : "s"}. Revisa que está bien:` : "A qué expediente va:"}</div>
+          {grupos.map((g, i) => (
+            <div key={i} className="border border-slate-200 rounded-md">
+              <div className="flex flex-wrap items-end gap-3 px-3 py-2 bg-slate-50 border-b border-slate-200">
+                <div className="flex-1 min-w-[180px]">
+                  <div className="text-xs text-slate-400">{g.codigo ? `En el documento: ${g.codigo}` : "Expediente"}{g.nombre ? ` — ${g.nombre}` : ""}</div>
+                  <Select value={g.destino} onChange={(e) => setGrupo(i, { destino: e.target.value })} className="mt-1">
+                    <option value="nuevo">➕ Crear expediente nuevo</option>
+                    {uxOrdenar(expedientes).map((x) => <option key={x.id} value={x.id}>{x.numero}{x.tipo ? ` (${x.tipo})` : ""}</option>)}
+                  </Select>
+                </div>
+                {g.destino === "nuevo" && (
+                  <div className="w-44"><div className="text-xs text-slate-400">Nº del expediente nuevo</div><TextInput value={g.numeroNuevo} onChange={(e) => setGrupo(i, { numeroNuevo: e.target.value })} className="mt-1" /></div>
+                )}
+                {grupos.length > 1 && <button type="button" onClick={() => setGrupos((gs) => gs.filter((_, j) => j !== i))} className="text-slate-300 hover:text-rose-500 pb-2" title="Quitar este expediente del pedido"><Trash2 size={15} /></button>}
+              </div>
+              {g.lineas.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-slate-400"><tr><th className="text-left px-3 py-1.5">Modelo</th><th className="text-left px-3 py-1.5">Código</th><th className="text-left px-3 py-1.5">Descripción</th><th className="text-right px-3 py-1.5">Ancho</th><th className="text-right px-3 py-1.5">Alto</th><th className="text-left px-3 py-1.5">Color</th><th className="text-right px-3 py-1.5">Uds</th></tr></thead>
+                    <tbody>
+                      {g.lineas.map((l, k) => (
+                        <tr key={k} className="border-t border-slate-100"><td className="px-3 py-1.5 font-semibold">{l.modelo}</td><td className="px-3 py-1.5">{l.codigo}</td><td className="px-3 py-1.5 text-slate-500">{l.descripcion}</td><td className="px-3 py-1.5 text-right">{l.ancho}</td><td className="px-3 py-1.5 text-right">{l.alto}</td><td className="px-3 py-1.5">{l.color}</td><td className="px-3 py-1.5 text-right font-semibold">{l.uds}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+          <button type="button" onClick={() => setGrupos((gs) => [...gs, grupoManual()])} className="text-xs font-semibold text-[#2E8B57] hover:underline">+ Añadir otro expediente</button>
+          {grupos.some((g) => g.destino === "nuevo") && tipos.length > 0 && (
+            <Field label="Tipo de los expedientes nuevos">
+              <Select value={tipoExp} onChange={(e) => setTipoExp(e.target.value)} className="max-w-xs">
+                {tipos.map((t) => <option key={t} value={t}>{t}</option>)}
+              </Select>
+            </Field>
+          )}
+        </div>
+      )}
+
+      <Field label="Comentarios para el proveedor"><TextArea rows={2} value={comentarios} onChange={(e) => setComentarios(e.target.value)} placeholder="Opcional" /></Field>
+      {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+        <button type="button" disabled={guardando || leyendo} onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-5 py-2.5 rounded-md disabled:opacity-60">
+          {guardando ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Guardar pedido
+        </button>
+      </div>
+      <p className="text-xs text-slate-400 text-right">Después de guardarlo te saldrán los botones para mandarlo al proveedor por correo o WhatsApp.</p>
+    </div>
+  );
+}
+
+const uxEstadoPedido = (p) => {
+  if (p.recibido) return { label: `Recibido en fábrica ${uxFecha(p.recibido)}`, cls: "bg-emerald-100 text-emerald-800 border-emerald-300" };
+  if (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual) return { label: "Enviado al proveedor", cls: "bg-sky-100 text-sky-800 border-sky-300" };
+  return { label: "Sin enviar al proveedor", cls: "bg-amber-100 text-amber-800 border-amber-300" };
+};
+
+function UxListaPedidos({ pedidos, onAbrir, onNuevo }) {
+  const lista = [...pedidos].sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button onClick={onNuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={14} /> Hacer pedido</button>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
+          <tbody>
+            {lista.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">Todavía no hay pedidos.</td></tr>}
+            {lista.map((p) => { const e = uxEstadoPedido(p); return (
+              <tr key={p.id} onClick={() => onAbrir(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
+                <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{p.numero}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
+                <td className="px-3 py-2">{p.tipo}</td>
+                <td className="px-3 py-2">{p.proveedorNombre}</td>
+                <td className="px-3 py-2 text-slate-600">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</td>
+                <td className="px-3 py-2"><span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border whitespace-nowrap ${e.cls}`}>{e.label}</span></td>
+              </tr>
+            ); })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar }) {
+  const [enviando, setEnviando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const email = (proveedor && proveedor.email) || pedido.proveedorEmail || "";
+  const movil = (proveedor && proveedor.movil) || pedido.proveedorMovil || "";
+  const exps = toArray(pedido.expedientes);
+  const listaExp = exps.map((x) => x.numero).filter(Boolean).join(", ");
+  const asunto = `Pedido ${pedido.numero} de ${pedido.tipo || "material"} — Uxcar${listaExp ? ` (${listaExp})` : ""}`;
+  const cuerpo = `Buenos días,\n\nOs adjuntamos nuestro pedido de ${String(pedido.tipo || "material").toLowerCase()}${listaExp ? ` (expedientes ${listaExp})` : ""}.${pedido.comentarios ? `\n\n${pedido.comentarios}` : ""}\n\nPor favor, confirmad la recepción y la fecha de entrega.\n\nUn saludo,\n${perfil.nombre || ""}\nUxcar`;
+  const e = uxEstadoPedido(pedido);
+
+  const enviarCorreo = async () => {
+    if (!email) return;
+    setEnviando(true); setErr(""); setMsg("");
+    try {
+      const r = await fetch("/.netlify/functions/enviar-email", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destinatario: email, asunto, cuerpo, replyTo: perfil.email || authUser.email || "", nombreRemitente: "Uxcar",
+          adjuntos: uxDocsPedido(pedido).map((d) => ({ nombre: d.nombre, url: d.url })),
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error) throw new Error(d.error || "no se pudo enviar");
+      await onMarcar({ enviadoEmail: new Date().toISOString() });
+      setMsg("✓ Correo enviado al proveedor");
+    } catch (x) {
+      setErr("No se ha podido mandar el correo ahora mismo (" + x.message + "). Mándalo por WhatsApp o desde vuestro correo con el PDF, y luego pulsa \"Ya lo he pedido\".");
+    } finally { setEnviando(false); }
+  };
+  const textoWhatsapp = `Pedido ${pedido.numero} de ${String(pedido.tipo || "material").toLowerCase()} — Uxcar${listaExp ? `\nExpedientes: ${listaExp}` : ""}${pedido.comentarios ? `\n\n${pedido.comentarios}` : ""}${uxDocsPedido(pedido).length ? `\n\n${uxDocsPedido(pedido).length === 1 ? "Documento del pedido" : "Documentos del pedido"}:\n${uxDocsPedido(pedido).map((d) => d.url).join("\n")}` : ""}\n\nPor favor, confirmad recepción y fecha de entrega. Gracias.`;
+  const enlaceWhatsapp = movil ? `https://wa.me/${movil.replace(/[^\d+]/g, "").replace(/^(\d{9})$/, "34$1").replace(/^\+/, "")}?text=${encodeURIComponent(textoWhatsapp)}` : "";
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-4xl space-y-5">
+      <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-xl font-extrabold text-slate-900">Pedido {pedido.numero}</h2>
+        <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+        <div><div className="text-xs text-slate-400">Qué</div><div className="font-semibold">{pedido.tipo}</div></div>
+        <div><div className="text-xs text-slate-400">Proveedor</div><div className="font-semibold">{pedido.proveedorNombre}</div></div>
+        <div><div className="text-xs text-slate-400">Fecha</div><div className="font-semibold">{uxFecha(pedido.fecha)}</div></div>
+        <div><div className="text-xs text-slate-400">Hecho por</div><div className="font-semibold">{pedido.creadoPor || "—"}</div></div>
+      </div>
+      {uxDocsPedido(pedido).length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{uxDocsPedido(pedido).map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] hover:underline"><FileText size={15} /> Ver documento ({d.nombre})</a>)}</div>}
+
+      <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">
+        <div className="text-sm font-semibold text-slate-800">Mandar al proveedor</div>
+        <div className="flex flex-wrap gap-2">
+          {email ? (
+            <button onClick={enviarCorreo} disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
+              {enviando ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />} {pedido.enviadoEmail ? "Volver a mandar por correo" : "Mandar por correo"}
+            </button>
+          ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene correo puesto.</span>}
+          {enlaceWhatsapp ? (
+            <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={() => { onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
+              <MessageCircle size={14} /> Mandar por WhatsApp
+            </a>
+          ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene móvil puesto.</span>}
+          {!(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual) && (
+            <button onClick={() => onMarcar({ enviadoManual: new Date().toISOString() })} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
+          )}
+        </div>
+        <p className="text-xs text-slate-500">El correo sale a nombre de Uxcar y, si el proveedor contesta, la respuesta os llega a vuestro correo. Por WhatsApp va el enlace al documento en el mensaje.</p>
+        {msg && <p className="text-sm font-semibold text-emerald-700">{msg}</p>}
+        {err && <p className="text-sm text-rose-600">{err}</p>}
+        {(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual) && (
+          <p className="text-xs text-slate-500">{pedido.enviadoEmail ? `Mandado por correo el ${uxFecha(pedido.enviadoEmail.slice(0, 10))}. ` : ""}{pedido.enviadoWhatsapp ? `Mandado por WhatsApp el ${uxFecha(pedido.enviadoWhatsapp.slice(0, 10))}. ` : ""}{pedido.enviadoManual ? `Pedido de otra forma el ${uxFecha(pedido.enviadoManual.slice(0, 10))}.` : ""}</p>
+        )}
+      </div>
+
+      {exps.map((x, i) => (
+        <div key={i} className="border border-slate-200 rounded-md">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-sm font-semibold">Expediente {x.numero || "—"}{x.nombre ? <span className="font-normal text-slate-500"> — {x.nombre}</span> : null}</div>
+          {toArray(x.lineas).length === 0 ? <div className="px-3 py-2 text-xs text-slate-400">Según el documento.</div> : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-slate-400"><tr><th className="text-left px-3 py-1.5">Modelo</th><th className="text-left px-3 py-1.5">Código</th><th className="text-left px-3 py-1.5">Descripción</th><th className="text-right px-3 py-1.5">Ancho</th><th className="text-right px-3 py-1.5">Alto</th><th className="text-left px-3 py-1.5">Color</th><th className="text-right px-3 py-1.5">Uds</th></tr></thead>
+                <tbody>
+                  {toArray(x.lineas).map((l, k) => (
+                    <tr key={k} className="border-t border-slate-100"><td className="px-3 py-1.5 font-semibold">{l.modelo}</td><td className="px-3 py-1.5">{l.codigo}</td><td className="px-3 py-1.5 text-slate-500">{l.descripcion}</td><td className="px-3 py-1.5 text-right">{l.ancho}</td><td className="px-3 py-1.5 text-right">{l.alto}</td><td className="px-3 py-1.5">{l.color}</td><td className="px-3 py-1.5 text-right font-semibold">{l.uds}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PortalUxcar({ authUser, perfil, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -23596,8 +24139,68 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
   useEffect(() => onValue(ref(fbDb, "portalUxcar"), (snap) => { setDatos(snap.val() || {}); setError(""); }, (err) => setError("No se pudieron cargar los datos: " + err.message)), []);
   const expedientes = datos ? toArray(datos.expedientes) : [];
   const tipos = datos && datos.config && datos.config.tipos ? toArray(datos.config.tipos) : [];
+  const pedidosUx = datos ? toArray(datos.pedidos) : [];
+  const proveedoresUx = datos ? toArray(datos.proveedores).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))) : [];
+  const [pedidoAbiertoId, setPedidoAbiertoId] = useState(null);
   const aviso = (m) => { setToastPortal(m); setTimeout(() => setToastPortal(""), 2600); };
   const nombre = perfil.nombre || authUser.email;
+
+  const guardarProveedor = async (f) => {
+    const id = f.id || uid();
+    try { await fbSet(ref(fbDb, `portalUxcar/proveedores/${id}`), { id, nombre: f.nombre, email: f.email || "", movil: f.movil || "" }); } catch (e) { return false; }
+    aviso(`Proveedor ${f.nombre} guardado`);
+    return id;
+  };
+  const borrarProveedor = async (id) => {
+    try { await fbSet(ref(fbDb, `portalUxcar/proveedores/${id}`), null); aviso("Proveedor borrado"); } catch (e) { aviso("No se pudo borrar"); }
+  };
+  const siguienteNumeroPedido = () => {
+    const nums = pedidosUx.map((p) => parseInt(String(p.numero || "").replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+    return "UX-" + ((nums.length ? Math.max(...nums) : 0) + 1);
+  };
+  const guardarPedido = async ({ tipo, proveedorId, archivos, grupos, tipoExp, comentarios }) => {
+    const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
+    const documentos = [];
+    try {
+      for (const a of archivos) documentos.push({ nombre: a.nombre, url: await subirArchivoAStorage(a.file, "uxcar-pedidos") });
+    } catch (e) { return false; }
+    const pedidoId = uid();
+    const hoy = uxHoy();
+    const ahora = Date.now();
+    const patch = {};
+    const expsPedido = [];
+    grupos.forEach((g) => {
+      let exp;
+      if (g.destino === "nuevo") {
+        const id = uid();
+        const materiales = {};
+        UX_MATERIALES.forEach(([k]) => { materiales[k] = { estado: k === "vidrios" && tipo === "Cristales" ? "pedido" : "pendiente" }; });
+        exp = {
+          id, numero: g.numeroNuevo.trim().replace(/\s+/g, " ").toUpperCase(), tipo: tipoExp || "", ventanas: uxVentanasDeLineas(g.lineas), puertas: 0, osciloParalelas: 0,
+          observaciones: g.nombre || "", materiales, estado: "virtual", fechaAlta: hoy, creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenPedidoId: pedidoId,
+        };
+        patch[`expedientes/${id}`] = exp;
+      } else {
+        exp = expedientes.find((x) => x.id === g.destino);
+        if (exp && tipo === "Cristales" && (!exp.materiales || !exp.materiales.vidrios || exp.materiales.vidrios.estado === "pendiente")) patch[`expedientes/${exp.id}/materiales/vidrios/estado`] = "pedido";
+      }
+      if (exp) expsPedido.push({ expedienteId: exp.id, numero: exp.numero, nombre: g.nombre || "", lineas: g.lineas });
+    });
+    const numero = siguienteNumeroPedido();
+    patch[`pedidos/${pedidoId}`] = JSON.parse(JSON.stringify({
+      id: pedidoId, numero, tipo, proveedorId, proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
+      documento: documentos[0], documentos, expedientes: expsPedido, comentarios: comentarios || "",
+      fecha: hoy, creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid,
+    }));
+    try { await fbUpdate(ref(fbDb, "portalUxcar"), patch); } catch (e) { return false; }
+    aviso(`Pedido ${numero} guardado. Ahora mándalo al proveedor.`);
+    setPedidoAbiertoId(pedidoId);
+    setVista("fichaPedido");
+    return true;
+  };
+  const marcarPedido = async (pedidoId, datosEnvio) => {
+    try { await fbUpdate(ref(fbDb, `portalUxcar/pedidos/${pedidoId}`), datosEnvio); } catch (e) { aviso("No se pudo guardar"); }
+  };
 
   const guardarNuevo = async (f) => {
     const id = uid();
@@ -23626,7 +24229,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
 
   const abierto = expedientes.find((x) => x.id === abiertoId);
   const tab = (id, label) => (
-    <button onClick={() => setVista(id)} className={`px-3 py-2 rounded-md text-sm font-semibold ${vista === id || (id === "lista" && (vista === "ficha" || vista === "editar")) ? "bg-[#333645] text-white" : "text-slate-600 hover:bg-slate-200"}`}>{label}</button>
+    <button onClick={() => setVista(id)} className={`px-3 py-2 rounded-md text-sm font-semibold ${vista === id || (id === "lista" && (vista === "ficha" || vista === "editar")) || (id === "pedidos" && (vista === "nuevoPedido" || vista === "fichaPedido")) ? "bg-[#333645] text-white" : "text-slate-600 hover:bg-slate-200"}`}>{label}</button>
   );
 
   return (
@@ -23642,10 +24245,12 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
       </header>
       <main className="max-w-5xl mx-auto px-4 py-6">
         <h1 className="font-display text-2xl font-extrabold text-slate-900">Expedientes Uxcar</h1>
-        <p className="text-sm text-slate-500 mb-4">Mete aquí cada expediente y sigue cómo va: material, producción y fecha de entrega.</p>
+        <p className="text-sm text-slate-500 mb-4">Mete aquí cada expediente y sus pedidos de material, y sigue cómo va: material, producción y fecha de entrega.</p>
         <div className="flex flex-wrap gap-1 mb-5">
           {tab("lista", "Mis expedientes")}
           {tab("nuevo", "+ Nuevo expediente")}
+          {tab("pedidos", "Pedidos")}
+          {tab("proveedores", "Proveedores")}
           {tab("resumen", "Resumen")}
         </div>
         {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
@@ -23656,6 +24261,20 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
         ) : vista === "resumen" ? (
           <UxResumen expedientes={expedientes} />
+        ) : vista === "proveedores" ? (
+          <UxProveedores proveedores={proveedoresUx} onGuardar={guardarProveedor} onBorrar={borrarProveedor} />
+        ) : vista === "nuevoPedido" ? (
+          <UxFormPedido proveedores={proveedoresUx} expedientes={expedientes} tipos={tipos} onGuardarProveedor={guardarProveedor} onCancel={() => setVista("pedidos")} onGuardar={guardarPedido} />
+        ) : vista === "fichaPedido" && pedidosUx.some((p) => p.id === pedidoAbiertoId) ? (
+          <UxFichaPedido
+            pedido={pedidosUx.find((p) => p.id === pedidoAbiertoId)}
+            proveedor={proveedoresUx.find((x) => x.id === (pedidosUx.find((p) => p.id === pedidoAbiertoId) || {}).proveedorId)}
+            perfil={perfil} authUser={authUser}
+            onVolver={() => setVista("pedidos")}
+            onMarcar={(d) => marcarPedido(pedidoAbiertoId, d)}
+          />
+        ) : vista === "pedidos" || vista === "fichaPedido" ? (
+          <UxListaPedidos pedidos={pedidosUx} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
         ) : vista === "editar" && abierto ? (
           <UxFormExpediente initial={abierto} tipos={tipos} expedientes={expedientes} onCancel={() => setVista("ficha")} onSave={guardarEdicion} />
         ) : vista === "ficha" && abierto ? (
@@ -23673,6 +24292,19 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
                 return <div key={k} className="flex justify-between px-3 py-2 text-sm"><span>{label}</span><span className={est === "recibido" ? "font-semibold text-emerald-700" : est === "no_lleva" ? "text-slate-400" : "text-slate-700"}>{UX_MAT_ESTADOS[est]}</span></div>;
               })}
             </div>
+            {pedidosUx.some((p) => toArray(p.expedientes).some((x) => x.expedienteId === abierto.id)) && (
+              <div className="mt-4">
+                <div className="text-sm font-semibold text-slate-700 mb-2">Pedidos de este expediente</div>
+                <div className="border border-slate-200 rounded-md divide-y divide-slate-100">
+                  {pedidosUx.filter((p) => toArray(p.expedientes).some((x) => x.expedienteId === abierto.id)).map((p) => { const e = uxEstadoPedido(p); return (
+                    <button key={p.id} onClick={() => { setPedidoAbiertoId(p.id); setVista("fichaPedido"); }} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm hover:bg-slate-50 text-left">
+                      <span><span className="font-semibold">{p.numero}</span> · {p.tipo} · {p.proveedorNombre}</span>
+                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span>
+                    </button>
+                  ); })}
+                </div>
+              </div>
+            )}
             {abierto.estado === "virtual" ? (
               <button onClick={() => setVista("editar")} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Editar</button>
             ) : (

@@ -6,6 +6,12 @@
       ".read": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()",
       "expedientes": {
         ".write": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()"
+      },
+      "pedidos": {
+        ".write": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()"
+      },
+      "proveedores": {
+        ".write": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()"
       }
     },
     "portalUsuarios": {
