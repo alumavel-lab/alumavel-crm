@@ -8474,20 +8474,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const junto = huecoJuntoAExpediente(expedientesDeCaballete(cristal), ocupadosExp);
       if (junto) return junto;
     }
-    const cfg = ZONAS_CRISTALES[zonaSugerida];
-    const filaReservada = FILA_RESERVA[zonaSugerida];
-    const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
-    for (const f of filasNormales) {
-      for (let h = 1; h <= cfg.huecos; h++) {
-        if (!ocupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
-      }
-    }
-    if (filaReservada) {
-      for (let h = 1; h <= cfg.huecos; h++) {
-        if (!ocupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
-      }
-    }
-    return null;
+    return huecoExpedienteNuevo(zonaSugerida, ocupado);
   };
 
   const leerPackingList = async (file) => {
@@ -8609,20 +8596,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           const junto = huecoJuntoAExpediente(expedientesDeCaballete(item), ocupadosSimulado);
           if (junto) return junto;
         }
-        const cfg = ZONAS_CRISTALES[zonaSugerida];
-        const filaReservada = FILA_RESERVA[zonaSugerida];
-        const filasNormales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== filaReservada);
-        for (const f of filasNormales) {
-          for (let h = 1; h <= cfg.huecos; h++) {
-            if (!estaOcupado(zonaSugerida, f, h)) return { zona: zonaSugerida, fila: f, hueco: h };
-          }
-        }
-        if (filaReservada) {
-          for (let h = 1; h <= cfg.huecos; h++) {
-            if (!estaOcupado(zonaSugerida, filaReservada, h)) return { zona: zonaSugerida, fila: filaReservada, hueco: h };
-          }
-        }
-        return null;
+        return huecoExpedienteNuevo(zonaSugerida, estaOcupado);
       };
 
       let sinHueco = 0;
@@ -9559,6 +9533,31 @@ function ControlPedidosCristal({ cristales, proveedores }) {
   );
 }
 
+// Orden de colocación del almacén "por columnas": hueco 1 fila 1, hueco 1 fila 2,
+// hueco 2 fila 1, hueco 2 fila 2… (solo filas normales). La fila de reserva va al final.
+// Así los caballetes de un mismo expediente quedan uno al lado del otro en vertical y en
+// horizontal, y el siguiente expediente empieza justo detrás.
+function ordenHuecosAlmacen(zona) {
+  const cfg = ZONAS_CRISTALES[zona];
+  if (!cfg) return [];
+  const reserva = FILA_RESERVA[zona];
+  const normales = Array.from({ length: cfg.filas }, (_, i) => i + 1).filter((f) => f !== reserva);
+  const orden = [];
+  for (let h = 1; h <= cfg.huecos; h++) normales.forEach((f) => orden.push({ zona, fila: f, hueco: h }));
+  if (reserva) for (let h = 1; h <= cfg.huecos; h++) orden.push({ zona, fila: reserva, hueco: h });
+  return orden;
+}
+
+// Hueco para un expediente que todavía no está en el almacén: el primer hueco libre
+// detrás del último caballete (en el orden por columnas); si no queda, el primero libre.
+function huecoExpedienteNuevo(zona, estaOcupado) {
+  const orden = ordenHuecosAlmacen(zona);
+  let ultimo = -1;
+  orden.forEach((u, i) => { if (estaOcupado(u.zona, u.fila, u.hueco)) ultimo = i; });
+  for (let i = ultimo + 1; i < orden.length; i++) if (!estaOcupado(orden[i].zona, orden[i].fila, orden[i].hueco)) return orden[i];
+  return orden.find((u) => !estaOcupado(u.zona, u.fila, u.hueco)) || null;
+}
+
 // ---- Agrupar caballetes por expediente en el almacén ----
 // Un caballete puede llevar cristales de varios expedientes ("EXP 662, EXP 663"). Estas
 // funciones sacan los expedientes de cada caballete y buscan un hueco libre en la fila
@@ -9577,96 +9576,65 @@ function expedientePrincipal(c) {
   return top ? top[0] : (numsExpediente(c.expediente)[0] || "");
 }
 // ocupados: [{ zona, fila, hueco, exps: Set }]
+// Hueco libre lo más pegado posible a los caballetes que ya hay de esos expedientes
+// (primero justo detrás de ellos en el orden por columnas).
 function huecoJuntoAExpediente(exps, ocupados) {
   if (!exps || exps.size === 0) return null;
-  const libre = (z, f, h) => !ocupados.some((o) => o.zona === z && o.fila === f && o.hueco === h);
-  const filas = {};
+  const zonas = {};
   ocupados.forEach((o) => {
-    const comunes = [...o.exps].filter((n) => exps.has(n)).length;
+    const comunes = [...(o.exps || [])].filter((n) => exps.has(n)).length;
     if (!comunes) return;
-    const k = `${o.zona}|${o.fila}`;
-    if (!filas[k]) filas[k] = { zona: o.zona, fila: o.fila, peso: 0, huecos: [] };
-    filas[k].peso += comunes;
-    filas[k].huecos.push(o.hueco);
+    zonas[o.zona] = (zonas[o.zona] || 0) + comunes;
   });
-  const candidatas = Object.values(filas).sort((a, b) => b.peso - a.peso);
-  for (const f of candidatas) {
-    const total = ZONAS_CRISTALES[f.zona]?.huecos || 0;
-    const libres = [];
-    for (let h = 1; h <= total; h++) if (libre(f.zona, f.fila, h)) libres.push(h);
-    if (!libres.length) continue;
-    const dist = (h) => Math.min(...f.huecos.map((x) => Math.abs(x - h)));
-    libres.sort((a, b) => dist(a) - dist(b) || a - b);
-    return { zona: f.zona, fila: f.fila, hueco: libres[0] };
+  const zonasOrden = Object.entries(zonas).sort((a, b) => b[1] - a[1]).map(([z]) => z);
+  for (const zona of zonasOrden) {
+    const orden = ordenHuecosAlmacen(zona);
+    const idx = (o) => orden.findIndex((u) => u.fila === o.fila && u.hueco === o.hueco);
+    const libre = (u) => !ocupados.some((o) => o.zona === u.zona && o.fila === u.fila && o.hueco === u.hueco);
+    const grupo = ocupados.filter((o) => o.zona === zona && [...(o.exps || [])].some((n) => exps.has(n))).map(idx).filter((x) => x >= 0);
+    if (!grupo.length) continue;
+    const ult = Math.max(...grupo);
+    const candidatos = orden.map((u, i) => ({ u, i })).filter(({ u }) => libre(u));
+    if (!candidatos.length) continue;
+    const dist = (i) => Math.min(...grupo.map((g) => Math.abs(g - i))) + (i < ult ? 0.5 : 0);
+    candidatos.sort((a, b) => dist(a.i) - dist(b.i) || a.i - b.i);
+    return candidatos[0].u;
   }
   return null;
 }
-// Propone los movimientos mínimos para que los caballetes del mismo expediente queden
-// en la misma fila: primero a huecos libres de su fila "casa" (donde ya hay más de ese
-// expediente) y, si está llena, intercambiando con un caballete que tampoco está en su
-// fila casa. No cambia de zona (arriba/abajo).
+
+// Orden ideal del almacén: se recorren los huecos por columnas (hueco 1 fila 1, hueco 1
+// fila 2, hueco 2 fila 1…) y se van poniendo los caballetes expediente a expediente, todos
+// los del mismo expediente seguidos. No cambia de zona (arriba/abajo). Devuelve los
+// caballetes que hay que mover, primero los que van a un hueco que ahora está vacío.
 function planReorganizarPorExpediente(cristales) {
-  const colocados = cristales.filter((c) => c.ubicacion && ZONAS_CRISTALES[c.ubicacion.zona]);
-  const pos = {};
-  colocados.forEach((c) => { pos[c.id] = { ...c.ubicacion }; });
-  const principal = {};
-  colocados.forEach((c) => { principal[c.id] = expedientePrincipal(c); });
-  const casaDe = {};
-  const grupos = {};
-  colocados.forEach((c) => {
-    const e = principal[c.id];
-    if (!e) return;
-    const k = `${c.ubicacion.zona}|${e}`;
-    (grupos[k] = grupos[k] || []).push(c);
-  });
-  Object.entries(grupos).forEach(([k, lista]) => {
-    const cuenta = {};
-    lista.forEach((c) => { cuenta[c.ubicacion.fila] = (cuenta[c.ubicacion.fila] || 0) + 1; });
-    const fila = Number(Object.entries(cuenta).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]);
-    casaDe[k] = fila;
-  });
-  const enCasa = (c) => {
-    const e = principal[c.id];
-    if (!e) return true;
-    return casaDe[`${pos[c.id].zona}|${e}`] === pos[c.id].fila;
-  };
-  const enHueco = (z, f, h) => colocados.filter((c) => pos[c.id].zona === z && pos[c.id].fila === f && pos[c.id].hueco === h);
-  const bloqueado = new Set();
   const movimientos = [];
-  const ordenGrupos = Object.entries(grupos).sort((a, b) => b[1].length - a[1].length);
-  for (const [k, lista] of ordenGrupos) {
-    if (lista.length < 2) continue;
-    const [zona] = k.split("|");
-    const filaCasa = casaDe[k];
-    const total = ZONAS_CRISTALES[zona].huecos;
-    for (const c of lista) {
-      if (pos[c.id].fila === filaCasa || bloqueado.has(c.id)) continue;
-      const deCasa = lista.filter((x) => pos[x.id].fila === filaCasa).map((x) => pos[x.id].hueco);
-      const dist = (h) => (deCasa.length ? Math.min(...deCasa.map((x) => Math.abs(x - h))) : h);
-      const huecos = Array.from({ length: total }, (_, i) => i + 1).sort((a, b) => dist(a) - dist(b) || a - b);
-      const libre = huecos.find((h) => enHueco(zona, filaCasa, h).length === 0);
-      const desde = { ...pos[c.id] };
-      if (libre) {
-        pos[c.id] = { zona, fila: filaCasa, hueco: libre };
-        bloqueado.add(c.id);
-        movimientos.push({ id: c.id, lote: c.lote, exp: principal[c.id], desde, hasta: { ...pos[c.id] } });
-        continue;
-      }
-      const intruso = huecos.map((h) => enHueco(zona, filaCasa, h)).find((occ) => occ.length === 1 && !bloqueado.has(occ[0].id) && !enCasa(occ[0]));
-      if (intruso) {
-        const o = intruso[0];
-        const hastaC = { ...pos[o.id] };
-        pos[o.id] = desde;
-        pos[c.id] = hastaC;
-        bloqueado.add(c.id); bloqueado.add(o.id);
-        const par = uid();
-        movimientos.push({ id: c.id, lote: c.lote, exp: principal[c.id], desde, hasta: hastaC, par });
-        movimientos.push({ id: o.id, lote: o.lote, exp: principal[o.id], desde: hastaC, hasta: desde, par });
-      }
-    }
-  }
-  const dispersos = Object.entries(grupos).filter(([, l]) => new Set(l.map((c) => pos[c.id].fila)).size > 1).map(([k]) => k.split("|")[1]);
-  return { movimientos, sinResolver: dispersos };
+  const sinResolver = [];
+  Object.keys(ZONAS_CRISTALES).forEach((zona) => {
+    const orden = ordenHuecosAlmacen(zona);
+    const idxDe = (u) => orden.findIndex((x) => x.fila === u.fila && x.hueco === u.hueco);
+    const enZona = cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona);
+    if (!enZona.length) return;
+    const grupos = {};
+    enZona.forEach((c) => { const e = expedientePrincipal(c) || `sin-${c.id}`; (grupos[e] = grupos[e] || []).push(c); });
+    // se respeta el orden en que ya están para mover lo menos posible
+    const lista = Object.entries(grupos)
+      .map(([exp, cs]) => ({ exp, cs: cs.sort((a, b) => idxDe(a.ubicacion) - idxDe(b.ubicacion)) }))
+      .sort((a, b) => idxDe(a.cs[0].ubicacion) - idxDe(b.cs[0].ubicacion));
+    let k = 0;
+    lista.forEach((g) => {
+      g.cs.forEach((c) => {
+        const d = orden[k++];
+        if (!d) { if (!g.exp.startsWith("sin-")) sinResolver.push(g.exp); return; }
+        if (d.fila !== c.ubicacion.fila || d.hueco !== c.ubicacion.hueco) {
+          movimientos.push({ id: c.id, lote: c.lote, exp: expedientePrincipal(c), desde: { ...c.ubicacion }, hasta: { ...d } });
+        }
+      });
+    });
+  });
+  const ocupadoAhora = (u) => cristales.some((c) => c.ubicacion && c.ubicacion.zona === u.zona && c.ubicacion.fila === u.fila && c.ubicacion.hueco === u.hueco);
+  movimientos.sort((a, b) => (ocupadoAhora(a.hasta) ? 1 : 0) - (ocupadoAhora(b.hasta) ? 1 : 0));
+  return { movimientos, sinResolver };
 }
 
 function ReorganizarCristalesPanel({ cristales, onCerrar }) {
@@ -9690,14 +9658,15 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
         <div>
           <h3 className="font-display font-bold text-slate-900">Reorganizar por expediente</h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Movimientos mínimos para que los caballetes del mismo expediente queden en la misma fila, lo más juntos posible.
-            Muévelos con la carretilla, marca los que ya estén hechos y pulsa <b>Guardar movimientos</b>.
+            Los caballetes se colocan por columnas: hueco 1 fila 1, hueco 1 fila 2, hueco 2 fila 1… y todos los del mismo
+            expediente seguidos. Mueve los caballetes con la carretilla en el orden de la lista, marca los que ya estén hechos
+            y pulsa <b>Guardar movimientos</b>.
           </p>
         </div>
         <button onClick={onCerrar} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
       </div>
       {plan.movimientos.length === 0 ? (
-        <p className="text-sm text-emerald-700 font-semibold">Todo en orden: los caballetes de cada expediente ya están en la misma fila.</p>
+        <p className="text-sm text-emerald-700 font-semibold">Todo en orden: cada expediente ya está junto.</p>
       ) : (
         <>
           <div className="overflow-x-auto">
@@ -9710,7 +9679,7 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
                   <tr key={m.id} className={`border-b border-slate-100 ${hechos[m.id] ? "bg-emerald-50" : ""}`}>
                     <td className="py-1.5 pr-2"><input type="checkbox" checked={!!hechos[m.id]} onChange={(e) => toggle(m, e.target.checked)} /></td>
                     <td className="pr-2 font-mono-num font-semibold">{m.lote || "—"}</td>
-                    <td className="pr-2">{m.exp ? `EXP ${m.exp}` : "—"}{m.par ? <span className="ml-1 text-amber-700 font-semibold">(intercambio)</span> : null}</td>
+                    <td className="pr-2">{m.exp ? `EXP ${m.exp}` : "—"}</td>
                     <td className="pr-2">{ubicacionTexto(m.desde)}</td>
                     <td className="pr-2 font-semibold text-[#2E8B57]">{ubicacionTexto(m.hasta)}</td>
                   </tr>
@@ -9719,7 +9688,7 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
             </table>
           </div>
           <div className="flex items-center gap-3 mt-3 flex-wrap">
-            <span className="text-xs text-slate-500">{plan.movimientos.length} movimiento(s). Los intercambios se marcan por parejas.</span>
+            <span className="text-xs text-slate-500">{plan.movimientos.length} movimiento(s). Si un hueco de destino está ocupado, mueve antes el caballete que hay en él (sale más arriba en la lista o puedes dejarlo a un lado un momento).</span>
             <button onClick={aplicar} disabled={!marcados.length} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
               className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-40">
               Guardar movimientos ({marcados.length})
