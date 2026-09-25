@@ -80,9 +80,10 @@ const ZONAS_CRISTALES = {
   arriba: { label: "Arriba (Uxcar)", filas: 3, huecos: 15 },
   abajo: { label: "Abajo (ALUMAVEL)", filas: 2, huecos: 15 },
 };
-// Fila que se deja siempre libre como "colchón": solo se usa cuando el resto de
-// filas de esa zona ya están completamente llenas.
-const FILA_RESERVA = { arriba: 3 };
+// Filas de reserva ("colchón"): ahora no hay ninguna, todas las filas se usan igual
+// para poder agrupar más los expedientes. Si algún día se quiere reservar una, se pone
+// aquí, por ejemplo { arriba: 3 }.
+const FILA_RESERVA = {};
 const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -8988,7 +8989,8 @@ const IncidenciasCristalCtx = React.createContext(null);
 const TIPOS_INCIDENCIA_CRISTAL = ["", "Falta", "Roto", "Defectuoso", "Medida mal", "Otro"];
 const CLAVE_RESPONSABLE_INC_CRISTAL = "crm_responsable_incidencias_cristal";
 
-function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho }) {
+function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, etiqueta = "Cristal", dondeEsta }) {
+  const donde = dondeEsta || `Caballete: ${cristal.lote || "—"}`;
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const proyectos = ctx.proyectos || [];
   const digitos = String(pieza.expediente || cristal.expediente || "").replace(/\D/g, "");
@@ -9006,18 +9008,18 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho }
     try { localStorage.setItem(CLAVE_RESPONSABLE_INC_CRISTAL, responsable); } catch {}
     const medida = pieza.ancho || pieza.alto ? `${pieza.ancho} × ${pieza.alto} mm` : "";
     const especificaciones = [
-      `Cristal ${String(tipo).toUpperCase()}`,
+      `${etiqueta} ${String(tipo).toUpperCase()}`,
       medida && `Medida: ${medida}`,
       pieza.cantidad && `Uds: ${pieza.cantidad}`,
       pieza.ref && `Vivienda / ref.: ${pieza.ref}`,
       (pieza.expediente || cristal.expediente) && `Expediente: ${pieza.expediente || cristal.expediente}`,
-      `Caballete: ${cristal.lote || "—"}`,
+      donde,
       (pieza.pedido || cristal.secuencia) && `Nº pedido: ${pieza.pedido || cristal.secuencia}`,
       comentario && `Comentario: ${comentario}`,
     ].filter(Boolean).join(" · ");
     const nueva = ctx.crear({
       proyectoId, especificaciones,
-      observaciones: "Creada desde el almacén de cristales. Hay que pedir la reposición del cristal.",
+      observaciones: `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Hay que pedir la reposición.`,
       responsableInicial: responsable, responsableActual: responsable,
     });
     onHecho({ comentario, incidenciaId: nueva.id, incidenciaNumero: nueva.numero });
@@ -9027,7 +9029,7 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho }
       <div className="bg-white rounded-xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display font-bold text-slate-900 mb-1">¿Crear también una incidencia?</h3>
         <p className="text-xs text-slate-500 mb-3">
-          Cristal <b>{tipo}</b>{pieza.ref ? ` · ${pieza.ref}` : ""}{pieza.ancho ? ` · ${pieza.ancho} × ${pieza.alto}` : ""} · caballete {cristal.lote || "—"}.
+          {etiqueta} <b>{tipo}</b>{pieza.ref ? ` · ${pieza.ref}` : ""}{pieza.ancho ? ` · ${pieza.ancho} × ${pieza.alto}` : ""} · {donde}.
           Le llegará al encargado de incidencias para que pida la reposición.
         </p>
         <div className="space-y-3">
@@ -9058,7 +9060,7 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho }
   );
 }
 
-function IncidenciaCristal({ pieza, cristal, onGuardar }) {
+function IncidenciaCristal({ pieza, cristal, onGuardar, etiqueta, dondeEsta }) {
   const ctx = React.useContext(IncidenciasCristalCtx);
   const [texto, setTexto] = useState(pieza.comentario || "");
   const [modalTipo, setModalTipo] = useState(null);
@@ -9115,6 +9117,8 @@ function IncidenciaCristal({ pieza, cristal, onGuardar }) {
           pieza={{ ...pieza, comentario: texto }}
           cristal={cristal}
           tipo={modalTipo}
+          etiqueta={etiqueta}
+          dondeEsta={dondeEsta}
           onCerrar={() => setModalTipo(null)}
           onHecho={(cambios) => { setModalTipo(null); onGuardar({ ...cambios, incidencia: modalTipo }); }}
         />
@@ -9962,6 +9966,39 @@ function AlmacenPersianas() {
 
   const actualizarCarro = (numero, patch) => guardarCarros(carros.map((c) => (c.numero === numero ? { ...c, ...patch } : c)));
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
+  const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const [qLista, setQLista] = useState("");
+  const [soloSinColocar, setSoloSinColocar] = useState(false);
+  const [soloIncidencia, setSoloIncidencia] = useState(false);
+
+  // Fila de una persiana: colocada en obra, dónde está e incidencia / comentario
+  const filaPersiana = (x, mostrarSitio = true) => (
+    <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : ""}`}>
+      <td className="py-1.5 px-2">
+        <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
+          onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
+      </td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"}</td>
+      <td className="px-2">{x.ref || "—"}</td>
+      <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
+      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.estante ? textoEstante(x.estante) : <span className="text-amber-700">Sin sitio</span>}</td>}
+      <td className="px-2 py-1">
+        <IncidenciaCristal
+          pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
+          cristal={{ lote: "", expediente: x.expediente }}
+          etiqueta="Persiana"
+          dondeEsta={x.estante ? textoEstante(x.estante) : "Almacén de persianas"}
+          onGuardar={(cambios) => actualizarPersiana(x.id, cambios)}
+        />
+      </td>
+    </tr>
+  );
+  const cabeceraPersianas = (mostrarSitio = true) => (
+    <thead><tr className="text-left text-xs text-slate-400 border-b">
+      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
+      {mostrarSitio && <th className="px-2">Dónde está</th>}<th className="px-2">Incidencia / comentario</th>
+    </tr></thead>
+  );
   const aplicarPlan = () => {
     const destino = {};
     plan.movimientos.forEach((m, i) => { if (hechos[i]) m.items.forEach((x) => { destino[x.id] = m.hasta; }); });
@@ -9987,7 +10024,7 @@ function AlmacenPersianas() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {[["mapa", "Mapa de carros"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
+        {[["mapa", "Mapa de carros"], ["lista", "Persianas (una a una)"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
         ))}
         <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
@@ -10066,6 +10103,37 @@ function AlmacenPersianas() {
           </div>
         </div>
       )}
+
+      {vista === "lista" && (() => {
+        const nql = qLista.trim().toLowerCase();
+        const lista = items.filter((x) => {
+          if (soloSinColocar && x.colocada) return false;
+          if (soloIncidencia && !x.incidencia) return false;
+          if (!nql) return true;
+          return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql);
+        }).sort((a, b) => String(a.expediente).localeCompare(String(b.expediente)) || String(a.ref).localeCompare(String(b.ref)));
+        const colocadas = items.filter((x) => x.colocada).length;
+        const conInc = items.filter((x) => x.incidencia).length;
+        return (
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
+              <input value={qLista} onChange={(e) => setQLista(e.target.value)} placeholder="Buscar expediente, vivienda, medida, comentario…" className="border border-slate-200 rounded-lg px-3 py-1.5 min-w-[240px]" />
+              <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinColocar} onChange={(e) => setSoloSinColocar(e.target.checked)} /> Solo sin colocar</label>
+              <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencia} onChange={(e) => setSoloIncidencia(e.target.checked)} /> Solo con incidencia</label>
+              <span className="ml-auto text-xs text-slate-500">{colocadas} de {items.length} colocadas{conInc ? <b className="text-rose-600"> · {conInc} con incidencia</b> : null}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                {cabeceraPersianas(true)}
+                <tbody>
+                  {lista.map((x) => filaPersiana(x, true))}
+                  {lista.length === 0 && <tr><td colSpan={6} className="px-2 py-8 text-center text-slate-400">No hay persianas que coincidan.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {vista === "sinsitio" && (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
@@ -10181,10 +10249,18 @@ function AlmacenPersianas() {
                 const porExp = {};
                 dentro.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
                 return Object.entries(porExp).map(([exp, xs]) => (
-                  <div key={exp} className="flex items-center justify-between gap-2 border border-slate-200 rounded-lg px-3 py-2 mb-1.5">
-                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} persiana(s)</span>
+                  <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} persiana(s) · {xs.filter((x) => x.colocada).length} colocada(s)</span>
                     <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} persianas del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
+                  </div>
+                  <div className="overflow-x-auto mt-2">
+                    <table className="w-full text-xs">
+                      {cabeceraPersianas(true)}
+                      <tbody>{xs.map((x) => filaPersiana(x, true))}</tbody>
+                    </table>
+                  </div>
                   </div>
                 ));
               })()}
