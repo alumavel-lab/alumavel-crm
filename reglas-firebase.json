@@ -18,6 +18,17 @@
       "$uid": {
         ".read": "auth != null && auth.uid === $uid"
       }
+    },
+    "packingListJobsInput": {
+      "$id": {
+        ".write": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()"
+      }
+    },
+    "packingListJobs": {
+      "$id": {
+        ".read": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()",
+        ".write": "auth != null && root.child('portalUsuarios').child(auth.uid).exists()"
+      }
     }
   }
 }

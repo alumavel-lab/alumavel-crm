@@ -20,3 +20,10 @@
 [functions."avisos-stock-minimo"]
   # Todos los días a las 07:00 UTC, igual que los demás avisos.
   schedule = "0 7 * * *"
+
+[functions."aviso-fabrica-diario"]
+  # De lunes a viernes a las 7:00 de la mañana (hora de España), al entrar a trabajar
+  # (horario de 7 a 15): lo que hay que preparar para el siguiente día de trabajo
+  # (el viernes, para el lunes). Se lanza a las 5 y a las 6 UTC y la propia función
+  # solo envía cuando en España son las 7, así vale en verano y en invierno.
+  schedule = "0 5,6 * * 1-5"
