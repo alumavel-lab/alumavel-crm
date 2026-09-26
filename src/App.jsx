@@ -2512,131 +2512,6 @@ export default function App() {
     saveProyectos(proyectos.map((p) => (p.id === proyectoId ? { ...p, persianasControl } : p)));
   };
 
-  // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
-  // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
-  // pedirlos juntos). Solo con presupuestos firmados desde que existe esta función, y con
-  // un bloqueo en Firebase para que no se haga dos veces si hay varios con el CRM abierto.
-  const autoPresRef = useRef(false);
-  useEffect(() => {
-    if (!currentUser || loading || autoPresRef.current) return;
-    const desde = tarifasPersianas && tarifasPersianas.autoPedidosDesde;
-    if (!desde) { saveTarifasPersianas({ ...(tarifasPersianas || {}), autoPedidosDesde: Date.now() }); return; }
-    const pendientes = presupuestos.filter((p) => p.firma && p.firma.estado === "firmado" && (p.firma.firmadoEn || 0) >= desde
-      && !p.proyectoCreadoId && !p.autoPedidosHecho && (toArray(p.persianas).length > 0 || toArray(p.ventanas).length > 0 || (p.proyectoId && proyectos.some((x) => x.id === p.proyectoId))));
-    if (pendientes.length === 0) return;
-    autoPresRef.current = true;
-    (async () => {
-      try {
-        let listaProyectos = [...proyectos], listaPedidos = [...pedidos], listaPresupuestos = [...presupuestos];
-        let numProy = parseInt(nextNumeroProyecto(), 10), numPed = parseInt(nextNumeroPedido(), 10);
-        const hoy = new Date().toISOString().slice(0, 10);
-        const provPers = (tarifasPersianas && tarifasPersianas.proveedorPedidosId) || (proveedores.find((pr) => /persax|persian/i.test(pr.nombre || "")) || {}).id || "";
-        const hechos = [];
-        for (const pre of pendientes) {
-          const r = await runTransaction(ref(fbDb, `autoPresupuestos/${pre.id}`), (a) => (a ? undefined : Date.now())).catch(() => null);
-          if (!r || !r.committed) continue;
-          const clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (pre.clienteNombre || "").trim().toLowerCase())?.id || "";
-          const docs = [...(pre.documentos || [])];
-          if (pre.firma.pdfUrl) docs.push({ id: uid(), nombre: `Presupuesto ${pre.numero} — firmado.pdf`, url: pre.firma.pdfUrl, subidoEn: Date.now() });
-          const obraExistente = pre.proyectoId ? listaProyectos.find((x) => x.id === pre.proyectoId) : null;
-          const proyectoId = obraExistente ? obraExistente.id : uid();
-          // Material de las persianas (el despiece de la calculadora), en espera
-          const lineas = [];
-          toArray(pre.persianas).forEach((entry) => {
-            const det = entry.despiece ? calcularPresupuestoPersianas(entry.despiece, entry.tarifas || tarifasPersianas || {}).detalle : [];
-            det.forEach((d) => lineas.push({ id: uid(), modo: "libre", materialId: "", referencia: d.nombre, ancho: "", alto: "", cantidad: d.cantidad, precio: d.precio || "", precioListado: parseFloat(d.precio) || 0, seccionListado: "persianas", estado: "Solicitado" }));
-          });
-          const pedidoId = uid();
-          // Ventanas y techos de la calculadora: su despiece se guarda como listado de materiales
-          // de la obra (para "Preparar material") y lo que falta en stock va a pedidos en espera.
-          const lineasListado = [];
-          const pedidosVentanas = {}; // proveedorId -> líneas
-          const pedidosCristal = {};
-          toArray(pre.ventanas).forEach((v) => {
-            toArray(v.materiales).forEach((m) => {
-              const esPerfil = m.tipo === "perfil";
-              const barras = esPerfil && m.longBarra ? Math.ceil(((parseFloat(m.cantidad) || 0) * 1000) / (parseFloat(m.longBarra) || 6000)) : 0;
-              const uds = esPerfil ? (barras || parseFloat(m.cantidad) || 0) : (parseFloat(m.cantidad) || 0);
-              const precioUd = esPerfil && m.longBarra ? (parseFloat(m.precioNeto) || 0) * ((parseFloat(m.longBarra) || 6000) / 1000) : (parseFloat(m.precioNeto) || 0);
-              const lin = { id: uid(), seccion: esPerfil ? "perfiles" : "herraje", codigo: String(m.ref || ""), descripcion: String(m.desc || ""), color: String(m.acabado || ""), uds, longitud: esPerfil ? (parseFloat(m.longBarra) || 6000) / 1000 : 0, ancho: 0, alto: 0, precioUd: Math.round(precioUd * 100) / 100, total: Math.round(precioUd * uds * 100) / 100 };
-              lineasListado.push(lin);
-              const mat = buscarMaterialListado(lin, materiales);
-              const falta = Math.max(0, Math.ceil(uds - (mat ? parseFloat(mat.stockReal) || 0 : 0)));
-              if (!falta) return;
-              const prov = (mat && mat.proveedorId) || v.proveedorAluminioId || "";
-              (pedidosVentanas[prov] = pedidosVentanas[prov] || []).push(mat
-                ? { id: uid(), modo: "catalogo", materialId: mat.id, referencia: "", ancho: "", alto: "", cantidad: String(falta), precio: String(lin.precioUd || ""), precioListado: lin.precioUd, codigoListado: lin.codigo, seccionListado: lin.seccion, estado: "Solicitado" }
-                : { id: uid(), modo: "libre", materialId: "", referencia: `${lin.codigo} ${lin.descripcion}${lin.color ? ` · ${lin.color}` : ""}${esPerfil ? ` — barras de ${lin.longitud} m` : ""}`, ancho: "", alto: "", cantidad: String(falta), precio: String(lin.precioUd || ""), precioListado: lin.precioUd, codigoListado: lin.codigo, seccionListado: lin.seccion, estado: "Solicitado" });
-            });
-            if (v.cristal && v.cristal.ancho && v.cristal.alto) {
-              const prov = v.cristal.proveedorId || "";
-              (pedidosCristal[prov] = pedidosCristal[prov] || []).push({ id: uid(), modo: "libre", materialId: "", referencia: `Cristal ${v.cristal.descripcion || ""}`.trim(), ancho: String(Math.round(v.cristal.ancho)), alto: String(Math.round(v.cristal.alto)), cantidad: String((parseFloat(v.cristal.cantidad) || 1) * (parseFloat(v.ud) || 1)), precio: v.cristal.precioPieza ? String(Math.round(v.cristal.precioPieza * 100) / 100) : "", precioListado: parseFloat(v.cristal.precioPieza) || 0, seccionListado: "cristal", estado: "Solicitado" });
-            }
-          });
-          const idsPerfil = [], idsCristal = [];
-          const nuevosPedidosVC = [];
-          [[pedidosVentanas, idsPerfil, "Material de ventanas/techos"], [pedidosCristal, idsCristal, "Cristales"]].forEach(([grupos, ids, que]) => {
-            Object.entries(grupos).forEach(([prov, ls]) => {
-              const id = uid(); ids.push(id);
-              nuevosPedidosVC.push({ id, numero: String(numPed++), proveedorId: prov, proyectoId, estado: "En espera", fechaCompra: hoy, fechaEntregaPrevista: "", lineas: ls, adjuntosPdf: [],
-                origenListado: `presupuesto ${pre.numero}`, creadoPor: "Automático (presupuesto firmado)", fechaCreado: hoy,
-                comentarios: `${que} del presupuesto ${pre.numero}, creado solo al firmarlo el cliente (lo que falta en stock). En espera para pedirlo junto con otros pedidos.${prov ? "" : " FALTA ELEGIR EL PROVEEDOR."}` });
-            });
-          });
-          listaPedidos = [...nuevosPedidosVC, ...listaPedidos];
-          const checklist = checklistMaterialesPorDefecto().map((c) => {
-            if (/persiana/i.test(c.nombre) && lineas.length) return { ...c, estado: "si", pedidoIds: [pedidoId] };
-            if (/perfil/i.test(c.nombre) && lineasListado.some((l) => l.seccion === "perfiles")) return { ...c, estado: "si", pedidoIds: idsPerfil, enStock: idsPerfil.length === 0 };
-            if (/cristal/i.test(c.nombre) && idsCristal.length) return { ...c, estado: "si", pedidoIds: idsCristal };
-            return c;
-          });
-          if (obraExistente) {
-            // Ampliación: lo nuevo se suma a la obra que ya existe
-            const clActual = normalizarChecklist(obraExistente.checklistMateriales).map((c) => {
-              const n = checklist.find((x) => x.nombre === c.nombre && x.estado === "si");
-              return n ? { ...c, estado: "si", enStock: false, pedidoIds: [...new Set([...(c.pedidoIds || []), ...(n.pedidoIds || [])])] } : c;
-            });
-            const lm = obraExistente.listadoMateriales;
-            listaProyectos = listaProyectos.map((x) => (x.id !== obraExistente.id ? x : {
-              ...x,
-              importePresupuesto: (parseFloat(x.importePresupuesto) || 0) + (parseFloat(pre.importe) || 0),
-              estadoTrabajo: ["Entregado", "Listo para reparto/recogida"].includes(x.estadoTrabajo) ? "Pendiente de aceptación" : x.estadoTrabajo,
-              checklistMateriales: clActual,
-              persianas: [...toArray(x.persianas), ...toArray(pre.persianas)], ventanas: [...toArray(x.ventanas), ...toArray(pre.ventanas)],
-              persianasControl: [...toArray(x.persianasControl), ...(pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre))],
-              documentos: [...toArray(x.documentos), ...docs.filter((d) => !toArray(x.documentos).some((y) => y.url === d.url))],
-              ...(lineasListado.length ? { listadoMateriales: { ...(lm || { numero: `Presupuesto ${pre.numero}`, referencia: pre.descripcion || "", fecha: hoy, archivo: "calculadora", superficies: { m2: 0, importe: 0 } }), lineas: [...toArray(lm && lm.lineas), ...lineasListado] } } : {}),
-              ampliaciones: [...toArray(x.ampliaciones), { presupuestoId: pre.id, numero: pre.numero, importe: pre.importe || 0, fecha: hoy }],
-            }));
-          } else listaProyectos = [{
-            id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
-            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
-            presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
-            techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
-            persianasControl: (pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre)),
-            documentos: docs, origen: "presupuestoFirmado", presupuestoId: pre.id,
-            ...(lineasListado.length ? { listadoMateriales: { numero: `Presupuesto ${pre.numero}`, referencia: pre.descripcion || "", fecha: hoy, archivo: "calculadora", lineas: lineasListado, superficies: { m2: 0, importe: 0 } } } : {}),
-          }, ...listaProyectos];
-          if (lineas.length) {
-            listaPedidos = [{
-              id: pedidoId, numero: String(numPed++), proveedorId: provPers, proyectoId, estado: "En espera", fechaCompra: hoy, fechaEntregaPrevista: "",
-              lineas, adjuntosPdf: [], origenListado: `presupuesto ${pre.numero}`, creadoPor: "Automático (presupuesto firmado)", fechaCreado: hoy,
-              comentarios: `Material de las persianas del presupuesto ${pre.numero}, creado solo al firmarlo el cliente. En espera para pedirlo junto con otros pedidos.${provPers ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
-            }, ...listaPedidos];
-          }
-          listaPresupuestos = listaPresupuestos.map((p) => (p.id === pre.id ? { ...p, estado: "Aceptado", proyectoCreadoId: proyectoId, autoPedidosHecho: true } : p));
-          hechos.push(pre.numero);
-        }
-        if (hechos.length) {
-          saveProyectos(listaProyectos);
-          savePedidos(listaPedidos);
-          savePresupuestos(listaPresupuestos);
-          showToast(`Presupuesto${hechos.length === 1 ? "" : "s"} ${hechos.join(", ")} firmado${hechos.length === 1 ? "" : "s"}: proyecto y pedidos de material creados (en espera)`);
-        }
-      } finally { autoPresRef.current = false; }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presupuestos, currentUser?.id, loading, tarifasPersianas, materiales]);
 
   // Crea un Proyecto a partir de un Presupuesto ya aceptado.
   const crearProyectoDesdePresupuesto = (presupuesto) => {
@@ -2996,6 +2871,132 @@ export default function App() {
 
   // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
   const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
+
+  // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
+  // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
+  // pedirlos juntos). Solo con presupuestos firmados desde que existe esta función, y con
+  // un bloqueo en Firebase para que no se haga dos veces si hay varios con el CRM abierto.
+  const autoPresRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || autoPresRef.current) return;
+    const desde = tarifasPersianas && tarifasPersianas.autoPedidosDesde;
+    if (!desde) { saveTarifasPersianas({ ...(tarifasPersianas || {}), autoPedidosDesde: Date.now() }); return; }
+    const pendientes = presupuestos.filter((p) => p.firma && p.firma.estado === "firmado" && (p.firma.firmadoEn || 0) >= desde
+      && !p.proyectoCreadoId && !p.autoPedidosHecho && (toArray(p.persianas).length > 0 || toArray(p.ventanas).length > 0 || (p.proyectoId && proyectos.some((x) => x.id === p.proyectoId))));
+    if (pendientes.length === 0) return;
+    autoPresRef.current = true;
+    (async () => {
+      try {
+        let listaProyectos = [...proyectos], listaPedidos = [...pedidos], listaPresupuestos = [...presupuestos];
+        let numProy = parseInt(nextNumeroProyecto(), 10), numPed = parseInt(nextNumeroPedido(), 10);
+        const hoy = new Date().toISOString().slice(0, 10);
+        const provPers = (tarifasPersianas && tarifasPersianas.proveedorPedidosId) || (proveedores.find((pr) => /persax|persian/i.test(pr.nombre || "")) || {}).id || "";
+        const hechos = [];
+        for (const pre of pendientes) {
+          const r = await runTransaction(ref(fbDb, `autoPresupuestos/${pre.id}`), (a) => (a ? undefined : Date.now())).catch(() => null);
+          if (!r || !r.committed) continue;
+          const clienteId = clientes.find((c) => c.nombre.trim().toLowerCase() === (pre.clienteNombre || "").trim().toLowerCase())?.id || "";
+          const docs = [...(pre.documentos || [])];
+          if (pre.firma.pdfUrl) docs.push({ id: uid(), nombre: `Presupuesto ${pre.numero} — firmado.pdf`, url: pre.firma.pdfUrl, subidoEn: Date.now() });
+          const obraExistente = pre.proyectoId ? listaProyectos.find((x) => x.id === pre.proyectoId) : null;
+          const proyectoId = obraExistente ? obraExistente.id : uid();
+          // Material de las persianas (el despiece de la calculadora), en espera
+          const lineas = [];
+          toArray(pre.persianas).forEach((entry) => {
+            const det = entry.despiece ? calcularPresupuestoPersianas(entry.despiece, entry.tarifas || tarifasPersianas || {}).detalle : [];
+            det.forEach((d) => lineas.push({ id: uid(), modo: "libre", materialId: "", referencia: d.nombre, ancho: "", alto: "", cantidad: d.cantidad, precio: d.precio || "", precioListado: parseFloat(d.precio) || 0, seccionListado: "persianas", estado: "Solicitado" }));
+          });
+          const pedidoId = uid();
+          // Ventanas y techos de la calculadora: su despiece se guarda como listado de materiales
+          // de la obra (para "Preparar material") y lo que falta en stock va a pedidos en espera.
+          const lineasListado = [];
+          const pedidosVentanas = {}; // proveedorId -> líneas
+          const pedidosCristal = {};
+          toArray(pre.ventanas).forEach((v) => {
+            toArray(v.materiales).forEach((m) => {
+              const esPerfil = m.tipo === "perfil";
+              const barras = esPerfil && m.longBarra ? Math.ceil(((parseFloat(m.cantidad) || 0) * 1000) / (parseFloat(m.longBarra) || 6000)) : 0;
+              const uds = esPerfil ? (barras || parseFloat(m.cantidad) || 0) : (parseFloat(m.cantidad) || 0);
+              const precioUd = esPerfil && m.longBarra ? (parseFloat(m.precioNeto) || 0) * ((parseFloat(m.longBarra) || 6000) / 1000) : (parseFloat(m.precioNeto) || 0);
+              const lin = { id: uid(), seccion: esPerfil ? "perfiles" : "herraje", codigo: String(m.ref || ""), descripcion: String(m.desc || ""), color: String(m.acabado || ""), uds, longitud: esPerfil ? (parseFloat(m.longBarra) || 6000) / 1000 : 0, ancho: 0, alto: 0, precioUd: Math.round(precioUd * 100) / 100, total: Math.round(precioUd * uds * 100) / 100 };
+              lineasListado.push(lin);
+              const mat = buscarMaterialListado(lin, materiales);
+              const falta = Math.max(0, Math.ceil(uds - (mat ? parseFloat(mat.stockReal) || 0 : 0)));
+              if (!falta) return;
+              const prov = (mat && mat.proveedorId) || v.proveedorAluminioId || "";
+              (pedidosVentanas[prov] = pedidosVentanas[prov] || []).push(mat
+                ? { id: uid(), modo: "catalogo", materialId: mat.id, referencia: "", ancho: "", alto: "", cantidad: String(falta), precio: String(lin.precioUd || ""), precioListado: lin.precioUd, codigoListado: lin.codigo, seccionListado: lin.seccion, estado: "Solicitado" }
+                : { id: uid(), modo: "libre", materialId: "", referencia: `${lin.codigo} ${lin.descripcion}${lin.color ? ` · ${lin.color}` : ""}${esPerfil ? ` — barras de ${lin.longitud} m` : ""}`, ancho: "", alto: "", cantidad: String(falta), precio: String(lin.precioUd || ""), precioListado: lin.precioUd, codigoListado: lin.codigo, seccionListado: lin.seccion, estado: "Solicitado" });
+            });
+            if (v.cristal && v.cristal.ancho && v.cristal.alto) {
+              const prov = v.cristal.proveedorId || "";
+              (pedidosCristal[prov] = pedidosCristal[prov] || []).push({ id: uid(), modo: "libre", materialId: "", referencia: `Cristal ${v.cristal.descripcion || ""}`.trim(), ancho: String(Math.round(v.cristal.ancho)), alto: String(Math.round(v.cristal.alto)), cantidad: String((parseFloat(v.cristal.cantidad) || 1) * (parseFloat(v.ud) || 1)), precio: v.cristal.precioPieza ? String(Math.round(v.cristal.precioPieza * 100) / 100) : "", precioListado: parseFloat(v.cristal.precioPieza) || 0, seccionListado: "cristal", estado: "Solicitado" });
+            }
+          });
+          const idsPerfil = [], idsCristal = [];
+          const nuevosPedidosVC = [];
+          [[pedidosVentanas, idsPerfil, "Material de ventanas/techos"], [pedidosCristal, idsCristal, "Cristales"]].forEach(([grupos, ids, que]) => {
+            Object.entries(grupos).forEach(([prov, ls]) => {
+              const id = uid(); ids.push(id);
+              nuevosPedidosVC.push({ id, numero: String(numPed++), proveedorId: prov, proyectoId, estado: "En espera", fechaCompra: hoy, fechaEntregaPrevista: "", lineas: ls, adjuntosPdf: [],
+                origenListado: `presupuesto ${pre.numero}`, creadoPor: "Automático (presupuesto firmado)", fechaCreado: hoy,
+                comentarios: `${que} del presupuesto ${pre.numero}, creado solo al firmarlo el cliente (lo que falta en stock). En espera para pedirlo junto con otros pedidos.${prov ? "" : " FALTA ELEGIR EL PROVEEDOR."}` });
+            });
+          });
+          listaPedidos = [...nuevosPedidosVC, ...listaPedidos];
+          const checklist = checklistMaterialesPorDefecto().map((c) => {
+            if (/persiana/i.test(c.nombre) && lineas.length) return { ...c, estado: "si", pedidoIds: [pedidoId] };
+            if (/perfil/i.test(c.nombre) && lineasListado.some((l) => l.seccion === "perfiles")) return { ...c, estado: "si", pedidoIds: idsPerfil, enStock: idsPerfil.length === 0 };
+            if (/cristal/i.test(c.nombre) && idsCristal.length) return { ...c, estado: "si", pedidoIds: idsCristal };
+            return c;
+          });
+          if (obraExistente) {
+            // Ampliación: lo nuevo se suma a la obra que ya existe
+            const clActual = normalizarChecklist(obraExistente.checklistMateriales).map((c) => {
+              const n = checklist.find((x) => x.nombre === c.nombre && x.estado === "si");
+              return n ? { ...c, estado: "si", enStock: false, pedidoIds: [...new Set([...(c.pedidoIds || []), ...(n.pedidoIds || [])])] } : c;
+            });
+            const lm = obraExistente.listadoMateriales;
+            listaProyectos = listaProyectos.map((x) => (x.id !== obraExistente.id ? x : {
+              ...x,
+              importePresupuesto: (parseFloat(x.importePresupuesto) || 0) + (parseFloat(pre.importe) || 0),
+              estadoTrabajo: ["Entregado", "Listo para reparto/recogida"].includes(x.estadoTrabajo) ? "Pendiente de aceptación" : x.estadoTrabajo,
+              checklistMateriales: clActual,
+              persianas: [...toArray(x.persianas), ...toArray(pre.persianas)], ventanas: [...toArray(x.ventanas), ...toArray(pre.ventanas)],
+              persianasControl: [...toArray(x.persianasControl), ...(pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre))],
+              documentos: [...toArray(x.documentos), ...docs.filter((d) => !toArray(x.documentos).some((y) => y.url === d.url))],
+              ...(lineasListado.length ? { listadoMateriales: { ...(lm || { numero: `Presupuesto ${pre.numero}`, referencia: pre.descripcion || "", fecha: hoy, archivo: "calculadora", superficies: { m2: 0, importe: 0 } }), lineas: [...toArray(lm && lm.lineas), ...lineasListado] } } : {}),
+              ampliaciones: [...toArray(x.ampliaciones), { presupuestoId: pre.id, numero: pre.numero, importe: pre.importe || 0, fecha: hoy }],
+            }));
+          } else listaProyectos = [{
+            id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
+            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
+            presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
+            techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
+            persianasControl: (pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre)),
+            documentos: docs, origen: "presupuestoFirmado", presupuestoId: pre.id,
+            ...(lineasListado.length ? { listadoMateriales: { numero: `Presupuesto ${pre.numero}`, referencia: pre.descripcion || "", fecha: hoy, archivo: "calculadora", lineas: lineasListado, superficies: { m2: 0, importe: 0 } } } : {}),
+          }, ...listaProyectos];
+          if (lineas.length) {
+            listaPedidos = [{
+              id: pedidoId, numero: String(numPed++), proveedorId: provPers, proyectoId, estado: "En espera", fechaCompra: hoy, fechaEntregaPrevista: "",
+              lineas, adjuntosPdf: [], origenListado: `presupuesto ${pre.numero}`, creadoPor: "Automático (presupuesto firmado)", fechaCreado: hoy,
+              comentarios: `Material de las persianas del presupuesto ${pre.numero}, creado solo al firmarlo el cliente. En espera para pedirlo junto con otros pedidos.${provPers ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
+            }, ...listaPedidos];
+          }
+          listaPresupuestos = listaPresupuestos.map((p) => (p.id === pre.id ? { ...p, estado: "Aceptado", proyectoCreadoId: proyectoId, autoPedidosHecho: true } : p));
+          hechos.push(pre.numero);
+        }
+        if (hechos.length) {
+          saveProyectos(listaProyectos);
+          savePedidos(listaPedidos);
+          savePresupuestos(listaPresupuestos);
+          showToast(`Presupuesto${hechos.length === 1 ? "" : "s"} ${hechos.join(", ")} firmado${hechos.length === 1 ? "" : "s"}: proyecto y pedidos de material creados (en espera)`);
+        }
+      } finally { autoPresRef.current = false; }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presupuestos, currentUser?.id, loading, tarifasPersianas, materiales]);
   // Si todavía no hay ningún usuario con el sistema nuevo, el primero en entrar es el administrador.
   const hayUsuariosNuevos = usuarios.some((u) => u.authUid);
   useEffect(() => {
