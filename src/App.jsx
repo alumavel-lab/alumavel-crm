@@ -319,7 +319,8 @@ const descargarListaComoWord = (titulo, columnas, filas) => {
 };
 
 const ESTADO_PRESUPUESTO = ["Esperando presupuesto", "Presupuesto enviado", "Presupuesto aceptado", "Presupuesto rechazado"];
-const ESTADO_TRABAJO = ["Pendiente de aceptación", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida", "Entregado", "Cancelado"];
+// Orden real: se fabrica → queda listo → el chófer firma la carga → se entrega
+const ESTADO_TRABAJO = ["Pendiente de aceptación", "En proceso", "Listo para reparto/recogida", "Albarán de carga firmado", "Entregado", "Cancelado"];
 const CATEGORIAS_CHECKLIST_MATERIALES = ["Cristal", "Persiana", "Perfil", "Postigo", "Panel de puerta", "Tirador / Manilla", "Mosquitera", "Guía de persiana"];
 const checklistMaterialesPorDefecto = () => CATEGORIAS_CHECKLIST_MATERIALES.map((nombre) => ({ id: uid(), nombre, estado: null }));
 const normalizarChecklist = (lista) => {
@@ -4275,10 +4276,12 @@ export default function App() {
           <AlbaranesChofer
             proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
             currentUser={currentUser} isAdmin={isAdmin}
-            onGuardarAlbaranEntrega={(id, albaran, entregar) => {
+            onGuardarAlbaranEntrega={(id, albaran, entregar, cargado) => {
               const albaranEntrega = JSON.parse(JSON.stringify(albaran));
-              // un solo guardado: el albarán firmado y (si toca) el paso a Entregado
+              const pr = proyectos.find((x) => x.id === id);
+              // un solo guardado: el albarán firmado y (si toca) el cambio de estado
               if (entregar) moverEstadoProyecto(id, "Entregado", { albaranEntrega });
+              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso"].includes(pr.estadoTrabajo)) moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: new Date().toISOString().slice(0, 10) });
               else updateProyectoInline(id, { albaranEntrega });
             }}
             onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
@@ -11948,7 +11951,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
   const materialInfo = (id) => materiales.find((m) => m.id === id);
 
-  const proyectosEnFabricacion = proyectos.filter((p) => ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
+  const proyectosEnFabricacion = proyectos.filter((p) => ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
 
   const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && (p.lineas || []).some((l) => !l.confirmadoFabrica));
 
@@ -12340,7 +12343,7 @@ function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMove
           <h3 className="font-display font-bold text-slate-800 mb-3 flex items-center gap-1.5"><Truck size={16} className="text-[#2E8B57]" /> {zona} ({porZona[zona].length})</h3>
           <div className="space-y-2">
             {porZona[zona].map((p) => {
-              const listo = p.estadoTrabajo === "Listo para reparto/recogida";
+              const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
               return (
                 <div key={p.id} className={`flex flex-wrap items-center justify-between gap-3 border rounded-lg p-3 ${listo ? "bg-white border-slate-200" : "bg-slate-50 border-slate-200"}`}>
                   <button onClick={() => onVerProyecto(p.id)} className="text-left">
@@ -12954,7 +12957,7 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
     setBorrador({ numero: a.numero || siguienteNumero(), chofer: a.chofer || nombreYo, matricula: a.matricula || "", contenido: a.contenido || [p.nombre, p.especificaciones].filter(Boolean).join("\n"), bultos: a.bultos || "", notas: a.notas || "" });
     setAbiertoId(p.id);
   };
-  const guardar = (extra = {}, entregar = false) => onGuardarAlbaranEntrega(abierto.id, { ...(abierto.albaranEntrega || {}), ...borrador, ...extra }, entregar);
+  const guardar = (extra = {}, entregar = false, cargado = false) => onGuardarAlbaranEntrega(abierto.id, { ...(abierto.albaranEntrega || {}), ...borrador, ...extra }, entregar, cargado);
   const tabBtn = (id, label, n) => (
     <button onClick={() => { setTab(id); setAbiertoId(null); }} className={`crm-tab px-3 py-2 text-sm font-semibold flex items-center gap-1.5 ${tab === id ? "border-[#2E8B57]" : ""}`}>
       {label}{n > 0 && <span className="text-[10px] font-bold bg-amber-100 text-amber-800 rounded px-1.5">{n}</span>}
@@ -12963,7 +12966,7 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
 
   if (tab === "repartos" && abierto && borrador) {
     const a = abierto.albaranEntrega || {};
-    const listo = abierto.estadoTrabajo === "Listo para reparto/recogida";
+    const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(abierto.estadoTrabajo);
     const cli = clienteDe(abierto);
     return (
       <div className="p-4 sm:p-8 max-w-2xl space-y-4">
@@ -13020,7 +13023,7 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
             onCancel={() => setFirmando(null)}
             onGuardar={(firma) => {
               const f = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160) };
-              if (firmando === "carga") guardar({ firmaCarga: f, chofer: borrador.chofer || firma.nombre });
+              if (firmando === "carga") guardar({ firmaCarga: f, chofer: borrador.chofer || firma.nombre }, false, true);
               else guardar({ firmaCliente: f }, !abierto.llevaInstalacion);
               setFirmando(null);
             }}
@@ -13043,7 +13046,7 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
-            const listo = p.estadoTrabajo === "Listo para reparto/recogida";
+            const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
             return (
               <button key={p.id} onClick={() => abrir(p)} className="w-full text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-[#2E8B57]">
                 <div className="flex flex-wrap items-center gap-2">
@@ -22856,7 +22859,7 @@ function ParteDiarioVentanas({ proyectos, uxExpedientes, clientes }) {
     terminadas.push({ id: p.id, obra: exp ? `Uxcar exp. ${exp.numero}` : `#${p.numero} ${p.nombre}`, quien: exp ? "Uxcar" : (nombreCliente(p) || "Ecowin"), ...v });
   });
   const fabricadasDia = proyectos.filter((p) => p.fechaTerminadoFabrica === dia).reduce((a, p) => a + ventanasDeObra(p, uxExpedientes).total, 0);
-  const enFab = proyectos.filter((p) => ["En proceso", "Albarán de carga firmado"].includes(p.estadoTrabajo));
+  const enFab = proyectos.filter((p) => ["En proceso"].includes(p.estadoTrabajo));
   const ventFab = enFab.reduce((a, p) => { const v = ventanasDeObra(p, uxExpedientes); return v.deUxcar ? { ...a, ux: a.ux + v.total } : { ...a, eco: a.eco + v.total }; }, { eco: 0, ux: 0 });
   const totEco = terminadas.filter((t) => !t.deUxcar).reduce((a, t) => a + t.total, 0);
   const totUx = terminadas.filter((t) => t.deUxcar).reduce((a, t) => a + t.total, 0);
@@ -26346,7 +26349,7 @@ function PlanningMontajes({ instalaciones, proyectos, clientes, pedidos = [], co
     const p = proyectos.find((x) => x.id === i.proyectoId);
     const v = p ? ventanasDeObra(p) : { total: 0, recuento: [] };
     const h = horasMontajeObra(v.recuento, v.total, i.horasMontaje, tiempos);
-    const fabricada = !p || (i.tipoTrabajo && i.tipoTrabajo !== "Montaje") || ["Listo para reparto/recogida", "Entregado"].includes(p.estadoTrabajo) || !!p.fechaTerminadoFabrica;
+    const fabricada = !p || (i.tipoTrabajo && i.tipoTrabajo !== "Montaje") || ["Listo para reparto/recogida", "Albarán de carga firmado", "Entregado"].includes(p.estadoTrabajo) || !!p.fechaTerminadoFabrica;
     // Si todavía se fabrica: disponible al día siguiente de terminar en el planning de fábrica
     const finFab = p && plan && plan.obras && plan.obras[`p-${p.id}`] ? plan.obras[`p-${p.id}`].fin : "";
     const creada = i.creadaEn ? new Date(i.creadaEn).toISOString().slice(0, 10) : "";
