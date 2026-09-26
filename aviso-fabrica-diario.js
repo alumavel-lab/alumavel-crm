@@ -55,17 +55,39 @@ export const handler = async (event) => {
     if (!plan || !plan.emailFabrica) return { statusCode: 200, body: "Sin planning confirmado o sin correo de fábrica." };
     const { f, texto: diaTexto } = manana();
     const trozos = toArray(plan.dias && plan.dias[f]);
-    if (trozos.length === 0) return { statusCode: 200, body: `Nada planificado para ${f}.` };
+    const [cristales, persianasAlmacen, proyectos, config, caballetes, portal] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos"), leer("configVentanas"), leer("caballetesVentanas"), leer("portalUxcar/expedientes")]);
 
-    const [cristales, persianasAlmacen, proyectos] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos")]);
+    // Caballetes que hacen falta para las cargas de ese día (fecha de reparto o de entrega)
+    const cap = Object.assign({ capacidad: 12, puerta: 2, corredera: 1.5, fijo: 1, osciloparalela: 2 }, (config && config.capacidadCaballetes) || {});
+    const huecos = (rec, tot) => {
+      const r = toArray(rec);
+      if (r.length) return r.reduce((a, l) => { const u = parseFloat(l.uds) || 0; if (l.tipo === "mosquitera" || l.tipo === "otro") return a; const k = { puerta: cap.puerta, corredera: cap.corredera, osciloparalela: cap.osciloparalela, fijo: cap.fijo }[l.tipo]; return a + u * (parseFloat(k) || 1); }, 0);
+      return (tot.v || 0) + (tot.p || 0) * (parseFloat(cap.puerta) || 1) + (tot.op || 0) * (parseFloat(cap.osciloparalela) || 1);
+    };
+    const expedientes = toArray(portal);
+    const cargas = toArray(proyectos).filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && (p.fechaReparto || p.fechaEntregaPrevista) === f).map((p) => {
+      const e = p.origen === "portalUxcar" ? expedientes.find((x) => x.id === p.uxcarExpedienteId) : null;
+      const h = e ? huecos(e.recuento, { v: parseFloat(e.ventanas) || 0, p: parseFloat(e.puertas) || 0, op: parseFloat(e.osciloParalelas) || 0 }) : huecos(p.recuento, {});
+      const nec = h > 0 ? Math.ceil(h / (parseFloat(cap.capacidad) || 12)) : 0;
+      const ya = toArray(caballetes).filter((c) => c.estado === "cargado" && c.obra && c.obra.proyectoId === p.id).map((c) => c.numero);
+      return { nombre: e ? `Uxcar exp. ${e.numero}` : `#${p.numero} ${p.nombre}`, nec, ya, sinContar: h === 0 };
+    });
+    if (trozos.length === 0 && cargas.length === 0) return { statusCode: 200, body: `Nada planificado ni cargas para ${f}.` };
     const obrasDia = trozos.map((t) => ({ ...t, obra: (plan.obras || {})[t.id] || { nombre: t.nombre, lineas: [], expNums: [] } }));
 
     let cuerpo = `PREPARAR HOY PARA EL ${diaTexto.toUpperCase()}\n\n`;
-    cuerpo += `Obras del próximo día de trabajo:\n${obrasDia.map((o) => `  • ${o.obra.nombre} — ${o.horas} h${o.obra.ventanas ? ` (${o.obra.ventanas} ventanas)` : ""}${o.obra.inicio && o.obra.inicio < f ? " · (sigue de días anteriores)" : ""}`).join("\n")}\n`;
+    if (cargas.length) {
+      const libres = toArray(caballetes).filter((c) => (c.estado || "libre") === "libre").length;
+      const falta = cargas.reduce((a, c) => a + Math.max(0, c.nec - c.ya.length), 0);
+      cuerpo += `CABALLETES PARA LAS CARGAS (caben ${cap.capacidad} ventanas por caballete):\n`;
+      cargas.forEach((c) => { cuerpo += `  ☐ ${c.nombre}: ${c.sinContar ? "ventanas sin contar, revisar" : `${c.nec} caballete${c.nec === 1 ? "" : "s"}`}${c.ya.length ? ` (ya cargados: ${c.ya.join(", ")})` : ""}\n`; });
+      cuerpo += `  → Hay que preparar ${falta} caballete${falta === 1 ? "" : "s"}. Libres ahora: ${libres}.${falta > libres ? " ⚠ NO HAY SUFICIENTES: reclamad los que están fuera." : ""}\n\n`;
+    }
+    if (obrasDia.length) cuerpo += `Obras del próximo día de trabajo:\n${obrasDia.map((o) => `  • ${o.obra.nombre} — ${o.horas} h${o.obra.ventanas ? ` (${o.obra.ventanas} ventanas)` : ""}${o.obra.inicio && o.obra.inicio < f ? " · (sigue de días anteriores)" : ""}`).join("\n")}\n`;
 
     // Solo se prepara el material de las obras que EMPIEZAN ese día (las que siguen ya lo tienen)
     const empiezan = obrasDia.filter((o) => !o.obra.inicio || o.obra.inicio === f);
-    if (empiezan.length === 0) cuerpo += `\nEse día no empieza ninguna obra nueva: se sigue con las que están en marcha.\n`;
+    if (obrasDia.length && empiezan.length === 0) cuerpo += `\nEse día no empieza ninguna obra nueva: se sigue con las que están en marcha.\n`;
 
     empiezan.forEach((o) => {
       const ob = o.obra;
@@ -110,7 +132,7 @@ export const handler = async (event) => {
     });
 
     cuerpo += `\n— Aviso automático del CRM, según el planning confirmado el ${new Date(plan.publicadoEn || Date.now()).toLocaleDateString("es-ES")}.`;
-    await enviar({ to: plan.emailFabrica, subject: `Preparar hoy para el ${diaTexto} — ${empiezan.length} obra${empiezan.length === 1 ? "" : "s"}`, text: cuerpo });
+    await enviar({ to: plan.emailFabrica, subject: `Preparar hoy para el ${diaTexto}${empiezan.length ? ` — ${empiezan.length} obra${empiezan.length === 1 ? "" : "s"}` : ""}${cargas.length ? ` — caballetes para ${cargas.length} carga${cargas.length === 1 ? "" : "s"}` : ""}`, text: cuerpo });
     return { statusCode: 200, body: "Enviado" };
   } catch (e) {
     console.error("aviso-fabrica-diario:", e.message);

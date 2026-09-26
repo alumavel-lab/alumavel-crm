@@ -2873,6 +2873,17 @@ export default function App() {
   // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
   const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
 
+  // Caballetes de ventanas terminadas (almacén de fábrica). Se guardan uno a uno en
+  // Firebase ("caballetesVentanas/<id>") y se leen en tiempo real.
+  const [caballetesVentanas, setCaballetesVentanas] = useState([]);
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, "caballetesVentanas"), (snap) => setCaballetesVentanas(toArray(snap.val())), () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  const guardarCaballete = (c) => fbSet(ref(fbDb, `caballetesVentanas/${c.id}`), JSON.parse(JSON.stringify(c))).catch((e) => showToast("No se pudo guardar el caballete: " + e.message, "error"));
+  const borrarCaballete = (id) => fbSet(ref(fbDb, `caballetesVentanas/${id}`), null);
+
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
   // pedirlos juntos). Solo con presupuestos firmados desde que existe esta función, y con
@@ -4216,6 +4227,9 @@ export default function App() {
             configVentanasFab={configVentanas}
             onSaveConfigVentanasFab={saveConfigVentanas}
             isAdminFab={isAdmin}
+            caballetesVentanas={caballetesVentanas}
+            onGuardarCaballete={guardarCaballete}
+            onBorrarCaballete={borrarCaballete}
             onSaveConfigPlanning={(pl) => saveConfigVentanas({ ...configVentanas, planning: pl })}
             onGuardarHorasPlanning={(r, horas) => {
               if (r.tipo === "proyecto") updateProyectoInline(r.id, { horasFabricacion: horas });
@@ -4274,6 +4288,7 @@ export default function App() {
         )}
         {modulo === "albaranes" && (
           <AlbaranesChofer
+            caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
             proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
             currentUser={currentUser} isAdmin={isAdmin}
             onGuardarAlbaranEntrega={(id, albaran, entregar, cargado) => {
@@ -11944,7 +11959,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab }) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete }) {
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
@@ -12072,6 +12087,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Albarán de salida
           {enviosProceso.filter((e) => e.estado === "Fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{enviosProceso.filter((e) => e.estado === "Fuera").length}</Badge>}
         </button>
+        <button onClick={() => setTab("caballetes")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "caballetes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Almacén ventanas
+          {toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length} fuera</Badge>}
+        </button>
         <button onClick={() => setTab("puestos")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "puestos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Puestos y partes
@@ -12092,12 +12112,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length}</Badge>
           )}
         </button>
-        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && (
+        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "caballetes" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
         )}
       </div>
+
+      {tab === "caballetes" && (
+        <AlmacenVentanas caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} />
+      )}
 
       {tab === "puestos" && (
         <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
@@ -12824,6 +12848,7 @@ async function generarPdfAlbaranEntrega(p, { cliente, direccion }) {
   fila("Material", (a.contenido || p.nombre || "").replace(/\n/g, " · "));
   if (a.bultos) fila("Bultos", a.bultos);
   if (a.notas) fila("Notas", a.notas);
+  if (toArray(a.caballetes).length) fila("Caballetes (a devolver)", `${toArray(a.caballetes).join(", ")} — propiedad de ECOWIN PVC`);
   if (p.documentoEntrega) fila("Detalle", p.documentoEntrega.tipo === "tipo_plano" ? "Ver tipo plano adjunto (hojas siguientes)" : "Ver documento adjunto (hojas siguientes)");
   y -= 10;
   const caja = async (x, titulo, fir) => {
@@ -12929,7 +12954,7 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
   );
 }
 
-function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
+function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
   const [firmando, setFirmando] = useState(null); // "carga" | "cliente"
@@ -12990,6 +13015,12 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
             <button onClick={() => setSubiendoDoc(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Subirlo</button>
           </div>
         )}
+        {toArray(caballetes).filter((c) => c.obra && c.obra.proyectoId === abierto.id && c.estado !== "libre").length > 0 && (
+          <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 text-sm text-amber-900">
+            <b>Caballetes de esta obra:</b> {toArray(caballetes).filter((c) => c.obra && c.obra.proyectoId === abierto.id && c.estado !== "libre").map((c) => `${c.numero}${c.ubicacion ? ` (${c.ubicacion})` : ""}${c.estado === "fuera" ? " · ya en obra" : ""}`).join(" · ")}
+            <div className="text-xs mt-1">Al firmar el cliente, quedan como pendientes de devolver.</div>
+          </div>
+        )}
         <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Chófer"><TextInput value={borrador.chofer} onChange={(e) => setBorrador({ ...borrador, chofer: e.target.value })} /></Field>
@@ -13024,7 +13055,13 @@ function AlbaranesChofer({ proyectos, clientes, envios, proveedores, usuarios, c
             onGuardar={(firma) => {
               const f = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160) };
               if (firmando === "carga") guardar({ firmaCarga: f, chofer: borrador.chofer || firma.nombre }, false, true);
-              else guardar({ firmaCliente: f }, !abierto.llevaInstalacion);
+              else {
+                // los caballetes de esta obra se quedan en casa del cliente: pendientes de devolver
+                const cabs = toArray(caballetes).filter((c) => c.estado === "cargado" && c.obra && c.obra.proyectoId === abierto.id);
+                const hoyC = new Date().toISOString().slice(0, 10);
+                cabs.forEach((c) => onGuardarCaballete && onGuardarCaballete({ ...c, estado: "fuera", salida: { fecha: hoyC, cliente: cli ? cli.nombre : (c.obra.cliente || ""), obra: c.obra.nombre, direccion: direccionDe(abierto) }, historial: [...toArray(c.historial), { fecha: new Date().toISOString(), accion: `Entregado con ${c.obra.nombre} (albarán ${borrador.numero})` }] }));
+                guardar({ firmaCliente: f, ...(cabs.length ? { caballetes: cabs.map((c) => c.numero) } : {}) }, !abierto.llevaInstalacion);
+              }
               setFirmando(null);
             }}
           />
@@ -26316,6 +26353,412 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
 const ALMACENES_DEF = ["Almacén 1", "Almacén 2", "Almacén 3", "Almacén 4", "Almacén 5"];
 const listaAlmacenes = (configVentanas) => (toArray(configVentanas && configVentanas.almacenes).length ? toArray(configVentanas.almacenes) : ALMACENES_DEF);
 const ubicacionMaterial = (m) => (m ? [m.almacen, m.estanteria].filter(Boolean).join(" · ") : "");
+
+/* ---------- ALMACÉN DE VENTANAS (CABALLETES) ---------- */
+// Caballetes donde se dejan las ventanas terminadas. Cada caballete tiene su sitio, se
+// carga con las ventanas de una obra (con su packing list) y, cuando sale con la entrega,
+// queda "fuera" (en casa del cliente) hasta que lo devuelven. Así se controla dónde está
+// cada caballete.
+// Código de barras Code 128 (juego B) en SVG, para las etiquetas de los caballetes.
+// Lo lee cualquier pistola lectora (funciona como un teclado) y la cámara del móvil.
+const C128_PATRONES = ["212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212","112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131","311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321","112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121","313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111","314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114","122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212","124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113","114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112"];
+function svgCode128(texto, alto = 70, modulo = 2) {
+  const vals = [104];
+  for (const ch of String(texto)) { const v = ch.charCodeAt(0) - 32; vals.push(v >= 0 && v <= 94 ? v : 31); }
+  let suma = 104;
+  vals.slice(1).forEach((v, i) => { suma += v * (i + 1); });
+  vals.push(suma % 103, 106);
+  const anchos = vals.map((v) => C128_PATRONES[v]).join("");
+  let x = 10 * modulo, barras = "", barra = true;
+  for (const d of anchos) { const w = +d * modulo; if (barra) barras += `<rect x="${x}" y="0" width="${w}" height="${alto}"/>`; x += w; barra = !barra; }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${x + 10 * modulo}" height="${alto}" viewBox="0 0 ${x + 10 * modulo} ${alto}"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${barras}</g></svg>`;
+}
+const codigoCaballete = (c) => String(c.numero || "").toUpperCase();
+function imprimirEtiquetasCaballetes(lista) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const etiqueta = (c) => `<div style="border:2px solid #000;border-radius:8px;padding:14px;text-align:center;page-break-inside:avoid;margin-bottom:14px">
+      <div style="font-size:12px;letter-spacing:2px">ECOWIN PVC · CABALLETE</div>
+      <div style="font-size:64px;font-weight:bold;line-height:1.1">${esc(c.numero)}</div>
+      <div>${svgCode128(codigoCaballete(c), 80, 3)}</div>
+      <div style="font-size:12px;margin-top:4px">${esc([c.almacenNombre, c.ubicacion].filter(Boolean).join(" · "))}</div>
+      <div style="font-size:10px;margin-top:4px">Propiedad de ECOWIN PVC — devolver</div>
+    </div>`;
+  const html = `<html><head><meta charset="utf-8"><title>Etiquetas de caballetes</title></head><body style="font-family:Arial;padding:16px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">${lista.map(etiqueta).join("")}</div></body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+}
+
+// Lector con la cámara del móvil (Chrome en Android). En otros navegadores se usa la
+// pistola lectora o se escribe el código.
+function LectorCamara({ onLeido, onCerrar }) {
+  const videoRef = useRef(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let stream = null, parar = false, t = null;
+    (async () => {
+      try {
+        if (!("BarcodeDetector" in window)) { setError("Este navegador no puede leer códigos con la cámara. Usa Chrome en el móvil Android, una pistola lectora o escribe el número."); return; }
+        const det = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "code_39"] });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (parar) return;
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        const buscar = async () => {
+          if (parar) return;
+          try {
+            const r = await det.detect(videoRef.current);
+            if (r && r.length) { onLeido(r[0].rawValue); return; }
+          } catch (e) { /* sigue intentando */ }
+          t = setTimeout(buscar, 300);
+        };
+        buscar();
+      } catch (e) { setError("No se pudo abrir la cámara: " + e.message); }
+    })();
+    return () => { parar = true; clearTimeout(t); if (stream) stream.getTracks().forEach((x) => x.stop()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4 gap-3">
+      {error ? <p className="text-white text-center max-w-sm">{error}</p> : <video ref={videoRef} playsInline muted className="w-full max-w-md rounded-lg" />}
+      {!error && <p className="text-white text-sm">Apunta al código de barras del caballete</p>}
+      <button onClick={onCerrar} className="px-5 py-2 rounded-md bg-white text-slate-800 font-semibold">Cerrar</button>
+    </div>
+  );
+}
+
+const ESTADO_CABALLETE = { libre: { t: "Libre", c: "bg-slate-100 text-slate-600 border-slate-300" }, cargado: { t: "Con ventanas", c: "bg-emerald-50 text-emerald-800 border-emerald-300" }, fuera: { t: "Fuera · pendiente de devolver", c: "bg-amber-50 text-amber-800 border-amber-300" } };
+function imprimirPackingCaballete(c) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const o = c.obra || {};
+  const html = `<html><head><meta charset="utf-8"><title>Packing list caballete ${esc(c.numero)}</title></head><body style="font-family:Arial;font-size:13px;padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="background:#333645;border-radius:8px;padding:10px 14px;-webkit-print-color-adjust:exact;print-color-adjust:exact"><img src="${LOGO_ECOWIN}" style="height:28px" /></div>
+      <div style="text-align:right"><div style="font-size:20px;font-weight:bold">PACKING LIST</div><div style="font-size:28px;font-weight:bold">CABALLETE ${esc(c.numero)}</div><div>${svgCode128(codigoCaballete(c), 50, 2)}</div><div>${new Date().toLocaleDateString("es-ES")}</div></div>
+    </div>
+    <table style="width:100%;margin-top:16px;border-collapse:collapse">
+      <tr><td style="padding:3px 0;width:120px"><b>Obra</b></td><td>${esc(o.nombre || "—")}</td></tr>
+      <tr><td style="padding:3px 0"><b>Cliente</b></td><td>${esc(o.cliente || "—")}</td></tr>
+      <tr><td style="padding:3px 0"><b>Dirección</b></td><td>${esc(o.direccion || "—")}</td></tr>
+      <tr><td style="padding:3px 0"><b>Ubicación</b></td><td>${esc([c.almacenNombre, c.ubicacion].filter(Boolean).join(" · ") || "—")}</td></tr>
+    </table>
+    <table style="width:100%;margin-top:14px;border-collapse:collapse">
+      <tr>${["Modelo / posición", "Descripción", "Medidas", "Uds"].map((h) => `<th style="border:1px solid #333;padding:5px;background:#f1f5f9;text-align:left">${h}</th>`).join("")}</tr>
+      ${toArray(c.lineas).map((l) => `<tr><td style="border:1px solid #ccc;padding:4px 6px">${esc(l.modelo)}</td><td style="border:1px solid #ccc;padding:4px 6px">${esc(l.descripcion)}</td><td style="border:1px solid #ccc;padding:4px 6px">${esc(l.medidas)}</td><td style="border:1px solid #ccc;padding:4px 6px;text-align:right;font-weight:bold">${esc(l.uds)}</td></tr>`).join("")}
+      <tr><td colspan="3" style="border:1px solid #333;padding:5px;text-align:right"><b>Total piezas</b></td><td style="border:1px solid #333;padding:5px;text-align:right;font-weight:bold">${toArray(c.lineas).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0)}</td></tr>
+    </table>
+    <p style="margin-top:18px;font-size:12px"><b>El caballete ${esc(c.numero)} es propiedad de ECOWIN PVC y debe devolverse.</b></p>
+    <div style="display:flex;gap:16px;margin-top:30px"><div style="flex:1;border-top:1px solid #333;padding-top:4px;font-size:11px">Preparado por</div><div style="flex:1;border-top:1px solid #333;padding-top:4px;font-size:11px">Recibido (cliente / chófer)</div></div>
+  </body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
+}
+
+// Cuántas ventanas caben en un caballete y cuántos caballetes necesita cada obra.
+// Las puertas y correderas ocupan más sitio: cuentan como varias ventanas.
+const CAB_CAPACIDAD_DEF = { capacidad: 12, puerta: 2, corredera: 1.5, fijo: 1, osciloparalela: 2 };
+const capacidadCaballetes = (config) => ({ ...CAB_CAPACIDAD_DEF, ...((config && config.capacidadCaballetes) || {}) });
+const huecosObra = (recuento, totales, cap) => {
+  const r = toArray(recuento);
+  if (r.length) return r.reduce((a, l) => {
+    const u = parseFloat(l.uds) || 0;
+    if (l.tipo === "mosquitera" || l.tipo === "otro") return a;
+    if (l.tipo === "puerta") return a + u * (parseFloat(cap.puerta) || 1);
+    if (l.tipo === "corredera") return a + u * (parseFloat(cap.corredera) || 1);
+    if (l.tipo === "osciloparalela") return a + u * (parseFloat(cap.osciloparalela) || 1);
+    return a + u * (l.tipo === "fijo" ? parseFloat(cap.fijo) || 1 : 1);
+  }, 0);
+  if (!totales) return 0;
+  return (totales.ventanas || 0) + (totales.puertas || 0) * (parseFloat(cap.puerta) || 1) + (totales.osciloParalelas || 0) * (parseFloat(cap.osciloparalela) || 1);
+};
+const caballetesNecesarios = (huecos, cap) => (huecos > 0 ? Math.ceil(huecos / (parseFloat(cap.capacidad) || 12)) : 0);
+
+// Previsión: caballetes que hacen falta cada día de carga (fecha de reparto o de entrega)
+function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, config, onSaveConfig }) {
+  const cap = capacidadCaballetes(config);
+  const [verAjustes, setVerAjustes] = useState(false);
+  const guardar = (k, v) => onSaveConfig && onSaveConfig({ ...(config || {}), capacidadCaballetes: { ...((config && config.capacidadCaballetes) || {}), [k]: parseFloat(v) || 0 } });
+  const hoy = new Date().toISOString().slice(0, 10);
+  const dias = []; { let f = hoy; for (let i = 0; i < 10; i++) { dias.push(f); f = sigLaborable(f); } }
+  const obras = proyectos.filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo)).map((p) => {
+    const dia = p.fechaReparto || p.fechaEntregaPrevista || "";
+    const v = ventanasDeObra(p, uxExpedientes);
+    const exp = p.origen === "portalUxcar" ? toArray(uxExpedientes).find((e) => e.id === p.uxcarExpedienteId) : null;
+    const tot = exp ? { ventanas: uxNum(exp.ventanas), puertas: uxNum(exp.puertas), osciloParalelas: uxNum(exp.osciloParalelas) } : uxTotalesRecuento(p.recuento);
+    const huecos = huecosObra(v.recuento, tot, cap);
+    const yaCargados = toArray(caballetes).filter((c) => c.estado === "cargado" && c.obra && c.obra.proyectoId === p.id).length;
+    const cl = clientes.find((c) => c.id === p.clienteId);
+    return { p, dia, nombre: exp ? `Uxcar exp. ${exp.numero}` : `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", huecos, necesarios: caballetesNecesarios(huecos, cap), yaCargados, sinContar: huecos === 0 };
+  }).filter((o) => o.dia && o.dia >= hoy && o.dia <= dias[dias.length - 1]);
+  const libres = toArray(caballetes).filter((c) => (c.estado || "libre") === "libre").length;
+  const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
+  let acumulado = 0;
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="mr-auto">
+          <div className="font-bold text-slate-800">Caballetes necesarios para las próximas cargas</div>
+          <div className="text-xs text-slate-500">Por la fecha de reparto (o de entrega) de cada obra. Caben <b>{cap.capacidad} ventanas</b> por caballete. Ahora hay <b>{libres} libres</b>{fuera ? ` y ${fuera} fuera sin devolver` : ""}.</div>
+        </div>
+        <button onClick={() => setVerAjustes(!verAjustes)} className="text-xs font-semibold text-slate-500 hover:underline">{verAjustes ? "Cerrar" : "Cuántas caben"}</button>
+      </div>
+      {verAjustes && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 border-t border-slate-100 pt-3">
+          <Field label="Ventanas por caballete"><TextInput type="number" min="1" defaultValue={cap.capacidad} onBlur={(e) => guardar("capacidad", e.target.value)} /></Field>
+          <Field label="Una puerta cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.puerta} onBlur={(e) => guardar("puerta", e.target.value)} /></Field>
+          <Field label="Una corredera cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.corredera} onBlur={(e) => guardar("corredera", e.target.value)} /></Field>
+          <Field label="Un fijo cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.fijo} onBlur={(e) => guardar("fijo", e.target.value)} /></Field>
+          <Field label="Una oscilo-paralela como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.osciloparalela} onBlur={(e) => guardar("osciloparalela", e.target.value)} /></Field>
+          <p className="col-span-full text-[11px] text-slate-400">Las ventanas de cada obra salen de su recuento (tipo plano o expediente). Las mosquiteras no cuentan.</p>
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Día de carga</th><th className="text-left px-3 py-2">Obras</th><th className="text-right px-3 py-2">Caballetes</th><th className="text-left px-3 py-2">¿Hay libres?</th></tr></thead>
+          <tbody>
+            {dias.map((d) => {
+              const del = obras.filter((o) => o.dia === d);
+              const falta = del.reduce((a, o) => a + Math.max(0, o.necesarios - o.yaCargados), 0);
+              acumulado += falta;
+              if (!del.length) return <tr key={d} className="border-t border-slate-100 text-slate-300"><td className="px-3 py-1.5 capitalize">{fmtDia(d)}</td><td className="px-3 py-1.5" colSpan={3}>Sin cargas</td></tr>;
+              return (
+                <tr key={d} className="border-t border-slate-100 align-top">
+                  <td className="px-3 py-2 font-semibold capitalize whitespace-nowrap">{fmtDia(d)}</td>
+                  <td className="px-3 py-2">{del.map((o) => <div key={o.p.id} className="text-xs"><b>{o.nombre}</b>{o.cliente ? ` · ${o.cliente}` : ""} · {o.sinContar ? <span className="text-amber-700">ventanas sin contar</span> : `${Math.round(o.huecos * 10) / 10} huecos → ${o.necesarios} caballete${o.necesarios === 1 ? "" : "s"}`}{o.yaCargados ? <span className="text-emerald-700"> ({o.yaCargados} ya cargado{o.yaCargados === 1 ? "" : "s"})</span> : ""}</div>)}</td>
+                  <td className="px-3 py-2 text-right text-lg font-extrabold">{falta}</td>
+                  <td className="px-3 py-2 text-xs">{falta === 0 ? <span className="text-emerald-700">✓ Ya están cargados</span> : acumulado <= libres ? <span className="text-emerald-700">✓ Hay libres</span> : <span className="font-semibold text-rose-600">⚠ Faltan {acumulado - libres}{fuera ? " (reclama los que están fuera)" : ""}</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
+const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
+
+function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig }) {
+  const almacenes = almacenesCaballetes(config);
+  const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
+  const [gestionando, setGestionando] = useState(false);
+  const nombreAlmacen = (id) => (almacenes.find((a) => a.id === id) || almacenes[0] || {}).nombre || "Fábrica";
+  const almacenDe = (c) => (almacenes.some((a) => a.id === c.almacenId) ? c.almacenId : almacenes[0].id);
+  const guardarAlmacenes = (lista) => onSaveConfig && onSaveConfig({ ...(config || {}), almacenesCaballetes: lista });
+  const [editando, setEditando] = useState(null); // caballete que se está cargando
+  const [filtro, setFiltro] = useState("");
+  const [codigo, setCodigo] = useState("");
+  const [escaneadoId, setEscaneadoId] = useState(null);
+  const [camara, setCamara] = useState(false);
+  const [avisoScan, setAvisoScan] = useState("");
+  const buscarCodigo = (txt) => {
+    const t = String(txt || "").trim().toUpperCase().replace(/^CAB[:\s-]*/, "");
+    if (!t) return;
+    const c = toArray(caballetes).find((x) => codigoCaballete(x) === t || codigoCaballete(x).replace(/\D/g, "") === t.replace(/\D/g, ""));
+    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); } else { setEscaneadoId(null); setAvisoScan(`No hay ningún caballete con el código "${txt}".`); }
+    setCodigo("");
+  };
+  const hoy = new Date().toISOString().slice(0, 10);
+  const lista = [...toArray(caballetes)].sort((a, b) => String(a.numero).localeCompare(String(b.numero), "es", { numeric: true }));
+  const cuenta = (e) => lista.filter((c) => (c.estado || "libre") === e && (!almacenSel || almacenDe(c) === almacenSel)).length;
+  const fuera = lista.filter((c) => c.estado === "fuera").sort((a, b) => String(a.salida && a.salida.fecha).localeCompare(String(b.salida && b.salida.fecha)));
+  const dias = (f) => (f ? Math.max(0, Math.round((new Date(hoy) - new Date(f)) / 86400000)) : 0);
+  // obras que se pueden cargar
+  const obras = [
+    ...proyectos.filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && p.origen !== "portalUxcar").map((p) => {
+      const cl = clientes.find((c) => c.id === p.clienteId);
+      return { key: `p-${p.id}`, proyectoId: p.id, nombre: `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", direccion: p.ubicacion || "", recuento: toArray(p.recuento) };
+    }),
+    ...toArray(uxExpedientes).filter((e) => e.estado !== "entregado").map((e) => ({ key: `u-${e.id}`, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, cliente: "Uxcar", direccion: "", recuento: toArray(e.recuento) })),
+  ];
+  const nuevo = () => {
+    const n = lista.reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
+    const alm = almacenSel || almacenes[0].id;
+    onGuardar({ id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] });
+  };
+  const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
+  const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
+
+  if (editando) {
+    const c = editando;
+    const setC = (patch) => setEditando({ ...c, ...patch });
+    const setL = (i, patch) => setC({ lineas: c.lineas.map((l, j) => (j === i ? { ...l, ...patch } : l)) });
+    return (
+      <div className="space-y-3 max-w-3xl">
+        <button onClick={() => setEditando(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+        <h3 className="text-lg font-extrabold text-slate-900">Cargar caballete {c.numero}</h3>
+        {c.obra && (() => {
+          const capC = capacidadCaballetes(config);
+          const pr = proyectos.find((x) => x.id === c.obra.proyectoId);
+          const o = obras.find((x) => x.key === c.obra.key);
+          const huecos = huecosObra(o ? o.recuento : [], pr ? uxTotalesRecuento(pr.recuento) : null, capC);
+          const nec = caballetesNecesarios(huecos, capC);
+          const ya = toArray(caballetes).filter((x) => x.id !== c.id && x.estado === "cargado" && x.obra && x.obra.proyectoId === c.obra.proyectoId).map((x) => x.numero);
+          const aqui = c.lineas.reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
+          return (
+            <div className={`text-sm rounded-md px-3 py-2 border ${aqui > capC.capacidad ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-sky-50 border-sky-200 text-sky-900"}`}>
+              {nec ? <>Esta obra necesita <b>{nec} caballete{nec === 1 ? "" : "s"}</b> ({Math.round(huecos * 10) / 10} huecos, caben {capC.capacidad} por caballete).</> : "Esta obra no tiene las ventanas contadas."}
+              {ya.length > 0 && <> Ya tiene cargados: <b>{ya.join(", ")}</b>.</>}
+              {aqui > capC.capacidad && <div className="font-semibold mt-1">⚠ En este caballete has puesto {aqui} piezas y caben {capC.capacidad}: reparte en otro caballete.</div>}
+            </div>
+          );
+        })()}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Obra / expediente">
+            <Select value={(c.obra && c.obra.key) || ""} onChange={(e) => {
+              const o = obras.find((x) => x.key === e.target.value);
+              if (!o) { setC({ obra: null }); return; }
+              const lineas = c.lineas.length ? c.lineas : o.recuento.map((r) => ({ modelo: r.modelo || "", descripcion: uxGrupoCarp(r), medidas: "", uds: parseFloat(r.uds) || 1 }));
+              setC({ obra: { key: o.key, proyectoId: o.proyectoId, nombre: o.nombre, cliente: o.cliente, direccion: o.direccion }, lineas });
+            }}>
+              <option value="">— Elige la obra —</option>
+              {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Almacén">
+              <Select value={almacenDe(c)} onChange={(e) => setC({ almacenId: e.target.value })}>
+                {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
+              </Select>
+            </Field>
+            <Field label="Sitio"><TextInput value={c.ubicacion || ""} onChange={(e) => setC({ ubicacion: e.target.value })} placeholder="Ej. fila 3" /></Field>
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-2 py-2">Modelo / posición</th><th className="text-left px-2 py-2">Descripción</th><th className="text-left px-2 py-2">Medidas</th><th className="text-right px-2 py-2">Uds</th><th /></tr></thead>
+            <tbody>
+              {c.lineas.map((l, i) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="px-2 py-1"><TextInput value={l.modelo} onChange={(e) => setL(i, { modelo: e.target.value })} /></td>
+                  <td className="px-2 py-1"><TextInput value={l.descripcion} onChange={(e) => setL(i, { descripcion: e.target.value })} /></td>
+                  <td className="px-2 py-1"><TextInput value={l.medidas} onChange={(e) => setL(i, { medidas: e.target.value })} placeholder="1200×1400" /></td>
+                  <td className="px-2 py-1"><TextInput type="number" min="0" value={l.uds} onChange={(e) => setL(i, { uds: e.target.value })} className="w-20 text-right" /></td>
+                  <td className="px-2 py-1 text-right"><button onClick={() => setC({ lineas: c.lineas.filter((_, j) => j !== i) })} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+              {c.lineas.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400 text-sm">Elige la obra (si tiene recuento de ventanas se rellena solo) o añade líneas.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <button onClick={() => setC({ lineas: [...c.lineas, { modelo: "", descripcion: "", medidas: "", uds: 1 }] })} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir línea</button>
+        <div className="flex flex-wrap gap-2 justify-end">
+          <button onClick={() => setEditando(null)} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          <button onClick={() => {
+            if (!c.obra) { alert("Elige la obra."); return; }
+            const listo = { ...c, estado: "cargado", fechaCarga: hoy, lineas: c.lineas.map((l) => ({ ...l, uds: parseFloat(l.uds) || 0 })), historial: hist(c, `Cargado con ${c.obra.nombre}`) };
+            onGuardar(listo); setEditando(null);
+            if (confirm("Caballete guardado. ¿Imprimir su packing list ahora?")) imprimirPackingCaballete({ ...listo, almacenNombre: nombreAlmacen(almacenDe(listo)) });
+          }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2 rounded-md text-sm font-semibold">Guardar caballete</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
+        {lista.length > 0 && <button onClick={() => imprimirEtiquetasCaballetes((almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista).map((x) => ({ ...x, almacenNombre: nombreAlmacen(almacenDe(x)) })))} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Printer size={14} /> Etiquetas con código de barras</button>}
+        <button onClick={nuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Plus size={14} /> Añadir caballete</button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => setAlmacenSel("")} className={`px-3 py-1.5 rounded-full text-sm font-semibold border ${!almacenSel ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300"}`}>Todos ({lista.length})</button>
+        {almacenes.map((a) => (
+          <button key={a.id} onClick={() => setAlmacenSel(a.id)} className={`px-3 py-1.5 rounded-full text-sm font-semibold border ${almacenSel === a.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>
+            {a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""} ({lista.filter((c) => almacenDe(c) === a.id).length})
+          </button>
+        ))}
+        {onSaveConfig && <button onClick={() => setGestionando(!gestionando)} className="text-xs font-semibold text-slate-500 hover:underline">{gestionando ? "Cerrar" : "Gestionar almacenes"}</button>}
+      </div>
+      {gestionando && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 max-w-2xl">
+          <div className="text-sm font-semibold text-slate-800">Almacenes de caballetes</div>
+          <p className="text-xs text-slate-500">Crea los que necesites: la fábrica, almacenes en otras ciudades, la furgoneta de cada montador… Luego en cada caballete eliges dónde está.</p>
+          {almacenes.map((a, i) => (
+            <div key={a.id} className="flex flex-wrap items-center gap-2">
+              <TextInput defaultValue={a.nombre} onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== a.nombre) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, nombre: v } : x))); }} className="!w-56" placeholder="Nombre" />
+              <TextInput defaultValue={a.ciudad || ""} onBlur={(e) => { if (e.target.value !== (a.ciudad || "")) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, ciudad: e.target.value.trim() } : x))); }} className="!w-40" placeholder="Ciudad" />
+              {almacenes.length > 1 && <button onClick={() => { const n = lista.filter((c) => almacenDe(c) === a.id).length; if (n) { alert(`No se puede quitar: tiene ${n} caballete(s). Muévelos antes a otro almacén.`); return; } if (confirm(`¿Quitar el almacén "${a.nombre}"?`)) guardarAlmacenes(almacenes.filter((x) => x.id !== a.id)); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>}
+            </div>
+          ))}
+          <button onClick={() => guardarAlmacenes([...almacenes, { id: uid(), nombre: `Almacén ${almacenes.length + 1}`, ciudad: "" }])} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir almacén</button>
+        </div>
+      )}
+      <div className="bg-white border-2 border-slate-300 rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">Escanear caballete:</span>
+        <input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Pasa la pistola o escribe el número (ej. C-03) y pulsa Enter" className="flex-1 min-w-[220px] border border-slate-300 rounded-md px-3 py-2 text-sm" />
+        <button onClick={() => buscarCodigo(codigo)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 hover:bg-slate-50">Buscar</button>
+        <button onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Cámara</button>
+        {escaneadoId && <button onClick={() => setEscaneadoId(null)} className="text-xs text-slate-500 hover:underline">Ver todos</button>}
+        {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
+      </div>
+      {camara && <LectorCamara onLeido={(v) => { setCamara(false); buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
+      <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />
+      <div className="grid grid-cols-3 gap-3">
+        {[["libre", "Libres"], ["cargado", "Con ventanas"], ["fuera", "Fuera (a devolver)"]].map(([k, t]) => (
+          <button key={k} onClick={() => setFiltro(filtro === k ? "" : k)} className={`text-left rounded-lg p-3 border ${filtro === k ? "border-[#2E8B57]" : "border-transparent"} ${k === "fuera" && cuenta("fuera") ? "bg-amber-50" : "bg-slate-50"}`}>
+            <div className="text-2xl font-extrabold text-slate-800">{cuenta(k)}</div><div className="text-xs uppercase text-slate-500">{t}</div>
+          </button>
+        ))}
+      </div>
+      {fuera.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3">
+          <div className="text-sm font-bold text-amber-900 mb-2">Caballetes fuera, pendientes de devolver ({fuera.length})</div>
+          <div className="space-y-1">
+            {fuera.map((c) => (
+              <div key={c.id} className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="font-bold text-slate-900">{c.numero}</span>
+                <span className="text-slate-700">{c.salida && c.salida.cliente ? c.salida.cliente : "—"} · {c.salida && c.salida.obra}{c.salida && c.salida.direccion ? ` · ${c.salida.direccion}` : ""}</span>
+                <span className={`text-xs font-semibold ${dias(c.salida && c.salida.fecha) > 15 ? "text-rose-600" : "text-amber-800"}`}>desde el {fmtDate(c.salida && c.salida.fecha)} ({dias(c.salida && c.salida.fecha)} días)</span>
+                <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, almacenId: almacenSel || almacenDe(c), historial: hist(c, `Devuelto por ${c.salida ? c.salida.cliente || c.salida.obra : ""} a ${nombreAlmacen(almacenSel || almacenDe(c))}`) }); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Devuelto</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {filtrados.map((c) => { const est = ESTADO_CABALLETE[c.estado || "libre"]; return (
+          <div key={c.id} className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-extrabold text-slate-900">{c.numero}</span>
+              <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${est.c}`}>{est.t}</span>
+              <button onClick={() => imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)) }])} className="ml-auto text-slate-400 hover:text-slate-700" title="Imprimir etiqueta con código de barras"><Printer size={14} /></button>
+              {isAdmin && (c.estado || "libre") === "libre" && <button onClick={() => { if (confirm(`¿Borrar el caballete ${c.numero}?`)) onBorrar(c.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button>}
+            </div>
+            {c.estado !== "fuera" && (
+              <div className="flex gap-1.5">
+                <select value={almacenDe(c)} onChange={(e) => { if (e.target.value !== almacenDe(c)) onGuardar({ ...c, almacenId: e.target.value, historial: hist(c, `Movido de ${nombreAlmacen(almacenDe(c))} a ${nombreAlmacen(e.target.value)}`) }); }} className="text-xs border border-slate-200 rounded px-1.5 py-1 bg-slate-50" title="Almacén">
+                  {almacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
+                </select>
+                <input defaultValue={c.ubicacion || ""} onBlur={(e) => e.target.value !== (c.ubicacion || "") && onGuardar({ ...c, ubicacion: e.target.value })} placeholder="Sitio (ej. fila 3)" className="flex-1 min-w-0 text-xs border border-slate-200 rounded px-2 py-1" />
+              </div>
+            )}
+            {!almacenSel && c.estado !== "fuera" && <div className="text-[11px] text-slate-400">{nombreAlmacen(almacenDe(c))}</div>}
+            {c.obra && <div className="text-sm"><b>{c.obra.nombre}</b>{c.obra.cliente ? <span className="text-slate-500"> · {c.obra.cliente}</span> : null}</div>}
+            {toArray(c.lineas).length > 0 && <div className="text-xs text-slate-500">{toArray(c.lineas).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0)} piezas · {toArray(c.lineas).length} líneas</div>}
+            <div className="flex flex-wrap gap-2 text-xs">
+              {(c.estado || "libre") === "libre" && <button onClick={() => setEditando({ ...c, lineas: [] })} className="font-semibold text-[#2E8B57] hover:underline">Cargar ventanas</button>}
+              {c.estado === "cargado" && <>
+                <button onClick={() => imprimirPackingCaballete({ ...c, almacenNombre: nombreAlmacen(almacenDe(c)) })} className="flex items-center gap-1 font-semibold text-slate-700 hover:underline"><Printer size={12} /> Packing list</button>
+                <button onClick={() => setEditando({ ...c, lineas: toArray(c.lineas) })} className="font-semibold text-slate-600 hover:underline">Editar</button>
+                <button onClick={() => { if (confirm(`¿Sale el caballete ${c.numero} con ${c.obra ? c.obra.nombre : "la obra"}? Quedará pendiente de devolver.`)) onGuardar({ ...c, estado: "fuera", salida: { fecha: hoy, cliente: c.obra ? c.obra.cliente : "", obra: c.obra ? c.obra.nombre : "", direccion: c.obra ? c.obra.direccion : "" }, historial: hist(c, `Sale con ${c.obra ? c.obra.nombre : ""}`) }); }} className="font-semibold text-amber-700 hover:underline">Sale con la obra</button>
+                <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
+              </>}
+              {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, almacenId: almacenSel || almacenDe(c), historial: hist(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`) }); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
+            </div>
+            {toArray(c.historial).length > 1 && (
+              <details className="text-[11px] text-slate-400"><summary className="cursor-pointer">Historial</summary>{[...toArray(c.historial)].reverse().slice(0, 12).map((h, i) => <div key={i}>{fmtDate(String(h.fecha).slice(0, 10))} · {h.accion}</div>)}</details>
+            )}
+          </div>
+        ); })}
+        {filtrados.length === 0 && <p className="text-sm text-slate-400">No hay caballetes{filtro ? " en ese estado" : " todavía"}.</p>}
+      </div>
+    </div>
+  );
+}
 
 /* ---------- PLANNING DE MONTAJES ---------- */
 // Obras con instalación: cuando están fabricadas pasan a los montadores. Se reparten por
