@@ -334,6 +334,28 @@ const normalizarChecklist = (lista) => {
 // Condiciones de "Qué lleva la obra": cada cosa marcada "Sí" tiene que tener su pedido
 // vinculado y llegado (o estar marcada "en stock") para que la obra pueda ir a fabricar.
 // Devuelve la lista de lo que falta, en texto, para enseñarlo en los avisos.
+// Lo que falta por PEDIR de una obra (no lo que falta por llegar): cosas de
+// "Qué lleva la obra" sin contestar, marcadas "Sí" sin pedido, o con el pedido
+// todavía en espera / pendiente de mandar al proveedor. Para el aviso de arriba.
+const materialSinPedirObra = (proyecto, pedidosTodos) => {
+  const faltan = [];
+  const sinMandar = (pd) => pd.estado === "En espera" || pd.estado === "Pendiente";
+  const vistos = new Set();
+  normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
+    const nombre = c.nombre || "Sin nombre";
+    if (!c.estado) { faltan.push(`${nombre}: sin decir si lo lleva`); return; }
+    if (c.estado !== "si" || c.enStock) return;
+    const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    vinculados.forEach((pd) => vistos.add(pd.id));
+    if (vinculados.length === 0) { faltan.push(`${nombre}: sin pedido`); return; }
+    vinculados.filter(sinMandar).forEach((pd) => faltan.push(`${nombre}: pedido #${pd.numero} ${pd.estado === "En espera" ? "en espera" : "sin mandar"}`));
+  });
+  (pedidosTodos || []).forEach((pd) => {
+    if (pd.proyectoId === proyecto.id && !vistos.has(pd.id) && sinMandar(pd)) faltan.push(`Pedido #${pd.numero} ${pd.estado === "En espera" ? "en espera" : "sin mandar"}`);
+  });
+  return faltan;
+};
+
 const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
   const faltan = [];
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
@@ -1056,12 +1078,9 @@ export default function App() {
   // documento que mandar a firmar. Deja constancia de quién la confirma y cuándo,
   // y cuenta igual que una firma real a efectos de poder crear el proyecto.
   const confirmarFirmaManualPresupuesto = async (presupuesto, nombreConfirma) => {
-    const next = presupuestos.map((p) => (p.id === presupuesto.id ? {
-      ...p,
-      firma: { estado: "firmado", metodo: "manual", firmanteNombre: nombreConfirma, firmadoEn: Date.now() },
-    } : p));
-    savePresupuestos(next);
-    showToast(`Aceptación confirmada por ${nombreConfirma}`);
+    // Se sustituye la firma entera (no se mezcla con un envío a Firma.dev anterior).
+    aceptarPresupuestoPorFirma(presupuesto, { estado: "firmado", metodo: "manual", firmanteNombre: nombreConfirma, firmadoEn: Date.now() }, null, true);
+    showToast(`Aceptación confirmada por ${nombreConfirma} — presupuesto Aceptado`);
   };
 
   const saveClientes = (next) => { setClientes(next); persist("clientes", next); };
@@ -1674,17 +1693,27 @@ export default function App() {
 
   // Pedidos "En espera" creados desde el listado de materiales de una obra (uno por proveedor).
   // Los perfiles y refuerzos quedan vinculados solos a "Perfil" de "Qué lleva la obra".
-  const crearPedidosEsperaListado = (proyecto, grupos, origen) => {
+  // extraPatch: otros cambios del proyecto a guardar en la MISMA escritura (p.ej. el
+  // listado recién subido), para que no se pisen dos guardados seguidos.
+  const crearPedidosEsperaListado = (proyecto, grupos, origen, extraPatch = null) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
     let num = parseInt(nextNumeroPedido(), 10);
-    const nuevos = Object.entries(grupos).map(([proveedorId, lineas]) => ({
+    const nuevos = Object.entries(grupos).map(([clave, lineas]) => {
+      // clave "sin:<seccion>" = sin proveedor todavía, agrupado por sección
+      const proveedorId = clave.startsWith("sin:") ? "" : clave;
+      const seccionSinProv = clave.startsWith("sin:") ? (LISTADO_SECCIONES[clave.slice(4)] || clave.slice(4)) : "";
+      return {
       id: uid(), numero: String(num++), proveedorId, proyectoId: proyecto.id, estado: "En espera",
       fechaCompra: hoy, fechaEntregaPrevista: "", lineas, adjuntosPdf: [], origenListado: origen,
-      comentarios: `Material que falta según el listado de materiales ${origen} de la obra #${proyecto.numero} — ${proyecto.nombre}. En espera para pedirlo junto con otros pedidos del proveedor.`,
+      comentarios: `${seccionSinProv ? `${seccionSinProv}: ` : ""}Material que falta según el listado de materiales ${origen} de la obra #${proyecto.numero} — ${proyecto.nombre}. En espera para pedirlo junto con otros pedidos del proveedor.${proveedorId ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
       creadoPor: creador, fechaCreado: hoy,
-    }));
-    if (nuevos.length === 0) return;
+    };
+    });
+    if (nuevos.length === 0) {
+      if (extraPatch) updateProyectoInline(proyecto.id, extraPatch);
+      return;
+    }
     savePedidos([...nuevos, ...pedidos]);
     // vincular a "Perfil" si la obra lo tiene marcado
     const checklist = normalizarChecklist(proyecto.checklistMateriales);
@@ -1698,8 +1727,9 @@ export default function App() {
       cambio = true;
       cl = cl.map((c) => (c.id === item.id ? { ...c, estado: c.estado || "si", pedidoIds: [...(c.pedidoIds || []), ...ids] } : c));
     });
-    if (cambio) updateProyectoInline(proyecto.id, { checklistMateriales: JSON.parse(JSON.stringify(cl)) });
-    showToast(`${nuevos.length} pedido${nuevos.length === 1 ? "" : "s"} en espera creado${nuevos.length === 1 ? "" : "s"} (${nuevos.map((x) => `#${x.numero}`).join(", ")})`);
+    if (cambio || extraPatch) updateProyectoInline(proyecto.id, { ...(extraPatch || {}), ...(cambio ? { checklistMateriales: JSON.parse(JSON.stringify(cl)) } : {}) });
+    const sinProv = nuevos.filter((x) => !x.proveedorId).length;
+    showToast(`${nuevos.length} pedido${nuevos.length === 1 ? "" : "s"} en espera creado${nuevos.length === 1 ? "" : "s"} (${nuevos.map((x) => `#${x.numero}`).join(", ")})${sinProv ? ` — ${sinProv} sin proveedor, elígelo en Pedidos` : ""}`, sinProv ? "error" : "ok");
   };
   // Parte de trabajo desde "Mi puesto": se guarda en partesTrabajo; las horas pasan al
   // registro horario del proyecto y, si hay incidencia, se crea una incidencia de la obra.
@@ -2451,9 +2481,44 @@ export default function App() {
   // en el presupuesto (estado "Firmado" + documento en "Documentos guardados").
   // silencioso = true cuando se lanza sola al abrir el presupuesto (sin avisos
   // si todavía está pendiente).
+  // Firmado = aceptado: pasa el presupuesto a "Aceptado" (si seguía Pendiente,
+  // Enviado o En espera), quita la próxima llamada y, si pertenece a una obra que
+  // ya existe, mete sus persianas en esa obra (igual que al aceptarlo a mano).
+  // cambiosFirma: lo que haya que guardar además en "firma" y en "documentos".
+  const aceptarPresupuestoPorFirma = (presupuesto, cambiosFirma = {}, documentoExtra = null, reemplazarFirma = false) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    // (Si pertenece a una obra que ya existe, o lleva persianas/ventanas de la
+    // calculadora, el proceso automático de "presupuesto firmado" crea/amplía la
+    // obra y deja los pedidos de material en espera — aquí no se toca.)
+    setPresupuestos((prev) => {
+      const next = prev.map((p) => {
+        if (p.id !== presupuesto.id) return p;
+        const documentos = [...(p.documentos || [])];
+        if (documentoExtra && !documentos.some((doc) => doc.url === documentoExtra.url)) documentos.push(documentoExtra);
+        const actualizado = { ...p, documentos, firma: reemplazarFirma ? { ...cambiosFirma } : { ...(p.firma || {}), ...cambiosFirma } };
+        if (p.estado !== "Aceptado" && p.estado !== "Rechazado") {
+          actualizado.estado = "Aceptado";
+          actualizado.proximaLlamadaFecha = "";
+          if (!p.fechaRespuesta) actualizado.fechaRespuesta = hoy;
+        }
+        return actualizado;
+      });
+      persist("presupuestos", next);
+      return next;
+    });
+  };
+
   const comprobarFirmaPresupuesto = async (presupuesto, silencioso = false) => {
     const firma = presupuesto?.firma;
-    if (!firma?.signingRequestId || firma.estado === "firmado") return;
+    // Ya firmado pero sin pasar a Aceptado (firmas de antes de este cambio): se arregla aquí.
+    if (firma?.estado === "firmado") {
+      if (presupuesto.estado !== "Aceptado" && presupuesto.estado !== "Rechazado") {
+        aceptarPresupuestoPorFirma(presupuesto);
+        showToast("✓ Presupuesto firmado — pasado a Aceptado");
+      }
+      return;
+    }
+    if (!firma?.signingRequestId) return;
     try {
       const r = await fetch("/.netlify/functions/firma-comprobar", {
         method: "POST",
@@ -2469,19 +2534,12 @@ export default function App() {
         }
         return;
       }
-      setPresupuestos((prev) => {
-        const next = prev.map((p) => {
-          if (p.id !== presupuesto.id || p.firma?.estado === "firmado") return p;
-          const documentos = [...(p.documentos || [])];
-          if (d.pdfUrl && !documentos.some((doc) => doc.url === d.pdfUrl)) {
-            documentos.push({ id: uid(), nombre: `Presupuesto ${p.numero} — FIRMADO.pdf`, url: d.pdfUrl, subidoEn: Date.now() });
-          }
-          return { ...p, documentos, firma: { ...(p.firma || {}), estado: "firmado", firmadoEn: d.firmadoEn ? new Date(d.firmadoEn).getTime() : Date.now(), pdfUrl: d.pdfUrl || "" } };
-        });
-        persist("presupuestos", next);
-        return next;
-      });
-      showToast(d.aviso ? `✓ Presupuesto firmado. ${d.aviso}` : "✓ Presupuesto firmado — PDF firmado guardado en el presupuesto", d.aviso ? "error" : "ok");
+      aceptarPresupuestoPorFirma(
+        presupuesto,
+        { estado: "firmado", firmadoEn: d.firmadoEn ? new Date(d.firmadoEn).getTime() : Date.now(), pdfUrl: d.pdfUrl || "" },
+        d.pdfUrl ? { id: uid(), nombre: `Presupuesto ${presupuesto.numero} — FIRMADO.pdf`, url: d.pdfUrl, subidoEn: Date.now() } : null
+      );
+      showToast(d.aviso ? `✓ Presupuesto firmado y aceptado. ${d.aviso}` : "✓ Presupuesto firmado y aceptado — ya puedes crear el proyecto", d.aviso ? "error" : "ok");
     } catch (err) {
       if (!silencioso) showToast("No se pudo comprobar la firma (revisa la conexión)", "error");
     }
@@ -2950,6 +3008,7 @@ export default function App() {
   // pedirlos juntos). Solo con presupuestos firmados desde que existe esta función, y con
   // un bloqueo en Firebase para que no se haga dos veces si hay varios con el CRM abierto.
   const autoPresRef = useRef(false);
+  const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
   useEffect(() => {
     if (!currentUser || loading || autoPresRef.current) return;
     const desde = tarifasPersianas && tarifasPersianas.autoPedidosDesde;
@@ -3852,6 +3911,56 @@ export default function App() {
               {pedidosRetrasados.length > 0 && `${pedidosRetrasados.length} pedido${pedidosRetrasados.length === 1 ? "" : "s"} van con retraso`}
               . Toca para verlos →
             </button>
+          );
+        })()}
+        {(() => {
+          // Presupuestos firmados que todavía no han terminado su camino: sin pasar a
+          // proyecto, o ya en proyecto pero con material sin pedir.
+          if (!currentUser || !isAdmin) return null;
+          const firmados = presupuestos.filter((p) => p.firma?.estado === "firmado" && p.estado !== "Rechazado");
+          const sinProyecto = firmados.filter((p) => !p.proyectoCreadoId);
+          const obrasSinPedir = [];
+          const vistas = new Set();
+          firmados.forEach((p) => {
+            if (!p.proyectoCreadoId || vistas.has(p.proyectoCreadoId)) return;
+            const obra = proyectos.find((x) => x.id === p.proyectoCreadoId);
+            if (!obra || !["Pendiente de aceptación", "En proceso"].includes(obra.estadoTrabajo || "Pendiente de aceptación")) return;
+            vistas.add(obra.id);
+            const faltan = materialSinPedirObra(obra, pedidos);
+            if (faltan.length) obrasSinPedir.push({ obra, faltan });
+          });
+          if (sinProyecto.length === 0 && obrasSinPedir.length === 0) return null;
+          const abrirPresupuesto = (id) => { setModulo("presupuestos"); setPresupuestoDetailId(id); setPresupuestoView("detail"); };
+          const abrirObra = (id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); };
+          return (
+            <div className="bg-violet-50 text-violet-800 border-b border-violet-100">
+              <button
+                onClick={() => setAvisoFirmadosAbierto(!avisoFirmadosAbierto)}
+                className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left hover:bg-violet-100 transition"
+              >
+                <Package size={15} />
+                {sinProyecto.length > 0 && `${sinProyecto.length} presupuesto${sinProyecto.length === 1 ? "" : "s"} firmado${sinProyecto.length === 1 ? "" : "s"} sin pasar a proyecto`}
+                {sinProyecto.length > 0 && obrasSinPedir.length > 0 && " · "}
+                {obrasSinPedir.length > 0 && `${obrasSinPedir.length} obra${obrasSinPedir.length === 1 ? "" : "s"} con material sin pedir`}
+                <span className="ml-auto text-xs font-semibold">{avisoFirmadosAbierto ? "Ocultar ▲" : "Ver cuáles ▼"}</span>
+              </button>
+              {avisoFirmadosAbierto && (
+                <div className="px-6 pb-3 space-y-1.5 text-sm">
+                  {sinProyecto.map((p) => (
+                    <button key={p.id} onClick={() => abrirPresupuesto(p.id)} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
+                      <span className="font-semibold">Presupuesto {p.numero}</span> — {p.clienteNombre || "sin cliente"}
+                      <span className="block text-xs text-violet-600">Firmado el {p.firma?.firmadoEn ? new Date(p.firma.firmadoEn).toLocaleDateString("es-ES") : "—"} · falta crear el proyecto. Toca para abrirlo →</span>
+                    </button>
+                  ))}
+                  {obrasSinPedir.map(({ obra, faltan }) => (
+                    <button key={obra.id} onClick={() => abrirObra(obra.id)} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-violet-200 hover:border-violet-400">
+                      <span className="font-semibold">Obra {obra.numero}</span> — {obra.nombre || ""}
+                      <span className="block text-xs text-violet-600">{faltan.slice(0, 4).join(" · ")}{faltan.length > 4 ? ` · y ${faltan.length - 4} más` : ""}. Toca para abrirla →</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })()}
         {modulo === "clientes" && (
@@ -5804,7 +5913,30 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     try {
       const l = await leerListadoMateriales(file);
       if (l.lineas.length === 0) throw new Error("no he encontrado líneas de material");
-      onGuardarListado(proyecto.id, l);
+      // Automático: al subirlo se crean ya los pedidos EN ESPERA de lo que falta en
+      // stock (uno por proveedor; lo que no está dado de alta va a un pedido sin
+      // proveedor para elegirlo luego). Si con este mismo listado ya se crearon
+      // pedidos antes, no se duplican: solo se guarda el listado.
+      const origen = l.numero || l.archivo;
+      const yaHabia = pedidosObra.some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && pd.origenListado && pd.origenListado === origen);
+      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0);
+      const listadoLimpio = JSON.parse(JSON.stringify(l));
+      if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
+        const gruposAuto = {};
+        faltanAuto.forEach((f) => {
+          // Sin proveedor conocido (p.ej. stock vacío o material sin dar de alta): se
+          // separa por sección (perfiles, herrajes, persianas…) para que cada pedido
+          // vaya luego a su proveedor, en vez de un único pedido con todo mezclado.
+          const prov = (f.mat && f.mat.proveedorId) || `sin:${f.seccion || "otros"}`;
+          (gruposAuto[prov] = gruposAuto[prov] || []).push(f.mat
+            ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" }
+            : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" });
+        });
+        onCrearPedidosEspera(proyecto, gruposAuto, origen, { listadoMateriales: listadoLimpio });
+      } else {
+        onGuardarListado(proyecto.id, l);
+        if (yaHabia) setError("Listado guardado. Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+      }
       setAbierto(true);
     } catch (e) { setError("No se pudo leer el listado: " + e.message); }
     finally { setLeyendo(false); }
@@ -5833,7 +5965,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Listado de materiales</div>
-          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube el \"Análisis materiales\" o el \"Listado cajas\" (PDF, Excel o Word) y te digo lo que tienes en stock y lo que falta."}</div>
+          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube el \"Análisis materiales\" o el \"Listado cajas\" (PDF, Excel o Word): se guardan las horas y lo que falta en stock se deja pedido EN ESPERA automáticamente."}</div>
         </div>
         <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
@@ -24230,7 +24362,8 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   // Al abrir un presupuesto pendiente de firma, se comprueba solo (sin avisos)
   // por si el cliente ya ha firmado.
   useEffect(() => {
-    if (onComprobarFirma && presupuesto.firma?.estado === "enviado" && presupuesto.firma?.signingRequestId) {
+    const firmadoSinAceptar = presupuesto.firma?.estado === "firmado" && presupuesto.estado !== "Aceptado" && presupuesto.estado !== "Rechazado";
+    if (onComprobarFirma && (firmadoSinAceptar || (presupuesto.firma?.estado === "enviado" && presupuesto.firma?.signingRequestId))) {
       onComprobarFirma(presupuesto, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
