@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
+  RefreshCw,
   Users, Briefcase, Search, Plus, X, Pencil, Trash2, ChevronLeft,
   Building2, ChevronDown, Phone, Mail, MapPin, Euro, Clock, FileText, CheckCircle2,
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
@@ -2446,6 +2447,46 @@ export default function App() {
 
   // Cancela un envío a firmar pendiente (para poder reenviarlo, p.ej. si se subió
   // el documento correcto después de haberlo mandado a firmar por error).
+  // Pregunta a Firma.dev si ya está firmado y, si lo está, guarda el PDF firmado
+  // en el presupuesto (estado "Firmado" + documento en "Documentos guardados").
+  // silencioso = true cuando se lanza sola al abrir el presupuesto (sin avisos
+  // si todavía está pendiente).
+  const comprobarFirmaPresupuesto = async (presupuesto, silencioso = false) => {
+    const firma = presupuesto?.firma;
+    if (!firma?.signingRequestId || firma.estado === "firmado") return;
+    try {
+      const r = await fetch("/.netlify/functions/firma-comprobar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signingRequestId: firma.signingRequestId, registroId: presupuesto.id }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { if (!silencioso) showToast(d.error || "No se pudo comprobar la firma", "error"); return; }
+      if (d.estado !== "firmado") {
+        if (!silencioso) {
+          const textos = { pendiente: "Todavía no lo ha firmado", generando: "Ya ha firmado — Firma.dev está preparando el PDF, vuelve a comprobarlo en un minuto", declined: "El firmante ha RECHAZADO firmar", cancelled: "La solicitud de firma está cancelada", expired: "La solicitud de firma ha caducado — vuelve a mandarla" };
+          showToast(textos[d.estado] || `Estado de la firma: ${d.estado}`, ["declined", "cancelled", "expired"].includes(d.estado) ? "error" : "ok");
+        }
+        return;
+      }
+      setPresupuestos((prev) => {
+        const next = prev.map((p) => {
+          if (p.id !== presupuesto.id || p.firma?.estado === "firmado") return p;
+          const documentos = [...(p.documentos || [])];
+          if (d.pdfUrl && !documentos.some((doc) => doc.url === d.pdfUrl)) {
+            documentos.push({ id: uid(), nombre: `Presupuesto ${p.numero} — FIRMADO.pdf`, url: d.pdfUrl, subidoEn: Date.now() });
+          }
+          return { ...p, documentos, firma: { ...(p.firma || {}), estado: "firmado", firmadoEn: d.firmadoEn ? new Date(d.firmadoEn).getTime() : Date.now(), pdfUrl: d.pdfUrl || "" } };
+        });
+        persist("presupuestos", next);
+        return next;
+      });
+      showToast(d.aviso ? `✓ Presupuesto firmado. ${d.aviso}` : "✓ Presupuesto firmado — PDF firmado guardado en el presupuesto", d.aviso ? "error" : "ok");
+    } catch (err) {
+      if (!silencioso) showToast("No se pudo comprobar la firma (revisa la conexión)", "error");
+    }
+  };
+
   const cancelarFirmaPresupuesto = (presupuestoId) => {
     const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, firma: null } : p));
     savePresupuestos(next);
@@ -4118,6 +4159,7 @@ export default function App() {
             onGenerarPedido={enviarAPedido}
             onAdjuntarDocumento={agregarDocumentoPresupuesto}
             onCancelarFirma={cancelarFirmaPresupuesto}
+            onComprobarFirma={comprobarFirmaPresupuesto}
             anadirPersianasAId={presupuestoParaAnadirPersianas}
             onClearAnadirPersianasA={() => setPresupuestoParaAnadirPersianas(null)}
             onAbrirCalculadoraParaAnadirPersianas={abrirCalculadoraParaAnadirPersianas}
@@ -19050,7 +19092,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -19336,6 +19378,7 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
         onGenerarPedido={onGenerarPedido}
         onAdjuntarDocumento={onAdjuntarDocumento}
         onCancelarFirma={onCancelarFirma}
+        onComprobarFirma={onComprobarFirma}
         onAnadirMasPersianas={() => onAbrirCalculadoraParaAnadirPersianas(presupuesto.id)}
       />
     );
@@ -24182,7 +24225,16 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
 // solo cambia quién firma. El estado (enviado/firmado) se guarda en Firebase y
 // lo actualiza el webhook de Firma.dev en cuanto se firma — como la app carga
 // los datos una sola vez, hay un botón para refrescar solo este registro.
-function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma, onConfirmarFirmaManual, usuarios }) {
+function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios }) {
+  const [comprobandoFirma, setComprobandoFirma] = useState(false);
+  // Al abrir un presupuesto pendiente de firma, se comprueba solo (sin avisos)
+  // por si el cliente ya ha firmado.
+  useEffect(() => {
+    if (onComprobarFirma && presupuesto.firma?.estado === "enviado" && presupuesto.firma?.signingRequestId) {
+      onComprobarFirma(presupuesto, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presupuesto.id]);
   const proyectoVinculado = (proyectos || []).find((p) => p.id === (presupuesto.proyectoId || presupuesto.proyectoCreadoId));
   const esAprobacionInterna = !!(proyectoVinculado?.contratoConstructoraFirmado && proyectoVinculado?.responsableAprobacionEmail);
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -24264,7 +24316,17 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     return (
       <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-sm space-y-2">
         <p className="font-semibold">✎ Pendiente de firma — {firma.firmanteEmail && !firma.firmanteEmail.endsWith("@sinemail.alumavel.es") ? `enviado a ${firma.firmanteEmail}` : `${firma.firmanteNombre || "firmante"} sin email`}</p>
-        <p className="text-xs text-amber-600">El estado se actualiza solo cuando firme (puede tardar en verse hasta que recargues la página).</p>
+        <p className="text-xs text-amber-600">Cuando firme, el PDF firmado aparecerá aquí y en "Documentos guardados". Se comprueba solo al abrir el presupuesto, o pulsa el botón.</p>
+        {onComprobarFirma && firma.signingRequestId && (
+          <button
+            type="button"
+            disabled={comprobandoFirma}
+            onClick={async () => { setComprobandoFirma(true); await onComprobarFirma(presupuesto, false); setComprobandoFirma(false); }}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-amber-800 border border-amber-300 bg-white hover:bg-amber-100 px-3.5 py-2 rounded-md mr-2 disabled:opacity-60"
+          >
+            <RefreshCw size={14} /> {comprobandoFirma ? "Comprobando..." : "Comprobar si ya ha firmado"}
+          </button>
+        )}
         {linkWhatsapp && (
           <a href={linkWhatsapp} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
             <MessageCircle size={14} /> Mandar enlace de firma por WhatsApp
@@ -24368,7 +24430,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
@@ -24640,7 +24702,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
         </div>
       )}
 
-      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
+      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onComprobarFirma={onComprobarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
