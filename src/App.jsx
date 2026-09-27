@@ -972,7 +972,7 @@ export default function App() {
       pagina.drawText(`Nº presupuesto: ${presupuesto.numero}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
       pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
       pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
-      pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
+      pagina.drawText(`Importe: ${presupuesto.importe ? importePresupuestoTexto(presupuesto) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
       pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
 
       const anchoUtil = 495;
@@ -11109,6 +11109,12 @@ async function leerDocumentoCristalConIA(file, prompt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// Importe de un presupuesto: se guarda SIN IVA. Si está marcado "+ IVA", se enseña también
+// el total con IVA (al % que tenga, 21 por defecto).
+const totalConIvaPresupuesto = (p) => (parseFloat(p && p.importe) || 0) * (1 + (parseFloat(p && p.ivaPct) || 21) / 100);
+const importePresupuestoTexto = (p) => (p && p.masIva
+  ? `${money(p.importe)} + IVA (${money(totalConIvaPresupuesto(p))} con IVA ${parseFloat(p.ivaPct) || 21}%)`
+  : money(p && p.importe));
 // "Qué lleva la obra" a partir del listado de materiales: qué líneas cuentan para cada cosa.
 const txtLinea = (l) => `${l.codigo || ""} ${l.descripcion || ""}`;
 const REGLAS_CHECKLIST = [
@@ -15823,7 +15829,7 @@ async function generarPdfBytesPresupuesto(presupuesto) {
   pagina.drawText(`Cliente: ${presupuesto.clienteNombre || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
   if (presupuesto.direccionEnvio) { pagina.drawText(`Dirección / Obra: ${presupuesto.direccionEnvio}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18; }
   pagina.drawText(`Fecha: ${fmtDate(presupuesto.fechaEnvio) || "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 18;
-  pagina.drawText(`Importe: ${presupuesto.importe ? money(presupuesto.importe) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
+  pagina.drawText(`Importe: ${presupuesto.importe ? importePresupuestoTexto(presupuesto) : "—"}`, { x: margen, y, size: 11, font: fuente, color: negro }); y -= 26;
 
   pagina.drawText("Descripción:", { x: margen, y, size: 11, font: fuenteNegrita, color: negro }); y -= 18;
   const palabras = (presupuesto.descripcion || "—").split(/\s+/);
@@ -19353,7 +19359,7 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
       ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
       : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
 
-    const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"clienteNombre":"","telefono":"","importe":numero_o_vacio,"descripcionGeneral":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
+    const prompt = 'Esto es un presupuesto o una nota con datos de un presupuesto para un cliente (puede ser una foto de algo escrito a mano, un documento impreso de un programa de presupuestos, etc). Es MUY IMPORTANTE que revises el documento entero, de arriba a abajo, y devuelvas TODAS las medidas/piezas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con este formato exacto: {"numero":"","clienteNombre":"","telefono":"","importeSinIva":numero_o_vacio,"ivaPct":numero_o_vacio,"totalConIva":numero_o_vacio,"descripcionBreve":"","zona":"","medidas":[{"referencia":"","ancho":"","alto":"","cantidad":""}]}. "numero" es el número del presupuesto tal como aparece (p.ej. Número:5.088 → "5.088"). "importeSinIva" es la base imponible SIN IVA: si el documento no la pone, súmala tú con los totales de cada línea o calcúlala como total con IVA / (1 + IVA/100); "ivaPct" el % de IVA (p.ej. 21); "totalConIva" el total final con IVA. Los números vienen en formato español (4.116,26 € = 4116.26): devuélvelos como números normales. "descripcionBreve" es UNA sola frase corta que resuma lo que se presupuesta (p.ej. "8 ventanas y 1 puerta PVC S8000 blanco, con persiana y mosquitera"). "zona" es la población o provincia del cliente. En "medidas" incluye una línea por cada pieza, ventana, puerta, etc. que tenga ancho y alto (en la unidad que aparezca, normalmente mm), con su referencia o nombre y la cantidad. No omitas ninguna pieza. Si no hay medidas, deja el array vacío. Deja en blanco lo que no encuentres.';
 
     const response = await fetch("/.netlify/functions/anthropic-proxy", {
       method: "POST",
@@ -19391,7 +19397,17 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
     const textoMedidas = medidas.length > 0
       ? "\n\nMedidas:\n" + medidas.map((m) => `- ${m.referencia || "Pieza"}: ${m.ancho || "—"} x ${m.alto || "—"} mm${m.cantidad ? ` (x${m.cantidad})` : ""}`).join("\n")
       : "";
-    const descripcionCompleta = `${info.descripcionGeneral || ""}${textoMedidas}`.trim();
+    const descripcionCompleta = `${info.descripcionBreve || info.descripcionGeneral || ""}${textoMedidas}`.trim();
+    const aNum = (x) => (typeof x === "number" ? x : parseFloat(String(x || "").replace(/\./g, "").replace(",", ".")) || 0);
+    const ivaPct = aNum(info.ivaPct);
+    let sinIva = aNum(info.importeSinIva) || aNum(info.importe);
+    const conIva = aNum(info.totalConIva);
+    if (!sinIva && conIva) sinIva = conIva / (1 + (ivaPct || 21) / 100);
+    sinIva = sinIva ? Math.round(sinIva * 100) / 100 : "";
+    // "5.088" (punto de miles) → "5088"; cualquier otro formato se deja tal cual
+    const numeroDoc = String(info.numero || "").trim();
+    const numeroLimpio = /^\d{1,3}(\.\d{3})+$/.test(numeroDoc) ? numeroDoc.replace(/\./g, "") : numeroDoc;
+    info.importe = sinIva;
 
     if (!info.clienteNombre && !descripcionCompleta && !info.importe) {
       throw new Error("No he podido leer datos claros en la imagen. Prueba con una foto más nítida.");
@@ -19402,6 +19418,9 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
       telefono: info.telefono || "",
       descripcion: descripcionCompleta,
       importe: info.importe || "",
+      ivaPct: ivaPct || (conIva ? 21 : ""),
+      masIva: !!(ivaPct || conIva),
+      numero: numeroLimpio,
       zona: info.zona || "",
       nombreArchivo: file.name,
     };
@@ -19412,10 +19431,13 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
     setErrorFoto("");
     try {
       const datos = await leerDatosDesdeArchivo(file);
+      // El archivo se guarda también como documento del presupuesto (es lo que se firma)
+      let documentos = [];
+      try { documentos = [{ id: uid(), nombre: file.name, url: await subirArchivoAStorage(file, "documentos-presupuestos"), subidoEn: Date.now() }]; } catch (e) { documentos = []; }
       setPrefillPresupuesto({
-        id: null, numero: nextNumero ? nextNumero() : "", fechaEnvio: new Date().toISOString().slice(0, 10),
+        id: null, numero: datos.numero || (nextNumero ? nextNumero() : ""), fechaEnvio: new Date().toISOString().slice(0, 10),
         clienteNombre: datos.clienteNombre, telefono: datos.telefono,
-        descripcion: datos.descripcion, importe: datos.importe, estado: "Pendiente",
+        descripcion: datos.descripcion, importe: datos.importe, masIva: datos.masIva, ivaPct: datos.ivaPct || 21, documentos, estado: "Pendiente",
         motivoRechazo: "", fechaRespuesta: "", comentarios: `Creado a partir de una foto/PDF subida (${datos.nombreArchivo}). Revisa los datos antes de guardar.`,
         fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: "", montaje: false, recoge: false, zona: datos.zona,
       });
@@ -19725,8 +19747,8 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
                       <td className="px-4 py-3 font-mono-num text-slate-500">{p.numero}</td>
                       <td className="px-4 py-3 text-slate-600">{fmtDate(p.fechaEnvio)}</td>
                       <td className="px-4 py-3 font-medium text-slate-800">{p.clienteNombre}</td>
-                      <td className="px-4 py-3 text-slate-600">{p.descripcion}</td>
-                      <td className="px-4 py-3 text-right font-mono-num">{money(p.importe)}</td>
+                      <td className="px-4 py-3 text-slate-600">{String(p.descripcion || "").split("\n")[0]}</td>
+                      <td className="px-4 py-3 text-right font-mono-num">{money(p.importe)}{p.masIva && <span className="block text-[11px] text-slate-400">+ IVA · {money(totalConIvaPresupuesto(p))}</span>}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <select
@@ -24169,6 +24191,10 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         telefono: datos.telefono || prev.telefono,
         descripcion: datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion,
         importe: datos.importe || prev.importe,
+        masIva: datos.importe ? datos.masIva : prev.masIva,
+        ivaPct: datos.ivaPct || prev.ivaPct || 21,
+        // El número del documento solo si es un presupuesto nuevo
+        numero: !prev.id && datos.numero ? datos.numero : prev.numero,
         zona: datos.zona || prev.zona,
       }));
       // Se guarda también como documento del presupuesto — así da igual cuál de los
@@ -24309,8 +24335,17 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           <Field label="Fecha envío" required>
             <TextInput type="date" value={f.fechaEnvio} onChange={set("fechaEnvio")} />
           </Field>
-          <Field label="Importe (€)">
+          <Field label="Importe sin IVA (€)">
             <TextInput type="number" step="0.01" value={f.importe} onChange={set("importe")} />
+            <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-slate-600">
+              <label className="flex items-center gap-1 cursor-pointer font-semibold"><input type="checkbox" checked={!!f.masIva} onChange={set("masIva")} /> + IVA</label>
+              {f.masIva && (
+                <>
+                  <input type="number" step="1" value={f.ivaPct ?? 21} onChange={set("ivaPct")} className="w-14 border border-slate-300 rounded px-1.5 py-0.5" />%
+                  <span className="text-[#2E8B57] font-semibold">= {money(totalConIvaPresupuesto(f))} con IVA</span>
+                </>
+              )}
+            </div>
           </Field>
         </div>
 
@@ -24672,7 +24707,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   const enlaceEmailManual = () => {
     if (!presupuesto.email) return null;
     const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
-    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nEcowin PVC`;
+    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
     return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -24691,7 +24726,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
       const dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
       const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
       const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
-      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${money(presupuesto.importe)}.\n\nUn saludo,\nEcowin PVC`;
+      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
@@ -24918,7 +24953,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
-          <InfoRow icon={<Euro size={14} />} label="Importe" value={money(presupuesto.importe)} />
+          <InfoRow icon={<Euro size={14} />} label="Importe" value={importePresupuestoTexto(presupuesto)} />
           <InfoRow icon={<Phone size={14} />} label="Teléfono" value={presupuesto.telefono || "—"} />
           <InfoRow icon={<Mail size={14} />} label="Email" value={presupuesto.email || "—"} />
           <InfoRow icon={<MapPin size={14} />} label="Zona" value={presupuesto.zona || "—"} />
