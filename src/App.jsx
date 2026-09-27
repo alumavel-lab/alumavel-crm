@@ -2536,34 +2536,6 @@ export default function App() {
     return `Obra #${proyecto.numero} ${proyecto.nombre || ""} entregada${a.numero ? ` · albarán ${a.numero}` : ""}${a.firmaCliente ? ` firmado por ${a.firmaCliente.nombre} el ${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")}` : ""}.${proyecto.importeUxcar && toArray(proyecto.importeUxcar.lineas).length ? `\n${toArray(proyecto.importeUxcar.lineas).map((x) => `${x.concepto}: ${x.uds} × ${Number(x.precio).toFixed(2)} € = ${Number(x.importe).toFixed(2)} €`).join("\n")}` : ""}`;
   };
   const proformaViva = (f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada;
-  const proformasRef = useRef(false);
-  useEffect(() => {
-    if (!currentUser || loading || proformasRef.current) return;
-    const faltan = pendientesDeFacturar(proyectos, facturas).filter((p) => p.clienteId && !facturas.some((f) => proformaViva(f) && toArray(f.proyectosIds).includes(p.id)));
-    if (!faltan.length) return;
-    proformasRef.current = true;
-    (async () => {
-      try {
-        const nuevas = [];
-        let n = facturas.filter((f) => String(f.numero || "").startsWith("PF-")).reduce((m, f) => Math.max(m, parseInt(String(f.numero).slice(3), 10) || 0), 0);
-        for (const p of faltan) {
-          // marca en la base de datos para que dos CRM abiertos no creen dos proformas
-          const res = await runTransaction(ref(fbDb, `proformasAuto/${p.id}`), (actual) => (actual ? undefined : Date.now())).catch(() => null);
-          if (!res || !res.committed) continue;
-          const pend = Math.round(((parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas)) * 100) / 100;
-          if (pend <= 0) continue;
-          const a = p.albaranEntrega || {};
-          const fecha = (a.firmaCliente && String(a.firmaCliente.fecha).slice(0, 10)) || p.fechaEntregado || new Date().toISOString().slice(0, 10);
-          nuevas.push({ id: uid(), numero: `PF-${++n}`, clienteId: p.clienteId, tipo: "Proforma", fecha, proyectosIds: [p.id], importesPorProyecto: { [p.id]: pend }, total: pend, pagos: [], observaciones: observacionesEntrega(p), origen: "entrega-auto" });
-        }
-        if (nuevas.length) {
-          saveFacturas([...nuevas, ...facturas]);
-          showToast(nuevas.length === 1 ? `Proforma ${nuevas[0].numero} creada (obra entregada)` : `${nuevas.length} proformas creadas de obras entregadas`);
-        }
-      } finally { proformasRef.current = false; }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proyectos, facturas, currentUser?.id, loading]);
   // Junta varias proformas de un cliente en una factura definitiva
   const juntarProformas = (ids, fecha) => {
     const lista = facturas.filter((f) => ids.includes(f.id) && proformaViva(f));
@@ -3434,6 +3406,36 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, currentUser?.id, loading]);
+
+  // Proformas automáticas de las obras entregadas (ver observacionesEntrega más arriba)
+  const proformasRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || proformasRef.current) return;
+    const faltan = pendientesDeFacturar(proyectos, facturas).filter((p) => p.clienteId && !facturas.some((f) => proformaViva(f) && toArray(f.proyectosIds).includes(p.id)));
+    if (!faltan.length) return;
+    proformasRef.current = true;
+    (async () => {
+      try {
+        const nuevas = [];
+        let n = facturas.filter((f) => String(f.numero || "").startsWith("PF-")).reduce((m, f) => Math.max(m, parseInt(String(f.numero).slice(3), 10) || 0), 0);
+        for (const p of faltan) {
+          // marca en la base de datos para que dos CRM abiertos no creen dos proformas
+          const res = await runTransaction(ref(fbDb, `proformasAuto/${p.id}`), (actual) => (actual ? undefined : Date.now())).catch(() => null);
+          if (!res || !res.committed) continue;
+          const pend = Math.round(((parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas)) * 100) / 100;
+          if (pend <= 0) continue;
+          const a = p.albaranEntrega || {};
+          const fecha = (a.firmaCliente && String(a.firmaCliente.fecha).slice(0, 10)) || p.fechaEntregado || new Date().toISOString().slice(0, 10);
+          nuevas.push({ id: uid(), numero: `PF-${++n}`, clienteId: p.clienteId, tipo: "Proforma", fecha, proyectosIds: [p.id], importesPorProyecto: { [p.id]: pend }, total: pend, pagos: [], observaciones: observacionesEntrega(p), origen: "entrega-auto" });
+        }
+        if (nuevas.length) {
+          saveFacturas([...nuevas, ...facturas]);
+          showToast(nuevas.length === 1 ? `Proforma ${nuevas[0].numero} creada (obra entregada)` : `${nuevas.length} proformas creadas de obras entregadas`);
+        }
+      } finally { proformasRef.current = false; }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proyectos, facturas, currentUser?.id, loading]);
 
   // Precio de Uxcar: el importe de cada expediente (por sus ventanas) pasa solo a su
   // proyecto, para que al entregarse salga en "Pendiente de facturar". No se toca si ya
