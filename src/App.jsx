@@ -6128,6 +6128,14 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
   const manejarSubidaPdfMedidas = async (file) => {
     if (!file) return;
+    // Los listados del programa de ventanas (análisis de materiales, mano de obra,
+    // listado de dibujos) no van aquí: van en "Listado de materiales" (pestaña Pedidos),
+    // que crea los pedidos por sección, guarda las horas y cuenta las ventanas.
+    if (/analis|analit|mano.?de.?obra|dibujo|listado.?cajas/i.test(file.name || "")) {
+      setTab("pedidos");
+      setErrorPdfMedidas("Ese documento es un listado del programa de ventanas: súbelo en \"Listado de materiales\", aquí abajo en la pestaña Pedidos (puedes elegir los tres PDF a la vez).");
+      return;
+    }
     setLeyendoPdfMedidas(true);
     setErrorPdfMedidas("");
     try {
@@ -6155,25 +6163,11 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
-      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) como un array: [{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
-
-      const response = await fetch("/.netlify/functions/anthropic-proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8000,
-          messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
-        }),
-      });
-      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message || "Error de la API");
-      const textoRespuesta = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
-      const limpio = textoRespuesta.replace(/```json|```/g, "").trim();
-      const inicio = limpio.indexOf("[");
-      const fin = limpio.lastIndexOf("]");
-      const items = JSON.parse(inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio);
+      const prompt = 'Esto es una medición o un pedido de cristales, persianas u otro material de carpintería (puede ser una foto de notas a mano, una hoja de medidas, etc). Revisa el documento entero, de arriba a abajo, y devuelve TODAS las líneas, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional, sin backticks) con esta forma: {"lineas":[{"referencia":"descripción tal cual aparece (ej. Cristal FL1, Persiana cajón 155...)","ancho":"","alto":"","cantidad":numero}]}. Las medidas suelen venir en milímetros o metros con coma decimal — conviértelas siempre a milímetros como número entero si vienen en metros. No omitas ninguna línea.';
+      // Se lee en segundo plano (sin el límite de ~26 s que daba el error 504 con documentos largos)
+      void contentBlock;
+      const leido = await leerDocumentoCristalConIA(file, prompt);
+      const items = Array.isArray(leido) ? leido : toArray(leido && leido.lineas);
 
       const nuevas = (Array.isArray(items) ? items : []).map((it) => ({
         id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
