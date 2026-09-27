@@ -11093,7 +11093,33 @@ async function leerDocumentoCristalConIA(file, prompt) {
   if (resultado.status === "error") throw new Error(resultado.error || "Error al leer el documento");
   const limpio = String(resultado.texto || "").replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
-  return JSON.parse(limpio.slice(oi, of + 1));
+  const trozo = limpio.slice(oi, of + 1);
+  try { return JSON.parse(trozo); }
+  catch (e) {
+    // Arreglo de lo más habitual: comillas dentro de un texto (p.ej. PERFIL UNION "L")
+    // o una coma de más al final de una lista.
+    return JSON.parse(repararJsonIA(trozo));
+  }
+}
+// Escapa las comillas que van DENTRO de un texto (las que no cierran el texto: la de
+// cierre siempre va seguida de , } ] o :) y quita comas sobrantes antes de } o ].
+function repararJsonIA(txt) {
+  let out = "", dentro = false;
+  for (let i = 0; i < txt.length; i++) {
+    const c = txt[i];
+    if (dentro && c === "\\") { out += c + (txt[i + 1] || ""); i++; continue; }
+    if (c === '"') {
+      if (!dentro) { dentro = true; out += c; continue; }
+      let j = i + 1;
+      while (j < txt.length && /\s/.test(txt[j])) j++;
+      if (j >= txt.length || ",}]:".includes(txt[j])) { dentro = false; out += c; }
+      else out += '\\"';
+      continue;
+    }
+    if (dentro && (c === "\n" || c === "\r")) { out += " "; continue; }
+    out += c;
+  }
+  return out.replace(/,\s*([}\]])/g, "$1");
 }
 
 /* ---------- Listado de materiales ("Análisis materiales" del programa de ventanas) ---------- */
@@ -11152,6 +11178,7 @@ async function leerListadoMateriales(file) {
     "- p: precio por unidad en euros: en perfiles y refuerzos = TOTAL BARRAS dividido entre UDS; en herraje y accesorios = el importe por unidad",
     "- t: el importe total de la línea (TOTAL BARRAS o TOTAL PRES) en euros",
     "Los números vienen en formato español (1.206,845 = 1206.845; 4.266,42€ = 4266.42). Devuélvelos como números normales.",
+    "IMPORTANTE para que el JSON sea válido: dentro de los textos NO pongas comillas dobles; si la descripción las lleva (p.ej. PERFIL UNION \"L\"), cámbialas por comillas simples (PERFIL UNION 'L').",
     "Si el mismo código sale en dos colores distintos, son dos líneas distintas.",
     'Si el documento trae las HORAS o el TIEMPO de fabricación (total de la obra o del expediente), ponlo en "horas" como número de horas (p.ej. 12,5 h → 12.5; 1:30 → 1.5). Si no lo trae, 0.',
     'Responde SOLO con JSON, sin texto ni ```: {"numero":"","referencia":"","cliente":"","fecha":"","horas":0,"superficies":{"m2":0,"importe":0},"lineas":[{"s":"perfiles","c":"","d":"","col":"","u":0,"l":6,"a":0,"h":0,"p":0,"t":0}]}',
