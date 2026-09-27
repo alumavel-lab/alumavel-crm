@@ -13,9 +13,36 @@ const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebased
 // Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
 // para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
 // las reglas sigan abiertas.
-const FB_AUTH = process.env.FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(process.env.FIREBASE_DB_SECRET)}` : "";
+// Acceso del servidor a la base de datos. Preferido: el usuario "robot" del CRM
+// (variables FIREBASE_ROBOT_EMAIL y FIREBASE_ROBOT_PASSWORD en Netlify), que entra
+// como un usuario más del equipo. Si no están, se usa la clave antigua
+// FIREBASE_DB_SECRET (Firebase ya no la acepta en este proyecto).
+const FIREBASE_WEB_API_KEY = "AIzaSyBf51Gy2drHdUyJ4kCstNdvvV2h3uYe4RM";
+let _tokenRobot = null, _tokenRobotCaduca = 0;
+async function fbAuthQuery() {
+  const email = (process.env.FIREBASE_ROBOT_EMAIL || "").trim();
+  const password = (process.env.FIREBASE_ROBOT_PASSWORD || "").trim();
+  if (email && password) {
+    if (_tokenRobot && Date.now() < _tokenRobotCaduca) return `?auth=${encodeURIComponent(_tokenRobot)}`;
+    const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_WEB_API_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: true }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.idToken) {
+      _tokenRobot = d.idToken;
+      _tokenRobotCaduca = Date.now() + 50 * 60 * 1000; // el token dura 1 h
+      return `?auth=${encodeURIComponent(_tokenRobot)}`;
+    }
+    console.error("No se pudo entrar con el usuario robot:", JSON.stringify(d.error || d));
+  }
+  const secreto = (process.env.FIREBASE_DB_SECRET || "").trim();
+  return secreto ? `?auth=${encodeURIComponent(secreto)}` : "";
+}
+let FB_AUTH = "";
 
 export const handler = async () => {
+  FB_AUTH = await fbAuthQuery().catch(() => "");
   try {
     const user = process.env.EMAIL_USER;
     const pass = process.env.EMAIL_PASSWORD;
