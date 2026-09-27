@@ -70,6 +70,67 @@ function manana() {
   return { f, texto: d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }) };
 }
 
+// Caballetes de ventanas: los que hay que tener listos para las obras que se cargan ese día
+// (las que terminan de fabricarse el día anterior según el planning, o con fecha de reparto
+// ese día), con los reservados, y los que están fuera con la vuelta ya pasada (a reclamar).
+function caballetesSeccion({ f, plan, proyectos, config, caballetes, expedientes }) {
+  const cap = Object.assign({ capacidad: 12, puerta: 2, corredera: 1.5, fijo: 1, osciloparalela: 2 }, config.capacidadCaballetes || {});
+  const pc = Object.assign({ diasDevolucion: 10 }, config.planningCaballetes || {});
+  const hoy = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" })).toISOString().slice(0, 10);
+  const num = (v) => parseFloat(v) || 0;
+  const huecos = (rec, tot) => {
+    const r = toArray(rec);
+    if (r.length) return r.reduce((a, l) => {
+      if (l.tipo === "mosquitera" || l.tipo === "otro") return a;
+      const k = { puerta: cap.puerta, corredera: cap.corredera, osciloparalela: cap.osciloparalela, fijo: cap.fijo }[l.tipo];
+      return a + num(l.uds) * (num(k) || 1);
+    }, 0);
+    return tot.v + tot.p * (num(cap.puerta) || 1) + tot.op * (num(cap.osciloparalela) || 1);
+  };
+  const totRecuento = (rec) => { const t = { v: 0, p: 0, op: 0 }; toArray(rec).forEach((l) => { const u = num(l.uds); if (l.tipo === "puerta") t.p += u; else if (l.tipo === "osciloparalela") t.op += u; else if (l.tipo !== "mosquitera" && l.tipo !== "otro") t.v += u; }); return t; };
+  const antes = (() => { const d = new Date(f + "T12:00:00"); do { d.setDate(d.getDate() - 1); } while (d.getDay() === 0 || d.getDay() === 6); return d.toISOString().slice(0, 10); })();
+  const finPlan = (key) => { const o = (plan.obras || {})[key]; return o && o.fin; };
+  const obras = [];
+  proyectos.filter((p) => p.origen !== "portalUxcar" && !["Entregado", "Cancelado", "Albarán de carga firmado"].includes(p.estadoTrabajo)).forEach((p) => {
+    const key = `p-${p.id}`;
+    if (finPlan(key) === antes || (p.fechaReparto || "") === f) obras.push({ key, proyectoId: p.id, nombre: `#${p.numero} ${p.nombre}`, h: huecos(p.recuento, totRecuento(p.recuento)) });
+  });
+  expedientes.filter((e) => e.estado !== "entregado").forEach((e) => {
+    const key = `u-${e.id}`;
+    const pl = e.proyectoId ? proyectos.find((x) => x.id === e.proyectoId) : null;
+    if (finPlan(key) === antes || ((pl && pl.fechaReparto) || "") === f) obras.push({ key, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, h: huecos(e.recuento, { v: num(e.ventanas), p: num(e.puertas), op: num(e.osciloParalelas) }) });
+  });
+  const de = (c, o) => c.obra && (c.obra.key === o.key || (o.proyectoId && c.obra.proyectoId === o.proyectoId));
+  const libres = caballetes.filter((c) => (c.estado || "libre") === "libre");
+  let texto = "";
+  if (obras.length) {
+    let falta = 0;
+    texto += `CABALLETES DE VENTANAS PARA ESE DÍA (caben ${cap.capacidad} ventanas por caballete):\n`;
+    obras.forEach((o) => {
+      const nec = o.h > 0 ? Math.ceil(o.h / (num(cap.capacidad) || 12)) : 0;
+      const ya = caballetes.filter((c) => c.estado === "cargado" && de(c, o)).map((c) => c.numero);
+      const res = libres.filter((c) => c.reserva && c.reserva.key === o.key).map((c) => c.numero);
+      falta += Math.max(0, nec - ya.length - res.length);
+      texto += `  ☐ ${o.nombre}: ${nec ? `${nec} caballete${nec === 1 ? "" : "s"}` : "ventanas sin contar, revisar"}${res.length ? ` · reservados: ${res.join(", ")}` : ""}${ya.length ? ` · ya cargados: ${ya.join(", ")}` : ""}\n`;
+    });
+    const sinReserva = libres.filter((c) => !c.reserva).length;
+    if (falta) texto += `  → Faltan por asignar ${falta}. Libres sin reservar: ${sinReserva}.${falta > sinReserva ? " ⚠ NO HAY SUFICIENTES: reclamad los que están fuera." : ""}\n`;
+    texto += "\n";
+  }
+  // Fuera con la vuelta pasada (media de días de cada cliente o, si no hay, el valor por defecto)
+  const medias = {};
+  caballetes.forEach((c) => toArray(c.devoluciones).forEach((d) => { const k = String(d.cliente || "").trim().toLowerCase(); if (k) (medias[k] = medias[k] || []).push(num(d.dias)); }));
+  const diasCli = (cl) => { const a = medias[String(cl || "").trim().toLowerCase()]; return a && a.length ? Math.max(1, Math.round(a.reduce((x, y) => x + y, 0) / a.length)) : num(pc.diasDevolucion) || 10; };
+  const sumar = (fecha, n) => { const d = new Date(fecha + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const tarde = caballetes.filter((c) => c.estado === "fuera" && c.salida).map((c) => ({ c, v: c.salida.vuelvePrevista || (c.salida.fecha ? sumar(c.salida.fecha, diasCli(c.salida.cliente)) : "") })).filter((x) => !x.v || x.v < hoy);
+  if (tarde.length) {
+    texto += `CABALLETES FUERA QUE YA TENÍAN QUE HABER VUELTO (reclamar):\n`;
+    tarde.forEach(({ c, v }) => { texto += `  ☐ ${c.numero} — ${c.salida.cliente || "—"} · ${c.salida.obra || ""}${c.salida.direccion ? ` · ${c.salida.direccion}` : ""}${v ? ` · tenía que volver el ${v.split("-").reverse().join("/")}` : ""}\n`; });
+    texto += "\n";
+  }
+  return { hay: !!(obras.length || tarde.length), texto };
+}
+
 export const handler = async (event) => {
   FB_AUTH = await fbAuthQuery().catch(() => "");
   try {
@@ -82,17 +143,18 @@ export const handler = async (event) => {
     if (!plan || !plan.emailFabrica) return { statusCode: 200, body: "Sin planning confirmado o sin correo de fábrica." };
     const { f, texto: diaTexto } = manana();
     const trozos = toArray(plan.dias && plan.dias[f]);
-    if (trozos.length === 0) return { statusCode: 200, body: `Nada planificado para ${f}.` };
-
-    const [cristales, persianasAlmacen, proyectos] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos")]);
+    const [cristales, persianasAlmacen, proyectos, config, caballetesRaw, expedientesRaw] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos"), leer("configVentanas"), leer("caballetesVentanas"), leer("portalUxcar/expedientes")]);
+    const cab = caballetesSeccion({ f, plan, proyectos: toArray(proyectos), config: config || {}, caballetes: toArray(caballetesRaw), expedientes: toArray(expedientesRaw) });
+    if (trozos.length === 0 && !cab.hay) return { statusCode: 200, body: `Nada planificado ni caballetes que avisar para ${f}.` };
     const obrasDia = trozos.map((t) => ({ ...t, obra: (plan.obras || {})[t.id] || { nombre: t.nombre, lineas: [], expNums: [] } }));
 
     let cuerpo = `PREPARAR HOY PARA EL ${diaTexto.toUpperCase()}\n\n`;
-    cuerpo += `Obras del próximo día de trabajo:\n${obrasDia.map((o) => `  • ${o.obra.nombre} — ${o.horas} h${o.obra.ventanas ? ` (${o.obra.ventanas} ventanas)` : ""}${o.obra.inicio && o.obra.inicio < f ? " · (sigue de días anteriores)" : ""}`).join("\n")}\n`;
+    cuerpo += cab.texto;
+    if (obrasDia.length) cuerpo += `Obras del próximo día de trabajo:\n${obrasDia.map((o) => `  • ${o.obra.nombre} — ${o.horas} h${o.obra.ventanas ? ` (${o.obra.ventanas} ventanas)` : ""}${o.obra.inicio && o.obra.inicio < f ? " · (sigue de días anteriores)" : ""}`).join("\n")}\n`;
 
     // Solo se prepara el material de las obras que EMPIEZAN ese día (las que siguen ya lo tienen)
     const empiezan = obrasDia.filter((o) => !o.obra.inicio || o.obra.inicio === f);
-    if (empiezan.length === 0) cuerpo += `\nEse día no empieza ninguna obra nueva: se sigue con las que están en marcha.\n`;
+    if (obrasDia.length && empiezan.length === 0) cuerpo += `\nEse día no empieza ninguna obra nueva: se sigue con las que están en marcha.\n`;
 
     empiezan.forEach((o) => {
       const ob = o.obra;
@@ -142,7 +204,7 @@ export const handler = async (event) => {
     });
 
     cuerpo += `\n— Aviso automático del CRM, según el planning confirmado el ${new Date(plan.publicadoEn || Date.now()).toLocaleDateString("es-ES")}.`;
-    await enviar({ to: plan.emailFabrica, subject: `Preparar hoy para el ${diaTexto} — ${empiezan.length} obra${empiezan.length === 1 ? "" : "s"}`, text: cuerpo });
+    await enviar({ to: plan.emailFabrica, subject: `Preparar hoy para el ${diaTexto} — ${empiezan.length ? `${empiezan.length} obra${empiezan.length === 1 ? "" : "s"}` : "caballetes"}`, text: cuerpo });
     return { statusCode: 200, body: "Enviado" };
   } catch (e) {
     console.error("aviso-fabrica-diario:", e.message);

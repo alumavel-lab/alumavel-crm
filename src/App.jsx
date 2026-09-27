@@ -12727,9 +12727,9 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         </button>
         <button onClick={() => setTab("reparto")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "reparto" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-          Reparto
-          {proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length > 0 && (
-            <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && p.estadoLogistica === "Reparto (camión)").length}</Badge>
+          Salidas
+          {proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida").length > 0 && (
+            <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida").length}</Badge>
           )}
         </button>
         {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "caballetes" && (
@@ -12740,7 +12740,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       </div>
 
       {tab === "caballetes" && (
-        <AlmacenVentanas caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} />
+        <AlmacenVentanas caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
+          pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
 
       {tab === "puestos" && (
@@ -12937,7 +12938,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       )}
 
       {tab === "reparto" && (
-        <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} onMoverEstado={onMoverEstado} />
+        <SalidasFabrica proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} caballetes={caballetesVentanas} config={configVentanasFab} onGuardarCaballete={onGuardarCaballete}
+          onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} onMoverEstado={onMoverEstado} />
       )}
     </div>
   );
@@ -12950,7 +12952,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 // no hace falta ningún paso manual aparte de fabricarlo y aceptar la obra.
 // Se agrupa por zona para que sea fácil planear la ruta, y la fecha que se
 // ponga aquí también aparece en el Calendario (pestaña "Reparto").
-function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMoverEstado }) {
+function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMoverEstado, caballetesInfo }) {
   // Se ve desde que se acepta la obra (en cuanto tiene "Reparto (camión)"
   // marcado), no solo cuando ya está fabricada — así se puede agrupar por
   // zona y fecha con antelación. Dentro de cada zona se distingue lo que ya
@@ -13000,6 +13002,7 @@ function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMove
                       )}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">{clienteNombre(p)} · Entrega prevista {fmtDate(p.fechaEntregaPrevista) || "—"}</div>
+                    {caballetesInfo && caballetesInfo(p)}
                   </button>
                   <div className="flex items-end gap-2">
                     <Field label="Fecha reparto">
@@ -13015,6 +13018,119 @@ function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMove
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Salidas de fábrica: todo lo terminado sale por una de tres vías y en las tres las ventanas
+// van paletizadas en caballetes. Reparto (camión) es la pestaña de siempre (el albarán lo
+// firma el cliente con el chófer). Recogida en fábrica e Instalación (montadores) se
+// controlan aquí: qué caballetes lleva cada obra y, al salir, quedan pendientes de devolver.
+function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config, onGuardarCaballete, onVerProyecto, onCambiarFecha, onMoverEstado }) {
+  const [vista, setVista] = useState("reparto");
+  const cap = capacidadCaballetes(config);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const cabs = toArray(caballetes);
+  const vivos = proyectos.filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo));
+  const reparto = vivos.filter((p) => p.estadoLogistica === "Reparto (camión)");
+  const instalacion = vivos.filter((p) => p.llevaInstalacion && p.estadoLogistica !== "Reparto (camión)");
+  const recogida = vivos.filter((p) => p.estadoLogistica === "Recogida en fábrica" && !p.llevaInstalacion);
+  const sinDefinir = vivos.filter((p) => (!p.estadoLogistica || p.estadoLogistica === "Sin definir") && !p.llevaInstalacion && ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
+  const esListo = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+  const cuentaListos = (arr) => arr.filter(esListo).length;
+  const clienteDe = (p) => clientes.find((c) => c.id === p.clienteId);
+  const necesarios = (p) => {
+    const v = ventanasDeObra(p, uxExpedientes);
+    const exp = p.origen === "portalUxcar" ? toArray(uxExpedientes).find((e) => e.id === p.uxcarExpedienteId) : null;
+    const tot = exp ? { ventanas: uxNum(exp.ventanas), puertas: uxNum(exp.puertas), osciloParalelas: uxNum(exp.osciloParalelas) } : uxTotalesRecuento(p.recuento);
+    return caballetesNecesarios(huecosObra(v.recuento, tot, cap), cap);
+  };
+  const deObra = (p, estado) => cabs.filter((c) => (estado === "libre" ? (c.estado || "libre") === "libre" && c.reserva && c.reserva.proyectoId === p.id : c.estado === estado && c.obra && c.obra.proyectoId === p.id));
+  const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
+  const sacar = (p, lista, texto) => {
+    const cl = clienteDe(p);
+    lista.forEach((c) => onGuardarCaballete({ ...c, estado: "fuera", salida: { fecha: hoy, cliente: cl ? cl.nombre : (c.obra && c.obra.cliente) || "", obra: (c.obra && c.obra.nombre) || `#${p.numero} ${p.nombre}`, direccion: p.ubicacion || (cl && cl.direccion) || "", tipo: texto }, historial: hist(c, `${texto}: ${(c.obra && c.obra.nombre) || p.nombre}`) }));
+  };
+  const vaciar = (lista, texto) => lista.forEach((c) => onGuardarCaballete({ ...c, estado: "libre", obra: null, lineas: [], reserva: null, historial: hist(c, texto) }));
+
+  const bloqueCaballetes = (p) => {
+    const nec = necesarios(p), carg = deObra(p, "cargado"), fue = deObra(p, "fuera"), res = deObra(p, "libre");
+    const faltan = Math.max(0, nec - carg.length - fue.length);
+    return (
+      <div className="text-xs text-slate-600 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>🪜 {nec ? `Necesita ${nec} caballete${nec === 1 ? "" : "s"}` : "Ventanas sin contar"}</span>
+        {carg.length > 0 && <span className="text-emerald-700 font-semibold">Cargados: {carg.map((c) => c.numero).join(", ")}</span>}
+        {res.length > 0 && <span className="text-sky-700">Reservados: {res.map((c) => c.numero).join(", ")}</span>}
+        {fue.length > 0 && <span className="text-amber-700 font-semibold">Fuera: {fue.map((c) => `${c.numero} (desde ${fmtDate(c.salida && c.salida.fecha)})`).join(", ")}</span>}
+        {esListo(p) && faltan > 0 && <span className="text-rose-600 font-semibold">⚠ Faltan {faltan} por paletizar</span>}
+      </div>
+    );
+  };
+  const tarjeta = (p, fechaLabel, acciones) => {
+    const cl = clienteDe(p);
+    const listo = esListo(p);
+    return (
+      <div key={p.id} className={`flex flex-wrap items-center justify-between gap-3 border rounded-lg p-3 ${listo ? "bg-white border-slate-200" : "bg-slate-50 border-slate-200"}`}>
+        <div className="min-w-0">
+          <button onClick={() => onVerProyecto(p.id)} className="text-left font-semibold text-slate-800 text-sm hover:text-[#2E8B57] flex items-center gap-2">
+            #{p.numero} — {p.nombre}
+            {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Listo</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
+          </button>
+          <div className="text-xs text-slate-500 mt-0.5">{cl ? cl.nombre : "—"} · Entrega prevista {fmtDate(p.fechaEntregaPrevista) || "—"}{p.llevaInstalacion && p.fechaMontaje ? ` · Montaje ${fmtDate(p.fechaMontaje)}` : ""}</div>
+          {bloqueCaballetes(p)}
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label={fechaLabel}><TextInput type="date" value={p.fechaReparto || ""} onChange={(e) => onCambiarFecha(p.id, e.target.value)} className="!w-40" /></Field>
+          {listo && acciones}
+        </div>
+      </div>
+    );
+  };
+  const boton = (texto, onClick, principal = true) => <button onClick={onClick} style={principal ? { backgroundColor: "#2E8B57", color: "#ffffff" } : undefined} className={`text-xs font-semibold px-3 py-2 rounded-md mb-0.5 ${principal ? "" : "border border-slate-300 text-slate-700 hover:bg-slate-50"}`}>{texto}</button>;
+  const ordenar = (arr) => [...arr].sort((a, b) => (esListo(b) ? 1 : 0) - (esListo(a) ? 1 : 0) || (a.fechaReparto || a.fechaMontaje || a.fechaEntregaPrevista || "9999").localeCompare(b.fechaReparto || b.fechaMontaje || b.fechaEntregaPrevista || "9999"));
+
+  const pestanas = [["reparto", "Reparto (camión)", reparto], ["recogida", "Recogida en fábrica", recogida], ["instalacion", "Instalación", instalacion]];
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {pestanas.map(([k, t, arr]) => (
+          <button key={k} onClick={() => setVista(k)} className={`px-3 py-1.5 rounded-full text-sm font-semibold border flex items-center gap-1.5 ${vista === k ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>
+            {t} ({arr.length}){cuentaListos(arr) > 0 && <span className={`text-[11px] px-1.5 rounded ${vista === k ? "bg-white/25" : "bg-emerald-50 text-emerald-700"}`}>{cuentaListos(arr)} listas</span>}
+          </button>
+        ))}
+      </div>
+      {sinDefinir.length > 0 && (
+        <div className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-md px-3 py-2">
+          <b>Sin forma de salida:</b> {sinDefinir.map((p) => <button key={p.id} onClick={() => onVerProyecto(p.id)} className="underline mr-2">#{p.numero} {p.nombre}</button>)} — ponles en la ficha del proyecto si es reparto, recogida o lleva instalación, para que aparezcan aquí.
+        </div>
+      )}
+      {vista === "reparto" && <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFecha} onMoverEstado={onMoverEstado} caballetesInfo={bloqueCaballetes} />}
+      {vista === "recogida" && (
+        <div className="space-y-2">
+          <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">Obras que recoge el cliente en fábrica. Al recogerlas, indica si se lleva los caballetes (quedan pendientes de devolver) o si se descargan aquí.</div>
+          {recogida.length === 0 && <p className="text-sm text-slate-400">No hay obras de recogida en fábrica pendientes.</p>}
+          {ordenar(recogida).map((p) => {
+            const carg = deObra(p, "cargado");
+            const acabar = () => { if (!p.llevaInstalacion) onMoverEstado(p.id, "Entregado"); };
+            return tarjeta(p, "Fecha de recogida", carg.length ? <>
+              {boton("Recogido · se lleva los caballetes", () => { if (confirm(`¿#${p.numero} recogido? Se lleva ${carg.map((c) => c.numero).join(", ")} y quedan pendientes de devolver.`)) { sacar(p, carg, "Recogido por el cliente"); acabar(); } })}
+              {boton("Recogido · caballetes se quedan", () => { if (confirm(`¿#${p.numero} recogido? Los caballetes ${carg.map((c) => c.numero).join(", ")} se descargan y quedan libres.`)) { vaciar(carg, `Descargado: ${p.nombre} recogido por el cliente`); acabar(); } }, false)}
+            </> : boton("Recogido", () => { if (confirm(`¿#${p.numero} recogido por el cliente? No tiene caballetes cargados.`)) acabar(); }));
+          })}
+        </div>
+      )}
+      {vista === "instalacion" && (
+        <div className="space-y-2">
+          <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">Obras que montan vuestros instaladores. Cuando salen a la obra, los caballetes se quedan allí pendientes de devolver hasta que los traigan. La obra pasa a Entregado al finalizar la instalación.</div>
+          {instalacion.length === 0 && <p className="text-sm text-slate-400">No hay obras con instalación pendientes.</p>}
+          {ordenar(instalacion).map((p) => {
+            const carg = deObra(p, "cargado");
+            return tarjeta(p, "Fecha de salida a obra", carg.length
+              ? boton("Sale a la obra", () => { if (confirm(`¿Sale #${p.numero} a la obra con ${carg.map((c) => c.numero).join(", ")}? Quedan pendientes de devolver.`)) sacar(p, carg, "Sale a instalación"); })
+              : deObra(p, "fuera").length ? <span className="text-xs text-slate-500 mb-2">En la obra · pasa a Entregado al finalizar la instalación</span> : <span className="text-xs text-amber-700 mb-2">Sin caballetes cargados</span>);
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -27267,10 +27383,254 @@ function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, c
   );
 }
 
+// ---------- PLANNING VIRTUAL DE CABALLETES ----------
+// Cuándo se carga cada obra (fin de fabricación según el planning), cuándo sale y cuándo
+// vuelven sus caballetes (media de días que tarda cada cliente en devolverlos). Con eso
+// se calcula, día a día, cuántos caballetes habrá libres en las próximas semanas.
+const CAB_PLAN_DEF = { diasDevolucion: 10, semanas: 6, semanasReserva: 2 };
+const cabPlanCfg = (config) => ({ ...CAB_PLAN_DEF, ...((config && config.planningCaballetes) || {}) });
+const cabSumarDias = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + (parseInt(n, 10) || 0)); return d.toISOString().slice(0, 10); };
+const cabDiasEntre = (a, b) => (a && b ? Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000) : 0);
+// Días que tarda un cliente en devolver los caballetes: media de sus devoluciones o, si no hay, el valor por defecto
+const diasDevolucionCliente = (caballetes, config) => {
+  const def = parseFloat(cabPlanCfg(config).diasDevolucion) || CAB_PLAN_DEF.diasDevolucion;
+  const m = {};
+  toArray(caballetes).forEach((c) => toArray(c.devoluciones).forEach((d) => { const k = String(d.cliente || "").trim().toLowerCase(); if (k) (m[k] = m[k] || []).push(parseFloat(d.dias) || 0); }));
+  return (cliente) => {
+    const a = m[String(cliente || "").trim().toLowerCase()];
+    return a && a.length ? { dias: Math.max(1, Math.round(a.reduce((x, y) => x + y, 0) / a.length)), media: true, n: a.length } : { dias: def, media: false, n: 0 };
+  };
+};
+const vueltaPrevistaCaballete = (c, diasDev) => (c && c.salida ? c.salida.vuelvePrevista || (c.salida.fecha ? cabSumarDias(c.salida.fecha, diasDev(c.salida.cliente).dias) : "") : "");
+const cabObraDe = (c, o) => !!(c.obra && (c.obra.key === o.key || (o.proyectoId && c.obra.proyectoId === o.proyectoId)));
+
+// Fin de fabricación de cada obra con la misma cuenta que Fábrica → Planning (firme + virtual)
+const finesPlanningFabrica = ({ pedidos, uxExpedientes, uxPedidos, listoParaFabricar, proyectos, config }) => {
+  const cfg = config || {};
+  const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
+  const horasDia = parseFloat(cfg.horasDia) || 16;
+  const d0 = new Date(); d0.setDate(d0.getDate() + ((8 - d0.getDay()) % 7 || 7));
+  const desde = d0.toISOString().slice(0, 10);
+  const obraP = (p) => { const v = ventanasDeObra(p, uxExpedientes); const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas); return { id: `p-${p.id}`, nombre: `#${p.numero}`, horas: h.horas, entrega: p.fechaEntregaPrevista || "" }; };
+  const obraU = (e) => { const h = horasObra(e.recuento, { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, e.horasFabricacion, tiempos, e.listadoMateriales && e.listadoMateriales.horas); return { id: `u-${e.id}`, nombre: `Uxcar ${e.numero}`, horas: h.horas, entrega: e.fechaEntrega || "" }; };
+  const orden = toArray(cfg.orden);
+  const ordenar = (arr) => [...arr].sort((a, b) => { const ia = orden.indexOf(a.id), ib = orden.indexOf(b.id); if (ia === -1 && ib === -1) return 0; if (ia === -1) return 1; if (ib === -1) return -1; return ia - ib; });
+  const lp = toArray(listoParaFabricar);
+  const listas = ordenar([...lp.filter((p) => p.origen !== "portalUxcar").map(obraP), ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraU)]
+    .sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999")));
+  const fechaMaterial = (p) => {
+    const pend = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && !["Recibido", "Cancelado"].includes(pd.estado));
+    if (!pend.length) return "";
+    if (pend.some((pd) => !pd.fechaEntregaPrevista)) return null;
+    return pend.map((pd) => pd.fechaEntregaPrevista).sort().pop();
+  };
+  const esperando = [
+    ...toArray(proyectos).filter((p) => p.origen !== "portalUxcar" && p.estadoTrabajo === "Pendiente de aceptación" && !lp.some((x) => x.id === p.id)
+      && (toArray(pedidos).some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado") || normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si")))
+      .map((p) => ({ ...obraP(p), material: fechaMaterial(p) })),
+    ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) !== "verde").map((e) => {
+      const pend = toArray(uxPedidos).filter((pd) => !pd.recibido && toArray(pd.expedientes).some((x) => x.expedienteId === e.id));
+      const material = pend.length === 0 ? "" : pend.some((pd) => !pd.llegadaPrevista) ? null : pend.map((pd) => pd.llegadaPrevista).sort().pop();
+      return { ...obraU(e), material };
+    }),
+  ];
+  const conFecha = ordenar(esperando.filter((o) => o.material !== null).sort((a, b) => (a.material || "").localeCompare(b.material || "") || (a.entrega || "9999").localeCompare(b.entrega || "9999")));
+  const sinFecha = ordenar(esperando.filter((o) => o.material === null));
+  const plan1 = repartirPlanning(listas.map((o) => ({ ...o, disponible: desde })), desde, horasDia);
+  const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
+  const plan2 = repartirPlanning([...conFecha, ...sinFecha].map((o) => ({ ...o, disponible: o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
+  const res = {};
+  Object.entries(plan1.obras).forEach(([id, r]) => { res[id] = { fin: r.fin, virtual: false }; });
+  Object.entries(plan2.obras).forEach(([id, r]) => { res[id] = { fin: r.fin, virtual: true, sinFechaMaterial: sinFecha.some((o) => o.id === id) }; });
+  return res;
+};
+
+function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, config, onSaveConfig, pedidos, uxPedidos, listoParaFabricar, configPlanning, onGuardar, almacenPrincipal }) {
+  const cap = capacidadCaballetes(config);
+  const pc = cabPlanCfg(config);
+  const guardarPc = (k, v) => onSaveConfig && onSaveConfig({ ...(config || {}), planningCaballetes: { ...((config && config.planningCaballetes) || {}), [k]: parseFloat(v) || 0 } });
+  const publicado = usePlanningPublicado();
+  const [verAjustes, setVerAjustes] = useState(false);
+  const [semanaAbierta, setSemanaAbierta] = useState(null);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const cabs = toArray(caballetes);
+  const diasDev = diasDevolucionCliente(cabs, config);
+  const fines = useMemo(() => finesPlanningFabrica({ pedidos, uxExpedientes, uxPedidos, listoParaFabricar, proyectos, config: configPlanning }),
+    [pedidos, uxExpedientes, uxPedidos, listoParaFabricar, proyectos, configPlanning]);
+
+  // Cuándo se carga una obra: terminada = hoy; si no, fin en el planning confirmado,
+  // en el planning (virtual) o, si no está planificada, su fecha de reparto/entrega.
+  const cuandoCarga = (key, listo, enFabrica, fechas) => {
+    if (listo) return { f: hoy, origen: "Terminada" };
+    const pub = publicado && publicado.obras && publicado.obras[key];
+    if (pub && pub.fin && pub.fin >= hoy) return { f: sigLaborable(pub.fin), origen: "Planning confirmado" };
+    const fp = fines[key];
+    if (fp && fp.fin) return { f: sigLaborable(fp.fin), origen: fp.virtual ? (fp.sinFechaMaterial ? "Virtual (material sin fecha)" : "Planning virtual") : "Planning" };
+    const f = fechas.find(Boolean);
+    if (f) return { f: f < hoy ? hoy : f, origen: "Fecha de entrega" };
+    if (enFabrica) return { f: sigLaborable(hoy), origen: "En fabricación (sin fecha)" };
+    return null;
+  };
+  const obras = [];
+  proyectos.filter((p) => p.origen !== "portalUxcar" && ["Pendiente de aceptación", "En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo)).forEach((p) => {
+    const v = ventanasDeObra(p, uxExpedientes);
+    const nec = caballetesNecesarios(huecosObra(v.recuento, uxTotalesRecuento(p.recuento), cap), cap);
+    const cl = clientes.find((c) => c.id === p.clienteId);
+    obras.push({ key: `p-${p.id}`, proyectoId: p.id, nombre: `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", telefono: cl ? cl.telefono || cl.movil || "" : "", direccion: p.ubicacion || "", nec,
+      carga: cuandoCarga(`p-${p.id}`, p.estadoTrabajo === "Listo para reparto/recogida", p.estadoTrabajo === "En proceso", [p.fechaReparto, p.fechaEntregaPrevista]),
+      salidaFecha: p.fechaReparto || (p.llevaInstalacion && p.fechaMontaje) || p.fechaEntregaPrevista || "" });
+  });
+  toArray(uxExpedientes).filter((e) => e.estado !== "entregado").forEach((e) => {
+    const pl = e.proyectoId ? proyectos.find((x) => x.id === e.proyectoId) : null;
+    if (pl && ["Entregado", "Cancelado", "Albarán de carga firmado"].includes(pl.estadoTrabajo)) return;
+    const nec = caballetesNecesarios(huecosObra(toArray(e.recuento), { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, cap), cap);
+    obras.push({ key: `u-${e.id}`, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, cliente: "Uxcar", telefono: "", direccion: "", nec,
+      carga: cuandoCarga(`u-${e.id}`, e.estado === "terminado", e.estado === "produccion", [pl && pl.fechaReparto, e.fechaEntrega]),
+      salidaFecha: (pl && pl.fechaReparto) || e.fechaEntrega || "" });
+  });
+  obras.forEach((o) => {
+    o.cargados = cabs.filter((c) => c.estado === "cargado" && cabObraDe(c, o)).length;
+    o.fuera = cabs.filter((c) => c.estado === "fuera" && cabObraDe(c, o)).length;
+    o.reservados = cabs.filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === o.key);
+    o.pendientes = Math.max(0, o.nec - o.cargados - o.fuera);
+    if (o.carga) {
+      o.salida = o.salidaFecha && o.salidaFecha > o.carga.f ? o.salidaFecha : o.carga.f;
+      o.dev = diasDev(o.cliente);
+      o.vuelta = cabSumarDias(o.salida, o.dev.dias);
+    }
+  });
+  const conFecha = obras.filter((o) => o.carga && o.nec > 0);
+  const sinFecha = obras.filter((o) => !o.carga && o.nec > 0 && o.pendientes > 0);
+  const sinContar = obras.filter((o) => o.carga && o.nec === 0 && (fines[o.key] || (publicado && publicado.obras && publicado.obras[o.key]) || o.key.startsWith("u-")));
+
+  // Tramos de ocupación: cada caballete ocupado desde que se carga hasta que vuelve
+  const tramos = [];
+  conFecha.forEach((o) => { if (o.pendientes > 0) tramos.push({ n: o.pendientes, desde: o.carga.f, hasta: o.vuelta, obra: o }); });
+  const retrasados = [];
+  cabs.forEach((c) => {
+    if (c.estado === "cargado") {
+      const o = obras.find((x) => cabObraDe(c, x));
+      const hasta = o && o.vuelta ? o.vuelta : cabSumarDias(sigLaborable(hoy), diasDev(c.obra && c.obra.cliente).dias);
+      tramos.push({ n: 1, desde: hoy, hasta, cab: c });
+    } else if (c.estado === "fuera") {
+      const v = vueltaPrevistaCaballete(c, diasDev);
+      if (!v || v < hoy) { retrasados.push({ c, v }); tramos.push({ n: 1, desde: hoy, hasta: "9999-12-31", cab: c, retrasado: true }); }
+      else tramos.push({ n: 1, desde: hoy, hasta: v, cab: c, vuelve: true });
+    }
+  });
+  const total = cabs.length;
+  const ocupadosDia = (d) => tramos.reduce((a, t) => a + (t.desde <= d && d < t.hasta ? t.n : 0), 0);
+  // Semanas
+  const lunes0 = lunesDe(hoy);
+  const semanas = [];
+  for (let i = 0; i < (parseInt(pc.semanas, 10) || 6); i++) {
+    const l = cabSumarDias(lunes0, i * 7), fin = cabSumarDias(l, 6);
+    const dias = []; for (let j = 0; j < 5; j++) { const f = cabSumarDias(l, j); if (f >= hoy) dias.push(f); }
+    if (!dias.length) continue;
+    let peor = null;
+    dias.forEach((f) => { const lib = total - ocupadosDia(f); if (peor === null || lib < peor.libres) peor = { f, libres: lib }; });
+    const cargan = conFecha.filter((o) => o.carga.f >= l && o.carga.f <= fin).sort((a, b) => a.carga.f.localeCompare(b.carga.f));
+    const vuelven = tramos.filter((t) => !t.retrasado && t.hasta >= l && t.hasta <= fin && t.hasta !== "9999-12-31").reduce((a, t) => a + t.n, 0);
+    const salen = conFecha.filter((o) => o.salida >= l && o.salida <= fin).reduce((a, o) => a + o.nec, 0);
+    semanas.push({ l, fin, peor, cargan, necesitan: cargan.reduce((a, o) => a + o.pendientes, 0), vuelven, salen });
+  }
+  const libresAhora = cabs.filter((c) => (c.estado || "libre") === "libre").length;
+  const libresSinReserva = cabs.filter((c) => (c.estado || "libre") === "libre" && !c.reserva);
+  const peorSemana = semanas.reduce((m, s) => (m === null || s.peor.libres < m.peor.libres ? s : m), null);
+
+  const ordenLibres = (arr) => [...arr].sort((a, b) => ((a.almacenId || almacenPrincipal) === almacenPrincipal ? 0 : 1) - ((b.almacenId || almacenPrincipal) === almacenPrincipal ? 0 : 1) || String(a.numero).localeCompare(String(b.numero), "es", { numeric: true }));
+  const reservar = (lista) => {
+    let libres = ordenLibres(libresSinReserva);
+    let faltan = 0;
+    lista.forEach((o) => {
+      const n = Math.max(0, o.pendientes - o.reservados.length);
+      const toma = libres.slice(0, n); libres = libres.slice(n);
+      faltan += n - toma.length;
+      toma.forEach((c) => onGuardar({ ...c, reserva: { key: o.key, proyectoId: o.proyectoId || "", nombre: o.nombre, cliente: o.cliente, direccion: o.direccion, fecha: o.carga ? o.carga.f : "" }, historial: [...toArray(c.historial), { fecha: new Date().toISOString(), accion: `Reservado para ${o.nombre}` }] }));
+    });
+    if (faltan) alert(`No hay caballetes libres suficientes: faltan ${faltan}. Reclama los que están fuera con retraso o da de alta más.`);
+  };
+  const quitarReservas = (o) => o.reservados.forEach((c) => onGuardar({ ...c, reserva: null, historial: [...toArray(c.historial), { fecha: new Date().toISOString(), accion: `Quitada la reserva de ${o.nombre}` }] }));
+  const limiteReserva = cabSumarDias(hoy, (parseInt(pc.semanasReserva, 10) || 2) * 7);
+  const porReservar = conFecha.filter((o) => o.carga.f <= limiteReserva && o.pendientes > o.reservados.length).sort((a, b) => a.carga.f.localeCompare(b.carga.f));
+  const fmtC = (f) => (f ? new Date(f + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "—");
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="mr-auto">
+          <div className="font-bold text-slate-800">Planning de caballetes · próximas {pc.semanas} semanas</div>
+          <div className="text-xs text-slate-500">Cada obra ocupa sus caballetes desde que termina de fabricarse (según el planning) hasta que el cliente los devuelve.</div>
+        </div>
+        {porReservar.length > 0 && <button onClick={() => { if (confirm(`¿Reservar caballetes para las ${porReservar.length} obra(s) que se cargan en las próximas ${pc.semanasReserva} semanas?`)) reservar(porReservar); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Reservar las próximas {pc.semanasReserva} semanas</button>}
+        <button onClick={() => setVerAjustes(!verAjustes)} className="text-xs font-semibold text-slate-500 hover:underline">{verAjustes ? "Cerrar" : "Ajustes"}</button>
+      </div>
+      {verAjustes && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
+          <Field label="Días que tardan en devolver (por defecto)"><TextInput type="number" min="1" defaultValue={pc.diasDevolucion} onBlur={(e) => guardarPc("diasDevolucion", e.target.value)} /></Field>
+          <Field label="Semanas que se ven"><TextInput type="number" min="1" max="12" defaultValue={pc.semanas} onBlur={(e) => guardarPc("semanas", e.target.value)} /></Field>
+          <Field label="Reservar con cuántas semanas"><TextInput type="number" min="1" max="6" defaultValue={pc.semanasReserva} onBlur={(e) => guardarPc("semanasReserva", e.target.value)} /></Field>
+          <p className="col-span-full text-[11px] text-slate-400">Cuando un cliente ya ha devuelto caballetes, se usa su media real de días. Mientras no, se usa el valor por defecto.</p>
+        </div>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-slate-50 rounded-lg p-3"><div className="text-2xl font-extrabold text-slate-800">{total}</div><div className="text-xs uppercase text-slate-500">Caballetes en total</div></div>
+        <div className="bg-slate-50 rounded-lg p-3"><div className="text-2xl font-extrabold text-slate-800">{libresAhora}</div><div className="text-xs uppercase text-slate-500">Libres ahora{libresAhora - libresSinReserva.length ? ` · ${libresAhora - libresSinReserva.length} reservados` : ""}</div></div>
+        <div className={`${retrasados.length ? "bg-rose-50" : "bg-slate-50"} rounded-lg p-3`}><div className={`text-2xl font-extrabold ${retrasados.length ? "text-rose-600" : "text-slate-800"}`}>{retrasados.length}</div><div className="text-xs uppercase text-slate-500">Fuera con retraso</div></div>
+        <div className={`${peorSemana && peorSemana.peor.libres < 0 ? "bg-rose-50" : "bg-emerald-50"} rounded-lg p-3`}><div className={`text-2xl font-extrabold ${peorSemana && peorSemana.peor.libres < 0 ? "text-rose-600" : "text-emerald-700"}`}>{peorSemana ? (peorSemana.peor.libres < 0 ? `Faltan ${-peorSemana.peor.libres}` : peorSemana.peor.libres) : "—"}</div><div className="text-xs uppercase text-slate-500">{peorSemana && peorSemana.peor.libres < 0 ? `El ${fmtC(peorSemana.peor.f)}` : "Libres en el peor día"}</div></div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Semana</th><th className="text-right px-3 py-2">Se cargan</th><th className="text-right px-3 py-2">Vuelven</th><th className="text-right px-3 py-2">Libres (peor día)</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
+          <tbody>
+            {semanas.map((s) => (
+              <React.Fragment key={s.l}>
+                <tr onClick={() => setSemanaAbierta(semanaAbierta === s.l ? null : s.l)} className="border-t border-slate-100 cursor-pointer hover:bg-slate-50">
+                  <td className="px-3 py-2 font-semibold whitespace-nowrap">{semanaAbierta === s.l ? "▾" : "▸"} {fmtC(s.l)} – {fmtC(cabSumarDias(s.l, 4))}{s.l === lunes0 ? <span className="text-xs text-slate-400"> (esta)</span> : null}</td>
+                  <td className="px-3 py-2 text-right">{s.necesitan} <span className="text-xs text-slate-400">({s.cargan.length} obra{s.cargan.length === 1 ? "" : "s"})</span></td>
+                  <td className="px-3 py-2 text-right">{s.vuelven}</td>
+                  <td className={`px-3 py-2 text-right text-lg font-extrabold ${s.peor.libres < 0 ? "text-rose-600" : s.peor.libres <= 2 ? "text-amber-600" : "text-slate-800"}`}>{s.peor.libres}</td>
+                  <td className="px-3 py-2 text-xs">{s.peor.libres < 0 ? <span className="font-semibold text-rose-600">⚠ Faltan {-s.peor.libres} el {fmtC(s.peor.f)}{retrasados.length ? " · reclama los retrasados" : ""}</span> : s.peor.libres <= 2 ? <span className="font-semibold text-amber-700">Justo</span> : <span className="text-emerald-700">✓ Sobran</span>}</td>
+                </tr>
+                {semanaAbierta === s.l && (
+                  <tr className="bg-slate-50/60"><td colSpan={5} className="px-3 py-2">
+                    {s.cargan.length === 0 && <div className="text-xs text-slate-400">No se carga ninguna obra esta semana.</div>}
+                    {s.cargan.map((o) => (
+                      <div key={o.key} className="flex flex-wrap items-center gap-2 text-xs py-1 border-b border-slate-100 last:border-0">
+                        <span className="font-semibold capitalize w-24">{fmtDia(o.carga.f)}</span>
+                        <b className="text-slate-800">{o.nombre}</b>{o.cliente && <span className="text-slate-500">· {o.cliente}</span>}
+                        <span className="text-slate-600">· {o.nec} caballete{o.nec === 1 ? "" : "s"}{o.cargados ? ` (${o.cargados} ya cargado${o.cargados === 1 ? "" : "s"})` : ""}</span>
+                        <span className="text-slate-400">· {o.carga.origen} · vuelven ~{fmtC(o.vuelta)} ({o.dev.dias} días{o.dev.media ? " de media" : ""})</span>
+                        {o.reservados.length > 0 && <span className="text-sky-700 font-semibold">· Reservados: {o.reservados.map((c) => c.numero).join(", ")}</span>}
+                        <span className="ml-auto flex gap-2">
+                          {o.pendientes > o.reservados.length && <button onClick={() => reservar([o])} className="font-semibold text-[#2E8B57] hover:underline">Reservar {o.pendientes - o.reservados.length}</button>}
+                          {o.reservados.length > 0 && <button onClick={() => quitarReservas(o)} className="text-slate-400 hover:underline">Quitar reservas</button>}
+                        </span>
+                      </div>
+                    ))}
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {retrasados.length > 0 && (
+        <div className="text-xs bg-rose-50 border border-rose-200 rounded-md px-3 py-2 text-rose-800">
+          <b>Reclamar:</b> {retrasados.map(({ c, v }) => `${c.numero} (${(c.salida && (c.salida.cliente || c.salida.obra)) || "—"}${v ? `, tenía que volver el ${fmtC(v)}` : ""})`).join(" · ")}. Mientras no vuelvan, el planning los cuenta como no disponibles.
+        </div>
+      )}
+      {sinFecha.length > 0 && <div className="text-xs text-amber-800 bg-amber-50 rounded-md px-3 py-2"><b>Sin fecha (no entran en el planning):</b> {sinFecha.map((o) => `${o.nombre} (${o.nec})`).join(", ")}. Ponles fecha de entrega o mételas en el planning de fabricación.</div>}
+      {sinContar.length > 0 && <div className="text-xs text-slate-500"><b>Sin ventanas contadas:</b> {sinContar.map((o) => o.nombre).join(", ")}. No se sabe cuántos caballetes necesitan.</div>}
+    </div>
+  );
+}
+
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
 
-function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig }) {
+function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
+  const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
   const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
   const [gestionando, setGestionando] = useState(false);
@@ -27309,6 +27669,31 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
     onGuardar({ id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] });
   };
   const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
+  const diasDev = diasDevolucionCliente(caballetes, config);
+  // Al volver un caballete se apunta cuántos días ha estado fuera (para la media de cada cliente)
+  const devolver = (c, accion) => onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, reserva: null, almacenId: almacenSel || almacenDe(c),
+    devoluciones: c.salida && c.salida.fecha ? [...toArray(c.devoluciones), { cliente: c.salida.cliente || c.salida.obra || "", dias: cabDiasEntre(c.salida.fecha, hoy), fecha: hoy }].slice(-30) : toArray(c.devoluciones),
+    historial: hist(c, accion) });
+  // Al cargar un caballete reservado, la obra ya viene elegida
+  const empezarCarga = (c) => {
+    const o = c.reserva ? obras.find((x) => x.key === c.reserva.key) : null;
+    if (!o) { setEditando({ ...c, lineas: [] }); return; }
+    const lineas = o.recuento.map((r) => ({ modelo: r.modelo || "", descripcion: uxGrupoCarp(r), medidas: "", uds: parseFloat(r.uds) || 1 }));
+    setEditando({ ...c, obra: { key: o.key, proyectoId: o.proyectoId, nombre: o.nombre, cliente: o.cliente, direccion: o.direccion }, lineas });
+  };
+  const telCliente = (nombre) => { const cl = clientes.find((x) => String(x.nombre || "").trim().toLowerCase() === String(nombre || "").trim().toLowerCase()); return cl ? cl.movil || cl.telefono || "" : ""; };
+  // Caballetes que necesita una obra (por su recuento de ventanas o por los totales del expediente de Uxcar)
+  const necesariosObra = (obra) => {
+    if (!obra) return 0;
+    const capC = capacidadCaballetes(config);
+    const pr = proyectos.find((x) => x.id === obra.proyectoId);
+    const o = obras.find((x) => x.key === obra.key);
+    const ex = String(obra.key || "").startsWith("u-") ? toArray(uxExpedientes).find((e) => `u-${e.id}` === obra.key) : null;
+    const tot = ex && (parseFloat(ex.ventanas) || parseFloat(ex.puertas) || parseFloat(ex.osciloParalelas))
+      ? { ventanas: parseFloat(ex.ventanas) || 0, puertas: parseFloat(ex.puertas) || 0, osciloParalelas: parseFloat(ex.osciloParalelas) || 0 }
+      : pr ? uxTotalesRecuento(pr.recuento) : null;
+    return caballetesNecesarios(huecosObra(o ? o.recuento : [], tot, capC), capC);
+  };
   const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
   if (editando) {
@@ -27324,13 +27709,14 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
           const pr = proyectos.find((x) => x.id === c.obra.proyectoId);
           const o = obras.find((x) => x.key === c.obra.key);
           const huecos = huecosObra(o ? o.recuento : [], pr ? uxTotalesRecuento(pr.recuento) : null, capC);
-          const nec = caballetesNecesarios(huecos, capC);
+          const nec = necesariosObra(c.obra) || caballetesNecesarios(huecos, capC);
           const ya = toArray(caballetes).filter((x) => x.id !== c.id && x.estado === "cargado" && x.obra && x.obra.proyectoId === c.obra.proyectoId).map((x) => x.numero);
           const aqui = c.lineas.reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
           return (
             <div className={`text-sm rounded-md px-3 py-2 border ${aqui > capC.capacidad ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-sky-50 border-sky-200 text-sky-900"}`}>
               {nec ? <>Esta obra necesita <b>{nec} caballete{nec === 1 ? "" : "s"}</b> ({Math.round(huecos * 10) / 10} huecos, caben {capC.capacidad} por caballete).</> : "Esta obra no tiene las ventanas contadas."}
               {ya.length > 0 && <> Ya tiene cargados: <b>{ya.join(", ")}</b>.</>}
+              <div className="text-xs mt-1">{nec ? (ya.length + 1 >= nec ? "✓ Con este caballete se completa la obra: al guardarlo pasa sola a Reparto." : `Cuando estén cargados los ${nec}, la obra pasará sola a Reparto.`) : "Sin ventanas contadas no se puede saber cuándo está completa: pásala a Reparto a mano con \"Fabricación terminada\"."}</div>
               {aqui > capC.capacidad && <div className="font-semibold mt-1">⚠ En este caballete has puesto {aqui} piezas y caben {capC.capacidad}: reparte en otro caballete.</div>}
             </div>
           );
@@ -27378,8 +27764,22 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
           <button onClick={() => setEditando(null)} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
           <button onClick={() => {
             if (!c.obra) { alert("Elige la obra."); return; }
-            const listo = { ...c, estado: "cargado", fechaCarga: hoy, lineas: c.lineas.map((l) => ({ ...l, uds: parseFloat(l.uds) || 0 })), historial: hist(c, `Cargado con ${c.obra.nombre}`) };
+            if (c.reserva && c.reserva.key !== c.obra.key && !confirm(`Este caballete estaba reservado para ${c.reserva.nombre}. ¿Cargarlo con ${c.obra.nombre} igualmente?`)) return;
+            if (c.estado !== "cargado" && !(c.reserva && c.reserva.key === c.obra.key)) {
+              // Se carga uno sin reservar: se libera una de las reservas de esta obra para que no sobren
+              const otra = toArray(caballetes).find((x) => x.id !== c.id && (x.estado || "libre") === "libre" && x.reserva && x.reserva.key === c.obra.key);
+              if (otra) onGuardar({ ...otra, reserva: null, historial: hist(otra, `Reserva liberada: ${c.obra.nombre} se cargó en ${c.numero}`) });
+            }
+            const listo = { ...c, reserva: null, estado: "cargado", fechaCarga: hoy, lineas: c.lineas.map((l) => ({ ...l, uds: parseFloat(l.uds) || 0 })), historial: hist(c, `Cargado con ${c.obra.nombre}`) };
             onGuardar(listo); setEditando(null);
+            // Si con este caballete ya están cargados todos los que necesita la obra, pasa sola a Reparto
+            const pr = proyectos.find((x) => x.id === c.obra.proyectoId);
+            const nec = necesariosObra(c.obra);
+            const cargados = toArray(caballetes).filter((x) => x.id !== c.id && x.estado === "cargado" && x.obra && x.obra.proyectoId === c.obra.proyectoId).length + 1;
+            if (onMoverEstado && pr && nec > 0 && cargados >= nec && ["Pendiente de aceptación", "En proceso"].includes(pr.estadoTrabajo)) {
+              onMoverEstado(pr.id, "Listo para reparto/recogida");
+              alert(`Cargados los ${nec} caballete${nec === 1 ? "" : "s"} de ${c.obra.nombre}: la obra pasa a Reparto.`);
+            }
             if (confirm("Caballete guardado. ¿Imprimir su packing list ahora?")) imprimirPackingCaballete({ ...listo, almacenNombre: nombreAlmacen(almacenDe(listo)) });
           }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2 rounded-md text-sm font-semibold">Guardar caballete</button>
         </div>
@@ -27426,7 +27826,14 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
         {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
       </div>
       {camara && <LectorCamara onLeido={(v) => { setCamara(false); buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
-      <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />
+      <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
+        <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
+        <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
+      </div>
+      {vistaPrev === "semanas"
+        ? <PlanningCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig}
+            pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} onGuardar={onGuardar} almacenPrincipal={almacenes[0].id} />
+        : <PrevisionCaballetes proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} caballetes={caballetes} config={config} onSaveConfig={onSaveConfig} />}
       <div className="grid grid-cols-3 gap-3">
         {[["libre", "Libres"], ["cargado", "Con ventanas"], ["fuera", "Fuera (a devolver)"]].map(([k, t]) => (
           <button key={k} onClick={() => setFiltro(filtro === k ? "" : k)} className={`text-left rounded-lg p-3 border ${filtro === k ? "border-[#2E8B57]" : "border-transparent"} ${k === "fuera" && cuenta("fuera") ? "bg-amber-50" : "bg-slate-50"}`}>
@@ -27442,8 +27849,21 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
               <div key={c.id} className="flex flex-wrap items-center gap-2 text-sm">
                 <span className="font-bold text-slate-900">{c.numero}</span>
                 <span className="text-slate-700">{c.salida && c.salida.cliente ? c.salida.cliente : "—"} · {c.salida && c.salida.obra}{c.salida && c.salida.direccion ? ` · ${c.salida.direccion}` : ""}</span>
-                <span className={`text-xs font-semibold ${dias(c.salida && c.salida.fecha) > 15 ? "text-rose-600" : "text-amber-800"}`}>desde el {fmtDate(c.salida && c.salida.fecha)} ({dias(c.salida && c.salida.fecha)} días)</span>
-                <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, almacenId: almacenSel || almacenDe(c), historial: hist(c, `Devuelto por ${c.salida ? c.salida.cliente || c.salida.obra : ""} a ${nombreAlmacen(almacenSel || almacenDe(c))}`) }); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Devuelto</button>
+                {(() => {
+                  const v = vueltaPrevistaCaballete(c, diasDev);
+                  const tarde = !v || v < hoy;
+                  const dd = diasDev(c.salida && c.salida.cliente);
+                  const tel = telCliente(c.salida && c.salida.cliente);
+                  return <>
+                    <span className={`text-xs font-semibold ${tarde ? "text-rose-600" : "text-amber-800"}`}>desde el {fmtDate(c.salida && c.salida.fecha)} ({dias(c.salida && c.salida.fecha)} días)</span>
+                    <span className={`text-xs ${tarde ? "font-semibold text-rose-600" : "text-slate-600"}`}>{tarde ? "⚠ Reclamar · tenía que volver" : "Vuelve"} el</span>
+                    <input type="date" defaultValue={v} key={v} title={c.salida && c.salida.vuelvePrevista ? "Fecha puesta a mano" : `Calculada: ${dd.dias} días${dd.media ? ` (media de ${dd.n} devoluciones de este cliente)` : " (valor por defecto)"}`}
+                      onBlur={(e) => { const nv = e.target.value; if (nv !== v) onGuardar({ ...c, salida: { ...(c.salida || {}), vuelvePrevista: nv || null }, historial: hist(c, nv ? `Vuelta prevista el ${fmtDate(nv)}` : "Vuelta prevista: la calcula el CRM") }); }}
+                      className={`text-xs border rounded px-1.5 py-0.5 ${tarde ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-white"}`} />
+                    {tel && <a href={`tel:${tel}`} className="text-xs font-semibold text-sky-700 hover:underline">📞 {tel}</a>}
+                  </>;
+                })()}
+                <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) devolver(c, `Devuelto por ${c.salida ? c.salida.cliente || c.salida.obra : ""} a ${nombreAlmacen(almacenSel || almacenDe(c))}`); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Devuelto</button>
               </div>
             ))}
           </div>
@@ -27467,17 +27887,19 @@ function AlmacenVentanas({ caballetes, proyectos, clientes, uxExpedientes, onGua
               </div>
             )}
             {!almacenSel && c.estado !== "fuera" && <div className="text-[11px] text-slate-400">{nombreAlmacen(almacenDe(c))}</div>}
+            {(c.estado || "libre") === "libre" && c.reserva && <div className="text-xs bg-sky-50 text-sky-800 border border-sky-200 rounded px-2 py-1">Reservado para <b>{c.reserva.nombre}</b>{c.reserva.fecha ? ` · carga el ${fmtDate(c.reserva.fecha)}` : ""}</div>}
             {c.obra && <div className="text-sm"><b>{c.obra.nombre}</b>{c.obra.cliente ? <span className="text-slate-500"> · {c.obra.cliente}</span> : null}</div>}
             {toArray(c.lineas).length > 0 && <div className="text-xs text-slate-500">{toArray(c.lineas).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0)} piezas · {toArray(c.lineas).length} líneas</div>}
             <div className="flex flex-wrap gap-2 text-xs">
-              {(c.estado || "libre") === "libre" && <button onClick={() => setEditando({ ...c, lineas: [] })} className="font-semibold text-[#2E8B57] hover:underline">Cargar ventanas</button>}
+              {(c.estado || "libre") === "libre" && <button onClick={() => empezarCarga(c)} className="font-semibold text-[#2E8B57] hover:underline">Cargar ventanas</button>}
+              {(c.estado || "libre") === "libre" && c.reserva && <button onClick={() => onGuardar({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) })} className="text-slate-400 hover:underline">Quitar reserva</button>}
               {c.estado === "cargado" && <>
                 <button onClick={() => imprimirPackingCaballete({ ...c, almacenNombre: nombreAlmacen(almacenDe(c)) })} className="flex items-center gap-1 font-semibold text-slate-700 hover:underline"><Printer size={12} /> Packing list</button>
                 <button onClick={() => setEditando({ ...c, lineas: toArray(c.lineas) })} className="font-semibold text-slate-600 hover:underline">Editar</button>
                 <button onClick={() => { if (confirm(`¿Sale el caballete ${c.numero} con ${c.obra ? c.obra.nombre : "la obra"}? Quedará pendiente de devolver.`)) onGuardar({ ...c, estado: "fuera", salida: { fecha: hoy, cliente: c.obra ? c.obra.cliente : "", obra: c.obra ? c.obra.nombre : "", direccion: c.obra ? c.obra.direccion : "" }, historial: hist(c, `Sale con ${c.obra ? c.obra.nombre : ""}`) }); }} className="font-semibold text-amber-700 hover:underline">Sale con la obra</button>
                 <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
               </>}
-              {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, almacenId: almacenSel || almacenDe(c), historial: hist(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`) }); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
+              {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) devolver(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
             </div>
             {toArray(c.historial).length > 1 && (
               <details className="text-[11px] text-slate-400"><summary className="cursor-pointer">Historial</summary>{[...toArray(c.historial)].reverse().slice(0, 12).map((h, i) => <div key={i}>{fmtDate(String(h.fecha).slice(0, 10))} · {h.accion}</div>)}</details>
