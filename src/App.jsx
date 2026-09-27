@@ -19767,6 +19767,7 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
         onAddLlamada={(llamada, nuevoEstado) => onAddLlamada(presupuesto.id, llamada, nuevoEstado)}
         onDeleteLlamada={(llamadaId) => onDeleteLlamada(presupuesto.id, llamadaId)}
         onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
+        onGuardarTelefono={(tel, extra) => onUpsert({ ...presupuesto, telefono: tel, ...(extra || {}) })}
         onCrearProyecto={() => onCrearProyecto(presupuesto)}
         onDuplicar={() => onDuplicar(presupuesto)}
         replicas={replicasDe(presupuesto)}
@@ -24845,7 +24846,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
@@ -25018,10 +25019,31 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
               <Phone size={14} /> Llamar
             </a>
           )}
-          {enlaceWhatsapp(presupuesto) && (
+          {/* Enviar el presupuesto al cliente por WhatsApp (con el enlace a su PDF). Siempre
+              visible: si el presupuesto no tiene teléfono, lo pide y lo guarda. */}
+          {enlaceWhatsapp(presupuesto) ? (
             <a href={enlaceWhatsapp(presupuesto)} target="_blank" rel="noopener noreferrer" onClick={() => onMarcarEnviado("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
-              <MessageCircle size={14} /> WhatsApp
+              <MessageCircle size={14} /> {presupuestoSinEnviar(presupuesto) ? "Enviar presupuesto por WhatsApp" : "WhatsApp (seguimiento)"}
             </a>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                const tel = (window.prompt("Este presupuesto no tiene teléfono. Escribe el móvil del cliente para mandárselo por WhatsApp:", (presupuesto.firma && presupuesto.firma.firmanteTelefono) || "") || "").trim();
+                if (!tel) return;
+                const url = enlaceWhatsapp({ ...presupuesto, telefono: tel });
+                if (!url) { alert("Ese teléfono no parece válido."); return; }
+                window.open(url, "_blank", "noopener");
+                // Teléfono y "Enviado" en un solo guardado (dos seguidos se pisarían)
+                const hoy = new Date().toISOString().slice(0, 10);
+                const en7 = new Date(); en7.setDate(en7.getDate() + 7);
+                const extra = presupuestoSinEnviar(presupuesto) ? { estado: "Enviado", fechaEnvio: hoy, proximaLlamadaFecha: en7.toISOString().slice(0, 10) } : {};
+                if (onGuardarTelefono) onGuardarTelefono(tel, extra); else onMarcarEnviado("whatsapp");
+              }}
+              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md"
+            >
+              <MessageCircle size={14} /> {presupuestoSinEnviar(presupuesto) ? "Enviar presupuesto por WhatsApp" : "WhatsApp (seguimiento)"}
+            </button>
           )}
           {presupuesto.email && (
             <div className="flex flex-col items-end gap-1">
