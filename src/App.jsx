@@ -860,14 +860,33 @@ export default function App() {
   // tal cual, página a página — en vez de un resumen genérico. Las fotos se meten
   // como página de imagen. Si no hay ningún documento guardado, se genera un
   // resumen básico como respaldo para que el envío nunca se quede sin nada que firmar.
-  const generarPdfBase64Presupuesto = async (presupuesto, documentoId) => {
+  // Descarga un archivo guardado (Firebase Storage) pasando por el servidor de
+  // Netlify, porque el navegador no puede bajarlo directamente (CORS del bucket →
+  // "Failed to fetch"). Devuelve { bytes, mimeType }.
+  const descargarArchivoGuardado = async (url) => {
+    const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
+    const r = await fetch("/.netlify/functions/descargar-archivo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ url }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `No se pudo descargar (${r.status})`);
+    return { bytes: Uint8Array.from(atob(d.base64), (c) => c.charCodeAt(0)), mimeType: d.contentType || "" };
+  };
+
+  // documentoIds: lista de ids de los documentos a firmar (se juntan en un solo
+  // PDF en el orden en que están guardados). Acepta también un id suelto o null
+  // (null = todos los documentos guardados).
+  const generarPdfBase64Presupuesto = async (presupuesto, documentoIds) => {
     const pdfDoc = await PDFDocument.create();
-    const documentos = documentoId
-      ? (presupuesto.documentos || []).filter((d) => d.id === documentoId)
+    const ids = documentoIds == null ? null : (Array.isArray(documentoIds) ? documentoIds : [documentoIds]);
+    const documentos = ids
+      ? (presupuesto.documentos || []).filter((d) => ids.includes(d.id))
       : (presupuesto.documentos || []);
     const fallos = [];
-    if (documentoId && documentos.length === 0) {
-      fallos.push(`No se encontró el documento elegido (id ${documentoId}) entre los guardados en el presupuesto`);
+    if (ids && documentos.length < ids.length) {
+      fallos.push(`No se encontraron ${ids.length - documentos.length} de los documentos elegidos entre los guardados en el presupuesto`);
     }
 
     if (documentos.length > 0) {
@@ -881,11 +900,9 @@ export default function App() {
             bytes = Uint8Array.from(atob(matchDataUri[2]), (c) => c.charCodeAt(0));
           } else if (doc.url) {
             // Documentos nuevos: URL de Firebase Storage — hay que descargarlos.
-            const respuesta = await fetch(doc.url);
-            if (!respuesta.ok) throw new Error(`No se pudo descargar (${respuesta.status})`);
-            mimeType = respuesta.headers.get("content-type") || "";
-            const buffer = await respuesta.arrayBuffer();
-            bytes = new Uint8Array(buffer);
+            const descargado = await descargarArchivoGuardado(doc.url);
+            mimeType = descargado.mimeType;
+            bytes = descargado.bytes;
             // Si el content-type no viene claro, se adivina por la extensión del nombre.
             if (!mimeType || mimeType === "application/octet-stream") {
               const ext = (doc.nombre || "").split(".").pop().toLowerCase();
@@ -956,8 +973,7 @@ export default function App() {
     // Si hay un PDF de condiciones configurado, se añaden sus páginas a continuación
     if (configuracionFirma.condicionesPdfUrl) {
       try {
-        const respuestaCondiciones = await fetch(configuracionFirma.condicionesPdfUrl);
-        const bytesCondiciones = await respuestaCondiciones.arrayBuffer();
+        const { bytes: bytesCondiciones } = await descargarArchivoGuardado(configuracionFirma.condicionesPdfUrl);
         const pdfCondiciones = await PDFDocument.load(bytesCondiciones);
         const paginasCopiadas = await pdfDoc.copyPages(pdfCondiciones, pdfCondiciones.getPageIndices());
         paginasCopiadas.forEach((p) => pdfDoc.addPage(p));
@@ -997,15 +1013,19 @@ export default function App() {
   // responsable interno de aprobación de la obra vinculada (si la tiene) o el
   // propio cliente del presupuesto. Actualiza el estado de firma en Firebase
   // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
-  const enviarPresupuestoAFirmar = async (presupuesto, firmante, documentoId) => {
+  const enviarPresupuestoAFirmar = async (presupuesto, firmante, documentoIds) => {
     try {
-      const { base64: pdfBase64, fallos } = await generarPdfBase64Presupuesto(presupuesto, documentoId);
+      const { base64: pdfBase64, fallos } = await generarPdfBase64Presupuesto(presupuesto, documentoIds);
       if (fallos.length > 0) {
-        showToast(`⚠ No se pudo usar el documento real (se manda un resumen en su lugar): ${fallos.join("; ")}`, "error");
+        // No se manda a firmar un resumen en lugar del presupuesto real: el cliente
+        // tiene que firmar el documento de verdad. Se para aquí y se avisa.
+        showToast(`No se ha enviado nada a firmar — no se pudo cargar el documento: ${fallos.join("; ")}`, "error");
+        return;
       }
+      const tokenUsuario = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
       const response = await fetch("/.netlify/functions/firma-enviar", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(tokenUsuario ? { Authorization: `Bearer ${tokenUsuario}` } : {}) },
         body: JSON.stringify({
           registroTipo: "presupuestos",
           registroId: presupuesto.id,
@@ -24174,7 +24194,9 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   });
   const firma = presupuesto.firma;
   const documentos = presupuesto.documentos || [];
-  const [documentoElegidoId, setDocumentoElegidoId] = useState(documentos.length > 0 ? documentos[documentos.length - 1].id : "");
+  // Documentos marcados para firmar (casillas). Por defecto, el último subido.
+  const [documentosElegidosIds, setDocumentosElegidosIds] = useState(documentos.length > 0 ? [documentos[documentos.length - 1].id] : []);
+  const alternarDocumentoElegido = (id) => setDocumentosElegidosIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const sinDocumento = documentos.length === 0;
   const [mostrarFormManual, setMostrarFormManual] = useState(false);
   const [usuarioConfirmaId, setUsuarioConfirmaId] = useState("");
@@ -24222,7 +24244,8 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
     const firmanteAEnviar = firmante.email.trim()
       ? firmante
       : { ...firmante, email: `${presupuesto.id}@sinemail.alumavel.es` };
-    await onEnviarFirma(presupuesto, firmanteAEnviar, documentoElegidoId || null);
+    if (documentos.length > 0 && documentosElegidosIds.length === 0) { setEnviando(false); return; }
+    await onEnviarFirma(presupuesto, firmanteAEnviar, documentos.length > 0 ? documentosElegidosIds : null);
     setEnviando(false);
     setMostrarForm(false);
   };
@@ -24269,10 +24292,20 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
       ) : (
         <form onSubmit={enviar} className="space-y-2">
           {documentos.length > 1 ? (
-            <Field label="Qué documento firmar (tiene varios guardados)">
-              <Select value={documentoElegidoId} onChange={(e) => setDocumentoElegidoId(e.target.value)}>
-                {documentos.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
-              </Select>
+            <Field label="Qué documentos firmar (se juntan en un solo PDF, en este orden)">
+              <div className="space-y-1.5">
+                {documentos.map((d) => (
+                  <label key={d.id} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={documentosElegidosIds.includes(d.id)} onChange={() => alternarDocumentoElegido(d.id)} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                    {d.nombre}
+                  </label>
+                ))}
+                <div className="flex gap-3 text-xs pt-0.5">
+                  <button type="button" onClick={() => setDocumentosElegidosIds(documentos.map((d) => d.id))} className="font-semibold text-[#2E8B57] hover:underline">Marcar todos</button>
+                  <button type="button" onClick={() => setDocumentosElegidosIds([])} className="font-semibold text-slate-500 hover:underline">Desmarcar todos</button>
+                </div>
+                {documentosElegidosIds.length === 0 && <p className="text-xs text-rose-600 font-semibold">Marca al menos un documento.</p>}
+              </div>
             </Field>
           ) : (
             <p className="text-xs text-slate-500">
@@ -24294,7 +24327,7 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
           </Field>
           <p className="text-xs text-slate-400">Si no pone email, el enlace de firma se manda solo por WhatsApp — pon el teléfono para poder compartirlo.</p>
           <div className="flex gap-2">
-            <button type="submit" disabled={enviando || (!firmante.email.trim() && !firmante.telefono.trim())} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
+            <button type="submit" disabled={enviando || (!firmante.email.trim() && !firmante.telefono.trim()) || (documentos.length > 0 && documentosElegidosIds.length === 0)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {enviando ? "Enviando..." : "Enviar a firmar"}
             </button>
             <button type="button" onClick={() => setMostrarForm(false)} className="text-sm font-semibold text-slate-500 px-3.5 py-2">Cancelar</button>

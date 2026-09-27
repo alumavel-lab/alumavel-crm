@@ -38,6 +38,26 @@ export const handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: "registroTipo debe ser 'presupuestos' o 'proyectos'." }) };
     }
 
+    // Acceso a la base de datos: se usa el token del usuario que ha iniciado sesión
+    // en el CRM (lo manda el navegador). Si no viene, se usa FIREBASE_DB_SECRET.
+    const tokenUsuario = (event.headers?.authorization || event.headers?.Authorization || "").replace(/^Bearer\s+/i, "");
+    const dbAuth = tokenUsuario ? `?auth=${encodeURIComponent(tokenUsuario)}` : FB_AUTH;
+
+    // Se comprueba que el registro existe ANTES de crear la solicitud en Firma.dev,
+    // para no gastar un envío si luego no se puede guardar. OJO: el CRM guarda
+    // presupuestos/proyectos como una lista (índices 0,1,2...), no con el id como
+    // clave — hay que traer la colección y buscar el índice real.
+    const getColRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}.json${dbAuth}`);
+    const coleccion = await getColRes.json().catch(() => null);
+    if (!getColRes.ok || coleccion?.error) {
+      console.error("Firebase rechazó la lectura:", getColRes.status, JSON.stringify(coleccion));
+      return { statusCode: 500, body: JSON.stringify({ error: `El servidor no tiene permiso para leer la base de datos (${coleccion?.error || getColRes.status}). Cierra sesión y vuelve a entrar; si sigue, revisa FIREBASE_DB_SECRET en Netlify.` }) };
+    }
+    const claveReal = coleccion ? Object.keys(coleccion).find((k) => coleccion[k]?.id === registroId) : null;
+    if (!claveReal) {
+      return { statusCode: 404, body: JSON.stringify({ error: "No se encontró el presupuesto en la base de datos (¿está recién creado? espera unos segundos y reintenta)." }) };
+    }
+
     const apiKey = process.env.FIRMA_API_KEY || process.env.FIRMA_API_KEY_TEST;
     if (!apiKey) {
       console.error("Falta FIRMA_API_KEY_TEST (o FIRMA_API_KEY) en Netlify");
@@ -81,17 +101,6 @@ export const handler = async (event) => {
     // par de sitios más por si acaso, en vez de fallar en silencio.
     const signingLink = dataFirma.first_signer?.signing_link || dataFirma.signing_link || dataFirma.recipients?.[0]?.signing_link || "";
 
-    // Comprueba que el registro existe antes de escribir en él. OJO: el CRM guarda
-    // presupuestos/proyectos como una lista (índices 0,1,2...), no con el id de cada
-    // uno como clave de Firebase — así que hay que traer toda la colección y buscar
-    // cuál tiene ese id, y escribir luego en su clave real (el índice), no en el id.
-    const getColRes = await fetch(`${FIREBASE_DB_URL}/${registroTipo}.json${FB_AUTH}`);
-    const coleccion = await getColRes.json();
-    const claveReal = coleccion ? Object.keys(coleccion).find((k) => coleccion[k]?.id === registroId) : null;
-    if (!claveReal) {
-      return { statusCode: 404, body: JSON.stringify({ error: "No se encontró el registro en Firebase." }) };
-    }
-
     const firmaInfo = {
       signingRequestId,
       estado: "enviado",
@@ -101,7 +110,7 @@ export const handler = async (event) => {
       signingLink,
     };
 
-    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json${FB_AUTH}`, {
+    await fetch(`${FIREBASE_DB_URL}/${registroTipo}/${claveReal}/firma.json${dbAuth}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(firmaInfo),
