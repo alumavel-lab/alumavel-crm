@@ -4866,7 +4866,7 @@ const MANUALES = {
       "La pestaña \"Calculadora\" tiene la calculadora de persianas: calcula el despiece y el precio a partir de las medidas y, al pulsar \"Pasar a presupuesto →\", abre el formulario ya relleno — solo falta revisarlo y pulsar Guardar.",
       "Al guardar un presupuesto (nuevo o editado) se abre directamente su ficha, para tenerlo a mano al momento.",
       "Si un presupuesto de persianas ya guardado necesita más persianas, pulsa \"Añadir más persianas\" en su ficha: te lleva a la Calculadora en modo \"sumar a este presupuesto\" en vez de crear uno nuevo (solo disponible si el presupuesto aún no se ha pasado a proyecto).",
-      "En la ficha del presupuesto ya guardado tienes un botón \"Imprimir\" para sacarlo en PDF o papel, \"Generar PDF y guardarlo aquí\" para generarlo y guardarlo de golpe, y — si el presupuesto tiene email — \"Enviar por email\" para mandárselo directamente al cliente con el PDF adjunto.",
+      "En la ficha del presupuesto ya guardado tienes un botón \"Imprimir\" para sacarlo en PDF o papel, \"Enviar presupuesto\" (WhatsApp, con el enlace a su PDF), \"Seguimiento\" (WhatsApp para preguntar si lo ha revisado) y — si el presupuesto tiene email — \"Enviar por email\" para mandárselo con el PDF adjunto.",
       "Puedes registrar las llamadas de seguimiento que haces a un cliente sobre su presupuesto.",
       "Cuando el cliente lo acepta, cambia el estado a \"Aceptado\" y pulsa \"CREAR PROYECTO DESDE ESTE PRESUPUESTO\" para convertirlo en un proyecto/obra real (ese botón solo aparece en ese estado).",
       "También puedes duplicar un presupuesto para no escribirlo todo de nuevo si es parecido a otro.",
@@ -19392,21 +19392,24 @@ const enlaceVerPdfPresupuesto = (p) => {
   return doc && typeof window !== "undefined" ? `${window.location.origin}/.netlify/functions/ver-documento?p=${encodeURIComponent(p.id)}&d=${encodeURIComponent(doc.id)}` : "";
 };
 const presupuestoSinEnviar = (p) => !p.estado || p.estado === "Pendiente";
-const mensajeWhatsappPresupuesto = (p) => {
+// modo: "envio" (mandar el presupuesto), "seguimiento" (¿lo ha revisado?) o, sin modo,
+// según esté o no enviado ya.
+const mensajeWhatsappPresupuesto = (p, modo) => {
   const descCorta = String(p.descripcion || "").split("\n")[0];
   const enlace = enlaceVerPdfPresupuesto(p);
-  // Primera vez (todavía sin enviar): se le manda el presupuesto con el enlace al PDF.
-  if (presupuestoSinEnviar(p) && enlace) {
-    return `Hola ${p.clienteNombre}, le enviamos de Ecowin PVC el presupuesto ${p.numero}${descCorta ? ` (${descCorta})` : ""}${p.importe ? `, importe ${importePresupuestoTexto(p)}` : ""}. Puede verlo aquí: ${enlace}\nQuedamos a su disposición para cualquier duda. Un saludo.`;
+  const envio = modo ? modo === "envio" : presupuestoSinEnviar(p);
+  // Envío del presupuesto: con el enlace al PDF.
+  if (envio) {
+    return `Hola ${p.clienteNombre}, le enviamos de Ecowin PVC el presupuesto ${p.numero}${descCorta ? ` (${descCorta})` : ""}${p.importe ? `, importe ${importePresupuestoTexto(p)}` : ""}.${enlace ? ` Puede verlo aquí: ${enlace}` : ""}\nQuedamos a su disposición para cualquier duda. Un saludo.`;
   }
   return `Hola ${p.clienteNombre}, le escribimos de Ecowin PVC para saber si ha podido revisar el presupuesto ${p.numero}${descCorta ? ` (${descCorta})` : ""}.${enlace ? ` Se lo dejo aquí otra vez: ${enlace}` : ""} Quedamos a su disposición para cualquier duda. Un saludo.`;
 };
 
-const enlaceWhatsapp = (p) => {
+const enlaceWhatsapp = (p, modo) => {
   const tel = (p.telefono || "").replace(/[^\d+]/g, "");
   if (!tel) return null;
   const telConPrefijo = tel.startsWith("+") ? tel.replace("+", "") : (tel.startsWith("34") ? tel : `34${tel}`);
-  return `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(mensajeWhatsappPresupuesto(p))}`;
+  return `https://wa.me/${telConPrefijo}?text=${encodeURIComponent(mensajeWhatsappPresupuesto(p, modo))}`;
 };
 
 const enlaceLlamar = (p) => {
@@ -25019,32 +25022,33 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
               <Phone size={14} /> Llamar
             </a>
           )}
-          {/* Enviar el presupuesto al cliente por WhatsApp (con el enlace a su PDF). Siempre
-              visible: si el presupuesto no tiene teléfono, lo pide y lo guarda. */}
-          {enlaceWhatsapp(presupuesto) ? (
-            <a href={enlaceWhatsapp(presupuesto)} target="_blank" rel="noopener noreferrer" onClick={() => onMarcarEnviado("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
-              <MessageCircle size={14} /> {presupuestoSinEnviar(presupuesto) ? "Enviar presupuesto por WhatsApp" : "WhatsApp (seguimiento)"}
-            </a>
-          ) : (
+          {/* WhatsApp: dos botones, "Enviar presupuesto" (con el enlace a su PDF) y
+              "Seguimiento" (¿lo ha revisado?). Si no hay teléfono, se pide y se guarda. */}
+          {["envio", "seguimiento"].map((modo) => (
             <button
+              key={modo}
               type="button"
               onClick={() => {
-                const tel = (window.prompt("Este presupuesto no tiene teléfono. Escribe el móvil del cliente para mandárselo por WhatsApp:", (presupuesto.firma && presupuesto.firma.firmanteTelefono) || "") || "").trim();
-                if (!tel) return;
-                const url = enlaceWhatsapp({ ...presupuesto, telefono: tel });
+                let tel = String(presupuesto.telefono || "").trim();
+                if (!tel) {
+                  tel = (window.prompt("Este presupuesto no tiene teléfono. Escribe el móvil del cliente para WhatsApp:", (presupuesto.firma && presupuesto.firma.firmanteTelefono) || "") || "").trim();
+                  if (!tel) return;
+                }
+                const url = enlaceWhatsapp({ ...presupuesto, telefono: tel }, modo);
                 if (!url) { alert("Ese teléfono no parece válido."); return; }
                 window.open(url, "_blank", "noopener");
-                // Teléfono y "Enviado" en un solo guardado (dos seguidos se pisarían)
                 const hoy = new Date().toISOString().slice(0, 10);
                 const en7 = new Date(); en7.setDate(en7.getDate() + 7);
-                const extra = presupuestoSinEnviar(presupuesto) ? { estado: "Enviado", fechaEnvio: hoy, proximaLlamadaFecha: en7.toISOString().slice(0, 10) } : {};
-                if (onGuardarTelefono) onGuardarTelefono(tel, extra); else onMarcarEnviado("whatsapp");
+                // Enviar: pasa a "Enviado" (si no lo estaba). Teléfono nuevo y estado, en un solo guardado.
+                const extra = modo === "envio" && presupuestoSinEnviar(presupuesto) ? { estado: "Enviado", fechaEnvio: hoy, proximaLlamadaFecha: en7.toISOString().slice(0, 10) } : {};
+                if (tel !== String(presupuesto.telefono || "").trim() && onGuardarTelefono) onGuardarTelefono(tel, extra);
+                else if (modo === "envio") onMarcarEnviado("whatsapp");
               }}
-              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md"
+              className={`flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md ${modo === "envio" ? "text-white bg-emerald-600 hover:bg-emerald-700" : "text-emerald-700 border border-emerald-300 bg-white hover:bg-emerald-50"}`}
             >
-              <MessageCircle size={14} /> {presupuestoSinEnviar(presupuesto) ? "Enviar presupuesto por WhatsApp" : "WhatsApp (seguimiento)"}
+              <MessageCircle size={14} /> {modo === "envio" ? "Enviar presupuesto" : "Seguimiento"}
             </button>
-          )}
+          ))}
           {presupuesto.email && (
             <div className="flex flex-col items-end gap-1">
               <button
@@ -25065,23 +25069,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </div>
           )}
           <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
-          <div className="flex flex-col items-end gap-1">
-            <button
-              onClick={generarYGuardarPdf}
-              disabled={generandoPdf}
-              title="Genera el PDF y lo deja guardado aquí mismo como documento — así ya está listo para 'Enviar a firmar' sin tener que subirlo a mano"
-              style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-              className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90 disabled:opacity-60"
-            >
-              <FileText size={14} /> {generandoPdf ? "Generando..." : "Generar PDF y guardarlo aquí"}
-            </button>
-            {pdfGuardadoUrl && (
-              <span className="text-xs text-emerald-600 font-semibold">
-                ✓ Guardado — <a href={pdfGuardadoUrl} target="_blank" rel="noopener noreferrer" className="underline">Ver/descargar</a>
-              </span>
-            )}
-            {errorGenerarPdf && <span className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">⚠ {errorGenerarPdf}</span>}
-          </div>
+
           <button onClick={onDuplicar} title="Crea una réplica de este presupuesto con su propio número (ej. 4192 → 4192-1), lista para modificar" className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Copy size={14} /> Duplicar (nueva réplica)</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
