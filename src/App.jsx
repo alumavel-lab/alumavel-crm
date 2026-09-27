@@ -11074,9 +11074,21 @@ async function bloqueDeArchivoParaIA(file) {
 const ACEPTA_DOCUMENTOS = "application/pdf,image/*,.xlsx,.xls,.csv,.ods,.docx";
 
 async function leerDocumentoCristalConIA(file, prompt) {
+  const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 8000)).replace(/```json|```/g, "").trim();
+  const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
+  const trozo = limpio.slice(oi, of + 1);
+  try { return JSON.parse(trozo); }
+  catch (e) {
+    // Arreglo de lo más habitual: comillas dentro de un texto (p.ej. PERFIL UNION "L")
+    // o una coma de más al final de una lista.
+    return JSON.parse(repararJsonIA(trozo));
+  }
+}
+// Manda el documento a la IA en segundo plano (sin límite de tiempo) y devuelve el texto tal cual.
+async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens) {
   const contentBlock = await bloqueDeArchivoParaIA(file);
   const jobId = uid();
-  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: 8000, contentBlock, prompt });
+  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: maxTokens || 8000, contentBlock, prompt });
   await fetch("/.netlify/functions/anthropic-proxy-background", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),
   });
@@ -11091,15 +11103,7 @@ async function leerDocumentoCristalConIA(file, prompt) {
   fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
   if (!resultado) throw new Error("La lectura está tardando demasiado. Prueba de nuevo.");
   if (resultado.status === "error") throw new Error(resultado.error || "Error al leer el documento");
-  const limpio = String(resultado.texto || "").replace(/```json|```/g, "").trim();
-  const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
-  const trozo = limpio.slice(oi, of + 1);
-  try { return JSON.parse(trozo); }
-  catch (e) {
-    // Arreglo de lo más habitual: comillas dentro de un texto (p.ej. PERFIL UNION "L")
-    // o una coma de más al final de una lista.
-    return JSON.parse(repararJsonIA(trozo));
-  }
+  return String(resultado.texto || "");
 }
 // Escapa las comillas que van DENTRO de un texto (las que no cierran el texto: la de
 // cierre siempre va seguida de , } ] o :) y quita comas sobrantes antes de } o ].
@@ -11162,29 +11166,46 @@ const rellenarChecklistDesdeListado = (checklist, lineas, pedidosObra) => normal
   return { ...c, estado: "si", pedidoIds, enStock: pedidoIds.length === 0 };
 });
 async function leerListadoMateriales(file) {
+  // Se pide en formato de líneas separadas por | (y no JSON): así una comilla o un símbolo
+  // raro en una descripción no estropea la lectura entera.
   const prompt = [
-    'Esto es un listado de materiales de un programa de ventanas: un "ANÁLISIS MATERIALES" y/o un "LISTADO CAJAS" (persianas y cajones). Puede venir en PDF, Excel o Word. Revisa TODO el documento.',
-    'Si hay persianas o cajones (LISTADO CAJAS, o la sección PERSIANA del análisis: cajones, guías de persiana, cajones y guías de mosquitera…), saca cada línea con s:"persianas", c: el código (p.ej. CJ_DECOR_S/G, C.327020, MPLX42240), d: la descripción (si es un LISTADO CAJAS, delante el expediente y el modelo, p.ej. "6.276-5 V3 · Compacto decorativo - guía aparte"), col: el color, u: las unidades, a: el ancho en mm y h: el alto en mm si los trae (cajones), l: la longitud de barra en metros si la trae (guías), p: precio por unidad (TOTAL BARRAS o TOTAL PRES dividido entre UDS), t: el total de la línea.',
-    "Saca TODAS las líneas de las secciones PERFILES Y JUNTAS, REFUERZO, HERRAJE y ACCESORIOS.",
-    'La sección SUPERFICIES (cristales y paneles) SÍ sácala línea a línea, TODAS (aunque se repitan medidas): s:"cristal", c: la composición (p.ej. "4/20/4" o "4/20/4 MATE"), d: la descripción (p.ej. "CAMARA 4/20/4 MATE"), u: las UDS, a: el ancho en mm, h: el alto en mm, p: el importe de la línea dividido entre UDS, t: el importe de la línea. Y además su total de m2 y de importe en "superficies".',
-    'Si el documento es un LISTADO DE MANO DE OBRA (tiempos por zona: tronzadoras, mecanizados, armados…), no tiene líneas de material: devuelve "lineas":[] y en "horas" el TOTAL de horas (TOT.MO.PRES, p.ej. 31,17 Horas → 31.17).',
-    "Para cada línea usa estas claves cortas:",
-    '- s: sección, una de "perfiles", "refuerzo", "herraje", "accesorios", "persianas", "cristal"',
-    "- c: código (p.ej. 8095, 8727, MAC-202271, 2591)",
-    "- d: descripción tal cual",
-    "- col: color o acabado si lo pone (BLANCO, Embero, Negro (PIEZA)…), si no vacío",
-    "- u: unidades (UDS: barras en perfiles y refuerzos, piezas en herrajes y accesorios)",
-    "- l: longitud de cada barra en metros (6,0 m → 6), solo en perfiles y refuerzos",
-    "- p: precio por unidad en euros: en perfiles y refuerzos = TOTAL BARRAS dividido entre UDS; en herraje y accesorios = el importe por unidad",
-    "- t: el importe total de la línea (TOTAL BARRAS o TOTAL PRES) en euros",
-    "Los números vienen en formato español (1.206,845 = 1206.845; 4.266,42€ = 4266.42). Devuélvelos como números normales.",
-    "IMPORTANTE para que el JSON sea válido: dentro de los textos NO pongas comillas dobles; si la descripción las lleva (p.ej. PERFIL UNION \"L\"), cámbialas por comillas simples (PERFIL UNION 'L').",
-    "Si el mismo código sale en dos colores distintos, son dos líneas distintas.",
-    'Si el documento trae las HORAS o el TIEMPO de fabricación (total de la obra o del expediente), ponlo en "horas" como número de horas (p.ej. 12,5 h → 12.5; 1:30 → 1.5). Si no lo trae, 0.',
-    'Responde SOLO con JSON, sin texto ni ```: {"numero":"","referencia":"","cliente":"","fecha":"","horas":0,"superficies":{"m2":0,"importe":0},"lineas":[{"s":"perfiles","c":"","d":"","col":"","u":0,"l":6,"a":0,"h":0,"p":0,"t":0}]}',
+    'Esto es un documento de un programa de ventanas: un "ANÁLISIS MATERIALES", un "LISTADO CAJAS" (persianas y cajones) o un "LISTADO MANO DE OBRA". Puede venir en PDF, Excel o Word. Revisa TODO el documento, todas las páginas.',
+    "Responde SOLO con líneas de texto, sin explicaciones, sin JSON y sin ```. Separa los campos con el carácter | . No uses el carácter | dentro de ningún texto.",
+    "Primera línea, la cabecera:",
+    "CAB|numero|referencia|cliente|fecha|horas|m2_superficies|importe_superficies",
+    '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
+    "Después, UNA línea por cada línea de material:",
+    "L|seccion|codigo|descripcion|color|uds|longitud|ancho|alto|precio_ud|total",
+    '- seccion: una de perfiles, refuerzo, herraje, accesorios, persianas, cristal.',
+    "- Saca TODAS las líneas de PERFILES Y JUNTAS (perfiles), REFUERZO (refuerzo), HERRAJE (herraje) y ACCESORIOS (accesorios).",
+    '- Sección PERSIANA del análisis o LISTADO CAJAS → seccion persianas (cajones, guías de persiana, cajones y guías de mosquitera…). En un LISTADO CAJAS pon delante de la descripción el expediente y el modelo (p.ej. 6.276-5 V3 · Compacto decorativo).',
+    "- Sección SUPERFICIES → seccion cristal, TODAS las líneas aunque se repitan medidas: codigo = la composición (p.ej. 4/20/4 o 4/20/4 MATE), descripcion (p.ej. CAMARA 4/20/4 MATE), uds, ancho y alto en mm.",
+    "- uds: UDS (barras en perfiles, refuerzos y guías; piezas en el resto). longitud: metros de cada barra (6,0 m → 6), si no 0. ancho y alto en mm si los trae (cajones y cristales), si no 0.",
+    "- precio_ud: en perfiles, refuerzos y guías = TOTAL BARRAS / UDS; en el resto = importe por unidad (en cristales = importe de la línea / UDS). total: importe total de la línea.",
+    "- color: el color o acabado si lo pone (BLANCO, LACADO BLANCO…), si no vacío.",
+    "- Números con punto decimal y sin separador de miles (4.116,26 → 4116.26; 1.320,00mm → 1320).",
+    "- Si el mismo código sale en dos colores, son dos líneas.",
+    "Un LISTADO MANO DE OBRA no tiene líneas de material: solo la cabecera CAB con las horas.",
+    "Ejemplo:",
+    "CAB|5.088|Morena|Jose Freila|27/09/2026|0|8.2|324.70",
+    "L|perfiles|5806|PERFIL UNION L|BLANCO|1|6|0|0|10.73|10.73",
+    "L|cristal|4/20/4 MATE|CAMARA 4/20/4 MATE||1|0|419|1724|30.31|30.31",
   ].join("\n");
-  const o = await leerDocumentoCristalConIA(file, prompt);
-  const lineas = (Array.isArray(o.lineas) ? o.lineas : []).map((l) => ({
+  const texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000);
+  const aNum = (x) => { const t = String(x || "").trim().replace(/[€\s]|mm$/gi, ""); return parseFloat(/,\d{1,3}$/.test(t) ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "")) || 0; };
+  const o = { numero: "", referencia: "", cliente: "", fecha: "", horas: 0, superficies: { m2: 0, importe: 0 } };
+  const crudas = [];
+  texto.split(/\r?\n/).forEach((fila) => {
+    const c = fila.split("|").map((x) => x.trim());
+    if (c[0] === "CAB") {
+      o.numero = c[1] || ""; o.referencia = c[2] || ""; o.cliente = c[3] || ""; o.fecha = c[4] || "";
+      o.horas = aNum(c[5]); o.superficies = { m2: aNum(c[6]), importe: aNum(c[7]) };
+    } else if (c[0] === "L" && c.length >= 7) {
+      crudas.push({ s: (c[1] || "").toLowerCase(), c: c[2], d: c[3], col: c[4], u: aNum(c[5]), l: aNum(c[6]), a: aNum(c[7]), h: aNum(c[8]), p: aNum(c[9]), t: aNum(c[10]) });
+    }
+  });
+  if (!crudas.length && !o.horas && !o.numero) throw new Error("la lectura no ha devuelto nada reconocible. Prueba de nuevo.");
+  const lineas = crudas.map((l) => ({
     id: uid(), seccion: LISTADO_SECCIONES[l.s] ? l.s : "accesorios",
     codigo: String(l.c || "").trim(), descripcion: String(l.d || "").trim(), color: String(l.col || "").trim(),
     uds: parseFloat(l.u) || 0, longitud: parseFloat(l.l) || 0, ancho: parseFloat(l.a) || 0, alto: parseFloat(l.h) || 0, precioUd: Math.round((parseFloat(l.p) || 0) * 100) / 100, total: parseFloat(l.t) || 0,
