@@ -156,6 +156,21 @@ export const handler = async (event) => {
     const empiezan = obrasDia.filter((o) => !o.obra.inicio || o.obra.inicio === f);
     if (obrasDia.length && empiezan.length === 0) cuerpo += `\nEse día no empieza ninguna obra nueva: se sigue con las que están en marcha.\n`;
 
+    // Si el informe de materiales se subió después de confirmar el planning (p.ej. Uxcar
+    // desde su portal), se coge el actual del expediente o del proyecto.
+    const necesitaActual = empiezan.some((o) => !toArray(o.obra.lineas).length);
+    const materialesStock = necesitaActual ? toArray(await leer("materiales")) : [];
+    const normC = (c) => String(c || "").toUpperCase().replace(/\s+/g, "").replace(/^MAC-?/, "MAC");
+    const listadoActual = (id) => {
+      if (String(id).startsWith("u-")) { const e = toArray(expedientesRaw).find((x) => `u-${x.id}` === id); return e && e.listadoMateriales; }
+      const p = toArray(proyectos).find((x) => `p-${x.id}` === id); return p && p.listadoMateriales;
+    };
+    empiezan.forEach((o) => {
+      if (!toArray(o.obra.lineas).length) {
+        const l = listadoActual(o.id);
+        if (l && toArray(l.lineas).length) o.obra = { ...o.obra, lineas: toArray(l.lineas).map((x) => { const m = materialesStock.find((mm) => normC(mm.codigo) === normC(x.codigo)); return { ...x, almacen: (m && m.almacen) || "", estanteria: (m && m.estanteria) || "" }; }) };
+      }
+    });
     empiezan.forEach((o) => {
       const ob = o.obra;
       cuerpo += `\n==============================\n${ob.nombre.toUpperCase()}\n==============================\n`;

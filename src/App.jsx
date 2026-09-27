@@ -421,7 +421,8 @@ const ESTADO_FACTURA_STYLE = {
 const facturadoProyecto = (p, facturas) => (facturas || []).reduce((s, f) => {
   const ids = f.proyectosIds || [];
   if (!ids.includes(p.id) || f.tipo === "Proforma") return s;
-  const parte = ids.length === 1 ? (parseFloat(f.total) || 0) : (parseFloat(p.importePresupuesto) || 0);
+  const parte = f.importesPorProyecto && f.importesPorProyecto[p.id] != null ? (parseFloat(f.importesPorProyecto[p.id]) || 0)
+    : ids.length === 1 ? (parseFloat(f.total) || 0) : (parseFloat(p.importePresupuesto) || 0);
   return s + (f.tipo === "Abono" ? -Math.abs(parte) : parte);
 }, 0);
 // Obras entregadas (albarán firmado por el cliente o estado Entregado) con algo por facturar
@@ -1929,6 +1930,137 @@ export default function App() {
     showToast("Comprobación de albarán guardada");
   };
 
+  // Entrada de un pedido con el albarán (cualquier material). filas: lo revisado en la
+  // ficha del pedido, línea a línea (llega / rotos). Cada cosa va a su sitio:
+  //  · material de stock → suma al Stock lo que llega bien
+  //  · cristales → caballete en Fábrica → Cristales (colocado en un hueco si hay sitio)
+  //  · persianas → almacén de persianas (colocadas en su carro si hay sitio)
+  // Se apunta en el pedido lo recibido y lo roto; si llega todo pasa a "Recibido". Si es
+  // un pedido de Uxcar, la entrada también se guarda en su portal.
+  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor }) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const proveedorNombre = proveedores.find((pr) => pr.id === pedido.proveedorId)?.nombre || pedido.proveedorExterno || "Proveedor";
+    const porId = Object.fromEntries(filas.map((f) => [f.lineaId, f]));
+    const bienDe = (f) => Math.max(0, (parseFloat(f.llega) || 0) - (parseFloat(f.rotos) || 0));
+    const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
+    const expUx = pedido.uxcarExpedienteId ? uxExpedientes.find((e) => e.id === pedido.uxcarExpedienteId) : null;
+    const esUxcar = pedido.origen === "portalUxcar" || (proyecto && proyecto.origen === "portalUxcar");
+    const expediente = expUx ? String(expUx.numero || "").replace(/^EXP\.?\s*/i, "") : proyecto ? String(proyecto.numero || "") : "";
+    const cliente = esUxcar ? "Uxcar" : proyecto ? ((clientes.find((c) => c.id === proyecto.clienteId) || {}).nombre || proyecto.nombre || "") : "";
+    const mov = (cant) => ({ id: uid(), tipo: "entrada", cantidad: cant, contacto: proveedorNombre, estado: "Recibido", fecha: hoy, pedidoNumero: pedido.numero, albaran: numeroAlbaran || archivo || "" });
+
+    // 1) Stock
+    let mats = materiales;
+    let altas = 0, aStock = 0;
+    toArray(pedido.lineas).forEach((l) => {
+      const f = porId[l.id];
+      if (!f || f.tipo !== "stock") return;
+      const bien = bienDe(f);
+      if (!bien) return;
+      aStock += bien;
+      if (l.modo !== "libre" && l.materialId) {
+        mats = mats.map((m) => (m.id === l.materialId ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + bien, movimientos: [...(m.movimientos || []), mov(bien)] } : m));
+      } else if (l.tarifaRef && l.tarifaRef.ref) {
+        const t = l.tarifaRef;
+        const idx = mats.findIndex((m) => normRef(m.codigo) === normRef(t.ref) && String(m.color || "").toLowerCase() === String(t.acabado || "").toLowerCase());
+        if (idx >= 0) mats = mats.map((m, i) => (i === idx ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + bien, movimientos: [...(m.movimientos || []), mov(bien)] } : m));
+        else {
+          altas++;
+          mats = [{
+            id: uid(), codigo: t.ref, descripcion: t.desc || t.ref, proveedorId: pedido.proveedorId || "",
+            stockReal: bien, stockMinimo: 0, stockOptimo: 0, color: t.acabado || "", acabadoDescripcion: t.acabado || "",
+            longitud: t.longitudBarra ? String(t.longitudBarra) : "", ancho: "", alto: "", grueso: "",
+            precioCompra: l.precio || "", precioVenta: "", unidadCompra: t.unidadStock || "Unidad",
+            categoria: t.tipo === "aluminio" ? "Perfil aluminio" : t.tipo === "goma" ? "Gomas" : "Accesorios", familia: t.serie || "",
+            foto: "", movimientos: [mov(bien)], historicoPrecios: registrarHistoricoPrecio([], "", "", l.precio || "", "", `Alta al recibir pedido #${pedido.numero}`),
+          }, ...mats];
+        }
+      }
+    });
+
+    // 2) Cristales → Fábrica → Cristales, un caballete por nº de caballete del albarán
+    const filasCris = filas.filter((f) => f.tipo === "cristal" && (parseFloat(f.llega) || 0) > 0);
+    let nCris = 0;
+    const nuevosCab = [];
+    if (filasCris.length) {
+      const porCab = {};
+      filasCris.forEach((f) => { (porCab[f.caballete || ""] = porCab[f.caballete || ""] || []).push(f); });
+      const ocupados = cristales.filter((c) => c.ubicacion).map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) }));
+      const estaOcupado = (z, fi, h) => ocupados.some((o) => o.zona === z && o.fila === fi && o.hueco === h);
+      Object.entries(porCab).forEach(([cab, fs]) => {
+        const piezas = [];
+        fs.forEach((f) => {
+          const bien = bienDe(f), rotos = Math.min(parseFloat(f.rotos) || 0, parseFloat(f.llega) || 0);
+          if (bien) piezas.push({ ancho: f.ancho, alto: f.alto, cantidad: bien, ref: f.ref || "", pedido: numeroPedidoProveedor || pedido.numero, expediente, descripcion: f.nombre });
+          if (rotos) piezas.push({ ancho: f.ancho, alto: f.alto, cantidad: rotos, ref: f.ref || "", pedido: numeroPedidoProveedor || pedido.numero, expediente, descripcion: f.nombre, incidencia: "Roto", udsAfectadas: rotos, fechaIncidencia: hoy });
+          nCris += bien;
+        });
+        const cantidad = piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 0), 0);
+        const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id };
+        const ub = huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
+        if (ub) ocupados.push({ ...ub, expediente, exps: expedientesDeCaballete(datos) });
+        nuevosCab.push({ id: uid(), estado: ub ? "Colocado" : "Pendiente", ubicacion: ub || null, fechaColocado: ub ? hoy : "", fechaLlegada: hoy, ...datos });
+      });
+    }
+
+    // 3) Persianas → almacén de persianas
+    const nuevasPers = [];
+    filas.filter((f) => f.tipo === "persiana").forEach((f) => {
+      const bien = bienDe(f);
+      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
+    });
+    let sinSitioPers = 0;
+    if (nuevasPers.length) {
+      const estado = estadoOcupacionPersianas(persianasAlmacen);
+      const r = colocarGrupoPersianas(nuevasPers, expediente || "—", estantesAlmacenPersianas(carrosPersianas), estado);
+      nuevasPers.forEach((x) => { x.estante = r.res[x.id] || null; if (!x.estante) sinSitioPers++; });
+    }
+
+    // 4) El pedido: lo recibido y lo roto por línea
+    let bienTotal = 0, rotosTotal = 0;
+    const lineas = toArray(pedido.lineas).map((l) => {
+      const f = porId[l.id];
+      if (!f || !(parseFloat(f.llega) > 0)) return l;
+      const bien = bienDe(f), rotos = Math.min(parseFloat(f.rotos) || 0, parseFloat(f.llega) || 0);
+      bienTotal += bien; rotosTotal += rotos;
+      const recibidoBien = (parseFloat(l.recibidoBien) || 0) + bien;
+      const completa = recibidoBien >= (parseFloat(l.cantidad) || 0);
+      return { ...l, recibidoBien, rotos: (parseFloat(l.rotos) || 0) + rotos, cantidadRecibida: (parseFloat(l.cantidadRecibida) || 0) + (parseFloat(f.llega) || 0), ...(completa ? { estado: "Recibido", confirmadoFabrica: true, fechaConfirmadoFabrica: hoy } : {}) };
+    });
+    const todo = lineas.length > 0 && lineas.every((l) => (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
+    const recep = { fecha: hoy, archivo: archivo || "", numeroAlbaran: numeroAlbaran || "", bien: bienTotal, rotos: rotosTotal, cristales: nCris, persianas: nuevasPers.length, por: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" };
+    const pedidoNuevo = { ...pedido, lineas, recepciones: [...toArray(pedido.recepciones), recep], albaranComprobado: { fecha: new Date().toISOString(), archivo: archivo || "" },
+      ...(todo ? { estado: "Recibido", fechaRecibido: hoy, recepcionParcial: false } : { recepcionParcial: true }) };
+
+    if (mats !== materiales) saveMateriales(mats);
+    if (nuevosCab.length) saveCristales([...nuevosCab, ...cristales]);
+    if (nuevasPers.length) savePersianasAlmacen([...persianasAlmacen, ...nuevasPers]);
+    savePedidos(pedidos.map((p) => (p.id === pedidoId ? JSON.parse(JSON.stringify(pedidoNuevo)) : p)));
+
+    // 5) Pedido de Uxcar: la entrada también en su portal
+    if (pedido.uxcarPedidoId) {
+      const uxP = uxPedidos.find((x) => x.id === pedido.uxcarPedidoId);
+      if (uxP) {
+        let gi = toArray(uxP.expedientes).findIndex((e) => (e.expedienteId || "") === (pedido.uxcarExpedienteId || ""));
+        if (gi < 0) gi = 0;
+        const previa = uxP.recepcion || {};
+        const lin = { ...(previa.lineas || {}) };
+        lineas.forEach((l, li) => { lin[`${gi}-${li}`] = parseFloat(l.recibidoBien) || 0; });
+        const completo = uxLineasPedidas(uxP).every((x) => (parseFloat(lin[x.key]) || 0) >= x.pedido);
+        uxGuardarRecepcion(uxP, JSON.parse(JSON.stringify({ ...previa, fecha: hoy, por: recep.por || "Ecowin PVC", lineas: lin, completo, historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: recep.por || "Ecowin PVC", completo }] })));
+      }
+    }
+
+    const partes = [];
+    if (aStock) partes.push(`${aStock} al stock${altas ? ` (${altas} material${altas === 1 ? "" : "es"} nuevo${altas === 1 ? "" : "s"})` : ""}`);
+    if (nCris) partes.push(`${nCris} cristales a Fábrica${nuevosCab.some((c) => !c.ubicacion) ? " (alguno sin hueco)" : ""}`);
+    if (nuevasPers.length) partes.push(`${nuevasPers.length} persianas al almacén${sinSitioPers ? ` (${sinSitioPers} sin sitio)` : ""}`);
+    if (rotosTotal) partes.push(`${rotosTotal} rotos`);
+    showToast(`Pedido #${pedido.numero}: ${todo ? "recibido completo" : "entrada parcial"}${partes.length ? " · " + partes.join(" · ") : ""}`, todo ? "ok" : "error");
+  };
+
   // Marca que el pedido ya se ha comunicado de verdad al proveedor — por email (al pulsar
   // "Enviar por email") o a mano (si se ha llamado/hablado de otra forma). Hasta que esto
   // no esté marcado, no se puede recibir el pedido — para no marcar como recibido algo
@@ -2379,7 +2511,7 @@ export default function App() {
   const saveFacturas = (next) => { setFacturas(next); persist("facturas", next); };
 
   const nextNumeroFactura = () => {
-    const nums = facturas.map((f) => parseInt(String(f.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+    const nums = facturas.filter((f) => !String(f.numero || "").startsWith("PF-")).map((f) => parseInt(String(f.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
     const max = nums.length ? Math.max(...nums) : 100;
     return String(max + 1);
   };
@@ -2397,6 +2529,61 @@ export default function App() {
     setFacturaView("list");
   };
 
+  // Proformas automáticas: cada obra entregada con algo por facturar tiene su proforma
+  // (serie PF-). A final de mes se juntan las de cada cliente en una factura.
+  const observacionesEntrega = (proyecto) => {
+    const a = proyecto.albaranEntrega || {};
+    return `Obra #${proyecto.numero} ${proyecto.nombre || ""} entregada${a.numero ? ` · albarán ${a.numero}` : ""}${a.firmaCliente ? ` firmado por ${a.firmaCliente.nombre} el ${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")}` : ""}.${proyecto.importeUxcar && toArray(proyecto.importeUxcar.lineas).length ? `\n${toArray(proyecto.importeUxcar.lineas).map((x) => `${x.concepto}: ${x.uds} × ${Number(x.precio).toFixed(2)} € = ${Number(x.importe).toFixed(2)} €`).join("\n")}` : ""}`;
+  };
+  const proformaViva = (f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada;
+  const proformasRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || proformasRef.current) return;
+    const faltan = pendientesDeFacturar(proyectos, facturas).filter((p) => p.clienteId && !facturas.some((f) => proformaViva(f) && toArray(f.proyectosIds).includes(p.id)));
+    if (!faltan.length) return;
+    proformasRef.current = true;
+    (async () => {
+      try {
+        const nuevas = [];
+        let n = facturas.filter((f) => String(f.numero || "").startsWith("PF-")).reduce((m, f) => Math.max(m, parseInt(String(f.numero).slice(3), 10) || 0), 0);
+        for (const p of faltan) {
+          // marca en la base de datos para que dos CRM abiertos no creen dos proformas
+          const res = await runTransaction(ref(fbDb, `proformasAuto/${p.id}`), (actual) => (actual ? undefined : Date.now())).catch(() => null);
+          if (!res || !res.committed) continue;
+          const pend = Math.round(((parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas)) * 100) / 100;
+          if (pend <= 0) continue;
+          const a = p.albaranEntrega || {};
+          const fecha = (a.firmaCliente && String(a.firmaCliente.fecha).slice(0, 10)) || p.fechaEntregado || new Date().toISOString().slice(0, 10);
+          nuevas.push({ id: uid(), numero: `PF-${++n}`, clienteId: p.clienteId, tipo: "Proforma", fecha, proyectosIds: [p.id], importesPorProyecto: { [p.id]: pend }, total: pend, pagos: [], observaciones: observacionesEntrega(p), origen: "entrega-auto" });
+        }
+        if (nuevas.length) {
+          saveFacturas([...nuevas, ...facturas]);
+          showToast(nuevas.length === 1 ? `Proforma ${nuevas[0].numero} creada (obra entregada)` : `${nuevas.length} proformas creadas de obras entregadas`);
+        }
+      } finally { proformasRef.current = false; }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proyectos, facturas, currentUser?.id, loading]);
+  // Junta varias proformas de un cliente en una factura definitiva
+  const juntarProformas = (ids, fecha) => {
+    const lista = facturas.filter((f) => ids.includes(f.id) && proformaViva(f));
+    if (!lista.length) return;
+    const clienteId = lista[0].clienteId;
+    if (lista.some((f) => f.clienteId !== clienteId)) { showToast("Solo se pueden juntar proformas del mismo cliente", "error"); return; }
+    const reparto = {};
+    lista.forEach((f) => Object.entries(f.importesPorProyecto || { [toArray(f.proyectosIds)[0]]: f.total }).forEach(([pid, imp]) => { reparto[pid] = Math.round(((reparto[pid] || 0) + (parseFloat(imp) || 0)) * 100) / 100; }));
+    const total = Math.round(lista.reduce((a, f) => a + (parseFloat(f.total) || 0), 0) * 100) / 100;
+    const numero = nextNumeroFactura();
+    const nueva = {
+      id: uid(), numero, clienteId, tipo: "Definitiva", fecha: fecha || new Date().toISOString().slice(0, 10),
+      proyectosIds: Object.keys(reparto), importesPorProyecto: reparto, total, pagos: [], origen: "proformas",
+      proformasIds: lista.map((f) => f.id),
+      observaciones: `Factura de ${lista.length} obra${lista.length === 1 ? "" : "s"} entregada${lista.length === 1 ? "" : "s"}:\n${lista.map((f) => `· ${f.numero} (${fmtDate(f.fecha)}): ${Number(f.total).toFixed(2)} € — ${String(f.observaciones || "").split("\n")[0]}`).join("\n")}`,
+    };
+    saveFacturas([nueva, ...facturas.map((f) => (lista.some((x) => x.id === f.id) ? { ...f, convertidaFacturaId: nueva.id, convertidaNumero: numero } : f))]);
+    showToast(`Factura ${numero} emitida con ${lista.length} proforma${lista.length === 1 ? "" : "s"} · ${money(total)}`);
+  };
+
   // Factura de una obra entregada, desde "Pendiente de facturar" (un solo botón)
   const emitirFacturaPendiente = (proyecto, importe) => {
     const total = Math.round((parseFloat(importe) || 0) * 100) / 100;
@@ -2405,10 +2592,10 @@ export default function App() {
     const nueva = {
       id: uid(), numero: nextNumeroFactura(), clienteId: proyecto.clienteId, tipo: "Definitiva",
       fecha: new Date().toISOString().slice(0, 10), proyectosIds: [proyecto.id], total, pagos: [],
-      observaciones: `Obra entregada${a.numero ? ` · albarán ${a.numero}` : ""}${a.firmaCliente ? ` firmado por ${a.firmaCliente.nombre} el ${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")}` : ""}.`,
+      observaciones: `Obra entregada${a.numero ? ` · albarán ${a.numero}` : ""}${a.firmaCliente ? ` firmado por ${a.firmaCliente.nombre} el ${new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES")}` : ""}.${proyecto.importeUxcar && toArray(proyecto.importeUxcar.lineas).length ? `\n${toArray(proyecto.importeUxcar.lineas).map((x) => `${x.concepto}: ${x.uds} × ${x.precio.toFixed(2)} € = ${x.importe.toFixed(2)} €`).join("\n")}` : ""}`,
       origen: "entrega",
     };
-    saveFacturas([nueva, ...facturas]);
+    saveFacturas([nueva, ...facturas.map((f) => (proformaViva(f) && toArray(f.proyectosIds).includes(proyecto.id) ? { ...f, convertidaFacturaId: nueva.id, convertidaNumero: nueva.numero } : f))]);
     showToast(`Factura ${nueva.numero} emitida por ${money(total)}`);
   };
   const descartarFacturacion = (proyectoId) => {
@@ -3233,6 +3420,7 @@ export default function App() {
             provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
             gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
             origen: "portalUxcar", uxcarExpedienteId: exp.id,
+            estadoLogistica: "Recogida en fábrica", // Uxcar casi siempre viene a por ellas (se puede cambiar en la ficha)
           });
         }
         if (clientesNuevos && nuevos.length > 0) saveClientes(clientesNuevos);
@@ -3246,6 +3434,73 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, currentUser?.id, loading]);
+
+  // Precio de Uxcar: el importe de cada expediente (por sus ventanas) pasa solo a su
+  // proyecto, para que al entregarse salga en "Pendiente de facturar". No se toca si ya
+  // está facturado entero o si se ha puesto a mano (importeManual).
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const tarifa = uxTarifa(configVentanas);
+    const cambios = {};
+    uxExpedientes.forEach((e) => {
+      const p = e.proyectoId && proyectos.find((x) => x.id === e.proyectoId);
+      if (!p || p.importeManual || p.estadoTrabajo === "Cancelado") return;
+      const pr = uxPrecioExpediente(e, tarifa);
+      if (!pr.total) return;
+      if (facturadoProyecto(p, facturas) > 0.005) return;
+      if (Math.abs((parseFloat(p.importePresupuesto) || 0) - pr.total) > 0.005) cambios[p.id] = { importePresupuesto: pr.total, importeUxcar: JSON.parse(JSON.stringify({ lineas: pr.lineas, total: pr.total })) };
+    });
+    if (!Object.keys(cambios).length) return;
+    saveProyectos(proyectos.map((p) => (cambios[p.id] ? { ...p, ...cambios[p.id] } : p)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxExpedientes, proyectos, configVentanas, facturas, currentUser?.id, loading]);
+
+  // El informe de materiales de Uxcar se trata igual que el nuestro: al subirlo (en su
+  // portal o aquí) pasa al Proyecto del expediente y se crean los pedidos EN ESPERA de lo
+  // que falta en nuestro stock (perfiles, refuerzos, herrajes, accesorios; las persianas y
+  // los cristales los piden ellos). Si se sube en la ficha del Proyecto, se copia al
+  // expediente para que lo usen el planning y los correos de fábrica.
+  const uxListadoRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || uxListadoRef.current) return;
+    const trabajo = [];
+    uxExpedientes.forEach((e) => {
+      const p = e.proyectoId && proyectos.find((x) => x.id === e.proyectoId);
+      if (!p) return;
+      const kE = claveListado(e.listadoMateriales), kP = claveListado(p.listadoMateriales);
+      if (kE && kE !== kP && p.listadoUxClave !== kE && e.crmListadoClave !== kE) trabajo.push({ tipo: "aProyecto", e, p, k: kE });
+      else if (kP && kP !== kE && p.listadoUxClave !== kP) trabajo.push({ tipo: "aExpediente", e, p, k: kP });
+    });
+    if (!trabajo.length) return;
+    uxListadoRef.current = true;
+    (async () => {
+      try {
+        // de uno en uno: cada guardado es de la lista entera de proyectos; el siguiente
+        // se hace en la próxima pasada, con la lista ya actualizada
+        for (const t of trabajo.slice(0, 1)) {
+          if (t.tipo === "aExpediente") {
+            await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${t.e.id}`), { listadoMateriales: JSON.parse(JSON.stringify(t.p.listadoMateriales)), crmListadoClave: t.k }).catch(() => {});
+            updateProyectoInline(t.p.id, { listadoUxClave: t.k });
+            continue;
+          }
+          // se "reserva" con una transacción para que no se dupliquen los pedidos si hay varios CRM abiertos
+          const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${t.e.id}/crmListadoClave`), (actual) => (actual === t.k ? undefined : t.k)).catch(() => null);
+          if (!res || !res.committed) continue;
+          const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
+          const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
+          const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
+          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS);
+          const extra = { listadoMateriales: l, listadoUxClave: t.k };
+          if (Object.keys(grupos).length) crearPedidosEsperaListado(t.p, grupos, origen, extra);
+          else crearPedidosEsperaListado(t.p, {}, origen, extra);
+          showToast(`Informe de materiales de Uxcar exp. ${t.e.numero} recibido${Object.keys(grupos).length ? ": pedidos en espera creados de lo que falta en stock" : ""}`);
+        }
+      } finally {
+        uxListadoRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxExpedientes, proyectos, currentUser?.id, loading]);
 
   // Cada pedido que Uxcar hace a SU proveedor desde el portal entra solo en Pedidos
   // del CRM: un pedido por expediente, unido al Proyecto de ese expediente. Se espera
@@ -4000,6 +4255,25 @@ export default function App() {
             </div>
           );
         })()}
+        {(() => {
+          // Aviso arriba: obras entregadas sin facturar y proformas del mes por juntar
+          const pend = pendientesDeFacturar(proyectos, facturas);
+          const vivas = facturas.filter((f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada);
+          if (!pend.length && !vivas.length) return null;
+          const importe = vivas.reduce((a, f) => a + (parseFloat(f.total) || 0), 0);
+          const sinProforma = pend.filter((p) => !vivas.some((f) => toArray(f.proyectosIds).includes(p.id)));
+          const sinCliente = sinProforma.filter((p) => !p.clienteId).length;
+          return (
+            <button onClick={() => { setModulo("facturas"); setFacturaView("list"); }} className="w-full flex flex-wrap items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left bg-sky-50 text-sky-900 border-b border-sky-100 hover:bg-sky-100 transition">
+              <FileText size={15} />
+              Pendiente de facturar:
+              {vivas.length > 0 && ` ${vivas.length} proforma${vivas.length === 1 ? "" : "s"} por juntar en factura (${money(importe)})`}
+              {sinProforma.length > 0 && ` ${vivas.length ? "·" : ""} ${sinProforma.length} obra${sinProforma.length === 1 ? "" : "s"} entregada${sinProforma.length === 1 ? "" : "s"} sin proforma`}
+              {sinCliente > 0 && <span className="text-rose-600"> ({sinCliente} sin cliente: ponlo en el proyecto)</span>}
+              <span className="ml-auto text-xs font-semibold">Ir a Facturas →</span>
+            </button>
+          );
+        })()}
         {modulo === "clientes" && (
           <ClientesModulo
             clientes={clientes}
@@ -4147,6 +4421,7 @@ export default function App() {
             prefill={pedidoPrefill}
             onClearPrefill={() => setPedidoPrefill(null)}
             onConfirmarAlbaran={confirmarAlbaranPedido}
+            onRecibirConAlbaran={recibirPedidoConAlbaran}
             onMarcarEnviado={marcarPedidoEnviado}
             onCrearDesdeFoto={(lineas, comentario) => enviarAPedido(undefined, lineas, "", comentario)}
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
@@ -4261,6 +4536,7 @@ export default function App() {
             nextNumero={nextNumeroFactura}
             onEmitirPendiente={emitirFacturaPendiente}
             onDescartarPendiente={descartarFacturacion}
+            onJuntarProformas={juntarProformas}
           />
         )}
         {modulo === "presupuestos" && (
@@ -4516,6 +4792,8 @@ export default function App() {
         )}
         {modulo === "uxcar" && (
           <UxcarModulo
+            tarifaUx={uxTarifa(configVentanas)}
+            onGuardarTarifaUx={(t) => { saveConfigVentanas({ ...(configVentanas || {}), tarifaUxcar: t }); showToast("Precios de Uxcar guardados"); }}
             expedientes={uxExpedientes}
             uxPedidos={uxPedidos}
             config={uxConfig}
@@ -6213,7 +6491,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // pedidos antes, no se duplican: solo se guarda el listado.
       const origen = l.numero || l.archivo;
       const yaHabia = pedidosObra.some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && pd.origenListado && pd.origenListado === origen);
-      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0);
+      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0 && !(proyecto.origen === "portalUxcar" && UX_SECCIONES_PROPIAS.includes(f.seccion)));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
       if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
@@ -8647,7 +8925,7 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
   );
 }
 
-function PedidosModulo({ onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [agrupando, setAgrupando] = useState(false);
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
@@ -8732,7 +9010,10 @@ function PedidosModulo({ onMarcarGrupo, pedidos, proveedores, materiales, articu
   const [datosAlbaran, setDatosAlbaran] = useState(null);
   const inputAlbaranRef = useRef(null);
 
+  const [archivoAlbaranGeneral, setArchivoAlbaranGeneral] = useState(null);
+  const [archivoParaDetalle, setArchivoParaDetalle] = useState(null);
   const leerAlbaranEntrada = async (file) => {
+    setArchivoAlbaranGeneral(file);
     setLeyendoAlbaran(true);
     setErrorAlbaran("");
     setCandidatosAlbaran(null);
@@ -8848,6 +9129,8 @@ function PedidosModulo({ onMarcarGrupo, pedidos, proveedores, materiales, articu
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
         onMarcarEnviado={(metodo, fecha) => onMarcarEnviado(pedido.id, metodo, fecha)}
         onCrearPedidoFaltante={onCrearPedidoFaltante}
+        onRecibirConAlbaran={onRecibirConAlbaran}
+        archivoInicial={archivoParaDetalle} onArchivoUsado={() => setArchivoParaDetalle(null)}
       />
     );
   }
@@ -8998,7 +9281,7 @@ function PedidosModulo({ onMarcarGrupo, pedidos, proveedores, materiales, articu
                     <span className="text-slate-500"> — {(p.proveedorExterno || proveedorNombre(p.proveedorId))} · {p.fechaCompra || "sin fecha"} · {p.estado}</span>
                   </div>
                   <button
-                    onClick={() => { onRecibir(p.id); setCandidatosAlbaran(null); setDatosAlbaran(null); }}
+                    onClick={() => { setArchivoParaDetalle(archivoAlbaranGeneral); setCandidatosAlbaran(null); setDatosAlbaran(null); setDetailId(p.id); setView("detail"); }}
                     style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
                     className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90"
                   >
@@ -9674,7 +9957,160 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
   );
 }
 
-function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin }) {
+// ---------- RECEPCIÓN DE PEDIDOS CON EL ALBARÁN (todo el material) ----------
+// Una sola foto del albarán para cualquier pedido: se compara línea a línea con lo pedido
+// (por medida en cristales y persianas, por código o nombre en el resto), se apunta lo que
+// llega, lo que viene roto y lo que falta, y cada cosa va a su sitio: el material de stock
+// suma al Stock, los cristales pasan a Fábrica → Cristales y las persianas al almacén de
+// persianas. Lo que falta o viene roto se pide con un botón.
+const DESTINO_RECEPCION = { stock: "Stock", cristal: "Fábrica → Cristales", persiana: "Almacén de persianas", otro: "Solo se apunta" };
+const tipoLineaRecepcion = (l, pedido) => {
+  const s = l.seccionListado || "";
+  const txt = `${l.referencia || ""} ${l.codigoListado || ""}`.toLowerCase();
+  const medidas = parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0;
+  if (s === "cristal" || (medidas && (pedido.tipoUxcar === "Cristales" || /cristal|vidrio|c[aá]mara|laminar|templad|\d+\s*\/\s*\d+\s*\/\s*\d+/.test(txt)))) return "cristal";
+  if (s === "persianas" || (medidas && (pedido.tipoUxcar === "Persianas" || /persian|caj[oó]n|compacto|lama|monoblo/.test(txt)))) return "persiana";
+  if (l.modo !== "libre" && l.materialId) return "stock";
+  if (l.modo === "libre" && l.tarifaRef) return "stock";
+  return "otro";
+};
+async function leerAlbaranRecepcion(file) {
+  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","caballete":""}]}. Reglas: "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece. "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
+  const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 16000)).replace(/```json|```/g, "").trim();
+  const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
+  const trozo = limpio.slice(oi, of + 1);
+  let o;
+  try { o = JSON.parse(trozo); } catch (e) { o = JSON.parse(repararJsonIA(trozo)); }
+  return {
+    proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(),
+    lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
+  };
+}
+// Cruza lo del albarán con las líneas del pedido que aún están pendientes
+const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
+  const alb = lineasAlb.map((a, i) => ({ ...a, i, resto: parseFloat(a.cantidad) || 0 }));
+  const filas = toArray(pedido.lineas).map((l) => {
+    const pedida = parseFloat(l.cantidad) || 0;
+    const ya = parseFloat(l.recibidoBien) || 0;
+    const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
+    const tipo = tipoLineaRecepcion(l, pedido);
+    const nombre = nombreLinea(l);
+    let llega = 0, precioAlb = 0, caballete = "", ref = "";
+    const toma = (a, n) => { const t = Math.min(a.resto, n); a.resto -= t; llega += t; if (a.precio) precioAlb = a.precio; if (!caballete && a.caballete) caballete = a.caballete; if (!ref && a.ref) ref = a.ref; };
+    if (pend > 0) {
+      if (parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) {
+        for (const a of alb) { if (llega >= pend) break; if (a.resto > 0 && mismaMedidaCristal(l.ancho, l.alto, a.ancho, a.alto)) toma(a, pend - llega); }
+      } else {
+        const mat = l.modo === "libre" ? null : materiales.find((m) => m.id === l.materialId);
+        const codigo = normCodigo(l.codigoListado || (mat && mat.codigo) || (l.tarifaRef && l.tarifaRef.ref) || "");
+        const nom = nombre.toLowerCase();
+        const a = (codigo && codigo.length >= 3 && alb.find((x) => x.resto > 0 && (normCodigo(x.codigo) === codigo || normCodigo(`${x.codigo}${x.descripcion}`).includes(codigo))))
+          || alb.find((x) => { const d = String(x.descripcion || "").toLowerCase(); return x.resto > 0 && d.length >= 4 && nom.length >= 4 && (d.includes(nom.slice(0, 10)) || nom.includes(d.slice(0, 10))); });
+        if (a) toma(a, pend);
+      }
+    }
+    return { lineaId: l.id, nombre, tipo, ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb, caballete, ref };
+  });
+  return { filas, sobrantes: alb.filter((a) => a.resto > 0) };
+};
+
+function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [error, setError] = useState("");
+  const [lectura, setLectura] = useState(null); // { filas, sobrantes, archivo, info }
+  const inputRef = useRef(null);
+  const leer = async (file) => {
+    setLeyendo(true); setError(""); setLectura(null);
+    try {
+      const info = await leerAlbaranRecepcion(file);
+      if (!info.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
+      const r = emparejarAlbaran(pedido, info.lineas, materiales, nombreLinea);
+      setLectura({ ...r, archivo: file.name || "", info });
+    } catch (e) { setError("No se pudo leer el albarán: " + (e.message || "prueba con una foto más clara")); }
+    finally { setLeyendo(false); }
+  };
+  useEffect(() => { if (archivoInicial) { leer(archivoInicial); onArchivoUsado && onArchivoUsado(); } }, [archivoInicial]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
+  const num = (v) => Math.max(0, parseFloat(v) || 0);
+  const pendientes = toArray(pedido.lineas).map((l) => ({ l, falta: Math.max(0, Math.round(((parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)) * 100) / 100) })).filter((x) => x.falta > 0);
+  const hayRecepciones = toArray(pedido.recepciones).length > 0;
+  const reponer = () => onCrearPedidoFaltante(pedido, pendientes.map(({ l, falta }) => ({ ...l, id: uid(), cantidad: falta, estado: "Solicitado", recibidoBien: 0, rotos: 0, cantidadRecibida: 0 })));
+  const confirmar = () => {
+    const filas = lectura.filas.map((f) => ({ ...f, llega: num(f.llega), rotos: Math.min(num(f.rotos), num(f.llega)) }));
+    if (!filas.some((f) => f.llega > 0)) { setError("No hay nada que recibir: pon cuántas han llegado."); return; }
+    onRecibirConAlbaran({ filas, archivo: lectura.archivo, numeroAlbaran: lectura.info.numeroAlbaran, numeroPedidoProveedor: lectura.info.numeroPedido });
+    setLectura(null);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <h2 className="font-display font-bold text-slate-800 mb-1">Recibir con el albarán</h2>
+      <p className="text-xs text-slate-400 mb-3">Sube la foto o el PDF del albarán. Lo comparo con lo pedido y tú revisas cuántos han llegado y cuántos vienen rotos. Al confirmar, cada cosa va a su sitio: el material al Stock, los cristales a Fábrica → Cristales y las persianas a su almacén.</p>
+      {puedeRecibir && (
+        <>
+          <button type="button" onClick={() => inputRef.current?.click()} disabled={leyendo || !pedido.envioConfirmado}
+            title={!pedido.envioConfirmado ? "Confirma primero que el pedido se ha enviado al proveedor" : ""}
+            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
+            {leyendo ? <><Loader2 size={15} className="animate-spin" /> Leyendo el albarán (puede tardar un minuto)…</> : <><ImageIcon size={15} /> {hayRecepciones ? "Recibir otro albarán" : "Subir foto o PDF del albarán"}</>}
+          </button>
+          {!pedido.envioConfirmado && <p className="text-xs text-amber-700 font-semibold mt-2">⚠ Confirma arriba que el pedido se ha enviado al proveedor antes de poder recibirlo.</p>}
+          <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        </>
+      )}
+      {error && <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {error}</div>}
+      {lectura && (
+        <div className="mt-4 space-y-3">
+          <div className="text-xs text-slate-500">Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</div>
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-[11px] uppercase text-slate-500"><tr>
+                <th className="text-left px-3 py-2">Material</th><th className="text-right px-3 py-2">Pendiente</th><th className="text-right px-3 py-2">Llegan</th><th className="text-right px-3 py-2">Rotos</th><th className="text-right px-3 py-2">Faltarán</th><th className="text-left px-3 py-2">Va a</th><th className="text-right px-3 py-2">Precio</th>
+              </tr></thead>
+              <tbody>
+                {lectura.filas.map((f, i) => {
+                  const falta = Math.max(0, Math.round((f.pend - num(f.llega) + Math.min(num(f.rotos), num(f.llega))) * 100) / 100);
+                  const distinto = f.precioRef > 0 && f.precioAlb > 0 && Math.abs(f.precioAlb - f.precioRef) / f.precioRef > 0.01;
+                  return (
+                    <tr key={f.lineaId} className={`border-t border-slate-100 ${f.pend === 0 ? "text-slate-300" : ""}`}>
+                      <td className="px-3 py-1.5">{f.nombre}{f.ancho && f.alto ? <span className="text-xs text-slate-400"> · {f.ancho}×{f.alto}</span> : null}{f.caballete ? <span className="text-xs text-slate-400"> · cab. {f.caballete}</span> : null}</td>
+                      <td className="px-3 py-1.5 text-right">{f.pend}</td>
+                      <td className="px-3 py-1.5 text-right">{f.pend > 0 ? <input type="number" min="0" value={f.llega} onChange={(e) => setFila(i, { llega: e.target.value })} className={`w-16 text-right border rounded px-1.5 py-0.5 ${num(f.llega) < f.pend ? "border-amber-300 bg-amber-50" : "border-slate-200"}`} /> : "✓"}</td>
+                      <td className="px-3 py-1.5 text-right">{f.pend > 0 ? <input type="number" min="0" value={f.rotos} onChange={(e) => setFila(i, { rotos: e.target.value })} className={`w-14 text-right border rounded px-1.5 py-0.5 ${num(f.rotos) > 0 ? "border-rose-300 bg-rose-50" : "border-slate-200"}`} /> : ""}</td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${falta > 0 ? "text-rose-600" : "text-emerald-700"}`}>{f.pend > 0 ? (falta > 0 ? falta : "✓") : ""}</td>
+                      <td className="px-3 py-1.5 text-xs text-slate-500 whitespace-nowrap">{DESTINO_RECEPCION[f.tipo]}</td>
+                      <td className="px-3 py-1.5 text-right text-xs whitespace-nowrap">{f.precioAlb > 0 ? <span className={distinto ? "font-semibold text-orange-700" : "text-slate-600"} title={distinto ? `Pagabas ${money(f.precioRef)}` : ""}>{distinto ? (f.precioAlb > f.precioRef ? "▲ " : "▼ ") : ""}{money(f.precioAlb)}</span> : <span className="text-slate-300">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {lectura.filas.some((f) => f.precioRef > 0 && f.precioAlb > 0 && Math.abs(f.precioAlb - f.precioRef) / f.precioRef > 0.01) && <div className="px-3 py-2 rounded-md bg-orange-50 border border-orange-300 text-orange-800 text-sm font-semibold">€ Hay precios distintos a los del pedido (marcados en naranja).</div>}
+          {lectura.sobrantes.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm">⚠ En el albarán hay {lectura.sobrantes.length} línea{lectura.sobrantes.length === 1 ? "" : "s"} que no encuentro en el pedido: {lectura.sobrantes.map((a) => `${a.codigo || a.descripcion}${a.ancho ? ` ${a.ancho}×${a.alto}` : ""} (${a.resto})`).join(", ")}.</div>}
+          <p className="text-xs text-slate-400">La lectura es automática y puede fallar con fotos borrosas: revisa las cantidades antes de confirmar.</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={confirmar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-md"><CheckCircle2 size={16} /> Confirmar entrada</button>
+            <button type="button" onClick={() => setLectura(null)} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          </div>
+        </div>
+      )}
+      {!lectura && hayRecepciones && (
+        <div className="mt-4 space-y-2">
+          {pendientes.length > 0 ? (
+            <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm">
+              <b>Falta por llegar (o vino roto):</b> {pendientes.map(({ l, falta }) => `${nombreLinea(l)}${l.ancho && l.alto ? ` ${l.ancho}×${l.alto}` : ""}: ${falta}`).join(" · ")}
+              <div className="mt-2"><button type="button" onClick={reponer} className="text-sm font-semibold text-amber-800 border border-amber-400 bg-white px-3 py-1.5 rounded-md hover:bg-amber-100">📦 Pedir reposición de lo que falta</button></div>
+            </div>
+          ) : <div className="px-3 py-2.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">✓ Ha llegado todo.</div>}
+          <div className="text-xs text-slate-500">
+            {toArray(pedido.recepciones).map((r, i) => <div key={i}>{fmtDate(r.fecha)} · albarán {r.numeroAlbaran || r.archivo || "—"} · {r.bien} bien{r.rotos ? ` · ${r.rotos} rotos` : ""}{r.cristales ? ` · ${r.cristales} cristales a Fábrica` : ""}{r.persianas ? ` · ${r.persianas} persianas al almacén` : ""}</div>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin, onRecibirConAlbaran, archivoInicial, onArchivoUsado }) {
   // "He hecho este pedido de otra forma": se pide la fecha de llegada (propuesta con los
   // días de entrega del proveedor) antes de darlo por hecho.
   const [confirmandoManual, setConfirmandoManual] = useState(false);
@@ -10054,121 +10490,12 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
         </div>
       )}
 
-      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
-        <h2 className="font-display font-bold text-slate-800 mb-2">Comprobar albarán</h2>
-        <p className="text-xs text-slate-400 mb-3">Sube la foto o el PDF del albarán que te ha llegado. Lo leo y lo comparo con lo que hay pedido — nada se guarda hasta que tú confirmes abajo.</p>
-
-        <button
-          type="button"
-          onClick={() => inputAlbaranRef.current?.click()}
-          disabled={leyendoAlbaran}
-          style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-          className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:bg-slate-300 px-4 py-2.5 rounded-md w-fit cursor-pointer"
-        >
-          {leyendoAlbaran ? "Leyendo..." : "Subir foto o PDF del albarán"}
-        </button>
-        <input
-          ref={inputAlbaranRef}
-          type="file"
-          accept="image/*,application/pdf"
-          className="hidden"
-          onChange={(e) => { if (e.target.files?.[0]) leerAlbaran(e.target.files[0]); e.target.value = ""; }}
-        />
-
-        {errorAlbaran && (
-          <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorAlbaran}</div>
-        )}
-
-        {resultadoAlbaran && (
-          <div className="mt-4">
-            <div className="bg-slate-50 border border-slate-200 rounded-lg overflow-hidden mb-3">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-500">
-                    <th className="px-3 py-2 font-semibold">Material (del pedido)</th>
-                    <th className="px-3 py-2 font-semibold text-right">Pedido</th>
-                    <th className="px-3 py-2 font-semibold text-right">En el albarán</th>
-                    <th className="px-3 py-2 font-semibold">¿Coincide?</th>
-                    <th className="px-3 py-2 font-semibold text-right">Precio</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {resultadoAlbaran.comparacion.map((c, i) => (
-                    <tr key={i} className="border-t border-slate-200">
-                      <td className="px-3 py-2 text-slate-700">{c.nombre}</td>
-                      <td className="px-3 py-2 text-right font-mono-num">{c.cantidadPedida}</td>
-                      <td className="px-3 py-2 text-right font-mono-num">{c.encontrado ? c.cantidadAlbaran : "No aparece"}</td>
-                      <td className="px-3 py-2">
-                        {c.coincide ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ Coincide</Badge> : <Badge className="bg-rose-50 text-rose-700 ring-rose-200">⚠ Revisar</Badge>}
-                      </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap text-xs">
-                        {c.precioAlb > 0 && c.precioRef > 0 ? (
-                          c.precioDistinto
-                            ? <span className="font-semibold text-orange-700" title={`Pagabas ${money(c.precioRef)}`}>{c.precioAlb > c.precioRef ? "▲" : "▼"} {money(c.precioAlb)} <span className="text-slate-400 font-normal">(era {money(c.precioRef)}, {c.precioAlb > c.precioRef ? "+" : ""}{Math.round(((c.precioAlb - c.precioRef) / c.precioRef) * 1000) / 10}%)</span></span>
-                            : <span className="text-emerald-700">✓ {money(c.precioAlb)}</span>
-                        ) : c.precioAlb > 0 ? money(c.precioAlb) : <span className="text-slate-300">—</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {resultadoAlbaran.comparacion.some((c) => c.precioDistinto) && (
-              <div className="px-3 py-2.5 rounded-md bg-orange-50 border border-orange-300 text-orange-800 text-sm font-semibold mb-3">
-                € {resultadoAlbaran.comparacion.filter((c) => c.precioDistinto).length} material{resultadoAlbaran.comparacion.filter((c) => c.precioDistinto).length === 1 ? "" : "es"} con precio distinto al del listado de materiales: {resultadoAlbaran.comparacion.filter((c) => c.precioDistinto).map((c) => `${c.nombre} (${money(c.precioRef)} → ${money(c.precioAlb)})`).join(" · ")}
-              </div>
-            )}
-            {resultadoAlbaran.sobrantesAlbaran.length > 0 && (
-              <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm mb-3">
-                ⚠ En el albarán hay {resultadoAlbaran.sobrantesAlbaran.length} línea{resultadoAlbaran.sobrantesAlbaran.length === 1 ? "" : "s"} que no encuentro en el pedido: {resultadoAlbaran.sobrantesAlbaran.map((l) => l.material).join(", ")}.
-              </div>
-            )}
-            <p className="text-xs text-slate-400 mb-3">La lectura del albarán es automática y puede tener algún error, sobre todo con fotos borrosas o letra manuscrita — revísalo tú antes de confirmar.</p>
-            {resultadoAlbaran.comparacion.some((c) => !c.coincide) && (
-              <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
-                ⚠ Hay líneas marcadas como "Revisar" arriba. Si confirmas igualmente, se recibirá el pedido completo tal y como está pedido.
-              </div>
-            )}
-            {resultadoAlbaran.comparacion.some((c) => !c.coincide) && !pedido.albaranComprobado && (
-              <button
-                onClick={() => onCrearPedidoFaltante(pedido, lineasFaltantesAlbaran())}
-                className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-4 py-2.5 rounded-md hover:bg-amber-50 mb-3"
-              >
-                📦 Crear pedido al proveedor con lo que falta
-              </button>
-            )}
-            {pedido.albaranComprobado ? (
-              <div className="px-3 py-2.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
-                ✓ Comprobación confirmada el {fmtDate(pedido.albaranComprobado.fecha?.slice(0, 10))}.
-              </div>
-            ) : (
-              <>
-                <button
-                  onClick={() => {
-                    onConfirmarAlbaran(resultadoAlbaran);
-                    if (puedeRecibir && pedido.envioConfirmado) onRecibir();
-                  }}
-                  disabled={puedeRecibir && !pedido.envioConfirmado}
-                  title={puedeRecibir && !pedido.envioConfirmado ? "Confirma primero que el pedido se ha enviado al proveedor" : ""}
-                  style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-                  className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:bg-slate-300 disabled:cursor-not-allowed px-4 py-2.5 rounded-md"
-                >
-                  <CheckCircle2 size={16} /> {puedeRecibir ? "Confirmar y recibir pedido (suma al stock)" : "Confirmar comprobación"}
-                </button>
-                {puedeRecibir && !pedido.envioConfirmado && (
-                  <p className="text-xs text-amber-700 font-semibold mt-2">⚠ Confirma arriba que el pedido se ha enviado al proveedor antes de poder recibirlo.</p>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {!resultadoAlbaran && pedido.albaranComprobado && (
-          <div className="mt-3 px-3 py-2.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
-            ✓ Ya hay una comprobación de albarán confirmada el {fmtDate(pedido.albaranComprobado.fecha?.slice(0, 10))} ({pedido.albaranComprobado.archivo}).
-          </div>
-        )}
-      </div>
+      <RecepcionPedido pedido={pedido} materiales={materiales} nombreLinea={nombreLinea} puedeRecibir={puedeRecibir}
+        archivoInicial={archivoInicial} onArchivoUsado={onArchivoUsado}
+        onRecibirConAlbaran={(datos) => onRecibirConAlbaran && onRecibirConAlbaran(pedido.id, datos)} onCrearPedidoFaltante={onCrearPedidoFaltante} />
+      {pedido.albaranComprobado && !toArray(pedido.recepciones).length && (
+        <div className="mb-6 px-3 py-2.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">✓ Albarán comprobado el {fmtDate(pedido.albaranComprobado.fecha?.slice(0, 10))} ({pedido.albaranComprobado.archivo}).</div>
+      )}
 
       {pedido.comentarios && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
@@ -11404,6 +11731,22 @@ const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
 // Proveedor al que se le pide normalmente cada sección (marcado en la ficha del proveedor,
 // "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
 const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
+// Lo que Uxcar pide por su cuenta a sus proveedores (desde su portal): no sale de nuestro stock
+const UX_SECCIONES_PROPIAS = ["persianas", "cristal"];
+// Identifica un listado subido (para saber si ya se ha pasado de un sitio a otro)
+const claveListado = (l) => (l ? `${l.numero || ""}|${l.archivo || ""}|${l.fecha || ""}|${toArray(l.lineas).length}|${l.horas || 0}` : "");
+// Líneas de pedido "en espera" de lo que falta en stock según un listado, agrupadas por proveedor
+const gruposPedidoDesdeListado = (listado, materiales, proveedores, excluir = []) => {
+  const grupos = {};
+  compararListadoConStock(listado, materiales).filter((f) => f.falta > 0 && !excluir.includes(f.seccion)).forEach((f) => {
+    const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
+    const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
+    (grupos[prov] = grupos[prov] || []).push(f.mat
+      ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
+      : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
+  });
+  return grupos;
+};
 // Fecha de llegada que se propone al hacer un pedido: hoy + los días de entrega del
 // proveedor. Cada proveedor tiene días "en blanco / estándar" y días "en color": si alguna
 // línea del pedido va en un color que no es blanco, se usan los de color.
@@ -13034,8 +13377,10 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
   const vivos = proyectos.filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo));
   const reparto = vivos.filter((p) => p.estadoLogistica === "Reparto (camión)");
   const instalacion = vivos.filter((p) => p.llevaInstalacion && p.estadoLogistica !== "Reparto (camión)");
-  const recogida = vivos.filter((p) => p.estadoLogistica === "Recogida en fábrica" && !p.llevaInstalacion);
-  const sinDefinir = vivos.filter((p) => (!p.estadoLogistica || p.estadoLogistica === "Sin definir") && !p.llevaInstalacion && ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
+  // Las obras de Uxcar sin forma de salida se tratan como recogida (casi siempre vienen a por ellas)
+  const sinForma = (p) => !p.estadoLogistica || p.estadoLogistica === "Sin definir";
+  const recogida = vivos.filter((p) => (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && sinForma(p))) && !p.llevaInstalacion);
+  const sinDefinir = vivos.filter((p) => sinForma(p) && p.origen !== "portalUxcar" && !p.llevaInstalacion && ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
   const esListo = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
   const cuentaListos = (arr) => arr.filter(esListo).length;
   const clienteDe = (p) => clientes.find((c) => c.id === p.clienteId);
@@ -13107,7 +13452,7 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
       {vista === "reparto" && <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFecha} onMoverEstado={onMoverEstado} caballetesInfo={bloqueCaballetes} />}
       {vista === "recogida" && (
         <div className="space-y-2">
-          <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">Obras que recoge el cliente en fábrica. Al recogerlas, indica si se lleva los caballetes (quedan pendientes de devolver) o si se descargan aquí.</div>
+          <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">Obras que recoge el cliente en fábrica. Lo mejor es que firme el albarán en <b>Albaranes → Repartos y recogidas</b>: la obra pasa a Entregado, a "Pendiente de facturar" y sus caballetes quedan pendientes de devolver. Si no se firma albarán, usa los botones de aquí.</div>
           {recogida.length === 0 && <p className="text-sm text-slate-400">No hay obras de recogida en fábrica pendientes.</p>}
           {ordenar(recogida).map((p) => {
             const carg = deObra(p, "cargado");
@@ -13690,6 +14035,9 @@ function SubirDocumentoEntrega({ proyecto, onGuardar, onCancel, textoBoton = "Gu
   );
 }
 
+// Obras que el cliente recoge en fábrica (las de Uxcar sin forma de salida también)
+const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && (!p.estadoLogistica || p.estadoLogistica === "Sin definir")));
+
 function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
@@ -13704,7 +14052,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     const ciudad = p.provinciaReparto === "Otra ciudad..." ? p.ciudadRepartoManual : p.provinciaReparto;
     return [p.ubicacion || (c && c.direccion) || "", ciudad || (c && c.provincia) || ""].filter(Boolean).join(", ");
   };
-  const repartos = proyectos.filter((p) => p.estadoLogistica === "Reparto (camión)" && !["Entregado", "Cancelado"].includes(p.estadoTrabajo))
+  // Repartos en camión y recogidas en fábrica: los dos llevan albarán firmado por el cliente
+  const repartos = proyectos.filter((p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p)) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo))
     .sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999"));
   const firmados = proyectos.filter((p) => p.albaranEntrega && (p.albaranEntrega.firmaCarga || p.albaranEntrega.firmaCliente))
     .sort((a, b) => String((b.albaranEntrega.firmaCliente || b.albaranEntrega.firmaCarga || {}).fecha || "").localeCompare(String((a.albaranEntrega.firmaCliente || a.albaranEntrega.firmaCarga || {}).fecha || "")));
@@ -13759,8 +14108,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         )}
         <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Chófer"><TextInput value={borrador.chofer} onChange={(e) => setBorrador({ ...borrador, chofer: e.target.value })} /></Field>
-            <Field label="Matrícula"><TextInput value={borrador.matricula} onChange={(e) => setBorrador({ ...borrador, matricula: e.target.value })} /></Field>
+            <Field label={esRecogidaFabrica(abierto) ? "Entrega (de fábrica)" : "Chófer"}><TextInput value={borrador.chofer} onChange={(e) => setBorrador({ ...borrador, chofer: e.target.value })} /></Field>
+            <Field label={esRecogidaFabrica(abierto) ? "Matrícula (del que recoge)" : "Matrícula"}><TextInput value={borrador.matricula} onChange={(e) => setBorrador({ ...borrador, matricula: e.target.value })} /></Field>
           </div>
           <Field label="Material que se entrega"><TextArea rows={3} value={borrador.contenido} onChange={(e) => setBorrador({ ...borrador, contenido: e.target.value })} /></Field>
           <div className="grid grid-cols-3 gap-3">
@@ -13771,12 +14120,12 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <div className="text-sm font-bold text-slate-800 mb-1">1. Carga (chófer)</div>
+            <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "1. Salida de fábrica (opcional)" : "1. Carga (chófer)"}</div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
             <button onClick={() => setFirmando("carga")} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <div className="text-sm font-bold text-slate-800 mb-1">2. Entrega (firma el cliente)</div>
+            <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
             {a.firmaCliente ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCliente.nombre} el {new Date(a.firmaCliente.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Dale el móvil al cliente para que firme al recibirlo.</div>}
             <button onClick={() => setFirmando("cliente")} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
           </div>
@@ -13810,13 +14159,13 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     <div className="p-4 sm:p-8 max-w-5xl">
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
-        {tabBtn("repartos", "Repartos (entrega)", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
+        {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
       </div>
       {tab === "repartos" && (
         <div className="space-y-2">
-          {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos pendientes.</p>}
+          {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
             const listo = ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
@@ -13824,9 +14173,10 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
               <button key={p.id} onClick={() => abrir(p)} className="w-full text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-[#2E8B57]">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</span>
-                  {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Listo para cargar</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
+                  {listo ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">{esRecogidaFabrica(p) ? "Listo para recoger" : "Listo para cargar"}</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
+                  {esRecogidaFabrica(p) && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Recoge en fábrica</Badge>}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {direccionDe(p) || "Sin dirección"} · Reparto {fmtDate(p.fechaReparto) || "sin fecha"}</div>
+                <div className="text-xs text-slate-500 mt-1">{(clienteDe(p) || {}).nombre || "—"} · {esRecogidaFabrica(p) ? `Recogida ${fmtDate(p.fechaReparto) || "sin fecha"}` : `${direccionDe(p) || "Sin dirección"} · Reparto ${fmtDate(p.fechaReparto) || "sin fecha"}`}</div>
                 <div className="text-xs mt-1 flex gap-3">
                   <span className={a.firmaCarga ? "text-emerald-700 font-semibold" : "text-slate-400"}>{a.firmaCarga ? "✓ Carga firmada" : "Carga sin firmar"}</span>
                   <span className={a.firmaCliente ? "text-emerald-700 font-semibold" : "text-slate-400"}>{a.firmaCliente ? "✓ Cliente firmado" : "Cliente sin firmar"}</span>
@@ -18810,6 +19160,59 @@ function ArticuloDetail({ articulo, proveedor, materiales, onBack, onEdit, onDel
 
 // Obras entregadas pendientes de facturar: sale lo que falta (presupuesto − ya facturado)
 // y se emite con un botón. El importe se puede tocar antes por si hay extras o cambios.
+// Proformas de las obras entregadas, por cliente: a final de mes se marcan y se juntan en
+// una sola factura (una por cliente).
+function JuntarProformas({ facturas, clientes, onJuntar }) {
+  const vivas = facturas.filter((f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada);
+  const [sel, setSel] = useState({});
+  const [fechaFac, setFechaFac] = useState(() => new Date().toISOString().slice(0, 10));
+  if (!vivas.length) return null;
+  const porCliente = {};
+  vivas.forEach((f) => { (porCliente[f.clienteId || ""] = porCliente[f.clienteId || ""] || []).push(f); });
+  const mesDe = (f) => String(f.fecha || "").slice(0, 7);
+  const nombreMes = (m) => (m ? new Date(m + "-15T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" }) : "sin fecha");
+  return (
+    <div className="mb-6 border-2 border-sky-300 bg-sky-50 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="mr-auto">
+          <div className="font-bold text-sky-900">Proformas pendientes de juntar ({vivas.length})</div>
+          <p className="text-xs text-sky-800">Se crean solas al entregar cada obra. A final de mes marca las de cada cliente y crea una sola factura con todas.</p>
+        </div>
+        <Field label="Fecha de la factura"><TextInput type="date" value={fechaFac} onChange={(e) => setFechaFac(e.target.value)} className="!w-40" /></Field>
+      </div>
+      {Object.entries(porCliente).map(([cid, lista]) => {
+        const cl = clientes.find((c) => c.id === cid);
+        const meses = [...new Set(lista.map(mesDe))].sort();
+        const marcadas = lista.filter((f) => sel[f.id]);
+        const total = marcadas.reduce((a, f) => a + (parseFloat(f.total) || 0), 0);
+        return (
+          <div key={cid} className="bg-white border border-sky-200 rounded-md p-3">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="font-semibold text-slate-800 mr-auto">{cl ? cl.nombre : "Sin cliente"} <span className="text-xs font-normal text-slate-500">· {lista.length} proforma{lista.length === 1 ? "" : "s"} · {money(lista.reduce((a, f) => a + (parseFloat(f.total) || 0), 0))}</span></span>
+              {meses.map((m) => <button key={m} type="button" onClick={() => setSel((x) => { const n = { ...x }; lista.forEach((f) => { n[f.id] = mesDe(f) === m; }); return n; })} className="text-xs font-semibold px-2 py-1 rounded border border-sky-300 text-sky-800 hover:bg-sky-100 capitalize">Marcar {nombreMes(m)}</button>)}
+            </div>
+            <div className="divide-y divide-slate-100">
+              {lista.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))).map((f) => (
+                <label key={f.id} className="flex items-center gap-2 py-1.5 text-sm cursor-pointer">
+                  <input type="checkbox" checked={!!sel[f.id]} onChange={(e) => setSel((x) => ({ ...x, [f.id]: e.target.checked }))} />
+                  <span className="font-semibold w-16">{f.numero}</span>
+                  <span className="text-xs text-slate-500 w-20">{fmtDate(f.fecha)}</span>
+                  <span className="flex-1 text-xs text-slate-600 truncate">{String(f.observaciones || "").split("\n")[0]}</span>
+                  <span className="font-semibold">{money(f.total)}</span>
+                </label>
+              ))}
+            </div>
+            {marcadas.length > 0 && (
+              <button type="button" onClick={() => { if (confirm(`¿Crear una factura a ${cl ? cl.nombre : "este cliente"} con ${marcadas.length} proforma(s) por ${money(total)} (sin IVA)?`)) { onJuntar(marcadas.map((f) => f.id), fechaFac); setSel({}); } }}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-2 text-sm font-semibold px-4 py-2 rounded-md">Crear factura con {marcadas.length} proforma{marcadas.length === 1 ? "" : "s"} · {money(total)}</button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescartar }) {
   const lista = pendientesDeFacturar(proyectos, facturas);
   const [importes, setImportes] = useState({});
@@ -18829,7 +19232,7 @@ function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescart
           return (
             <div key={p.id} className="bg-white border border-amber-200 rounded-md p-3 flex flex-wrap items-center gap-3">
               <div className="flex-1 min-w-[220px]">
-                <div className="font-semibold text-slate-800 text-sm">#{p.numero} — {p.nombre}</div>
+                <div className="font-semibold text-slate-800 text-sm">#{p.numero} — {p.nombre}{(() => { const pf = facturas.find((f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada && toArray(f.proyectosIds).includes(p.id)); return pf ? <span className="ml-2 text-xs font-semibold text-sky-700">Proforma {pf.numero} (se junta a fin de mes)</span> : null; })()}</div>
                 <div className="text-xs text-slate-500">{(clienteDe(p) || {}).nombre || "Sin cliente"} · Entregado {a.firmaCliente ? new Date(a.firmaCliente.fecha).toLocaleDateString("es-ES") : fmtDate(p.fechaEntregado) || ""}{a.numero ? ` · Albarán ${a.numero}` : ""}</div>
                 <div className="text-xs text-slate-500 mt-0.5">Presupuesto {money(presu)} · Ya facturado {money(ya)} · <b className="text-slate-800">Falta {money(pend)}</b></div>
                 {!p.clienteId && <div className="text-xs text-rose-600 font-semibold mt-0.5">Esta obra no tiene cliente: ponlo en el proyecto antes de facturar.</div>}
@@ -18848,7 +19251,7 @@ function PendientesFacturar({ proyectos, facturas, clientes, onEmitir, onDescart
   );
 }
 
-function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin, onEmitirPendiente, onDescartarPendiente }) {
+function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddPago, onRemovePago, nextNumero, isAdmin, onEmitirPendiente, onDescartarPendiente, onJuntarProformas }) {
   const [q, setQ] = useState("");
   const [tipo, setTipo] = useState("");
   const [estado, setEstado] = useState("");
@@ -18910,6 +19313,7 @@ function FacturasModulo({ facturas, clientes, proyectos, view, setView, editId, 
         subtitle={`${facturas.length} factura${facturas.length === 1 ? "" : "s"} emitida${facturas.length === 1 ? "" : "s"}`}
       />
 
+      {onJuntarProformas && <JuntarProformas facturas={facturas} clientes={clientes} onJuntar={onJuntarProformas} />}
       {onEmitirPendiente && <PendientesFacturar proyectos={proyectos} facturas={facturas} clientes={clientes} onEmitir={onEmitirPendiente} onDescartar={onDescartarPendiente} />}
       {clientes.length === 0 && (
         <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-3">
@@ -26343,6 +26747,48 @@ const uxTotalesRecuento = (lineas) => {
   return { ventanas, puertas, osciloParalelas, mosquiteras };
 };
 
+// ---------- Precio de las ventanas de Uxcar ----------
+// Se les cobra por ventana: la de 1 o 2 hojas vale lo mismo; las puertas con cerradura
+// tienen su precio; la persiana suma; dos ventanas juntas valen el doble; un fijo unido a
+// la ventana suma; las mosquiteras aparte. Las puertas sin cerradura (balconeras),
+// correderas y oscilo-paralelas se cobran como ventana.
+const UX_TARIFA_DEF = { ventana: 76, puerta: 125, persiana: 10, fijoUnido: 10, fijoSuelto: 76, mosquitera: 10 };
+const UX_TARIFA_ETIQ = { ventana: "Ventana (1 o 2 hojas)", puerta: "Puerta con cerradura", persiana: "+ si lleva persiana (por ventana)", fijoUnido: "+ fijo unido a la ventana", fijoSuelto: "Fijo suelto", mosquitera: "Mosquitera" };
+const uxTarifa = (configVentanas) => ({ ...UX_TARIFA_DEF, ...((configVentanas && configVentanas.tarifaUxcar) || {}) });
+const uxPrecioExpediente = (exp, tarifa) => {
+  const t = tarifa || UX_TARIFA_DEF;
+  const lineas = [];
+  let sinPrecio = 0;
+  const add = (concepto, uds, precio) => {
+    const u = Math.round((parseFloat(uds) || 0) * 100) / 100, pr = parseFloat(precio) || 0;
+    if (!u || !pr) return;
+    const k = lineas.find((x) => x.concepto === concepto && x.precio === pr);
+    if (k) { k.uds += u; k.importe = Math.round(k.uds * pr * 100) / 100; } else lineas.push({ concepto, uds: u, precio: pr, importe: Math.round(u * pr * 100) / 100 });
+  };
+  const r = toArray(exp && exp.recuento);
+  if (r.length) {
+    r.forEach((l) => {
+      const u = parseFloat(l.uds) || 0;
+      if (!u) return;
+      const juntas = Math.max(1, parseInt(l.juntas, 10) || 1);
+      const fijos = Math.max(0, parseInt(l.fijos, 10) || 0);
+      if (l.tipo === "mosquitera") { add("Mosquitera", u, t.mosquitera); return; }
+      if (l.tipo === "otro") { sinPrecio += u; return; }
+      if (l.tipo === "fijo") add("Fijo suelto", u, t.fijoSuelto);
+      else if (l.tipo === "puerta" && l.cerradura) add("Puerta con cerradura", u * juntas, t.puerta);
+      else add("Ventana", u * juntas, t.ventana);
+      if (fijos && l.tipo !== "fijo") add("Fijo unido a ventana", u * fijos, t.fijoUnido);
+      if (l.persiana && l.tipo !== "fijo") add("Persiana", u * juntas, t.persiana);
+    });
+  } else {
+    // sin recuento: con los totales del expediente (sin saber persianas ni juntas)
+    add("Ventana", (parseFloat(exp && exp.ventanas) || 0) + (parseFloat(exp && exp.osciloParalelas) || 0), t.ventana);
+    add("Puerta", parseFloat(exp && exp.puertas) || 0, t.puerta);
+  }
+  const total = Math.round(lineas.reduce((a, x) => a + x.importe, 0) * 100) / 100;
+  return { lineas, total, sinPrecio, sinRecuento: r.length === 0 };
+};
+
 async function uxContarVentanasConClaude(dataUrl, mediaType) {
   const base64 = String(dataUrl).split(",")[1];
   const contentBlock = mediaType === "application/pdf"
@@ -26363,7 +26809,9 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     "- hojas: nº de hojas que ABREN. Una hoja que abre tiene líneas en diagonal (triángulo o X) o es una hoja corredera. Los cristales sin líneas son fijos y NO cuentan como hoja. El nº de cristales (Vid ud:) NO siempre es el nº de hojas. En un fijo, hojas = 0.",
     "- persiana: true si encima de la ventana hay una franja de cajón de persiana (normalmente acotada como 185 en lo alto), false si no.",
     "- cerradura: true SOLO en puertas cuya manilla tiene bombín/cerradura (cuadradito de llave en la manilla). El cuadradito que sale al lado de una ventana es el recogedor de la persiana: eso NO es cerradura.",
-    "Responde SOLO con JSON, sin texto ni ```: {\"lineas\":[{\"modelo\":\"\",\"uds\":1,\"tipo\":\"ventana\",\"hojas\":1,\"persiana\":false,\"cerradura\":false}]}",
+    "- juntas: cuántas ventanas (o puertas) van unidas en el mismo dibujo. Una ventana de 1 o de 2 hojas es 1. Si en el mismo recuadro hay dos ventanas separadas por un montante, cada una con sus hojas, son 2. En un fijo suelto, 1.",
+    "- fijos: cuántos fijos van unidos a la ventana en el mismo dibujo (p.ej. un fijo debajo o encima = 1). En un fijo suelto, 0.",
+    "Responde SOLO con JSON, sin texto ni ```: {\"lineas\":[{\"modelo\":\"\",\"uds\":1,\"tipo\":\"ventana\",\"hojas\":1,\"persiana\":false,\"cerradura\":false,\"juntas\":1,\"fijos\":0}]}",
   ].join("\n");
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
@@ -26387,6 +26835,8 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     hojas: parseInt(l.hojas, 10) || 0,
     persiana: !!l.persiana,
     cerradura: !!l.cerradura,
+    juntas: Math.max(1, parseInt(l.juntas, 10) || 1),
+    fijos: Math.max(0, parseInt(l.fijos, 10) || 0),
   }));
 }
 
@@ -26463,7 +26913,7 @@ function UxRecuentoEditor({ lineas, onChange }) {
         <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md disabled:opacity-60">
           {leyendo ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />} {leyendo ? "Contando…" : "Contar desde el PDF"}
         </button>
-        <button type="button" onClick={() => onChange([...lista, { id: uid(), modelo: "", uds: 1, tipo: "ventana", hojas: 1, persiana: false, cerradura: false }])} className="flex items-center gap-1 text-xs font-semibold px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100"><Plus size={13} /> Añadir a mano</button>
+        <button type="button" onClick={() => onChange([...lista, { id: uid(), modelo: "", uds: 1, tipo: "ventana", hojas: 1, persiana: false, cerradura: false, juntas: 1, fijos: 0 }])} className="flex items-center gap-1 text-xs font-semibold px-3 py-2 rounded-md text-slate-600 hover:bg-slate-100"><Plus size={13} /> Añadir a mano</button>
       </div>
       <p className="text-[11px] text-slate-400">Sube el listado de dibujos o de montaje y se cuentan solas: con o sin persiana, nº de hojas, corredera, puerta, cerradura… Los totales de arriba se rellenan solos.</p>
       {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
@@ -26471,7 +26921,7 @@ function UxRecuentoEditor({ lineas, onChange }) {
         <>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Modelo</th><th className="text-right py-1 px-1">Uds</th><th className="text-left py-1 px-1">Tipo</th><th className="text-right py-1 px-1">Hojas</th><th className="py-1 px-1">Persiana</th><th className="py-1 px-1">Cerradura</th><th /></tr></thead>
+              <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Modelo</th><th className="text-right py-1 px-1">Uds</th><th className="text-left py-1 px-1">Tipo</th><th className="text-right py-1 px-1">Hojas</th><th className="py-1 px-1">Persiana</th><th className="py-1 px-1">Cerradura</th><th className="text-right py-1 px-1" title="Ventanas unidas en el mismo dibujo">Juntas</th><th className="text-right py-1 px-1" title="Fijos unidos a la ventana">Fijos</th><th /></tr></thead>
               <tbody>
                 {lista.map((l, i) => (
                   <tr key={l.id || i} className="border-t border-slate-100">
@@ -26481,6 +26931,8 @@ function UxRecuentoEditor({ lineas, onChange }) {
                     <td className="py-1 px-1"><TextInput type="number" min="0" value={l.hojas} onChange={(e) => setLinea(i, { hojas: e.target.value })} className="w-14 text-right" /></td>
                     <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.persiana} onChange={(e) => setLinea(i, { persiana: e.target.checked })} /></td>
                     <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.cerradura} onChange={(e) => setLinea(i, { cerradura: e.target.checked })} /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="1" value={l.juntas || 1} onChange={(e) => setLinea(i, { juntas: e.target.value })} className="w-14 text-right" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.fijos || 0} onChange={(e) => setLinea(i, { fijos: e.target.value })} className="w-14 text-right" /></td>
                     <td className="py-1 pl-1 text-right"><button type="button" onClick={() => onChange(lista.filter((_, j) => j !== i))} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
@@ -29033,6 +29485,114 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
   );
 }
 
+// Portal de Uxcar: subir el informe de materiales de su programa (el mismo que usamos
+// nosotros). Se lee, se reconoce el expediente por su número y se guarda en él. En el CRM
+// entra solo en su Proyecto: material a preparar, pedidos de lo que falta y correos de fábrica.
+function UxSubirInformes({ expedientes, onGuardar }) {
+  const [items, setItems] = useState([]); // { id, nombre, lis, expId, error, guardado }
+  const [leyendo, setLeyendo] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const inputRef = useRef(null);
+  const digitos = (t) => String(t || "").replace(/\./g, "").match(/\d{3,}/g) || [];
+  const adivinar = (lis, nombre) => {
+    const ds = [...digitos(lis.numero), ...digitos(lis.referencia), ...digitos(nombre)];
+    const e = expedientes.find((x) => digitos(x.numero).some((d) => ds.includes(d)));
+    return e ? e.id : "";
+  };
+  const elegir = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setLeyendo(true); setAviso("");
+    const nuevos = [];
+    for (const f of files) {
+      try {
+        const lis = await leerListadoMateriales(f);
+        if (["dibujos", "presupuesto", "medidas", "otro"].includes(lis.tipo)) { nuevos.push({ id: uid(), nombre: f.name, error: "No es un informe de materiales (parece otro documento)." }); continue; }
+        if (!lis.lineas.length && !lis.horas) { nuevos.push({ id: uid(), nombre: f.name, error: "No he encontrado líneas de material." }); continue; }
+        nuevos.push({ id: uid(), nombre: f.name, lis, expId: adivinar(lis, f.name) });
+      } catch (e) { nuevos.push({ id: uid(), nombre: f.name, error: "No se pudo leer: " + e.message }); }
+    }
+    setItems((prev) => [...prev, ...nuevos]);
+    setLeyendo(false);
+  };
+  const guardar = async () => {
+    const validos = items.filter((x) => x.lis && !x.guardado);
+    if (validos.some((x) => !x.expId)) { setAviso("Elige a qué expediente va cada informe."); return; }
+    setGuardando(true); setAviso("");
+    const porExp = {};
+    validos.forEach((x) => { (porExp[x.expId] = porExp[x.expId] || []).push(x); });
+    let ok = 0;
+    for (const [expId, lista] of Object.entries(porExp)) {
+      const exp = expedientes.find((e) => e.id === expId);
+      if (!exp) continue;
+      const leidos = lista.map((x) => x.lis);
+      const conLineas = leidos.filter((x) => x.lineas.length);
+      const horas = Math.max(0, ...leidos.map((x) => x.horas || 0));
+      let l;
+      if (!conLineas.length) {
+        // solo la mano de obra: se añaden las horas al informe que ya tuviera
+        if (!exp.listadoMateriales) { setAviso(`Para ${exp.numero} solo has subido la mano de obra: sube también el análisis de materiales.`); continue; }
+        l = { ...exp.listadoMateriales, horas: horas || exp.listadoMateriales.horas || 0 };
+      } else {
+        const base = conLineas[0];
+        l = { ...base, horas: horas || base.horas || 0, lineas: conLineas.flatMap((x) => x.lineas), archivo: lista.map((x) => x.nombre).join(" + "), superficies: (leidos.find((x) => x.superficies && x.superficies.m2 > 0) || base).superficies };
+      }
+      const res = await onGuardar(exp, JSON.parse(JSON.stringify(l)));
+      if (res !== false) { ok++; setItems((prev) => prev.map((x) => (lista.includes(x) ? { ...x, guardado: true } : x))); }
+    }
+    setGuardando(false);
+    if (ok) setAviso(`Informe${ok === 1 ? "" : "s"} guardado${ok === 1 ? "" : "s"} en ${ok} expediente${ok === 1 ? "" : "s"}. Ecowin PVC ya lo tiene para preparar el material.`);
+  };
+  const pendientes = items.filter((x) => x.lis && !x.guardado);
+  const activos = expedientes.filter((e) => e.estado !== "entregado").sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
+        <p className="text-sm text-slate-600">Sube el <b>análisis de materiales</b> de cada expediente (y la <b>mano de obra</b> si la tienes), tal cual sale del programa de ventanas. Puedes elegir varios a la vez: cada uno se une a su expediente por el número.</p>
+        <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { elegir(e.target.files); e.target.value = ""; }} />
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} className="w-full border-2 border-dashed border-slate-300 hover:border-[#2E8B57] rounded-lg px-4 py-6 text-sm text-slate-600 flex flex-col items-center gap-1 disabled:opacity-60">
+          {leyendo ? <><Loader2 size={20} className="animate-spin text-[#2E8B57]" /> Leyendo (puede tardar un minuto por documento)…</> : <><FileText size={20} className="text-slate-400" /><span className="font-semibold">Subir informe de materiales (PDF, Excel o Word)</span></>}
+        </button>
+        {items.length > 0 && (
+          <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+            {items.map((x) => (
+              <div key={x.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                <FileText size={16} className="text-[#2E8B57] shrink-0" />
+                <span className="font-semibold text-slate-800 truncate max-w-[220px]">{x.nombre}</span>
+                {x.error ? <span className="text-xs text-rose-600">{x.error}</span> : <>
+                  <span className="text-xs text-slate-500">{x.lis.lineas.length} líneas{x.lis.horas ? ` · ${x.lis.horas} h` : ""}{x.lis.numero ? ` · nº ${x.lis.numero}` : ""}</span>
+                  {x.guardado ? <span className="ml-auto text-xs font-semibold text-emerald-700">✓ Guardado</span> : (
+                    <Select value={x.expId} onChange={(e) => setItems((prev) => prev.map((y) => (y.id === x.id ? { ...y, expId: e.target.value } : y)))} className="ml-auto max-w-[200px] text-xs">
+                      <option value="">— ¿Qué expediente? —</option>
+                      {activos.map((e) => <option key={e.id} value={e.id}>{e.numero}</option>)}
+                    </Select>
+                  )}
+                </>}
+                {!x.guardado && <button type="button" onClick={() => setItems((prev) => prev.filter((y) => y.id !== x.id))} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>}
+              </div>
+            ))}
+          </div>
+        )}
+        {aviso && <p className="text-sm font-semibold text-slate-700">{aviso}</p>}
+        {pendientes.length > 0 && <button type="button" disabled={guardando} onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">{guardando ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Guardar {pendientes.length} informe{pendientes.length === 1 ? "" : "s"}</button>}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg">
+        <div className="px-4 py-2 text-sm font-bold text-slate-700 border-b border-slate-100">Expedientes y su informe de materiales</div>
+        {activos.length === 0 && <div className="px-4 py-4 text-sm text-slate-400">No hay expedientes abiertos.</div>}
+        {activos.map((e) => (
+          <div key={e.id} className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm border-b border-slate-50 last:border-0">
+            <span className="font-semibold text-slate-900 w-28">{e.numero}</span>
+            <UxEstado estado={e.estado} />
+            {e.listadoMateriales ? <span className="text-xs text-emerald-700">✓ Subido el {fmtDate(e.listadoMateriales.fecha)} · {toArray(e.listadoMateriales.lineas).length} líneas{e.listadoMateriales.horas ? ` · ${e.listadoMateriales.horas} h` : ""}</span>
+              : <span className="text-xs font-semibold text-rose-600">✗ Falta el informe de materiales</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PortalUxcar({ authUser, perfil, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -29155,6 +29715,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("lista", "Mis expedientes")}
           {tab("nuevo", "+ Nuevo expediente")}
           {tab("pedidos", "Pedidos")}
+          {tab("materiales", "Informe de materiales")}
           {tab("proveedores", "Proveedores")}
           {tab("resumen", "Resumen")}
         </div>
@@ -29166,6 +29727,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
         ) : vista === "resumen" ? (
           <UxResumen expedientes={expedientes} />
+        ) : vista === "materiales" ? (
+          <UxSubirInformes expedientes={expedientes} onGuardar={async (exp, lis) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: lis }); return true; } catch (e) { return false; } }} />
         ) : vista === "proveedores" ? (
           <UxProveedores proveedores={proveedoresUx} onGuardar={guardarProveedor} onBorrar={borrarProveedor} />
         ) : vista === "nuevoPedido" ? (
@@ -29216,7 +29779,24 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
 }
 
 // Módulo "Uxcar" dentro del CRM (lo usa el equipo)
-function UxcarModulo({ expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+function UxPrecioFicha({ exp, tarifa }) {
+  const pr = uxPrecioExpediente(exp, tarifa);
+  return (
+    <div className="border border-slate-200 rounded-lg p-4">
+      <div className="flex items-center mb-2"><div className="text-sm font-bold text-slate-800 mr-auto">Precio para Uxcar</div><div className="text-lg font-extrabold text-slate-900">{money(pr.total)} <span className="text-xs font-normal text-slate-400">sin IVA</span></div></div>
+      {pr.lineas.length === 0 ? <p className="text-xs text-slate-400">Sin ventanas contadas todavía.</p> : (
+        <table className="w-full text-xs">
+          <tbody>{pr.lineas.map((x) => <tr key={x.concepto + x.precio} className="border-t border-slate-100"><td className="py-1">{x.concepto}</td><td className="py-1 text-right">{x.uds} × {money(x.precio)}</td><td className="py-1 text-right font-semibold w-24">{money(x.importe)}</td></tr>)}</tbody>
+        </table>
+      )}
+      {pr.sinRecuento && pr.lineas.length > 0 && <p className="text-[11px] text-amber-700 mt-1">Calculado con los totales, sin recuento: no se saben las persianas ni las ventanas juntas. Sube el listado de dibujos para afinarlo.</p>}
+      {pr.sinPrecio > 0 && <p className="text-[11px] text-amber-700 mt-1">{pr.sinPrecio} línea(s) de tipo "otro" sin precio: revísalas en el recuento.</p>}
+      <p className="text-[11px] text-slate-400 mt-1">Este importe pasa solo al proyecto del expediente, para facturarlo cuando se entregue.</p>
+    </div>
+  );
+}
+
+function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
   const [vista, setVista] = useState("lista");
   const [abiertoId, setAbiertoId] = useState(null);
   const tipos = config && config.tipos ? toArray(config.tipos) : [];
@@ -29239,6 +29819,7 @@ function UxcarModulo({ expedientes, uxPedidos = [], onCambiarControlOtros, onGua
         {tab("lista", "Expedientes")}
         {tab("resumen", "Resumen")}
         {isAdmin && tab("config", "Tipos de expediente")}
+        {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
       {pendientesProduccion > 0 && vista === "lista" && (
@@ -29248,6 +29829,16 @@ function UxcarModulo({ expedientes, uxPedidos = [], onCambiarControlOtros, onGua
       )}
       {vista === "resumen" ? (
         <UxResumen expedientes={expedientes} />
+      ) : vista === "precios" && isAdmin ? (
+        <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-lg space-y-3">
+          <p className="text-sm text-slate-600">Lo que cobráis a Uxcar por cada cosa (sin IVA). Dos ventanas juntas en el mismo dibujo se cobran como dos. Las puertas sin cerradura, correderas y oscilo-paralelas se cobran como ventana.</p>
+          <div className="grid grid-cols-2 gap-3">
+            {Object.keys(UX_TARIFA_DEF).map((k) => (
+              <Field key={k} label={UX_TARIFA_ETIQ[k]}><TextInput type="number" min="0" step="0.01" defaultValue={(tarifaUx || UX_TARIFA_DEF)[k]} onBlur={(e) => onGuardarTarifaUx && onGuardarTarifaUx({ ...(tarifaUx || UX_TARIFA_DEF), [k]: parseFloat(e.target.value) || 0 })} /></Field>
+            ))}
+          </div>
+          <p className="text-xs text-slate-400">Al cambiar un precio se recalculan los expedientes que todavía no se han facturado.</p>
+        </div>
       ) : vista === "config" && isAdmin ? (
         <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-lg">
           <Field label="Tipos de expediente (uno por línea)">
@@ -29301,6 +29892,7 @@ function UxcarModulo({ expedientes, uxPedidos = [], onCambiarControlOtros, onGua
           </div>
           <UxControl3 exp={abierto} pedidos={uxPedidos} onCambiarMaterial={onCambiarMaterial} onCambiarControlOtros={onCambiarControlOtros}
             onGuardarListado={onGuardarListadoUx} />
+          <div className="mt-4"><UxPrecioFicha exp={abierto} tarifa={tarifaUx} /></div>
           <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
           <div className="mt-5 flex flex-wrap items-end gap-3">
             {abierto.estado === "virtual" && (
