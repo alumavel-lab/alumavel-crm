@@ -2461,7 +2461,7 @@ export default function App() {
       }
       idParaAbrir = data.id;
     } else {
-      const np = { estado: "Pendiente", ...data, id: uid() };
+      const np = { estado: "Pendiente", ...data, id: uid(), creadoEn: Date.now() };
       next = [np, ...presupuestos];
       showToast("Presupuesto dado de alta");
       idParaAbrir = np.id;
@@ -3919,6 +3919,22 @@ export default function App() {
               {pedidosLlegados.length > 0 && pedidosRetrasados.length > 0 && " · "}
               {pedidosRetrasados.length > 0 && `${pedidosRetrasados.length} pedido${pedidosRetrasados.length === 1 ? "" : "s"} van con retraso`}
               . Toca para verlos →
+            </button>
+          );
+        })()}
+        {(() => {
+          // Presupuestos creados hace más de 2 días que todavía no se han enviado al cliente.
+          if (!currentUser || !isAdmin) return null;
+          const limite = Date.now() - 2 * 24 * 3600 * 1000;
+          const sinEnviar = presupuestos.filter((p) => presupuestoSinEnviar(p) && !(p.firma && p.firma.estado) && (p.creadoEn || (p.fechaEnvio ? new Date(p.fechaEnvio + "T12:00:00").getTime() : Date.now())) < limite);
+          if (sinEnviar.length === 0) return null;
+          return (
+            <button
+              onClick={() => { setModulo("presupuestos"); if (sinEnviar.length === 1) { setPresupuestoDetailId(sinEnviar[0].id); setPresupuestoView("detail"); } else setPresupuestoView("list"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-50 text-orange-800 hover:bg-orange-100"
+            >
+              <Send size={15} />
+              {sinEnviar.length} presupuesto{sinEnviar.length === 1 ? "" : "s"} sin enviar al cliente desde hace más de 2 días ({sinEnviar.slice(0, 4).map((p) => p.numero).join(", ")}{sinEnviar.length > 4 ? "…" : ""}). Toca para {sinEnviar.length === 1 ? "abrirlo" : "verlos"} →
             </button>
           );
         })()}
@@ -15929,6 +15945,21 @@ function imprimirPresupuesto(presupuesto) {
 // Genera un PDF real del presupuesto (con pdf-lib, igual que el PDF de respaldo
 // que ya se usa para firma) para poder descargarlo y/o guardarlo como documento
 // del presupuesto en un solo paso, sin tener que imprimir y volver a subirlo a mano.
+// Descarga (pasando por el servidor, por el CORS de Firebase Storage) un archivo guardado
+// y lo devuelve como data URL, para adjuntarlo a un correo.
+async function archivoGuardadoComoDataUrl(url, nombre) {
+  const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
+  const r = await fetch("/.netlify/functions/descargar-archivo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ url }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `No se pudo descargar ${nombre || "el documento"}`);
+  const tipo = d.contentType && d.contentType !== "application/octet-stream" ? d.contentType : (/\.pdf$/i.test(nombre || "") ? "application/pdf" : "application/octet-stream");
+  return `data:${tipo};base64,${d.base64}`;
+}
+
 async function generarPdfBytesPresupuesto(presupuesto) {
   const pdfDoc = await PDFDocument.create();
   const fuente = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -19354,8 +19385,21 @@ const diasSinRespuestaDe = (p) => {
   return diasEntre(desde, new Date().toISOString().slice(0, 10));
 };
 
+// PDF "de verdad" del presupuesto (el último subido que no sea el firmado)
+const pdfPrincipalPresupuesto = (p) => toArray(p && p.documentos).filter((d) => /\.pdf$/i.test(d.nombre || "") && !/firmado/i.test(d.nombre || "")).slice(-1)[0] || null;
+const enlaceVerPdfPresupuesto = (p) => {
+  const doc = pdfPrincipalPresupuesto(p);
+  return doc && typeof window !== "undefined" ? `${window.location.origin}/.netlify/functions/ver-documento?p=${encodeURIComponent(p.id)}&d=${encodeURIComponent(doc.id)}` : "";
+};
+const presupuestoSinEnviar = (p) => !p.estado || p.estado === "Pendiente";
 const mensajeWhatsappPresupuesto = (p) => {
-  return `Hola ${p.clienteNombre}, le escribimos de Ecowin PVC para saber si ha podido revisar el presupuesto ${p.numero}${p.descripcion ? ` (${p.descripcion})` : ""}. Quedamos a su disposición para cualquier duda. Un saludo.`;
+  const descCorta = String(p.descripcion || "").split("\n")[0];
+  const enlace = enlaceVerPdfPresupuesto(p);
+  // Primera vez (todavía sin enviar): se le manda el presupuesto con el enlace al PDF.
+  if (presupuestoSinEnviar(p) && enlace) {
+    return `Hola ${p.clienteNombre}, le enviamos de Ecowin PVC el presupuesto ${p.numero}${descCorta ? ` (${descCorta})` : ""}${p.importe ? `, importe ${importePresupuestoTexto(p)}` : ""}. Puede verlo aquí: ${enlace}\nQuedamos a su disposición para cualquier duda. Un saludo.`;
+  }
+  return `Hola ${p.clienteNombre}, le escribimos de Ecowin PVC para saber si ha podido revisar el presupuesto ${p.numero}${descCorta ? ` (${descCorta})` : ""}.${enlace ? ` Se lo dejo aquí otra vez: ${enlace}` : ""} Quedamos a su disposición para cualquier duda. Un saludo.`;
 };
 
 const enlaceWhatsapp = (p) => {
@@ -24844,11 +24888,20 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
     setErrorEnvioEmail("");
     setEmailEnviadoOk(false);
     try {
-      const bytes = await generarPdfBytesPresupuesto(presupuesto);
-      let binario = "";
-      for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
-      const dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
-      const nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      // Si el presupuesto tiene su PDF de verdad guardado (p.ej. el del programa de
+      // ventanas), se manda ESE; si no, se genera uno con los datos del CRM.
+      const pdfReal = toArray(presupuesto.documentos).filter((d) => /\.pdf$/i.test(d.nombre || "") && !/firmado/i.test(d.nombre || "")).slice(-1)[0];
+      let dataUrl, nombreArchivo;
+      if (pdfReal) {
+        dataUrl = await archivoGuardadoComoDataUrl(pdfReal.url, pdfReal.nombre);
+        nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      } else {
+        const bytes = await generarPdfBytesPresupuesto(presupuesto);
+        let binario = "";
+        for (let i = 0; i < bytes.length; i++) binario += String.fromCharCode(bytes[i]);
+        dataUrl = `data:application/pdf;base64,${btoa(binario)}`;
+        nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
+      }
       const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
       const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
 
