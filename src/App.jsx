@@ -1939,6 +1939,15 @@ export default function App() {
   const actualizarPedido = (pedidoId, patch) => {
     savePedidos(pedidos.map((p) => (p.id === pedidoId ? { ...p, ...patch } : p)));
   };
+  // Al elegir proveedor para un pedido de una sección (perfiles, herrajes…), se ofrece
+  // recordarlo: a partir de ahí esa sección se le pedirá a ese proveedor automáticamente.
+  const recordarProveedorSeccion = (proveedorId, seccion) => {
+    saveProveedores(proveedores.map((pr) => {
+      const secs = toArray(pr.seccionesHabituales).filter((x) => x !== seccion);
+      return pr.id === proveedorId ? { ...pr, seccionesHabituales: [...secs, seccion] } : { ...pr, seccionesHabituales: secs };
+    }));
+    showToast(`Guardado: ${LISTADO_SECCIONES[seccion] || seccion} → ${(proveedores.find((x) => x.id === proveedorId) || {}).nombre || "proveedor"}`);
+  };
   const marcarPedidoEnviado = (pedidoId, metodo, fechaEntrega) => {
     const hoy = new Date().toISOString().slice(0, 10);
     let aviso = "";
@@ -4070,6 +4079,7 @@ export default function App() {
             onCrearPedidosEspera={crearPedidosEsperaListado}
             onMarcarPedidoEnviado={marcarPedidoEnviado}
             onActualizarPedido={actualizarPedido}
+            onRecordarProveedorSeccion={recordarProveedorSeccion}
             onGuardarLlamada={guardarLlamadaProyecto}
             usuarios={usuarios}
             onActualizarUnidadPersiana={actualizarUnidadPersiana}
@@ -5300,7 +5310,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ onMarcarPedidoEnviado, onActualizarPedido, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -5373,6 +5383,7 @@ function ProyectosModulo({ onMarcarPedidoEnviado, onActualizarPedido, onCrearPed
         onCrearPedidosEspera={onCrearPedidosEspera}
         onMarcarPedidoEnviado={onMarcarPedidoEnviado}
         onActualizarPedido={onActualizarPedido}
+        onRecordarProveedorSeccion={onRecordarProveedorSeccion}
         onGuardarLlamada={onGuardarLlamada}
         usuarios={usuarios}
         onActualizarUnidadPersiana={(unidadId, cambios) => onActualizarUnidadPersiana(proyecto.id, unidadId, cambios)}
@@ -6032,7 +6043,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales) => {
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
 // PEDIRLOS desde aquí mismo: elegir proveedor, mandarlo por WhatsApp o email, o marcar que
 // ya se ha pedido de otra forma — pidiendo siempre la fecha aproximada de llegada.
-function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido }) {
+function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion }) {
   const [confirmando, setConfirmando] = useState(null); // { id, metodo, fecha }
   const hoy = new Date().toISOString().slice(0, 10);
   if (pedidos.length === 0) return <p className="px-4 py-8 text-center text-sm text-slate-400">Sin pedidos de materiales vinculados a este proyecto todavía.</p>;
@@ -6065,7 +6076,15 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
             {sinPedir && (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {!prov && !p.proveedorExterno ? (
-                  <Select value="" onChange={(e) => e.target.value && onActualizarPedido(p.id, { proveedorId: e.target.value })} className="!w-auto text-xs">
+                  <Select value="" onChange={(e) => {
+                    const provId = e.target.value;
+                    if (!provId) return;
+                    onActualizarPedido(p.id, { proveedorId: provId, proveedorExterno: "" });
+                    // Si el pedido es de una sola sección, se ofrece recordarlo para las próximas obras
+                    const secs = [...new Set(toArray(p.lineas).map((l) => l.seccionListado).filter(Boolean))];
+                    const nombreProv = (proveedores.find((x) => x.id === provId) || {}).nombre || "";
+                    if (secs.length === 1 && onRecordarProveedorSeccion && confirm(`¿Pedir siempre a ${nombreProv} los "${LISTADO_SECCIONES[secs[0]] || secs[0]}"?\n\nAsí, en las próximas obras esos pedidos ya saldrán con ${nombreProv} puesto (se puede cambiar en su ficha, en "Le pido normalmente").`)) onRecordarProveedorSeccion(provId, secs[0]);
+                  }} className="!w-auto text-xs">
                     <option value="">Elige el proveedor para poder pedirlo…</option>
                     {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
                   </Select>
@@ -6079,6 +6098,22 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                 ) : (
                   <>
                     <span className="text-xs font-semibold text-amber-700 mr-1">Sin pedir:</span>
+                    <Select
+                      value={p.proveedorId || ""}
+                      onChange={(e) => {
+                        const provId = e.target.value;
+                        if (!provId || provId === p.proveedorId) return;
+                        onActualizarPedido(p.id, { proveedorId: provId, proveedorExterno: "" });
+                        const secs = [...new Set(toArray(p.lineas).map((l) => l.seccionListado).filter(Boolean))];
+                        const nombreProv = (proveedores.find((x) => x.id === provId) || {}).nombre || "";
+                        if (secs.length === 1 && onRecordarProveedorSeccion && confirm(`Pedido cambiado a ${nombreProv}.\n\n¿Pedir también a partir de ahora a ${nombreProv} los "${LISTADO_SECCIONES[secs[0]] || secs[0]}"? (Si es solo esta vez, pulsa Cancelar.)`)) onRecordarProveedorSeccion(provId, secs[0]);
+                      }}
+                      title="Cambiar a quién se le pide"
+                      className="!w-auto text-xs"
+                    >
+                      {!p.proveedorId && <option value="">{p.proveedorExterno || "Proveedor…"}</option>}
+                      {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
+                    </Select>
                     {waProv && <button onClick={() => empezar("whatsapp", waProv)} className="flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md"><MessageCircle size={12} /> Pedir por WhatsApp</button>}
                     {mailProv && <button onClick={() => empezar("email", mailProv)} className="flex items-center gap-1 text-xs font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md"><Mail size={12} /> Pedir por email</button>}
                     <button onClick={() => empezar("manual", "")} className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-md">Ya lo he pedido de otra forma</button>
@@ -6186,7 +6221,8 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
           // Sin proveedor conocido (p.ej. stock vacío o material sin dar de alta): se
           // separa por sección (perfiles, herrajes, persianas…) para que cada pedido
           // vaya luego a su proveedor, en vez de un único pedido con todo mezclado.
-          const prov = (f.mat && f.mat.proveedorId) || `sin:${f.seccion || "otros"}`;
+          const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
+          const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
           (gruposAuto[prov] = gruposAuto[prov] || []).push(f.mat
             ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
             : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
@@ -6284,7 +6320,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7134,7 +7170,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           </div>
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <PedidosObraAcciones proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} materiales={materiales} openPedido={openPedido}
-              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} />
+              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} />
           </div>
           {/* Documentación de la obra, todo junto: listado de materiales (a la izquierda) y
               tipo plano (a la derecha), cada uno con su botón. */}
@@ -7506,6 +7542,17 @@ function ProveedorForm({ initial, onCancel, onSave }) {
           </div>
           <p className="text-xs text-slate-400 mt-1">Lo que suele tardar en llegar un pedido suyo. Al hacerle un pedido se propone como fecha de llegada: si alguna línea va en un color que no es blanco, con los días de color (luego se puede cambiar).</p>
         </div>
+        <Field label="Le pido normalmente">
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
+            {Object.entries(LISTADO_SECCIONES).map(([k, n]) => (
+              <label key={k} className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={toArray(f.seccionesHabituales).includes(k)} onChange={(e) => setF({ ...f, seccionesHabituales: e.target.checked ? [...toArray(f.seccionesHabituales), k] : toArray(f.seccionesHabituales).filter((x) => x !== k) })} />
+                {n.replace(" (a medida)", "")}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Al subir el listado de una obra, lo que no esté dado de alta en Stock se pide a este proveedor según la sección.</p>
+        </Field>
         <Field label="Comentarios"><TextArea rows={3} value={f.comentarios} onChange={set("comentarios")} /></Field>
         {errorMsg && (
           <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">
@@ -11354,6 +11401,9 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// Proveedor al que se le pide normalmente cada sección (marcado en la ficha del proveedor,
+// "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
+const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
 // Fecha de llegada que se propone al hacer un pedido: hoy + los días de entrega del
 // proveedor. Cada proveedor tiene días "en blanco / estándar" y días "en color": si alguna
 // línea del pedido va en un color que no es blanco, se usan los de color.
