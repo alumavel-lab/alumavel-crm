@@ -1710,24 +1710,17 @@ export default function App() {
       creadoPor: creador, fechaCreado: hoy,
     };
     });
+    // "Qué lleva la obra" se rellena solo con lo que trae el listado, enlazado a sus pedidos
+    const lineasListado = toArray((extraPatch && extraPatch.listadoMateriales && extraPatch.listadoMateriales.lineas) || (proyecto.listadoMateriales && proyecto.listadoMateriales.lineas));
+    const pedidosDeLaObra = [...nuevos, ...pedidos.filter((pd) => pd.proyectoId === proyecto.id)];
+    const cl = lineasListado.length ? rellenarChecklistDesdeListado(proyecto.checklistMateriales, lineasListado, pedidosDeLaObra) : null;
+    const patch = { ...(extraPatch || {}), ...(cl ? { checklistMateriales: JSON.parse(JSON.stringify(cl)) } : {}) };
     if (nuevos.length === 0) {
-      if (extraPatch) updateProyectoInline(proyecto.id, extraPatch);
+      if (Object.keys(patch).length) updateProyectoInline(proyecto.id, patch);
       return;
     }
     savePedidos([...nuevos, ...pedidos]);
-    // vincular a "Perfil" si la obra lo tiene marcado
-    const checklist = normalizarChecklist(proyecto.checklistMateriales);
-    const vinculos = [[/perfil/i, ["perfiles", "refuerzo"]], [/persiana/i, ["persianas"]], [/cristal/i, ["cristal"]]];
-    let cl = checklist, cambio = false;
-    vinculos.forEach(([re, secciones]) => {
-      const item = cl.find((c) => re.test(c.nombre || ""));
-      if (!item) return;
-      const ids = nuevos.filter((pd) => pd.lineas.some((l) => secciones.includes(l.seccionListado))).map((pd) => pd.id);
-      if (!ids.length) return;
-      cambio = true;
-      cl = cl.map((c) => (c.id === item.id ? { ...c, estado: c.estado || "si", pedidoIds: [...(c.pedidoIds || []), ...ids] } : c));
-    });
-    if (cambio || extraPatch) updateProyectoInline(proyecto.id, { ...(extraPatch || {}), ...(cambio ? { checklistMateriales: JSON.parse(JSON.stringify(cl)) } : {}) });
+    if (Object.keys(patch).length) updateProyectoInline(proyecto.id, patch);
     const sinProv = nuevos.filter((x) => !x.proveedorId).length;
     showToast(`${nuevos.length} pedido${nuevos.length === 1 ? "" : "s"} en espera creado${nuevos.length === 1 ? "" : "s"} (${nuevos.map((x) => `#${x.numero}`).join(", ")})${sinProv ? ` — ${sinProv} sin proveedor, elígelo en Pedidos` : ""}`, sinProv ? "error" : "ok");
   };
@@ -5979,7 +5972,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         });
         onCrearPedidosEspera(proyecto, gruposAuto, origen, JSON.parse(JSON.stringify({ listadoMateriales: listadoLimpio, ...extraProyecto })));
       } else {
-        onGuardarListado(proyecto.id, l, extraProyecto);
+        onGuardarListado(proyecto.id, l, { ...extraProyecto, checklistMateriales: rellenarChecklistDesdeListado(proyecto.checklistMateriales, l.lineas, pedidosObra.filter((pd) => pd.proyectoId === proyecto.id)) });
         if (yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
       }
       if (avisos.length) setError(avisos.join(" "));
@@ -11116,6 +11109,32 @@ async function leerDocumentoCristalConIA(file, prompt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// "Qué lleva la obra" a partir del listado de materiales: qué líneas cuentan para cada cosa.
+const txtLinea = (l) => `${l.codigo || ""} ${l.descripcion || ""}`;
+const REGLAS_CHECKLIST = [
+  [/^cristal/i, (l) => l.seccion === "cristal"],
+  [/^persiana/i, (l) => l.seccion === "persianas" && /CJ_|compacto|persiana|lama/i.test(txtLinea(l)) && !/mosquit/i.test(txtLinea(l))],
+  [/^perfil/i, (l) => l.seccion === "perfiles" || l.seccion === "refuerzo"],
+  [/postigo/i, (l) => /postigo/i.test(txtLinea(l))],
+  [/panel/i, (l) => /panel/i.test(txtLinea(l))],
+  [/tirador|manilla/i, (l) => /manilla|tirador/i.test(txtLinea(l))],
+  [/mosquitera/i, (l) => /mosquit|PLX|con tela/i.test(txtLinea(l))],
+  [/gu[ií]a de persiana/i, (l) => l.seccion === "persianas" && /gu[ií]a/i.test(txtLinea(l)) && !/mosquit/i.test(txtLinea(l))],
+];
+// Rellena "Qué lleva la obra": lo que aparece en el listado → "Sí" (enlazado a los pedidos
+// que lo llevan, o "en stock" si no hizo falta pedirlo); lo que no aparece → "No". Lo que ya
+// estaba contestado a mano no se cambia (solo se le añaden los pedidos nuevos).
+const rellenarChecklistDesdeListado = (checklist, lineas, pedidosObra) => normalizarChecklist(checklist).map((c) => {
+  const regla = REGLAS_CHECKLIST.find(([re]) => re.test(c.nombre || ""));
+  if (!regla) return c;
+  const suyas = toArray(lineas).filter(regla[1]);
+  if (suyas.length === 0) return c.estado ? c : { ...c, estado: "no" };
+  const codigos = new Set(suyas.map((l) => normCodigo(l.codigo)));
+  const ids = toArray(pedidosObra).filter((pd) => pd.estado !== "Cancelado" && toArray(pd.lineas).some((x) => codigos.has(normCodigo(x.codigoListado)))).map((pd) => pd.id);
+  if (c.estado === "no") return c;
+  const pedidoIds = [...new Set([...(c.pedidoIds || []), ...ids])];
+  return { ...c, estado: "si", pedidoIds, enStock: pedidoIds.length === 0 };
+});
 async function leerListadoMateriales(file) {
   const prompt = [
     'Esto es un listado de materiales de un programa de ventanas: un "ANÁLISIS MATERIALES" y/o un "LISTADO CAJAS" (persianas y cajones). Puede venir en PDF, Excel o Word. Revisa TODO el documento.',
