@@ -1933,9 +1933,25 @@ export default function App() {
   // "Enviar por email") o a mano (si se ha llamado/hablado de otra forma). Hasta que esto
   // no esté marcado, no se puede recibir el pedido — para no marcar como recibido algo
   // que en realidad nunca se llegó a pedir.
-  const marcarPedidoEnviado = (pedidoId, metodo) => {
-    savePedidos(pedidos.map((p) => (p.id === pedidoId ? { ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString() } : p)));
-    showToast(metodo === "email" ? "Marcado como enviado por email" : "Marcado como pedido realizado");
+  // Al quedar hecho, el pedido pasa de "En espera"/"Pendiente" a "Realizado", con la fecha
+  // de hoy como fecha del pedido y la de llegada que se indique (o, si no se indica, la de
+  // los días de entrega del proveedor). La fecha de llegada se puede cambiar luego.
+  const marcarPedidoEnviado = (pedidoId, metodo, fechaEntrega) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    let aviso = "";
+    savePedidos(pedidos.map((p) => {
+      if (p.id !== pedidoId) return p;
+      const prov = proveedores.find((x) => x.id === p.proveedorId);
+      const llegada = fechaEntrega || p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) || "";
+      if (!llegada) aviso = " — ponle la fecha de llegada (Editar)";
+      const sinHacer = !p.estado || p.estado === "En espera" || p.estado === "Pendiente";
+      return {
+        ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString(),
+        ...(sinHacer ? { estado: "Realizado", fechaCompra: hoy } : {}),
+        fechaEntregaPrevista: llegada,
+      };
+    }));
+    showToast((metodo === "email" ? "Marcado como enviado por email" : metodo === "whatsapp" ? "Marcado como enviado por WhatsApp" : "Pedido marcado como realizado") + aviso, aviso ? "error" : "ok");
   };
 
   // Confirmación INDEPENDIENTE desde el almacén/fábrica de que un material ha llegado.
@@ -5851,7 +5867,7 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
 
 // Tipo plano de la obra: se sube una vez en el proyecto. Sirve para el albarán de entrega
 // (va detrás) y para contar las ventanas por tipo (parte diario e informes).
-function TipoPlanoObra({ proyecto, onInlineUpdate }) {
+function TipoPlanoObra({ proyecto, onInlineUpdate, sinBoton }) {
   const [subiendo, setSubiendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const inputRef = useRef(null);
@@ -5877,13 +5893,13 @@ function TipoPlanoObra({ proyecto, onInlineUpdate }) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Tipo plano y ventanas de la obra {toArray(proyecto.recuento).length > 0 && <span className="text-slate-500 font-normal">· {ventanasDeObra(proyecto).total} ventanas</span>}</div>
-          <div className="text-xs text-slate-500">Se sube una vez: va detrás del albarán de entrega y cuenta las ventanas para los informes.</div>
+          <div className="text-xs text-slate-500">{sinBoton ? (doc ? "Va detrás del albarán de entrega y cuenta las ventanas para el planning y los informes." : "Todavía no hay: sube el \"Listado dibujos\" con el botón de \"Documentación de la obra\" y aparecerá aquí con las ventanas contadas.") : "Se sube una vez: va detrás del albarán de entrega y cuenta las ventanas para los informes."}</div>
         </div>
         {doc && <a href={doc.url} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[#2E8B57] hover:underline">{doc.tipo === "tipo_plano" ? "Tipo plano" : "Documento"}: {doc.nombre}</a>}
         <input ref={inputRef} type="file" accept="application/pdf,image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
-        <button disabled={subiendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
+        {!sinBoton && <button disabled={subiendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {subiendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {subiendo ? "Subiendo y contando…" : doc ? "Cambiar tipo plano" : "Subir tipo plano"}
-        </button>
+        </button>}
       </div>
       {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
       {(toArray(proyecto.recuento).length > 0 || doc) && (
@@ -5893,7 +5909,7 @@ function TipoPlanoObra({ proyecto, onInlineUpdate }) {
   );
 }
 
-function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera }) {
+function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas }) {
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [provSinStock, setProvSinStock] = useState("");
@@ -5912,13 +5928,31 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // plano de la obra y cuenta las ventanas (para el planning y los partes); el
       // presupuesto se ignora aquí (ya está en el presupuesto firmado); el resto
       // (análisis de materiales, mano de obra, listado cajas) es el listado de materiales.
+      // UN SOLO BOTÓN para toda la documentación de la obra: cada archivo se reconoce por
+      // su contenido (y por el nombre, si está claro) y va a su sitio:
+      //  · análisis de materiales / listado cajas / mano de obra → listado de materiales
+      //    (pedidos en espera, horas de fabricación, "Qué lleva la obra")
+      //  · listado de dibujos / tipo plano → tipo plano de la obra (y cuenta las ventanas)
+      //  · presupuesto → se guarda en los documentos de la obra
+      //  · hoja o foto de medidas → pedido de esas medidas (lo de antes de "Subir medidas")
       const esDibujos = (f) => /dibujo|tipo[\s_-]*plano/i.test(f.name || "");
-      const esPresupuesto = (f) => /presupuesto/i.test(f.name || "") && !/analis|analit|material|mano|obra|cajas/i.test(f.name || "");
-      const dibujos = todos.filter(esDibujos);
-      const files = todos.filter((f) => !esDibujos(f) && !esPresupuesto(f));
       const avisos = [];
-      if (todos.some(esPresupuesto)) avisos.push("El presupuesto no hace falta aquí (ya va en el presupuesto firmado); lo he dejado fuera.");
+      const dibujos = todos.filter(esDibujos);
+      const presupuestos = [], medidas = [], leidos = [], files = [];
+      for (const f of todos.filter((x) => !esDibujos(x))) {
+        const r = await leerListadoMateriales(f);
+        if (r.tipo === "dibujos") dibujos.push(f);
+        else if (r.tipo === "presupuesto") presupuestos.push(f);
+        else if (r.tipo === "medidas" || r.tipo === "otro") medidas.push(f);
+        else { leidos.push(r); files.push(f); }
+      }
       let extraProyecto = {};
+      if (presupuestos.length) {
+        const docs = [...toArray(proyecto.documentos)];
+        for (const f of presupuestos) docs.push({ id: uid(), nombre: f.name, url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
+        extraProyecto.documentos = docs;
+        avisos.push(`Presupuesto guardado en los documentos de la obra (${presupuestos.map((f) => f.name).join(", ")}).`);
+      }
       if (dibujos.length) {
         const fd = dibujos[0];
         const url = await subirArchivoAStorage(fd, `documentos-entrega/${proyecto.id}`);
@@ -5927,16 +5961,18 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
           try { recuento = await uxContarVentanasConClaude(await uxLeerComoDataUrl(fd), mediaType); } catch (e) { recuento = null; }
         }
-        extraProyecto = { documentoEntrega: { nombre: fd.name, url, tipo: "tipo_plano", fecha: new Date().toISOString().slice(0, 10) }, ...(recuento && recuento.length ? { recuento } : {}) };
+        extraProyecto = { ...extraProyecto, documentoEntrega: { nombre: fd.name, url, tipo: "tipo_plano", fecha: new Date().toISOString().slice(0, 10) }, ...(recuento && recuento.length ? { recuento } : {}) };
         avisos.push(recuento && recuento.length ? "Listado de dibujos guardado como tipo plano y ventanas contadas (revísalas en \"Tipo plano\")." : "Listado de dibujos guardado como tipo plano, pero no he podido contar las ventanas: añádelas a mano en \"Tipo plano\".");
+      }
+      if (medidas.length && onMedidas) {
+        for (const f of medidas) await onMedidas(f);
+        avisos.push("Hoja de medidas leída: arriba te sale el pedido para crearlo.");
       }
       if (files.length === 0) {
         if (Object.keys(extraProyecto).length) onGuardarListado(proyecto.id, listado || null, extraProyecto);
         setError(avisos.join(" "));
         return;
       }
-      const leidos = [];
-      for (const f of files) leidos.push(await leerListadoMateriales(f));
       const base = leidos.find((x) => x.lineas.length > 0) || leidos[0];
       const l = {
         ...base,
@@ -5967,8 +6003,8 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
           // vaya luego a su proveedor, en vez de un único pedido con todo mezclado.
           const prov = (f.mat && f.mat.proveedorId) || `sin:${f.seccion || "otros"}`;
           (gruposAuto[prov] = gruposAuto[prov] || []).push(f.mat
-            ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" }
-            : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" });
+            ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
+            : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
         });
         onCrearPedidosEspera(proyecto, gruposAuto, origen, JSON.parse(JSON.stringify({ listadoMateriales: listadoLimpio, ...extraProyecto })));
       } else {
@@ -5993,8 +6029,8 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       const prov = (f.mat && f.mat.proveedorId) || provSinStock;
       if (!grupos[prov]) grupos[prov] = [];
       grupos[prov].push(f.mat
-        ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" }
-        : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" });
+        ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
+        : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
     });
     onCrearPedidosEspera(proyecto, grupos, listado.numero || listado.archivo);
   };
@@ -6003,12 +6039,12 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
-          <div className="font-semibold text-slate-800 text-sm">Listado de materiales</div>
-          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube a la vez el \"Análisis materiales\", el \"Listado mano de obra\" y el \"Listado dibujos\" (con Ctrl pulsado): se guardan las horas, se cuentan las ventanas para el planning y lo que falta (cristales y persianas incluidos) se deja pedido EN ESPERA automáticamente."}</div>
+          <div className="font-semibold text-slate-800 text-sm">Documentación de la obra</div>
+          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube aquí TODO lo de la obra a la vez (con Ctrl pulsado): análisis de materiales, mano de obra, listado de dibujos, presupuesto u hojas de medidas. Cada documento se reconoce solo y va a su sitio: pedidos en espera de lo que falta, horas para el planning, ventanas contadas y \"Qué lleva la obra\"."}</div>
         </div>
         <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
-          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo (puede tardar un minuto)…" : listado ? "Subir otro listado" : "Subir listado de materiales"}
+          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo (puede tardar un par de minutos)…" : "Subir documentos de la obra"}
         </button>
         {listado && <button onClick={() => setAbierto(!abierto)} className="text-xs text-slate-500 hover:underline">{abierto ? "Ocultar" : "Ver"}</button>}
       </div>
@@ -6133,7 +6169,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
     // que crea los pedidos por sección, guarda las horas y cuenta las ventanas.
     if (/analis|analit|mano.?de.?obra|dibujo|listado.?cajas/i.test(file.name || "")) {
       setTab("pedidos");
-      setErrorPdfMedidas("Ese documento es un listado del programa de ventanas: súbelo en \"Listado de materiales\", aquí abajo en la pestaña Pedidos (puedes elegir los tres PDF a la vez).");
+      setErrorPdfMedidas("Ese documento es un listado del programa de ventanas: súbelo en \"Listado de materiales\" o en \"Tipo plano\", aquí abajo en la pestaña Pedidos (en el listado puedes elegir los tres PDF a la vez).");
       return;
     }
     setLeyendoPdfMedidas(true);
@@ -6277,22 +6313,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
             </p>
           </div>
           <div className="flex gap-2 shrink-0 flex-wrap">
-            <input
-              ref={inputPdfMedidasRef}
-              type="file"
-              accept="image/*,application/pdf"
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidas(e.target.files[0]); e.target.value = ""; }}
-            />
-            <button
-              type="button"
-              onClick={() => inputPdfMedidasRef.current?.click()}
-              disabled={leyendoPdfMedidas}
-              title="Sube el PDF o foto de las medidas de cristales, persianas u otro material y se prepara el pedido solo"
-              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 disabled:opacity-50 px-3.5 py-2 rounded-lg"
-            >
-              <ImageIcon size={14} /> {leyendoPdfMedidas ? "Leyendo..." : "Subir medidas"}
-            </button>
+            {leyendoPdfMedidas && <span className="flex items-center gap-1.5 text-sm text-slate-500"><Loader2 size={14} className="animate-spin" /> Leyendo medidas…</span>}
             <button
               type="button"
               onClick={crearPedidoDesdeProyecto}
@@ -6582,9 +6603,6 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
 
       {tab === "llamadas" && (
         <RegistroLlamadasObra proyecto={proyecto} cliente={cliente} usuarios={usuarios} onInlineUpdate={onInlineUpdate} onGuardarLlamada={onGuardarLlamada} />
-      )}
-      {tab === "datos" && proyecto.origen !== "portalUxcar" && (
-        <TipoPlanoObra proyecto={proyecto} onInlineUpdate={onInlineUpdate} />
       )}
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
@@ -6929,11 +6947,16 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
               <Plus size={14} /> Nuevo pedido
             </button>
           </div>
-          {onCrearPedidosEspera && (
-            <ListadoMaterialesObra proyecto={proyecto} materiales={materiales} proveedores={proveedores} pedidosObra={pedidos}
-              onGuardarListado={(id, l, extra) => onInlineUpdate(id, JSON.parse(JSON.stringify({ ...(l ? { listadoMateriales: l } : {}), ...(extra || {}) })))}
-              onCrearPedidosEspera={onCrearPedidosEspera} />
-          )}
+          {/* Documentación de la obra, todo junto: listado de materiales (a la izquierda) y
+              tipo plano (a la derecha), cada uno con su botón. */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+            {onCrearPedidosEspera && (
+              <ListadoMaterialesObra proyecto={proyecto} materiales={materiales} proveedores={proveedores} pedidosObra={pedidos}
+                onGuardarListado={(id, l, extra) => onInlineUpdate(id, JSON.parse(JSON.stringify({ ...(l ? { listadoMateriales: l } : {}), ...(extra || {}) })))}
+                onCrearPedidosEspera={onCrearPedidosEspera} onMedidas={manejarSubidaPdfMedidas} />
+            )}
+            {proyecto.origen !== "portalUxcar" && <TipoPlanoObra proyecto={proyecto} onInlineUpdate={onInlineUpdate} sinBoton={!!onCrearPedidosEspera} />}
+          </div>
           {checklist.some((c) => !c.estado) && (
             <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
               ⚠ El checklist "Qué lleva la obra" no está completo todavía. No podrás crear un pedido nuevo para este proyecto hasta rellenarlo (pestaña "Qué lleva la obra").
@@ -7314,6 +7337,13 @@ function ProveedorForm({ initial, onCancel, onSave }) {
         <div className="grid grid-cols-2 gap-4">
           <Field label="Provincia"><TextInput value={f.provincia} onChange={set("provincia")} /></Field>
           <Field label="Código postal"><TextInput value={f.cp} onChange={set("cp")} /></Field>
+        </div>
+        <div>
+          <div className="grid grid-cols-2 gap-4 max-w-md">
+            <Field label="Días de entrega en blanco"><TextInput type="number" min="0" step="1" value={f.diasEntrega ?? ""} onChange={set("diasEntrega")} placeholder="Ej: 3" /></Field>
+            <Field label="Días de entrega en color"><TextInput type="number" min="0" step="1" value={f.diasEntregaColor ?? ""} onChange={set("diasEntregaColor")} placeholder="Ej: 7" /></Field>
+          </div>
+          <p className="text-xs text-slate-400 mt-1">Lo que suele tardar en llegar un pedido suyo. Al hacerle un pedido se propone como fecha de llegada: si alguna línea va en un color que no es blanco, con los días de color (luego se puede cambiar).</p>
         </div>
         <Field label="Comentarios"><TextArea rows={3} value={f.comentarios} onChange={set("comentarios")} /></Field>
         {errorMsg && (
@@ -8608,7 +8638,7 @@ function PedidosModulo({ onMarcarGrupo, pedidos, proveedores, materiales, articu
         isAdmin={isAdmin}
         onRecibir={() => onRecibir(pedido.id)}
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
-        onMarcarEnviado={(metodo) => onMarcarEnviado(pedido.id, metodo)}
+        onMarcarEnviado={(metodo, fecha) => onMarcarEnviado(pedido.id, metodo, fecha)}
         onCrearPedidoFaltante={onCrearPedidoFaltante}
       />
     );
@@ -9437,6 +9467,10 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
 }
 
 function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin }) {
+  // "He hecho este pedido de otra forma": se pide la fecha de llegada (propuesta con los
+  // días de entrega del proveedor) antes de darlo por hecho.
+  const [confirmandoManual, setConfirmandoManual] = useState(false);
+  const [fechaLlegadaManual, setFechaLlegadaManual] = useState("");
   const materialInfo = (id) => materiales.find((m) => m.id === id);
   const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
   const puedeRecibir = pedido.estado !== "Recibido" && pedido.estado !== "Cancelado";
@@ -9709,12 +9743,32 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
           <p className="text-xs font-normal text-amber-700">
             Si le has llamado, o lo has pedido de otra forma que no sea el botón de email de arriba, confírmalo aquí:
           </p>
-          <button
-            onClick={() => onMarcarEnviado("manual")}
-            className="text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-md"
-          >
-            He hecho este pedido de otra forma
-          </button>
+          {!confirmandoManual ? (
+            <button
+              onClick={() => {
+                if (!pedido.proveedorId && !pedido.proveedorExterno) { alert("Este pedido todavía no tiene proveedor. Pulsa \"Editar\" y elígelo antes de darlo por hecho."); return; }
+                setFechaLlegadaManual(pedido.fechaEntregaPrevista || fechaEntregaPorProveedor(proveedor, pedido, materiales));
+                setConfirmandoManual(true);
+              }}
+              className="text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-md"
+            >
+              He hecho este pedido de otra forma
+            </button>
+          ) : (
+            <div className="flex flex-wrap items-end gap-2 pt-1">
+              <label className="text-xs font-normal text-amber-800">
+                ¿Cuándo llega, más o menos?{(() => { const { dias, enColor } = diasEntregaPedido(proveedor, pedido, materiales); return dias ? ` (${proveedor.nombre} suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""; })()}
+                <input type="date" value={fechaLlegadaManual} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setFechaLlegadaManual(e.target.value)} className="block mt-1 border border-amber-300 rounded px-2 py-1 text-sm text-slate-800" />
+              </label>
+              <button
+                onClick={() => { if (!fechaLlegadaManual) { alert("Pon la fecha aproximada de llegada (luego la puedes cambiar)."); return; } onMarcarEnviado("manual", fechaLlegadaManual); setConfirmandoManual(false); }}
+                className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md"
+              >
+                Confirmar pedido hecho
+              </button>
+              <button onClick={() => setConfirmandoManual(false)} className="text-xs font-semibold text-amber-800 px-2 py-1.5">Cancelar</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -11133,6 +11187,30 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// Fecha de llegada que se propone al hacer un pedido: hoy + los días de entrega del
+// proveedor. Cada proveedor tiene días "en blanco / estándar" y días "en color": si alguna
+// línea del pedido va en un color que no es blanco, se usan los de color.
+const esColorBlanco = (c) => !String(c || "").trim() || /blanc|white|^RAL\s*9016$/i.test(String(c).trim());
+const colorLineaPedido = (l, materiales) => {
+  if (l.colorListado) return l.colorListado;
+  const m = l.materialId ? toArray(materiales).find((x) => x.id === l.materialId) : null;
+  if (m && (m.color || m.acabadoDescripcion)) return m.color || m.acabadoDescripcion;
+  const tras = String(l.referencia || "").split(" · ").slice(1).join(" ").split(" — ")[0];
+  return tras;
+};
+const pedidoEsEnColor = (pedido, materiales) => toArray(pedido && pedido.lineas).some((l) => !esColorBlanco(colorLineaPedido(l, materiales)));
+const diasEntregaPedido = (proveedor, pedido, materiales) => {
+  const blanco = parseInt(proveedor && proveedor.diasEntrega, 10) || 0;
+  const color = parseInt(proveedor && proveedor.diasEntregaColor, 10) || 0;
+  const enColor = pedidoEsEnColor(pedido, materiales);
+  return { dias: enColor ? (color || blanco) : (blanco || color), enColor };
+};
+const fechaEntregaPorProveedor = (proveedor, pedido, materiales) => {
+  const { dias } = diasEntregaPedido(proveedor, pedido, materiales);
+  if (!dias) return "";
+  const d = new Date(); d.setDate(d.getDate() + dias);
+  return d.toISOString().slice(0, 10);
+};
 // Importe de un presupuesto: se guarda SIN IVA. Si está marcado "+ IVA", se enseña también
 // el total con IVA (al % que tenga, 21 por defecto).
 const totalConIvaPresupuesto = (p) => (parseFloat(p && p.importe) || 0) * (1 + (parseFloat(p && p.ivaPct) || 21) / 100);
@@ -11171,7 +11249,8 @@ async function leerListadoMateriales(file) {
   const prompt = [
     'Esto es un documento de un programa de ventanas: un "ANÁLISIS MATERIALES", un "LISTADO CAJAS" (persianas y cajones) o un "LISTADO MANO DE OBRA". Puede venir en PDF, Excel o Word. Revisa TODO el documento, todas las páginas.',
     "Responde SOLO con líneas de texto, sin explicaciones, sin JSON y sin ```. Separa los campos con el carácter | . No uses el carácter | dentro de ningún texto.",
-    "Primera línea, la cabecera:",
+    "Primera línea, qué documento es: TIPO|x, donde x es: analisis (ANÁLISIS MATERIALES), cajas (LISTADO CAJAS), mano_obra (LISTADO MANO DE OBRA), dibujos (LISTADO DIBUJOS o tipo plano: dibujos de cada ventana con sus medidas), presupuesto (presupuesto para el cliente con precios de venta), medidas (hoja o foto de medidas de cristales, persianas u otro material para pedir) u otro. Si es dibujos, presupuesto, medidas u otro, responde SOLO la línea TIPO y nada más.",
+    "Segunda línea, la cabecera:",
     "CAB|numero|referencia|cliente|fecha|horas|m2_superficies|importe_superficies",
     '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
     "Después, UNA línea por cada línea de material:",
@@ -11193,17 +11272,19 @@ async function leerListadoMateriales(file) {
   ].join("\n");
   const texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000);
   const aNum = (x) => { const t = String(x || "").trim().replace(/[€\s]|mm$/gi, ""); return parseFloat(/,\d{1,3}$/.test(t) ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "")) || 0; };
-  const o = { numero: "", referencia: "", cliente: "", fecha: "", horas: 0, superficies: { m2: 0, importe: 0 } };
+  const o = { tipo: "", numero: "", referencia: "", cliente: "", fecha: "", horas: 0, superficies: { m2: 0, importe: 0 } };
   const crudas = [];
   texto.split(/\r?\n/).forEach((fila) => {
     const c = fila.split("|").map((x) => x.trim());
-    if (c[0] === "CAB") {
+    if (c[0] === "TIPO") o.tipo = (c[1] || "").toLowerCase();
+    else if (c[0] === "CAB") {
       o.numero = c[1] || ""; o.referencia = c[2] || ""; o.cliente = c[3] || ""; o.fecha = c[4] || "";
       o.horas = aNum(c[5]); o.superficies = { m2: aNum(c[6]), importe: aNum(c[7]) };
     } else if (c[0] === "L" && c.length >= 7) {
       crudas.push({ s: (c[1] || "").toLowerCase(), c: c[2], d: c[3], col: c[4], u: aNum(c[5]), l: aNum(c[6]), a: aNum(c[7]), h: aNum(c[8]), p: aNum(c[9]), t: aNum(c[10]) });
     }
   });
+  if (["dibujos", "presupuesto", "medidas", "otro"].includes(o.tipo)) return { tipo: o.tipo, lineas: [], horas: 0, archivo: file.name };
   if (!crudas.length && !o.horas && !o.numero) throw new Error("la lectura no ha devuelto nada reconocible. Prueba de nuevo.");
   const lineas = crudas.map((l) => ({
     id: uid(), seccion: LISTADO_SECCIONES[l.s] ? l.s : "accesorios",
@@ -11220,6 +11301,7 @@ async function leerListadoMateriales(file) {
   });
   lineas.length = 0; lineas.push(...juntas);
   return {
+    tipo: o.tipo || "analisis",
     numero: String(o.numero || "").trim(), referencia: String(o.referencia || "").trim(), cliente: String(o.cliente || "").trim(), fechaDoc: String(o.fecha || "").trim(), horas: parseFloat(o.horas) || 0,
     superficies: { m2: parseFloat(o.superficies && o.superficies.m2) || 0, importe: parseFloat(o.superficies && o.superficies.importe) || 0 },
     lineas, archivo: file.name, fecha: new Date().toISOString().slice(0, 10),
