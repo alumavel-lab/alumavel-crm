@@ -98,7 +98,8 @@ export const handler = async (event) => {
       const ob = o.obra;
       cuerpo += `\n==============================\n${ob.nombre.toUpperCase()}\n==============================\n`;
       // Perfiles, refuerzos, herrajes y accesorios, por almacén y estantería
-      const mat = toArray(ob.lineas).filter((l) => l.seccion !== "persianas")
+      // (persianas y cristales van aparte, más abajo, con su sitio en su almacén)
+      const mat = toArray(ob.lineas).filter((l) => l.seccion !== "persianas" && l.seccion !== "cristal")
         .sort((a, b) => ((a.almacen ? 0 : 1) - (b.almacen ? 0 : 1) || String(a.almacen || "").localeCompare(String(b.almacen || ""))) || String(a.estanteria || "").localeCompare(String(b.estanteria || ""), "es", { numeric: true }));
       if (mat.length) {
         let alm = null;
@@ -133,7 +134,11 @@ export const handler = async (event) => {
           const piezas = toArray(c.piezas).filter((p) => nums(p.expediente).some((n) => (ob.expNums || []).includes(n))).length;
           cuerpo += `   ☐ ${u} — caballete ${c.lote || c.numero || ""}${piezas ? ` (${piezas} cristales de esta obra)` : ""}\n`;
         });
-      } else cuerpo += `\nCRISTALES: no encuentro caballetes de esta obra en el almacén (¿han llegado?)\n`;
+      } else {
+        const crisListado = toArray(ob.lineas).filter((l) => l.seccion === "cristal");
+        cuerpo += `\nCRISTALES: no encuentro caballetes de esta obra en el almacén (¿han llegado?)\n`;
+        crisListado.forEach((l) => { cuerpo += `   ☐ ${l.codigo}${l.ancho ? ` ${l.ancho}×${l.alto}` : ""} → ${l.uds} (del listado)\n`; });
+      }
     });
 
     cuerpo += `\n— Aviso automático del CRM, según el planning confirmado el ${new Date(plan.publicadoEn || Date.now()).toLocaleDateString("es-ES")}.`;

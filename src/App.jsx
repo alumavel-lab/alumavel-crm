@@ -1717,7 +1717,7 @@ export default function App() {
     savePedidos([...nuevos, ...pedidos]);
     // vincular a "Perfil" si la obra lo tiene marcado
     const checklist = normalizarChecklist(proyecto.checklistMateriales);
-    const vinculos = [[/perfil/i, ["perfiles", "refuerzo"]], [/persiana/i, ["persianas"]]];
+    const vinculos = [[/perfil/i, ["perfiles", "refuerzo"]], [/persiana/i, ["persianas"]], [/cristal/i, ["cristal"]]];
     let cl = checklist, cambio = false;
     vinculos.forEach(([re, secciones]) => {
       const item = cl.find((c) => re.test(c.nombre || ""));
@@ -5907,12 +5907,57 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   const [abierto, setAbierto] = useState(true);
   const inputRef = useRef(null);
   const listado = proyecto.listadoMateriales;
-  const subir = async (file) => {
-    if (!file) return;
+  // Se pueden subir varios documentos a la vez (p.ej. "Análisis materiales" +
+  // "Listado mano de obra"): se juntan en un solo listado — las líneas de material de
+  // todos y las horas de fabricación del que las traiga.
+  const subir = async (fileList) => {
+    const todos = Array.from(fileList || []);
+    if (todos.length === 0) return;
     setLeyendo(true); setError("");
     try {
-      const l = await leerListadoMateriales(file);
-      if (l.lineas.length === 0) throw new Error("no he encontrado líneas de material");
+      // Cada documento a su sitio: el "Listado dibujos" (o tipo plano) se guarda como tipo
+      // plano de la obra y cuenta las ventanas (para el planning y los partes); el
+      // presupuesto se ignora aquí (ya está en el presupuesto firmado); el resto
+      // (análisis de materiales, mano de obra, listado cajas) es el listado de materiales.
+      const esDibujos = (f) => /dibujo|tipo[\s_-]*plano/i.test(f.name || "");
+      const esPresupuesto = (f) => /presupuesto/i.test(f.name || "") && !/analis|analit|material|mano|obra|cajas/i.test(f.name || "");
+      const dibujos = todos.filter(esDibujos);
+      const files = todos.filter((f) => !esDibujos(f) && !esPresupuesto(f));
+      const avisos = [];
+      if (todos.some(esPresupuesto)) avisos.push("El presupuesto no hace falta aquí (ya va en el presupuesto firmado); lo he dejado fuera.");
+      let extraProyecto = {};
+      if (dibujos.length) {
+        const fd = dibujos[0];
+        const url = await subirArchivoAStorage(fd, `documentos-entrega/${proyecto.id}`);
+        let recuento = null;
+        const mediaType = fd.type || (fd.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+        if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
+          try { recuento = await uxContarVentanasConClaude(await uxLeerComoDataUrl(fd), mediaType); } catch (e) { recuento = null; }
+        }
+        extraProyecto = { documentoEntrega: { nombre: fd.name, url, tipo: "tipo_plano", fecha: new Date().toISOString().slice(0, 10) }, ...(recuento && recuento.length ? { recuento } : {}) };
+        avisos.push(recuento && recuento.length ? "Listado de dibujos guardado como tipo plano y ventanas contadas (revísalas en \"Tipo plano\")." : "Listado de dibujos guardado como tipo plano, pero no he podido contar las ventanas: añádelas a mano en \"Tipo plano\".");
+      }
+      if (files.length === 0) {
+        if (Object.keys(extraProyecto).length) onGuardarListado(proyecto.id, listado || null, extraProyecto);
+        setError(avisos.join(" "));
+        return;
+      }
+      const leidos = [];
+      for (const f of files) leidos.push(await leerListadoMateriales(f));
+      const base = leidos.find((x) => x.lineas.length > 0) || leidos[0];
+      const l = {
+        ...base,
+        numero: base.numero || (leidos.find((x) => x.numero) || {}).numero || "",
+        horas: Math.max(0, ...leidos.map((x) => x.horas || 0)),
+        superficies: leidos.find((x) => x.superficies && x.superficies.m2 > 0)?.superficies || base.superficies,
+        lineas: leidos.flatMap((x) => x.lineas),
+        archivo: files.map((f) => f.name).join(" + "),
+      };
+      if (l.lineas.length === 0) {
+        // Solo se ha subido la mano de obra: se guardan las horas en el listado que ya hubiera.
+        if (l.horas > 0 && listado) { onGuardarListado(proyecto.id, { ...listado, horas: l.horas }, extraProyecto); setAbierto(true); if (avisos.length) setError(avisos.join(" ")); return; }
+        throw new Error(l.horas > 0 ? "solo trae horas; sube también el \"Análisis materiales\" (puedes elegir los dos a la vez)" : "no he encontrado líneas de material");
+      }
       // Automático: al subirlo se crean ya los pedidos EN ESPERA de lo que falta en
       // stock (uno por proveedor; lo que no está dado de alta va a un pedido sin
       // proveedor para elegirlo luego). Si con este mismo listado ya se crearon
@@ -5932,11 +5977,12 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
             ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" }
             : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, estado: "Solicitado" });
         });
-        onCrearPedidosEspera(proyecto, gruposAuto, origen, { listadoMateriales: listadoLimpio });
+        onCrearPedidosEspera(proyecto, gruposAuto, origen, JSON.parse(JSON.stringify({ listadoMateriales: listadoLimpio, ...extraProyecto })));
       } else {
-        onGuardarListado(proyecto.id, l);
-        if (yaHabia) setError("Listado guardado. Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+        onGuardarListado(proyecto.id, l, extraProyecto);
+        if (yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
       }
+      if (avisos.length) setError(avisos.join(" "));
       setAbierto(true);
     } catch (e) { setError("No se pudo leer el listado: " + e.message); }
     finally { setLeyendo(false); }
@@ -5965,9 +6011,9 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Listado de materiales</div>
-          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube el \"Análisis materiales\" o el \"Listado cajas\" (PDF, Excel o Word): se guardan las horas y lo que falta en stock se deja pedido EN ESPERA automáticamente."}</div>
+          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube a la vez el \"Análisis materiales\", el \"Listado mano de obra\" y el \"Listado dibujos\" (con Ctrl pulsado): se guardan las horas, se cuentan las ventanas para el planning y lo que falta (cristales y persianas incluidos) se deja pedido EN ESPERA automáticamente."}</div>
         </div>
-        <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo (puede tardar un minuto)…" : listado ? "Subir otro listado" : "Subir listado de materiales"}
         </button>
@@ -5981,7 +6027,8 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
             <span className="px-2 py-1 rounded bg-rose-50 text-rose-700 font-semibold">✗ Faltan {faltan.length}</span>
             {sinAlta.length > 0 && <span className="px-2 py-1 rounded bg-amber-50 text-amber-800 font-semibold">⚠ {sinAlta.length} sin dar de alta en Stock</span>}
             {filas.some((f) => f.difPrecio) && <span className="px-2 py-1 rounded bg-orange-50 text-orange-800 font-semibold">€ {filas.filter((f) => f.difPrecio).length} con precio distinto al de Stock</span>}
-            {listado.superficies && listado.superficies.m2 > 0 && <span className="px-2 py-1 rounded bg-slate-100 text-slate-600">Cristales y paneles: {listado.superficies.m2} m² (se piden por Cristales)</span>}
+            {listado.superficies && listado.superficies.m2 > 0 && <span className="px-2 py-1 rounded bg-slate-100 text-slate-600">Cristales y paneles: {listado.superficies.m2} m²</span>}
+            {listado.horas > 0 && <span className="px-2 py-1 rounded bg-violet-50 text-violet-800 font-semibold">⏱ {String(listado.horas).replace(".", ",")} h de fabricación</span>}
           </div>
           <div className="overflow-x-auto border border-slate-100 rounded-md">
             <table className="w-full text-xs">
@@ -6897,7 +6944,7 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
           </div>
           {onCrearPedidosEspera && (
             <ListadoMaterialesObra proyecto={proyecto} materiales={materiales} proveedores={proveedores} pedidosObra={pedidos}
-              onGuardarListado={(id, l) => onInlineUpdate(id, { listadoMateriales: JSON.parse(JSON.stringify(l)) })}
+              onGuardarListado={(id, l, extra) => onInlineUpdate(id, JSON.parse(JSON.stringify({ ...(l ? { listadoMateriales: l } : {}), ...(extra || {}) })))}
               onCrearPedidosEspera={onCrearPedidosEspera} />
           )}
           {checklist.some((c) => !c.estado) && (
@@ -11066,14 +11113,18 @@ async function leerDocumentoCristalConIA(file, prompt) {
 // Se lee el PDF (perfiles, refuerzos, herrajes y accesorios, con sus precios), se compara
 // con el Stock y con lo que falta se crean pedidos "En espera" por proveedor. Los precios
 // se guardan para compararlos luego con el albarán del proveedor.
-const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)" };
+const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
+// Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
+const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
 async function leerListadoMateriales(file) {
   const prompt = [
     'Esto es un listado de materiales de un programa de ventanas: un "ANÁLISIS MATERIALES" y/o un "LISTADO CAJAS" (persianas y cajones). Puede venir en PDF, Excel o Word. Revisa TODO el documento.',
-    'Si hay persianas o cajones (LISTADO CAJAS), saca cada línea con s:"persianas", c: el código (p.ej. CJ_DECOR_S/G), d: la descripción y delante el expediente y el modelo (p.ej. "6.276-5 V3 · Compacto decorativo - guía aparte"), col: el color, u: las unidades, a: el ancho en mm, h: el alto en mm, p: 0 si no trae precio.',
-    "Saca TODAS las líneas de las secciones PERFILES Y JUNTAS, REFUERZO, HERRAJE y ACCESORIOS. La sección SUPERFICIES (cristales y paneles) NO la saques línea a línea: solo su total de m2 y de importe (están al final de esa sección).",
+    'Si hay persianas o cajones (LISTADO CAJAS, o la sección PERSIANA del análisis: cajones, guías de persiana, cajones y guías de mosquitera…), saca cada línea con s:"persianas", c: el código (p.ej. CJ_DECOR_S/G, C.327020, MPLX42240), d: la descripción (si es un LISTADO CAJAS, delante el expediente y el modelo, p.ej. "6.276-5 V3 · Compacto decorativo - guía aparte"), col: el color, u: las unidades, a: el ancho en mm y h: el alto en mm si los trae (cajones), l: la longitud de barra en metros si la trae (guías), p: precio por unidad (TOTAL BARRAS o TOTAL PRES dividido entre UDS), t: el total de la línea.',
+    "Saca TODAS las líneas de las secciones PERFILES Y JUNTAS, REFUERZO, HERRAJE y ACCESORIOS.",
+    'La sección SUPERFICIES (cristales y paneles) SÍ sácala línea a línea, TODAS (aunque se repitan medidas): s:"cristal", c: la composición (p.ej. "4/20/4" o "4/20/4 MATE"), d: la descripción (p.ej. "CAMARA 4/20/4 MATE"), u: las UDS, a: el ancho en mm, h: el alto en mm, p: el importe de la línea dividido entre UDS, t: el importe de la línea. Y además su total de m2 y de importe en "superficies".',
+    'Si el documento es un LISTADO DE MANO DE OBRA (tiempos por zona: tronzadoras, mecanizados, armados…), no tiene líneas de material: devuelve "lineas":[] y en "horas" el TOTAL de horas (TOT.MO.PRES, p.ej. 31,17 Horas → 31.17).',
     "Para cada línea usa estas claves cortas:",
-    '- s: sección, una de "perfiles", "refuerzo", "herraje", "accesorios"',
+    '- s: sección, una de "perfiles", "refuerzo", "herraje", "accesorios", "persianas", "cristal"',
     "- c: código (p.ej. 8095, 8727, MAC-202271, 2591)",
     "- d: descripción tal cual",
     "- col: color o acabado si lo pone (BLANCO, Embero, Negro (PIEZA)…), si no vacío",
@@ -11092,6 +11143,15 @@ async function leerListadoMateriales(file) {
     codigo: String(l.c || "").trim(), descripcion: String(l.d || "").trim(), color: String(l.col || "").trim(),
     uds: parseFloat(l.u) || 0, longitud: parseFloat(l.l) || 0, ancho: parseFloat(l.a) || 0, alto: parseFloat(l.h) || 0, precioUd: Math.round((parseFloat(l.p) || 0) * 100) / 100, total: parseFloat(l.t) || 0,
   })).filter((l) => l.codigo && l.uds > 0);
+  // Las líneas iguales (mismo código, color y medida — p.ej. los cristales, que el
+  // programa repite una vez por ventana) se juntan en una sola sumando unidades.
+  const juntas = [];
+  lineas.forEach((l) => {
+    const igual = juntas.find((x) => x.seccion === l.seccion && normCodigo(x.codigo) === normCodigo(l.codigo) && x.color === l.color && x.ancho === l.ancho && x.alto === l.alto && x.longitud === l.longitud && x.descripcion === l.descripcion);
+    if (igual) { igual.uds += l.uds; igual.total = Math.round((igual.total + l.total) * 100) / 100; }
+    else juntas.push({ ...l });
+  });
+  lineas.length = 0; lineas.push(...juntas);
   return {
     numero: String(o.numero || "").trim(), referencia: String(o.referencia || "").trim(), cliente: String(o.cliente || "").trim(), fechaDoc: String(o.fecha || "").trim(), horas: parseFloat(o.horas) || 0,
     superficies: { m2: parseFloat(o.superficies && o.superficies.m2) || 0, importe: parseFloat(o.superficies && o.superficies.importe) || 0 },
@@ -11108,8 +11168,8 @@ const buscarMaterialListado = (linea, materiales) => {
   return mismos.find((m) => col && `${m.color || ""} ${m.acabadoDescripcion || ""} ${m.descripcion || ""}`.toLowerCase().includes(col)) || mismos[0];
 };
 const compararListadoConStock = (listado, materiales) => toArray(listado && listado.lineas).map((l) => {
-  // Las persianas se hacen a medida: no se miran en stock, se piden todas
-  if (l.seccion === "persianas") return { ...l, mat: null, stock: 0, falta: Math.ceil(l.uds), precioStock: 0, difPrecio: false, aMedida: true };
+  // Persianas y cristales se hacen a medida: no se miran en stock, se piden todos
+  if (SECCIONES_A_MEDIDA.includes(l.seccion)) return { ...l, mat: null, stock: 0, falta: Math.ceil(l.uds), precioStock: 0, difPrecio: false, aMedida: true };
   const mat = buscarMaterialListado(l, materiales);
   const stock = mat ? parseFloat(mat.stockReal) || 0 : 0;
   const falta = Math.max(0, Math.ceil(l.uds - stock));
@@ -27696,7 +27756,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           nombre: o.nombre, ventanas: o.ventanas || 0, horas: o.horas, inicio: r.inicio || "", fin: r.fin || "",
           expNums: numsExpediente(numeroRef || o.nombre), proyectoId: o.ref.tipo === "proyecto" ? o.ref.id : "",
           lineas: toArray(o.listado && o.listado.lineas).map((l) => {
-            const m = l.seccion === "persianas" ? null : buscarMaterialListado(l, materiales);
+            const m = SECCIONES_A_MEDIDA.includes(l.seccion) ? null : buscarMaterialListado(l, materiales);
             return { seccion: l.seccion, codigo: l.codigo, descripcion: l.descripcion, color: l.color || "", uds: l.uds, ancho: l.ancho || 0, alto: l.alto || 0, almacen: (m && m.almacen) || "", estanteria: (m && m.estanteria) || "" };
           }),
         };
@@ -27920,7 +27980,7 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
       </div>
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <span className="font-semibold text-slate-700">Qué juntar:</span>
-        {Object.entries(LISTADO_SECCIONES).filter(([k]) => k !== "persianas").map(([k, n]) => (
+        {Object.entries(LISTADO_SECCIONES).filter(([k]) => !SECCIONES_A_MEDIDA.includes(k)).map(([k, n]) => (
           <label key={k} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={secc.includes(k)} onChange={(e) => setSecc(e.target.checked ? [...secc, k] : secc.filter((x) => x !== k))} /> {n}</label>
         ))}
       </div>
