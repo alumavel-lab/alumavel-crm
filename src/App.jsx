@@ -356,6 +356,13 @@ const materialSinPedirObra = (proyecto, pedidosTodos) => {
   return faltan;
 };
 
+// Una obra (vuestra) sin informe de materiales tiene que tener "Qué lleva la obra"
+// contestado a mano: si no, no se pueden hacer pedidos ni pasarla a fabricación.
+const faltaQueLlevaObra = (p) => !!p && p.origen !== "portalUxcar"
+  && !toArray(p.listadoMateriales && p.listadoMateriales.lineas).length
+  && normalizarChecklist(p.checklistMateriales).some((c) => !c.estado);
+const AVISO_QUE_LLEVA = 'Esta obra no tiene informe de materiales: súbelo, o contesta a mano "Qué lleva la obra" en la ficha del proyecto (Sí/No en todo).';
+
 const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
   const faltan = [];
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
@@ -1818,18 +1825,27 @@ export default function App() {
   };
 
   // Vincula el pedido a las cosas de "Qué lleva la obra" elegidas en "¿Para qué es este pedido?"
-  const vincularPedidoChecklist = (pedidoId, proyectoId, paraChecklist) => {
-    if (!proyectoId || !Array.isArray(paraChecklist)) return;
+  // pedidoNuevo: al crear un pedido, "Qué lleva la obra" se rellena solo (con el listado de
+  // materiales de la obra si lo tiene, y con lo que lleva el propio pedido).
+  const vincularPedidoChecklist = (pedidoId, proyectoId, paraChecklist, pedidoNuevo) => {
+    if (!proyectoId) return;
     const pr = proyectos.find((x) => x.id === proyectoId);
     if (!pr) return;
-    const actual = normalizarChecklist(pr.checklistMateriales);
+    let actual = normalizarChecklist(pr.checklistMateriales);
     let cambio = false;
-    const nuevo = actual.map((c) => {
+    if (pedidoNuevo) {
+      const antes = JSON.stringify(actual);
+      const lineasListado = toArray(pr.listadoMateriales && pr.listadoMateriales.lineas);
+      if (lineasListado.length) actual = rellenarChecklistDesdeListado(actual, lineasListado, [...pedidos.filter((pd) => pd.proyectoId === pr.id), pedidoNuevo]);
+      actual = rellenarChecklistDesdePedido(actual, pedidoNuevo, materiales);
+      if (JSON.stringify(actual) !== antes) cambio = true;
+    }
+    const nuevo = !Array.isArray(paraChecklist) ? actual : actual.map((c) => {
       const tiene = (c.pedidoIds || []).includes(pedidoId);
       const quiere = paraChecklist.includes(c.id);
       if (tiene === quiere) return c;
       cambio = true;
-      return { ...c, pedidoIds: quiere ? [...(c.pedidoIds || []), pedidoId] : (c.pedidoIds || []).filter((x) => x !== pedidoId) };
+      return quiere ? { ...c, estado: "si", enStock: false, pedidoIds: [...(c.pedidoIds || []), pedidoId] } : { ...c, pedidoIds: (c.pedidoIds || []).filter((x) => x !== pedidoId) };
     });
     if (cambio) updateProyectoInline(proyectoId, { checklistMateriales: JSON.parse(JSON.stringify(nuevo)) });
   };
@@ -1841,18 +1857,15 @@ export default function App() {
       showToast("Pedido actualizado");
       vincularPedidoChecklist(data.id, data.proyectoId, data.paraChecklist);
     } else {
-      if (data.proyectoId) {
-        const proyectoDestino = proyectos.find((p) => p.id === data.proyectoId);
-        const checklist = normalizarChecklist(proyectoDestino?.checklistMateriales);
-        const incompleto = checklist.some((c) => !c.estado);
-        if (incompleto) {
-          showToast('No puedes crear el pedido: completa antes el checklist "Qué lleva la obra" en la ficha del proyecto (Sí/No en todas las categorías).', "error");
-          return;
-        }
+      // Sin informe de materiales, "Qué lleva la obra" tiene que estar contestado a mano.
+      // Con informe, se rellena solo al crear el pedido (abajo).
+      if (data.proyectoId && faltaQueLlevaObra(proyectos.find((p) => p.id === data.proyectoId))) {
+        showToast(`No puedes crear el pedido. ${AVISO_QUE_LLEVA}`, "error");
+        return;
       }
       next = [{ ...data, id: uid(), numero: nextNumeroPedido(), creadoPor: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "", fechaCreado: new Date().toISOString().slice(0, 10) }, ...pedidos];
       showToast("Pedido dado de alta");
-      vincularPedidoChecklist(next[0].id, data.proyectoId, data.paraChecklist);
+      vincularPedidoChecklist(next[0].id, data.proyectoId, data.paraChecklist, next[0]);
     }
     savePedidos(next);
     setPedidoView("list");
@@ -4689,6 +4702,7 @@ export default function App() {
             clientes={clientes}
             onConfirmarLinea={confirmarLineaFabrica}
             onIniciarFabricacion={(proyectoId) => {
+              if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
               showToast("Proyecto marcado como en fabricación");
             }}
@@ -6645,10 +6659,10 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
   const inputPdfMedidasRef = useRef(null);
 
   // Botón "Nuevo pedido": abre el formulario de Pedidos ya vinculado a esta obra.
-  // Respeta la norma de que "Qué lleva la obra" tiene que estar completo antes.
+  // Sin informe de materiales hay que contestar antes "Qué lleva la obra" a mano.
   const crearPedidoDesdeProyecto = () => {
-    if (checklist.some((c) => !c.estado)) {
-      alert('Antes de crear un pedido tienes que completar "Qué lleva la obra". Te llevo a esa sección.');
+    if (faltaQueLlevaObra(proyecto)) {
+      alert(`${AVISO_QUE_LLEVA} Te llevo a esa sección.`);
       setTab("checklist");
       return;
     }
@@ -11805,6 +11819,26 @@ const rellenarChecklistDesdeListado = (checklist, lineas, pedidosObra) => normal
   const pedidoIds = [...new Set([...(c.pedidoIds || []), ...ids])];
   return { ...c, estado: "si", pedidoIds, enStock: pedidoIds.length === 0 };
 });
+// Rellena "Qué lleva la obra" con lo que se pide en un pedido: lo que lleva el pedido se
+// marca "Sí" y queda enlazado a él. Lo demás no se toca.
+const rellenarChecklistDesdePedido = (checklist, pedido, materiales) => {
+  const lineas = toArray(pedido && pedido.lineas).map((l) => {
+    const mat = l.modo !== "libre" && l.materialId ? toArray(materiales).find((m) => m.id === l.materialId) : null;
+    const descripcion = `${l.referencia || ""} ${mat ? `${mat.descripcion || ""} ${mat.categoria || ""} ${mat.familia || ""}` : ""}`;
+    const codigo = l.codigoListado || (mat && mat.codigo) || "";
+    const t = `${codigo} ${descripcion}`;
+    const seccion = l.seccionListado
+      || (/cristal|vidrio|c[aá]mara|laminar|templad|\d+\s*\/\s*\d+\s*\/\s*\d+/i.test(t) ? "cristal"
+        : /persian|caj[oó]n|compacto|lama|gu[ií]a|CJ_/i.test(t) ? "persianas"
+        : /perfil|refuerzo/i.test(t) ? "perfiles" : "");
+    return { codigo, descripcion, seccion };
+  });
+  return normalizarChecklist(checklist).map((c) => {
+    const regla = REGLAS_CHECKLIST.find(([re]) => re.test(c.nombre || ""));
+    if (!regla || !lineas.some(regla[1])) return c;
+    return { ...c, estado: "si", enStock: false, pedidoIds: [...new Set([...(c.pedidoIds || []), pedido.id])] };
+  });
+};
 async function leerListadoMateriales(file) {
   // Se pide en formato de líneas separadas por | (y no JSON): así una comilla o un símbolo
   // raro en una descripción no estropea la lectura entera.
