@@ -5116,7 +5116,7 @@ const MANUALES = {
       "\"Listo para fabricar\": líneas de pedido ya recibidas y listas para empezar a fabricar.",
       "\"Materiales pendientes\": lo que aún falta para poder fabricar.",
       "\"En fabricación\": lo que ya se está fabricando.",
-      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre. Si los cristales llegan sueltos, con \"Montar caballete con fotos de pegatinas\" haces una foto a la pegatina de cada cristal y el caballete se forma solo.",
+      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre. Si los cristales llegan sueltos, en \"Nuevo caballete\" → \"Hacer fotos a las pegatinas\" haces una foto a la pegatina de cada cristal y el caballete se forma solo.",
       "\"Albarán de salida\": material que sale de fábrica (p.ej. a lacar o a otro proceso externo), con su albarán para imprimir o firmar en pantalla por el chófer.",
       "\"Reparto\": obras ya listas para repartir o recoger.",
       "En la mayoría de pestañas puedes descargar esa vista como documento Word.",
@@ -10844,10 +10844,10 @@ const piezaDesdePegatina = (f) => {
 };
 const BORRADOR_CABALLETE_FOTOS = "crm_caballeteFotos_borrador";
 
-function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCerrar }) {
+function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCerrar, numeroInicial }) {
   const hoyTxt = () => { const d = new Date(); return `SUELTOS-${String(d.getDate()).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`; };
   const [modo, setModo] = useState("nuevo");
-  const [numero, setNumero] = useState(hoyTxt);
+  const [numero, setNumero] = useState(() => (numeroInicial && String(numeroInicial).trim()) || hoyTxt());
   const [caballeteId, setCaballeteId] = useState("");
   const [filas, setFilas] = useState([]);
   const [recuperado, setRecuperado] = useState(false);
@@ -11089,6 +11089,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [mostrarNuevo, setMostrarNuevo] = useState(false);
   const [verFotosPegatinas, setVerFotosPegatinas] = useState(() => { try { return !!localStorage.getItem(BORRADOR_CABALLETE_FOTOS); } catch (e) { return false; } });
   const [avisoOk, setAvisoOk] = useState("");
+  const [numeroFotos, setNumeroFotos] = useState("");
   const inputPackingRef = useRef(null);
 
   const normalizar = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
@@ -11320,12 +11321,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         </button>
         <input ref={inputPackingRef} type="file" accept=".xlsx,.xls,.csv,.ods,image/*,application/pdf" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
-        <button type="button" onClick={() => setVerFotosPegatinas(true)}
-          className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-md">
-          <Camera size={14} /> Montar caballete con fotos de pegatinas
-        </button>
         <button type="button" onClick={() => setMostrarNuevo(true)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
-          <Plus size={14} /> Añadir a mano
+          <Plus size={14} /> Nuevo caballete
         </button>
       </div>
       {avisoOk && (
@@ -11337,7 +11334,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       {verFotosPegatinas && (
         <CaballetePorFotos
           cristales={cristales}
-          onCerrar={() => setVerFotosPegatinas(false)}
+          numeroInicial={numeroFotos}
+          onCerrar={() => { setVerFotosPegatinas(false); setNumeroFotos(""); }}
           onGuardarNuevo={(datos) => {
             setErrorPacking("");
             colocarYGuardarCaballetes([datos]);
@@ -11367,7 +11365,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       )}
 
       {mostrarNuevo && (
-        <NuevoCristalForm onCancel={() => setMostrarNuevo(false)} onSave={(data) => { onAdd(data); setMostrarNuevo(false); }} />
+        <NuevoCristalForm onCancel={() => setMostrarNuevo(false)} onSave={(data) => { onAdd(data); setMostrarNuevo(false); }}
+          onFotos={(lote) => { setNumeroFotos(lote || ""); setMostrarNuevo(false); setVerFotosPegatinas(true); }} />
       )}
 
       <div className="flex gap-1 mb-4 border-b border-slate-200">
@@ -11502,12 +11501,21 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   );
 }
 
-function NuevoCristalForm({ onCancel, onSave }) {
+function NuevoCristalForm({ onCancel, onSave, onFotos }) {
   const [f, setF] = useState({ lote: "", secuencia: "", cliente: "", proveedor: "", expediente: "", medida: "", cantidad: 1, fechaLlegada: new Date().toISOString().slice(0, 10) });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
       <h3 className="font-display font-bold text-slate-800 mb-3">Nuevo caballete</h3>
+      {onFotos && (
+        <div className="mb-4 p-3 rounded-lg bg-emerald-50 border border-emerald-200 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={() => onFotos(f.lote)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
+            <Camera size={16} /> Hacer fotos a las pegatinas
+          </button>
+          <span className="text-xs text-emerald-800">Si los cristales vienen sueltos, haz una foto a la pegatina de cada uno y el caballete se rellena solo. Si no, rellénalo a mano abajo.</span>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-3 mb-3">
         <Field label="Nº caballete"><TextInput value={f.lote} onChange={set("lote")} /></Field>
         <Field label="Nº pedido"><TextInput value={f.secuencia} onChange={set("secuencia")} /></Field>
@@ -12847,6 +12855,230 @@ async function leerPackingPersianas(file) {
   return unidades;
 }
 
+// ---- Entrada de persianas con fotos de las etiquetas (cuando llegan sin packing list) ----
+const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = vivienda o posición (ej. V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+const BORRADOR_PERSIANAS_FOTOS = "crm_persianasFotos_borrador";
+
+function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
+  const [filas, setFilas] = useState([]);
+  const [recuperado, setRecuperado] = useState(false);
+  const inputCamaraRef = useRef(null);
+  const inputGaleriaRef = useRef(null);
+  const colaRef = useRef([]);
+  const activosRef = useRef(0);
+  const cargadoRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const b = JSON.parse(localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) || "null");
+      if (b && Array.isArray(b.filas) && b.filas.length) {
+        setFilas(b.filas.map((f) => (f.estado === "leyendo" ? { ...f, estado: "error", error: "Se cortó la lectura: repite esta foto." } : f)));
+        setRecuperado(true);
+      }
+    } catch (e) { /* sin borrador */ }
+    cargadoRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!cargadoRef.current) return;
+    try {
+      if (!filas.length) localStorage.removeItem(BORRADOR_PERSIANAS_FOTOS);
+      else localStorage.setItem(BORRADOR_PERSIANAS_FOTOS, JSON.stringify({ filas: filas.map(({ thumb, ...r }) => r) }));
+    } catch (e) { /* nada */ }
+  }, [filas]);
+
+  const cambiarFila = (id, patch) => setFilas((fs) => fs.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  // Red de seguridad por si la IA no pasa bien las unidades: una persiana mide entre
+  // 30 cm y 4 m, así que un número < 10 son metros y uno < 300, centímetros.
+  const aMm = (v) => {
+    const n = parseFloat(String(v ?? "").replace(",", "."));
+    if (!n) return "";
+    if (n < 10) return Math.round(n * 1000);
+    if (n < 300) return Math.round(n * 10);
+    return Math.round(n);
+  };
+  const limpia = (e) => {
+    const m = String(e.expediente || "").match(/\d{2,}/);
+    return {
+      proveedor: String(e.proveedor || "").trim(), cliente: String(e.cliente || "").trim(), pedido: String(e.pedido || "").trim(),
+      expediente: m ? m[0] : String(e.expediente || "").trim(), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
+      largo: aMm(e.ancho ?? e.largo), alto: aMm(e.alto), medidaTexto: String(e.medidaTexto || "").trim(), cantidad: Math.max(1, parseInt(e.cantidad, 10) || 1),
+      pieza: String(e.pieza || "").trim(), color: String(e.color || "").trim(), descripcion: String(e.descripcion || "").trim(),
+    };
+  };
+  const leerUna = async (id, file) => {
+    try {
+      const reducido = await reducirFotoPegatina(file, 2000, 0.88);
+      const o = await leerDocumentoCristalConIA(reducido, PROMPT_ETIQUETA_PERSIANA);
+      const etiquetas = toArray(o?.etiquetas).filter((e) => e && (e.ancho || e.largo || e.alto || e.pedido || e.expediente));
+      if (!etiquetas.length) { cambiarFila(id, { estado: "error", error: "No he leído ninguna etiqueta clara. Repite la foto más de cerca y sin reflejos." }); return; }
+      setFilas((fs) => {
+        const idx = fs.findIndex((f) => f.id === id);
+        if (idx === -1) return fs;
+        const base = fs[idx];
+        const extra = etiquetas.slice(1).map((e) => ({ id: uid(), estado: "ok", thumb: base.thumb, ...limpia(e) }));
+        const copia = [...fs];
+        copia.splice(idx, 1, { ...base, estado: "ok", error: "", ...limpia(etiquetas[0]) }, ...extra);
+        return copia;
+      });
+    } catch (e) {
+      cambiarFila(id, { estado: "error", error: "No se pudo leer: " + (e.message || "error") });
+    }
+  };
+  const siguiente = () => {
+    while (activosRef.current < 3 && colaRef.current.length) {
+      const { id, file } = colaRef.current.shift();
+      activosRef.current++;
+      leerUna(id, file).finally(() => { activosRef.current--; siguiente(); });
+    }
+  };
+  const anadirFotos = async (lista) => {
+    const files = [...(lista || [])].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|webp)$/i.test(f.name || ""));
+    for (const file of files) {
+      const id = uid();
+      const thumb = await miniaturaFoto(file);
+      setFilas((fs) => [...fs, { id, estado: "leyendo", thumb }]);
+      colaRef.current.push({ id, file });
+    }
+    siguiente();
+  };
+
+  // Posible foto repetida: mismo pedido, expediente, vivienda, medida y nº de pieza
+  const vistos = {};
+  const marcas = {};
+  filas.forEach((f) => {
+    if (f.estado !== "ok") return;
+    const k = [f.proveedor, f.pedido, f.expediente, f.ref, parseFloat(f.largo) || "", parseFloat(f.alto) || "", f.pieza].map((x) => String(x ?? "").replace(/\s/g, "").toUpperCase()).join("|");
+    if (vistos[k]) marcas[f.id] = true; else vistos[k] = f.id;
+  });
+
+  const leyendo = filas.filter((f) => f.estado === "leyendo").length;
+  const conError = filas.filter((f) => f.estado === "error").length;
+  const buenas = filas.filter((f) => f.estado === "ok" && parseFloat(f.largo) > 0);
+  const sinLargo = filas.filter((f) => f.estado === "ok" && !(parseFloat(f.largo) > 0)).length;
+  const totalUds = buenas.reduce((a, f) => a + (Math.max(1, parseInt(f.cantidad, 10) || 1)), 0);
+  const expsResumen = [...new Set(buenas.map((f) => f.expediente).filter(Boolean))];
+
+  const colocar = () => {
+    if (leyendo) { alert("Espera a que terminen de leerse las fotos."); return; }
+    if (!buenas.length) { alert("No hay ninguna persiana con largo para colocar."); return; }
+    const avisos = [];
+    if (conError) avisos.push(`${conError} foto(s) sin leer`);
+    if (sinLargo) avisos.push(`${sinLargo} sin largo`);
+    if (avisos.length && !window.confirm(`Hay ${avisos.join(" y ")} que no se guardarán. ¿Seguir?`)) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const unidades = [];
+    buenas.forEach((f) => {
+      const n = Math.max(1, parseInt(f.cantidad, 10) || 1);
+      for (let k = 0; k < n; k++) {
+        unidades.push({
+          id: uid(), expediente: String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+          largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
+          proveedor: String(f.proveedor || "").trim(), cliente: String(f.cliente || "").trim(), obra: String(f.obra || "").trim(),
+          pieza: String(f.pieza || "").trim(), color: String(f.color || "").trim(), descripcion: String(f.descripcion || "").trim(),
+          medidaEtiqueta: String(f.medidaTexto || "").trim(), origen: "foto etiqueta", fechaEntrada: hoy, estante: null, entregada: false,
+        });
+      }
+    });
+    try { localStorage.removeItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { /* nada */ }
+    onColocar(unidades);
+    onCerrar();
+  };
+  const descartar = () => {
+    if (filas.length && !window.confirm("¿Descartar todas las fotos leídas?")) return;
+    try { localStorage.removeItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { /* nada */ }
+    onCerrar();
+  };
+  const campo = (f, k, ph, w = "") => (
+    <input value={f[k] ?? ""} placeholder={ph} onChange={(e) => cambiarFila(f.id, { [k]: e.target.value })}
+      className={`border border-slate-200 rounded px-2 py-1 text-xs ${w}`} />
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-2 sm:p-6">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h3 className="font-display font-bold text-slate-800 flex items-center gap-2"><Camera size={18} /> Entrada de persianas con fotos de etiquetas</h3>
+            <p className="text-xs text-slate-500 mt-1">Para persianas que llegan sin packing list. Haz una foto a la etiqueta de cada persiana: se lee sola. Revisa lo leído (sobre todo el largo) y pulsa "Colocar en los carros".</p>
+          </div>
+          <button onClick={onCerrar} className="text-slate-400 hover:text-slate-600" title="Cerrar (se guarda el borrador)"><X size={18} /></button>
+        </div>
+        {recuperado && (
+          <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">Se ha recuperado una entrada que tenías a medias. Sigue haciendo fotos o descártala.</div>
+        )}
+
+        <div className="flex flex-wrap gap-2 mb-3">
+          <button onClick={() => inputCamaraRef.current?.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
+            <Camera size={16} /> Hacer foto a una etiqueta
+          </button>
+          <button onClick={() => inputGaleriaRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2.5 rounded-md hover:bg-slate-50">
+            <ImageIcon size={15} /> Subir varias fotos
+          </button>
+          <input ref={inputCamaraRef} type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
+          <input ref={inputGaleriaRef} type="file" accept="image/*" multiple className="hidden"
+            onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
+        </div>
+
+        <div className="text-xs text-slate-600 mb-2 flex flex-wrap gap-x-4 gap-y-1">
+          <span><b>{totalUds}</b> persiana(s) listas</span>
+          {leyendo > 0 && <span className="text-sky-700 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> leyendo {leyendo}…</span>}
+          {conError > 0 && <span className="text-rose-600">{conError} sin leer</span>}
+          {sinLargo > 0 && <span className="text-rose-600">{sinLargo} sin largo</span>}
+          {expsResumen.length > 0 && <span className="text-slate-500">Expedientes: {expsResumen.map((e) => `EXP ${e}`).join(", ")}</span>}
+        </div>
+
+        <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+          {filas.length === 0 && (
+            <div className="text-center text-sm text-slate-400 py-10 border border-dashed border-slate-300 rounded-lg">Aún no hay fotos. Pulsa "Hacer foto a una etiqueta" y ve persiana a persiana.</div>
+          )}
+          {filas.map((f, i) => {
+            const corta = f.estado === "ok" && parseFloat(f.largo) > 0 && parseFloat(f.largo) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm;
+            return (
+              <div key={f.id} className={`flex gap-3 p-2 rounded-lg border ${f.estado === "error" ? "border-rose-200 bg-rose-50" : marcas[f.id] || corta ? "border-amber-300 bg-amber-50" : "border-slate-200"}`}>
+                <div className="shrink-0 w-16 text-center">
+                  {f.thumb ? <img src={f.thumb} alt="" className="w-16 h-16 object-cover rounded" /> : <div className="w-16 h-16 rounded bg-slate-100 flex items-center justify-center text-slate-300"><ImageIcon size={18} /></div>}
+                  <div className="text-[10px] text-slate-400 mt-0.5">#{i + 1}</div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  {f.estado === "leyendo" && <div className="text-xs text-sky-700 flex items-center gap-1 pt-5"><Loader2 size={13} className="animate-spin" /> Leyendo etiqueta…</div>}
+                  {f.estado === "error" && <div className="text-xs text-rose-600 pt-4">⚠ {f.error}</div>}
+                  {f.estado === "ok" && (
+                    <div className="flex flex-wrap gap-1.5 items-center">
+                      <span className="text-[11px] text-slate-500">Largo (ancho)</span>{campo(f, "largo", "mm", "w-16")}
+                      <span className="text-[11px] text-slate-500">Alto</span>{campo(f, "alto", "mm", "w-16")}
+                      <span className="text-[11px] text-slate-500">EXP</span>{campo(f, "expediente", "Expediente", "w-20")}
+                      {campo(f, "ref", "Vivienda / ref.", "w-28")}
+                      <span className="text-[11px] text-slate-500">Uds</span>{campo(f, "cantidad", "1", "w-10")}
+                      {campo(f, "pedido", "Nº pedido", "w-28")}
+                      {campo(f, "proveedor", "Proveedor", "w-24")}
+                      {campo(f, "color", "Color", "w-24")}
+                      {campo(f, "descripcion", "Tipo", "flex-1 min-w-[140px]")}
+                      {f.medidaTexto && <div className="w-full text-[11px] text-slate-500">En la etiqueta pone: <b>{f.medidaTexto}</b> → comprueba que el largo y el alto en mm cuadran</div>}
+                      {marcas[f.id] && <span className="text-[11px] font-semibold text-amber-700">⚠ Parece la misma que otra foto: bórrala si está repetida</span>}
+                      {corta && <span className="text-[11px] font-semibold text-amber-700">⚠ Mide menos de 40 cm: no cabe en ningún carro</span>}
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => setFilas((fs) => fs.filter((x) => x.id !== f.id))} className="self-start text-slate-300 hover:text-rose-500" title="Quitar"><Trash2 size={15} /></button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap justify-between gap-2 mt-4 pt-3 border-t border-slate-200">
+          <button onClick={descartar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-2 rounded-md hover:bg-rose-50">Descartar</button>
+          <button onClick={colocar} disabled={!buenas.length || leyendo > 0} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2 rounded-md">
+            Colocar en los carros ({totalUds})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AlmacenPersianas() {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const carros = ctx.carrosPersianas || [];
@@ -12860,6 +13092,7 @@ function AlmacenPersianas() {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [borrador, setBorrador] = useState(null);
+  const [verFotosEtiquetas, setVerFotosEtiquetas] = useState(() => { try { return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { return false; } });
   const inputRef = useRef(null);
 
   const activos = items.filter((x) => !x.entregada);
@@ -12892,11 +13125,12 @@ function AlmacenPersianas() {
     return { sitio, fallan };
   };
 
-  const confirmarEntrada = () => {
-    const { sitio, fallan } = colocar(borrador);
-    const nuevas = borrador.map((x) => ({ ...x, estante: sitio[x.id] || null }));
+  const confirmarEntrada = (lista) => {
+    const entrada = Array.isArray(lista) ? lista : borrador;
+    const { sitio, fallan } = colocar(entrada);
+    const nuevas = entrada.map((x) => ({ ...x, estante: sitio[x.id] || null }));
     guardarItems([...items, ...nuevas]);
-    setBorrador(null);
+    if (!Array.isArray(lista)) setBorrador(null);
     const cortas = nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
     setAviso(fallan ? `${fallan} persiana(s) sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} persianas colocadas.`);
     setVista(fallan ? "sinsitio" : "mapa");
@@ -12977,7 +13211,14 @@ function AlmacenPersianas() {
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : "Subir packing list de persianas"}
         </button>
+        <button onClick={() => setVerFotosEtiquetas(true)}
+          className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
+          <Camera size={14} /> Entrada con fotos de etiquetas
+        </button>
       </div>
+      {verFotosEtiquetas && (
+        <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} onColocar={(unidades) => confirmarEntrada(unidades)} />
+      )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
 
       {borrador && (
@@ -13002,7 +13243,7 @@ function AlmacenPersianas() {
           </div>
           <div className="flex gap-2 mt-3">
             <button onClick={() => setBorrador(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
-            <button onClick={confirmarEntrada} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Colocar en los carros</button>
+            <button onClick={() => confirmarEntrada()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Colocar en los carros</button>
           </div>
         </div>
       )}
