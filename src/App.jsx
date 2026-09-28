@@ -1621,7 +1621,7 @@ export default function App() {
         const historicoPrecios = registrarHistoricoPrecio([], "", "", fila.precioCompra || "", fila.precioVenta || "", nombreOrigen);
         working = [{
           id: uid(), codigo: fila.codigo || "", descripcion: fila.descripcion || fila.codigo, proveedorId: proveedorIdForzado || "",
-          stockReal: 0, stockMinimo: 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
+          stockReal: parseFloat(fila.stockReal) || 0, stockMinimo: parseFloat(fila.stockMinimo) || 0, stockOptimo: 0, color: "", acabadoDescripcion: "",
           longitud: "", ancho: "", alto: "", grueso: "",
           precioCompra: fila.precioCompra || "", precioVenta: fila.precioVenta || "", unidadCompra: "Unidad", categoria: "", familia: fila.familia || "",
           foto: fila.foto || "", historicoPrecios,
@@ -8401,6 +8401,8 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       precioCompra: valorPorCabeceras(fila, ["preciocompra", "pcompra", "coste", "costo"]),
       foto: String(valorPorCabeceras(fila, ["foto", "imagen", "imagenurl", "fotourl"]) || "").trim(),
       familia: String(valorPorCabeceras(fila, ["familia", "serie", "grupo", "categoria"]) || "").trim(),
+      stockReal: valorPorCabeceras(fila, ["stockreal", "stock", "cantidad", "existencias"]),
+      stockMinimo: valorPorCabeceras(fila, ["stockminimo", "minimo", "min"]),
     })).filter((f) => f.codigo || f.descripcion);
     if (filas.length === 0) {
       alert("No se ha encontrado ninguna fila con código o descripción. Revisa las cabeceras del Excel.");
@@ -17190,6 +17192,25 @@ const PERSIANAS_MOTOR_OPCIONES = [
   { valor: 1, label: "Con motor, con recogedor (sin discos)" },
   { valor: 2, label: "Con motor, sin recogedor ni discos" },
 ];
+// Motores Persax SPX (tarifa "Precio_motores", precios netos por tramo de cajas de 10
+// unidades — 1 a 5 cajas, 6 a 9 cajas, 10 o más cajas). El precio que se usa en el
+// presupuesto es el del tramo que corresponda según el total de motores de ese modelo
+// en todo el cálculo (a más cantidad, más barato).
+const MOTORES_PERSAX = [
+  { id: "spx-2015-nm", nombre: "MOTOR SPX 20/15 NM SERIE 45", codigo: "124707", radio: false, precios: [21.0, 18.0, 16.0] },
+  { id: "spx-3015-nm", nombre: "MOTOR SPX 30/15 NM SERIE 45", codigo: "124706", radio: false, precios: [26.0, 23.0, 20.0] },
+  { id: "spx-5012-nm", nombre: "MOTOR SPX 50/12 NM SERIE 45", codigo: "124880", radio: false, precios: [31.0, 28.0, 25.0] },
+  { id: "spx-1015-radio", nombre: "MOTOR SPX RADIO PnP 10/15 SERIE 45 - P24", codigo: "1241375", radio: true, precios: [52.0, 45.0, 43.0] },
+  { id: "spx-2015-radio", nombre: "MOTOR SPX RADIO PnP 20/15 SERIE 45 - P24", codigo: "1241376", radio: true, precios: [57.0, 50.0, 47.0] },
+  { id: "spx-3015-radio", nombre: "MOTOR SPX RADIO PnP 30/15 SERIE 45 - P24", codigo: "1241377", radio: true, precios: [61.0, 54.0, 51.0] },
+  { id: "spx-5012-radio", nombre: "MOTOR SPX RADIO PnP 50/12 SERIE 45 - P24", codigo: "1241378", radio: true, precios: [65.0, 57.0, 54.0] },
+];
+// Tramo de precio (0/1/2) según el total de unidades de ese modelo en todo el cálculo:
+// menos de 6 cajas (1 a 5) · de 6 a 9 cajas · 10 cajas o más (embalaje de 10 uds).
+const tramoPrecioMotorPersax = (unidadesTotal) => {
+  const cajas = Math.ceil((parseFloat(unidadesTotal) || 0) / 10) || 1;
+  return cajas >= 10 ? 2 : cajas >= 6 ? 1 : 0;
+};
 
 // Altura (mm) a partir de la cual el cajón de 155 no es válido y hay que pasar
 // a 185 obligatoriamente. Regla de Miguel: 1500mm o más -> 185.
@@ -17362,7 +17383,7 @@ function calcularDespiecePersianasConjunto(filas, ajustes) {
     felpudo: 0, testeros: 0, placaContencion: 0, jgoLateral: 0,
     embudosGealan: 0, embudosCortizo: 0, recogedor: 0,
     tirantes: 0, discos: 0, capsula: 0, pasacintasFrontal: 0, pasacintasInferior: 0,
-    topes: 0, motores: 0,
+    topes: 0, motores: 0, motoresPorModelo: {}, // { modeloId: unidades } — motores Persax con modelo elegido
   };
   const lineas = [];
 
@@ -17398,7 +17419,11 @@ function calcularDespiecePersianasConjunto(filas, ajustes) {
     herraje.pasacintasFrontal += r.pasacintasFrontal;
     herraje.pasacintasInferior += r.pasacintasInferior;
     herraje.topes += r.topes;
-    herraje.motores += r.motoresUd;
+    if (r.motoresUd > 0 && fila.motorModelo) {
+      herraje.motoresPorModelo[fila.motorModelo] = (herraje.motoresPorModelo[fila.motorModelo] || 0) + r.motoresUd;
+    } else {
+      herraje.motores += r.motoresUd; // sin modelo elegido: precio genérico de tarifa, como antes
+    }
   });
 
   const barras6m = (m) => Math.ceil((m || 0) / 6);
@@ -17450,6 +17475,15 @@ function calcularPresupuestoPersianas(despieceConjunto, tarifas) {
       total += importe;
       if (g.m > 0) detalle.push({ nombre: `Guía ${g.ancho}mm (cajón ${p.cajon})`, cantidad: g.m, unidad: "m", precio, importe });
     });
+  });
+
+  Object.entries(despieceConjunto.herraje.motoresPorModelo || {}).forEach(([modeloId, unidades]) => {
+    const modelo = MOTORES_PERSAX.find((m) => m.id === modeloId);
+    if (!modelo || !(unidades > 0)) return;
+    const precio = modelo.precios[tramoPrecioMotorPersax(unidades)];
+    const importe = precio * unidades;
+    total += importe;
+    detalle.push({ nombre: `Motor ${modelo.nombre}`, cantidad: unidades, unidad: "ud", precio, importe });
   });
 
   [
@@ -24506,10 +24540,16 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                     >Con motor</button>
                   </div>
                   {parseFloat(f.motor) > 0 && (
-                    <Select value={f.motor} onChange={(e) => actualizarFila(f.id, "motor", parseFloat(e.target.value))} className="min-w-[190px]">
-                      <option value={1}>Con recogedor</option>
-                      <option value={2}>Sin recogedor ni discos</option>
-                    </Select>
+                    <>
+                      <Select value={f.motor} onChange={(e) => actualizarFila(f.id, "motor", parseFloat(e.target.value))} className="min-w-[190px] mb-1">
+                        <option value={1}>Con recogedor</option>
+                        <option value={2}>Sin recogedor ni discos</option>
+                      </Select>
+                      <Select value={f.motorModelo || ""} onChange={(e) => actualizarFila(f.id, "motorModelo", e.target.value)} className="min-w-[190px]">
+                        <option value="">Motor genérico (precio de tarifa)</option>
+                        {MOTORES_PERSAX.map((m) => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                      </Select>
+                    </>
                   )}
                 </td>
                 <td className="px-3 py-2">
@@ -24677,12 +24717,16 @@ function CalculadoraPersianas({ clientes, tarifas, onSaveTarifas, onPasarAPresup
                           <td className="px-4 py-2 text-slate-700">{d.nombre}</td>
                           <td className="px-4 py-2 text-slate-500">{d.cantidad.toFixed(2)} {d.unidad}</td>
                           <td className="px-4 py-2">
-                            <input
-                              type="number" step="0.01" value={tarifas[key] ?? ""}
-                              onChange={(e) => key && cambiarTarifa(key, e.target.value)}
-                              className={inputCls + " w-24"}
-                              placeholder="0,00"
-                            />
+                            {key ? (
+                              <input
+                                type="number" step="0.01" value={tarifas[key] ?? ""}
+                                onChange={(e) => cambiarTarifa(key, e.target.value)}
+                                className={inputCls + " w-24"}
+                                placeholder="0,00"
+                              />
+                            ) : (
+                              <span className="text-slate-500 font-mono-num">{money(d.precio)} <span className="text-[10px] text-slate-400">(tarifa Persax)</span></span>
+                            )}
                           </td>
                           <td className="px-4 py-2 font-mono-num text-slate-600">{money(d.importe)}</td>
                         </tr>
