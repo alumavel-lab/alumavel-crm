@@ -6,7 +6,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Menu, Send, Printer, Calculator,
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Upload, Menu, Send, Printer, Calculator,
   UserPlus, PhoneCall, Scale
 } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -495,7 +495,32 @@ function Field({ label, children, required }) {
 const inputCls =
   "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40 focus:border-[#2E8B57]";
 
-function TextInput(props) { return <input {...props} className={inputCls + " " + (props.className || "")} />; }
+// Primera letra en mayúscula al escribir (textos normales; no emails, webs, búsquedas, números ni contraseñas)
+const capitalizarPrimera = (v) => {
+  const s = String(v ?? "");
+  if (!s || s.includes("@") || /^\s*(https?:|www\.)/i.test(s)) return s;
+  const i = s.search(/\S/);
+  if (i === -1) return s;
+  const c = s[i], up = c.toLocaleUpperCase("es-ES");
+  return up === c ? s : s.slice(0, i) + up + s.slice(i + 1);
+};
+const conMayuscula = (props, esTextarea) => {
+  const tipo = props.type || "text";
+  const aplicar = !props.sinMayuscula && props.onChange && !props.readOnly && !props.disabled
+    && (esTextarea || tipo === "text") && !/buscar|busca|filtr|email|correo|contraseña/i.test(String(props.placeholder || ""));
+  const { sinMayuscula, ...resto } = props;
+  if (!aplicar) return resto;
+  return {
+    ...resto,
+    autoCapitalize: resto.autoCapitalize || "sentences",
+    onChange: (e) => {
+      const el = e.target, v = el.value, nv = capitalizarPrimera(v);
+      if (nv !== v) { const pos = el.selectionStart; el.value = nv; try { el.setSelectionRange(pos, pos); } catch (err) { /* nada */ } }
+      props.onChange(e);
+    },
+  };
+};
+function TextInput(props) { return <input {...conMayuscula(props, false)} className={inputCls + " " + (props.className || "")} />; }
 function Select({ children, ...props }) { return <select {...props} className={inputCls + " " + (props.className || "")}>{children}</select>; }
 
 // Selector con buscador para listas largas (materiales, artículos...) donde un <select>
@@ -551,7 +576,7 @@ function SelectorBuscable({ options, value, onChange, placeholder }) {
     </div>
   );
 }
-function TextArea(props) { return <textarea {...props} className={inputCls + " " + (props.className || "")} />; }
+function TextArea(props) { return <textarea {...conMayuscula(props, true)} className={inputCls + " " + (props.className || "")} />; }
 
 /* ================= APP ================= */
 
@@ -2246,6 +2271,21 @@ export default function App() {
     return nueva;
   };
 
+  // Pedido de reposición "En espera" que se crea junto con una incidencia de cristal o persiana
+  // (roto, falta, defectuoso…). Queda en espera para pedirlo junto con los demás del proveedor.
+  const crearPedidoEsperaReposicion = ({ proveedorId, proyectoId, linea, comentarios }) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
+    const nuevo = {
+      id: uid(), numero: nextNumeroPedido(), proveedorId: proveedorId || "", proyectoId: proyectoId || "", estado: "En espera",
+      fechaCompra: hoy, fechaEntregaPrevista: "", lineas: [{ id: uid(), modo: "libre", materialId: "", precio: "", estado: "Solicitado", ...linea }],
+      adjuntosPdf: [], comentarios: `${comentarios || ""}${proveedorId ? "" : " FALTA ELEGIR EL PROVEEDOR."}`.trim(),
+      origenReposicion: true, creadoPor: creador, fechaCreado: hoy,
+    };
+    savePedidos([nuevo, ...pedidos]);
+    return nuevo;
+  };
+
   const nextNumeroIncidencia = () => {
     const nums = incidencias.map((i) => parseInt(String(i.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
     const max = nums.length ? Math.max(...nums) : 0;
@@ -2567,6 +2607,25 @@ export default function App() {
     };
     saveFacturas([nueva, ...facturas.map((f) => (lista.some((x) => x.id === f.id) ? { ...f, convertidaFacturaId: nueva.id, convertidaNumero: numero } : f))]);
     showToast(`Factura ${numero} emitida con ${lista.length} proforma${lista.length === 1 ? "" : "s"} · ${money(total)}`);
+  };
+
+  // Presupuesto → factura proforma (serie PF-). Queda en Facturas como proforma viva y
+  // luego se puede pasar a definitiva o juntar con otras del mismo cliente.
+  const pasarPresupuestoAProforma = (pre, { clienteId, fecha, total, observaciones }) => {
+    const t = Math.round((parseFloat(total) || 0) * 100) / 100;
+    if (!clienteId) { showToast("Elige el cliente de la proforma", "error"); return null; }
+    if (t <= 0) { showToast("El importe tiene que ser mayor que 0", "error"); return null; }
+    const n = facturas.filter((f) => String(f.numero || "").startsWith("PF-")).reduce((m, f) => Math.max(m, parseInt(String(f.numero).slice(3), 10) || 0), 0);
+    const proyectoId = pre.proyectoId || "";
+    const nueva = {
+      id: uid(), numero: `PF-${n + 1}`, clienteId, tipo: "Proforma", fecha: fecha || new Date().toISOString().slice(0, 10),
+      proyectosIds: proyectoId ? [proyectoId] : [], ...(proyectoId ? { importesPorProyecto: { [proyectoId]: t } } : {}),
+      total: t, pagos: [], observaciones: observaciones || "", origen: "presupuesto", presupuestoId: pre.id, presupuestoNumero: pre.numero || "",
+    };
+    saveFacturas([nueva, ...facturas]);
+    savePresupuestos(presupuestos.map((x) => (x.id === pre.id ? { ...x, proformas: [...toArray(x.proformas), { id: nueva.id, numero: nueva.numero, fecha: nueva.fecha, total: t }] } : x)));
+    showToast(`Proforma ${nueva.numero} creada por ${money(t)} — la tienes en Facturas`);
+    return nueva;
   };
 
   // Factura de una obra entregada, desde "Pendiente de facturar" (un solo botón)
@@ -3048,6 +3107,7 @@ export default function App() {
       proyectoId: solicitud.proyectoId || "",
       comentarios: `Solicitado por ${solicitud.solicitanteNombre} el ${fmtDate(solicitud.fecha)}: ${solicitud.descripcion}`,
       lineas: [],
+      documentos: toArray(solicitud.adjuntos),
     });
     setPedidoEditId(null);
     setPedidoView("form");
@@ -4416,6 +4476,7 @@ export default function App() {
         )}
         {modulo === "pedidos" && (
           <PedidosModulo
+            clientes={clientes}
             onMarcarGrupo={marcarGrupoPedido}
             pedidos={pedidos}
             proveedores={proveedores}
@@ -4429,6 +4490,7 @@ export default function App() {
             detailId={pedidoDetailId}
             setDetailId={setPedidoDetailId}
             onUpsert={upsertPedido}
+            onActualizarPedido={actualizarPedido}
             onDelete={deletePedido}
             isAdmin={isAdmin}
             onRecibir={recibirPedido}
@@ -4579,6 +4641,7 @@ export default function App() {
               setProyectoDetailId(proyectoId);
               setProyectoView("detail");
             }}
+            onPasarAProforma={pasarPresupuestoAProforma}
             onDuplicar={(presupuesto) => {
               const nuevaId = duplicarPresupuesto(presupuesto);
               setPresupuestoDetailId(nuevaId);
@@ -4679,7 +4742,7 @@ export default function App() {
         )}
         {modulo === "fabrica" && (
           <IncidenciasCristalCtx.Provider value={{
-            incidencias, proyectos, clientes, crear: crearIncidenciaDesdeCristal,
+            incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen,
@@ -6240,7 +6303,36 @@ function TipoPlanoObra({ proyecto, onInlineUpdate, sinBoton }) {
 // ---------- PDF del pedido (para mandarlo al proveedor o imprimirlo) ----------
 // Las fuentes estándar del PDF solo tienen los caracteres "occidentales": el resto se cambia.
 const textoPdfSeguro = (t) => String(t == null ? "" : t).replace(/[→⇒]/g, "->").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[^\x20-\x7E\xA0-\xFF€—–·•…]/g, "?");
-async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales) {
+// Datos de la obra (o de dónde sale el pedido) para que el proveedor y quien lo vea
+// sepan siempre a qué va: se usan en el correo, el WhatsApp, el PDF y el listado.
+const lineasObraPedido = (pedido, proyecto, cliente) => {
+  const out = [];
+  if (proyecto) {
+    out.push(`Obra: #${proyecto.numero} — ${proyecto.nombre || ""}`.trim());
+    const ref = [proyecto.referencia, proyecto.expediente].filter(Boolean).join(" · ");
+    if (ref) out.push(`Referencia: ${ref}`);
+    if (cliente && cliente.nombre) out.push(`Cliente: ${cliente.nombre}`);
+    const ciudad = proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto;
+    const dir = [proyecto.ubicacion || (cliente && cliente.direccion) || "", ciudad || (cliente && cliente.provincia) || ""].filter(Boolean).join(", ");
+    if (dir) out.push(`Dirección: ${dir}`);
+  } else {
+    const obras = toArray(pedido.obrasPreparacion).map((o) => (typeof o === "string" ? o : [o.numero ? `#${o.numero}` : "", o.nombre || ""].filter(Boolean).join(" — "))).filter(Boolean);
+    if (obras.length) out.push(`Obras: ${obras.join(", ")}`);
+    else if (pedido.origenListado) out.push(`Referencia: ${pedido.origenListado}`);
+    else out.push("Pedido para stock (sin obra)");
+  }
+  return out;
+};
+const resumenObraPedido = (pedido, proyecto) => {
+  if (proyecto) return `#${proyecto.numero} — ${proyecto.nombre || ""}`;
+  const obras = toArray(pedido.obrasPreparacion).map((o) => (typeof o === "string" ? o : [o.numero ? `#${o.numero}` : "", o.nombre || ""].filter(Boolean).join(" "))).filter(Boolean);
+  if (obras.length) return `Varias: ${obras.join(", ")}`;
+  if (pedido.origenListado) return pedido.origenListado;
+  const c = String(pedido.comentarios || "").trim();
+  return c ? `Stock · ${c.slice(0, 40)}${c.length > 40 ? "…" : ""}` : "Stock";
+};
+
+async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales, cliente) {
   const pdfDoc = await PDFDocument.create();
   const f = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fb = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -6269,7 +6361,7 @@ async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales) {
   if (proveedor && (proveedor.email || proveedor.movil)) fila("CONTACTO", [proveedor.movil, proveedor.email].filter(Boolean).join(" · "));
   fila("FECHA DEL PEDIDO", fmtDate(pedido.fechaCompra) || fmtDate(new Date().toISOString().slice(0, 10)));
   fila("ENTREGA PREVISTA", fmtDate(pedido.fechaEntregaPrevista) || "a concretar");
-  if (proyecto) fila("OBRA / REFERENCIA", `#${proyecto.numero} — ${proyecto.nombre}`);
+  lineasObraPedido(pedido, proyecto, cliente).forEach((l) => { const i = l.indexOf(": "); fila(i > 0 ? l.slice(0, i).toUpperCase() : "OBRA / REFERENCIA", i > 0 ? l.slice(i + 2) : l); });
   y -= 8;
   // Tabla
   const cols = [{ t: "CÓDIGO", x: M, w: 85 }, { t: "DESCRIPCIÓN", x: M + 90, w: 250 }, { t: "COLOR", x: M + 345, w: 70 }, { t: "MEDIDAS", x: M + 420, w: 65 }, { t: "CANT.", x: W - M - 35, w: 35 }];
@@ -6311,10 +6403,10 @@ async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales) {
   return await pdfDoc.save();
 }
 const bytesADataUrlPdf = (bytes) => { let b = ""; for (let i = 0; i < bytes.length; i++) b += String.fromCharCode(bytes[i]); return `data:application/pdf;base64,${btoa(b)}`; };
-async function abrirPdfPedido(pedido, proveedor, proyecto, materiales) {
+async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) {
   const ventana = window.open("", "_blank");
   try {
-    const bytes = await pdfPedidoBytes(pedido, proveedor, proyecto, materiales);
+    const bytes = await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, cliente);
     const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
     if (ventana) ventana.location.href = url; else window.open(url, "_blank");
   } catch (e) {
@@ -8941,7 +9033,7 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
   );
 }
 
-function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [agrupando, setAgrupando] = useState(false);
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
@@ -9108,6 +9200,21 @@ function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedore
     });
   }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales]);
 
+  // Solo los administradores y los usuarios marcados como "responsable de pedidos" hacen
+  // pedidos. El resto solo puede solicitarlos (pestaña de solicitudes).
+  const soloSolicitar = !isAdmin && !(currentUser && currentUser.responsablePedidos);
+  if (soloSolicitar) {
+    return (
+      <SolicitudesPedidoModulo
+        solicitudes={solicitudes} proyectos={proyectos} currentUser={currentUser} isAdmin={false}
+        view={solicitudView} setView={setSolicitudView} editId={solicitudEditId} setEditId={setSolicitudEditId}
+        detailId={solicitudDetailId} setDetailId={setSolicitudDetailId}
+        onUpsert={onUpsertSolicitud} onDelete={onDeleteSolicitud} onAprobar={onAprobarSolicitud} onRechazar={onRechazarSolicitud}
+        onComentar={onComentarSolicitud} onVolverPedidos={null} prefill={solicitudPrefill} onClearPrefill={onClearSolicitudPrefill}
+      />
+    );
+  }
+
   if (view === "form") {
     const editing = pedidos.find((p) => p.id === editId) || null;
     return (
@@ -9132,6 +9239,8 @@ function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedore
     if (!pedido) { setView("list"); return null; }
     return (
       <PedidoDetail
+        clientes={clientes}
+        onActualizarPedido={onActualizarPedido}
         pedido={pedido}
         proveedor={proveedores.find((p) => p.id === pedido.proveedorId)}
         materiales={materiales}
@@ -9157,7 +9266,7 @@ function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedore
         solicitudes={solicitudes}
         proyectos={proyectos}
         currentUser={currentUser}
-        isAdmin={isAdmin}
+        isAdmin={isAdmin || !!(currentUser && currentUser.responsablePedidos)}
         view={solicitudView}
         setView={setSolicitudView}
         editId={solicitudEditId}
@@ -9390,7 +9499,7 @@ function PedidosModulo({ onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedore
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
                   <td className="px-4 py-3 font-medium text-slate-800">{(p.proveedorExterno || proveedorNombre(p.proveedorId))}</td>
-                  <td className="px-4 py-3 text-slate-600">{proyectoNombre(p.proyectoId)}</td>
+                  <td className="px-4 py-3 text-slate-600">{resumenObraPedido(p, p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null)}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
                   <td className="px-4 py-3 text-slate-500">{p.creadoPor || "—"}</td>
@@ -9505,6 +9614,64 @@ function GenerarPedidoDesdeObrasPanel({ proyectos, materiales, onGenerar, onClos
   );
 }
 
+// Documentos de un pedido (PDF, Excel, Word, fotos…): se suben a Storage y se quedan
+// guardados en el pedido. Los marcados "enviar al proveedor" van adjuntos en el correo.
+function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo = "Documentos del pedido" }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+  const docs = toArray(documentos);
+  const subir = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length) return;
+    setSubiendo(true); setError("");
+    try {
+      const nuevos = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) { setError(`"${file.name}" pesa más de 20 MB.`); continue; }
+        const url = await subirArchivoAStorage(file, carpeta);
+        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now(), enviar: true });
+      }
+      if (nuevos.length) onChange([...docs, ...nuevos]);
+    } catch (e) { setError("No se pudo subir: " + (e.message || "error")); }
+    finally { setSubiendo(false); }
+  };
+  return (
+    <div className="border border-slate-200 rounded-md p-3 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <span className="text-[11px] font-semibold tracking-wide uppercase text-slate-500">{titulo}</span>
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={subiendo}
+          className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50 disabled:opacity-60">
+          {subiendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {subiendo ? "Subiendo…" : "Añadir documento"}
+        </button>
+        <input ref={inputRef} type="file" multiple className="hidden"
+          accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.odt,.ods,.txt,.jpg,.jpeg,.png,.heic,.webp,image/*,application/pdf"
+          onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
+      </div>
+      {toArray(adjuntosPdf).map((a, i) => (
+        <div key={`adj${i}`} className="flex items-center gap-2 text-sm py-0.5">
+          <FileText size={14} className="text-slate-400 shrink-0" />
+          <a href={a.dataUrl || a.url} download={a.nombre} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{a.nombre}</a>
+          <span className="text-[11px] text-slate-400 shrink-0">va en el correo al proveedor</span>
+        </div>
+      ))}
+      {docs.map((d) => (
+        <div key={d.id} className="flex items-center gap-2 text-sm py-0.5">
+          <FileText size={14} className="text-slate-400 shrink-0" />
+          <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{d.nombre}</a>
+          <label className="flex items-center gap-1 text-[11px] text-slate-500 shrink-0 cursor-pointer">
+            <input type="checkbox" checked={d.enviar !== false} onChange={(e) => onChange(docs.map((x) => (x.id === d.id ? { ...x, enviar: e.target.checked } : x)))} />
+            enviar al proveedor
+          </label>
+          <button type="button" onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" del pedido?`)) onChange(docs.filter((x) => x.id !== d.id)); }} className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={14} /></button>
+        </div>
+      ))}
+      {!docs.length && !toArray(adjuntosPdf).length && <p className="text-xs text-slate-400">Sin documentos. Puedes guardar aquí PDF, Excel, Word o fotos del pedido.</p>}
+      {error && <p className="text-xs text-rose-600 font-semibold mt-1">⚠ {error}</p>}
+    </div>
+  );
+}
+
 function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
   const blankLinea = () => ({ id: uid(), modo: "catalogo", materialId: materiales[0]?.id || "", referencia: "", ancho: "", alto: "", cantidad: "", precio: "", estado: "Solicitado" });
   const avisosPorDefecto = () => ({
@@ -9522,6 +9689,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
         lineas: prefill.lineas && prefill.lineas.length ? prefill.lineas : [blankLinea()],
         avisos: avisosPorDefecto(),
         adjuntosPdf: prefill.adjuntos || [],
+        documentos: toArray(prefill.documentos).map((d) => ({ ...d, enviar: false })),
       };
     }
     return {
@@ -9530,6 +9698,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       lineas: [blankLinea()],
       avisos: avisosPorDefecto(),
       adjuntosPdf: [],
+      documentos: [],
     };
   });
   const setAviso = (clave, valor) => {
@@ -9933,12 +10102,9 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           {errorPdfPedido && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfPedido}</p>}
         </div>
 
-        {f.adjuntosPdf && f.adjuntosPdf.length > 0 && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-slate-50 border border-slate-200 text-sm text-slate-600">
-            <FileText size={14} className="text-slate-400 shrink-0" />
-            {f.adjuntosPdf.length === 1 ? `Se adjuntará "${f.adjuntosPdf[0].nombre}" al enviar el pedido por correo.` : `Se adjuntarán ${f.adjuntosPdf.length} PDF/fotos al enviar el pedido por correo.`}
-          </div>
-        )}
+        <DocumentosPedido documentos={f.documentos} adjuntosPdf={f.adjuntosPdf}
+          carpeta={`documentos-proyectos/pedido-${f.id || "nuevo"}`}
+          onChange={(docs) => setF((prev) => ({ ...prev, documentos: docs }))} />
 
         <Field label="Comentarios"><TextArea rows={2} value={f.comentarios} onChange={set("comentarios")} /></Field>
 
@@ -10126,13 +10292,16 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   );
 }
 
-function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin, onRecibirConAlbaran, archivoInicial, onArchivoUsado }) {
+function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin, onRecibirConAlbaran, archivoInicial, onArchivoUsado }) {
   // "He hecho este pedido de otra forma": se pide la fecha de llegada (propuesta con los
   // días de entrega del proveedor) antes de darlo por hecho.
   const [confirmandoManual, setConfirmandoManual] = useState(false);
   const [fechaLlegadaManual, setFechaLlegadaManual] = useState("");
   const materialInfo = (id) => materiales.find((m) => m.id === id);
   const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
+  const clienteObra = proyecto ? toArray(clientes).find((c) => c.id === proyecto.clienteId) : null;
+  const bloqueObra = lineasObraPedido(pedido, proyecto, clienteObra).join("\n");
+  const [confirmarEnvio, setConfirmarEnvio] = useState(null); // "whatsapp" | "email" tras abrir el enlace
   const puedeRecibir = pedido.estado !== "Recibido" && pedido.estado !== "Cancelado";
   const [confirmandoRecibir, setConfirmandoRecibir] = useState(false);
   const [leyendoAlbaran, setLeyendoAlbaran] = useState(false);
@@ -10243,7 +10412,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
     }).join("\n");
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""}:\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -10253,19 +10422,19 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
     setErrorEnvioEmail("");
     setEmailEnviadoOk(false);
     try {
-      const tieneAdjuntos = pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0;
+      const tieneAdjuntos = (pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0) || toArray(pedido.documentos).some((d) => d.enviar !== false && d.url);
       const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
       let cuerpo;
       if (tieneAdjuntos) {
         // Con PDF adjunto no hace falta repetir el desglose por escrito: el propio
         // documento ya trae las medidas, solo hace falta un texto breve dirigido al proveedor.
-        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido${proyecto ? ` de la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""} en el documento adjunto.\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido en el documento adjunto.\n\n${bloqueObra}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
       } else {
         const lineasTexto = pedido.lineas.map((l) => {
           const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
           return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
         }).join("\n");
-        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido${proyecto ? ` para la obra "${proyecto.nombre}" (proyecto #${proyecto.numero})` : ""} (va también en el PDF adjunto):\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
       }
 
       const response = await fetch("/.netlify/functions/enviar-email", {
@@ -10277,8 +10446,9 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
           cuerpo,
           replyTo: currentUser?.email || "",
           adjuntos: [
-            { nombre: `pedido-${pedido.numero}.pdf`, dataUrl: bytesADataUrlPdf(await pdfPedidoBytes(pedido, proveedor, proyecto, materiales)) },
-            ...(tieneAdjuntos ? pedido.adjuntosPdf : []),
+            { nombre: `pedido-${pedido.numero}.pdf`, dataUrl: bytesADataUrlPdf(await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, clienteObra)) },
+            ...toArray(pedido.adjuntosPdf),
+            ...toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => ({ nombre: d.nombre, url: d.url })),
           ],
         }),
       });
@@ -10302,7 +10472,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (proyecto #${proyecto.numero})` : ""}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -10342,12 +10512,14 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
           ))}
           <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}{pedido.creadoPor && ` · Pedido por ${pedido.creadoPor}`}</p>
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
-          {pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0 && (
-            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1"><FileText size={12} /> {pedido.adjuntosPdf.length === 1 ? `Con "${pedido.adjuntosPdf[0].nombre}" adjunto (solo al enviar por email)` : `Con ${pedido.adjuntosPdf.length} PDF/fotos adjuntos (solo al enviar por email)`}</p>
-          )}
+          <div className="mt-2 max-w-xl">
+            <DocumentosPedido documentos={pedido.documentos} adjuntosPdf={pedido.adjuntosPdf}
+              carpeta={`documentos-proyectos/pedido-${pedido.id}`}
+              onChange={(docs) => onActualizarPedido && onActualizarPedido(pedido.id, { documentos: JSON.parse(JSON.stringify(docs)) })} />
+          </div>
         </div>
         <div className="flex gap-2 shrink-0">
-          <button onClick={() => abrirPdfPedido(pedido, proveedor, proyecto, materiales)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 h-fit">
+          <button onClick={() => abrirPdfPedido(pedido, proveedor, proyecto, materiales, clienteObra)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 h-fit">
             <FileText size={14} /> PDF del pedido
           </button>
           {proveedor?.email ? (
@@ -10364,7 +10536,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
               {errorEnvioEmail && (
                 <div className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">
                   ⚠ {errorEnvioEmail}
-                  <a href={enlaceEmailProveedor()} onClick={() => onMarcarEnviado("email")} className="block underline mt-0.5">Abrir en mi correo</a>
+                  <a href={enlaceEmailProveedor()} onClick={() => setConfirmarEnvio("email")} className="block underline mt-0.5">Abrir en mi correo</a>
                 </div>
               )}
             </div>
@@ -10374,7 +10546,7 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
             </span>
           )}
           {enlaceWhatsappProveedor() ? (
-            <a href={enlaceWhatsappProveedor()} target="_blank" rel="noreferrer" onClick={() => onMarcarEnviado("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
+            <a href={enlaceWhatsappProveedor()} target="_blank" rel="noreferrer" onClick={() => setConfirmarEnvio("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
               <MessageCircle size={14} /> Enviar por WhatsApp
             </a>
           ) : (
@@ -10399,6 +10571,15 @@ function PedidoDetail({ pedido, proveedor, materiales, proyectos, currentUser, o
         )}
       </div>
 
+      {confirmarEnvio && !pedido.envioConfirmado && (
+        <div className="px-4 py-3 rounded-md bg-sky-50 border-2 border-sky-300 text-sky-900 text-sm mb-6">
+          <p className="font-semibold mb-2">¿Has enviado el pedido por {confirmarEnvio === "whatsapp" ? "WhatsApp" : "tu correo"}? Solo se marca como hecho si lo confirmas.</p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { onMarcarEnviado(confirmarEnvio); setConfirmarEnvio(null); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Sí, lo he enviado</button>
+            <button onClick={() => setConfirmarEnvio(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-md hover:bg-slate-50">No, todavía no</button>
+          </div>
+        </div>
+      )}
       {pedido.envioConfirmado ? (
         <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold mb-6">
           ✓ {pedido.envioMetodo === "email" ? "Enviado por email" : pedido.envioMetodo === "whatsapp" ? "Enviado por WhatsApp" : "Pedido realizado"} el {fmtDate(pedido.fechaEnvioConfirmado?.slice(0, 10))}.
@@ -10572,7 +10753,7 @@ function SolicitudesPedidoModulo({ solicitudes, proyectos, currentUser, isAdmin,
 
   return (
     <div className="p-8 max-w-5xl">
-      <button onClick={onVolverPedidos} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver a Pedidos</button>
+      {onVolverPedidos && <button onClick={onVolverPedidos} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-5"><ChevronLeft size={16} /> Volver a Pedidos</button>}
 
       <Header
         icon={<ClipboardList size={20} className="text-[#2E8B57]" />}
@@ -10634,14 +10815,34 @@ function SolicitudesPedidoModulo({ solicitudes, proyectos, currentUser, isAdmin,
 
 function SolicitudPedidoForm({ initial, proyectos, onCancel, onSave }) {
   const [f, setF] = useState(
-    initial || { id: null, proyectoId: "", tipo: "Material para proyecto", descripcion: "", urgencia: "Normal" }
+    initial || { id: null, proyectoId: "", tipo: "Material para proyecto", descripcion: "", urgencia: "Normal", adjuntos: [] }
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
+  const [subiendoAdj, setSubiendoAdj] = useState(false);
+  const inputAdjRef = useRef(null);
+  const carpetaAdj = useRef(`documentos-proyectos/solicitud-${(initial && initial.id) || uid()}`);
+  const subirAdjuntos = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length) return;
+    setSubiendoAdj(true); setErrorMsg("");
+    try {
+      const nuevos = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) { setErrorMsg(`"${file.name}" pesa más de 20 MB.`); continue; }
+        const url = await subirArchivoAStorage(file, carpetaAdj.current);
+        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now() });
+      }
+      setF((prev) => ({ ...prev, adjuntos: [...toArray(prev.adjuntos), ...nuevos] }));
+    } catch (e) {
+      setErrorMsg("No se pudo subir el archivo: " + (e.message || "error"));
+    } finally { setSubiendoAdj(false); }
+  };
 
   const submit = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!f.descripcion.trim()) { setErrorMsg("Falta describir qué necesitas pedir (es obligatorio)."); return; }
+    if (subiendoAdj) { setErrorMsg("Espera a que terminen de subirse los archivos."); return; }
     setErrorMsg("");
     onSave(f);
   };
@@ -10681,6 +10882,30 @@ function SolicitudPedidoForm({ initial, proyectos, onCancel, onSave }) {
         <Field label="¿Qué necesitas pedir?" required>
           <TextArea rows={4} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Necesitamos 10 tiradores modelo X para la obra de Antonio Vico" />
         </Field>
+
+        <div>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Documentos (PDF, Excel, Word, fotos…)</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => inputAdjRef.current?.click()} disabled={subiendoAdj}
+              className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 disabled:opacity-60">
+              {subiendoAdj ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {subiendoAdj ? "Subiendo…" : "Adjuntar archivos"}
+            </button>
+            <input ref={inputAdjRef} type="file" multiple className="hidden"
+              accept=".pdf,.xls,.xlsx,.csv,.doc,.docx,.odt,.ods,.txt,.jpg,.jpeg,.png,.heic,.webp,image/*,application/pdf"
+              onChange={(e) => { subirAdjuntos(e.target.files); e.target.value = ""; }} />
+          </div>
+          {toArray(f.adjuntos).length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {toArray(f.adjuntos).map((a) => (
+                <li key={a.id} className="flex items-center gap-2 text-sm">
+                  <FileText size={14} className="text-slate-400 shrink-0" />
+                  <a href={a.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{a.nombre}</a>
+                  <button type="button" onClick={() => setF((prev) => ({ ...prev, adjuntos: toArray(prev.adjuntos).filter((x) => x.id !== a.id) }))} className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={14} /></button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
           <button type="button" onClick={onCancel} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
@@ -10728,6 +10953,16 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
       <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 text-sm text-slate-700 whitespace-pre-wrap">
         {solicitud.descripcion}
       </div>
+      {toArray(solicitud.adjuntos).length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+          <div className="text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Documentos adjuntos</div>
+          <ul className="space-y-1">
+            {toArray(solicitud.adjuntos).map((a) => (
+              <li key={a.id}><a href={a.url} target="_blank" rel="noreferrer" className="text-sm text-[#2E8B57] hover:underline inline-flex items-center gap-1.5"><FileText size={14} /> {a.nombre}</a></li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {solicitud.estado === "Rechazada" && solicitud.motivoRechazo && (
         <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-sm">
@@ -11692,6 +11927,16 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, 
     try { return localStorage.getItem(CLAVE_RESPONSABLE_INC_CRISTAL) || ""; } catch { return ""; }
   });
   const [error, setError] = useState("");
+  // Proveedor al que pedir la reposición: se propone el que viene en la pegatina/packing list
+  const proveedores = ctx.proveedores || [];
+  const normProv = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+  const nombreProvPieza = normProv(pieza.proveedor || cristal.proveedor || "");
+  const provSugerido = nombreProvPieza.length >= 3
+    ? proveedores.find((pr) => { const n = normProv(pr.nombre); return n && (n.includes(nombreProvPieza) || nombreProvPieza.includes(n)); })
+    : null;
+  const [dejarPedido, setDejarPedido] = useState(true);
+  const [proveedorId, setProveedorId] = useState(provSugerido?.id || "");
+  const udsReponer = parseFloat(pieza.udsAfectadas) || parseFloat(pieza.cantidad) || 1;
   const crear = () => {
     if (!proyectoId) { setError("Elige la obra a la que pertenece este cristal."); return; }
     try { localStorage.setItem(CLAVE_RESPONSABLE_INC_CRISTAL, responsable); } catch {}
@@ -11706,12 +11951,31 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, 
       (pieza.pedido || cristal.secuencia) && `Nº pedido: ${pieza.pedido || cristal.secuencia}`,
       comentario && `Comentario: ${comentario}`,
     ].filter(Boolean).join(" · ");
+    const proy = proyectos.find((p) => p.id === proyectoId);
+    let pedido = null;
+    if (dejarPedido && ctx.crearPedidoEsperaReposicion) {
+      const referencia = [
+        `Reposición ${etiqueta.toLowerCase()} (${String(tipo).toLowerCase()})`,
+        pieza.composicion || pieza.descripcion || "",
+        pieza.color || "",
+        pieza.ref ? `· ${pieza.ref}` : "",
+        (pieza.expediente || cristal.expediente) ? `· ${pieza.expediente || cristal.expediente}` : "",
+      ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      pedido = ctx.crearPedidoEsperaReposicion({
+        proveedorId, proyectoId,
+        linea: { referencia, ancho: pieza.ancho || "", alto: pieza.alto || "", cantidad: udsReponer },
+        comentarios: `Reposición por incidencia (${etiqueta.toLowerCase()} ${String(tipo).toLowerCase()})${proy ? ` de la obra #${proy.numero} — ${proy.nombre}` : ""}.${(pieza.pedido || cristal.secuencia) ? ` Pedido original: ${pieza.pedido || cristal.secuencia}.` : ""}${comentario ? ` ${comentario}` : ""} En espera para pedirlo junto con otros pedidos del proveedor.`,
+      });
+    }
     const nueva = ctx.crear({
       proyectoId, especificaciones,
-      observaciones: `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Hay que pedir la reposición.`,
+      observaciones: pedido
+        ? `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Pedido de reposición #${pedido.numero} dejado en espera.`
+        : `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Hay que pedir la reposición.`,
       responsableInicial: responsable, responsableActual: responsable,
+      ...(pedido ? { pedidoReposicionId: pedido.id, pedidoReposicionNumero: pedido.numero } : {}),
     });
-    onHecho({ comentario, incidenciaId: nueva.id, incidenciaNumero: nueva.numero });
+    onHecho({ comentario, incidenciaId: nueva.id, incidenciaNumero: nueva.numero, ...(pedido ? { pedidoReposicionId: pedido.id, pedidoReposicionNumero: pedido.numero } : {}) });
   };
   return (
     <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4" onClick={onCerrar}>
@@ -11734,6 +11998,20 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, 
           <Field label="Comentario">
             <TextArea rows={2} value={comentario} onChange={(e) => setComentario(e.target.value)} placeholder="Ej: se rompió al montarlo" />
           </Field>
+          {ctx.crearPedidoEsperaReposicion && (
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
+              <label className="flex items-center gap-2 text-sm font-semibold text-amber-900">
+                <input type="checkbox" checked={dejarPedido} onChange={(e) => setDejarPedido(e.target.checked)} />
+                Dejar pedido de reposición en espera ({udsReponer} ud{udsReponer === 1 ? "" : "s"})
+              </label>
+              {dejarPedido && (
+                <Select value={proveedorId} onChange={(e) => setProveedorId(e.target.value)}>
+                  <option value="">— Proveedor (elígelo luego si no lo sabes) —</option>
+                  {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
+                </Select>
+              )}
+            </div>
+          )}
           {error && <p className="text-xs font-semibold text-rose-600">{error}</p>}
         </div>
         <div className="flex gap-2 mt-4">
@@ -11795,6 +12073,7 @@ function IncidenciaCristal({ pieza, cristal, onGuardar, etiqueta, dondeEsta }) {
         <div className="text-[11px] mt-0.5 text-rose-700 font-semibold">
           Incidencia #{pieza.incidenciaNumero || incVinculada?.numero}
           {incVinculada ? ` · ${incVinculada.estadoIncidencia}` : " · (borrada)"}
+          {pieza.pedidoReposicionNumero ? <span className="text-amber-700"> · Pedido #{pieza.pedidoReposicionNumero} en espera</span> : null}
         </div>
       ) : conIncidencia && ctx && cristal ? (
         <button type="button" onClick={() => setModalTipo(pieza.incidencia)} className="text-[11px] mt-0.5 text-sky-700 font-semibold hover:underline">
@@ -20817,7 +21096,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -21116,6 +21395,26 @@ function PresupuestosModulo({ presupuestos, clientes, usuarios, nextNumero, onCr
         onGuardarTelefono={(tel, extra) => onUpsert({ ...presupuesto, telefono: tel, ...(extra || {}) })}
         onCrearProyecto={() => onCrearProyecto(presupuesto)}
         onDuplicar={() => onDuplicar(presupuesto)}
+        clientes={clientes}
+        onPasarAProforma={onPasarAProforma ? (datos) => onPasarAProforma(presupuesto, datos) : null}
+        onLeerDatos={leerDatosDesdeArchivo}
+        onRellenarDesdeDocumento={(datos) => {
+          // Rellena solo lo que está vacío. El número del documento se usa si no está
+          // ya enviado a firmar ni aceptado y no lo tiene otro presupuesto.
+          const p = presupuesto;
+          const vacio = (v) => v === undefined || v === null || String(v).trim() === "" || parseFloat(v) === 0;
+          const patch = {};
+          if (datos.importe && vacio(p.importe)) { patch.importe = datos.importe; patch.masIva = !!datos.masIva; patch.ivaPct = datos.ivaPct || p.ivaPct || 21; }
+          if (datos.clienteNombre && vacio(p.clienteNombre)) patch.clienteNombre = datos.clienteNombre;
+          if (datos.telefono && vacio(p.telefono)) patch.telefono = datos.telefono;
+          if (datos.descripcion && vacio(p.descripcion)) patch.descripcion = datos.descripcion;
+          if (datos.zona && vacio(p.zona)) patch.zona = datos.zona;
+          const num = String(datos.numero || "").trim();
+          if (num && num.toLowerCase() !== String(p.numero || "").trim().toLowerCase() && !p.firma && p.estado !== "Aceptado"
+            && !presupuestos.some((x) => x.id !== p.id && String(x.numero || "").trim().toLowerCase() === num.toLowerCase())) patch.numero = num;
+          if (Object.keys(patch).length) onUpsert(JSON.parse(JSON.stringify({ ...p, ...patch })));
+          return patch;
+        }}
         replicas={replicasDe(presupuesto)}
         onAbrirReplica={(id) => { setDetailId(id); setView("detail"); }}
         isAdmin={isAdmin}
@@ -24748,6 +25047,72 @@ function ParteDiarioVentanas({ proyectos, uxExpedientes, clientes }) {
   );
 }
 
+// Informe diario de obras aceptadas: los presupuestos que se aceptaron (a mano o por
+// firma) en el día elegido, con su importe y la obra que se ha creado.
+const fechaLocalISO = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+const fechaAceptacionPresupuesto = (p) => {
+  if (!p || p.estado !== "Aceptado") return "";
+  if (p.fechaRespuesta) return String(p.fechaRespuesta).slice(0, 10);
+  if (p.firma && p.firma.firmadoEn) return fechaLocalISO(p.firma.firmadoEn);
+  return "";
+};
+function ObrasAceptadasDia({ presupuestos, proyectos }) {
+  const [dia, setDia] = useState(() => fechaLocalISO(Date.now()));
+  const moverDia = (n) => { const d = new Date(`${dia}T12:00:00`); d.setDate(d.getDate() + n); setDia(fechaLocalISO(d)); };
+  const lista = toArray(presupuestos).filter((p) => fechaAceptacionPresupuesto(p) === dia)
+    .sort((a, b) => String(a.numero || "").localeCompare(String(b.numero || ""), "es", { numeric: true }));
+  const obraDe = (p) => toArray(proyectos).find((o) => o.id === (p.proyectoCreadoId || p.proyectoId));
+  const total = lista.reduce((a, p) => a + (parseFloat(p.importe) || 0), 0);
+  const imprimir = () => {
+    const e = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const filas = lista.map((p) => { const o = obraDe(p); return `<tr><td>${e(p.numero)}</td><td>${e(p.clienteNombre)}</td><td>${e(p.descripcion || "").slice(0, 160)}</td><td>${e(p.zona)}</td><td>${o ? `#${e(o.numero)} ${e(o.nombre)}` : "Sin obra creada"}</td><td>${p.firma && p.firma.estado === "firmado" ? "Firma" : "Manual"}</td><td style="text-align:right">${e(money(p.importe))}</td></tr>`; }).join("");
+    const w = window.open("", "_blank");
+    if (!w) { alert("Permite las ventanas emergentes para imprimir el informe."); return; }
+    w.document.write(`<html><head><meta charset="utf-8"><title>Obras aceptadas ${fmtDate(dia)}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#1e293b}h1{font-size:20px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px solid #e2e8f0;padding:6px;text-align:left;vertical-align:top}th{background:#f1f5f9}</style></head><body><h1>Obras aceptadas el ${fmtDate(dia)}</h1><p>${lista.length} obra(s) · total ${e(money(total))} (importes sin IVA salvo que se indique)</p><table><thead><tr><th>Nº presup.</th><th>Cliente</th><th>Qué es</th><th>Zona</th><th>Obra</th><th>Aceptado por</th><th style="text-align:right">Importe</th></tr></thead><tbody>${filas || '<tr><td colspan="7">No se aceptó ninguna obra este día.</td></tr>'}</tbody></table></body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <h3 className="font-display font-bold text-slate-800 mr-2">Obras aceptadas del día</h3>
+        <button onClick={() => moverDia(-1)} className="px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50"><ChevronLeft size={14} /></button>
+        <input type="date" value={dia} onChange={(e) => e.target.value && setDia(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-sm" />
+        <button onClick={() => moverDia(1)} className="px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50"><ChevronRight size={14} /></button>
+        <button onClick={() => setDia(fechaLocalISO(Date.now()))} className="text-xs font-semibold text-[#2E8B57] hover:underline">Hoy</button>
+        <button onClick={imprimir} className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-1.5 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir / PDF</button>
+      </div>
+      <div className="flex flex-wrap gap-4 text-sm mb-3">
+        <span><b className="text-emerald-700 text-lg">{lista.length}</b> obra{lista.length === 1 ? "" : "s"} aceptada{lista.length === 1 ? "" : "s"}</span>
+        <span>Total: <b>{money(total)}</b></span>
+      </div>
+      {lista.length === 0 ? (
+        <p className="text-sm text-slate-400">No se aceptó ninguna obra el {fmtDate(dia)}.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+              <th className="py-2 pr-3">Nº presup.</th><th className="pr-3">Cliente</th><th className="pr-3">Qué es</th><th className="pr-3">Zona</th><th className="pr-3">Obra</th><th className="pr-3">Aceptado por</th><th className="text-right">Importe</th>
+            </tr></thead>
+            <tbody>
+              {lista.map((p) => { const o = obraDe(p); return (
+                <tr key={p.id} className="border-b border-slate-100 last:border-0 align-top">
+                  <td className="py-2 pr-3 font-mono-num text-slate-500">{p.numero}</td>
+                  <td className="pr-3 font-medium text-slate-800">{p.clienteNombre || "—"}</td>
+                  <td className="pr-3 text-slate-600 max-w-[320px]">{String(p.descripcion || "").slice(0, 120)}{String(p.descripcion || "").length > 120 ? "…" : ""}</td>
+                  <td className="pr-3 text-slate-500">{p.zona || "—"}</td>
+                  <td className="pr-3">{o ? <span className="text-slate-700">#{o.numero} {o.nombre}</span> : <span className="text-amber-700 text-xs font-semibold">Sin obra creada</span>}</td>
+                  <td className="pr-3 text-slate-500">{p.firma && p.firma.estado === "firmado" ? "Firma" : "Manual"}</td>
+                  <td className="text-right font-semibold">{importePresupuestoTexto(p)}</td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin, uxExpedientes = [], puestosInforme = [], etiquetaInforme = "Adicional" }) {
   const COLOR_ESTADO = { Pendiente: "#f59e0b", Aceptado: "#10b981", Rechazado: "#f43f5e", "En espera": "#94a3b8" };
   const [periodo, setPeriodo] = useState("mes");
@@ -25066,6 +25431,7 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
   return (
     <div className="p-8">
       <Header icon={<BarChart3 size={20} className="text-[#2E8B57]" />} title="Informes" manualKey="informes" subtitle="Vista general de proyectos, presupuestos y dinero" />
+      <ObrasAceptadasDia presupuestos={presupuestos} proyectos={proyectos} />
       <ParteDiarioVentanas proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} />
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6"><PartesTrabajoPanel puestos={puestosInforme} titulo="Partes de trabajo de fábrica" etiqueta={etiquetaInforme} /></div>
 
@@ -25642,6 +26008,24 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       // arriba, así que aquí simplemente se termina sin intentar leerlo.
       if (!esPdf && !esImagen) return;
 
+      // Igual que al crearlo con "Rellenar desde foto/PDF": precio, IVA, cliente,
+      // teléfono, descripción y zona se rellenan solos (sin pisar lo ya escrito).
+      if (onLeerDatos) {
+        onLeerDatos(file).then((datos) => {
+          if (!datos) return;
+          const vacio = (v) => v === undefined || v === null || String(v).trim() === "" || parseFloat(v) === 0;
+          setF((prev) => ({
+            ...prev,
+            clienteNombre: vacio(prev.clienteNombre) ? (datos.clienteNombre || prev.clienteNombre) : prev.clienteNombre,
+            telefono: vacio(prev.telefono) ? (datos.telefono || prev.telefono) : prev.telefono,
+            descripcion: vacio(prev.descripcion) ? (datos.descripcion || prev.descripcion) : prev.descripcion,
+            ...(vacio(prev.importe) && datos.importe ? { importe: datos.importe, masIva: datos.masIva, ivaPct: datos.ivaPct || prev.ivaPct || 21 } : {}),
+            numero: !prev.id && datos.numero ? datos.numero : prev.numero,
+            zona: vacio(prev.zona) ? (datos.zona || prev.zona) : prev.zona,
+          }));
+        }).catch(() => { /* si no se puede leer, el documento ya está guardado */ });
+      }
+
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } };
@@ -26192,8 +26576,50 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   );
 }
 
-function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
+  const norm = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+  const nombre = norm(presupuesto.clienteNombre);
+  const sugerido = presupuesto.clienteId
+    ? toArray(clientes).find((c) => c.id === presupuesto.clienteId)
+    : (nombre ? toArray(clientes).find((c) => norm(c.nombre) === nombre) || toArray(clientes).find((c) => { const n = norm(c.nombre); return n && nombre.length >= 4 && (n.includes(nombre) || nombre.includes(n)); }) : null);
+  const [clienteId, setClienteId] = useState(sugerido?.id || "");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [total, setTotal] = useState(String(parseFloat(presupuesto.importe) || ""));
+  const [observaciones, setObservaciones] = useState(
+    `Presupuesto nº ${presupuesto.numero || ""}${presupuesto.descripcion ? `: ${presupuesto.descripcion}` : ""}${presupuesto.masIva ? ` (importe + IVA ${parseFloat(presupuesto.ivaPct) || 21}%)` : ""}`
+  );
+  const ordenados = [...toArray(clientes)].sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"));
+  return (
+    <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4" onClick={onCerrar}>
+      <div className="bg-white rounded-xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display font-bold text-slate-900 mb-1">Pasar a factura proforma</h3>
+        <p className="text-xs text-slate-500 mb-3">Presupuesto nº {presupuesto.numero} · {presupuesto.clienteNombre || "—"}. Se crea una proforma (serie PF-) en Facturas.</p>
+        <div className="space-y-3">
+          <Field label="Cliente" required>
+            <Select value={clienteId} onChange={(e) => setClienteId(e.target.value)}>
+              <option value="">— Elige el cliente —</option>
+              {ordenados.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </Select>
+            {!sugerido && <p className="text-[11px] text-amber-700 mt-1">No he encontrado "{presupuesto.clienteNombre}" en Clientes: elígelo o créalo antes en Clientes.</p>}
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha"><TextInput type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
+            <Field label="Importe (€)" required><TextInput type="number" step="0.01" value={total} onChange={(e) => setTotal(e.target.value)} /></Field>
+          </div>
+          <Field label="Concepto / observaciones"><TextArea rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} /></Field>
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button onClick={onCerrar} className="flex-1 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">Cancelar</button>
+          <button onClick={() => { const r = onCrear({ clienteId, fecha, total, observaciones }); if (r) onCerrar(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-semibold px-3 py-2 rounded-lg hover:opacity-90">Crear proforma</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PresupuestoDetail({ onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
+  const [verProforma, setVerProforma] = useState(false);
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
   // tenga fecha puesta) y deja de mostrarse en cuanto el presupuesto queda resuelto
@@ -26305,16 +26731,35 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
   // de una hoja de medidas, eso se hace ahora desde el Proyecto una vez creado.
   const [subiendoDocumentoPre, setSubiendoDocumentoPre] = useState(false);
   const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
+  const [avisoDocumentoPre, setAvisoDocumentoPre] = useState("");
   const inputPdfMedidasPreRef = useRef(null);
+  // Siempre la versión más reciente (tras subir el documento el presupuesto ya ha cambiado)
+  const rellenarRef = useRef(null);
+  rellenarRef.current = onRellenarDesdeDocumento;
 
   const manejarSubidaPdfMedidasPre = async (file) => {
     if (!file) return;
     setSubiendoDocumentoPre(true);
     setErrorPdfMedidasPre("");
+    setAvisoDocumentoPre("");
     try {
       const urlStorage = await subirArchivoAStorage(file, `documentos-presupuestos/${presupuesto.id}`);
       if (onAdjuntarDocumento) {
         onAdjuntarDocumento(presupuesto.id, { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() });
+      }
+      // Igual que al crear el presupuesto: se lee el precio, el número, el cliente…
+      const tipo = file.type || "";
+      if (onLeerDatos && (tipo === "application/pdf" || tipo.startsWith("image/"))) {
+        setAvisoDocumentoPre("Documento guardado. Leyendo precio, número y datos del cliente…");
+        try {
+          const datos = await onLeerDatos(file);
+          const cambios = rellenarRef.current ? rellenarRef.current(datos || {}) : {};
+          const nombres = { numero: "número", importe: "precio", clienteNombre: "cliente", telefono: "teléfono", descripcion: "descripción", zona: "zona" };
+          const hechos = Object.keys(cambios || {}).filter((k) => nombres[k]).map((k) => nombres[k]);
+          setAvisoDocumentoPre(hechos.length ? `Documento guardado. Rellenado desde el documento: ${hechos.join(", ")}.` : "Documento guardado. No había datos vacíos que rellenar (o no se han encontrado en el documento).");
+        } catch (e) {
+          setAvisoDocumentoPre("Documento guardado, pero no se han podido leer los datos del documento.");
+        }
       }
     } catch (err) {
       console.error("No se pudo subir el documento a Storage:", err);
@@ -26412,6 +26857,13 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </div>
           )}
           <button onClick={() => imprimirPresupuesto(presupuesto)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Printer size={14} /> Imprimir</button>
+          {onPasarAProforma && (
+            <button onClick={() => setVerProforma(true)} title={toArray(presupuesto.proformas).length ? `Ya tiene: ${toArray(presupuesto.proformas).map((x) => x.numero).join(", ")}` : "Crea una factura proforma con los datos de este presupuesto"}
+              className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
+              <FileText size={14} /> Pasar a proforma{toArray(presupuesto.proformas).length ? ` (${toArray(presupuesto.proformas).map((x) => x.numero).join(", ")})` : ""}
+            </button>
+          )}
+          {verProforma && <PasarAProformaModal presupuesto={presupuesto} clientes={clientes} onCerrar={() => setVerProforma(false)} onCrear={onPasarAProforma} />}
 
           <button onClick={onDuplicar} title="Crea una réplica de este presupuesto con su propio número (ej. 4192 → 4192-1), lista para modificar" className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Copy size={14} /> Duplicar (nueva réplica)</button>
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
@@ -26444,6 +26896,7 @@ function PresupuestoDetail({ presupuesto, onBack, onEdit, onDelete, onAddLlamada
             </button>
           </div>
           {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
+          {avisoDocumentoPre && <p className="text-xs text-emerald-700 font-semibold mt-2 flex items-center gap-1">{/Leyendo/.test(avisoDocumentoPre) && <Loader2 size={12} className="animate-spin" />}{avisoDocumentoPre}</p>}
         </div>
       )}
 
@@ -27420,7 +27873,7 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     "Esto es un listado de carpintería de PVC/aluminio (\"Listado dibujos\" o \"Listado de montaje\") con un dibujo por cada modelo. Mira el TEXTO y también los DIBUJOS de cada recuadro.",
     "Para cada modelo/recuadro saca:",
     "- modelo: el texto de \"Modelo:\" o, si no hay, el de la columna TIPO (p.ej. \"Dormitorio\", \"Baño\").",
-    "- uds: las unidades (\"Uds:\" o columna UDS).",
+    "- uds: las unidades (\"Uds:\" o columna UDS). Si la casilla de unidades está VACÍA o no aparece, uds = 1 (el programa no escribe el 1): NO te saltes ese modelo. Si el número de unidades solo viene escrito en la descripción o en el texto del recuadro, cógelo de ahí.",
     "- tipo, uno de: ventana, corredera, puerta, fijo, osciloparalela, mosquitera, otro.",
     "  · corredera: la serie (Pos) empieza por CORR, o el dibujo tiene flechas horizontales de desplazamiento (1 → ← 2).",
     "  · puerta: la serie es de puerta (p.ej. LINEAR-P), el modelo lleva P de puerta (p.ej. B2-P01D) o el tipo dice Puerta / Puerta Entrada.",
@@ -27429,21 +27882,31 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     "  · osciloparalela: solo si lo indica claramente.",
     "  · ventana: el resto de practicables/oscilobatientes (incluye balconeras).",
     "- hojas: nº de hojas que ABREN. Una hoja que abre tiene líneas en diagonal (triángulo o X) o es una hoja corredera. Los cristales sin líneas son fijos y NO cuentan como hoja. El nº de cristales (Vid ud:) NO siempre es el nº de hojas. En un fijo, hojas = 0.",
-    "- persiana: true si encima de la ventana hay una franja de cajón de persiana (normalmente acotada como 185 en lo alto), false si no.",
+    "- persiana: true si la ventana lleva persiana: encima del dibujo hay una franja o rectángulo de cajón de persiana (a menudo acotado como 185, 165, 205… en lo alto, o con lamas horizontales dibujadas), o el TEXTO/descripción del recuadro menciona persiana, cajón, CJ, compacto, monoblock, lama, motor o recogedor. Revisa cada recuadro uno por uno: es fácil que lleven persiana muchas ventanas. false solo si no hay cajón ni se menciona.",
     "- cerradura: true SOLO en puertas cuya manilla tiene bombín/cerradura (cuadradito de llave en la manilla). El cuadradito que sale al lado de una ventana es el recogedor de la persiana: eso NO es cerradura.",
     "- juntas: cuántas ventanas (o puertas) van unidas en el mismo dibujo. Una ventana de 1 o de 2 hojas es 1. Si en el mismo recuadro hay dos ventanas separadas por un montante, cada una con sus hojas, son 2. En un fijo suelto, 1.",
     "- fijos: cuántos fijos van unidos a la ventana en el mismo dibujo (p.ej. un fijo debajo o encima = 1). En un fijo suelto, 0.",
     "Responde SOLO con JSON, sin texto ni ```: {\"lineas\":[{\"modelo\":\"\",\"uds\":1,\"tipo\":\"ventana\",\"hojas\":1,\"persiana\":false,\"cerradura\":false,\"juntas\":1,\"fijos\":0}]}",
   ].join("\n");
-  const response = await fetch("/.netlify/functions/anthropic-proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
-  });
-  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message || "error al leer");
-  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  // Primero con el modelo más preciso (en segundo plano, que no corta por tiempo); si
+  // falla, con el rápido de siempre.
+  let texto = "";
+  try {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const file = new File([bytes], mediaType === "application/pdf" ? "tipo-plano.pdf" : "tipo-plano.jpg", { type: mediaType });
+    texto = await pedirTextoIAEnSegundoPlano(file, prompt, 8000);
+  } catch (e) { texto = ""; }
+  if (!texto || texto.indexOf("{") === -1) {
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+    });
+    if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message || "error al leer");
+    texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  }
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");
@@ -30871,8 +31334,14 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
           </Field>
         </div>
 
+        {f.rol !== "Administrador" && (
+          <label className="flex items-start gap-2 text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-md p-3 cursor-pointer">
+            <input type="checkbox" checked={!!f.responsablePedidos} onChange={(e) => setF({ ...f, responsablePedidos: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+            <span><b>Responsable de pedidos</b>: puede hacer pedidos a proveedores y aprobar las solicitudes de los empleados. Si no está marcado, en Pedidos solo puede <b>solicitar</b> pedidos.</span>
+          </label>
+        )}
         {f.rol === "Administrador" ? (
-          <p className="text-xs text-slate-400 px-1">Los administradores siempre tienen acceso a todos los módulos.</p>
+          <p className="text-xs text-slate-400 px-1">Los administradores siempre tienen acceso a todos los módulos y pueden hacer pedidos.</p>
         ) : (
           <Field label="Módulos a los que tiene acceso este usuario">
             <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-200 rounded-md p-3">
