@@ -768,6 +768,7 @@ export default function App() {
         await Promise.all(claves.map(async (k) => {
           const snap = await fbGet(ref(fbDb, k)).catch(() => { fallos.push(k); return null; });
           resultados[k] = snap && snap.exists() ? snap.val() : null;
+          if (snap && snap.exists()) { const lista = toArray(snap.val()); if (listaConIdsUnicos(lista)) persistBase.current[k] = lista; }
         }));
         if (resultados.clientes) setClientes(toArray(resultados.clientes));
         if (resultados.proyectos) setProyectos(toArray(resultados.proyectos));
@@ -871,6 +872,9 @@ export default function App() {
   const persistTimers = useRef({});
   const persistLatest = useRef({});
   const persistInFlight = useRef({});
+  // Última versión de cada lista tal como la tenía ESTE navegador (al cargar o al guardar).
+  // Sirve para saber qué ha cambiado aquí y no pisar lo que otros usuarios hayan añadido.
+  const persistBase = useRef({});
 
   const writeToStorage = useCallback(async (key) => {
     if (persistInFlight.current[key]) {
@@ -879,9 +883,18 @@ export default function App() {
     }
     persistInFlight.current[key] = true;
     const payload = persistLatest.current[key];
+    const base = persistBase.current[key];
+    const fusionable = listaConIdsUnicos(payload) && listaConIdsUnicos(base);
     for (let intento = 1; intento <= 3; intento++) {
       try {
-        await fbSet(ref(fbDb, key), payload);
+        if (fusionable) {
+          // Solo se aplica lo que se ha cambiado desde este navegador; lo que otro usuario
+          // haya creado o cambiado mientras tanto se respeta (antes se pisaba la lista entera).
+          await runTransaction(ref(fbDb, key), (actual) => fusionarListaGuardado(actual, base, payload));
+        } else {
+          await fbSet(ref(fbDb, key), payload);
+        }
+        if (Array.isArray(payload)) persistBase.current[key] = payload;
         persistInFlight.current[key] = false;
         return;
       } catch (e) {
@@ -2886,10 +2899,11 @@ export default function App() {
 
 
   // Crea un Proyecto a partir de un Presupuesto ya aceptado.
-  const crearProyectoDesdePresupuesto = (presupuesto) => {
+  const crearProyectoDesdePresupuesto = (presupuesto, opciones = {}) => {
     // Red de seguridad: aunque el botón ya solo aparece con firma confirmada, esto
     // evita crear un proyecto de un presupuesto sin firmar si se llega por otra vía.
-    if (presupuesto.firma?.estado !== "firmado") {
+    // (Al volver a crear una obra que desapareció, no se exige: ya estaba aceptado.)
+    if (!opciones.recrear && presupuesto.firma?.estado !== "firmado") {
       showToast("No se puede crear el proyecto: falta confirmar la firma del presupuesto.", "error");
       return null;
     }
@@ -2902,7 +2916,7 @@ export default function App() {
       documentosProyecto.push({ id: uid(), nombre: `Presupuesto ${presupuesto.numero} — firmado.pdf`, url: presupuesto.firma.pdfUrl, subidoEn: Date.now() });
     }
     const np = {
-      id: uid(),
+      id: (opciones.recrear && presupuesto.proyectoCreadoId) || uid(),
       numero: nextNumeroProyecto(),
       nombre: presupuesto.descripcion || presupuesto.numero,
       clienteId,
@@ -4634,6 +4648,14 @@ export default function App() {
             onAddLlamada={addLlamadaPresupuesto}
             onDeleteLlamada={deleteLlamadaPresupuesto}
             onMarcarEnviado={marcarPresupuestoEnviado}
+            onRecrearProyecto={(presupuesto) => {
+              const proyectoId = crearProyectoDesdePresupuesto(presupuesto, { recrear: true });
+              if (!proyectoId) return;
+              setModulo("proyectos");
+              setProyectoDetailId(proyectoId);
+              setProyectoView("detail");
+            }}
+            onAbrirProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
             onCrearProyecto={(presupuesto) => {
               const proyectoId = crearProyectoDesdePresupuesto(presupuesto);
               if (!proyectoId) return;
@@ -4894,6 +4916,21 @@ export default function App() {
         )}
         {modulo === "administracion" && isAdmin && (
           <AdministracionModulo
+            datosRecuperables={{ proyectos, presupuestos, pedidos, clientes, facturas, incidencias, instalaciones, mediciones, tareas, leads, proveedores, ingresos }}
+            onRestaurarCopia={(key, items) => {
+              const mapa = {
+                proyectos: [proyectos, saveProyectos], presupuestos: [presupuestos, savePresupuestos], pedidos: [pedidos, savePedidos],
+                clientes: [clientes, saveClientes], facturas: [facturas, saveFacturas], incidencias: [incidencias, saveIncidencias],
+                instalaciones: [instalaciones, saveInstalaciones], mediciones: [mediciones, saveMediciones], tareas: [tareas, saveTareas],
+                leads: [leads, saveLeads], proveedores: [proveedores, saveProveedores], ingresos: [ingresos, saveIngresos],
+              };
+              const par = mapa[key];
+              if (!par) return;
+              const ids = new Set(par[0].map((x) => x.id));
+              const nuevos = items.filter((x) => !ids.has(x.id));
+              par[1]([...nuevos, ...par[0]]);
+              showToast(`${nuevos.length} registro(s) recuperado(s)`);
+            }}
             usuarios={usuarios}
             currentUser={currentUser}
             onUpsert={upsertUsuario}
@@ -6330,6 +6367,40 @@ const resumenObraPedido = (pedido, proyecto) => {
   if (pedido.origenListado) return pedido.origenListado;
   const c = String(pedido.comentarios || "").trim();
   return c ? `Stock · ${c.slice(0, 40)}${c.length > 40 ? "…" : ""}` : "Stock";
+};
+
+// ---- Guardado de listas sin pisar a otros usuarios ----
+const listaConIdsUnicos = (lista) => {
+  if (!Array.isArray(lista)) return false;
+  const vistos = new Set();
+  for (const x of lista) {
+    if (!x || typeof x !== "object" || x.id === undefined || x.id === null || x.id === "") return false;
+    if (vistos.has(x.id)) return false;
+    vistos.add(x.id);
+  }
+  return true;
+};
+// actual: lo que hay ahora en la base de datos · base: cómo estaba la lista en este
+// navegador antes del cambio · local: cómo está ahora en este navegador.
+const fusionarListaGuardado = (actual, base, local) => {
+  const servidor = toArray(actual);
+  if (!listaConIdsUnicos(servidor)) return local;
+  const limpio = (x) => JSON.stringify(JSON.parse(JSON.stringify(x)));
+  const baseMap = new Map(base.map((x) => [x.id, limpio(x)]));
+  const servMap = new Map(servidor.map((x) => [x.id, x]));
+  const localIds = new Set(local.map((x) => x.id));
+  const borradosAqui = new Set(base.filter((x) => !localIds.has(x.id)).map((x) => x.id));
+  const resultado = [];
+  local.forEach((x) => {
+    const antes = baseMap.get(x.id);
+    const cambiadoAqui = antes === undefined || antes !== limpio(x);
+    if (cambiadoAqui) resultado.push(x);
+    else if (servMap.has(x.id)) resultado.push(servMap.get(x.id)); // sin tocar aquí: vale lo último de la base de datos
+    // sin tocar aquí y borrado por otro usuario: se queda borrado
+  });
+  const enResultado = new Set(resultado.map((x) => x.id));
+  const deOtros = servidor.filter((x) => !enResultado.has(x.id) && !borradosAqui.has(x.id) && !baseMap.has(x.id));
+  return [...deOtros, ...resultado];
 };
 
 async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales, cliente) {
@@ -7927,6 +7998,37 @@ function ProveedorForm({ initial, onCancel, onSave }) {
             <Field label="Días de entrega en color"><TextInput type="number" min="0" step="1" value={f.diasEntregaColor ?? ""} onChange={set("diasEntregaColor")} placeholder="Ej: 7" /></Field>
           </div>
           <p className="text-xs text-slate-400 mt-1">Lo que suele tardar en llegar un pedido suyo. Al hacerle un pedido se propone como fecha de llegada: si alguna línea va en un color que no es blanco, con los días de color (luego se puede cambiar).</p>
+        </div>
+        <div className="border border-slate-200 rounded-md p-3 bg-slate-50/60">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+            <span className="text-[11px] font-semibold tracking-wide uppercase text-slate-500">Entrega por días fijos (cristalerías)</span>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setF({ ...f, entregaCortes: [{ dia: 2, hora: "12:00", llega: 4 }, { dia: 4, hora: "12:00", llega: 2 }] })}
+                className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-md hover:bg-white">Martes→jueves / Jueves→martes</button>
+              <button type="button" onClick={() => setF({ ...f, entregaCortes: [...toArray(f.entregaCortes), { dia: 2, hora: "12:00", llega: 4 }] })}
+                className="text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1 rounded-md hover:bg-white">+ Añadir día</button>
+            </div>
+          </div>
+          <p className="text-xs text-slate-400 mb-2">Si lo rellenas, manda sobre los días de entrega de arriba. Ej.: pedido el martes antes de las 12 → llega el jueves (si no, el martes siguiente); pedido el jueves antes de las 12 → llega el martes (si no, el jueves siguiente).</p>
+          {toArray(f.entregaCortes).map((c, i) => {
+            const cambiar = (k, v) => setF({ ...f, entregaCortes: toArray(f.entregaCortes).map((x, j) => (j === i ? { ...x, [k]: v } : x)) });
+            return (
+              <div key={i} className="flex flex-wrap items-center gap-2 text-sm mb-1.5">
+                <span className="text-slate-500">Si se pide el</span>
+                <select value={c.dia} onChange={(e) => cambiar("dia", parseInt(e.target.value, 10))} className="border border-slate-300 rounded px-2 py-1 text-sm">
+                  {DIAS_SEMANA_ES.map((d, n) => <option key={n} value={n}>{d.toLowerCase()}</option>)}
+                </select>
+                <span className="text-slate-500">antes de las</span>
+                <input type="time" value={c.hora || "12:00"} onChange={(e) => cambiar("hora", e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
+                <span className="text-slate-500">llega el</span>
+                <select value={c.llega} onChange={(e) => cambiar("llega", parseInt(e.target.value, 10))} className="border border-slate-300 rounded px-2 py-1 text-sm">
+                  {DIAS_SEMANA_ES.map((d, n) => <option key={n} value={n}>{d.toLowerCase()}</option>)}
+                </select>
+                <button type="button" onClick={() => setF({ ...f, entregaCortes: toArray(f.entregaCortes).filter((_, j) => j !== i) })} className="text-slate-300 hover:text-rose-500" title="Quitar"><X size={14} /></button>
+              </div>
+            );
+          })}
+          {toArray(f.entregaCortes).length > 0 && (() => { const r = fechaLlegadaPorCortes(f); return r ? <p className="text-xs text-emerald-700 font-semibold mt-1">Si se pidiera ahora, llegaría el {DIAS_SEMANA_ES[r.llegada.getDay()].toLowerCase()} {fmtDate(`${r.llegada.getFullYear()}-${String(r.llegada.getMonth() + 1).padStart(2, "0")}-${String(r.llegada.getDate()).padStart(2, "0")}`)}.</p> : null; })()}
         </div>
         <Field label="Le pido normalmente">
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
@@ -12099,40 +12201,83 @@ function IncidenciaCristal({ pieza, cristal, onGuardar, etiqueta, dondeEsta }) {
 // expediente y un tic para marcar cuando está puesto.
 function PiezasCristalTabla({ cristal, onUpdate }) {
   const piezas = cristal.piezas || [];
-  if (!piezas.length) return null;
+  const [verAnadir, setVerAnadir] = useState(false);
+  const [nuevo, setNuevo] = useState({ ref: "", expediente: "", ancho: "", alto: "", cantidad: 1, pedido: "" });
   const puestos = piezas.filter((p) => p.puesto).length;
   const marcar = (i, v) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
   const guardarIncidencia = (i, cambios) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, ...cambios } : p)) });
+  const quitar = (i, p) => {
+    if (!window.confirm(`¿Quitar de este caballete el cristal ${p.ref ? `"${p.ref}"` : `de ${p.ancho}×${p.alto}`}? No se borra el cristal, solo se saca de aquí.`)) return;
+    onUpdate(cristal.id, { piezas: piezas.filter((_, j) => j !== i) });
+  };
+  const anadir = () => {
+    const ancho = parseFloat(nuevo.ancho) || 0, alto = parseFloat(nuevo.alto) || 0;
+    if (!ancho || !alto) { alert("Pon el ancho y el alto del cristal."); return; }
+    const pieza = {
+      ref: nuevo.ref.trim(), expediente: nuevo.expediente.trim(), ancho, alto,
+      cantidad: Math.max(1, parseInt(nuevo.cantidad, 10) || 1), m2: Math.round((ancho * alto) / 1000) / 1000,
+      pedido: nuevo.pedido.trim(), origen: "añadido a mano",
+    };
+    onUpdate(cristal.id, { piezas: [...piezas, pieza] });
+    setNuevo({ ref: "", expediente: "", ancho: "", alto: "", cantidad: 1, pedido: "" });
+    setVerAnadir(false);
+  };
   const conIncidencia = piezas.filter((p) => p.incidencia).length;
   return (
     <div className="mt-2">
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="font-semibold text-slate-600">Cristales ({piezas.length} líneas)</span>
-        <span className={puestos === piezas.length ? "text-emerald-700 font-semibold" : "text-slate-500"}>
-          {puestos} de {piezas.length} puestos{conIncidencia > 0 && <b className="text-rose-600"> · {conIncidencia} con incidencia</b>}
-        </span>
+        <div className="flex items-center gap-2">
+          {piezas.length > 0 && (
+            <span className={puestos === piezas.length ? "text-emerald-700 font-semibold" : "text-slate-500"}>
+              {puestos} de {piezas.length} puestos{conIncidencia > 0 && <b className="text-rose-600"> · {conIncidencia} con incidencia</b>}
+            </span>
+          )}
+          <button onClick={() => setVerAnadir((v) => !v)} className="flex items-center gap-1 text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-1 rounded-md hover:bg-emerald-50">
+            <Plus size={12} /> Añadir cristal
+          </button>
+        </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th></tr></thead>
-          <tbody>
-            {piezas.map((p, i) => (
-              <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
-                <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
-                <td className="pr-2 font-semibold">{p.ref || "—"}</td>
-                <td className="pr-2">{p.expediente || "—"}</td>
-                <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
-                <td className="pr-2">{p.cantidad}</td>
-                <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
-                <td className="pr-2 py-1"><IncidenciaCristal pieza={p} cristal={cristal} onGuardar={(cambios) => guardarIncidencia(i, cambios)} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {verAnadir && (
+        <div className="flex flex-wrap gap-1.5 items-center p-2 mb-2 rounded-md bg-slate-50 border border-slate-200">
+          <input value={nuevo.ancho} onChange={(e) => setNuevo({ ...nuevo, ancho: e.target.value })} placeholder="Ancho" className="border border-slate-300 rounded px-2 py-1 text-xs w-16" />
+          <span className="text-slate-400 text-xs">×</span>
+          <input value={nuevo.alto} onChange={(e) => setNuevo({ ...nuevo, alto: e.target.value })} placeholder="Alto" className="border border-slate-300 rounded px-2 py-1 text-xs w-16" />
+          <input value={nuevo.ref} onChange={(e) => setNuevo({ ...nuevo, ref: e.target.value })} placeholder="Vivienda / ref." className="border border-slate-300 rounded px-2 py-1 text-xs w-28" />
+          <input value={nuevo.expediente} onChange={(e) => setNuevo({ ...nuevo, expediente: e.target.value })} placeholder="Expediente" className="border border-slate-300 rounded px-2 py-1 text-xs w-24" />
+          <input value={nuevo.cantidad} onChange={(e) => setNuevo({ ...nuevo, cantidad: e.target.value })} placeholder="Uds" className="border border-slate-300 rounded px-2 py-1 text-xs w-12" />
+          <input value={nuevo.pedido} onChange={(e) => setNuevo({ ...nuevo, pedido: e.target.value })} placeholder="Nº pedido" className="border border-slate-300 rounded px-2 py-1 text-xs w-24" />
+          <button onClick={anadir} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-2.5 py-1 rounded-md hover:opacity-90">Añadir</button>
+          <button onClick={() => setVerAnadir(false)} className="text-xs font-semibold text-slate-500 px-2 py-1 rounded-md hover:bg-slate-100">Cancelar</button>
+        </div>
+      )}
+      {piezas.length === 0 ? (
+        <p className="text-xs text-slate-400">Este caballete no tiene ningún cristal suelto apuntado.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th><th className="pr-2"></th></tr></thead>
+            <tbody>
+              {piezas.map((p, i) => (
+                <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
+                  <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
+                  <td className="pr-2 font-semibold">{p.ref || "—"}</td>
+                  <td className="pr-2">{p.expediente || "—"}</td>
+                  <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
+                  <td className="pr-2">{p.cantidad}</td>
+                  <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
+                  <td className="pr-2 py-1"><IncidenciaCristal pieza={p} cristal={cristal} onGuardar={(cambios) => guardarIncidencia(i, cambios)} /></td>
+                  <td className="pr-2 py-1"><button onClick={() => quitar(i, p)} className="text-slate-300 hover:text-rose-500" title="Quitar de este caballete"><Trash2 size={13} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
+
 
 // Lista de todos los cristales sueltos de todos los caballetes, para buscar por vivienda,
 // expediente o medida y ver en qué caballete/hueco está.
@@ -12211,6 +12356,14 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
               </div>
               {onUpdate && <PiezasCristalTabla cristal={cristal} onUpdate={onUpdate} />}
+              {cristalesEnHueco.length > 1 && (
+                <button
+                  onClick={() => { if (window.confirm(`¿Quitar de este caballete el expediente ${cristal.expediente || cristal.lote || ""} (con todos sus cristales)? El expediente queda pendiente de volver a colocar.`)) onLiberar(cristal.id); }}
+                  className="w-full mt-2 text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md hover:bg-amber-50"
+                >
+                  Sacar este expediente del caballete (vuelve a pendiente)
+                </button>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => onMover(cristal)} className="flex-1 text-xs font-semibold text-sky-700 border border-sky-300 px-3 py-1.5 rounded-md hover:bg-sky-50">
                   Mover a otro hueco
@@ -12401,13 +12554,45 @@ const colorLineaPedido = (l, materiales) => {
   return tras;
 };
 const pedidoEsEnColor = (pedido, materiales) => toArray(pedido && pedido.lineas).some((l) => !esColorBlanco(colorLineaPedido(l, materiales)));
+// Entrega por días fijos (típico de cristalerías): "si se pide el martes antes de las
+// 12, llega el jueves; si no, el martes siguiente". Cada regla es un corte (día y hora
+// límite de pedido) y el día de la semana en que llega lo pedido antes de ese corte.
+const DIAS_SEMANA_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const cortesEntregaProveedor = (proveedor) => toArray(proveedor && proveedor.entregaCortes)
+  .map((c) => ({ dia: parseInt(c.dia, 10), hora: String(c.hora || "12:00"), llega: parseInt(c.llega, 10) }))
+  .filter((c) => c.dia >= 0 && c.dia <= 6 && c.llega >= 0 && c.llega <= 6);
+const fechaLlegadaPorCortes = (proveedor, desde = new Date()) => {
+  const cortes = cortesEntregaProveedor(proveedor);
+  if (!cortes.length) return null;
+  let mejor = null;
+  for (let i = 0; i < 15; i++) {
+    const d = new Date(desde); d.setDate(d.getDate() + i);
+    cortes.filter((c) => c.dia === d.getDay()).forEach((c) => {
+      const [hh, mm] = c.hora.split(":").map((x) => parseInt(x, 10) || 0);
+      const limite = new Date(d); limite.setHours(hh, mm, 0, 0);
+      if (limite < desde) return;
+      const llegada = new Date(limite); llegada.setHours(12, 0, 0, 0);
+      do { llegada.setDate(llegada.getDate() + 1); } while (llegada.getDay() !== c.llega);
+      if (!mejor || limite < mejor.limite) mejor = { limite, llegada };
+    });
+    if (mejor) break;
+  }
+  return mejor;
+};
 const diasEntregaPedido = (proveedor, pedido, materiales) => {
+  const porCortes = fechaLlegadaPorCortes(proveedor);
+  if (porCortes) {
+    const hoy = new Date(); hoy.setHours(12, 0, 0, 0);
+    return { dias: Math.max(1, Math.round((porCortes.llegada - hoy) / 86400000)), enColor: pedidoEsEnColor(pedido, materiales), porCortes: true };
+  }
   const blanco = parseInt(proveedor && proveedor.diasEntrega, 10) || 0;
   const color = parseInt(proveedor && proveedor.diasEntregaColor, 10) || 0;
   const enColor = pedidoEsEnColor(pedido, materiales);
   return { dias: enColor ? (color || blanco) : (blanco || color), enColor };
 };
 const fechaEntregaPorProveedor = (proveedor, pedido, materiales) => {
+  const porCortes = fechaLlegadaPorCortes(proveedor);
+  if (porCortes) { const l = porCortes.llegada; return `${l.getFullYear()}-${String(l.getMonth() + 1).padStart(2, "0")}-${String(l.getDate()).padStart(2, "0")}`; }
   const { dias } = diasEntregaPedido(proveedor, pedido, materiales);
   if (!dias) return "";
   const d = new Date(); d.setDate(d.getDate() + dias);
@@ -20576,7 +20761,9 @@ function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, edi
 
   // Los no-administradores solo ven sus propios leads (mismo criterio que
   // ya se usa en Solicitudes de pedido).
-  const visibles = isAdmin ? leads : leads.filter((l) => l.comercialId === currentUser?.id);
+  // Administradores y usuarios con "Ve todos los leads" ven todos; el resto, solo los suyos
+  const veTodosLeads = isAdmin || !!(currentUser && currentUser.verTodosLeads);
+  const visibles = veTodosLeads ? leads : leads.filter((l) => l.comercialId === currentUser?.id);
   const filtered = useMemo(() => {
     if (!q) return visibles;
     const ql = q.toLowerCase();
@@ -20618,7 +20805,7 @@ function LeadsModulo({ leads, usuarios, currentUser, isAdmin, view, setView, edi
         icon={<UserPlus size={20} className="text-[#2E8B57]" />}
         title="Leads / Prospección"
         manualKey="leads"
-        subtitle={`${filtered.length} lead${filtered.length === 1 ? "" : "s"}${!isAdmin ? " tuyo(s)" : ""}`}
+        subtitle={`${filtered.length} lead${filtered.length === 1 ? "" : "s"}${!veTodosLeads ? " tuyo(s)" : ""}`}
         action={
           <div className="flex items-center gap-2">
             <TextInput placeholder="Buscar..." value={q} onChange={(e) => setQ(e.target.value)} className="!w-52" />
@@ -21096,7 +21283,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -21263,7 +21450,7 @@ function PresupuestosModulo({ onPasarAProforma, presupuestos, clientes, usuarios
   const filtered = useMemo(() => {
     return presupuestos.filter((p) => {
       if (!q && esReplica(p) && (p.estado || "Pendiente") === "Pendiente") return false;
-      if (estadoFiltro && p.estado !== estadoFiltro) return false;
+      if (estadoFiltro && (p.estado || "Pendiente") !== estadoFiltro) return false;
       if (zonaFiltro && p.zona !== zonaFiltro) return false;
       if (!q) return true;
       const hay = `${p.numero} ${p.clienteNombre} ${p.descripcion} ${p.zona}`.toLowerCase();
@@ -21394,6 +21581,8 @@ function PresupuestosModulo({ onPasarAProforma, presupuestos, clientes, usuarios
         onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
         onGuardarTelefono={(tel, extra) => onUpsert({ ...presupuesto, telefono: tel, ...(extra || {}) })}
         onCrearProyecto={() => onCrearProyecto(presupuesto)}
+        onRecrearProyecto={onRecrearProyecto ? () => onRecrearProyecto(presupuesto) : null}
+        onAbrirProyecto={onAbrirProyecto}
         onDuplicar={() => onDuplicar(presupuesto)}
         clientes={clientes}
         onPasarAProforma={onPasarAProforma ? (datos) => onPasarAProforma(presupuesto, datos) : null}
@@ -21535,11 +21724,47 @@ function PresupuestosModulo({ onPasarAProforma, presupuestos, clientes, usuarios
             )}
             <button onClick={exportarExcel} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><FileSpreadsheet size={14} /> Exportar a Excel</button>
           </div>
+          <div className="md:hidden flex gap-2 mb-3 overflow-x-auto pb-1">
+            {[["", "Todos"], ["Pendiente", "Sin enviar"], ["Enviado", "Enviados"], ["Aceptado", "Aceptados"], ["Rechazado", "Rechazados"]].map(([valor, etiqueta]) => (
+              <button key={valor || "todos"} onClick={() => setEstadoFiltro(valor)}
+                className={`shrink-0 text-xs font-semibold px-3 py-1.5 rounded-full border ${estadoFiltro === valor ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{etiqueta}</button>
+            ))}
+          </div>
           {presupuestos.some((p) => esReplica(p) && (p.estado || "Pendiente") === "Pendiente") && !q && (
             <p className="text-xs text-slate-400 mb-3">Las réplicas pendientes (números con guion, ej. 4192-1) están ocultas aquí — se ven dentro de la ficha del presupuesto original, o buscando su número. En cuanto una réplica se acepta o se rechaza, vuelve a aparecer aquí como cualquier otro presupuesto.</p>
           )}
 
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {/* Móvil: una tarjeta por presupuesto, con el estado bien visible (sin enviar / enviado…) */}
+          <div className="md:hidden space-y-2">
+            {filtered.map((p) => {
+              const estadoP = p.estado || "Pendiente";
+              const dias = diasSinRespuestaDe(p);
+              const etiquetaEstado = estadoP === "Pendiente" ? "Sin enviar" : estadoP;
+              return (
+                <div key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="bg-white border border-slate-200 rounded-lg p-3 active:bg-slate-50">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <span className="font-mono-num text-sm text-slate-500">#{p.numero}</span>
+                    <span className={`text-xs font-bold ring-1 rounded-full px-2.5 py-1 ${ESTADO_PRESUPUESTO_TRACKER_STYLE[estadoP] || ""}`}>
+                      {estadoP === "Enviado" ? "✓ " : estadoP === "Pendiente" ? "○ " : ""}{etiquetaEstado}
+                    </span>
+                  </div>
+                  <div className="font-semibold text-slate-800 text-sm">{p.clienteNombre || "—"}</div>
+                  <div className="text-xs text-slate-500 truncate">{String(p.descripcion || "").split("\n")[0]}</div>
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mt-2 text-xs">
+                    <span className="font-mono-num font-semibold text-slate-700">{money(p.importe)}{p.masIva ? " + IVA" : ""}</span>
+                    <span className="text-slate-400">
+                      {estadoP === "Pendiente" ? "Sin enviar al cliente" : p.fechaEnvio ? `Enviado el ${fmtDate(p.fechaEnvio)}` : ""}
+                      {dias !== null && estadoP === "Enviado" ? <span className={dias > 7 ? "text-rose-600 font-semibold" : ""}> · {dias}d sin respuesta</span> : null}
+                    </span>
+                  </div>
+                  {p.proyectoCreadoId && <div className="mt-1.5"><Badge className="bg-violet-50 text-violet-700 ring-violet-200">✓ Ya tiene proyecto</Badge></div>}
+                </div>
+              );
+            })}
+            {filtered.length === 0 && <p className="text-center text-slate-400 text-sm py-8">No hay presupuestos que coincidan con la búsqueda.</p>}
+          </div>
+
+          <div className="hidden md:block bg-white border border-slate-200 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
@@ -26617,7 +26842,7 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
   );
 }
 
-function PresupuestoDetail({ onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
   const dias = diasSinRespuestaDe(presupuesto);
@@ -26926,11 +27151,21 @@ function PresupuestoDetail({ onLeerDatos, onRellenarDesdeDocumento, clientes, on
           ⚠ Aceptado, pero todavía no hay firma confirmada — hasta que no esté firmado (arriba, en "Enviar a firmar") no se puede crear el proyecto.
         </div>
       )}
-      {presupuesto.proyectoCreadoId && (
-        <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold">
-          ✓ Ya se creó un proyecto a partir de este presupuesto.
-        </div>
-      )}
+      {presupuesto.proyectoCreadoId && (() => {
+        const obra = (proyectos || []).find((p) => p.id === presupuesto.proyectoCreadoId);
+        return obra ? (
+          <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold flex flex-wrap items-center gap-3">
+            ✓ Ya se creó la obra #{obra.numero} — {obra.nombre}{obra.estadoTrabajo ? ` (${obra.estadoTrabajo})` : ""}.
+            {onAbrirProyecto && <button onClick={() => onAbrirProyecto(obra.id)} className="underline hover:no-underline">Abrir la obra →</button>}
+          </div>
+        ) : (
+          <div className="mb-6 px-4 py-3 rounded-md bg-rose-50 border-2 border-rose-300 text-rose-800 text-sm">
+            <p className="font-semibold mb-1">⚠ Se creó una obra desde este presupuesto, pero ya no existe (se ha borrado o se perdió al guardar).</p>
+            <p className="text-xs mb-2">Lo mejor es recuperarla tal cual estaba desde la copia de seguridad del email (Administración → "Recuperar algo borrado"). Si no la tienes, puedes volver a crearla desde el presupuesto: se mantienen enlazados los pedidos que ya tenía, pero lo que se hubiera añadido a mano en la obra hay que volver a meterlo.</p>
+            {onRecrearProyecto && <button onClick={() => { if (window.confirm("¿Volver a crear la obra desde este presupuesto?")) onRecrearProyecto(); }} className="text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3.5 py-2 rounded-md">Volver a crear la obra</button>}
+          </div>
+        );
+      })()}
 
       <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onComprobarFirma={onComprobarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
 
@@ -31165,7 +31400,90 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
   );
 }
 
-function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword }) {
+// Recuperar registros borrados (obras, presupuestos, pedidos…) desde el archivo de
+// copia de seguridad que llega cada día por email. Solo añade lo que ya no existe;
+// no toca nada de lo que hay ahora.
+const SECCIONES_RECUPERABLES = [
+  { key: "proyectos", label: "Proyectos / Obras", nombre: (x) => `#${x.numero || "—"} ${x.nombre || ""}` },
+  { key: "presupuestos", label: "Presupuestos", nombre: (x) => `${x.numero || "—"} · ${x.clienteNombre || ""}` },
+  { key: "pedidos", label: "Pedidos", nombre: (x) => `Pedido #${x.numero || "—"}` },
+  { key: "clientes", label: "Clientes", nombre: (x) => x.nombre || "—" },
+  { key: "facturas", label: "Facturas", nombre: (x) => `${x.numero || "—"} · ${money(x.total)}` },
+  { key: "incidencias", label: "Incidencias", nombre: (x) => `Incidencia #${x.numero || "—"}` },
+  { key: "instalaciones", label: "Instalaciones", nombre: (x) => `${x.fecha || ""} ${x.titulo || x.nombre || ""}` },
+  { key: "mediciones", label: "Mediciones", nombre: (x) => `${x.fecha || ""} ${x.clienteNombre || x.nombre || ""}` },
+  { key: "tareas", label: "Tareas", nombre: (x) => x.titulo || "—" },
+  { key: "leads", label: "Leads", nombre: (x) => x.nombre || x.empresa || "—" },
+  { key: "proveedores", label: "Proveedores", nombre: (x) => x.nombre || "—" },
+  { key: "ingresos", label: "Entradas de dinero", nombre: (x) => `${x.fecha || ""} ${money(x.importe)}` },
+];
+function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
+  const [copia, setCopia] = useState(null);
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [seccion, setSeccion] = useState("proyectos");
+  const [q, setQ] = useState("");
+  const [elegidos, setElegidos] = useState([]);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+  const leer = async (file) => {
+    setError(""); setElegidos([]);
+    try {
+      const datos = JSON.parse(await file.text());
+      if (!datos || typeof datos !== "object") throw new Error("formato");
+      setCopia(datos); setNombreArchivo(file.name);
+    } catch (e) { setError("Ese archivo no es una copia de seguridad del CRM (tiene que ser el .json que llega por email)."); }
+  };
+  const def = SECCIONES_RECUPERABLES.find((x) => x.key === seccion);
+  const actualesIds = new Set(toArray(datosActuales[seccion]).map((x) => x && x.id));
+  const texto = (x) => JSON.stringify(x).toLowerCase();
+  const faltan = copia ? toArray(copia[seccion]).filter((x) => x && x.id && !actualesIds.has(x.id) && (!q.trim() || texto(x).includes(q.trim().toLowerCase()))) : [];
+  const restaurar = () => {
+    const items = faltan.filter((x) => elegidos.includes(x.id));
+    if (!items.length) return;
+    if (!window.confirm(`¿Recuperar ${items.length} registro(s) de ${def.label} desde la copia "${nombreArchivo}"?`)) return;
+    onRestaurar(seccion, items);
+    setElegidos([]);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <h2 className="font-display font-bold text-slate-800 text-sm mb-1">Recuperar algo borrado desde una copia de seguridad</h2>
+      <p className="text-xs text-slate-500 mb-3">Sube el archivo .json de la copia que llega cada día por email. Te enseña lo que había en esa copia y ya no existe ahora (por ejemplo, una obra que ha desaparecido) y lo puedes recuperar tal cual estaba. No toca nada de lo que hay ahora.</p>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <button onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Upload size={14} /> {copia ? "Cambiar archivo" : "Subir copia de seguridad (.json)"}</button>
+        <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        {copia && <span className="text-xs text-emerald-700 font-semibold">✓ {nombreArchivo}</span>}
+      </div>
+      {error && <p className="text-xs text-rose-600 font-semibold mb-2">⚠ {error}</p>}
+      {copia && (
+        <>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <select value={seccion} onChange={(e) => { setSeccion(e.target.value); setElegidos([]); }} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+              {SECCIONES_RECUPERABLES.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
+            </select>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar (ej. Freila, 6845)…" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm flex-1 min-w-[180px]" />
+          </div>
+          {faltan.length === 0 ? (
+            <p className="text-sm text-slate-400">En esta copia no hay nada de {def.label.toLowerCase()} que falte ahora{q ? " con esa búsqueda" : ""}.</p>
+          ) : (
+            <>
+              <div className="max-h-64 overflow-y-auto border border-slate-100 rounded-md divide-y divide-slate-100 mb-2">
+                {faltan.map((x) => (
+                  <label key={x.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                    <input type="checkbox" checked={elegidos.includes(x.id)} onChange={(e) => setElegidos(e.target.checked ? [...elegidos, x.id] : elegidos.filter((i) => i !== x.id))} />
+                    <span className="truncate">{def.nombre(x)}</span>
+                  </label>
+                ))}
+              </div>
+              <button onClick={restaurar} disabled={!elegidos.length} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md hover:opacity-90 disabled:opacity-50">Recuperar {elegidos.length || ""} seleccionado(s)</button>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword }) {
   const [view, setView] = useState("list");
   const [editId, setEditId] = useState(null);
   const [descargandoBackup, setDescargandoBackup] = useState(false);
@@ -31225,6 +31543,8 @@ function AdministracionModulo({ usuarios, currentUser, onUpsert, onDelete, onEnv
           <Download size={15} /> {descargandoBackup ? "Descargando..." : "Descargar copia de seguridad ahora"}
         </button>
       </div>
+
+      {onRestaurarCopia && <RecuperarDesdeCopia datosActuales={datosRecuperables || {}} onRestaurar={onRestaurarCopia} />}
 
       <button
         onClick={() => { setEditId(null); setView("form"); }}
@@ -31338,6 +31658,12 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-md p-3 cursor-pointer">
             <input type="checkbox" checked={!!f.responsablePedidos} onChange={(e) => setF({ ...f, responsablePedidos: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
             <span><b>Responsable de pedidos</b>: puede hacer pedidos a proveedores y aprobar las solicitudes de los empleados. Si no está marcado, en Pedidos solo puede <b>solicitar</b> pedidos.</span>
+          </label>
+        )}
+        {f.rol !== "Administrador" && (
+          <label className="flex items-start gap-2 text-sm text-slate-700 bg-sky-50 border border-sky-200 rounded-md p-3 cursor-pointer">
+            <input type="checkbox" checked={!!f.verTodosLeads} onChange={(e) => setF({ ...f, verTodosLeads: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+            <span><b>Ve todos los leads</b>: en Leads / Prospección ve los de todos los comerciales. Si no está marcado, solo ve los que tiene asignados.</span>
           </label>
         )}
         {f.rol === "Administrador" ? (
