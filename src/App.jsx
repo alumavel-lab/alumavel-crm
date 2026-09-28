@@ -21858,6 +21858,7 @@ const TARIFA_DESCUENTO_CLAVE = { aluminio: "aluminio", goma: "goma", accesorio: 
 const TARIFAS_PRECARGADAS = [
   { match: /medit/i, archivo: "mediterraneo-2024.json", etiqueta: "Mediterráneo 2024" },
   { match: /primal/i, archivo: "primalum-2026.json", etiqueta: "Primalum V26.5 (2026)" },
+  { match: /maco|hautu/i, archivo: "maco-2026.json", etiqueta: "Maco / Hautu — herrajes (leída del Excel)" },
 ];
 
 const normRef = (r) => String(r || "").trim().toUpperCase().replace(/[.\-\s]/g, "").replace(/^0+(?=\w)/, "");
@@ -23281,6 +23282,16 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
         <p className="text-xs text-slate-500 mt-2">Al cambiarlos, todos los precios netos de esta tarifa (calculadora y pedidos) se recalculan al momento.</p>
       </div>
 
+      <div className={`border rounded-lg p-4 ${parseFloat(tarifa.recargoPct) ? "bg-amber-50 border-amber-300" : "bg-white border-slate-200"}`}>
+        <h4 className="text-sm font-bold text-slate-700 mb-2">Recargo temporal (%)</h4>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <Field label="Recargo %"><TextInput type="number" step="0.1" value={tarifa.recargoPct ?? ""} onChange={(e) => onChange({ recargoPct: e.target.value })} placeholder="Ej: 2.9" /></Field>
+          <Field label="Motivo / aviso del proveedor"><TextInput value={tarifa.recargoMotivo ?? ""} onChange={(e) => onChange({ recargoMotivo: e.target.value })} placeholder="Ej: Recargo MTZ energía/materia prima" /></Field>
+          <Field label="Desde"><TextInput type="date" value={tarifa.recargoDesde ?? ""} onChange={(e) => onChange({ recargoDesde: e.target.value })} /></Field>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Se suma DESPUÉS del descuento, a todos los precios de esta tarifa (calculadora y pedidos). En blanco o 0 = sin recargo.</p>
+      </div>
+
       <div className="bg-white border border-slate-200 rounded-lg p-4">
         <div className="flex flex-wrap gap-2 items-center mb-3">
           <div className="relative"><Search size={14} className="absolute left-2 top-2.5 text-slate-400" />
@@ -23310,7 +23321,7 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
                   <td className="pr-1 py-0.5 w-20"><input className={cellCls + " font-mono"} value={it.ref} onChange={(e) => setItem(it.id, { ref: e.target.value })} /></td>
                   <td className="pr-1 min-w-[180px]"><input className={cellCls} value={it.desc} onChange={(e) => setItem(it.id, { desc: e.target.value })} /></td>
                   <td className="pr-1 w-24"><select className={cellCls} value={it.tipo} onChange={(e) => setItem(it.id, { tipo: e.target.value })}>{TARIFA_GRUPOS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}</select></td>
-                  <td className="pr-1 w-14"><select className={cellCls} value={it.unidad || "m"} onChange={(e) => setItem(it.id, { unidad: e.target.value })}><option value="m">m</option><option value="ud">ud</option></select></td>
+                  <td className="pr-1 w-14"><select className={cellCls} value={it.unidad || "m"} onChange={(e) => setItem(it.id, { unidad: e.target.value })}><option value="m">m</option><option value="ud">ud</option><option value="kg">kg</option><option value="par">par</option><option value="ml">ml</option></select></td>
                   {claves.map((k) => (
                     <td key={k} className="pr-1 w-16"><input className={cellCls} value={it.precios?.[k] ?? ""} onChange={(e) => setPrecio(it, k, e.target.value)} /></td>
                   ))}
@@ -23898,7 +23909,13 @@ function TarifasProveedorTabs({ ctx, proveedor }) {
   // Presupuestos → Calculadora → Cristales → "Nueva tarifa de cristal" (ahí eliges el
   // proveedor) y luego ya le aparecerá aquí la pestaña sola.
   const mostrarCristal = !proveedor || (ctx.tarifasCristal || []).some((t) => t.proveedorId === proveedor.id);
-  const tipos = mostrarCristal ? [["aluminio", "Aluminio"], ["cristal", "Cristal"]] : [["aluminio", "Aluminio"]];
+  // Si TODOS los artículos de TODAS las tarifas de este proveedor son "accesorio" (herrajes,
+  // tiradores, bisagras…) y no tiene ni un perfil de aluminio, la pestaña se llama "Herraje"
+  // en vez de "Aluminio" — es automático, según lo que tenga cargado, sin nada que marcar.
+  const tarifasAluDeEste = proveedor ? (ctx.tarifasAluminio || []).filter((t) => t.proveedorId === proveedor.id) : [];
+  const esSoloHerraje = tarifasAluDeEste.length > 0 && tarifasAluDeEste.every((t) => (t.items || []).length > 0 && (t.items || []).every((i) => i.tipo === "accesorio"));
+  const etiquetaAluminio = esSoloHerraje ? "Herraje" : "Aluminio";
+  const tipos = mostrarCristal ? [["aluminio", etiquetaAluminio], ["cristal", "Cristal"]] : [["aluminio", etiquetaAluminio]];
   return (
     <div className="space-y-3">
       {tipos.length > 1 && (
