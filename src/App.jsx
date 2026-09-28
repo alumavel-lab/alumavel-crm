@@ -10394,6 +10394,55 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   );
 }
 
+// Exporta un pedido a la plantilla oficial de Maco/Hautu (el Excel de siempre, con
+// todas sus secciones y referencias ya puestas): busca cada referencia del pedido en
+// la plantilla y rellena su columna de unidades; limpia antes las unidades que hubiera
+// puestas de una vez anterior, para no reenviar cantidades viejas por error.
+async function exportarPedidoAPlantillaMaco(pedido, materiales) {
+  const r = await fetch(`/plantillas/pedido-maco.xlsx?t=${Date.now()}`);
+  if (!r.ok) throw new Error("No se encuentra la plantilla de Maco");
+  const buffer = await r.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const nombreHoja = wb.SheetNames.includes("Pedido") ? "Pedido" : wb.SheetNames[0];
+  const hoja = wb.Sheets[nombreHoja];
+  const rango = XLSX.utils.decode_range(hoja["!ref"]);
+  const normRefMaco = (v) => String(v ?? "").trim().replace(/^0+(?=\d)/, "");
+  // 1) limpiar la columna E (unidades) de todas las filas de artículo (las que tienen
+  //    referencia numérica en la columna A), por si quedó algo puesto de otra vez.
+  for (let fila = rango.s.r; fila <= rango.e.r; fila++) {
+    const celdaRef = hoja[XLSX.utils.encode_cell({ r: fila, c: 0 })];
+    if (celdaRef && (typeof celdaRef.v === "number" || /^\d+$/.test(String(celdaRef.v).trim()))) {
+      const dirE = XLSX.utils.encode_cell({ r: fila, c: 4 });
+      if (hoja[dirE]) delete hoja[dirE].v;
+    }
+  }
+  // 2) mapa referencia → fila
+  const filaPorRef = new Map();
+  for (let fila = rango.s.r; fila <= rango.e.r; fila++) {
+    const celdaRef = hoja[XLSX.utils.encode_cell({ r: fila, c: 0 })];
+    if (celdaRef && celdaRef.v !== undefined && celdaRef.v !== "") filaPorRef.set(normRefMaco(celdaRef.v), fila);
+  }
+  // 3) rellenar cabecera (nº de pedido, fecha, notas) si esas celdas existen
+  const setCelda = (dir, valor) => { if (valor === undefined || valor === null || valor === "") return; if (!hoja[dir]) hoja[dir] = { t: "s" }; hoja[dir].v = valor; hoja[dir].t = typeof valor === "number" ? "n" : "s"; };
+  setCelda("C6", pedido.numero || "");
+  setCelda("C7", fmtDate(new Date().toISOString().slice(0, 10)));
+  if (pedido.comentarios) setCelda("C10", pedido.comentarios);
+  // 4) rellenar unidades de cada línea del pedido que tenga referencia de esta tarifa
+  const sinEncontrar = [];
+  toArray(pedido.lineas).forEach((l) => {
+    // La referencia sale de la tarifa si se añadió con "Añadir desde tarifa"; si la línea
+    // viene de reponer stock (modo "catalogo"), se saca del código del material.
+    const mat = l.materialId ? (materiales || []).find((m) => m.id === l.materialId) : null;
+    const ref = l.tarifaRef?.ref || mat?.codigo;
+    if (!ref) return;
+    const fila = filaPorRef.get(normRefMaco(ref));
+    if (fila === undefined) { sinEncontrar.push(ref); return; }
+    setCelda(XLSX.utils.encode_cell({ r: fila, c: 4 }), parseFloat(l.cantidad) || 0);
+  });
+  XLSX.writeFile(wb, `pedido-maco-${pedido.numero || "nuevo"}.xlsx`);
+  return sinEncontrar;
+}
+
 function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materiales, proyectos, currentUser, onBack, onEdit, onDelete, onRecibir, onConfirmarAlbaran, onMarcarEnviado, onCrearPedidoFaltante, isAdmin, onRecibirConAlbaran, archivoInicial, onArchivoUsado }) {
   // "He hecho este pedido de otra forma": se pide la fecha de llegada (propuesta con los
   // días de entrega del proveedor) antes de darlo por hecho.
@@ -10404,6 +10453,8 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
   const clienteObra = proyecto ? toArray(clientes).find((c) => c.id === proyecto.clienteId) : null;
   const bloqueObra = lineasObraPedido(pedido, proyecto, clienteObra).join("\n");
   const [confirmarEnvio, setConfirmarEnvio] = useState(null); // "whatsapp" | "email" tras abrir el enlace
+  const [exportandoMaco, setExportandoMaco] = useState(false);
+  const esProveedorMaco = /maco|hautu/i.test(proveedor?.nombre || "");
   const puedeRecibir = pedido.estado !== "Recibido" && pedido.estado !== "Cancelado";
   const [confirmandoRecibir, setConfirmandoRecibir] = useState(false);
   const [leyendoAlbaran, setLeyendoAlbaran] = useState(false);
@@ -10624,6 +10675,22 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           <button onClick={() => abrirPdfPedido(pedido, proveedor, proyecto, materiales, clienteObra)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 h-fit">
             <FileText size={14} /> PDF del pedido
           </button>
+          {esProveedorMaco && (
+            <button
+              onClick={async () => {
+                setExportandoMaco(true);
+                try {
+                  const sinEncontrar = await exportarPedidoAPlantillaMaco(pedido, materiales);
+                  if (sinEncontrar.length) alert(`Descargado. Ojo: ${sinEncontrar.length} referencia(s) del pedido no las he encontrado en la plantilla (revísalas a mano): ${sinEncontrar.join(", ")}`);
+                } catch (e) { alert("No se pudo generar el Excel: " + e.message); }
+                finally { setExportandoMaco(false); }
+              }}
+              disabled={exportandoMaco}
+              className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50 h-fit disabled:opacity-60"
+            >
+              {exportandoMaco ? <Loader2 size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />} Excel plantilla Maco
+            </button>
+          )}
           {proveedor?.email ? (
             <div className="flex flex-col items-end gap-1">
               <button
