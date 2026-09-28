@@ -6,7 +6,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Upload, Menu, Send, Printer, Calculator,
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Square, Upload, Menu, Send, Printer, Calculator,
   UserPlus, PhoneCall, Scale
 } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -23616,6 +23616,7 @@ function TarifasCristalPanel({ ctx, proveedor }) {
           </button>
         )}
       </div>
+      <p className="text-xs text-slate-400">Para probar un cristal y ver su precio, usa Presupuestos → Calculadora → Cristales.</p>
       {!sel && <p className="text-sm text-slate-500">Elige o crea una tarifa de cristal.</p>}
       {sel && <TarifaCristalDetalle tarifa={sel} proveedores={proveedores} onChange={actualizar} onBorrar={borrar} />}
     </div>
@@ -23629,10 +23630,6 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
   const setLista = (clave, idx, patch) => onChange({ [clave]: (tarifa[clave] || []).map((x, i) => (i === idx ? { ...x, ...patch } : x)) });
   const quitarDeLista = (clave, idx) => onChange({ [clave]: (tarifa[clave] || []).filter((_, i) => i !== idx) });
   const [q, setQ] = useState("");
-  // Probador rápido
-  const [pA, setPA] = useState(1000), [pH, setPH] = useState(1000);
-  const [pCfg, setPCfg] = useState({ tarifaId: tarifa.id, baseId: "", incrementos: [], forma: "Rectangular", plantilla: false });
-  const prueba = calcularCristal({ tarifa, anchoMm: pA, altoMm: pH, cantidad: 1, ...pCfg });
   const campo = (k, label, type = "number") => (
     <Field key={k} label={label}><TextInput type={type} value={tarifa[k] ?? ""} onChange={(e) => onChange({ [k]: e.target.value })} /></Field>
   );
@@ -23687,22 +23684,7 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-lg p-4">
-        <h4 className="text-sm font-bold text-slate-700 mb-2">Probar un cristal</h4>
-        <div className="grid lg:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <div className="flex gap-2 items-center text-sm">Medida <input className={cellCls + " w-24"} type="number" value={pA} onChange={(e) => setPA(numOr(e.target.value))} /> × <input className={cellCls + " w-24"} type="number" value={pH} onChange={(e) => setPH(numOr(e.target.value))} /> mm</div>
-            <SelectorCristal tarifas={[tarifa]} cfg={{ ...pCfg, tarifaId: tarifa.id }} onChange={setPCfg} />
-          </div>
-          <div className="text-xs">
-            {prueba.lineas.map((l, i) => <div key={i} className="flex justify-between border-b border-slate-100 py-0.5"><span>{l.nombre} <span className="text-slate-400">{l.uds === "%" ? `${l.cant}%` : `${Math.round(l.cant * 100) / 100} ${l.uds}`}{l.dto ? ` · dto ${l.dto}%` : ""}</span></span><span>{money(l.importe)}</span></div>)}
-            {prueba.lineas.length > 0 && <div className="flex justify-between font-bold pt-1"><span>Total ({prueba.m2Fact.toFixed(2)} m² fact. · {prueba.kg.toFixed(1)} kg)</span><span>{money(prueba.totalPieza)}</span></div>}
-            {prueba.avisos.map((a, i) => <div key={i} className="text-amber-700 mt-1">⚠ {a}</div>)}
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
+            <div className="bg-white border border-slate-200 rounded-lg p-4 overflow-x-auto">
         <div className="flex flex-wrap gap-2 items-center mb-2">
           <h4 className="text-sm font-bold text-slate-700">Cristales y extras ({items.length})</h4>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar…" className="px-2 py-1 border border-slate-300 rounded-md text-sm" />
@@ -23734,6 +23716,70 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
 }
 
 // Pestaña "Tarifas y descuentos": aluminio y cristal (en la ficha del proveedor y en la calculadora).
+// ---- Calculadora de cristales (dentro de la Calculadora de presupuestos) ----
+// Antes este "probador" estaba repetido dentro de la ficha de cada proveedor; ahora
+// vive aquí una sola vez y se elige la tarifa (proveedor) que se quiera probar.
+function CalculadoraCristales({ onPasarAPresupuesto }) {
+  const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const tarifas = ctx.tarifasCristal || [];
+  const proveedores = ctx.proveedores || [];
+  const nombreProv = (t) => t.proveedorNombre || (proveedores.find((p) => p.id === t.proveedorId) || {}).nombre || "";
+  const [pA, setPA] = useState(1000), [pH, setPH] = useState(1000);
+  const [cantidad, setCantidad] = useState(1);
+  const [cfg, setCfg] = useState({ tarifaId: tarifas[0]?.id || "", baseId: "", incrementos: [], forma: "Rectangular", plantilla: false });
+  const [clienteNombre, setClienteNombre] = useState("");
+  const tarifa = tarifas.find((t) => t.id === cfg.tarifaId) || tarifas[0];
+  const prueba = tarifa ? calcularCristal({ tarifa, anchoMm: pA, altoMm: pH, cantidad: parseFloat(cantidad) || 1, ...cfg, tarifaId: tarifa.id }) : null;
+  if (!tarifas.length) {
+    return <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg p-4">No hay ninguna tarifa de cristal cargada. Se cargan en Proveedores → ficha del proveedor → "Tarifas y descuentos" → Cristal.</p>;
+  }
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
+      <div>
+        <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Tarifa / proveedor</span>
+        <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => setCfg({ ...cfg, tarifaId: e.target.value, baseId: "", incrementos: [] })}>
+          {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}{nombreProv(t) ? ` (${nombreProv(t)})` : ""}</option>)}
+        </select>
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <div className="flex gap-2 items-center text-sm">
+            Medida <TextInput type="number" value={pA} onChange={(e) => setPA(numOr(e.target.value))} className="w-24" /> ×
+            <TextInput type="number" value={pH} onChange={(e) => setPH(numOr(e.target.value))} className="w-24" /> mm
+            <span className="ml-2">Uds</span><TextInput type="number" value={cantidad} onChange={(e) => setCantidad(e.target.value)} className="w-16" />
+          </div>
+          {tarifa && <SelectorCristal tarifas={[tarifa]} cfg={{ ...cfg, tarifaId: tarifa.id }} onChange={setCfg} />}
+        </div>
+        <div className="text-sm">
+          {prueba && prueba.lineas.map((l, i) => (
+            <div key={i} className="flex justify-between border-b border-slate-100 py-1"><span>{l.nombre} <span className="text-slate-400 text-xs">{l.uds === "%" ? `${l.cant}%` : `${Math.round(l.cant * 100) / 100} ${l.uds}`}{l.dto ? ` · dto ${l.dto}%` : ""}</span></span><span>{money(l.total)}</span></div>
+          ))}
+          {prueba && prueba.lineas.length > 0 && (
+            <div className="flex justify-between font-bold pt-2 text-base"><span>Total ({prueba.m2Fact.toFixed(2)} m² fact. · {prueba.kg.toFixed(1)} kg)</span><span>{money(prueba.totalPieza)}</span></div>
+          )}
+          {prueba && prueba.avisos.map((a, i) => <div key={i} className="text-amber-700 mt-1 text-xs">⚠ {a}</div>)}
+          {!prueba || !prueba.lineas.length ? <p className="text-slate-400 text-xs">Elige el cristal (arriba a la izquierda) para ver el precio.</p> : null}
+        </div>
+      </div>
+      {onPasarAPresupuesto && prueba && prueba.lineas.length > 0 && (
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-end gap-2">
+          <Field label="Cliente (para el presupuesto)"><TextInput value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} className="w-56" /></Field>
+          <button
+            onClick={() => onPasarAPresupuesto({
+              clienteNombre, importe: prueba.totalPieza.toFixed(2),
+              descripcion: `Cristal ${pA}×${pH} mm · ${cantidad} ud · ${tarifa.nombre}${nombreProv(tarifa) ? ` (${nombreProv(tarifa)})` : ""}`,
+              comentarios: `Creado desde la Calculadora de Cristales. Revisa los datos y el importe antes de guardar.`,
+            })}
+            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md hover:opacity-90"
+          >
+            Pasar a presupuesto →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TarifasProveedorTabs({ ctx, proveedor }) {
   const [tipo, setTipo] = useState("aluminio");
   return (
@@ -23757,6 +23803,7 @@ const CALCULADORA_PRODUCTOS = [
   { id: "persianas", label: "Persianas", icon: Ruler, disponible: true },
   { id: "ventanas", label: "Ventanas", icon: Layers, disponible: true },
   { id: "techos", label: "Techos", icon: Wrench, disponible: true },
+  { id: "cristales", label: "Cristales", icon: Square, disponible: true },
 ];
 
 function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPersianas, onPasarAPresupuesto, onGenerarPedido, presupuestoDestino, onAnadirAPresupuestoExistente, onCancelarAnadir }) {
@@ -23804,6 +23851,7 @@ function CalculadoraPresupuestos({ clientes, tarifasPersianas, onSaveTarifasPers
           <CalculadoraVentanas categoria="techo" clientes={clientes} tarifasPersianas={tarifasPersianas || {}} onPasarAPresupuesto={onPasarAPresupuesto} />
         </div>
       )}
+      {producto === "cristales" && <CalculadoraCristales onPasarAPresupuesto={onPasarAPresupuesto} />}
     </div>
   );
 }
