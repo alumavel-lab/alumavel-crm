@@ -23100,6 +23100,29 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
       alert(`${nuevos.length} artículo(s) añadidos (por ejemplo los accesorios de techo). Lo que ya tenías no se ha tocado.`);
     } catch (e) { alert("No se pudo leer el archivo de tarifa: " + e.message); }
   };
+  // Rellena el dibujo (foto) de los artículos que ya tienen el suyo en el archivo
+  // precargado pero que en esta tarifa (creada antes) todavía no lo tienen. No toca
+  // precios ni nada que ya esté puesto a mano.
+  const rellenarDibujos = async () => {
+    if (!sel) return;
+    try {
+      const pre = TARIFAS_PRECARGADAS.find((p) => p.match.test(sel.nombre || "")) || TARIFAS_PRECARGADAS[0];
+      const r = await fetch(`/tarifas/${pre.archivo}?t=${Date.now()}`);
+      const d = await r.json();
+      const porRef = new Map(d.items.filter((i) => i.imagenUrl).map((i) => [normRef(i.ref), i.imagenUrl]));
+      let n = 0;
+      const items2 = (sel.items || []).map((it) => {
+        if (it.imagenUrl) return it;
+        const url = porRef.get(normRef(it.ref));
+        if (!url) return it;
+        n++;
+        return { ...it, imagenUrl: url };
+      });
+      if (!n) { alert("No hay ningún dibujo nuevo que rellenar (o ya los tiene todos)."); return; }
+      actualizar({ items: items2 });
+      alert(`${n} dibujo(s) rellenados.`);
+    } catch (e) { alert("No se pudo leer el archivo de tarifa: " + e.message); }
+  };
 
   return (
     <div className="space-y-4">
@@ -23110,6 +23133,9 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
         <button onClick={nueva} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-300 text-sm"><Plus size={14} /> Nueva tarifa</button>
         {sel && TARIFAS_PRECARGADAS.some((p) => p.match.test(sel.nombre || "")) && (
           <button onClick={completarMediterraneo} className="px-3 py-1.5 rounded-md border border-slate-300 text-sm">Completar con lo que falte del archivo</button>
+        )}
+        {sel && TARIFAS_PRECARGADAS.some((p) => p.match.test(sel.nombre || "")) && (
+          <button onClick={rellenarDibujos} className="flex items-center gap-1 px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold"><ImageIcon size={14} /> Rellenar dibujos del catálogo</button>
         )}
         {precargadas.map((pre) => (
           <button key={pre.archivo} onClick={() => cargarPrecargada(pre)} disabled={cargando} className="px-3 py-1.5 rounded-md border border-[#2E8B57] text-[#2E8B57] text-sm font-semibold">
@@ -23124,12 +23150,50 @@ function TarifasAluminioPanel({ ctx, proveedor }) {
   );
 }
 
+// Miniatura del artículo (perfil, panel de puerta, cristal…) con botón para subir o
+// cambiar la foto/plano desde el catálogo del proveedor. Clic en la miniatura = verla grande.
+function DibujoArticulo({ url, carpeta, onChange }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const inputRef = useRef(null);
+  const subir = async (file) => {
+    if (!file) return;
+    setSubiendo(true);
+    try {
+      const comprimido = /^image\//.test(file.type) ? await comprimirFotoMontaje(file, 500, 0.8) : file;
+      const nuevoUrl = await subirArchivoAStorage(comprimido, carpeta);
+      onChange(nuevoUrl);
+    } catch (e) { alert("No se pudo subir la imagen: " + (e.message || "error")); }
+    finally { setSubiendo(false); }
+  };
+  return (
+    <div className="flex items-center gap-1">
+      {url ? (
+        <a href={url} target="_blank" rel="noreferrer" title="Ver grande">
+          <img src={url} alt="" className="w-9 h-9 object-cover rounded border border-slate-200" />
+        </a>
+      ) : (
+        <button onClick={() => inputRef.current?.click()} disabled={subiendo} className="w-9 h-9 rounded border border-dashed border-slate-300 text-slate-300 hover:text-[#2E8B57] hover:border-[#2E8B57] flex items-center justify-center" title="Añadir dibujo/foto">
+          {subiendo ? <Loader2 size={13} className="animate-spin" /> : <ImageIcon size={14} />}
+        </button>
+      )}
+      {url && (
+        <button onClick={() => inputRef.current?.click()} disabled={subiendo} className="text-slate-300 hover:text-[#2E8B57]" title="Cambiar">
+          {subiendo ? <Loader2 size={12} className="animate-spin" /> : <Pencil size={12} />}
+        </button>
+      )}
+      <input ref={inputRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => { subir(e.target.files[0]); e.target.value = ""; }} />
+    </div>
+  );
+}
+
 function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
   const [q, setQ] = useState("");
   const [tipoF, setTipoF] = useState("");
   const [serieF, setSerieF] = useState("");
   const [limite, setLimite] = useState(80);
   const inputExcel = useRef(null);
+  const inputCatalogo = useRef(null);
+  const [subiendoCatalogo, setSubiendoCatalogo] = useState(false);
   const items = tarifa.items || [];
   const series = useMemo(() => [...new Set(items.flatMap((i) => String(i.serie || "").split(" / ")).filter(Boolean))].sort(), [items]);
   const filtrados = items.filter((it) => {
@@ -23190,6 +23254,21 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
         <div className="flex items-end"><button onClick={onBorrar} className="flex items-center gap-1 px-3 py-2 rounded-md border border-rose-300 text-rose-600 text-sm"><Trash2 size={14} /> Borrar tarifa</button></div>
       </div>
 
+      <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold tracking-wide uppercase text-slate-500">Catálogo del proveedor</span>
+        {tarifa.catalogoUrl ? (
+          <a href={tarifa.catalogoUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm text-[#2E8B57] hover:underline"><FileText size={14} /> {tarifa.catalogoNombre || "Ver catálogo"}</a>
+        ) : (
+          <span className="text-xs text-slate-400">Sin catálogo adjunto</span>
+        )}
+        <input ref={inputCatalogo} type="file" accept="application/pdf,image/*" className="hidden"
+          onChange={async (e) => { const file = e.target.files[0]; e.target.value = ""; if (!file) return; setSubiendoCatalogo(true); try { const url = await subirArchivoAStorage(file, `tarifas-catalogos/${tarifa.id}`); onChange({ catalogoUrl: url, catalogoNombre: file.name }); } catch (err) { alert("No se pudo subir: " + err.message); } finally { setSubiendoCatalogo(false); } }} />
+        <button onClick={() => inputCatalogo.current?.click()} disabled={subiendoCatalogo} className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50 disabled:opacity-60">
+          {subiendoCatalogo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {tarifa.catalogoUrl ? "Cambiar" : "Subir catálogo (PDF)"}
+        </button>
+        <p className="text-xs text-slate-400 w-full">Guarda aquí el catálogo entero (PDF) del proveedor. Para el dibujo de cada artículo, sube su foto en la columna "Dibujo" de la tabla de abajo.</p>
+      </div>
+
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
         <h4 className="text-sm font-bold text-slate-700 mb-2">Descuentos de esta tarifa (%)</h4>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 max-w-3xl">
@@ -23221,12 +23300,13 @@ function TarifaAluminioDetalle({ tarifa, proveedores, onChange, onBorrar }) {
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead><tr className="text-left text-slate-500 border-b">
-              <th className="pr-1 py-1">Ref</th><th className="pr-1">Descripción</th><th className="pr-1">Grupo</th><th className="pr-1">Ud</th>
+              <th className="pr-1 py-1">Dibujo</th><th className="pr-1">Ref</th><th className="pr-1">Descripción</th><th className="pr-1">Grupo</th><th className="pr-1">Ud</th>
               {claves.map((k) => <th key={k} className="pr-1 capitalize">{tarifa.acabadosNombres?.[k] ? k : k}</th>)}<th className="pr-1">Serie</th><th></th>
             </tr></thead>
             <tbody>
               {filtrados.slice(0, limite).map((it) => (
                 <tr key={it.id} className="border-b border-slate-100">
+                  <td className="pr-1 py-1"><DibujoArticulo url={it.imagenUrl} carpeta={`tarifas-articulos/${tarifa.id}`} onChange={(url) => setItem(it.id, { imagenUrl: url })} /></td>
                   <td className="pr-1 py-0.5 w-20"><input className={cellCls + " font-mono"} value={it.ref} onChange={(e) => setItem(it.id, { ref: e.target.value })} /></td>
                   <td className="pr-1 min-w-[180px]"><input className={cellCls} value={it.desc} onChange={(e) => setItem(it.id, { desc: e.target.value })} /></td>
                   <td className="pr-1 w-24"><select className={cellCls} value={it.tipo} onChange={(e) => setItem(it.id, { tipo: e.target.value })}>{TARIFA_GRUPOS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}</select></td>
@@ -23630,6 +23710,8 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
   const setLista = (clave, idx, patch) => onChange({ [clave]: (tarifa[clave] || []).map((x, i) => (i === idx ? { ...x, ...patch } : x)) });
   const quitarDeLista = (clave, idx) => onChange({ [clave]: (tarifa[clave] || []).filter((_, i) => i !== idx) });
   const [q, setQ] = useState("");
+  const inputCatalogo = useRef(null);
+  const [subiendoCatalogo, setSubiendoCatalogo] = useState(false);
   const campo = (k, label, type = "number") => (
     <Field key={k} label={label}><TextInput type={type} value={tarifa[k] ?? ""} onChange={(e) => onChange({ [k]: e.target.value })} /></Field>
   );
@@ -23645,6 +23727,21 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
         </Field>
         {campo("fecha", "Fecha", "date")}
         <div className="flex items-end"><button onClick={onBorrar} className="flex items-center gap-1 px-3 py-2 rounded-md border border-rose-300 text-rose-600 text-sm"><Trash2 size={14} /> Borrar tarifa</button></div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold tracking-wide uppercase text-slate-500">Catálogo del proveedor</span>
+        {tarifa.catalogoUrl ? (
+          <a href={tarifa.catalogoUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm text-[#2E8B57] hover:underline"><FileText size={14} /> {tarifa.catalogoNombre || "Ver catálogo"}</a>
+        ) : (
+          <span className="text-xs text-slate-400">Sin catálogo adjunto</span>
+        )}
+        <input ref={inputCatalogo} type="file" accept="application/pdf,image/*" className="hidden"
+          onChange={async (e) => { const file = e.target.files[0]; e.target.value = ""; if (!file) return; setSubiendoCatalogo(true); try { const url = await subirArchivoAStorage(file, `tarifas-catalogos/${tarifa.id}`); onChange({ catalogoUrl: url, catalogoNombre: file.name }); } catch (err) { alert("No se pudo subir: " + err.message); } finally { setSubiendoCatalogo(false); } }} />
+        <button onClick={() => inputCatalogo.current?.click()} disabled={subiendoCatalogo} className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50 disabled:opacity-60">
+          {subiendoCatalogo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {tarifa.catalogoUrl ? "Cambiar" : "Subir catálogo (PDF)"}
+        </button>
+        <p className="text-xs text-slate-400 w-full">Guarda aquí el catálogo entero (PDF) del proveedor. Para el dibujo de cada cristal/extra, sube su foto en la tabla de abajo.</p>
       </div>
 
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -23692,10 +23789,11 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
           <button onClick={() => onChange({ items: [{ id: uid(), grupo: "", nombre: "", precio: "", tipo: "incremento", unidad: "m2", neto: false, minimoM2: 0, kgM2: 0 }, ...items] })} className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-sm"><Plus size={14} /> Línea</button>
         </div>
         <table className="w-full text-xs">
-          <thead><tr className="text-left text-slate-500 border-b"><th className="pr-1">Grupo</th><th className="pr-1">Nombre</th><th className="pr-1">Tipo</th><th className="pr-1">Precio</th><th className="pr-1">Por</th><th className="pr-1">kg/m²</th><th className="pr-1">Mín m²</th><th className="pr-1">Neto</th><th></th></tr></thead>
+          <thead><tr className="text-left text-slate-500 border-b"><th className="pr-1">Dibujo</th><th className="pr-1">Grupo</th><th className="pr-1">Nombre</th><th className="pr-1">Tipo</th><th className="pr-1">Precio</th><th className="pr-1">Por</th><th className="pr-1">kg/m²</th><th className="pr-1">Mín m²</th><th className="pr-1">Neto</th><th></th></tr></thead>
           <tbody>
             {items.filter((i) => !q || `${i.grupo} ${i.nombre}`.toLowerCase().includes(q.toLowerCase())).map((i) => (
               <tr key={i.id} className="border-b border-slate-100">
+                <td className="pr-1 py-1"><DibujoArticulo url={i.imagenUrl} carpeta={`tarifas-articulos/${tarifa.id}`} onChange={(url) => setItem(i.id, { imagenUrl: url })} /></td>
                 <td className="pr-1 py-0.5 w-48"><input className={cellCls} value={i.grupo} onChange={(e) => setItem(i.id, { grupo: e.target.value })} /></td>
                 <td className="pr-1 min-w-[180px]"><input className={cellCls} value={i.nombre} onChange={(e) => setItem(i.id, { nombre: e.target.value })} /></td>
                 <td className="pr-1 w-32"><select className={cellCls} value={i.tipo} onChange={(e) => setItem(i.id, { tipo: e.target.value })}><option value="base">Cámara base</option><option value="simple">Monolítico / completo</option><option value="incremento">Extra / incremento</option></select></td>
@@ -23721,6 +23819,7 @@ function TarifaCristalDetalle({ tarifa, proveedores, onChange, onBorrar }) {
 // vive aquí una sola vez y se elige la tarifa (proveedor) que se quiera probar.
 function CalculadoraCristales({ onPasarAPresupuesto }) {
   const ctx = React.useContext(TarifasVentanasCtx) || {};
+  const [verGestion, setVerGestion] = useState(false);
   const tarifas = ctx.tarifasCristal || [];
   const proveedores = ctx.proveedores || [];
   const nombreProv = (t) => t.proveedorNombre || (proveedores.find((p) => p.id === t.proveedorId) || {}).nombre || "";
@@ -23730,50 +23829,61 @@ function CalculadoraCristales({ onPasarAPresupuesto }) {
   const [clienteNombre, setClienteNombre] = useState("");
   const tarifa = tarifas.find((t) => t.id === cfg.tarifaId) || tarifas[0];
   const prueba = tarifa ? calcularCristal({ tarifa, anchoMm: pA, altoMm: pH, cantidad: parseFloat(cantidad) || 1, ...cfg, tarifaId: tarifa.id }) : null;
-  if (!tarifas.length) {
-    return <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg p-4">No hay ninguna tarifa de cristal cargada. Se cargan en Proveedores → ficha del proveedor → "Tarifas y descuentos" → Cristal.</p>;
-  }
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
-      <div>
-        <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Tarifa / proveedor</span>
-        <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => setCfg({ ...cfg, tarifaId: e.target.value, baseId: "", incrementos: [] })}>
-          {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}{nombreProv(t) ? ` (${nombreProv(t)})` : ""}</option>)}
-        </select>
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <button onClick={() => setVerGestion((v) => !v)} className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57]">
+          {verGestion ? <ChevronDown size={15} /> : <ChevronRight size={15} />} Crear o editar tarifas de cristal
+        </button>
+        <p className="text-xs text-slate-400 mt-1">Aquí es donde se suben o cambian las tarifas de cristal — separado de las de aluminio, que se siguen gestionando dentro de cada proveedor. Al crear una tarifa de cristal eliges de qué proveedor es.</p>
+        {verGestion && <div className="mt-3"><TarifasCristalPanel ctx={ctx} proveedor={null} /></div>}
       </div>
-      <div className="grid lg:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <div className="flex gap-2 items-center text-sm">
-            Medida <TextInput type="number" value={pA} onChange={(e) => setPA(numOr(e.target.value))} className="w-24" /> ×
-            <TextInput type="number" value={pH} onChange={(e) => setPH(numOr(e.target.value))} className="w-24" /> mm
-            <span className="ml-2">Uds</span><TextInput type="number" value={cantidad} onChange={(e) => setCantidad(e.target.value)} className="w-16" />
+
+      {!tarifas.length ? (
+        <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg p-4">Todavía no hay ninguna tarifa de cristal. Pulsa arriba "Crear o editar tarifas de cristal" para meter la primera.</p>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
+          <div>
+            <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Tarifa / proveedor</span>
+            <select className={inputCls} value={tarifa?.id || ""} onChange={(e) => setCfg({ ...cfg, tarifaId: e.target.value, baseId: "", incrementos: [] })}>
+              {tarifas.map((t) => <option key={t.id} value={t.id}>{t.nombre}{nombreProv(t) ? ` (${nombreProv(t)})` : ""}</option>)}
+            </select>
           </div>
-          {tarifa && <SelectorCristal tarifas={[tarifa]} cfg={{ ...cfg, tarifaId: tarifa.id }} onChange={setCfg} />}
-        </div>
-        <div className="text-sm">
-          {prueba && prueba.lineas.map((l, i) => (
-            <div key={i} className="flex justify-between border-b border-slate-100 py-1"><span>{l.nombre} <span className="text-slate-400 text-xs">{l.uds === "%" ? `${l.cant}%` : `${Math.round(l.cant * 100) / 100} ${l.uds}`}{l.dto ? ` · dto ${l.dto}%` : ""}</span></span><span>{money(l.total)}</span></div>
-          ))}
-          {prueba && prueba.lineas.length > 0 && (
-            <div className="flex justify-between font-bold pt-2 text-base"><span>Total ({prueba.m2Fact.toFixed(2)} m² fact. · {prueba.kg.toFixed(1)} kg)</span><span>{money(prueba.totalPieza)}</span></div>
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <div className="flex gap-2 items-center text-sm">
+                Medida <TextInput type="number" value={pA} onChange={(e) => setPA(numOr(e.target.value))} className="w-24" /> ×
+                <TextInput type="number" value={pH} onChange={(e) => setPH(numOr(e.target.value))} className="w-24" /> mm
+                <span className="ml-2">Uds</span><TextInput type="number" value={cantidad} onChange={(e) => setCantidad(e.target.value)} className="w-16" />
+              </div>
+              {tarifa && <SelectorCristal tarifas={[tarifa]} cfg={{ ...cfg, tarifaId: tarifa.id }} onChange={setCfg} />}
+            </div>
+            <div className="text-sm">
+              {prueba && prueba.lineas.map((l, i) => (
+                <div key={i} className="flex justify-between border-b border-slate-100 py-1"><span>{l.nombre} <span className="text-slate-400 text-xs">{l.uds === "%" ? `${l.cant}%` : `${Math.round(l.cant * 100) / 100} ${l.uds}`}{l.dto ? ` · dto ${l.dto}%` : ""}</span></span><span>{money(l.total)}</span></div>
+              ))}
+              {prueba && prueba.lineas.length > 0 && (
+                <div className="flex justify-between font-bold pt-2 text-base"><span>Total ({prueba.m2Fact.toFixed(2)} m² fact. · {prueba.kg.toFixed(1)} kg)</span><span>{money(prueba.totalPieza)}</span></div>
+              )}
+              {prueba && prueba.avisos.map((a, i) => <div key={i} className="text-amber-700 mt-1 text-xs">⚠ {a}</div>)}
+              {!prueba || !prueba.lineas.length ? <p className="text-slate-400 text-xs">Elige el cristal (arriba a la izquierda) para ver el precio.</p> : null}
+            </div>
+          </div>
+          {onPasarAPresupuesto && prueba && prueba.lineas.length > 0 && (
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-end gap-2">
+              <Field label="Cliente (para el presupuesto)"><TextInput value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} className="w-56" /></Field>
+              <button
+                onClick={() => onPasarAPresupuesto({
+                  clienteNombre, importe: prueba.totalPieza.toFixed(2),
+                  descripcion: `Cristal ${pA}×${pH} mm · ${cantidad} ud · ${tarifa.nombre}${nombreProv(tarifa) ? ` (${nombreProv(tarifa)})` : ""}`,
+                  comentarios: `Creado desde la Calculadora de Cristales. Revisa los datos y el importe antes de guardar.`,
+                })}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md hover:opacity-90"
+              >
+                Pasar a presupuesto →
+              </button>
+            </div>
           )}
-          {prueba && prueba.avisos.map((a, i) => <div key={i} className="text-amber-700 mt-1 text-xs">⚠ {a}</div>)}
-          {!prueba || !prueba.lineas.length ? <p className="text-slate-400 text-xs">Elige el cristal (arriba a la izquierda) para ver el precio.</p> : null}
-        </div>
-      </div>
-      {onPasarAPresupuesto && prueba && prueba.lineas.length > 0 && (
-        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-end gap-2">
-          <Field label="Cliente (para el presupuesto)"><TextInput value={clienteNombre} onChange={(e) => setClienteNombre(e.target.value)} className="w-56" /></Field>
-          <button
-            onClick={() => onPasarAPresupuesto({
-              clienteNombre, importe: prueba.totalPieza.toFixed(2),
-              descripcion: `Cristal ${pA}×${pH} mm · ${cantidad} ud · ${tarifa.nombre}${nombreProv(tarifa) ? ` (${nombreProv(tarifa)})` : ""}`,
-              comentarios: `Creado desde la Calculadora de Cristales. Revisa los datos y el importe antes de guardar.`,
-            })}
-            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-md hover:opacity-90"
-          >
-            Pasar a presupuesto →
-          </button>
         </div>
       )}
     </div>
@@ -23782,14 +23892,23 @@ function CalculadoraCristales({ onPasarAPresupuesto }) {
 
 function TarifasProveedorTabs({ ctx, proveedor }) {
   const [tipo, setTipo] = useState("aluminio");
+  // La pestaña "Cristal" solo se enseña si ese proveedor ya tiene alguna tarifa de
+  // cristal metida: así cada proveedor tiene solo lo suyo, sin nada que marcar a mano.
+  // Para meterle la primera tarifa de cristal a un proveedor nuevo, hazlo desde
+  // Presupuestos → Calculadora → Cristales → "Nueva tarifa de cristal" (ahí eliges el
+  // proveedor) y luego ya le aparecerá aquí la pestaña sola.
+  const mostrarCristal = !proveedor || (ctx.tarifasCristal || []).some((t) => t.proveedorId === proveedor.id);
+  const tipos = mostrarCristal ? [["aluminio", "Aluminio"], ["cristal", "Cristal"]] : [["aluminio", "Aluminio"]];
   return (
     <div className="space-y-3">
-      <div className="inline-flex rounded-md border border-slate-300 overflow-hidden">
-        {[["aluminio", "Aluminio"], ["cristal", "Cristal"]].map(([k, l]) => (
-          <button key={k} onClick={() => setTipo(k)} className={`px-4 py-1.5 text-sm font-semibold ${tipo === k ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>{l}</button>
-        ))}
-      </div>
-      {tipo === "aluminio" ? <TarifasAluminioPanel ctx={ctx} proveedor={proveedor} /> : <TarifasCristalPanel ctx={ctx} proveedor={proveedor} />}
+      {tipos.length > 1 && (
+        <div className="inline-flex rounded-md border border-slate-300 overflow-hidden">
+          {tipos.map(([k, l]) => (
+            <button key={k} onClick={() => setTipo(k)} className={`px-4 py-1.5 text-sm font-semibold ${tipo === k ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>{l}</button>
+          ))}
+        </div>
+      )}
+      {tipo === "cristal" && mostrarCristal ? <TarifasCristalPanel ctx={ctx} proveedor={proveedor} /> : <TarifasAluminioPanel ctx={ctx} proveedor={proveedor} />}
     </div>
   );
 }
