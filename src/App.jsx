@@ -6,7 +6,7 @@ import {
   AlertCircle, Circle, Loader2, Hash, ClipboardList, Receipt, Timer,
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
-  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Menu, Send, Printer, Calculator,
+  Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Menu, Send, Printer, Calculator,
   UserPlus, PhoneCall, Scale
 } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -5116,7 +5116,7 @@ const MANUALES = {
       "\"Listo para fabricar\": líneas de pedido ya recibidas y listas para empezar a fabricar.",
       "\"Materiales pendientes\": lo que aún falta para poder fabricar.",
       "\"En fabricación\": lo que ya se está fabricando.",
-      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre.",
+      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre. Si los cristales llegan sueltos, con \"Montar caballete con fotos de pegatinas\" haces una foto a la pegatina de cada cristal y el caballete se forma solo.",
       "\"Albarán de salida\": material que sale de fábrica (p.ej. a lacar o a otro proceso externo), con su albarán para imprimir o firmar en pantalla por el chófer.",
       "\"Reparto\": obras ya listas para repartir o recoger.",
       "En la mayoría de pestañas puedes descargar esa vista como documento Word.",
@@ -10781,6 +10781,302 @@ function SolicitudPedidoDetail({ solicitud, proyecto, currentUser, isAdmin, onBa
 
 /* ================= CRISTALES (almacén de vidrio, dentro de Fábrica) ================= */
 
+// ---- Montar un caballete con fotos de las pegatinas (cristales que llegan sueltos) ----
+// Cuando los cristales vienen sin packing list, se hace una foto a la pegatina de cada
+// cristal: la IA la lee (proveedor, pedido, expediente, vivienda, medida, pieza…) y se va
+// formando el caballete cristal a cristal. Vale para F.Sola, Tvitec/Cricursa, Persimaster,
+// Sedatec/Guardian y cualquier otra pegatina.
+const PROMPT_PEGATINA_CRISTAL = 'Esto es una FOTO DE LA PEGATINA (etiqueta) de un cristal / unidad de vidrio aislante, hecha en el almacén. Cada proveedor la hace distinta (F.Sola, Tvitec/Cricursa, Persimaster/Iberglass, Sedatec/Guardian, etc.). Lee SOLO las pegatinas que se vean ENTERAS y legibles; si detrás asoma otra pegatina tapada o cortada, IGNÓRALA. Normalmente hay una sola. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","ref":"","ancho":0,"alto":0,"pieza":"","posicion":"","composicion":"","peso":0,"fecha":""}]}. Reglas: "proveedor" = la cristalería que fabrica o envía el cristal (el logo principal: F.Sola, Cricursa, Persimaster, Sedatec…; si pone Guardian Select y abajo SEDATEC, el proveedor es Sedatec). "cliente" = a quién va el cristal (ej. Cerramientos Alumavel, Construcciones Uxcar); si pone "ENTREGAR EN ALUMAVEL" es Alumavel. "pedido" = número de pedido del proveedor (tal cual, ej. 918284, 1123107, PD26-0017266-1-7, PV-2523618). "expediente" = SOLO si aparece EXP o EXPEDIENTE seguido de número, con formato "EXP 810" (de "EXP810" o "EXP 1103"); si no aparece, vacío. "obra" = el nombre o referencia de obra/cliente final si aparece (ej. ALICANTE, CFS HOUSE-JOAQUIN, 2º PEDIDO AMENABAR, RECTIFICACIÓN). "ref" = la vivienda, posición o sitio del cristal (ej. V05.013, 4ª PLANTA-B1B.I, COCINA). "ancho" y "alto" = la MEDIDA del cristal en MILÍMETROS como números (el primero es el ancho y el segundo el alto, tal como vienen; "526,0 x 982,0" es 526 y 982; "719.00 * 948.00" es 719 y 948). "pieza" = la numeración de pieza tipo "2/2", "13/57" o "Secuencia 1" (y si pone Unidades 2/3, "2/3"). "posicion" = el número de Position/Pos si aparece. "composicion" = la composición del vidrio en una línea (ej. "4 Neutralux 1.1 / 16 / 8 incoloro"), añadiendo "argón" si lo indica. "peso" en kg como número. "fecha" = fecha del pedido en formato AAAA-MM-DD. Copia los números EXACTOS, dígito a dígito. Deja vacío (o 0) lo que no encuentres.';
+
+// Reduce una foto del móvil (varios MB) a un JPEG más ligero: se lee igual de bien y va más rápido.
+async function reducirFotoPegatina(file, maxLado = 1600, calidad = 0.85) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const esc = Math.min(1, maxLado / Math.max(img.width, img.height));
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(img.width * esc); cv.height = Math.round(img.height * esc);
+    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+    const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", calidad));
+    if (!blob) return file;
+    return new File([blob], "pegatina.jpg", { type: "image/jpeg" });
+  } catch (e) {
+    return file; // si el navegador no sabe abrirla (p. ej. HEIC), se manda tal cual
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+async function miniaturaFoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const esc = Math.min(1, 220 / Math.max(img.width, img.height));
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(img.width * esc); cv.height = Math.round(img.height * esc);
+    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+    return cv.toDataURL("image/jpeg", 0.7);
+  } catch (e) { return ""; } finally { URL.revokeObjectURL(url); }
+}
+const normExpPegatina = (v) => {
+  const m = String(v || "").match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i);
+  return m ? `EXP ${m[1]}` : String(v || "").trim();
+};
+const clavePiezaPegatina = (f) => [f.proveedor, f.pedido, f.ref, parseFloat(f.ancho) || "", parseFloat(f.alto) || "", f.pieza, f.posicion]
+  .map((x) => String(x ?? "").replace(/\s/g, "").toUpperCase()).join("|");
+// De una fila leída de pegatina a la "pieza" que se guarda dentro del caballete
+const piezaDesdePegatina = (f) => {
+  const ancho = parseFloat(f.ancho) || "", alto = parseFloat(f.alto) || "";
+  return {
+    pedido: String(f.pedido || "").trim(),
+    pos: [f.posicion ? `Pos ${f.posicion}` : "", f.pieza || ""].filter(Boolean).join(" · "),
+    cantidad: 1, ancho, alto,
+    m2: ancho && alto ? Math.round((ancho * alto) / 1000) / 1000 : 0,
+    ref: String(f.ref || "").trim(),
+    expediente: normExpPegatina(f.expediente) || String(f.obra || "").trim(),
+    obra: String(f.obra || "").trim(),
+    proveedor: String(f.proveedor || "").trim(),
+    composicion: String(f.composicion || "").trim(),
+    peso: parseFloat(f.peso) || 0,
+    pieza: String(f.pieza || "").trim(),
+    fechaPedido: String(f.fecha || "").trim(),
+    origen: "foto pegatina",
+  };
+};
+const BORRADOR_CABALLETE_FOTOS = "crm_caballeteFotos_borrador";
+
+function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCerrar }) {
+  const hoyTxt = () => { const d = new Date(); return `SUELTOS-${String(d.getDate()).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`; };
+  const [modo, setModo] = useState("nuevo");
+  const [numero, setNumero] = useState(hoyTxt);
+  const [caballeteId, setCaballeteId] = useState("");
+  const [filas, setFilas] = useState([]);
+  const [recuperado, setRecuperado] = useState(false);
+  const inputCamaraRef = useRef(null);
+  const inputGaleriaRef = useRef(null);
+  const colaRef = useRef([]);
+  const activosRef = useRef(0);
+  const cargadoRef = useRef(false);
+
+  // Borrador: si se cierra la pantalla o el móvil recarga al abrir la cámara, no se pierde nada.
+  useEffect(() => {
+    try {
+      const b = JSON.parse(localStorage.getItem(BORRADOR_CABALLETE_FOTOS) || "null");
+      if (b && Array.isArray(b.filas) && b.filas.length) {
+        setModo(b.modo || "nuevo"); setNumero(b.numero || hoyTxt()); setCaballeteId(b.caballeteId || "");
+        setFilas(b.filas.map((f) => (f.estado === "leyendo" ? { ...f, estado: "error", error: "Se cortó la lectura: repite esta foto." } : f)));
+        setRecuperado(true);
+      }
+    } catch (e) { /* sin borrador */ }
+    cargadoRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!cargadoRef.current) return;
+    try {
+      if (!filas.length) localStorage.removeItem(BORRADOR_CABALLETE_FOTOS);
+      else localStorage.setItem(BORRADOR_CABALLETE_FOTOS, JSON.stringify({ modo, numero, caballeteId, filas: filas.map(({ thumb, ...r }) => r) }));
+    } catch (e) { /* almacenamiento lleno o bloqueado: seguimos igual */ }
+  }, [filas, modo, numero, caballeteId]);
+
+  const cambiarFila = (id, patch) => setFilas((fs) => fs.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+
+  const leerUna = async (id, file) => {
+    try {
+      const reducido = await reducirFotoPegatina(file);
+      const o = await leerDocumentoCristalConIA(reducido, PROMPT_PEGATINA_CRISTAL);
+      const etiquetas = toArray(o?.etiquetas).filter((e) => e && (e.ancho || e.alto || e.pedido));
+      if (!etiquetas.length) { cambiarFila(id, { estado: "error", error: "No he leído ninguna pegatina clara. Repite la foto más de cerca y sin reflejos." }); return; }
+      const limpia = (e) => ({
+        proveedor: String(e.proveedor || "").trim(), cliente: String(e.cliente || "").trim(), pedido: String(e.pedido || "").trim(),
+        expediente: normExpPegatina(e.expediente), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
+        ancho: parseFloat(e.ancho) || "", alto: parseFloat(e.alto) || "", pieza: String(e.pieza || "").trim(),
+        posicion: String(e.posicion || "").trim(), composicion: String(e.composicion || "").trim(), peso: parseFloat(e.peso) || "", fecha: String(e.fecha || "").trim(),
+      });
+      // la primera pegatina rellena esta fila; si en la foto había más, se añaden debajo
+      setFilas((fs) => {
+        const idx = fs.findIndex((f) => f.id === id);
+        if (idx === -1) return fs;
+        const base = fs[idx];
+        const extra = etiquetas.slice(1).map((e) => ({ id: uid(), estado: "ok", thumb: base.thumb, ...limpia(e) }));
+        const copia = [...fs];
+        copia.splice(idx, 1, { ...base, estado: "ok", error: "", ...limpia(etiquetas[0]) }, ...extra);
+        return copia;
+      });
+    } catch (e) {
+      cambiarFila(id, { estado: "error", error: "No se pudo leer: " + (e.message || "error") });
+    }
+  };
+  const siguiente = () => {
+    while (activosRef.current < 3 && colaRef.current.length) {
+      const { id, file } = colaRef.current.shift();
+      activosRef.current++;
+      leerUna(id, file).finally(() => { activosRef.current--; siguiente(); });
+    }
+  };
+  const anadirFotos = async (lista) => {
+    const files = [...(lista || [])].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|webp)$/i.test(f.name || ""));
+    for (const file of files) {
+      const id = uid();
+      const thumb = await miniaturaFoto(file);
+      setFilas((fs) => [...fs, { id, estado: "leyendo", thumb }]);
+      colaRef.current.push({ id, file });
+    }
+    siguiente();
+  };
+
+  const existente = cristales.find((c) => c.id === caballeteId);
+  const clavesExistentes = new Set((existente?.piezas || []).map((p) => clavePiezaPegatina({ ...p, posicion: "", pieza: p.pieza || "" })));
+  const vistos = {};
+  const repetida = (f) => {
+    if (f.estado !== "ok") return false;
+    const k = clavePiezaPegatina(f);
+    const kSinPos = clavePiezaPegatina({ ...f, posicion: "" });
+    if (clavesExistentes.has(kSinPos)) return "ya está en ese caballete";
+    if (vistos[k] && vistos[k] !== f.id) return "foto repetida";
+    vistos[k] = f.id;
+    return false;
+  };
+  const marcas = Object.fromEntries(filas.map((f) => [f.id, repetida(f)]));
+
+  const leyendo = filas.filter((f) => f.estado === "leyendo").length;
+  const buenas = filas.filter((f) => f.estado === "ok" && !marcas[f.id] && (parseFloat(f.ancho) || parseFloat(f.alto)));
+  const conError = filas.filter((f) => f.estado === "error").length;
+  const m2Total = buenas.reduce((a, f) => a + ((parseFloat(f.ancho) || 0) * (parseFloat(f.alto) || 0)) / 1e6, 0);
+  const expsResumen = [...new Set(buenas.map((f) => normExpPegatina(f.expediente) || f.obra).filter(Boolean))];
+
+  const guardar = () => {
+    if (leyendo) { alert("Espera a que terminen de leerse las fotos."); return; }
+    if (!buenas.length) { alert("No hay ningún cristal leído para guardar."); return; }
+    if (modo === "existente" && !existente) { alert("Elige el caballete al que añadir los cristales."); return; }
+    if (conError && !window.confirm(`Hay ${conError} foto(s) que no se han podido leer y no se guardarán. ¿Guardar igualmente?`)) return;
+    const piezas = buenas.map(piezaDesdePegatina);
+    const unir = (arr) => [...new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))].join(", ");
+    const clientes = buenas.map((f) => f.cliente).filter(Boolean);
+    const cliente = clientes.find((c) => /uxcar/i.test(c)) ? (clientes.find((c) => /uxcar/i.test(c))) : (clientes[0] || "");
+    const datos = {
+      lote: modo === "nuevo" ? numero.trim() : (existente.lote || ""),
+      secuencia: unir(piezas.map((p) => p.pedido)),
+      cliente, proveedor: unir(piezas.map((p) => p.proveedor)),
+      expediente: unir(piezas.map((p) => p.expediente)),
+      medida: `${piezas.length} cristales · ${Math.round(m2Total * 100) / 100} m²`,
+      cantidad: piezas.length, piezas,
+    };
+    if (modo === "nuevo") onGuardarNuevo(datos); else onAnadirAExistente(existente, piezas);
+    try { localStorage.removeItem(BORRADOR_CABALLETE_FOTOS); } catch (e) { /* nada */ }
+    onCerrar();
+  };
+  const descartar = () => {
+    if (filas.length && !window.confirm("¿Descartar todas las fotos leídas de este caballete?")) return;
+    try { localStorage.removeItem(BORRADOR_CABALLETE_FOTOS); } catch (e) { /* nada */ }
+    onCerrar();
+  };
+
+  const opcionesExistentes = [...cristales].sort((a, b) => String(b.fechaLlegada || "").localeCompare(String(a.fechaLlegada || "")));
+  const campo = (f, k, ph, w = "") => (
+    <input value={f[k] ?? ""} placeholder={ph} onChange={(e) => cambiarFila(f.id, { [k]: e.target.value })}
+      className={`border border-slate-200 rounded px-2 py-1 text-xs ${w}`} />
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-2 sm:p-6">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h3 className="font-display font-bold text-slate-800 flex items-center gap-2"><Camera size={18} /> Montar caballete con fotos de pegatinas</h3>
+            <p className="text-xs text-slate-500 mt-1">Para cristales que llegan sueltos, sin packing list. Haz una foto a la pegatina de cada cristal: se lee sola y se va formando el caballete. Revisa lo leído y corrige lo que haga falta.</p>
+          </div>
+          <button onClick={onCerrar} className="text-slate-400 hover:text-slate-600" title="Cerrar (se guarda el borrador)"><X size={18} /></button>
+        </div>
+
+        {recuperado && (
+          <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">Se ha recuperado un caballete que tenías a medias. Sigue haciendo fotos o descártalo.</div>
+        )}
+
+        <div className="flex flex-wrap gap-3 items-end mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200">
+          <div className="flex gap-1">
+            <button onClick={() => setModo("nuevo")} className={`text-xs font-semibold px-3 py-1.5 rounded-md border ${modo === "nuevo" ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600"}`}>Caballete nuevo</button>
+            <button onClick={() => setModo("existente")} className={`text-xs font-semibold px-3 py-1.5 rounded-md border ${modo === "existente" ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600"}`}>Añadir a uno que ya existe</button>
+          </div>
+          {modo === "nuevo" ? (
+            <label className="text-xs text-slate-600 flex flex-col gap-1">Nº / nombre del caballete
+              <input value={numero} onChange={(e) => setNumero(e.target.value)} className={inputCls + " !py-1.5 !text-sm"} />
+            </label>
+          ) : (
+            <label className="text-xs text-slate-600 flex flex-col gap-1 flex-1 min-w-[220px]">Caballete
+              <select value={caballeteId} onChange={(e) => setCaballeteId(e.target.value)} className={inputCls + " !py-1.5 !text-sm"}>
+                <option value="">— Elige caballete —</option>
+                {opcionesExistentes.map((c) => (
+                  <option key={c.id} value={c.id}>{c.lote || "sin nº"} · {c.expediente || c.cliente || "—"} · {c.medida || ""} · {ubicacionTexto(c.ubicacion)}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-3">
+          <button onClick={() => inputCamaraRef.current?.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
+            <Camera size={16} /> Hacer foto a una pegatina
+          </button>
+          <button onClick={() => inputGaleriaRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2.5 rounded-md hover:bg-slate-50">
+            <ImageIcon size={15} /> Subir varias fotos
+          </button>
+          <input ref={inputCamaraRef} type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
+          <input ref={inputGaleriaRef} type="file" accept="image/*" multiple className="hidden"
+            onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
+        </div>
+
+        <div className="text-xs text-slate-600 mb-2 flex flex-wrap gap-x-4 gap-y-1">
+          <span><b>{buenas.length}</b> cristal(es) listos · <b>{Math.round(m2Total * 100) / 100}</b> m²</span>
+          {leyendo > 0 && <span className="text-sky-700 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> leyendo {leyendo}…</span>}
+          {conError > 0 && <span className="text-rose-600">{conError} sin leer</span>}
+          {expsResumen.length > 0 && <span className="text-slate-500">Obras: {expsResumen.join(", ")}</span>}
+        </div>
+
+        <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+          {filas.length === 0 && (
+            <div className="text-center text-sm text-slate-400 py-10 border border-dashed border-slate-300 rounded-lg">Aún no hay fotos. Pulsa "Hacer foto a una pegatina" y ve cristal a cristal.</div>
+          )}
+          {filas.map((f, i) => (
+            <div key={f.id} className={`flex gap-3 p-2 rounded-lg border ${f.estado === "error" ? "border-rose-200 bg-rose-50" : marcas[f.id] ? "border-amber-300 bg-amber-50" : "border-slate-200"}`}>
+              <div className="shrink-0 w-16 text-center">
+                {f.thumb ? <img src={f.thumb} alt="" className="w-16 h-16 object-cover rounded" /> : <div className="w-16 h-16 rounded bg-slate-100 flex items-center justify-center text-slate-300"><ImageIcon size={18} /></div>}
+                <div className="text-[10px] text-slate-400 mt-0.5">#{i + 1}</div>
+              </div>
+              <div className="flex-1 min-w-0">
+                {f.estado === "leyendo" && <div className="text-xs text-sky-700 flex items-center gap-1 pt-5"><Loader2 size={13} className="animate-spin" /> Leyendo pegatina…</div>}
+                {f.estado === "error" && <div className="text-xs text-rose-600 pt-4">⚠ {f.error}</div>}
+                {f.estado === "ok" && (
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    {campo(f, "ancho", "Ancho", "w-16")}<span className="text-slate-400 text-xs">×</span>{campo(f, "alto", "Alto", "w-16")}
+                    {campo(f, "expediente", "Expediente", "w-24")}
+                    {campo(f, "ref", "Vivienda / ref.", "w-28")}
+                    {campo(f, "pedido", "Nº pedido", "w-28")}
+                    {campo(f, "pieza", "Pieza", "w-16")}
+                    {campo(f, "proveedor", "Proveedor", "w-24")}
+                    {campo(f, "obra", "Obra", "w-32")}
+                    {campo(f, "composicion", "Composición", "flex-1 min-w-[180px]")}
+                    {marcas[f.id] && <span className="text-[11px] font-semibold text-amber-700">⚠ Repetido ({marcas[f.id]}): no se guardará</span>}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setFilas((fs) => fs.filter((x) => x.id !== f.id))} className="self-start text-slate-300 hover:text-rose-500" title="Quitar"><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap justify-between gap-2 mt-4 pt-3 border-t border-slate-200">
+          <button onClick={descartar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-2 rounded-md hover:bg-rose-50">Descartar</button>
+          <button onClick={guardar} disabled={!buenas.length || leyendo > 0} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+            className="text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2 rounded-md">
+            {modo === "nuevo" ? `Guardar caballete (${buenas.length} cristales)` : `Añadir ${buenas.length} cristales al caballete`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
@@ -10791,6 +11087,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [leyendoPacking, setLeyendoPacking] = useState(false);
   const [errorPacking, setErrorPacking] = useState("");
   const [mostrarNuevo, setMostrarNuevo] = useState(false);
+  const [verFotosPegatinas, setVerFotosPegatinas] = useState(() => { try { return !!localStorage.getItem(BORRADOR_CABALLETE_FOTOS); } catch (e) { return false; } });
+  const [avisoOk, setAvisoOk] = useState("");
   const inputPackingRef = useRef(null);
 
   const normalizar = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
@@ -10817,6 +11115,82 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       if (junto) return junto;
     }
     return huecoExpedienteNuevo(zonaSugerida, ocupado);
+  };
+
+  // Coloca en el almacén y guarda una lista de caballetes (packing list o fotos de pegatinas).
+  // Si el nº de caballete ya existe, sus cristales se juntan con él.
+  const colocarYGuardarCaballetes = (items) => {
+    // Mismo nº de caballete = MISMO caballete, aunque venga en otra hoja u otra foto:
+    // sus cristales se añaden al caballete que ya existe (sin repetir los que ya tenía).
+    const claveLote = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+    const existentes = {};
+    cristales.forEach((c) => { const k = claveLote(c.lote); if (k) existentes[k] = c; });
+    const fusiones = {};
+    const claveP = (p) => `${claveLote(p.pedido)}|${claveLote(p.ref)}|${parseFloat(p.ancho) || ""}|${parseFloat(p.alto) || ""}|${p.pos || ""}`;
+    items = items.filter((it) => {
+      const ex = existentes[claveLote(it.lote)];
+      if (!ex) return true;
+      const base = fusiones[ex.id] || { piezas: [...(ex.piezas || [])], expediente: ex.expediente || "", secuencia: ex.secuencia || "" };
+      const ya = new Set(base.piezas.map(claveP));
+      (it.piezas || []).forEach((p) => { if (!ya.has(claveP(p))) { base.piezas.push(p); ya.add(claveP(p)); } });
+      const unir = (a, b) => [...new Set(`${a}, ${b}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
+      base.expediente = unir(base.expediente, it.expediente || "");
+      base.secuencia = unir(base.secuencia, it.secuencia || "");
+      base.cantidad = base.piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0);
+      const m2 = base.piezas.reduce((a, p) => a + (parseFloat(p.m2) || 0), 0);
+      base.medida = `${base.cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`;
+      fusiones[ex.id] = base;
+      return false;
+    });
+    const nFusionados = Object.keys(fusiones).length;
+
+    // Simulamos la colocación de cada caballete nuevo uno a uno, usando la misma lógica
+    // de sugerencia (agrupar por expediente en la misma fila, si no el primer hueco libre
+    // de la zona). Trabajamos sobre una copia local para que los caballetes del mismo
+    // packing list también se tengan en cuenta entre sí según se van "colocando".
+    const ocupadosSimulado = cristales
+      .filter((c) => c.ubicacion)
+      .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) }));
+
+    const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
+
+    const calcularUbicacion = (item) => {
+      const zonaSugerida = `${item.proveedor || ""} ${item.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
+      {
+        const junto = huecoJuntoAExpediente(expedientesDeCaballete(item), ocupadosSimulado);
+        if (junto) return junto;
+      }
+      return huecoExpedienteNuevo(zonaSugerida, estaOcupado);
+    };
+
+    let sinHueco = 0;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const aGuardar = [];
+    items.forEach((it) => {
+      const datosBase = {
+        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
+        proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
+        cantidad: it.cantidad || 1,
+        ...(it.piezas ? { piezas: it.piezas } : {}),
+      };
+      const ubicacion = calcularUbicacion(datosBase);
+      if (ubicacion) {
+        ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente, exps: expedientesDeCaballete(datosBase) });
+        aGuardar.push({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
+      } else {
+        sinHueco++;
+        aGuardar.push(datosBase);
+      }
+    });
+    const ctxPacking = ctxAlmacen?.guardarPackingCaballetes;
+    if (ctxPacking) ctxPacking(aGuardar, fusiones);
+    else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
+    if (nFusionados > 0) {
+      setErrorPacking(`${nFusionados} caballete(s) ya estaban en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro).`);
+    }
+    if (sinHueco > 0) {
+      setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
+    }
   };
 
   const leerPackingList = async (file) => {
@@ -10919,77 +11293,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         setLeyendoPacking(false);
         return;
       }
-      // Mismo nº de caballete = MISMO caballete, aunque venga en otra hoja u otra foto:
-      // sus cristales se añaden al caballete que ya existe (sin repetir los que ya tenía).
-      const claveLote = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
-      const existentes = {};
-      cristales.forEach((c) => { const k = claveLote(c.lote); if (k) existentes[k] = c; });
-      const fusiones = {};
-      const claveP = (p) => `${claveLote(p.pedido)}|${claveLote(p.ref)}|${parseFloat(p.ancho) || ""}|${parseFloat(p.alto) || ""}|${p.pos || ""}`;
-      items = items.filter((it) => {
-        const ex = existentes[claveLote(it.lote)];
-        if (!ex) return true;
-        const base = fusiones[ex.id] || { piezas: [...(ex.piezas || [])], expediente: ex.expediente || "", secuencia: ex.secuencia || "" };
-        const ya = new Set(base.piezas.map(claveP));
-        (it.piezas || []).forEach((p) => { if (!ya.has(claveP(p))) { base.piezas.push(p); ya.add(claveP(p)); } });
-        const unir = (a, b) => [...new Set(`${a}, ${b}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
-        base.expediente = unir(base.expediente, it.expediente || "");
-        base.secuencia = unir(base.secuencia, it.secuencia || "");
-        base.cantidad = base.piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0);
-        const m2 = base.piezas.reduce((a, p) => a + (parseFloat(p.m2) || 0), 0);
-        base.medida = `${base.cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`;
-        fusiones[ex.id] = base;
-        return false;
-      });
-      const nFusionados = Object.keys(fusiones).length;
-
-      // Simulamos la colocación de cada caballete nuevo uno a uno, usando la misma lógica
-      // de sugerencia (agrupar por expediente en la misma fila, si no el primer hueco libre
-      // de la zona). Trabajamos sobre una copia local para que los caballetes del mismo
-      // packing list también se tengan en cuenta entre sí según se van "colocando".
-      const ocupadosSimulado = cristales
-        .filter((c) => c.ubicacion)
-        .map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) }));
-
-      const estaOcupado = (zona, fila, hueco) => ocupadosSimulado.some((o) => o.zona === zona && o.fila === fila && o.hueco === hueco);
-
-      const calcularUbicacion = (item) => {
-        const zonaSugerida = `${item.proveedor || ""} ${item.cliente || ""}`.toLowerCase().includes("uxcar") ? "arriba" : "abajo";
-        {
-          const junto = huecoJuntoAExpediente(expedientesDeCaballete(item), ocupadosSimulado);
-          if (junto) return junto;
-        }
-        return huecoExpedienteNuevo(zonaSugerida, estaOcupado);
-      };
-
-      let sinHueco = 0;
-      const hoy = new Date().toISOString().slice(0, 10);
-      const aGuardar = [];
-      items.forEach((it) => {
-        const datosBase = {
-          lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
-          proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
-          cantidad: it.cantidad || 1,
-          ...(it.piezas ? { piezas: it.piezas } : {}),
-        };
-        const ubicacion = calcularUbicacion(datosBase);
-        if (ubicacion) {
-          ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente, exps: expedientesDeCaballete(datosBase) });
-          aGuardar.push({ ...datosBase, ubicacion, estado: "Colocado", fechaColocado: hoy });
-        } else {
-          sinHueco++;
-          aGuardar.push(datosBase);
-        }
-      });
-      const ctxPacking = ctxAlmacen?.guardarPackingCaballetes;
-      if (ctxPacking) ctxPacking(aGuardar, fusiones);
-      else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
-      if (nFusionados > 0) {
-        setErrorPacking(`${nFusionados} caballete(s) ya estaban en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro).`);
-      }
-      if (sinHueco > 0) {
-        setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
-      }
+      colocarYGuardarCaballetes(items);
     } catch (e) {
       console.error("Error leyendo packing list:", e);
       setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF. (" + e.message + ")");
@@ -11016,10 +11320,45 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         </button>
         <input ref={inputPackingRef} type="file" accept=".xlsx,.xls,.csv,.ods,image/*,application/pdf" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
+        <button type="button" onClick={() => setVerFotosPegatinas(true)}
+          className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-md">
+          <Camera size={14} /> Montar caballete con fotos de pegatinas
+        </button>
         <button type="button" onClick={() => setMostrarNuevo(true)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <Plus size={14} /> Añadir a mano
         </button>
       </div>
+      {avisoOk && (
+        <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-emerald-50 border border-emerald-200">
+          <p className="text-xs text-emerald-700 font-semibold">✓ {avisoOk}</p>
+          <button onClick={() => setAvisoOk("")} className="text-emerald-400 hover:text-emerald-600 text-xs font-bold shrink-0">✕</button>
+        </div>
+      )}
+      {verFotosPegatinas && (
+        <CaballetePorFotos
+          cristales={cristales}
+          onCerrar={() => setVerFotosPegatinas(false)}
+          onGuardarNuevo={(datos) => {
+            setErrorPacking("");
+            colocarYGuardarCaballetes([datos]);
+            setAvisoOk(`Caballete ${datos.lote || ""} guardado con ${datos.cantidad} cristales (${datos.expediente || "sin expediente"}).`);
+          }}
+          onAnadirAExistente={(cab, piezasNuevas) => {
+            const piezas = [...(cab.piezas || []), ...piezasNuevas];
+            const unir = (a, b) => [...new Set(`${a || ""}, ${b || ""}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
+            const cantidad = piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0);
+            const m2 = piezas.reduce((a, p) => a + (parseFloat(p.m2) || 0), 0);
+            onUpdate(cab.id, {
+              piezas, cantidad,
+              expediente: unir(cab.expediente, piezasNuevas.map((p) => p.expediente).join(", ")),
+              secuencia: unir(cab.secuencia, piezasNuevas.map((p) => p.pedido).join(", ")),
+              proveedor: unir(cab.proveedor, piezasNuevas.map((p) => p.proveedor).join(", ")),
+              medida: `${cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`,
+            });
+            setAvisoOk(`${piezasNuevas.length} cristales añadidos al caballete ${cab.lote || ""}.`);
+          }}
+        />
+      )}
       {errorPacking && (
         <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-rose-50 border border-rose-200">
           <p className="text-xs text-rose-600 font-semibold">⚠ {errorPacking}</p>
