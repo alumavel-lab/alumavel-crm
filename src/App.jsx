@@ -1266,7 +1266,7 @@ export default function App() {
       const cant = porId[m.id];
       if (!cant) return m;
       const mov = { id: uid(), tipo: "salida", cantidad: cant, contacto: motivo || "Calculadora de ventanas", estado: "Recibido", fecha: hoy };
-      return { ...m, stockReal: (parseFloat(m.stockReal) || 0) - cant, movimientos: [...(m.movimientos || []), mov] };
+      return { ...m, ...aplicarDeltaStock(m, -cant), movimientos: [...(m.movimientos || []), mov] };
     });
     saveMateriales(next);
     showToast(`Stock descontado (${Object.keys(porId).length} referencia/s)`);
@@ -1579,7 +1579,7 @@ export default function App() {
       const totalRevertir = movs.reduce((s, mv) => s + (parseFloat(mv.cantidad) || 0), 0);
       return {
         ...m,
-        stockReal: (m.stockReal || 0) + totalRevertir,
+        ...aplicarDeltaStock(m, totalRevertir),
         movimientos: (m.movimientos || []).filter((mv) => mv.usoId !== usoId),
       };
     });
@@ -1678,6 +1678,12 @@ export default function App() {
     saveProveedores(proveedores.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   };
 
+  const asignarProveedorMateriales = (ids, proveedorId) => {
+    const idSet = new Set(ids);
+    saveMateriales(materiales.map((m) => (idSet.has(m.id) ? { ...m, proveedorId } : m)));
+    showToast(`${ids.length} material(es) con proveedor asignado`);
+  };
+
   const upsertMaterial = (data) => {
     let next;
     if (data.id) {
@@ -1706,11 +1712,8 @@ export default function App() {
     const next = materiales.map((m) => {
       if (m.id !== materialId) return m;
       const movimientos = [...(m.movimientos || []), mov];
-      let stockReal = m.stockReal || 0;
-      if (mov.estado === "Recibido") {
-        stockReal += mov.tipo === "entrada" ? mov.cantidad : -mov.cantidad;
-      }
-      return { ...m, movimientos, stockReal };
+      const delta = mov.estado === "Recibido" ? (mov.tipo === "entrada" ? mov.cantidad : -mov.cantidad) : 0;
+      return { ...m, movimientos, ...(delta ? aplicarDeltaStock(m, delta) : {}) };
     });
     saveMateriales(next);
   };
@@ -1720,11 +1723,8 @@ export default function App() {
       if (m.id !== materialId) return m;
       const mov = (m.movimientos || []).find((x) => x.id === movId);
       const movimientos = (m.movimientos || []).filter((x) => x.id !== movId);
-      let stockReal = m.stockReal || 0;
-      if (mov && mov.estado === "Recibido") {
-        stockReal -= mov.tipo === "entrada" ? mov.cantidad : -mov.cantidad;
-      }
-      return { ...m, movimientos, stockReal };
+      const delta = mov && mov.estado === "Recibido" ? -(mov.tipo === "entrada" ? mov.cantidad : -mov.cantidad) : 0;
+      return { ...m, movimientos, ...(delta ? aplicarDeltaStock(m, delta) : {}) };
     });
     saveMateriales(next);
   };
@@ -1949,7 +1949,7 @@ export default function App() {
       const idx = materialesFinal.findIndex((m) => normRef(m.codigo) === normRef(t.ref) && String(m.color || "").toLowerCase() === String(t.acabado || "").toLowerCase());
       if (idx >= 0) {
         const m = materialesFinal[idx];
-        materialesFinal = materialesFinal.map((x, i) => (i === idx ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + cant, movimientos: [...(m.movimientos || []), mov] } : x));
+        materialesFinal = materialesFinal.map((x, i) => (i === idx ? { ...m, ...aplicarDeltaStock(m, cant), movimientos: [...(m.movimientos || []), mov] } : x));
       } else {
         altasNuevas++;
         materialesFinal = [{
@@ -2012,11 +2012,11 @@ export default function App() {
       if (!bien) return;
       aStock += bien;
       if (l.modo !== "libre" && l.materialId) {
-        mats = mats.map((m) => (m.id === l.materialId ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + bien, movimientos: [...(m.movimientos || []), mov(bien)] } : m));
+        mats = mats.map((m) => (m.id === l.materialId ? { ...m, ...aplicarDeltaStock(m, bien), movimientos: [...(m.movimientos || []), mov(bien)] } : m));
       } else if (l.tarifaRef && l.tarifaRef.ref) {
         const t = l.tarifaRef;
         const idx = mats.findIndex((m) => normRef(m.codigo) === normRef(t.ref) && String(m.color || "").toLowerCase() === String(t.acabado || "").toLowerCase());
-        if (idx >= 0) mats = mats.map((m, i) => (i === idx ? { ...m, stockReal: (parseFloat(m.stockReal) || 0) + bien, movimientos: [...(m.movimientos || []), mov(bien)] } : m));
+        if (idx >= 0) mats = mats.map((m, i) => (i === idx ? { ...m, ...aplicarDeltaStock(m, bien), movimientos: [...(m.movimientos || []), mov(bien)] } : m));
         else {
           altas++;
           mats = [{
@@ -4479,6 +4479,7 @@ export default function App() {
             detailId={materialDetailId}
             setDetailId={setMaterialDetailId}
             onUpsert={upsertMaterial}
+            onAsignarProveedor={asignarProveedorMateriales}
             onDelete={deleteMaterial}
             isAdmin={isAdmin}
             onAddMovimiento={addMovimiento}
@@ -8367,9 +8368,11 @@ function ProveedorDetail({ proveedor, materiales, pedidos, proyectos, onBack, on
 
 /* ================= STOCK ================= */
 
-function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido, onImportarTarifas, onImportarFotos }) {
+function StockModulo({ materiales, proveedores, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onAsignarProveedor, onDelete, onAddMovimiento, onRemoveMovimiento, isAdmin, onEnviarAPedido, onImportarTarifas, onImportarFotos }) {
   const [q, setQ] = useState("");
   const [subview, setSubview] = useState("catalogo"); // catalogo | reponer
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [asignandoProveedor, setAsignandoProveedor] = useState(false);
   const inputTarifasRef = useRef(null);
   const inputFotosRef = useRef(null);
   const [importandoFotos, setImportandoFotos] = useState(false);
@@ -8419,7 +8422,11 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
   const [editandoAlmacenes, setEditandoAlmacenes] = useState(false);
   const filtered = useMemo(() => {
     return materiales.filter((m) => {
-      if (filtroAlmacen && (filtroAlmacen === "__sin" ? m.almacen : m.almacen !== filtroAlmacen)) return false;
+      if (filtroAlmacen) {
+        const almacenesDelMaterial = (m.stockPorAlmacen || []).length ? m.stockPorAlmacen.map((x) => x.almacen) : [m.almacen];
+        const tieneAlmacen = almacenesDelMaterial.some(Boolean);
+        if (filtroAlmacen === "__sin" ? tieneAlmacen : !almacenesDelMaterial.includes(filtroAlmacen)) return false;
+      }
       if (!q) return true;
       const s = `${m.codigo} ${m.descripcion} ${m.categoria} ${m.familia} ${proveedorNombre(m.proveedorId)} ${m.almacen || ""} ${m.estanteria || ""}`.toLowerCase();
       return s.includes(q.toLowerCase());
@@ -8505,6 +8512,7 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
         onDelete={() => onDelete(material.id)}
         isAdmin={isAdmin}
         onRemoveMovimiento={(movId) => onRemoveMovimiento(material.id, movId)}
+        onUpsert={onUpsert}
       />
     );
   }
@@ -8594,6 +8602,20 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
               <option value="__sin">Sin almacén asignado</option>
             </Select>
             {ctxAlm.saveConfigVentanas && <button onClick={() => setEditandoAlmacenes(!editandoAlmacenes)} className="text-sm font-semibold text-slate-600 hover:underline">Almacenes</button>}
+            {seleccionados.length > 0 && (
+              <div className="flex items-center gap-2 ml-auto bg-emerald-50 border border-emerald-200 rounded-md px-3 py-1.5">
+                <span className="text-xs font-semibold text-emerald-700">{seleccionados.length} seleccionado(s)</span>
+                <select className="text-sm border border-slate-300 rounded-md px-2 py-1" value="" onChange={(e) => {
+                  const provId = e.target.value; if (!provId) return;
+                  onAsignarProveedor && onAsignarProveedor(seleccionados, provId);
+                  setSeleccionados([]); setAsignandoProveedor(false);
+                }}>
+                  <option value="">Asignar proveedor…</option>
+                  {[...proveedores].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es")).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+                <button onClick={() => setSeleccionados([])} className="text-xs text-slate-500 hover:underline">Quitar selección</button>
+              </div>
+            )}
           </div>
           {editandoAlmacenes && (
             <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-2 max-w-lg">
@@ -8613,6 +8635,10 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                  <th className="px-4 py-3 w-8">
+                    <input type="checkbox" checked={filtered.length > 0 && seleccionados.length === filtered.length}
+                      onChange={(e) => setSeleccionados(e.target.checked ? filtered.map((m) => m.id) : [])} />
+                  </th>
                   <th className="px-4 py-3 font-semibold">Código</th>
                   <th className="px-4 py-3 font-semibold">Descripción</th>
                   <th className="px-4 py-3 font-semibold">Proveedor</th>
@@ -8625,12 +8651,16 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
               </thead>
               <tbody>
                 {filtered.length === 0 && (
-                  <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400 text-sm">No hay materiales que coincidan con la búsqueda.</td></tr>
+                  <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400 text-sm">No hay materiales que coincidan con la búsqueda.</td></tr>
                 )}
                 {filtered.map((m) => {
                   const bajo = m.stockReal <= m.stockMinimo;
                   return (
                     <tr key={m.id} onClick={() => { setDetailId(m.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={seleccionados.includes(m.id)}
+                          onChange={(e) => setSeleccionados(e.target.checked ? [...seleccionados, m.id] : seleccionados.filter((id) => id !== m.id))} />
+                      </td>
                       <td className="px-4 py-3 font-mono-num text-slate-500">{m.codigo}</td>
                       <td className="px-4 py-3 font-medium text-slate-800">{m.descripcion}</td>
                       <td className="px-4 py-3 text-slate-600">{proveedorNombre(m.proveedorId)}</td>
@@ -8791,6 +8821,10 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
       stockOptimo: parseFloat(f.stockOptimo) || 0,
       precioCompra: parseFloat(f.precioCompra) || 0,
       precioVenta: parseFloat(f.precioVenta) || 0,
+      ...(f.stockPorAlmacen && f.stockPorAlmacen.length ? (() => {
+        const limpias = f.stockPorAlmacen.map((x) => ({ ...x, cantidad: parseFloat(x.cantidad) || 0 }));
+        return { stockPorAlmacen: limpias, stockReal: limpias.reduce((a, x) => a + x.cantidad, 0) };
+      })() : {}),
     });
   };
 
@@ -8821,14 +8855,13 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
           <Field label="Familia"><TextInput value={f.familia} onChange={set("familia")} /></Field>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Almacén">
-            <Select value={f.almacen || ""} onChange={set("almacen")}>
-              <option value="">— Sin almacén —</option>
-              {[...new Set([...listaAlmacenes(ctxAlm.configVentanas), ...(f.almacen ? [f.almacen] : [])])].map((a) => <option key={a} value={a}>{a}</option>)}
-            </Select>
-          </Field>
-          <Field label="Estantería / balda / hueco"><TextInput value={f.estanteria || ""} onChange={set("estanteria")} placeholder="Ej. E3 · balda 2" /></Field>
+        <div>
+          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Dónde está (se puede repartir entre varios almacenes)</span>
+          <StockPorAlmacenEditor
+            filas={f.stockPorAlmacen && f.stockPorAlmacen.length ? f.stockPorAlmacen : (f.almacen || f.estanteria ? [{ id: uid(), almacen: f.almacen || "", estanteria: f.estanteria || "", cantidad: f.stockReal || 0 }] : [])}
+            onChange={(filas) => setF({ ...f, stockPorAlmacen: filas })}
+            almacenes={listaAlmacenes(ctxAlm.configVentanas)}
+          />
         </div>
 
         <div className="grid grid-cols-3 gap-4">
@@ -8892,8 +8925,10 @@ function MaterialForm({ initial, proveedores, onCancel, onSave }) {
   );
 }
 
-function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemoveMovimiento, isAdmin }) {
+function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemoveMovimiento, isAdmin, onUpsert }) {
+  const ctxAlm = React.useContext(TarifasVentanasCtx) || {};
   const [tab, setTab] = useState("datos");
+  const sumaAlmacenes = totalStockPorAlmacen(material);
   const movimientos = material.movimientos || [];
   const historicoPrecios = material.historicoPrecios || [];
   const bajo = material.stockReal <= material.stockMinimo;
@@ -9001,6 +9036,20 @@ function MaterialDetail({ material, proveedor, onBack, onEdit, onDelete, onRemov
             <InfoRow icon={<Package size={14} />} label="Unidad de compra" value={material.unidadCompra || "—"} />
             <InfoRow icon={<Package size={14} />} label="Acabado" value={[material.color, material.acabadoDescripcion].filter(Boolean).join(" — ") || "—"} />
             <InfoRow icon={<Hash size={14} />} label="Dimensiones (L×A×H×Grueso)" value={[material.longitud, material.ancho, material.alto, material.grueso].filter((v) => v !== "" && v != null).length ? `${material.longitud || 0} × ${material.ancho || 0} × ${material.alto || 0} × ${material.grueso || 0}` : "—"} />
+          </div>
+          <div className="mt-6 pt-6 border-t border-slate-100">
+            <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Dónde está (reparto por almacén)</span>
+            <StockPorAlmacenEditor
+              filas={material.stockPorAlmacen || []}
+              onChange={(filas) => {
+                const limpias = filas.map((x) => ({ ...x, cantidad: parseFloat(x.cantidad) || 0 }));
+                onUpsert && onUpsert({ ...material, stockPorAlmacen: limpias, stockReal: limpias.reduce((a, x) => a + x.cantidad, 0) });
+              }}
+              almacenes={listaAlmacenes(ctxAlm.configVentanas)}
+            />
+            {(material.stockPorAlmacen || []).length > 0 && (
+              <p className="mt-2 text-xs text-slate-500">El Stock real ({material.stockReal ?? 0}) es siempre la suma de estos almacenes, y es lo que usan Pedidos y "A reponer". Al recibir un pedido o registrar un movimiento, entra o sale del primer almacén de la lista — si quieres que sea otro, ponlo el primero de la lista.</p>
+            )}
           </div>
         </CornerFrame>
       )}
@@ -10061,18 +10110,6 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           <div className="space-y-2">
             {f.lineas.map((l) => (
               <div key={l.id} className="border border-slate-200 rounded-md p-2.5 bg-slate-50/50">
-                <div className="flex items-center gap-2 mb-2">
-                  <button type="button" onClick={() => setLinea(l.id, { modo: "catalogo" })}
-                    className={`text-xs font-semibold px-2.5 py-1 rounded-full ${l.modo === "catalogo" ? "bg-[#2E8B57] text-white" : "bg-slate-200 text-slate-500"}`}>
-                    Material de catálogo
-                  </button>
-                  <button type="button" onClick={() => setLinea(l.id, { modo: "libre" })}
-                    className={`text-xs font-semibold px-2.5 py-1 rounded-full ${l.modo === "libre" ? "bg-[#2E8B57] text-white" : "bg-slate-200 text-slate-500"}`}>
-                    Medida a medida
-                  </button>
-                  <button type="button" onClick={() => removeLinea(l.id)} className="ml-auto text-slate-300 hover:text-rose-500"><X size={15} /></button>
-                </div>
-
                 {l.modo === "catalogo" ? (
                   <div className="grid grid-cols-12 gap-2 items-center">
                     <div className="col-span-6">
@@ -10083,30 +10120,26 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
                         options={materiales.map((m) => ({ value: m.id, label: m.descripcion, sublabel: m.codigo }))}
                       />
                     </div>
-                    <div className="col-span-3">
+                    <div className="col-span-2">
                       <TextInput type="number" placeholder="Cantidad" value={l.cantidad} onChange={(e) => setLinea(l.id, { cantidad: e.target.value })} />
                     </div>
                     <div className="col-span-3">
                       <TextInput type="number" step="0.01" placeholder="Precio ud. (€)" value={l.precio} onChange={(e) => setLinea(l.id, { precio: e.target.value })} />
                     </div>
+                    <button type="button" onClick={() => removeLinea(l.id)} className="col-span-1 text-slate-300 hover:text-rose-500 justify-self-end"><X size={15} /></button>
                   </div>
                 ) : (
                   <div className="grid grid-cols-12 gap-2 items-center">
-                    <div className="col-span-4">
-                      <TextInput placeholder="Referencia / descripción (ej. Cristal FL1)" value={l.referencia} onChange={(e) => setLinea(l.id, { referencia: e.target.value })} />
-                    </div>
-                    <div className="col-span-2">
-                      <TextInput type="number" placeholder="Ancho" value={l.ancho} onChange={(e) => setLinea(l.id, { ancho: e.target.value })} />
-                    </div>
-                    <div className="col-span-2">
-                      <TextInput type="number" placeholder="Alto" value={l.alto} onChange={(e) => setLinea(l.id, { alto: e.target.value })} />
+                    <div className="col-span-6">
+                      <TextInput placeholder="Referencia / descripción" value={l.referencia} onChange={(e) => setLinea(l.id, { referencia: e.target.value })} />
                     </div>
                     <div className="col-span-2">
                       <TextInput type="number" placeholder="Cantidad" value={l.cantidad} onChange={(e) => setLinea(l.id, { cantidad: e.target.value })} />
                     </div>
-                    <div className="col-span-2">
+                    <div className="col-span-3">
                       <TextInput type="number" step="0.01" placeholder="Precio ud. (€)" value={l.precio} onChange={(e) => setLinea(l.id, { precio: e.target.value })} />
                     </div>
+                    <button type="button" onClick={() => removeLinea(l.id)} className="col-span-1 text-slate-300 hover:text-rose-500 justify-self-end"><X size={15} /></button>
                   </div>
                 )}
               </div>
@@ -10116,11 +10149,8 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             <button type="button" onClick={() => addLinea("catalogo")} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
               <Plus size={14} /> Añadir material de catálogo
             </button>
-            <button type="button" onClick={() => addLinea("libre")} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
-              <Plus size={14} /> Añadir medida a medida
-            </button>
             <button type="button" onClick={() => setVerSelectorTarifa(!verSelectorTarifa)} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
-              <Plus size={14} /> Añadir desde tarifa de aluminio
+              <Plus size={14} /> Añadir desde tarifa de aluminio/herraje
             </button>
           </div>
           {verSelectorTarifa && (
@@ -10183,28 +10213,6 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             </div>
           </div>
         )}
-
-        <div className="border border-dashed border-slate-300 rounded-md p-3 bg-slate-50/50">
-          <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-1">Importar directamente desde un PDF (Listado de cajas)</span>
-          <p className="text-xs text-slate-400 mb-2">Sube el PDF tal cual te lo manda el proveedor (ej. "Listado Cajas" de Ecowin) y se leen todas las medidas de todas las páginas automáticamente como líneas "a medida".</p>
-          <button
-            type="button"
-            onClick={() => inputPdfPedidoRef.current?.click()}
-            disabled={leyendoPdfPedido}
-            style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-            className="flex items-center gap-1.5 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md"
-          >
-            <FileText size={14} /> {leyendoPdfPedido ? "Leyendo el PDF..." : "Subir PDF de listado de cajas"}
-          </button>
-          <input
-            ref={inputPdfPedidoRef}
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={(e) => { if (e.target.files?.[0]) importarLineasDesdePdf(e.target.files[0]); e.target.value = ""; }}
-          />
-          {errorPdfPedido && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfPedido}</p>}
-        </div>
 
         <DocumentosPedido documentos={f.documentos} adjuntosPdf={f.adjuntosPdf}
           carpeta={`documentos-proyectos/pedido-${f.id || "nuevo"}`}
@@ -29265,7 +29273,53 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
 // Almacenes de material (tornillería, accesorios...). La lista se edita en Stock.
 const ALMACENES_DEF = ["Almacén 1", "Almacén 2", "Almacén 3", "Almacén 4", "Almacén 5"];
 const listaAlmacenes = (configVentanas) => (toArray(configVentanas && configVentanas.almacenes).length ? toArray(configVentanas.almacenes) : ALMACENES_DEF);
-const ubicacionMaterial = (m) => (m ? [m.almacen, m.estanteria].filter(Boolean).join(" · ") : "");
+const ubicacionMaterial = (m) => {
+  if (!m) return "";
+  if ((m.stockPorAlmacen || []).length > 0) {
+    return m.stockPorAlmacen.map((x) => `${[x.almacen, x.estanteria].filter(Boolean).join(" · ") || "(sin almacén)"} (${x.cantidad ?? 0})`).join(" · ");
+  }
+  return [m.almacen, m.estanteria].filter(Boolean).join(" · ");
+};
+const totalStockPorAlmacen = (m) => (m?.stockPorAlmacen || []).reduce((a, x) => a + (parseFloat(x.cantidad) || 0), 0);
+// Aplica un cambio de cantidad (+/-) al stock de un material. Si tiene reparto por
+// almacén, el movimiento entra/sale del primer almacén de la lista (el principal) y el
+// Stock real se recalcula solo como la suma; si no tiene reparto, solo cambia el Stock
+// real de siempre. Así todo pedido/movimiento sigue funcionando igual, tenga o no reparto.
+const aplicarDeltaStock = (m, delta) => {
+  const reparto = m.stockPorAlmacen || [];
+  if (reparto.length > 0) {
+    const nuevoReparto = reparto.map((x, i) => (i === 0 ? { ...x, cantidad: (parseFloat(x.cantidad) || 0) + delta } : x));
+    return { stockPorAlmacen: nuevoReparto, stockReal: nuevoReparto.reduce((a, x) => a + (parseFloat(x.cantidad) || 0), 0) };
+  }
+  return { stockReal: (parseFloat(m.stockReal) || 0) + delta };
+};
+// Editor de "en qué almacén(es) está este material y cuánto hay en cada uno". Uso
+// manual: quien mueve stock físicamente lo mantiene al día; no se toca solo al
+// recibir pedidos o hacer un movimiento — eso sigue sumando/restando el Stock real.
+function StockPorAlmacenEditor({ filas, onChange, almacenes }) {
+  const lista = filas || [];
+  const total = lista.reduce((a, x) => a + (parseFloat(x.cantidad) || 0), 0);
+  const cambiarFila = (id, patch) => onChange(lista.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const quitarFila = (id) => onChange(lista.filter((x) => x.id !== id));
+  const anadirFila = () => onChange([...lista, { id: uid(), almacen: almacenes[0] || "", estanteria: "", cantidad: 0 }]);
+  return (
+    <div className="space-y-2">
+      {lista.map((x) => (
+        <div key={x.id} className="flex flex-wrap items-center gap-2">
+          <select className={inputCls + " !w-auto"} value={x.almacen || ""} onChange={(e) => cambiarFila(x.id, { almacen: e.target.value })}>
+            <option value="">— Sin almacén —</option>
+            {[...new Set([...almacenes, ...(x.almacen ? [x.almacen] : [])])].map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <TextInput className="!w-40" placeholder="Estantería / balda" value={x.estanteria || ""} onChange={(e) => cambiarFila(x.id, { estanteria: e.target.value })} />
+          <TextInput type="number" className="!w-24" placeholder="Cantidad" value={x.cantidad ?? ""} onChange={(e) => cambiarFila(x.id, { cantidad: e.target.value })} />
+          <button type="button" onClick={() => quitarFila(x.id)} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
+        </div>
+      ))}
+      <button type="button" onClick={anadirFila} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir almacén</button>
+      {lista.length > 0 && <p className="text-xs text-slate-500">Suma de todos los almacenes: <b>{total}</b> unidades.</p>}
+    </div>
+  );
+}
 
 /* ---------- ALMACÉN DE VENTANAS (CABALLETES) ---------- */
 // Caballetes donde se dejan las ventanas terminadas. Cada caballete tiene su sitio, se
