@@ -109,6 +109,15 @@ const ZONAS_CRISTALES = {
   arriba: { label: "Arriba (Uxcar)", filas: 3, huecos: 15 },
   abajo: { label: "Abajo (ALUMAVEL)", filas: 2, huecos: 15 },
 };
+// Tamaño de cada zona guardado en Firebase ("zonasCristales"): se amplía con los "+" rojos
+// del mapa (más huecos a la derecha o una fila más). Se aplica encima de lo de arriba.
+function aplicarZonasCristales(v) {
+  Object.keys(ZONAS_CRISTALES).forEach((z) => {
+    const o = (v && v[z]) || {};
+    if (parseInt(o.filas, 10) > 0) ZONAS_CRISTALES[z].filas = parseInt(o.filas, 10);
+    if (parseInt(o.huecos, 10) > 0) ZONAS_CRISTALES[z].huecos = parseInt(o.huecos, 10);
+  });
+}
 // Filas de reserva ("colchón"): ahora no hay ninguna, todas las filas se usan igual
 // para poder agrupar más los expedientes. Si algún día se quiere reservar una, se pone
 // aquí, por ejemplo { arriba: 3 }.
@@ -618,6 +627,7 @@ export default function App() {
   const [confirmacionesCristal, setConfirmacionesCristal] = useState([]);
   const [carrosPersianas, setCarrosPersianas] = useState([]);
   const [persianasAlmacen, setPersianasAlmacen] = useState([]);
+  const [almacenesPersianas, setAlmacenesPersianas] = useState([]);
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionesUsuario, setSesionesUsuario] = useState({});
@@ -762,7 +772,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas"];
         const resultados = {};
         const fallos = [];
         await Promise.all(claves.map(async (k) => {
@@ -803,6 +813,7 @@ export default function App() {
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
         if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
+        setAlmacenesPersianas(resultados.almacenesPersianas ? toArray(resultados.almacenesPersianas) : [ALMACEN_PERSIANAS_PRINCIPAL]);
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
         if (resultados.tareas) setTareas(toArray(resultados.tareas));
@@ -869,6 +880,65 @@ export default function App() {
     return () => { activo = false; clearInterval(intervalo); };
   }, [modulo]);
 
+  // Abrir documentos en el móvil. Chrome (sobre todo en Android) no abre los documentos
+  // guardados como "data:" (los antiguos) — al pulsar no hacía nada — y los PDF de
+  // Firebase a veces tampoco. Aquí se intercepta el clic en cualquier enlace del CRM:
+  // los "data:" se convierten en archivo de verdad, y en Android los PDF se descargan
+  // (se abren desde la notificación de descarga con el visor de PDF del móvil).
+  useEffect(() => {
+    const esAndroid = /Android/i.test(navigator.userAgent || "");
+    const conExtension = (nombre, tipo) => {
+      const n = String(nombre || "documento").replace(/[\\/:*?"<>|]+/g, "_").trim() || "documento";
+      if (/\.[a-z0-9]{2,5}$/i.test(n)) return n;
+      return n + (/pdf/.test(tipo) ? ".pdf" : /png/.test(tipo) ? ".png" : /jpe?g/.test(tipo) ? ".jpg" : "");
+    };
+    const guardarBlob = (blob, nombre) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = nombre; a.rel = "noopener"; a.style.display = "none";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+    const onClick = async (ev) => {
+      if (ev.defaultPrevented || ev.button !== 0) return;
+      const a = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      const nombre = a.getAttribute("download") || (a.textContent || "").trim().slice(0, 100);
+      const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(href);
+      if (m) {
+        ev.preventDefault();
+        try {
+          const tipo = m[1] || "application/octet-stream";
+          const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const blob = new Blob([bytes], { type: tipo });
+          if (esAndroid || a.hasAttribute("download")) { guardarBlob(blob, conExtension(nombre, tipo)); return; }
+          const w = window.open(URL.createObjectURL(blob), "_blank");
+          if (!w) guardarBlob(blob, conExtension(nombre, tipo));
+        } catch (e) { alert("No se pudo abrir el documento: " + e.message); }
+        return;
+      }
+      if (esAndroid && /firebasestorage\.googleapis\.com/.test(href) && /\.pdf/i.test((() => { try { return decodeURIComponent(href); } catch (e) { return href; } })() + " " + nombre)) {
+        ev.preventDefault();
+        showToast("Descargando el PDF…");
+        try {
+          const { bytes, mimeType } = await descargarArchivoGuardado(href);
+          guardarBlob(new Blob([bytes], { type: mimeType || "application/pdf" }), conExtension(nombre, "application/pdf"));
+          showToast("PDF descargado: ábrelo desde la notificación de descarga");
+        } catch (e) {
+          window.location.href = href; // si falla, que Chrome lo descargue a su manera
+        }
+      }
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const [, setZonasCristalesVer] = useState(0);
+  useEffect(() => onValue(ref(fbDb, "zonasCristales"), (snap) => { aplicarZonasCristales(snap.val()); setZonasCristalesVer((n) => n + 1); }, () => {}), []);
   const persistTimers = useRef({});
   const persistLatest = useRef({});
   const persistInFlight = useRef({});
@@ -2064,9 +2134,11 @@ export default function App() {
     });
     let sinSitioPers = 0;
     if (nuevasPers.length) {
-      const estado = estadoOcupacionPersianas(persianasAlmacen);
-      const r = colocarGrupoPersianas(nuevasPers, expediente || "—", estantesAlmacenPersianas(carrosPersianas), estado);
-      nuevasPers.forEach((x) => { x.estante = r.res[x.id] || null; if (!x.estante) sinSitioPers++; });
+      // Solo en el almacén marcado para recibir pedidos (los números de carro se repiten entre almacenes)
+      const almRec = almacenRecepcionPersianas(almacenesPersianas);
+      const estado = estadoOcupacionPersianas(persianasAlmacen.filter((x) => almacenDe(x) === almRec));
+      const r = colocarGrupoPersianas(nuevasPers, expediente || "—", estantesAlmacenPersianas(carrosPersianas.filter((c) => almacenDe(c) === almRec)), estado);
+      nuevasPers.forEach((x) => { x.almacenId = almRec; x.estante = r.res[x.id] || null; if (!x.estante) sinSitioPers++; });
     }
 
     // 4) El pedido: lo recibido y lo roto por línea
@@ -2173,6 +2245,7 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
+  const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
 
   const addCristal = (data) => {
     const nuevo = { id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: new Date().toISOString().slice(0, 10), ...data };
@@ -4768,7 +4841,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen,
+            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas,
             guardarPackingCaballetes: (nuevos, fusiones) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -11947,6 +12020,26 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
 }
 
 function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) {
+  const cambiarZona = (zonaId, campo, delta) => {
+    const cfg = ZONAS_CRISTALES[zonaId];
+    const nuevo = (cfg[campo] || 0) + delta;
+    if (nuevo < 1) return;
+    if (delta < 0) {
+      const ocupado = cristales.some((c) => c.ubicacion && c.ubicacion.zona === zonaId && (campo === "huecos" ? c.ubicacion.hueco === cfg.huecos : c.ubicacion.fila === cfg.filas));
+      if (ocupado) { alert(`No se puede quitar: ${campo === "huecos" ? `el hueco ${cfg.huecos}` : `la fila ${cfg.filas}`} tiene caballetes. Muévelos antes.`); return; }
+      if (!window.confirm(`¿Quitar ${campo === "huecos" ? `el hueco ${cfg.huecos} de todas las filas` : `la fila ${cfg.filas}`} de ${cfg.label}?`)) return;
+    }
+    const todo = {};
+    Object.entries(ZONAS_CRISTALES).forEach(([z, c]) => { todo[z] = { filas: c.filas, huecos: c.huecos }; });
+    todo[zonaId][campo] = nuevo;
+    fbSet(ref(fbDb, "zonasCristales"), todo).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const botonMas = (onClick, title) => (
+    <button onClick={onClick} title={title} className="w-6 h-6 shrink-0 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold leading-none flex items-center justify-center shadow">+</button>
+  );
+  const botonMenos = (onClick, title) => (
+    <button onClick={onClick} title={title} className="w-5 h-5 shrink-0 rounded-full border border-rose-300 text-rose-500 hover:bg-rose-50 text-xs font-bold leading-none flex items-center justify-center">−</button>
+  );
   const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
   const nq = normalizarMapa(q);
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
@@ -11975,6 +12068,10 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                   <span key={h} className="w-[96px] shrink-0 text-center text-xs font-bold text-slate-500">{h}</span>
                 ))}
               </div>
+              <span className="flex items-center gap-1 ml-1">
+                {botonMas(() => cambiarZona(zonaId, "huecos", 1), "Añadir un hueco más al final de cada fila")}
+                {cfg.huecos > 1 && botonMenos(() => cambiarZona(zonaId, "huecos", -1), "Quitar el último hueco (si está vacío)")}
+              </span>
             </div>
             {Array.from({ length: cfg.filas }, (_, i) => i + 1).map((fila) => (
               <div key={fila} className="flex items-center gap-2 w-max">
@@ -12014,6 +12111,13 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                 </div>
               </div>
             ))}
+            <div className="flex items-center gap-2 pt-1">
+              <span className="w-14 shrink-0 sticky left-0 bg-white z-10 flex items-center gap-1">
+                {botonMas(() => cambiarZona(zonaId, "filas", 1), "Añadir una fila más")}
+                {cfg.filas > 1 && botonMenos(() => cambiarZona(zonaId, "filas", -1), "Quitar la última fila (si está vacía)")}
+              </span>
+              <span className="text-[10px] text-slate-400">{cfg.filas} filas × {cfg.huecos} huecos</span>
+            </div>
           </div>
         </div>
       ))}
@@ -12149,8 +12253,8 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, 
     const nueva = ctx.crear({
       proyectoId, especificaciones,
       observaciones: pedido
-        ? `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Pedido de reposición #${pedido.numero} dejado en espera.`
-        : `Creada desde el almacén de ${etiqueta === "Persiana" ? "persianas" : "cristales"}. Hay que pedir la reposición.`,
+        ? `Creada desde el almacén de ${etiqueta === "Cristal" ? "cristales" : `${etiqueta.toLowerCase()}s`}. Pedido de reposición #${pedido.numero} dejado en espera.`
+        : `Creada desde el almacén de ${etiqueta === "Cristal" ? "cristales" : `${etiqueta.toLowerCase()}s`}. Hay que pedir la reposición.`,
       responsableInicial: responsable, responsableActual: responsable,
       ...(pedido ? { pedidoReposicionId: pedido.id, pedidoReposicionNumero: pedido.numero } : {}),
     });
@@ -12395,7 +12499,7 @@ function ListaCristalesSueltos({ cristales, q, onUpdate }) {
                 <td className="px-3 py-1.5 font-mono-num">{p.ancho} × {p.alto}</td>
                 <td className="px-3 py-1.5">{p.cantidad}</td>
                 <td className="px-3 py-1.5 font-mono-num">{c.lote}</td>
-                <td className="px-3 py-1.5">{c.ubicacion ? ubicacionTexto(c.ubicacion) : <span className="text-amber-700">Pendiente de ubicar</span>}</td>
+                <td className="px-3 py-1.5">{c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? <span className="text-sky-700 font-semibold">En {c.enPuesto} <button onClick={() => { if (window.confirm("¿Devolver este caballete al almacén? Quedará en Pendientes de ubicar.")) onUpdate(c.id, { estado: "Pendiente", enPuesto: "", ubicacion: null }); }} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : <span className="text-amber-700">Pendiente de ubicar</span>}</td>
                 <td className="px-3 py-1.5"><IncidenciaCristal pieza={p} cristal={c} onGuardar={(cambios) => guardarIncidencia(c, i, cambios)} /></td>
               </tr>
             ))}
@@ -13246,7 +13350,31 @@ function ReorganizarCristalesPanel({ cristales, onCerrar }) {
 const TIPOS_CARRO_PERSIANA = {
   amarillo: { label: "Soporte corto (desde 40 cm)", corto: "40 cm", color: "#F2C230", texto: "#5B4300", minimoMm: 400, nivelesDefecto: 4 },
   gris: { label: "Soporte largo (desde 60 cm)", corto: "60 cm", color: "#94A3B8", texto: "#1E293B", minimoMm: 600, nivelesDefecto: 4 },
+  // Mosquiteras: van de pie en carros verticales; lo que cabe se cuenta por unidades, no por largo.
+  vertical: { label: "Carro vertical (mosquiteras)", corto: "Vertical", color: "#7DD3FC", texto: "#0C4A6E", minimoMm: 0, nivelesDefecto: 1, porUds: true, capacidadDefecto: 20 },
 };
+// ---- Varios almacenes (persianas y mosquiteras) ----
+// Cada carro y cada pieza lleva almacenId; lo antiguo (sin almacenId) es del almacén principal.
+const ALMACEN_PRINCIPAL_ID = "principal";
+const ALMACEN_PERSIANAS_PRINCIPAL = { id: ALMACEN_PRINCIPAL_ID, nombre: "Almacén de persianas", ubicacion: "", tipo: "persiana", recepcion: true };
+const almacenDe = (x) => (x && x.almacenId) || ALMACEN_PRINCIPAL_ID;
+const TIPOS_CARRO_DE_ALMACEN = { persiana: ["gris", "amarillo"], mosquitera: ["vertical"] };
+function almacenRecepcionPersianas(almacenes) {
+  const l = (almacenes || []).filter((a) => a.tipo !== "mosquitera");
+  return (l.find((a) => a.recepcion) || l[0] || ALMACEN_PERSIANAS_PRINCIPAL).id;
+}
+function carrosNuevosAlmacen(almacenId, cuantos) {
+  // cuantos: [[tipo, número de carros, capacidad por lado (solo verticales)], ...]
+  const lista = [];
+  cuantos.forEach(([tipo, n, cap]) => {
+    for (let i = 0; i < (parseInt(n, 10) || 0); i++) {
+      const numero = lista.length + 1;
+      const t = TIPOS_CARRO_PERSIANA[tipo];
+      lista.push({ id: uid(), almacenId, numero, tipo, niveles: t.nivelesDefecto, largo: LARGO_ESTANTE_MM, ...(t.porUds ? { capacidad: parseInt(cap, 10) || t.capacidadDefecto } : {}), sitio: numero, movido: false, notaSitio: "" });
+    }
+  });
+  return lista;
+}
 const CARROS_POR_FILA = 5;
 const LARGO_ESTANTE_MM = 2000;
 const HOLGURA_PERSIANA_MM = 20; // separación entre una persiana y otra en el estante
@@ -13266,10 +13394,12 @@ const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante 
 function estantesAlmacenPersianas(carros) {
   const lista = [];
   [...carros].sort((a, b) => (a.sitio || a.numero) - (b.sitio || b.numero)).forEach((c) => {
-    const niveles = parseInt(c.niveles, 10) || TIPOS_CARRO_PERSIANA[c.tipo]?.nivelesDefecto || 4;
+    const t = TIPOS_CARRO_PERSIANA[c.tipo] || {};
+    const niveles = t.porUds ? 1 : (parseInt(c.niveles, 10) || t.nivelesDefecto || 4);
     LADOS_CARRO.forEach((lado) => {
       for (let nivel = 1; nivel <= niveles; nivel++) {
-        lista.push({ key: `${c.numero}|${lado}|${nivel}`, carro: c.numero, lado, nivel, tipo: c.tipo, largo: parseFloat(c.largo) || LARGO_ESTANTE_MM });
+        lista.push({ key: `${c.numero}|${lado}|${nivel}`, carro: c.numero, lado, nivel, tipo: c.tipo, largo: parseFloat(c.largo) || LARGO_ESTANTE_MM,
+          ...(t.porUds ? { porUds: true, capacidad: parseInt(c.capacidad, 10) || t.capacidadDefecto } : {}) });
       }
     });
   });
@@ -13282,6 +13412,7 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
   const res = {};
   const idx = Object.fromEntries(estantes.map((e, i) => [e.key, i]));
   const cabe = (e, L) => {
+    if (e.porUds) return (estado.uds?.[e.key] || 0) < e.capacidad;
     const min = TIPOS_CARRO_PERSIANA[e.tipo]?.minimoMm || 0;
     if (L < min) return false;
     const usado = estado.usado[e.key] || 0;
@@ -13290,6 +13421,8 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
   };
   const poner = (e, L, id) => {
     estado.usado[e.key] = (estado.usado[e.key] || 0) + L + ((estado.usado[e.key] || 0) ? HOLGURA_PERSIANA_MM : 0);
+    estado.uds = estado.uds || {};
+    estado.uds[e.key] = (estado.uds[e.key] || 0) + 1;
     (estado.exps[e.key] = estado.exps[e.key] || new Set()).add(exp);
     res[id] = { carro: e.carro, lado: e.lado, nivel: e.nivel };
   };
@@ -13324,10 +13457,11 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
 }
 
 function estadoOcupacionPersianas(items) {
-  const estado = { usado: {}, exps: {} };
+  const estado = { usado: {}, exps: {}, uds: {} };
   items.filter((x) => x.estante && !x.entregada).forEach((x) => {
     const k = `${x.estante.carro}|${x.estante.lado}|${x.estante.nivel}`;
     estado.usado[k] = (estado.usado[k] || 0) + largoPersiana(x) + (estado.usado[k] ? HOLGURA_PERSIANA_MM : 0);
+    estado.uds[k] = (estado.uds[k] || 0) + 1;
     (estado.exps[k] = estado.exps[k] || new Set()).add(x.expediente || "—");
   });
   return estado;
@@ -13343,7 +13477,7 @@ function planReorganizarPersianas(items, carros) {
   const grupos = {};
   colocadas.forEach((x) => { (grupos[x.expediente || "—"] = grupos[x.expediente || "—"] || []).push(x); });
   const orden = Object.entries(grupos).sort((a, b) => Math.min(...a[1].map(pos)) - Math.min(...b[1].map(pos)));
-  const estado = { usado: {}, exps: {} };
+  const estado = { usado: {}, exps: {}, uds: {} };
   const destino = {};
   let sinSitio = 0;
   orden.forEach(([exp, xs]) => {
@@ -13620,12 +13754,195 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
   );
 }
 
+const CLAVE_ALMACEN_BORRADOR_FOTOS = "alumavel_almacen_borrador_fotos";
+const CLAVE_ALMACEN_PERSIANAS_SEL = "alumavel_almacen_persianas_sel";
+
+// Varios almacenes de persianas y de mosquiteras (en varios sitios). Cada uno con sus carros.
+// "Duplicar" copia solo los carros (vacíos), nunca lo que hay dentro.
 function AlmacenPersianas() {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
-  const carros = ctx.carrosPersianas || [];
-  const guardarCarros = ctx.saveCarrosPersianas || (() => {});
-  const items = ctx.persianasAlmacen || [];
-  const guardarItems = ctx.savePersianasAlmacen || (() => {});
+  const todosCarros = ctx.carrosPersianas || [];
+  const todosItems = ctx.persianasAlmacen || [];
+  const almacenes = (ctx.almacenesPersianas && ctx.almacenesPersianas.length) ? ctx.almacenesPersianas : [ALMACEN_PERSIANAS_PRINCIPAL];
+  const guardarAlmacenes = ctx.saveAlmacenesPersianas || (() => {});
+  const saveCarros = ctx.saveCarrosPersianas || (() => {});
+  const saveItems = ctx.savePersianasAlmacen || (() => {});
+  const [selId, setSelIdRaw] = useState(() => { try { return localStorage.getItem(CLAVE_ALMACEN_PERSIANAS_SEL) || ALMACEN_PRINCIPAL_ID; } catch (e) { return ALMACEN_PRINCIPAL_ID; } });
+  const setSelId = (id) => { setSelIdRaw(id); try { localStorage.setItem(CLAVE_ALMACEN_PERSIANAS_SEL, id); } catch (e) { /* nada */ } };
+  const [form, setForm] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [irA, setIrA] = useState(null);
+  const almacen = almacenes.find((a) => a.id === selId) || almacenes[0];
+  // Busca en TODOS los almacenes: expediente, referencia/vivienda, medidas, color, comentario, incidencia…
+  // Varias palabras = tienen que estar todas. "1200x1400" busca las dos medidas.
+  const resultados = useMemo(() => {
+    const trozos = busca.toLowerCase().replace(/(\d)\s*[x×*]\s*(\d)/g, "$1 $2").split(/\s+/).filter(Boolean);
+    if (!trozos.length) return [];
+    return todosItems.filter((x) => {
+      const texto = [largoPersiana(x), ...Object.entries(x).filter(([k, v]) => !["id", "almacenId", "estante"].includes(k) && (typeof v === "string" || typeof v === "number")).map(([, v]) => v)]
+        .join(" ").toLowerCase();
+      return trozos.every((t) => texto.includes(t));
+    }).sort((a, b) => (a.entregada ? 1 : 0) - (b.entregada ? 1 : 0) || String(a.expediente).localeCompare(String(b.expediente)));
+  }, [busca, todosItems]);
+  const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén";
+
+  const carros = todosCarros.filter((c) => almacenDe(c) === almacen.id);
+  const items = todosItems.filter((x) => almacenDe(x) === almacen.id);
+  const guardarCarros = (next) => saveCarros([...todosCarros.filter((c) => almacenDe(c) !== almacen.id), ...next.map((c) => ({ ...c, almacenId: almacen.id }))]);
+  const guardarItems = (next) => saveItems([...todosItems.filter((x) => almacenDe(x) !== almacen.id), ...next.map((x) => ({ ...x, almacenId: almacen.id }))]);
+  const cuenta = (a) => todosItems.filter((x) => almacenDe(x) === a.id && !x.entregada).length;
+
+  const abrir = (modo) => {
+    if (modo === "nuevo") setForm({ modo, nombre: "", ubicacion: "", tipo: "persiana", nLargo: 10, nCorto: 5, nVertical: 5, capacidad: 20 });
+    if (modo === "duplicar") setForm({ modo, nombre: `${almacen.nombre} (copia)`, ubicacion: "", tipo: almacen.tipo || "persiana" });
+    if (modo === "editar") setForm({ modo, nombre: almacen.nombre, ubicacion: almacen.ubicacion || "", tipo: almacen.tipo || "persiana", recepcion: almacenRecepcionPersianas(almacenes) === almacen.id });
+  };
+  const guardarForm = () => {
+    const nombre = String(form.nombre || "").trim();
+    if (!nombre) { alert("Ponle un nombre al almacén."); return; }
+    if (almacenes.some((a) => a.id !== (form.modo === "editar" ? almacen.id : "") && a.nombre.trim().toLowerCase() === nombre.toLowerCase())) { alert("Ya hay un almacén con ese nombre."); return; }
+    if (form.modo === "editar") {
+      guardarAlmacenes(almacenes.map((a) => {
+        if (a.id === almacen.id) return { ...a, nombre, ubicacion: form.ubicacion, recepcion: a.tipo !== "mosquitera" && !!form.recepcion };
+        return form.recepcion && almacen.tipo !== "mosquitera" ? { ...a, recepcion: false } : a;
+      }));
+      setForm(null);
+      return;
+    }
+    const id = uid();
+    const nuevo = { id, nombre, ubicacion: form.ubicacion, tipo: form.tipo, recepcion: false, creado: new Date().toISOString().slice(0, 10) };
+    const carrosNuevos = form.modo === "duplicar"
+      ? carros.map((c) => ({ ...c, id: uid(), almacenId: id, movido: false, notaSitio: "" }))
+      : carrosNuevosAlmacen(id, form.tipo === "mosquitera" ? [["vertical", form.nVertical, form.capacidad]] : [["gris", form.nLargo], ["amarillo", form.nCorto]]);
+    guardarAlmacenes([...almacenes, nuevo]);
+    if (carrosNuevos.length) saveCarros([...todosCarros, ...carrosNuevos]);
+    setSelId(id);
+    setForm(null);
+  };
+  const borrarAlmacen = () => {
+    if (almacenes.length <= 1) { alert("Tiene que quedar al menos un almacén."); return; }
+    if (cuenta(almacen)) { alert(`${almacen.nombre} todavía tiene ${cuenta(almacen)} pieza(s) dentro. Sácalas antes de borrarlo.`); return; }
+    if (!window.confirm(`¿Borrar el almacén "${almacen.nombre}" y sus ${carros.length} carros?`)) return;
+    const quedan = almacenes.filter((a) => a.id !== almacen.id);
+    guardarAlmacenes(quedan);
+    saveCarros(todosCarros.filter((c) => almacenDe(c) !== almacen.id));
+    saveItems(todosItems.filter((x) => almacenDe(x) !== almacen.id));
+    setSelId(quedan[0].id);
+    setForm(null);
+  };
+  const num = (k) => (
+    <TextInput type="number" min="0" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-2">
+        {almacenes.map((a) => (
+          <button key={a.id} onClick={() => setSelId(a.id)}
+            className={`text-left px-3 py-1.5 rounded-lg border-2 text-sm ${a.id === almacen.id ? "border-[#2E8B57] bg-[#EEF7E4]" : "border-slate-200 hover:border-slate-300"}`}>
+            <div className="font-semibold text-slate-800">{a.nombre}</div>
+            <div className="text-[11px] text-slate-500">{a.tipo === "mosquitera" ? "Mosquiteras" : "Persianas"}{a.ubicacion ? ` · ${a.ubicacion}` : ""} · {cuenta(a)} dentro{almacenRecepcionPersianas(almacenes) === a.id ? " · recibe pedidos" : ""}</div>
+          </button>
+        ))}
+        <div className="ml-auto flex flex-wrap gap-2">
+          <button onClick={() => abrir("nuevo")} className="flex items-center gap-1 text-xs font-semibold text-white bg-[#2E8B57] hover:opacity-90 px-3 py-2 rounded-lg"><Plus size={13} /> Nuevo almacén</button>
+          <button onClick={() => abrir("duplicar")} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">Duplicar este</button>
+          <button onClick={() => abrir("editar")} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">Editar</button>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-3">
+        <div className="flex items-center gap-2">
+          <Search size={16} className="text-slate-400 shrink-0" />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder={`Buscar en ${almacenes.length > 1 ? "todos los almacenes" : "el almacén"}: expediente, vivienda, medida (1200x1400), color…`}
+            className="flex-1 min-w-0 text-sm border border-slate-200 rounded-lg px-3 py-2" />
+          {busca && <button onClick={() => setBusca("")} className="text-slate-400 hover:text-slate-700"><X size={16} /></button>}
+        </div>
+        {busca.trim() && (
+          <div className="mt-2 max-h-[45vh] overflow-y-auto">
+            <div className="text-xs text-slate-500 mb-1">{resultados.length} encontrada(s){resultados.length > 100 ? " · mostrando las 100 primeras" : ""}</div>
+            {resultados.slice(0, 100).map((x) => (
+              <button key={x.id} disabled={!x.estante || x.entregada}
+                onClick={() => { setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
+                className={`w-full text-left flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm ${x.estante && !x.entregada ? "hover:bg-[#EEF7E4]" : "opacity-70"}`}>
+                <b>EXP {x.expediente || "—"}</b>
+                <span>{x.ref || ""}</span>
+                <span className="font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</span>
+                <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
+                  {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
+                </span>
+                {x.incidencia && <span className="w-full text-xs text-rose-600">Incidencia: {x.incidencia}</span>}
+              </button>
+            ))}
+            {resultados.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">No hay nada que coincida.</div>}
+          </div>
+        )}
+      </div>
+
+      <AlmacenPersianasUno key={almacen.id} almacen={almacen} carros={carros} items={items} irA={irA && irA.almacenId === almacen.id ? irA : null}
+        guardarCarros={guardarCarros} guardarItems={guardarItems} variosAlmacenes={almacenes.length > 1} />
+
+      {form && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setForm(null)}>
+          <div className="bg-white rounded-xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-display font-bold text-slate-900 text-lg">
+                {form.modo === "nuevo" ? "Nuevo almacén" : form.modo === "duplicar" ? `Duplicar ${almacen.nombre}` : `Editar ${almacen.nombre}`}
+              </h3>
+              <button onClick={() => setForm(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            {form.modo === "duplicar" && <p className="text-xs text-slate-500 mb-3">Se copian los {carros.length} carros tal como están configurados, vacíos. Lo que hay dentro no se copia.</p>}
+            <div className="space-y-2">
+              <Field label="Nombre"><TextInput value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} placeholder="Ej: Persianas nave 2" /></Field>
+              <Field label="Dónde está"><TextInput value={form.ubicacion} onChange={(e) => setForm({ ...form, ubicacion: e.target.value })} placeholder="Ej: Nave de Huércal" /></Field>
+              {form.modo === "nuevo" && (
+                <>
+                  <Field label="Qué se guarda">
+                    <Select value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
+                      <option value="persiana">Persianas (carros con estantes)</option>
+                      <option value="mosquitera">Mosquiteras (carros verticales)</option>
+                    </Select>
+                  </Field>
+                  {form.tipo === "mosquitera" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Carros verticales">{num("nVertical")}</Field>
+                      <Field label="Mosquiteras por lado">{num("capacidad")}</Field>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Carros soporte largo (60 cm)">{num("nLargo")}</Field>
+                      <Field label="Carros soporte corto (40 cm)">{num("nCorto")}</Field>
+                    </div>
+                  )}
+                  <p className="text-[11px] text-slate-400">Luego puedes añadir o quitar carros y cambiar cada uno desde el mapa.</p>
+                </>
+              )}
+              {form.modo === "editar" && almacen.tipo !== "mosquitera" && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!!form.recepcion} onChange={(e) => setForm({ ...form, recepcion: e.target.checked })} />
+                  Aquí entran las persianas al recibir pedidos
+                </label>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-between gap-2 mt-4 pt-3 border-t border-slate-200">
+              {form.modo === "editar" ? <button onClick={borrarAlmacen} className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-2 rounded-lg hover:bg-rose-50">Borrar almacén</button> : <span />}
+              <button onClick={guardarForm} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-lg hover:opacity-90">
+                {form.modo === "nuevo" ? "Crear almacén" : form.modo === "duplicar" ? "Duplicar" : "Guardar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarItems, variosAlmacenes, irA }) {
+  const esMosq = almacen.tipo === "mosquitera";
+  const cosa = esMosq ? "mosquiteras" : "persianas";
+  const Cosa = esMosq ? "Mosquiteras" : "Persianas";
+  const tiposAqui = TIPOS_CARRO_DE_ALMACEN[esMosq ? "mosquitera" : "persiana"];
+  const dondeTxt = (e) => (variosAlmacenes ? `${almacen.nombre} · ` : "") + textoEstante(e);
   const [vista, setVista] = useState("mapa");
   const [carroAbierto, setCarroAbierto] = useState(null);
   const [q, setQ] = useState("");
@@ -13633,11 +13950,13 @@ function AlmacenPersianas() {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [borrador, setBorrador] = useState(null);
-  const [verFotosEtiquetas, setVerFotosEtiquetas] = useState(() => { try { return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { return false; } });
+  const [verFotosEtiquetas, setVerFotosEtiquetasRaw] = useState(() => { try { return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) && (localStorage.getItem(CLAVE_ALMACEN_BORRADOR_FOTOS) || ALMACEN_PRINCIPAL_ID) === almacen.id; } catch (e) { return false; } });
+  const setVerFotosEtiquetas = (v) => { if (v) { try { localStorage.setItem(CLAVE_ALMACEN_BORRADOR_FOTOS, almacen.id); } catch (e) { /* nada */ } } setVerFotosEtiquetasRaw(v); };
   const inputRef = useRef(null);
+  useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } }, [irA && irA.t]);
 
   const activos = items.filter((x) => !x.entregada);
-  const sinSitio = activos.filter((x) => !x.estante);
+  const sinSitio = activos.filter((x) => !x.estante && !x.enPuesto);
   const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
   const ocup = useMemo(() => estadoOcupacionPersianas(items), [items]);
   const nq = q.trim().toLowerCase();
@@ -13669,20 +13988,38 @@ function AlmacenPersianas() {
   const confirmarEntrada = (lista) => {
     const entrada = Array.isArray(lista) ? lista : borrador;
     const { sitio, fallan } = colocar(entrada);
-    const nuevas = entrada.map((x) => ({ ...x, estante: sitio[x.id] || null }));
+    const nuevas = entrada.map((x) => ({ ...x, almacenId: almacen.id, estante: sitio[x.id] || null }));
     guardarItems([...items, ...nuevas]);
     if (!Array.isArray(lista)) setBorrador(null);
-    const cortas = nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
-    setAviso(fallan ? `${fallan} persiana(s) sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} persianas colocadas.`);
+    const cortas = esMosq ? 0 : nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
+    setAviso(fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas.`);
     setVista(fallan ? "sinsitio" : "mapa");
   };
 
+  const devolverDePuesto = (x) => {
+    const { sitio } = colocar([x]);
+    guardarItems(items.map((y) => (y.id === x.id ? { ...y, enPuesto: "", estante: sitio[x.id] || null } : y)));
+    setAviso(sitio[x.id] ? `Devuelta a ${textoEstante(sitio[x.id])}.` : "No cabe en ningún carro: está en \"Sin sitio\".");
+  };
   const recolocarSinSitio = () => {
     const { sitio, fallan } = colocar(sinSitio);
     guardarItems(items.map((x) => (sitio[x.id] ? { ...x, estante: sitio[x.id] } : x)));
     setAviso(fallan ? `Siguen ${fallan} sin sitio.` : "Todas colocadas.");
   };
 
+  const anadirCarro = () => {
+    const numero = carros.reduce((m, c) => Math.max(m, parseInt(c.numero, 10) || 0), 0) + 1;
+    const tipo = tiposAqui[0];
+    const t = TIPOS_CARRO_PERSIANA[tipo];
+    guardarCarros([...carros, { id: uid(), almacenId: almacen.id, numero, tipo, niveles: t.nivelesDefecto, largo: LARGO_ESTANTE_MM, ...(t.porUds ? { capacidad: t.capacidadDefecto } : {}), sitio: numero, movido: false, notaSitio: "" }]);
+    setCarroAbierto(numero);
+  };
+  const quitarCarro = (numero) => {
+    if (activos.some((x) => x.estante && x.estante.carro === numero)) { alert(`El carro ${numero} tiene ${cosa} dentro. Sácalas o muévelas antes de quitarlo.`); return; }
+    if (!window.confirm(`¿Quitar el carro ${numero} de ${almacen.nombre}?`)) return;
+    guardarCarros(carros.filter((c) => c.numero !== numero));
+    setCarroAbierto(null);
+  };
   const actualizarCarro = (numero, patch) => guardarCarros(carros.map((c) => (c.numero === numero ? { ...c, ...patch } : c)));
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
   const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -13700,13 +14037,13 @@ function AlmacenPersianas() {
       <td className="px-2 font-semibold">EXP {x.expediente || "—"}</td>
       <td className="px-2">{x.ref || "—"}</td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
-      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.estante ? textoEstante(x.estante) : <span className="text-amber-700">Sin sitio</span>}</td>}
+      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? dondeTxt(x.estante) : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
           cristal={{ lote: "", expediente: x.expediente }}
-          etiqueta="Persiana"
-          dondeEsta={x.estante ? textoEstante(x.estante) : "Almacén de persianas"}
+          etiqueta={esMosq ? "Mosquitera" : "Persiana"}
+          dondeEsta={x.estante ? dondeTxt(x.estante) : almacen.nombre}
           onGuardar={(cambios) => actualizarPersiana(x.id, cambios)}
         />
       </td>
@@ -13732,8 +14069,8 @@ function AlmacenPersianas() {
 
   const resumenCarro = (c) => {
     const es = estantes.filter((e) => e.carro === c.numero);
-    const total = es.reduce((a, e) => a + e.largo, 0);
-    const usado = es.reduce((a, e) => a + Math.min(e.largo, ocup.usado[e.key] || 0), 0);
+    const total = es.reduce((a, e) => a + (e.porUds ? e.capacidad : e.largo), 0);
+    const usado = es.reduce((a, e) => a + (e.porUds ? Math.min(e.capacidad, ocup.uds[e.key] || 0) : Math.min(e.largo, ocup.usado[e.key] || 0)), 0);
     const exps = new Set();
     es.forEach((e) => (ocup.exps[e.key] || new Set()).forEach((x) => exps.add(x)));
     const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
@@ -13743,14 +14080,14 @@ function AlmacenPersianas() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {[["mapa", "Mapa de carros"], ["lista", "Persianas (una a una)"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
+        {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
         ))}
         <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) subir(e.target.files[0]); e.target.value = ""; }} />
         <button onClick={() => inputRef.current?.click()} disabled={leyendo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
-          <Plus size={14} /> {leyendo ? "Leyendo…" : "Subir packing list de persianas"}
+          <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
         <button onClick={() => setVerFotosEtiquetas(true)}
           className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
@@ -13764,14 +14101,14 @@ function AlmacenPersianas() {
 
       {borrador && (
         <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
-          <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las persianas antes de colocarlas</h3>
-          <p className="text-xs text-slate-600 mb-2">{borrador.length} persianas. Corrige el expediente o el largo si algo está mal leído.</p>
+          <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
+          <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
-                  <tr key={x.id} className={`border-b border-white ${largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
+                  <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
                     <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.ref || "—"}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
@@ -13792,10 +14129,11 @@ function AlmacenPersianas() {
       {vista === "mapa" && (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
-            {Object.entries(TIPOS_CARRO_PERSIANA).map(([id, t]) => (
+            {Object.entries(TIPOS_CARRO_PERSIANA).filter(([id]) => tiposAqui.includes(id) || carros.some((c) => c.tipo === id)).map(([id, t]) => (
               <span key={id} className="flex items-center gap-1.5"><span className="w-3 h-3 rounded" style={{ background: t.color }} /> {t.label} ({carros.filter((c) => c.tipo === id).length})</span>
             ))}
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border-2 border-dashed border-rose-400" /> Movido de su sitio</span>
+            <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
           </div>
           <div className="space-y-2 overflow-x-auto">
@@ -13816,7 +14154,7 @@ function AlmacenPersianas() {
                       <div className="h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
                         <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, r.pct * 100)}%`, background: r.pct >= 0.95 ? "#E11D48" : "#86D325" }} />
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">{r.n} persianas · {Math.round(r.pct * 100)} %</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">{r.n} {cosa} · {Math.round(r.pct * 100)} %</div>
                       <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
                         {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-300 font-normal">vacío</span>}
                       </div>
@@ -13863,15 +14201,15 @@ function AlmacenPersianas() {
 
       {vista === "sinsitio" && (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          {sinSitio.length === 0 ? <p className="text-sm text-slate-400">Todas las persianas tienen sitio.</p> : (
+          {sinSitio.length === 0 ? <p className="text-sm text-slate-400">Todas las {cosa} tienen sitio.</p> : (
             <>
-              <p className="text-sm text-slate-600 mb-2">Persianas que no han cabido en ningún estante (o miden menos de 40 cm). Libera sitio o cambia la configuración de algún carro y pulsa <b>Volver a colocar</b>.</p>
+              <p className="text-sm text-slate-600 mb-2">{Cosa} que no han cabido en ningún {esMosq ? "carro" : "estante (o miden menos de 40 cm)"}. Libera sitio o cambia la configuración de algún carro y pulsa <b>Volver a colocar</b>.</p>
               <table className="w-full text-xs mb-3">
                 <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo</th><th></th></tr></thead>
                 <tbody>{sinSitio.map((x) => (
                   <tr key={x.id} className="border-b border-slate-100">
                     <td className="py-1 pr-2 font-semibold">EXP {x.expediente || "—"}</td><td className="pr-2">{x.ref || "—"}</td><td className="pr-2">{largoPersiana(x)} mm</td>
-                    <td><button onClick={() => { if (window.confirm("¿Borrar esta persiana del almacén?")) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
+                    <td><button onClick={() => { if (window.confirm(`¿Borrar esta ${esMosq ? "mosquitera" : "persiana"} del almacén?`)) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
                   </tr>))}
                 </tbody>
               </table>
@@ -13922,21 +14260,27 @@ function AlmacenPersianas() {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setCarroAbierto(null)}>
           <div className="bg-white rounded-xl p-5 max-w-2xl w-full max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-display font-bold text-slate-900 text-lg">Carro {carroSel.numero}</h3>
+              <h3 className="font-display font-bold text-slate-900 text-lg">Carro {carroSel.numero}{variosAlmacenes ? <span className="text-sm font-normal text-slate-500"> · {almacen.nombre}</span> : null}</h3>
               <button onClick={() => setCarroAbierto(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
             </div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               <Field label="Tipo de carro">
                 <Select value={carroSel.tipo} onChange={(e) => actualizarCarro(carroSel.numero, { tipo: e.target.value })}>
-                  {Object.entries(TIPOS_CARRO_PERSIANA).map(([id, t]) => <option key={id} value={id}>{t.label}</option>)}
+                  {Object.entries(TIPOS_CARRO_PERSIANA).filter(([id]) => tiposAqui.includes(id) || id === carroSel.tipo).map(([id, t]) => <option key={id} value={id}>{t.label}</option>)}
                 </Select>
               </Field>
+              {TIPOS_CARRO_PERSIANA[carroSel.tipo]?.porUds ? (
+                <Field label="Mosquiteras por lado">
+                  <TextInput type="number" value={carroSel.capacidad ?? TIPOS_CARRO_PERSIANA[carroSel.tipo].capacidadDefecto} onChange={(e) => actualizarCarro(carroSel.numero, { capacidad: parseInt(e.target.value, 10) || 1 })} />
+                </Field>
+              ) : (<>
               <Field label="Estantes por lado">
                 <TextInput type="number" value={carroSel.niveles} onChange={(e) => actualizarCarro(carroSel.numero, { niveles: parseInt(e.target.value, 10) || 1 })} />
               </Field>
               <Field label="Largo del estante (mm)">
                 <TextInput type="number" value={carroSel.largo} onChange={(e) => actualizarCarro(carroSel.numero, { largo: parseInt(e.target.value, 10) || LARGO_ESTANTE_MM })} />
               </Field>
+              </>)}
             </div>
             <label className="flex items-center gap-2 text-sm mb-2">
               <input type="checkbox" checked={!!carroSel.movido} onChange={(e) => actualizarCarro(carroSel.numero, { movido: e.target.checked, notaSitio: e.target.checked ? carroSel.notaSitio : "" })} />
@@ -13952,12 +14296,12 @@ function AlmacenPersianas() {
                     const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel);
                     return (
                       <div key={e.key} className="mb-1.5">
-                        <div className="text-[10px] text-slate-400">Estante {e.nivel}</div>
+                        <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
                             <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
-                              style={{ width: `${Math.min(100, (largoPersiana(x) / e.largo) * 100)}%` }}>
+                              style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.expediente}
                             </div>
                           ))}
@@ -13977,8 +14321,8 @@ function AlmacenPersianas() {
                 return Object.entries(porExp).map(([exp, xs]) => (
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} persiana(s) · {xs.filter((x) => x.colocada).length} colocada(s)</span>
-                    <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} persianas del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
+                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} ${cosa} del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
                   </div>
                   <div className="overflow-x-auto mt-2">
@@ -13990,6 +14334,9 @@ function AlmacenPersianas() {
                   </div>
                 ));
               })()}
+            </div>
+            <div className="flex justify-end mt-3">
+              <button onClick={() => quitarCarro(carroSel.numero)} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar este carro</button>
             </div>
           </div>
         </div>
@@ -14200,7 +14547,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         </button>
         <button onClick={() => setTab("persianasAlmacen")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "persianasAlmacen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-          Almacén persianas
+          Almacén persianas y mosquiteras
         </button>
         <button onClick={() => setTab("procesoExterno")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "procesoExterno" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -14252,6 +14599,12 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         <Planning proyectos={proyectos} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
           onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} />
+      )}
+      {tab === "preparar" && (
+        <div className="mt-6">
+          <PreparacionProximoDia config={configPlanning} onSaveConfig={onSaveConfigPlanning} puestos={puestosDe(configVentanasFab)} cristales={cristales} onUpdateCristal={onUpdateCristal}
+            caballetes={caballetesVentanas} onGuardarCaballete={onGuardarCaballete} configFab={configVentanasFab} proyectos={proyectos} uxExpedientes={uxExpedientes} />
+        </div>
       )}
 
       {tab === "entradasUx" && (
@@ -30276,6 +30629,236 @@ const usePlanningPublicado = () => {
   useEffect(() => onValue(ref(fbDb, "planningPublicado"), (snap) => setPlan(snap.val()), () => setPlan(null)), []);
   return plan;
 };
+
+/* ---------- PREPARACIÓN DEL PRÓXIMO DÍA: dónde dejar cada material ---------- */
+// Cada material tiene un sitio fijo donde se deja lo del día siguiente (un puesto de
+// trabajo, un almacén de persianas o un sitio escrito a mano). El correo de las 7:00 lo
+// dice, y aquí se pulsa "Hecho" cuando se ha llevado: las persianas y los caballetes de
+// cristal se mueven de verdad en el CRM; el resto queda apuntado como preparado.
+const MATERIALES_PREPARACION = [
+  ["persianas", "Persianas"],
+  ["cristales", "Cristales (caballetes)"],
+  ["materiales", "Perfiles, herrajes y accesorios"],
+  ["ventanas", "Ventanas (caballetes para cargar)"],
+];
+const destinoPrepTexto = (d, almacenes, almacenesCab = []) => {
+  if (!d) return "";
+  if (d.startsWith("alm:")) return (toArray(almacenes).find((a) => a.id === d.slice(4)) || {}).nombre || "almacén de persianas";
+  if (d.startsWith("cab:")) return (toArray(almacenesCab).find((a) => a.id === d.slice(4)) || {}).nombre || "almacén de caballetes";
+  return d.replace(/^txt:/, "");
+};
+const siguienteDiaLaborable = () => {
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" }));
+  do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+  const f = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return { f, texto: d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }) };
+};
+
+function PreparacionProximoDia({ config, onSaveConfig, puestos, cristales = [], onUpdateCristal, caballetes = [], onGuardarCaballete, configFab, proyectos = [], uxExpedientes = [] }) {
+  const almCab = almacenesCaballetes(configFab);
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const itemsP = ctx.persianasAlmacen || [];
+  const carrosP = ctx.carrosPersianas || [];
+  const almacenes = (ctx.almacenesPersianas && ctx.almacenesPersianas.length) ? ctx.almacenesPersianas : [ALMACEN_PERSIANAS_PRINCIPAL];
+  const savePersianas = ctx.savePersianasAlmacen || (() => {});
+  const plan = usePlanningPublicado();
+  const cfg = config || {};
+  const destinos = cfg.destinos || {};
+  const { f, texto: diaTexto } = siguienteDiaLaborable();
+  const [f2, setF2] = useState(f);
+  const [hechos, setHechos] = useState({});
+  const [otro, setOtro] = useState({});
+  const [aviso, setAviso] = useState("");
+  useEffect(() => onValue(ref(fbDb, `preparacionFabrica/${f2}`), (snap) => setHechos(snap.val() || {}), () => setHechos({})), [f2]);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const quien = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
+  const guardarDestino = (mat, valor) => onSaveConfig({ ...cfg, destinos: { ...destinos, [mat]: valor } });
+  const apuntar = (clave, destino) => fbSet(ref(fbDb, `preparacionFabrica/${f2}/${clave}`), { hecho: true, destino, por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const desapuntar = (clave) => fbSet(ref(fbDb, `preparacionFabrica/${f2}/${clave}`), null).catch(() => {});
+  const claveDe = (obraId, mat) => `${String(obraId).replace(/[.#$\[\]\/]/g, "_")}__${mat}`;
+
+  const obrasDia = toArray(plan && plan.dias && plan.dias[f2]).map((t) => ({ ...t, obra: (plan.obras || {})[t.id] || { nombre: t.nombre, expNums: [] } }));
+  const empiezan = obrasDia.filter((o) => !o.obra.inicio || o.obra.inicio === f2);
+  const deObra = (expNums, exp) => numsExpediente(exp).some((n) => (expNums || []).includes(n));
+
+  const donde = (x) => {
+    if (x.enPuesto) return `ya en ${x.enPuesto}`;
+    const alm = almacenes.length > 1 ? `${(almacenes.find((a) => a.id === almacenDe(x)) || {}).nombre || "Almacén"} · ` : "";
+    return x.estante ? alm + textoEstante(x.estante) : alm + "sin sitio";
+  };
+
+  const llevarPersianas = (obra, xs) => {
+    const d = destinos.persianas;
+    if (!d) { alert("Primero elige arriba dónde se dejan las persianas."); return; }
+    const ids = new Set(xs.map((x) => x.id));
+    let next, fallan = 0;
+    if (d.startsWith("alm:")) {
+      const dest = d.slice(4);
+      const estado = estadoOcupacionPersianas(itemsP.filter((x) => almacenDe(x) === dest && !ids.has(x.id)));
+      const r = colocarGrupoPersianas(xs, obra.nombre || "—", estantesAlmacenPersianas(carrosP.filter((c) => almacenDe(c) === dest)), estado);
+      fallan = xs.length - Object.keys(r.res).length;
+      next = itemsP.map((x) => (ids.has(x.id) ? { ...x, almacenId: dest, estante: r.res[x.id] || null, enPuesto: "", fechaPreparacion: hoy } : x));
+    } else {
+      next = itemsP.map((x) => (ids.has(x.id) ? { ...x, estante: null, enPuesto: d.slice(4), fechaPreparacion: hoy } : x));
+    }
+    savePersianas(next);
+    apuntar(claveDe(obra.id, "persianas"), destinoPrepTexto(d, almacenes, almCab));
+    setAviso(fallan ? `${fallan} persiana(s) no caben en ${destinoPrepTexto(d, almacenes, almCab)}: se han quedado en "Sin sitio" de ese almacén.` : `Persianas de ${obra.nombre} llevadas a ${destinoPrepTexto(d, almacenes, almCab)}.`);
+  };
+  const llevarCristales = (obra, cs) => {
+    const d = destinos.cristales;
+    if (!d) { alert("Primero elige arriba dónde se dejan los cristales."); return; }
+    const sitio = destinoPrepTexto(d, almacenes, almCab);
+    cs.forEach((c) => onUpdateCristal && onUpdateCristal(c.id, { ubicacion: null, estado: "En puesto", enPuesto: sitio, fechaPreparacion: hoy }));
+    apuntar(claveDe(obra.id, "cristales"), sitio);
+    setAviso(`Caballetes de cristal de ${obra.nombre} llevados a ${sitio}. Sus huecos quedan libres.`);
+  };
+
+  const devolverCristal = (c) => {
+    if (!window.confirm(`¿Devolver el caballete ${c.lote || c.numero || ""} al almacén de cristales? Quedará en "Pendientes de ubicar" para darle hueco.`)) return;
+    onUpdateCristal && onUpdateCristal(c.id, { estado: "Pendiente", enPuesto: "", ubicacion: null });
+    setAviso(`Caballete ${c.lote || c.numero || ""} devuelto: búscalo en Cristales → "Pendientes de ubicar" para darle hueco.`);
+  };
+  // Caballetes de ventanas que salen ese día (mismas obras que en el correo de las 7:00):
+  // las que terminan de fabricarse el día anterior según el planning, o con reparto ese día.
+  const [destVent, setDestVent] = useState({});
+  const obrasSalen = (() => {
+    if (!plan) return [];
+    const antes = (() => { const d = new Date(f2 + "T12:00:00"); do { d.setDate(d.getDate() - 1); } while (d.getDay() === 0 || d.getDay() === 6); return d.toISOString().slice(0, 10); })();
+    const finPlan = (key) => { const o = (plan.obras || {})[key]; return o && o.fin; };
+    const lista = [];
+    proyectos.filter((p) => p.origen !== "portalUxcar" && !["Entregado", "Cancelado", "Albarán de carga firmado"].includes(p.estadoTrabajo)).forEach((p) => {
+      const key = `p-${p.id}`;
+      if (finPlan(key) === antes || (p.fechaReparto || "") === f2) lista.push({ key, proyectoId: p.id, nombre: `#${p.numero} ${p.nombre}` });
+    });
+    toArray(uxExpedientes).filter((e) => e.estado !== "entregado").forEach((e) => {
+      const key = `u-${e.id}`;
+      const pl = e.proyectoId ? proyectos.find((x) => x.id === e.proyectoId) : null;
+      if (finPlan(key) === antes || ((pl && pl.fechaReparto) || "") === f2) lista.push({ key, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}` });
+    });
+    return lista.map((o) => ({ ...o, cabs: toArray(caballetes).filter((c) => c.estado !== "libre" && c.estado !== "fuera" && c.obra && (c.obra.key === o.key || (o.proyectoId && c.obra.proyectoId === o.proyectoId))) }));
+  })();
+  const nombreAlmCab = (id) => (almCab.find((a) => a.id === id) || almCab[0] || {}).nombre || "Fábrica";
+  const sacarCaballetes = (o) => {
+    const d = destVent[o.key] || destinos.ventanas;
+    if (!d) { alert("Elige a dónde se llevan los caballetes."); return; }
+    const sitio = destinoPrepTexto(d, almacenes, almCab);
+    o.cabs.forEach((c) => {
+      const cambio = d.startsWith("cab:") ? { almacenId: d.slice(4), ubicacion: "" } : { ubicacion: sitio };
+      onGuardarCaballete && onGuardarCaballete({ ...c, ...cambio, historial: [...toArray(c.historial), { fecha: hoy, accion: `Preparado para salir (${o.nombre}): llevado a ${sitio}` }] });
+    });
+    apuntar(claveDe(o.key, "ventanas"), sitio);
+    setAviso(`${o.cabs.length} caballete(s) de ${o.nombre} llevados a ${sitio}.`);
+  };
+  const selectorDestino = (mat) => {
+    const val = destinos[mat] || "";
+    const esOtro = otro[mat] || (val.startsWith("txt:") && !toArray(puestos).some((p) => `txt:${p.nombre}` === val));
+    return (
+      <div key={mat} className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="w-56 font-semibold text-slate-700">{MATERIALES_PREPARACION.find((m) => m[0] === mat)[1]}</span>
+        <select value={esOtro ? "__otro" : val} onChange={(e) => { const v = e.target.value; if (v === "__otro") { setOtro({ ...otro, [mat]: true }); return; } setOtro({ ...otro, [mat]: false }); guardarDestino(mat, v); }}
+          className="border border-slate-300 rounded-md px-2 py-1.5 text-sm min-w-[220px]">
+          <option value="">— Sin definir —</option>
+          {mat === "persianas" && <optgroup label="Almacenes de persianas">{almacenes.filter((a) => a.tipo !== "mosquitera").map((a) => <option key={a.id} value={`alm:${a.id}`}>{a.nombre}{a.ubicacion ? ` (${a.ubicacion})` : ""}</option>)}</optgroup>}
+          {mat === "ventanas" && <optgroup label="Almacenes de caballetes">{almCab.map((a) => <option key={a.id} value={`cab:${a.id}`}>{a.nombre}{a.ciudad ? ` (${a.ciudad})` : ""}</option>)}</optgroup>}
+          {toArray(puestos).length > 0 && <optgroup label="Puestos de trabajo">{toArray(puestos).map((p) => <option key={p.id || p.nombre} value={`txt:${p.nombre}`}>{p.nombre}</option>)}</optgroup>}
+          <option value="__otro">Otro sitio (escribirlo)…</option>
+        </select>
+        {esOtro && <TextInput defaultValue={val.startsWith("txt:") ? val.slice(4) : ""} placeholder="Ej: Nave interior, junto a la puerta" onBlur={(e) => { const t = e.target.value.trim(); if (t) guardarDestino(mat, `txt:${t}`); }} className="!w-64" />}
+      </div>
+    );
+  };
+
+  const botonHecho = (clave, activo, onHecho, textoBoton) => {
+    const h = hechos[clave];
+    if (h) return (
+      <span className="flex items-center gap-2 text-xs">
+        <span className="font-semibold text-[#2E8B57]">✓ Hecho · {h.destino}{h.por ? ` · ${h.por.split("@")[0]}` : ""}</span>
+        <button onClick={() => { if (window.confirm("¿Quitar la marca de hecho? (no devuelve el material a su sitio)")) desapuntar(clave); }} className="text-slate-400 hover:text-slate-700 underline">quitar</button>
+      </span>
+    );
+    return <button disabled={!activo} onClick={onHecho} className="text-xs font-semibold text-white bg-[#2E8B57] hover:opacity-90 px-3 py-1.5 rounded-md disabled:opacity-40">{textoBoton}</button>;
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Preparar para el próximo día de trabajo</h3>
+        <TextInput type="date" value={f2} onChange={(e) => setF2(e.target.value || f)} className="!w-40" />
+        {f2 !== f && <button onClick={() => setF2(f)} className="text-xs text-[#2E8B57] font-semibold hover:underline">Volver a {diaTexto}</button>}
+      </div>
+      <div className="space-y-2 border border-slate-100 rounded-lg p-3 bg-slate-50">
+        <div className="text-xs text-slate-500 mb-1">Dónde se deja lo del día siguiente (sale también en el correo de las 7:00):</div>
+        {MATERIALES_PREPARACION.map(([mat]) => selectorDestino(mat))}
+      </div>
+      {aviso && <div className="text-sm bg-[#EEF7E4] text-[#1F5F3A] rounded-md px-3 py-2">{aviso}</div>}
+      {!plan ? <p className="text-sm text-slate-400">No hay ningún planning confirmado.</p>
+        : empiezan.length === 0 ? <p className="text-sm text-slate-400">El {f2.split("-").reverse().join("/")} no empieza ninguna obra nueva según el planning confirmado.</p>
+        : empiezan.map((o) => {
+          const pers = itemsP.filter((x) => !x.entregada && deObra(o.obra.expNums, x.expediente));
+          const cris = cristales.filter((c) => deObra(o.obra.expNums, c.expediente) || toArray(c.piezas).some((p) => deObra(o.obra.expNums, p.expediente)));
+          const nMat = toArray(o.obra.lineas).filter((l) => l.seccion !== "persianas" && l.seccion !== "cristal").length;
+          return (
+            <div key={o.id} className="border border-slate-200 rounded-lg p-3">
+              <div className="font-semibold text-slate-800 mb-2">{o.obra.nombre}</div>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <b className="w-56">Persianas ({pers.length})</b>
+                    <span className="text-xs text-slate-500">→ {destinoPrepTexto(destinos.persianas, almacenes, almCab) || <span className="text-amber-700">sin destino</span>}</span>
+                    <span className="ml-auto">{pers.length ? botonHecho(claveDe(o.id, "persianas"), !!destinos.persianas, () => llevarPersianas({ id: o.id, nombre: o.obra.nombre }, pers), "Hecho: llevadas") : <span className="text-xs text-slate-400">no hay en los almacenes</span>}</span>
+                  </div>
+                  {pers.length > 0 && <div className="text-xs text-slate-500 mt-1 pl-2">{pers.map((x) => `${x.ref || "—"} ${largoPersiana(x)}${x.alto ? "×" + x.alto : ""} (${donde(x)})`).join(" · ")}</div>}
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <b className="w-56">Cristales ({cris.length} caballete{cris.length === 1 ? "" : "s"})</b>
+                    <span className="text-xs text-slate-500">→ {destinoPrepTexto(destinos.cristales, almacenes, almCab) || <span className="text-amber-700">sin destino</span>}</span>
+                    <span className="ml-auto">{cris.length ? botonHecho(claveDe(o.id, "cristales"), !!destinos.cristales, () => llevarCristales({ id: o.id, nombre: o.obra.nombre }, cris), "Hecho: llevados") : <span className="text-xs text-slate-400">no hay caballetes de esta obra</span>}</span>
+                  </div>
+                  {cris.length > 0 && (
+                    <div className="text-xs text-slate-500 mt-1 pl-2 flex flex-wrap gap-x-3 gap-y-1">
+                      {cris.map((c) => (
+                        <span key={c.id}>{c.lote || c.numero || "caballete"} ({c.enPuesto ? <>en {c.enPuesto} <button onClick={() => devolverCristal(c)} className="text-[#2E8B57] underline font-semibold">devolver</button></> : ubicacionTexto(c.ubicacion)})</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <b className="w-56">Perfiles y herrajes ({nMat} líneas)</b>
+                  <span className="text-xs text-slate-500">→ {destinoPrepTexto(destinos.materiales, almacenes, almCab) || <span className="text-amber-700">sin destino</span>}</span>
+                  <span className="ml-auto">{botonHecho(claveDe(o.id, "materiales"), !!destinos.materiales, () => apuntar(claveDe(o.id, "materiales"), destinoPrepTexto(destinos.materiales, almacenes, almCab)), "Hecho: preparado")}</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      {plan && (
+        <div className="border-t border-slate-100 pt-3">
+          <div className="font-semibold text-slate-800 mb-1">Ventanas que salen ese día (caballetes)</div>
+          {obrasSalen.length === 0 && <p className="text-sm text-slate-400">No sale ninguna obra ese día según el planning y las fechas de reparto.</p>}
+          {obrasSalen.map((o) => (
+            <div key={o.key} className="flex flex-wrap items-center gap-2 text-sm py-1.5 border-b border-slate-100">
+              <b className="w-56">{o.nombre}</b>
+              <span className="text-xs text-slate-500">{o.cabs.length ? o.cabs.map((c) => `${c.numero} (${nombreAlmCab(c.almacenId)}${c.ubicacion ? " · " + c.ubicacion : ""})`).join(" · ") : "sin caballetes cargados todavía"}</span>
+              <span className="ml-auto flex items-center gap-2">
+                {!hechos[claveDe(o.key, "ventanas")] && o.cabs.length > 0 && (
+                  <select value={destVent[o.key] || destinos.ventanas || ""} onChange={(e) => setDestVent({ ...destVent, [o.key]: e.target.value })} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
+                    <option value="">— ¿A dónde? —</option>
+                    <optgroup label="Almacenes de caballetes">{almCab.map((a) => <option key={a.id} value={`cab:${a.id}`}>{a.nombre}</option>)}</optgroup>
+                    {toArray(puestos).length > 0 && <optgroup label="Puestos de trabajo">{toArray(puestos).map((p) => <option key={p.id || p.nombre} value={`txt:${p.nombre}`}>{p.nombre}</option>)}</optgroup>}
+                    {destinos.ventanas && destinos.ventanas.startsWith("txt:") && !toArray(puestos).some((p) => `txt:${p.nombre}` === destinos.ventanas) && <option value={destinos.ventanas}>{destinos.ventanas.slice(4)}</option>}
+                  </select>
+                )}
+                {o.cabs.length > 0 && botonHecho(claveDe(o.key, "ventanas"), !!(destVent[o.key] || destinos.ventanas), () => sacarCaballetes(o), "Hecho: sacados")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Partes de trabajo de un día o de una semana: avance de las obras, totales por empleado
 // y por puesto, y todos los partes con sus incidencias. Sale en Fábrica y en Informes.

@@ -143,13 +143,21 @@ export const handler = async (event) => {
     if (!plan || !plan.emailFabrica) return { statusCode: 200, body: "Sin planning confirmado o sin correo de fábrica." };
     const { f, texto: diaTexto } = manana();
     const trozos = toArray(plan.dias && plan.dias[f]);
-    const [cristales, persianasAlmacen, proyectos, config, caballetesRaw, expedientesRaw] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos"), leer("configVentanas"), leer("caballetesVentanas"), leer("portalUxcar/expedientes")]);
+    const [cristales, persianasAlmacen, proyectos, config, caballetesRaw, expedientesRaw, almacenesRaw] = await Promise.all([leer("cristales"), leer("persianasAlmacen"), leer("proyectos"), leer("configVentanas"), leer("caballetesVentanas"), leer("portalUxcar/expedientes"), leer("almacenesPersianas")]);
+    // Dónde se deja cada material (Fábrica → Preparar material → "Preparar para el próximo día")
+    const almacenesP = toArray(almacenesRaw);
+    const destinos = ((config || {}).planning || {}).destinos || {};
+    const almacenesCab = toArray((config || {}).almacenesCaballetes);
+    const destinoTxt = (d) => !d ? "" : d.startsWith("alm:") ? ((almacenesP.find((a) => a.id === d.slice(4)) || {}).nombre || "almacén de persianas")
+      : d.startsWith("cab:") ? ((almacenesCab.find((a) => a.id === d.slice(4)) || {}).nombre || "almacén de caballetes") : d.replace(/^txt:/, "");
+    const dejarEn = (mat) => destinoTxt(destinos[mat]) ? ` → DEJAR EN: ${destinoTxt(destinos[mat]).toUpperCase()}` : "";
+    const nombreAlmacen = (x) => almacenesP.length > 1 ? `${(almacenesP.find((a) => a.id === (x.almacenId || "principal")) || {}).nombre || "Almacén de persianas"} · ` : "";
     const cab = caballetesSeccion({ f, plan, proyectos: toArray(proyectos), config: config || {}, caballetes: toArray(caballetesRaw), expedientes: toArray(expedientesRaw) });
     if (trozos.length === 0 && !cab.hay) return { statusCode: 200, body: `Nada planificado ni caballetes que avisar para ${f}.` };
     const obrasDia = trozos.map((t) => ({ ...t, obra: (plan.obras || {})[t.id] || { nombre: t.nombre, lineas: [], expNums: [] } }));
 
     let cuerpo = `PREPARAR HOY PARA EL ${diaTexto.toUpperCase()}\n\n`;
-    cuerpo += cab.texto;
+    cuerpo += cab.texto.replace("CABALLETES DE VENTANAS PARA ESE DÍA", `CABALLETES DE VENTANAS PARA ESE DÍA${dejarEn("ventanas")}`);
     if (obrasDia.length) cuerpo += `Obras del próximo día de trabajo:\n${obrasDia.map((o) => `  • ${o.obra.nombre} — ${o.horas} h${o.obra.ventanas ? ` (${o.obra.ventanas} ventanas)` : ""}${o.obra.inicio && o.obra.inicio < f ? " · (sigue de días anteriores)" : ""}`).join("\n")}\n`;
 
     // Solo se prepara el material de las obras que EMPIEZAN ese día (las que siguen ya lo tienen)
@@ -180,7 +188,7 @@ export const handler = async (event) => {
         .sort((a, b) => ((a.almacen ? 0 : 1) - (b.almacen ? 0 : 1) || String(a.almacen || "").localeCompare(String(b.almacen || ""))) || String(a.estanteria || "").localeCompare(String(b.estanteria || ""), "es", { numeric: true }));
       if (mat.length) {
         let alm = null;
-        cuerpo += `\nMATERIAL (perfiles, refuerzos, herrajes, accesorios):\n`;
+        cuerpo += `\nMATERIAL (perfiles, refuerzos, herrajes, accesorios)${dejarEn("materiales")}:\n`;
         mat.forEach((l) => {
           const a = l.almacen || "Sin almacén asignado";
           if (a !== alm) { cuerpo += ` [${a}]\n`; alm = a; }
@@ -189,12 +197,12 @@ export const handler = async (event) => {
       } else cuerpo += `\n(OJO: esta obra no tiene listado de materiales en el CRM)\n`;
       // Persianas
       const persListado = toArray(ob.lineas).filter((l) => l.seccion === "persianas");
-      const persAlm = toArray(persianasAlmacen).filter((x) => nums(x.expediente).some((n) => (ob.expNums || []).includes(n)));
+      const persAlm = toArray(persianasAlmacen).filter((x) => !x.entregada && nums(x.expediente).some((n) => (ob.expNums || []).includes(n)));
       const proy = ob.proyectoId ? toArray(proyectos).find((p) => p.id === ob.proyectoId) : null;
       const persProy = proy ? toArray(proy.persianasControl) : [];
       if (persListado.length || persAlm.length || persProy.length) {
-        cuerpo += `\nPERSIANAS:\n`;
-        persAlm.forEach((x) => { cuerpo += `   ☐ ${x.estante ? `Carro ${x.estante.carro} · lado ${x.estante.lado} · estante ${x.estante.nivel}` : "sin sitio"} — ${[x.modelo, x.descripcion].filter(Boolean).join(" ") || "persiana"}${x.ancho || x.largo ? ` ${x.ancho || x.largo}${x.alto ? "×" + x.alto : ""}` : ""}\n`; });
+        cuerpo += `\nPERSIANAS${dejarEn("persianas")}:\n`;
+        persAlm.forEach((x) => { cuerpo += `   ☐ ${x.enPuesto ? `YA ESTÁ EN ${x.enPuesto}` : x.estante ? `${nombreAlmacen(x)}Carro ${x.estante.carro} · lado ${x.estante.lado} · estante ${x.estante.nivel}` : `${nombreAlmacen(x)}sin sitio`} — ${[x.modelo, x.descripcion].filter(Boolean).join(" ") || "persiana"}${x.ancho || x.largo ? ` ${x.ancho || x.largo}${x.alto ? "×" + x.alto : ""}` : ""}\n`; });
         persProy.forEach((u) => { cuerpo += `   ☐ ${u.carro ? `Carro ${u.carro}` : "sin carro"} — ${[u.nombre, u.descripcion, u.modelo].filter(Boolean).join(" ") || "persiana"}${u.ancho ? ` ${u.ancho}×${u.alto || ""}` : ""}\n`; });
         if (!persAlm.length && !persProy.length) persListado.forEach((l) => { cuerpo += `   ☐ ${l.descripcion}${l.ancho ? ` ${l.ancho}×${l.alto}` : ""}${l.color ? " · " + l.color : ""} → ${l.uds} (del listado; comprobar que han llegado)\n`; });
       }
@@ -205,9 +213,9 @@ export const handler = async (event) => {
         return (ob.expNums || []).some((n) => set.has(n));
       });
       if (cris.length) {
-        cuerpo += `\nCRISTALES (caballetes):\n`;
+        cuerpo += `\nCRISTALES (caballetes)${dejarEn("cristales")}:\n`;
         cris.forEach((c) => {
-          const u = c.ubicacion ? `Zona ${c.ubicacion.zona} · fila ${c.ubicacion.fila} · hueco ${c.ubicacion.hueco}` : "SIN UBICAR";
+          const u = c.enPuesto ? `YA ESTÁ EN ${c.enPuesto}` : c.ubicacion ? `Zona ${c.ubicacion.zona} · fila ${c.ubicacion.fila} · hueco ${c.ubicacion.hueco}` : "SIN UBICAR";
           const piezas = toArray(c.piezas).filter((p) => nums(p.expediente).some((n) => (ob.expNums || []).includes(n))).length;
           cuerpo += `   ☐ ${u} — caballete ${c.lote || c.numero || ""}${piezas ? ` (${piezas} cristales de esta obra)` : ""}\n`;
         });
@@ -218,6 +226,7 @@ export const handler = async (event) => {
       }
     });
 
+    if (Object.keys(destinos).some((k) => destinos[k])) cuerpo += `\nCuando lo llevéis, marcadlo como hecho en el CRM: Fábrica → Preparar material → "Preparar para el próximo día".\n`;
     cuerpo += `\n— Aviso automático del CRM, según el planning confirmado el ${new Date(plan.publicadoEn || Date.now()).toLocaleDateString("es-ES")}.`;
     await enviar({ to: plan.emailFabrica, subject: `Preparar hoy para el ${diaTexto} — ${empiezan.length ? `${empiezan.length} obra${empiezan.length === 1 ? "" : "s"}` : "caballetes"}`, text: cuerpo });
     return { statusCode: 200, body: "Enviado" };
