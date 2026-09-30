@@ -3108,25 +3108,27 @@ export default function App() {
     if (data.id) {
       const anterior = ingresos.find((i) => i.id === data.id);
       let actualizado = { ...anterior, ...data };
+      // Una entrada de dinero NUNCA genera factura sola: la factura se hace aparte.
       if (!anterior?.proyectoId && data.proyectoId) {
-        registrarPagoProyecto(data.proyectoId, { importe: actualizado.importe, fecha: actualizado.fecha, formaPago: actualizado.formaPago, tipo: "Anticipo" });
         actualizado.vinculado = true;
-        showToast("Entrada vinculada al proyecto y factura generada");
+        showToast("Entrada vinculada al proyecto (no se ha generado factura)");
       } else {
         showToast("Entrada de dinero actualizada");
       }
       next = ingresos.map((i) => (i.id === data.id ? actualizado : i));
     } else {
       const nuevo = { proyectoId: null, vinculado: false, ...data, id: uid() };
-      if (nuevo.proyectoId) {
-        registrarPagoProyecto(nuevo.proyectoId, { importe: nuevo.importe, fecha: nuevo.fecha, formaPago: nuevo.formaPago, tipo: "Anticipo" });
-        nuevo.vinculado = true;
-      }
+      if (nuevo.proyectoId) nuevo.vinculado = true;
       next = [nuevo, ...ingresos];
-      showToast(nuevo.proyectoId ? "Entrada registrada y factura generada" : "Entrada de dinero registrada");
+      showToast(nuevo.proyectoId ? "Entrada registrada en el proyecto (sin factura)" : "Entrada de dinero registrada");
     }
     saveIngresos(next);
     setIngresoView("list");
+  };
+
+  // Añade/quita justificantes de una entrada ya guardada sin salir de la lista.
+  const actualizarJustificantesIngreso = (id, justificantes) => {
+    saveIngresos(ingresos.map((i) => (i.id === id ? { ...i, justificantes } : i)));
   };
 
   const deleteIngreso = (id) => {
@@ -3135,13 +3137,12 @@ export default function App() {
   };
 
   // Vincula una entrada de dinero (recibida antes de crear el proyecto) a un proyecto
-  // ya existente. Genera además la factura correspondiente, igual que un pago normal.
+  // ya existente. Se resta de lo pendiente de cobrar del proyecto; NO genera factura.
   const vincularIngresoAProyecto = (ingresoId, proyectoId) => {
     const ingreso = ingresos.find((i) => i.id === ingresoId);
     if (!ingreso || !proyectoId) return;
-    registrarPagoProyecto(proyectoId, { importe: ingreso.importe, fecha: ingreso.fecha, formaPago: ingreso.formaPago, tipo: "Anticipo" });
     saveIngresos(ingresos.map((i) => (i.id === ingresoId ? { ...i, proyectoId, vinculado: true } : i)));
-    showToast("Entrada vinculada al proyecto y factura generada");
+    showToast("Entrada vinculada al proyecto (no se ha generado factura)");
   };
 
   const saveSolicitudesPedido = (next) => { setSolicitudesPedido(next); persist("solicitudes_pedido", next); };
@@ -4509,6 +4510,7 @@ export default function App() {
             onUsarArticulo={usarArticuloEnProyecto}
             onQuitarArticuloUsado={quitarArticuloUsado}
             onRegistrarIngreso={irARegistrarIngreso}
+            onJustificantesIngreso={actualizarJustificantesIngreso}
             instalaciones={instalaciones}
             onVerInstalacion={irAInstalacion}
             onGenerarPedidoFaltante={enviarAPedido}
@@ -4811,7 +4813,9 @@ export default function App() {
             onUpsert={upsertIngreso}
             onDelete={deleteIngreso}
             onVincular={vincularIngresoAProyecto}
+            onJustificantes={actualizarJustificantesIngreso}
             onRegistrarIngreso={irARegistrarIngreso}
+            onJustificantesIngreso={actualizarJustificantesIngreso}
             prefill={ingresoPrefill}
             onClearPrefill={() => setIngresoPrefill(null)}
             isAdmin={isAdmin}
@@ -5778,7 +5782,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -5845,6 +5849,7 @@ function ProyectosModulo({ onMarcarPedidoEnviado, onActualizarPedido, onRecordar
         onUsarArticulo={(articuloId, cantidad) => onUsarArticulo(proyecto.id, articuloId, cantidad)}
         onQuitarArticuloUsado={(usoId) => onQuitarArticuloUsado(proyecto.id, usoId)}
         onRegistrarIngreso={onRegistrarIngreso}
+        onJustificantesIngreso={onJustificantesIngreso}
         instalacion={instalaciones.find((i) => i.proyectoId === proyecto.id)}
         onVerInstalacion={onVerInstalacion}
         onGenerarPedidoFaltante={onGenerarPedidoFaltante}
@@ -6851,7 +6856,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7615,8 +7620,31 @@ function ProyectoDetail({ proyecto, cliente, facturas, ingresos, materiales, art
             <Kpi label="Pendiente de facturar" value={money(Math.max(saldoPresupuesto, 0))} tone={saldoPresupuesto > 0 ? "bad" : "neutral"} />
           </div>
 
-          <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm">
-            Cada ingreso genera su propia factura por el importe exacto recibido (no por el total del presupuesto).
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Entradas de dinero ({(ingresos || []).length}) — cobrado {money(totalRecibido)}</span>
+              <button type="button" onClick={() => onRegistrarIngreso(proyecto, cliente?.nombre, Math.max(saldoPendiente, 0))}
+                style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-lg">
+                <Plus size={13} /> Meter dinero
+              </button>
+            </div>
+            {(ingresos || []).length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-slate-400">Todavía no hay dinero registrado en esta obra.</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {[...(ingresos || [])].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).map((i) => (
+                  <div key={i.id} className="px-4 py-2.5 flex flex-wrap items-start gap-x-4 gap-y-1.5 text-sm">
+                    <span className="text-slate-500 w-24 shrink-0">{fmtDate(i.fecha)}</span>
+                    <span className="text-slate-700 flex-1 min-w-[140px]">{i.concepto || "—"} <span className="text-slate-400">· {i.formaPago || "—"}</span></span>
+                    <span className="font-mono-num font-semibold text-emerald-700 shrink-0">{money(i.importe)}</span>
+                    <div className="w-full">
+                      <JustificantesIngreso compacto justificantes={i.justificantes} onChange={onJustificantesIngreso ? (next) => onJustificantesIngreso(i.id, next) : null} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="px-4 py-2 text-[11px] text-slate-400 border-t border-slate-100">Meter dinero no genera factura. La factura se hace aparte con el formulario de abajo.</p>
           </div>
 
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -25573,7 +25601,7 @@ function PresupuestosPresentacion({ presupuestos }) {
   );
 }
 
-function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
+function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
   const totalSinProyecto = sinProyecto.reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
@@ -25593,7 +25621,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
   const filtered = useMemo(() => {
     return ingresos.filter((i) => {
       if (!q) return true;
-      const hay = `${i.clienteNombre} ${i.concepto}`.toLowerCase();
+      const hay = `${i.clienteNombre} ${i.concepto} ${toArray(i.justificantes).map((j) => j.nombre).join(" ")}`.toLowerCase();
       return hay.includes(q.toLowerCase());
     });
   }, [ingresos, q]);
@@ -25628,7 +25656,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
       </button>
 
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-6">
-        Usa esto cuando un cliente te dé dinero (señal, anticipo) <strong>antes</strong> de tener el proyecto dado de alta en el CRM. En cuanto crees el proyecto, vuelve aquí y vincúlalo — se generará la factura automáticamente por ese importe.
+        Usa esto cuando un cliente te dé dinero (señal, anticipo) <strong>antes</strong> de tener el proyecto dado de alta en el CRM. En cuanto crees el proyecto, vuelve aquí y vincúlalo — se restará de lo pendiente de cobrar de esa obra. <strong>No se genera factura</strong>: la factura se hace aparte. Sube el justificante (PDF o foto de la transferencia, recibo…) en cada entrada.
       </div>
 
       {sinProyecto.length > 0 && (
@@ -25691,6 +25719,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
               <th className="px-4 py-3 font-semibold">Forma de pago</th>
               <th className="px-4 py-3 font-semibold">Proyecto</th>
+              <th className="px-4 py-3 font-semibold">Justificante</th>
               <th className="px-4 py-3 font-semibold"></th>
             </tr>
           </thead>
@@ -25711,6 +25740,9 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
                       <VincularProyectoSelect proyectos={proyectos} onVincular={(proyectoId) => onVincular(i.id, proyectoId)} />
                     )}
                   </td>
+                  <td className="px-4 py-3 min-w-[180px]">
+                    <JustificantesIngreso compacto justificantes={i.justificantes} onChange={onJustificantes ? (next) => onJustificantes(i.id, next) : null} />
+                  </td>
                   <td className="px-4 py-3 flex gap-2 justify-end">
                     <button onClick={() => { setEditId(i.id); setView("form"); }} className="text-slate-400 hover:text-slate-700"><Pencil size={15} /></button>
                     {isAdmin && <button onClick={() => onDelete(i.id)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>}
@@ -25719,7 +25751,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
               );
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">No hay entradas de dinero registradas.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400 text-sm">No hay entradas de dinero registradas.</td></tr>
             )}
           </tbody>
         </table>
@@ -25745,6 +25777,75 @@ function VincularProyectoSelect({ proyectos, onVincular }) {
       >
         Vincular
       </button>
+    </div>
+  );
+}
+
+// Justificantes de una entrada de dinero (PDF de la transferencia, foto del recibo…).
+// Se suben a Firebase Storage y en la entrada solo se guarda nombre + URL.
+function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+  const docs = toArray(justificantes);
+  const subir = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length || !onChange) return;
+    setSubiendo(true); setError("");
+    try {
+      const nuevos = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) { setError(`"${file.name}" pesa más de 20 MB.`); continue; }
+        const url = await subirArchivoAStorage(file, "ingresos");
+        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now() });
+      }
+      if (nuevos.length) onChange([...docs, ...nuevos]);
+    } catch (e) { setError("No se pudo subir: " + (e.message || "error")); }
+    finally { setSubiendo(false); }
+  };
+  const input = (
+    <input ref={inputRef} type="file" multiple className="hidden" accept=".pdf,application/pdf,image/*,.jpg,.jpeg,.png,.heic,.webp"
+      onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
+  );
+  const lista = docs.map((d) => (
+    <div key={d.id} className="flex items-center gap-1.5 text-xs py-0.5 min-w-0">
+      <FileText size={13} className="text-slate-400 shrink-0" />
+      <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate" title={d.nombre}>{d.nombre}</a>
+      {onChange && (
+        <button type="button" onClick={() => { if (window.confirm(`¿Quitar el justificante "${d.nombre}"?`)) onChange(docs.filter((x) => x.id !== d.id)); }}
+          className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={13} /></button>
+      )}
+    </div>
+  ));
+  if (compacto) {
+    return (
+      <div className="min-w-0">
+        {lista}
+        {!docs.length && <span className="text-[11px] text-amber-600">Sin justificante</span>}
+        {onChange && (
+          <button type="button" onClick={() => inputRef.current?.click()} disabled={subiendo}
+            className="ml-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 disabled:opacity-60">
+            {subiendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} {subiendo ? "Subiendo…" : "Subir"}
+          </button>
+        )}
+        {input}
+        {error && <p className="text-[11px] text-rose-600 font-semibold">⚠ {error}</p>}
+      </div>
+    );
+  }
+  return (
+    <div className="border border-slate-200 rounded-md p-3 bg-slate-50/50">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <span className="text-[11px] font-semibold tracking-wide uppercase text-slate-500">Justificante (PDF o foto)</span>
+        <button type="button" onClick={() => inputRef.current?.click()} disabled={subiendo}
+          className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-300 bg-white px-2.5 py-1.5 rounded-md hover:bg-slate-50 disabled:opacity-60">
+          {subiendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {subiendo ? "Subiendo…" : "Subir justificante"}
+        </button>
+        {input}
+      </div>
+      {lista}
+      {!docs.length && <p className="text-xs text-slate-400">Sin justificante. Sube el PDF de la transferencia, el recibo o una foto.</p>}
+      {error && <p className="text-xs text-rose-600 font-semibold mt-1">⚠ {error}</p>}
     </div>
   );
 }
@@ -25812,13 +25913,14 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
           <TextArea rows={2} value={f.notas} onChange={set("notas")} />
         </Field>
 
+        <JustificantesIngreso justificantes={f.justificantes} onChange={(next) => setF((prev) => ({ ...prev, justificantes: next }))} />
+
         <Field label="Proyecto (déjalo en blanco si todavía no existe)">
           <Select value={f.proyectoId || ""} onChange={set("proyectoId")}>
             <option value="">Sin proyecto todavía</option>
             {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
           </Select>
-          {!initial?.id && <p className="text-xs text-slate-400 mt-1">Si eliges un proyecto ahora, se generará la factura al guardar.</p>}
-          {initial?.vinculado && <p className="text-xs text-amber-600 mt-1">Esta entrada ya generó una factura. Si cambias el proyecto aquí, solo se actualiza el vínculo — no se genera ni se mueve ninguna factura nueva.</p>}
+          <p className="text-xs text-slate-400 mt-1">Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura.</p>
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
