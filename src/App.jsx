@@ -3343,6 +3343,15 @@ export default function App() {
   }, [currentUser?.id]);
   const guardarCaballete = (c) => fbSet(ref(fbDb, `caballetesVentanas/${c.id}`), JSON.parse(JSON.stringify(c))).catch((e) => showToast("No se pudo guardar el caballete: " + e.message, "error"));
   const borrarCaballete = (id) => fbSet(ref(fbDb, `caballetesVentanas/${id}`), null);
+  // Etiquetas de fabricación subidas SIN obra (la obra aún no está en el CRM): "etiquetasFabSinObra/f<lote>"
+  const [etiquetasSinObra, setEtiquetasSinObra] = useState([]);
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, "etiquetasFabSinObra"), (snap) => setEtiquetasSinObra(toArray(snap.val())), () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
+  const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
 
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
@@ -4910,6 +4919,9 @@ export default function App() {
               if (String(key).startsWith("u-")) { const e = uxExpedientes.find((x) => x.id === String(key).slice(2)); if (e) uxActualizar(e, { etiquetasFab: l }); }
               else updateProyectoInline(String(key).slice(2), { etiquetasFab: l });
             }}
+            etiquetasSinObra={etiquetasSinObra}
+            onGuardarSinObra={guardarLoteSinObra}
+            onBorrarSinObra={borrarLoteSinObra}
             onSaveConfigPlanning={(pl) => saveConfigVentanas({ ...configVentanas, planning: pl })}
             onGuardarHorasPlanning={(r, horas) => {
               if (r.tipo === "proyecto") updateProyectoInline(r.id, { horasFabricacion: horas });
@@ -6396,13 +6408,16 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
   const [aviso, setAviso] = useState("");
   const inputRef = useRef(null);
   const lotes = toArray(lotesProp);
+  // Leer el PDF tarda unos segundos: al terminar se guarda con lo último que haya, no con lo de cuando se eligió el archivo
+  const lotesRef = useRef(lotes); lotesRef.current = lotes;
+  const guardarRef = useRef(onGuardar); guardarRef.current = onGuardar;
   const subir = async (file) => {
     if (!file) return;
     setLeyendo(true); setAviso("Leyendo el PDF…");
     try {
       const r = await leerEtiquetasFabPdf(file, (n, t) => setAviso(`Leyendo el PDF… página ${n} de ${t}`));
       if (!r.lotes.length) { setAviso("No he encontrado etiquetas de fabricación en ese PDF (busco la línea V01.401 - 6.363 -FAB:1.275 y su código de barras)."); return; }
-      onGuardar(mezclarLotesFab(lotes, r, file.name));
+      guardarRef.current(mezclarLotesFab(lotesRef.current, r, file.name));
       const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
       setAviso(`Leídas ${r.etiquetas} etiquetas de ${nv} ventanas/puertas (lote${r.lotes.length > 1 ? "s" : ""} ${r.lotes.map((l) => l.fab).join(", ")}).${r.ignoradas ? ` ${r.ignoradas} páginas no tenían etiqueta.` : ""}${r.repetidas ? ` ${r.repetidas} códigos repetidos ignorados.` : ""}`);
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
@@ -14810,7 +14825,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra}) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
@@ -14971,7 +14986,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       </div>
 
       {tab === "caballetes" && (
-        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
+        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
 
@@ -15282,7 +15297,7 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
     const v = ventanasDeObra(p, uxExpedientes);
     const exp = p.origen === "portalUxcar" ? toArray(uxExpedientes).find((e) => e.id === p.uxcarExpedienteId) : null;
     const tot = exp ? { ventanas: uxNum(exp.ventanas), puertas: uxNum(exp.puertas), osciloParalelas: uxNum(exp.osciloParalelas) } : uxTotalesRecuento(p.recuento);
-    return caballetesNecesarios(huecosObra(v.recuento, tot, cap), cap);
+    return caballetesObra(v.recuento, tot, cap);
   };
   const deObra = (p, estado) => cabs.filter((c) => (estado === "libre" ? (c.estado || "libre") === "libre" && c.reserva && c.reserva.proyectoId === p.id : c.estado === estado && c.obra && c.obra.proyectoId === p.id));
   const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
@@ -15290,7 +15305,7 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
     const cl = clienteDe(p);
     lista.forEach((c) => onGuardarCaballete({ ...c, estado: "fuera", salida: { fecha: hoy, cliente: cl ? cl.nombre : (c.obra && c.obra.cliente) || "", obra: (c.obra && c.obra.nombre) || `#${p.numero} ${p.nombre}`, direccion: p.ubicacion || (cl && cl.direccion) || "", tipo: texto }, historial: hist(c, `${texto}: ${(c.obra && c.obra.nombre) || p.nombre}`) }));
   };
-  const vaciar = (lista, texto) => lista.forEach((c) => onGuardarCaballete({ ...c, estado: "libre", obra: null, lineas: [], reserva: null, historial: hist(c, texto) }));
+  const vaciar = (lista, texto) => lista.forEach((c) => onGuardarCaballete({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], reserva: null, historial: hist(c, texto) }));
 
   const bloqueCaballetes = (p) => {
     const nec = necesarios(p), carg = deObra(p, "cargado"), fue = deObra(p, "fuera"), res = deObra(p, "libre");
@@ -30152,6 +30167,20 @@ function svgCode128(texto, alto = 70, modulo = 2) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${x + 10 * modulo}" height="${alto}" viewBox="0 0 ${x + 10 * modulo} ${alto}"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${barras}</g></svg>`;
 }
 const codigoCaballete = (c) => String(c.numero || "").toUpperCase();
+// Pitido del ordenador al leer una etiqueta: agudo = bien, grave doble = no se ha podido
+function pitidoCRM(ok) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = pitidoCRM.ctx || (pitidoCRM.ctx = new AC());
+    if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+    const t0 = ctx.currentTime;
+    const tono = (f, ini, dur) => { const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = "sine"; o.frequency.value = f; g.gain.value = 0.15; o.connect(g); g.connect(ctx.destination); o.start(t0 + ini); o.stop(t0 + ini + dur); };
+    if (ok) tono(1300, 0, 0.12); else { tono(320, 0, 0.18); tono(220, 0.22, 0.28); }
+  } catch (e) { /* sin sonido */ }
+}
+// Al vaciar un caballete hay que borrar también lo que dejó el escáner
+const CAB_LIMPIO = { ventanas: [], capacidad: null, largoCm: null, cargadoPorEscaner: false, reservaPrevia: null, ultimaVentana: null, fechaCarga: null };
 
 // ---- Etiquetas de fabricación (PDF que saca el programa de la línea) ----
 // Cada perfil lleva una etiqueta "V01.401 - 6.363 -FAB:1.275" con un código de barras de 12
@@ -30224,11 +30253,12 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
-function indicePiezasFab(proyectos, uxExpedientes) {
+function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
   const m = new Map();
   const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz }))));
   toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "" }, pr.etiquetasFab));
   toArray(uxExpedientes).forEach((e) => meter({ key: `u-${e.id}`, tipo: "u", id: e.id, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, clienteId: "", direccion: "" }, e.etiquetasFab));
+  toArray(sinObra).forEach((l) => meter({ key: `s-${l.fab}`, tipo: "s", id: l.fab, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, clienteId: "", direccion: "" }, [l]));
   return m;
 }
 // Mete los lotes recién leídos en los que ya tenía la obra (si el lote ya estaba, lo sustituye)
@@ -30240,7 +30270,7 @@ function mezclarLotesFab(previos, r, archivo) {
 }
 const codPiezaFab = (t) => { const m = String(t || "").trim().match(/^\*?(\d{12})\*?$/); return m ? m[1] : null; };
 // Las puertas ocupan más sitio en el caballete (mismo criterio que el resto del almacén)
-const huecosVentanaFab = (w, cap) => (String(w.pos || "").toUpperCase().startsWith("P") ? parseFloat(cap.puerta) || 2 : 1);
+const huecosVentanaFab = (w, cap) => celdaCm(cap, w.persiana === true ? true : w.persiana === false ? false : undefined, String(w.pos || "").toUpperCase().startsWith("P") ? parseFloat(cap.puerta) || 2 : 1);
 const huecosCaballeteFab = (c, cap) => toArray(c.ventanas).reduce((a, w) => a + huecosVentanaFab(w, cap), 0);
 // Code 128 para etiquetas de impresora térmica: el tamaño va en MILÍMETROS (no en px), así el
 // navegador no lo reescala al imprimir. Módulo de 0,5 mm = 4 puntos exactos a 203 dpi, que es lo
@@ -30294,20 +30324,22 @@ function imprimirEtiquetasCaballetes(lista) {
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
-// Subida del PDF de etiquetas desde el propio Almacén de ventanas: se lee, se propone la obra
-// por el nº de expediente del PDF (si coincide con una sola) y se guarda en ella.
-function SubirEtiquetasAlmacen({ obras, lotesDe, onGuardar }) {
+// Subida del PDF de etiquetas desde el propio Almacén de ventanas. Se puede guardar en una obra
+// o SIN obra (cuando todavía no está en el CRM) y asignarla después. Aquí también se ven y se borran todos los lotes.
+function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, onAsignar }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [pend, setPend] = useState(null); // { r, archivo, obraKey }
+  const [selAsignar, setSelAsignar] = useState({});
   const inputRef = useRef(null);
-  const conEtiquetas = obras.filter((o) => toArray(lotesDe(o.key)).length > 0);
-  const [ver, setVer] = useState(conEtiquetas.length === 0);
+  const total = toArray(sinObra).length + lotesTodos.reduce((a, x) => a + x.lotes.length, 0);
+  const [ver, setVer] = useState(total === 0);
   const sugerir = (exp) => {
     if (!exp) return "";
     const c = obras.filter((o) => o.nombre.startsWith(`#${exp} `) || o.nombre === `Uxcar exp. ${exp}`);
     return c.length === 1 ? c[0].key : "";
   };
+  const nVent = (l) => toArray(l.ventanas).length;
   const leer = async (file) => {
     if (!file) return;
     setLeyendo(true); setAviso("Leyendo el PDF…"); setPend(null);
@@ -30319,59 +30351,103 @@ function SubirEtiquetasAlmacen({ obras, lotesDe, onGuardar }) {
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
-  const guardar = () => {
-    if (!pend || !pend.obraKey) return;
-    onGuardar(pend.obraKey, mezclarLotesFab(lotesDe(pend.obraKey), pend.r, pend.archivo));
-    const o = obras.find((x) => x.key === pend.obraKey);
-    setAviso(`Guardado en ${o ? o.nombre : "la obra"}: ${pend.r.etiquetas} etiquetas de ${pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.`);
+  const guardar = (obraKey) => {
+    if (!pend) return;
+    if (!onSubir(obraKey, pend.r, pend.archivo)) return;
+    const o = obras.find((x) => x.key === obraKey);
+    setAviso(`Guardado ${o ? `en ${o.nombre}` : "SIN obra"}: ${pend.r.etiquetas} etiquetas de ${pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.${o ? "" : " Cuando la obra esté en el CRM, la asignas aquí abajo."}`);
     setPend(null);
   };
-  const quitar = (o, fab) => {
-    if (!window.confirm(`¿Quitar las etiquetas del lote ${fab} de ${o.nombre}? Las ventanas que ya estén en caballetes se quedan donde están.`)) return;
-    onGuardar(o.key, toArray(lotesDe(o.key)).filter((l) => l.fab !== fab));
+  const quitar = (key, nombre, fab) => {
+    if (!window.confirm(`¿Quitar las etiquetas del lote ${fab} (${nombre})? Las ventanas que ya estén en caballetes se quedan donde están, pero la pistola dejará de reconocer ese lote.`)) return;
+    onQuitar(key, fab);
   };
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => setVer(!ver)} className="text-sm font-semibold text-slate-700 hover:underline">{ver ? "▾" : "▸"} Etiquetas de fabricación (PDF de la línea)</button>
-        <span className="text-xs text-slate-500">{conEtiquetas.length ? `${conEtiquetas.length} obra${conEtiquetas.length === 1 ? "" : "s"} con etiquetas cargadas` : "Todavía no hay ninguna: sube el PDF para que la pistola reconozca las ventanas."}</span>
+        <span className="text-xs text-slate-500">{total ? `${total} lote${total === 1 ? "" : "s"} cargado${total === 1 ? "" : "s"}${toArray(sinObra).length ? ` · ${toArray(sinObra).length} sin obra` : ""}` : "Todavía no hay ninguno: sube el PDF para que la pistola reconozca las ventanas."}</span>
       </div>
       {ver && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { leer(e.target.files && e.target.files[0]); e.target.value = ""; }} />
             <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir PDF de etiquetas"}
             </button>
-            <span className="text-xs text-slate-500">Se puede subir aquí sin entrar en el proyecto ni en el expediente de Uxcar.</span>
+            <span className="text-xs text-slate-500">Se puede subir sin obra y asignarla después.</span>
           </div>
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
           {pend && (
             <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
               <div className="text-sm text-slate-800">PDF <b>{pend.archivo}</b>: {pend.r.etiquetas} etiquetas · {pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas · lote {pend.r.lotes.map((l) => l.fab).join(", ")}{pend.r.lotes[0].expediente ? ` · expediente ${pend.r.lotes[0].expediente}` : ""}</div>
               <div className="flex flex-wrap items-center gap-2">
-                <select value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[240px] flex-1">
-                  <option value="">— ¿De qué obra o expediente es? —</option>
+                <button onClick={() => guardar("")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar SIN obra (la asigno luego)</button>
+                <span className="text-xs text-slate-500">o</span>
+                <select value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
+                  <option value="">— Guardar directamente en una obra… —</option>
                   {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
                 </select>
-                <button onClick={guardar} disabled={!pend.obraKey} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold disabled:opacity-50">Guardar en esa obra</button>
+                <button onClick={() => guardar(pend.obraKey)} disabled={!pend.obraKey} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white disabled:opacity-50">Guardar en esa obra</button>
                 <button onClick={() => setPend(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
               </div>
-              {!pend.obraKey && <div className="text-xs text-sky-900">{pend.r.lotes[0].expediente ? `No he podido decidir sola la obra del expediente ${pend.r.lotes[0].expediente} (no hay una única coincidencia): elígela.` : "Elige la obra."}</div>}
             </div>
           )}
-          {conEtiquetas.length > 0 && (
+          {toArray(sinObra).length > 0 && (
+            <div className="rounded-md border border-amber-300 bg-amber-50/60 p-2 space-y-1.5">
+              <div className="text-xs font-semibold text-amber-900">Sin obra asignada · las ventanas que escanees van a caballetes "Sin asignar" hasta que elijas la obra</div>
+              {toArray(sinObra).map((l) => (
+                <div key={l.fab} className="flex flex-wrap items-center gap-2 text-xs">
+                  <b className="text-slate-800">Lote {l.fab}</b><span className="text-slate-600">{nVent(l)} ventanas/puertas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <select value={selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente)} onChange={(e) => setSelAsignar({ ...selAsignar, [l.fab]: e.target.value })} className="ml-auto text-xs border border-slate-300 rounded px-1.5 py-1 bg-white min-w-[180px]">
+                    <option value="">— Asignar a la obra… —</option>
+                    {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
+                  </select>
+                  <button onClick={() => { const k = selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente); if (k) onAsignar(l.fab, k); }} disabled={!(selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded font-semibold disabled:opacity-50">Asignar</button>
+                  <button onClick={() => quitar(`s-${l.fab}`, "sin obra", l.fab)} className="text-rose-600 hover:underline">Quitar</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {lotesTodos.length > 0 && (
             <div className="text-xs text-slate-600 space-y-1">
-              {conEtiquetas.map((o) => toArray(lotesDe(o.key)).map((l) => (
+              <div className="font-semibold text-slate-700">Asignados a una obra</div>
+              {lotesTodos.map((o) => o.lotes.map((l) => (
                 <div key={o.key + l.fab} className="flex flex-wrap items-center gap-x-3">
-                  <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {toArray(l.ventanas).length} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
-                  <button onClick={() => quitar(o, l.fab)} className="text-rose-600 hover:underline">Quitar</button>
+                  <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {nVent(l)} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <button onClick={() => quitar(o.key, o.nombre, l.fab)} className="text-rose-600 hover:underline">Quitar</button>
                 </div>
               )))}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Caja de escaneo DENTRO de un caballete: lo que se lea aquí va a ESTE caballete (no se elige otro).
+// Muestra siempre lo que ha llegado, para ver si la pistola está escribiendo.
+function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
+  const [v, setV] = useState("");
+  const [msg, setMsg] = useState(null); // { ok, texto }
+  const ref = useRef(null);
+  useEffect(() => { if (enfocar && ref.current) { ref.current.focus(); try { ref.current.scrollIntoView({ block: "center" }); } catch (e) { /* sin scroll */ } } }, [enfocar]);
+  const procesar = (txt) => {
+    const t = String(txt || "").trim();
+    if (!t) return;
+    const cod = (resolver || codPiezaFab)(t);
+    if (!cod) { const m = { ok: false, texto: `Ha llegado "${t}", pero no contiene un código de etiqueta de ventana (12 cifras).` }; setMsg(m); if (onAviso) onAviso(false, m.texto); }
+    else setMsg(onPieza(cod));
+    setV("");
+    setTimeout(() => { if (ref.current) ref.current.focus(); }, 30);
+  };
+  useEffect(() => { const t = v.trim(); if (t && (resolver || codPiezaFab)(t)) procesar(t); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v]);
+  return (
+    <div className="rounded-md border border-emerald-300 bg-emerald-50/40 p-2 space-y-1">
+      <input ref={ref} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") procesar(v); }} placeholder={`📷 Pasa la pistola aquí: la ventana se mete en ${numero}`} className="w-full border border-emerald-300 rounded px-2 py-1.5 text-xs bg-white" />
+      {msg && <div className={`text-xs font-semibold ${msg.ok ? "text-emerald-700" : "text-rose-600"}`}>{msg.texto}</div>}
     </div>
   );
 }
@@ -30444,22 +30520,68 @@ function imprimirPackingCaballete(c) {
 
 // Cuántas ventanas caben en un caballete y cuántos caballetes necesita cada obra.
 // Las puertas y correderas ocupan más sitio: cuentan como varias ventanas.
-const CAB_CAPACIDAD_DEF = { capacidad: 12, puerta: 2, corredera: 1.5, fijo: 1, osciloparalela: 2 };
+const CAB_CAPACIDAD_DEF = { largoCm: 100, anchoSinCm: 10, anchoConCm: 20, huecoCm: 2, puerta: 2, corredera: 1.5, fijo: 1, osciloparalela: 2 };
 const capacidadCaballetes = (config) => ({ ...CAB_CAPACIDAD_DEF, ...((config && config.capacidadCaballetes) || {}) });
+// Medidas del caballete, en centímetros (se cambian en el planning de caballetes → "Cuántas caben")
+const cabLargo = (cap) => (parseFloat(cap.largoCm) > 0 ? parseFloat(cap.largoCm) : 100);
+const cabHueco = (cap) => (parseFloat(cap.huecoCm) >= 0 ? parseFloat(cap.huecoCm) : 2);
+const cabSin = (cap) => (parseFloat(cap.anchoSinCm) > 0 ? parseFloat(cap.anchoSinCm) : 10);
+const cabCon = (cap) => (parseFloat(cap.anchoConCm) > 0 ? parseFloat(cap.anchoConCm) : 20);
+// Espacio que ocupa una ventana en el caballete (cm), contando el hueco que se deja con la siguiente.
+// persiana: true = con persiana · false = sin persiana · sin dato = la medida de en medio (así, 6 por caballete).
+// factor: una puerta, corredera... ocupan más que una ventana.
+const celdaCm = (cap, persiana, factor) => {
+  const ancho = persiana === true ? cabCon(cap) : persiana === false ? cabSin(cap) : (cabSin(cap) + cabCon(cap)) / 2;
+  return (factor || 1) * (ancho + cabHueco(cap));
+};
+const factorTipoCab = (tipo, cap) => (tipo === "puerta" ? parseFloat(cap.puerta) || 1 : tipo === "corredera" ? parseFloat(cap.corredera) || 1 : tipo === "osciloparalela" ? parseFloat(cap.osciloparalela) || 1 : tipo === "fijo" ? parseFloat(cap.fijo) || 1 : 1);
+// Espacio (cm) que necesita el recuento de una obra (o, sin recuento, sus totales)
 const huecosObra = (recuento, totales, cap) => {
   const r = toArray(recuento);
   if (r.length) return r.reduce((a, l) => {
     const u = parseFloat(l.uds) || 0;
     if (l.tipo === "mosquitera" || l.tipo === "otro") return a;
-    if (l.tipo === "puerta") return a + u * (parseFloat(cap.puerta) || 1);
-    if (l.tipo === "corredera") return a + u * (parseFloat(cap.corredera) || 1);
-    if (l.tipo === "osciloparalela") return a + u * (parseFloat(cap.osciloparalela) || 1);
-    return a + u * (l.tipo === "fijo" ? parseFloat(cap.fijo) || 1 : 1);
+    return a + u * celdaCm(cap, !!l.persiana, factorTipoCab(l.tipo, cap));
   }, 0);
   if (!totales) return 0;
-  return (totales.ventanas || 0) + (totales.puertas || 0) * (parseFloat(cap.puerta) || 1) + (totales.osciloParalelas || 0) * (parseFloat(cap.osciloparalela) || 1);
+  return (totales.ventanas || 0) * celdaCm(cap, undefined, 1) + (totales.puertas || 0) * celdaCm(cap, undefined, parseFloat(cap.puerta) || 1) + (totales.osciloParalelas || 0) * celdaCm(cap, undefined, parseFloat(cap.osciloparalela) || 1);
 };
-const caballetesNecesarios = (huecos, cap) => (huecos > 0 ? Math.ceil(huecos / (parseFloat(cap.capacidad) || 12)) : 0);
+// Reparte las piezas (cada una con su espacio en cm) en caballetes: en cada caballete se busca la combinación
+// de piezas que más lo llena (así 3 con persiana + 3 sin persiana van juntas), y se repite hasta acabar.
+const empaquetarCm = (items, capacidad) => {
+  const cuenta = new Map();
+  items.forEach((it) => { const k = Math.round(it * 100) / 100; cuenta.set(k, (cuenta.get(k) || 0) + 1); });
+  const tam = [...cuenta.keys()].sort((x, y) => y - x);
+  const n = tam.map((t) => cuenta.get(t));
+  let bins = 0;
+  while (n.some((x) => x > 0)) {
+    let mejor = null;
+    const uso = new Array(tam.length).fill(0);
+    const dfs = (i, resto, llenado, piezas) => {
+      if (i === tam.length) {
+        if (piezas > 0 && (!mejor || llenado > mejor.llenado + 1e-9 || (Math.abs(llenado - mejor.llenado) < 1e-9 && piezas > mejor.piezas))) mejor = { llenado, piezas, uso: uso.slice() };
+        return;
+      }
+      const max = Math.min(n[i], Math.floor((resto + 1e-9) / tam[i]));
+      for (let c = max; c >= 0; c--) { uso[i] = c; dfs(i + 1, resto - c * tam[i], llenado + c * tam[i], piezas + c); }
+      uso[i] = 0;
+    };
+    dfs(0, capacidad, 0, 0);
+    if (!mejor) { const i = n.findIndex((x) => x > 0); n[i]--; bins++; continue; } // una pieza que no cabe ni sola: caballete para ella
+    mejor.uso.forEach((c, i) => { n[i] -= c; });
+    bins++;
+  }
+  return bins;
+};
+// Cuántos caballetes necesita una obra, según su recuento (con y sin persiana) o sus totales
+const caballetesObra = (recuento, totales, cap) => {
+  const r = toArray(recuento); const items = [];
+  const poner = (n, cm) => { for (let i = 0; i < Math.round(n); i++) items.push(cm); };
+  if (r.length) r.forEach((l) => { if (l.tipo === "mosquitera" || l.tipo === "otro") return; poner(parseFloat(l.uds) || 0, celdaCm(cap, !!l.persiana, factorTipoCab(l.tipo, cap))); });
+  else if (totales) { poner(totales.ventanas || 0, celdaCm(cap, undefined, 1)); poner(totales.puertas || 0, celdaCm(cap, undefined, parseFloat(cap.puerta) || 1)); poner(totales.osciloParalelas || 0, celdaCm(cap, undefined, parseFloat(cap.osciloparalela) || 1)); }
+  return items.length ? empaquetarCm(items, cabLargo(cap) + cabHueco(cap)) : 0;
+};
+const caballetesNecesarios = (cm, cap) => (cm > 0 ? Math.ceil(cm / (cabLargo(cap) + cabHueco(cap))) : 0);
 
 // Previsión: caballetes que hacen falta cada día de carga (fecha de reparto o de entrega)
 function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, config, onSaveConfig }) {
@@ -30476,7 +30598,7 @@ function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, c
     const huecos = huecosObra(v.recuento, tot, cap);
     const yaCargados = toArray(caballetes).filter((c) => c.estado === "cargado" && c.obra && c.obra.proyectoId === p.id).length;
     const cl = clientes.find((c) => c.id === p.clienteId);
-    return { p, dia, nombre: exp ? `Uxcar exp. ${exp.numero}` : `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", huecos, necesarios: caballetesNecesarios(huecos, cap), yaCargados, sinContar: huecos === 0 };
+    return { p, dia, nombre: exp ? `Uxcar exp. ${exp.numero}` : `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", huecos, necesarios: caballetesObra(v.recuento, tot, cap), yaCargados, sinContar: huecos === 0 };
   }).filter((o) => o.dia && o.dia >= hoy && o.dia <= dias[dias.length - 1]);
   const libres = toArray(caballetes).filter((c) => (c.estado || "libre") === "libre").length;
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
@@ -30486,18 +30608,21 @@ function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, c
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-bold text-slate-800">Caballetes necesarios para las próximas cargas</div>
-          <div className="text-xs text-slate-500">Por la fecha de reparto (o de entrega) de cada obra. Caben <b>{cap.capacidad} ventanas</b> por caballete. Ahora hay <b>{libres} libres</b>{fuera ? ` y ${fuera} fuera sin devolver` : ""}.</div>
+          <div className="text-xs text-slate-500">Por la fecha de reparto (o de entrega) de cada obra. Caben <b>{cabLargo(cap)} cm</b> por caballete: {cabSin(cap)} cm cada ventana sin persiana, {cabCon(cap)} cm con persiana y {cabHueco(cap)} cm entre ventanas. Ahora hay <b>{libres} libres</b>{fuera ? ` y ${fuera} fuera sin devolver` : ""}.</div>
         </div>
         <button onClick={() => setVerAjustes(!verAjustes)} className="text-xs font-semibold text-slate-500 hover:underline">{verAjustes ? "Cerrar" : "Cuántas caben"}</button>
       </div>
       {verAjustes && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 border-t border-slate-100 pt-3">
-          <Field label="Ventanas por caballete"><TextInput type="number" min="1" defaultValue={cap.capacidad} onBlur={(e) => guardar("capacidad", e.target.value)} /></Field>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-slate-100 pt-3">
+          <Field label="Largo útil del caballete (cm)"><TextInput type="number" min="1" defaultValue={cabLargo(cap)} onBlur={(e) => guardar("largoCm", e.target.value)} /></Field>
+          <Field label="Ventana sin persiana (cm)"><TextInput type="number" min="1" defaultValue={cabSin(cap)} onBlur={(e) => guardar("anchoSinCm", e.target.value)} /></Field>
+          <Field label="Ventana con persiana (cm)"><TextInput type="number" min="1" defaultValue={cabCon(cap)} onBlur={(e) => guardar("anchoConCm", e.target.value)} /></Field>
+          <Field label="Hueco entre ventanas (cm)"><TextInput type="number" min="0" defaultValue={cabHueco(cap)} onBlur={(e) => guardar("huecoCm", e.target.value)} /></Field>
           <Field label="Una puerta cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.puerta} onBlur={(e) => guardar("puerta", e.target.value)} /></Field>
           <Field label="Una corredera cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.corredera} onBlur={(e) => guardar("corredera", e.target.value)} /></Field>
           <Field label="Un fijo cuenta como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.fijo} onBlur={(e) => guardar("fijo", e.target.value)} /></Field>
           <Field label="Una oscilo-paralela como"><TextInput type="number" min="0" step="0.5" defaultValue={cap.osciloparalela} onBlur={(e) => guardar("osciloparalela", e.target.value)} /></Field>
-          <p className="col-span-full text-[11px] text-slate-400">Las ventanas de cada obra salen de su recuento (tipo plano o expediente). Las mosquiteras no cuentan.</p>
+          <p className="col-span-full text-[11px] text-slate-400">Las ventanas de cada obra salen de su recuento (tipo plano o expediente): las que llevan persiana (marcada en el recuento) ocupan más. Las mosquiteras no cuentan.</p>
         </div>
       )}
       <div className="overflow-x-auto">
@@ -30512,7 +30637,7 @@ function PrevisionCaballetes({ proyectos, uxExpedientes, clientes, caballetes, c
               return (
                 <tr key={d} className="border-t border-slate-100 align-top">
                   <td className="px-3 py-2 font-semibold capitalize whitespace-nowrap">{fmtDia(d)}</td>
-                  <td className="px-3 py-2">{del.map((o) => <div key={o.p.id} className="text-xs"><b>{o.nombre}</b>{o.cliente ? ` · ${o.cliente}` : ""} · {o.sinContar ? <span className="text-amber-700">ventanas sin contar</span> : `${Math.round(o.huecos * 10) / 10} huecos → ${o.necesarios} caballete${o.necesarios === 1 ? "" : "s"}`}{o.yaCargados ? <span className="text-emerald-700"> ({o.yaCargados} ya cargado{o.yaCargados === 1 ? "" : "s"})</span> : ""}</div>)}</td>
+                  <td className="px-3 py-2">{del.map((o) => <div key={o.p.id} className="text-xs"><b>{o.nombre}</b>{o.cliente ? ` · ${o.cliente}` : ""} · {o.sinContar ? <span className="text-amber-700">ventanas sin contar</span> : `${Math.round(o.huecos)} cm de ventanas → ${o.necesarios} caballete${o.necesarios === 1 ? "" : "s"}`}{o.yaCargados ? <span className="text-emerald-700"> ({o.yaCargados} ya cargado{o.yaCargados === 1 ? "" : "s"})</span> : ""}</div>)}</td>
                   <td className="px-3 py-2 text-right text-lg font-extrabold">{falta}</td>
                   <td className="px-3 py-2 text-xs">{falta === 0 ? <span className="text-emerald-700">✓ Ya están cargados</span> : acumulado <= libres ? <span className="text-emerald-700">✓ Hay libres</span> : <span className="font-semibold text-rose-600">⚠ Faltan {acumulado - libres}{fuera ? " (reclama los que están fuera)" : ""}</span>}</td>
                 </tr>
@@ -30616,7 +30741,7 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
   const obras = [];
   proyectos.filter((p) => p.origen !== "portalUxcar" && ["Pendiente de aceptación", "En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo)).forEach((p) => {
     const v = ventanasDeObra(p, uxExpedientes);
-    const nec = caballetesNecesarios(huecosObra(v.recuento, uxTotalesRecuento(p.recuento), cap), cap);
+    const nec = caballetesObra(v.recuento, uxTotalesRecuento(p.recuento), cap);
     const cl = clientes.find((c) => c.id === p.clienteId);
     obras.push({ key: `p-${p.id}`, proyectoId: p.id, nombre: `#${p.numero} ${p.nombre}`, cliente: cl ? cl.nombre : "", telefono: cl ? cl.telefono || cl.movil || "" : "", direccion: p.ubicacion || "", nec,
       carga: cuandoCarga(`p-${p.id}`, p.estadoTrabajo === "Listo para reparto/recogida", p.estadoTrabajo === "En proceso", [p.fechaReparto, p.fechaEntregaPrevista]),
@@ -30625,7 +30750,7 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
   toArray(uxExpedientes).filter((e) => e.estado !== "entregado").forEach((e) => {
     const pl = e.proyectoId ? proyectos.find((x) => x.id === e.proyectoId) : null;
     if (pl && ["Entregado", "Cancelado", "Albarán de carga firmado"].includes(pl.estadoTrabajo)) return;
-    const nec = caballetesNecesarios(huecosObra(toArray(e.recuento), { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, cap), cap);
+    const nec = caballetesObra(toArray(e.recuento), { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, cap);
     obras.push({ key: `u-${e.id}`, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, cliente: "Uxcar", telefono: "", direccion: "", nec,
       carga: cuandoCarga(`u-${e.id}`, e.estado === "terminado", e.estado === "produccion", [pl && pl.fechaReparto, e.fechaEntrega]),
       salidaFecha: (pl && pl.fechaReparto) || e.fechaEntrega || "" });
@@ -30771,7 +30896,7 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
 
-function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
   const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
@@ -30787,13 +30912,36 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const [avisoScan, setAvisoScan] = useState("");
   const [okScan, setOkScan] = useState("");
   const inputScanRef = useRef(null);
-  const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes), [proyectos, uxExpedientes]);
+  const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, etiquetasSinObra), [proyectos, uxExpedientes, etiquetasSinObra]);
+  const [ultimaLectura, setUltimaLectura] = useState("");
+  const [enfocarCab, setEnfocarCab] = useState(null);
+  const [toastScan, setToastScan] = useState(null);
+  const toastTimer = useRef(null);
+  // Cartel grande arriba + pitido: así se sabe qué ha pasado aunque no se esté mirando la tarjeta
+  const avisar = (ok, texto) => {
+    pitidoCRM(ok); setToastScan({ ok, texto });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastScan(null), ok ? 4500 : 10000);
+  };
+  // Hay pistolas que no mandan "Enter" al final: el código de una etiqueta (12 cifras) se procesa en cuanto llega entero,
+  // y un "C-03" completo se procesa tras una pausa corta.
+  useEffect(() => {
+    const v = String(codigo || "").trim();
+    if (!v) return undefined;
+    if (piezaDeTexto(v)) { buscarCodigo(v); return undefined; }
+    if (/^C-?\d{2,}$/i.test(v)) { const tt = setTimeout(() => buscarCodigo(v), 600); return () => clearTimeout(tt); }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codigo]);
   const capC0 = capacidadCaballetes(config);
   const [ventanaEsc, setVentanaEsc] = useState(null); // última ventana leída con la pistola
   const [prepObra, setPrepObra] = useState("");
   const [prepN, setPrepN] = useState("");
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
-  const cabsAhora = () => toArray(caballetes).map((c) => overlayCab.current.get(c.id) || c);
+  const cabsAhora = () => {
+    const base = toArray(caballetes); const ids = new Set(base.map((c) => c.id));
+    return [...base.map((c) => overlayCab.current.get(c.id) || c), ...[...overlayCab.current.values()].filter((c) => !ids.has(c.id))];
+  };
   const guardarCab = (c) => { overlayCab.current.set(c.id, c); setTimeout(() => overlayCab.current.delete(c.id), 6000); onGuardar(c); };
   const volverAEscanear = () => setTimeout(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); if (inputScanRef.current) inputScanRef.current.focus(); }, 60);
   // Si el foco se pierde (se pulsó fuera), la pistola escribiría en el vacío: se recupera la caja al teclear
@@ -30808,12 +30956,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     return () => window.removeEventListener("keydown", f);
   }, []);
   const buscarCodigo = (txt) => {
-    const cp = codPiezaFab(txt);
+    if (String(txt || "").trim()) setUltimaLectura(`${String(txt).trim()} · ${new Date().toLocaleTimeString("es-ES")}`);
+    const cp = piezaDeTexto(txt);
     if (cp) { escanearPieza(cp); return; }
     const t = String(txt || "").trim().toUpperCase().replace(/^CAB[:\s-]*/, "");
     if (!t) return;
     const c = toArray(caballetes).find((x) => codigoCaballete(x) === t || codigoCaballete(x).replace(/\D/g, "") === t.replace(/\D/g, ""));
-    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); } else { setEscaneadoId(null); setOkScan(""); setAvisoScan(`La pistola ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
+    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); avisar(true, `✓ Caballete ${c.numero}`); } else { avisar(false, `La pistola ha leído "${txt}" pero no hay ningún caballete con ese código.`); setEscaneadoId(null); setOkScan(""); setAvisoScan(`La pistola ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
     setCodigo("");
     setTimeout(() => { if (inputScanRef.current) inputScanRef.current.focus(); }, 50);
   };
@@ -30830,11 +30979,16 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     }),
     ...toArray(uxExpedientes).filter((e) => e.estado !== "entregado").map((e) => ({ key: `u-${e.id}`, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, cliente: "Uxcar", direccion: "", recuento: toArray(e.recuento) })),
   ];
-  const nuevo = () => {
-    const n = lista.reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
+  const crearCaballete = (motivo) => {
+    const n = cabsAhora().reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
     const alm = almacenSel || almacenes[0].id;
-    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] };
-    onGuardar(cab);
+    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: motivo || `Alta en ${nombreAlmacen(alm)}` }] };
+    guardarCab(cab);
+    return cab;
+  };
+  const nuevo = () => {
+    const cab = crearCaballete();
+    setEnfocarCab(cab.id);
     // Se imprime solo la etiqueta del caballete nuevo (no todas)
     if (confirm(`Caballete ${cab.numero} creado. ¿Imprimir ahora su etiqueta?`)) imprimirYMarcar([cab]);
   };
@@ -30844,6 +30998,24 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     cabs.forEach((x) => { if (x.etiquetaPendiente) guardarCab({ ...x, etiquetaPendiente: false }); });
   };
   const pendientesEtiqueta = toArray(caballetes).filter((x) => x.etiquetaPendiente);
+  // Sacar un caballete (vacío o con ventanas "sin asignar") sin tener la obra dada de alta
+  const sinObraReal = (c) => !c.obra || String(c.obra.key || "").startsWith("s-");
+  const puedeSacarSinObra = (c) => { const est = c.estado || "libre"; return est === "libre" || (est === "cargado" && sinObraReal(c)); };
+  const sacarSinObra = (c) => {
+    const dest = window.prompt(`¿Para quién o adónde sale ${c.numero}? (opcional: puedes dejarlo vacío)`, "");
+    if (dest === null) return;
+    const txt = String(dest).trim();
+    const nv = toArray(c.ventanas).length;
+    guardarCab({ ...c, estado: "fuera", reserva: null, reservaPrevia: null,
+      salida: { fecha: hoy, cliente: txt || (c.obra && c.obra.cliente) || "", obra: c.obra ? c.obra.nombre : "Sin obra dada de alta", direccion: (c.obra && c.obra.direccion) || "", sinObra: true },
+      historial: hist(c, `Sale sin obra${nv ? ` con ${nv} ventana${nv === 1 ? "" : "s"}` : ""}${txt ? ` (${txt})` : ""}`) });
+  };
+  // Cuando ya se lo han llevado del todo (la salida "sin obra"), se quita del almacén
+  const quitarLlevado = (c) => {
+    if (!confirm(`¿Ya se han llevado ${c.numero}${c.salida && c.salida.cliente ? ` (${c.salida.cliente})` : ""}? Se quitará del almacén y dejará de controlarse.`)) return;
+    overlayCab.current.delete(c.id);
+    onBorrar(c.id);
+  };
   // Borrar un caballete: libre → un aviso; con ventanas/obra → avisa de lo que se pierde; fuera → doble aviso
   const puedeBorrar = (c) => isAdmin || ((c.estado || "libre") === "libre" && !toArray(c.ventanas).length && !toArray(c.lineas).length);
   const borrarCab = (c) => {
@@ -30857,6 +31029,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       const que = nv ? `${nv} ventana${nv === 1 ? "" : "s"} escaneada${nv === 1 ? "" : "s"}` : `${nl} línea${nl === 1 ? "" : "s"} de ventanas`;
       if (!confirm(`El caballete ${c.numero} tiene ${que}${c.obra ? ` de ${c.obra.nombre}` : ""}. Si lo borras se pierde esa asignación (habría que volver a asignarlas a otro caballete). ¿Borrarlo?`)) return;
     } else if (!confirm(`¿Borrar el caballete ${c.numero}?`)) return;
+    overlayCab.current.delete(c.id);
     onBorrar(c.id);
     if (ventanaEsc && ventanaEsc.cabId === c.id) setVentanaEsc(null);
     if (escaneadoId === c.id) setEscaneadoId(null);
@@ -30864,7 +31037,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
   const diasDev = diasDevolucionCliente(caballetes, config);
   // Al volver un caballete se apunta cuántos días ha estado fuera (para la media de cada cliente)
-  const devolver = (c, accion) => onGuardar({ ...c, estado: "libre", obra: null, lineas: [], salida: null, reserva: null, almacenId: almacenSel || almacenDe(c),
+  const devolver = (c, accion) => onGuardar({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], salida: null, reserva: null, almacenId: almacenSel || almacenDe(c),
     devoluciones: c.salida && c.salida.fecha ? [...toArray(c.devoluciones), { cliente: c.salida.cliente || c.salida.obra || "", dias: cabDiasEntre(c.salida.fecha, hoy), fecha: hoy }].slice(-30) : toArray(c.devoluciones),
     historial: hist(c, accion) });
   // Al cargar un caballete reservado, la obra ya viene elegida
@@ -30879,19 +31052,37 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const necesariosObra = (obra) => {
     if (!obra) return 0;
     const capC = capacidadCaballetes(config);
+    if (String(obra.key || "").startsWith("s-")) {
+      const lotSin = toArray(etiquetasSinObra).find((x) => `s-${x.fab}` === obra.key);
+      if (!lotSin) return 0;
+      return empaquetarCm(toArray(lotSin.ventanas).map((v) => huecosVentanaFab({ pos: v.pos }, capC)), cabLargo(capC) + cabHueco(capC));
+    }
     const pr = proyectos.find((x) => x.id === obra.proyectoId);
     const o = obras.find((x) => x.key === obra.key);
     const ex = String(obra.key || "").startsWith("u-") ? toArray(uxExpedientes).find((e) => `u-${e.id}` === obra.key) : null;
     const tot = ex && (parseFloat(ex.ventanas) || parseFloat(ex.puertas) || parseFloat(ex.osciloParalelas))
       ? { ventanas: parseFloat(ex.ventanas) || 0, puertas: parseFloat(ex.puertas) || 0, osciloParalelas: parseFloat(ex.osciloParalelas) || 0 }
       : pr ? uxTotalesRecuento(pr.recuento) : null;
-    return caballetesNecesarios(huecosObra(o ? o.recuento : [], tot, capC), capC);
+    return caballetesObra(o ? o.recuento : [], tot, capC);
   };
   // ---- Ventanas que salen de la línea: la pistola lee una etiqueta y la ventana va a un caballete ----
-  const capacidadMax = parseFloat(capC0.capacidad) || 12;
-  const hayHueco = (c, w) => huecosCaballeteFab(c, capC0) + huecosVentanaFab(w, capC0) <= capacidadMax;
+  const capacidadMax = cabLargo(capC0); // largo útil normal de un caballete (cm)
+  const capDe = (c) => (parseFloat(c.largoCm) > 0 ? parseFloat(c.largoCm) : capacidadMax);
+  // cm de ventanas que lleva (sin contar el hueco detrás de la última)
+  const usadoCm = (c) => (toArray(c.ventanas).length ? Math.max(0, huecosCaballeteFab(c, capC0) - cabHueco(capC0)) : 0);
+  const hayHueco = (c, w) => huecosCaballeteFab(c, capC0) + huecosVentanaFab(w, capC0) <= capDe(c) + cabHueco(capC0) + 0.0001;
+  // Si todas las ventanas de la obra llevan (o no) persiana según su recuento, las escaneadas heredan ese dato; si hay mezcla, se marca a mano
+  const persianaDeDueno = (key) => {
+    const o = obras.find((x) => x.key === key);
+    const r = o ? toArray(o.recuento).filter((l) => l.tipo !== "mosquitera" && l.tipo !== "otro" && l.tipo !== "puerta") : [];
+    if (!r.length) return undefined;
+    if (r.every((l) => l.persiana)) return true;
+    if (r.every((l) => !l.persiana)) return false;
+    return undefined;
+  };
   const claveObraW = (w) => w.obraKey || `p-${w.proyectoId}`;
   const mismaVentana = (x, w) => x.id === w.id && claveObraW(x) === claveObraW(w);
+  const reservaLibre = (c) => !!(c.reserva && c.reserva.key === "s-libre");
   const reservaEsDe = (c, obra) => !!(c.reserva && (c.reserva.key === obra.key || (obra.proyectoId && c.reserva.proyectoId === obra.proyectoId)));
   const lotesDe = (key) => (String(key).startsWith("u-") ? (toArray(uxExpedientes).find((e) => `u-${e.id}` === key) || {}).etiquetasFab : (toArray(proyectos).find((pr) => `p-${pr.id}` === key) || {}).etiquetasFab);
   const natNum = (a, b) => String(a.numero).localeCompare(String(b.numero), "es", { numeric: true });
@@ -30930,14 +31121,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     .sort(natNum);
   const textoOpcion = (c, w, obra) => {
     const libre = (c.estado || "libre") === "libre";
-    const resOtra = libre && c.reserva && !reservaEsDe(c, obra);
-    return `${c.numero} · ${libre ? (c.reserva && !resOtra ? "reservado para esta obra" : "libre") : "con ventanas de esta obra"}${resOtra ? ` · reservado para ${c.reserva.nombre}` : ""}${!hayHueco(c, w) ? " · lleno" : ""}`;
+    const resOtra = libre && c.reserva && !reservaEsDe(c, obra) && !reservaLibre(c);
+    return `${c.numero} · ${libre ? (reservaLibre(c) ? "reservado sin proyecto" : c.reserva && !resOtra ? "reservado para esta obra" : "libre") : "con ventanas de esta obra"}${resOtra ? ` · reservado para ${c.reserva.nombre}` : ""}${!hayHueco(c, w) ? " · lleno" : ""}`;
   };
   const cambiarCaballete = (w, obra, destinoId) => {
     const dest = cabsAhora().find((c) => c.id === destinoId);
     if (!dest) return false;
-    if ((dest.estado || "libre") === "libre" && dest.reserva && !reservaEsDe(dest, obra) && !confirm(`${dest.numero} está reservado para ${dest.reserva.nombre}. ¿Meter aquí esta ventana igualmente?`)) return false;
-    if (!hayHueco(dest, w) && !confirm(`${dest.numero} ya está lleno (caben ${capacidadMax} huecos). ¿Meter la ventana igualmente?`)) return false;
+    if ((dest.estado || "libre") === "libre" && dest.reserva && !reservaEsDe(dest, obra) && !reservaLibre(dest) && !confirm(`${dest.numero} está reservado para ${dest.reserva.nombre}. ¿Meter aquí esta ventana igualmente?`)) return false;
+    if (!hayHueco(dest, w) && !confirm(`${dest.numero} ya está lleno (largo útil ${capDe(dest)} cm). ¿Meter la ventana igualmente?`)) return false;
     return colocarVentana(w, obra, destinoId);
   };
   // Caballete que se propone: primero el que ya se está llenando de esa obra; si no, uno reservado para ella
@@ -30947,19 +31138,39 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       .sort((a, b) => String(b.ultimaVentana || "").localeCompare(String(a.ultimaVentana || "")) || natNum(a, b));
     if (cargados.length) return cargados[0];
     const reservados = todos.filter((c) => (c.estado || "libre") === "libre" && reservaEsDe(c, obra)).sort(natNum);
-    return reservados[0] || null;
+    if (reservados[0]) return reservados[0];
+    // Reservados "sin proyecto": valen para cualquier obra o lote que aún no tenga los suyos
+    const genericos = todos.filter((c) => (c.estado || "libre") === "libre" && reservaLibre(c)).sort(natNum);
+    if (genericos[0]) return genericos[0];
+    // Sin reservas: el primer caballete libre que nadie ha reservado (si no queda ninguno, se crea uno al escanear)
+    const principal = almacenes[0].id;
+    return todos.filter((c) => (c.estado || "libre") === "libre" && !c.reserva)
+      .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b))[0] || null;
+  };
+  // Si la pistola añade algo antes o después del código, se busca igualmente el código de 12 cifras conocido
+  const piezaDeTexto = (txt) => {
+    const exacto = codPiezaFab(txt);
+    if (exacto) return exacto;
+    const dig = String(txt || "").replace(/\D/g, "");
+    if (dig.length > 12) { for (const k of indicePiezas.keys()) if (dig.includes(k)) return k; }
+    return null;
+  };
+  const textoLoteDesconocido = (cod) => {
+    const cargados = [...new Set([...indicePiezas.values()].map((x) => x.lote.fab))];
+    return `Etiqueta ${cod}: es del lote ${parseInt(cod.slice(0, 6), 10) || "?"} y no está en ningún PDF subido. Lotes cargados: ${cargados.length ? cargados.join(", ") : "ninguno"}. Sube el PDF de ese lote (en el proyecto, en el expediente de Uxcar o en "Etiquetas de fabricación").`;
   };
   const escanearPieza = (cod) => {
     setCodigo(""); setEscaneadoId(null); setOkScan("");
     const h = indicePiezas.get(cod);
     if (!h) {
       setVentanaEsc(null);
-      setAvisoScan(`Etiqueta ${cod} (lote ${parseInt(cod.slice(0, 6), 10) || "?"}): no está en ningún PDF de etiquetas. Súbelo en el proyecto, en el expediente de Uxcar o aquí mismo (apartado "Etiquetas de fabricación").`);
+      const tx = textoLoteDesconocido(cod);
+      setAvisoScan(tx); avisar(false, tx);
       volverAEscanear(); return;
     }
     setAvisoScan("");
     const { dueno, lote, ventana: v, pieza } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
     if (cabCon) {
       const actual = toArray(cabCon.ventanas).find((x) => mismaVentana(x, w));
@@ -30967,16 +31178,55 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       const nueva = { ...actual, escaneadas: repetida ? toArray(actual.escaneadas) : [...toArray(actual.escaneadas), cod] };
       if (!repetida) guardarCab({ ...cabCon, ventanas: toArray(cabCon.ventanas).map((x) => (mismaVentana(x, w) ? nueva : x)) });
       setVentanaEsc({ w: nueva, dueno, tipo: pieza.t, cabId: cabCon.id, nueva: false, repetida });
+      avisar(true, `${repetida ? "Esa pieza ya estaba contada · " : "✓ "}${w.pos} está en ${cabCon.numero} · ${toArray(nueva.escaneadas).length}/${w.total} piezas`);
     } else {
       const obra = obraDeDueno(dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); }
-      else setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: null, nueva: true });
+      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); }
+      else {
+        const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al escanear ${w.pos}`);
+        colocarVentana(w, obra, creado.id);
+        setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: creado.id, nueva: true, creado: true });
+        avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${creado.numero} (caballete nuevo)`);
+      }
     }
     volverAEscanear();
   };
+  // Lectura hecha DENTRO de un caballete: la ventana va a ese caballete, elija lo que elija el CRM por su cuenta
+  const escanearEnCaballete = (cabId, cod) => {
+    setUltimaLectura(`${cod} · ${new Date().toLocaleTimeString("es-ES")}`);
+    const h = indicePiezas.get(cod);
+    if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
+    const { dueno, lote, ventana: v } = h;
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const todos = cabsAhora();
+    const destino = todos.find((c) => c.id === cabId);
+    if (!destino) return { ok: false, texto: "Ese caballete ya no existe." };
+    if (destino.estado === "fuera") return { ok: false, texto: `${destino.numero} está fuera: no se le pueden meter ventanas.` };
+    const origen = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
+    const previa = origen ? toArray(origen.ventanas).find((x) => mismaVentana(x, w)) : null;
+    const yaContada = !!(previa && toArray(previa.escaneadas).includes(cod));
+    const wReal = previa ? { ...previa, escaneadas: yaContada ? toArray(previa.escaneadas) : [...toArray(previa.escaneadas), cod] } : w;
+    const nPiezas = toArray(wReal.escaneadas).length;
+    if (origen && origen.id === destino.id) {
+      if (!yaContada) guardarCab({ ...destino, ventanas: toArray(destino.ventanas).map((x) => (mismaVentana(x, w) ? wReal : x)) });
+      return { ok: true, texto: `${yaContada ? "Esa pieza ya estaba contada. " : "✓ "}${w.pos} ya estaba en ${destino.numero} (${nPiezas}/${w.total} piezas).` };
+    }
+    const obra = obraDeDueno(dueno);
+    if ((destino.estado || "libre") !== "libre" && !cabObraDe(destino, obra) && !confirm(`${destino.numero} lleva ventanas de ${destino.obra ? destino.obra.nombre : "otra obra"} y esta ventana es de ${obra.nombre}. ¿Meterla igualmente?`)) return { ok: false, texto: "Cancelado: no se ha metido." };
+    if (!cambiarCaballete(wReal, obra, cabId)) return { ok: false, texto: "Cancelado: no se ha metido." };
+    return { ok: true, texto: `✓ ${w.pos} (nº ${w.num}, ${obra.nombre}) metida en ${destino.numero}${origen ? ` (estaba en ${origen.numero})` : ""} · ${nPiezas}/${w.total} piezas.` };
+  };
   // Panel "preparar obra": se elige la obra y cuántos caballetes lleva; se reservan libres para ella
-  const obraPrep = obras.find((x) => x.key === prepObra) || null;
+  const obrasPrep = [
+    { key: "s-libre", proyectoId: "", nombre: "SIN PROYECTO (no vinculado a nada)", cliente: "", direccion: "", recuento: [] },
+    ...toArray(etiquetasSinObra).map((l) => ({ key: `s-${l.fab}`, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, cliente: `${toArray(l.ventanas).length} ventanas/puertas del PDF`, direccion: "", recuento: [] })),
+    ...obras,
+  ];
+  const obraPrep = obrasPrep.find((x) => x.key === prepObra) || null;
+  const obraPrepLimpia = obraPrep ? { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: String(obraPrep.key).startsWith("s-") ? "" : (obraPrep.cliente || ""), direccion: obraPrep.direccion || "" } : null;
+  const lotesPrepDe = (key) => (String(key).startsWith("s-") ? toArray(etiquetasSinObra).filter((l) => `s-${l.fab}` === key) : toArray(lotesDe(key)));
+  const ventanasPrep = obraPrep ? lotesPrepDe(obraPrep.key).flatMap((l) => toArray(l.ventanas).map((v) => ({ v, fab: l.fab }))) : [];
   const reservadosPrep = obraPrep ? cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === obraPrep.key) : [];
   const cargadosPrep = obraPrep ? cabsAhora().filter((c) => c.estado === "cargado" && c.obra && (c.obra.key === obraPrep.key || (obraPrep.proyectoId && c.obra.proyectoId === obraPrep.proyectoId))) : [];
   const reservarParaObra = () => {
@@ -30989,10 +31239,84 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     const libres = cabsAhora().filter((c) => (c.estado || "libre") === "libre" && !c.reserva && (!almacenSel || almacenDe(c) === almacenSel))
       .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b));
     const toma = libres.slice(0, faltan);
-    toma.forEach((c) => guardarCab({ ...c, reserva: { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: obraPrep.cliente, direccion: obraPrep.direccion, fecha: hoy }, historial: hist(c, `Reservado para ${obraPrep.nombre}`) }));
+    toma.forEach((c) => guardarCab({ ...c, reserva: { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: obraPrepLimpia.cliente, direccion: obraPrep.direccion || "", fecha: hoy }, historial: hist(c, `Reservado para ${obraPrep.nombre}`) }));
     if (toma.length < faltan) alert(`Solo hay ${toma.length} caballetes libres sin reservar: faltan ${faltan - toma.length}. Reclama los que están fuera o da de alta más.`);
   };
   const quitarReservasPrep = () => reservadosPrep.forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${obraPrep.nombre}`) }));
+  // ---- Lotes de etiquetas: asignados a una obra o sin obra ----
+  const obraSin = (fab) => ({ key: `s-${fab}`, proyectoId: "", nombre: `Sin asignar · lote ${fab}`, cliente: "", direccion: "" });
+  const lotesTodos = [
+    ...toArray(proyectos).filter((pr) => toArray(pr.etiquetasFab).length).map((pr) => ({ key: `p-${pr.id}`, nombre: `#${pr.numero} ${pr.nombre}`, lotes: toArray(pr.etiquetasFab) })),
+    ...toArray(uxExpedientes).filter((e) => toArray(e.etiquetasFab).length).map((e) => ({ key: `u-${e.id}`, nombre: `Uxcar exp. ${e.numero}`, lotes: toArray(e.etiquetasFab) })),
+  ];
+  const dondeEstaLote = (fab) => {
+    if (toArray(etiquetasSinObra).some((l) => l.fab === fab)) return { key: `s-${fab}`, nombre: "sin asignar" };
+    const t = lotesTodos.find((x) => x.lotes.some((l) => l.fab === fab));
+    return t ? { key: t.key, nombre: t.nombre } : null;
+  };
+  const quitarLote = (key, fab) => {
+    if (String(key).startsWith("s-")) {
+      if (onBorrarSinObra) onBorrarSinObra(fab);
+      cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === key).forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) }));
+    }
+    else onGuardarEtiquetasObra(key, toArray(lotesDe(key)).filter((l) => l.fab !== fab));
+  };
+  // Las ventanas de ese lote que ya estén en caballetes pasan a la obra nueva (o a "sin asignar")
+  const relinkarLote = (fab, obraNueva) => {
+    if (obraNueva.key !== `s-${fab}`) {
+      const nuevaRes = (r) => ({ key: obraNueva.key, proyectoId: obraNueva.proyectoId || "", nombre: obraNueva.nombre, cliente: obraNueva.cliente || "", direccion: obraNueva.direccion || "", fecha: (r && r.fecha) || hoy });
+      cabsAhora().forEach((c) => {
+        const a = c.reserva && c.reserva.key === `s-${fab}`, b = c.reservaPrevia && c.reservaPrevia.key === `s-${fab}`;
+        if (!a && !b) return;
+        guardarCab({ ...c, ...(a ? { reserva: nuevaRes(c.reserva) } : {}), ...(b ? { reservaPrevia: nuevaRes(c.reservaPrevia) } : {}), historial: hist(c, `Reserva: lote ${fab} → ${obraNueva.nombre}`) });
+      });
+    }
+    cabsAhora().forEach((c) => {
+      const vs = toArray(c.ventanas);
+      if (!vs.some((w) => w.fab === fab && claveObraW(w) !== obraNueva.key)) return;
+      const viejas = new Set(vs.filter((w) => w.fab === fab).map(claveObraW));
+      const todasDelLote = vs.every((w) => w.fab === fab);
+      let c2 = { ...c, ventanas: vs.map((w) => (w.fab === fab ? { ...w, obraKey: obraNueva.key, proyectoId: obraNueva.proyectoId || "" } : w)), historial: hist(c, `Lote ${fab} → ${obraNueva.nombre}`) };
+      if (c.estado === "fuera" && c.salida && c.salida.sinObra && !String(obraNueva.key).startsWith("s-") && todasDelLote && c.obra && viejas.has(c.obra.key)) c2 = { ...c2, salida: { ...c.salida, obra: obraNueva.nombre, cliente: c.salida.cliente || obraNueva.cliente || "", direccion: obraNueva.direccion || "", sinObra: false } };
+      if (todasDelLote && c.obra && viejas.has(c.obra.key)) c2 = { ...c2, obra: { key: obraNueva.key, proyectoId: obraNueva.proyectoId || "", nombre: obraNueva.nombre, cliente: obraNueva.cliente || "", direccion: obraNueva.direccion || "" } };
+      guardarCab(c2);
+    });
+  };
+  // Guarda lo leído del PDF en una obra ("" = sin obra). Si el lote ya estaba en otro sitio se mueve (si no, la pistola solo reconocería uno).
+  const subirLotes = (obraKey, r, archivo) => {
+    const destinoObra = obraKey ? obras.find((x) => x.key === obraKey) : null;
+    if (obraKey && !destinoObra) return false;
+    for (const lote of r.lotes) {
+      const ya = dondeEstaLote(lote.fab);
+      const destinoKey = obraKey || `s-${lote.fab}`;
+      if (ya && ya.key !== destinoKey && !confirm(`El lote ${lote.fab} ya estaba cargado (${ya.nombre}). ¿Moverlo a ${destinoObra ? destinoObra.nombre : "sin asignar"}? Se quita de donde estaba.`)) return false;
+    }
+    r.lotes.forEach((lote) => { const ya = dondeEstaLote(lote.fab); if (ya && ya.key !== (obraKey || `s-${lote.fab}`)) quitarLote(ya.key, lote.fab); });
+    const hoyL = new Date().toISOString().slice(0, 10);
+    if (destinoObra) onGuardarEtiquetasObra(destinoObra.key, mezclarLotesFab(lotesDe(destinoObra.key), r, archivo));
+    else r.lotes.forEach((l) => onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoyL, ventanas: l.ventanas }))));
+    r.lotes.forEach((l) => relinkarLote(l.fab, destinoObra || obraSin(l.fab)));
+    return true;
+  };
+  // Cuando la obra ya existe en el CRM, los lotes que estaban "sin obra" se le ofrecen con un clic (por el nº de expediente del PDF)
+  const [aparcados, setAparcados] = useState([]);
+  const sugerirObraLote = (exp) => {
+    if (!exp) return null;
+    const c = obras.filter((o) => o.nombre.startsWith(`#${exp} `) || o.nombre === `Uxcar exp. ${exp}`);
+    return c.length === 1 ? c[0] : null;
+  };
+  const sugerenciasLotes = toArray(etiquetasSinObra)
+    .filter((l) => !aparcados.includes(l.fab))
+    .map((l) => ({ l, o: sugerirObraLote(l.expediente), enCab: cabsAhora().reduce((a, c) => a + toArray(c.ventanas).filter((w) => w.fab === l.fab).length, 0) }))
+    .filter((x) => x.o);
+  const asignarSinObra = (fab, obraKey) => {
+    const l = toArray(etiquetasSinObra).find((x) => x.fab === fab);
+    const o = obras.find((x) => x.key === obraKey);
+    if (!l || !o) return;
+    onGuardarEtiquetasObra(o.key, mezclarLotesFab(lotesDe(o.key), { lotes: [l] }, l.archivo));
+    onBorrarSinObra(fab);
+    relinkarLote(fab, o);
+  };
   const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
   if (editando) {
@@ -31008,15 +31332,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
           const pr = proyectos.find((x) => x.id === c.obra.proyectoId);
           const o = obras.find((x) => x.key === c.obra.key);
           const huecos = huecosObra(o ? o.recuento : [], pr ? uxTotalesRecuento(pr.recuento) : null, capC);
-          const nec = necesariosObra(c.obra) || caballetesNecesarios(huecos, capC);
+          const nec = necesariosObra(c.obra) || caballetesObra(o ? o.recuento : [], pr ? uxTotalesRecuento(pr.recuento) : null, capC);
           const ya = toArray(caballetes).filter((x) => x.id !== c.id && x.estado === "cargado" && x.obra && x.obra.proyectoId === c.obra.proyectoId).map((x) => x.numero);
           const aqui = c.lineas.reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
+          const capEste = parseFloat(c.largoCm) > 0 ? parseFloat(c.largoCm) : cabLargo(capC);
+          const aquiCm = Math.max(0, huecosObra(c.lineas, null, capC) - cabHueco(capC));
           return (
-            <div className={`text-sm rounded-md px-3 py-2 border ${aqui > capC.capacidad ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-sky-50 border-sky-200 text-sky-900"}`}>
-              {nec ? <>Esta obra necesita <b>{nec} caballete{nec === 1 ? "" : "s"}</b> ({Math.round(huecos * 10) / 10} huecos, caben {capC.capacidad} por caballete).</> : "Esta obra no tiene las ventanas contadas."}
+            <div className={`text-sm rounded-md px-3 py-2 border ${aquiCm > capEste + 0.0001 ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-sky-50 border-sky-200 text-sky-900"}`}>
+              {nec ? <>Esta obra necesita <b>{nec} caballete{nec === 1 ? "" : "s"}</b> ({Math.round(huecos)} cm de ventanas; en cada caballete caben {cabLargo(capC)} cm).</> : "Esta obra no tiene las ventanas contadas."}
               {ya.length > 0 && <> Ya tiene cargados: <b>{ya.join(", ")}</b>.</>}
               <div className="text-xs mt-1">{nec ? (ya.length + 1 >= nec ? "✓ Con este caballete se completa la obra: al guardarlo pasa sola a Reparto." : `Cuando estén cargados los ${nec}, la obra pasará sola a Reparto.`) : "Sin ventanas contadas no se puede saber cuándo está completa: pásala a Reparto a mano con \"Fabricación terminada\"."}</div>
-              {aqui > capC.capacidad && <div className="font-semibold mt-1">⚠ En este caballete has puesto {aqui} piezas y caben {capC.capacidad}: reparte en otro caballete.</div>}
+              {aquiCm > capEste + 0.0001 && <div className="font-semibold mt-1">⚠ En este caballete has puesto {aqui} piezas ({Math.round(aquiCm)} cm) y caben {capEste} cm: reparte en otro caballete.</div>}
             </div>
           );
         })()}
@@ -31124,8 +31450,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
         <button onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Cámara</button>
         {escaneadoId && <><span className="text-xs font-semibold text-emerald-700">{okScan}</span><button onClick={() => { setEscaneadoId(null); setOkScan(""); }} className="text-xs text-slate-500 hover:underline">Ver todos</button></>}
         {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
+        <div className="w-full text-[11px] text-slate-400">{ultimaLectura ? `Última lectura de la pistola: ${ultimaLectura}` : "Aún no ha llegado ninguna lectura. Haz clic en la caja y pasa la pistola: si el código aparece escrito, la pistola funciona."}</div>
       </div>
+      {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
       {camara && <LectorCamara onLeido={(v) => { setCamara(false); buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
+      {onGuardarEtiquetasObra && sugerenciasLotes.map(({ l, o, enCab }) => (
+        <div key={l.fab} className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-300 bg-sky-50 px-3 py-2 text-sm text-slate-800">
+          <span>El lote <b>{l.fab}</b> (expediente {l.expediente}) estaba <b>sin obra</b> y ya existe <b>{o.nombre}</b>{enCab ? ` · ${enCab} ventana${enCab === 1 ? "" : "s"} suya${enCab === 1 ? "" : "s"} ya está${enCab === 1 ? "" : "n"} en caballetes` : ""}.</span>
+          <button onClick={() => asignarSinObra(l.fab, o.key)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto px-3 py-1.5 rounded-md text-sm font-semibold">Asignar a {o.nombre}</button>
+          <button onClick={() => setAparcados([...aparcados, l.fab])} className="text-xs text-slate-500 hover:underline">Ahora no</button>
+        </div>
+      ))}
       {ventanaEsc && (() => {
         const ve = ventanaEsc;
         const cab = ve.cabId ? cabsAhora().find((c) => c.id === ve.cabId) : null;
@@ -31148,6 +31483,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
             ) : (
               <div className="text-sm font-semibold text-amber-900">⚠ No hay ningún caballete reservado con hueco para esta obra. Elige uno (la ventana aún no está asignada):</div>
             )}
+            {ve.creado && cab && cab.etiquetaPendiente && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md bg-amber-100 border border-amber-300 px-2 py-1.5 text-sm text-amber-900">
+                <span>No quedaban caballetes libres: se ha <b>creado {cab.numero}</b> automáticamente. Imprime su etiqueta y pégala en el caballete.</span>
+                <button onClick={() => imprimirYMarcar([cab])} className="ml-auto flex items-center gap-1 font-semibold underline"><Printer size={13} /> Imprimir su etiqueta</button>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <select value="" onChange={(e) => { const id = e.target.value; if (!id) return; if (cambiarCaballete(wAct, obra, id)) setVentanaEsc({ ...ve, cabId: id, w: { ...wAct } }); volverAEscanear(); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
                 <option value="">{cab ? "Cambiar de caballete…" : "Elegir caballete…"}</option>
@@ -31161,9 +31502,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="text-sm font-semibold text-slate-700">Preparar caballetes de una obra</div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={prepObra} onChange={(e) => { const o = obras.find((x) => x.key === e.target.value); setPrepObra(e.target.value); setPrepN(o ? String(necesariosObra(o) || "") : ""); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
-            <option value="">— Elige la obra o expediente que toca —</option>
-            {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
+          <select value={prepObra} onChange={(e) => { const o = obrasPrep.find((x) => x.key === e.target.value); setPrepObra(e.target.value); setPrepN(o ? String(necesariosObra(o) || "") : ""); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
+            <option value="">— Elige la obra, expediente o "Sin asignar" —</option>
+            {obrasPrep.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
           </select>
           <input type="number" min="1" value={prepN} onChange={(e) => setPrepN(e.target.value)} placeholder="Nº caballetes" className="w-32 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
           <button onClick={reservarParaObra} disabled={!obraPrep} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold disabled:opacity-50">Reservar caballetes</button>
@@ -31172,12 +31513,41 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
           <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-3">
             <span>Reservados: <b>{reservadosPrep.length ? reservadosPrep.map((c) => c.numero).join(", ") : "ninguno"}</b></span>
             <span>Con ventanas: <b>{cargadosPrep.length ? cargadosPrep.map((c) => c.numero).join(", ") : "ninguno"}</b></span>
-            {necesariosObra(obraPrep) > 0 && <span>Según su recuento necesita {necesariosObra(obraPrep)}.</span>}
+            {necesariosObra(obraPrep) > 0 && <span>Necesita {necesariosObra(obraPrep)} caballete{necesariosObra(obraPrep) === 1 ? "" : "s"} ({String(obraPrep.key).startsWith("s-") ? "según el PDF" : "según su recuento"}).</span>}
             {reservadosPrep.length > 0 && <button onClick={() => { if (confirm(`¿Quitar las ${reservadosPrep.length} reservas de ${obraPrep.nombre}?`)) quitarReservasPrep(); }} className="text-rose-600 hover:underline">Quitar reservas</button>}
           </div>
         )}
+        {obraPrep && obraPrep.key === "s-libre" && <div className="text-xs text-slate-500">Reserva caballetes sin vincularlos a ninguna obra. Cuando salgan ventanas de la línea y pases la pistola, se meten en ellos; luego ya se asignan a su obra.</div>}
+        {obraPrep && ventanasPrep.length > 0 && (() => {
+          const todos = cabsAhora();
+          const filas = ventanasPrep.map(({ v, fab }) => {
+            const wBase = { id: v.id, pos: v.pos, num: v.num, fab, color: v.color || "", obraKey: obraPrep.key, proyectoId: obraPrep.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(obraPrep.key), escaneadas: [] };
+            const cabW = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, wBase)));
+            const wReal = cabW ? toArray(cabW.ventanas).find((x) => mismaVentana(x, wBase)) : wBase;
+            return { wBase, cabW, wReal };
+          });
+          const sinColocar = filas.filter((f) => !f.cabW).length;
+          return (
+            <details open className="border border-slate-200 rounded-md">
+              <summary className="px-2 py-1.5 text-xs font-semibold text-slate-700 cursor-pointer">Repartir las ventanas a mano · {filas.length} en total · {sinColocar} sin caballete</summary>
+              <div className="px-2 pb-2 grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-1">
+                {filas.map(({ wBase, cabW, wReal }) => (
+                  <div key={wBase.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                    <b className="text-slate-900">{wBase.pos}</b>
+                    <span className="text-slate-500">nº {wBase.num}{wBase.color ? ` · ${wBase.color}` : ""}</span>
+                    <span className={cabW ? "text-emerald-700 font-semibold" : "text-amber-700"}>{cabW ? `en ${cabW.numero}` : "sin caballete"}</span>
+                    <select value="" onChange={(e) => { if (e.target.value) cambiarCaballete(wReal, obraPrepLimpia, e.target.value); volverAEscanear(); }} className="ml-auto text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white">
+                      <option value="">{cabW ? "Mover a…" : "Meter en…"}</option>
+                      {opcionesDestino(obraPrepLimpia, cabW ? cabW.id : null).map((c) => <option key={c.id} value={c.id}>{textoOpcion(c, wBase, obraPrepLimpia)}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </details>
+          );
+        })()}
       </div>
-      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesDe={lotesDe} onGuardar={onGuardarEtiquetasObra} />}
+      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={quitarLote} onAsignar={asignarSinObra} />}
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
         <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
@@ -31253,9 +31623,20 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
                 </div>
               </div>
             )}
+            {c.estado !== "fuera" && <EscanerEnCaballete numero={c.numero} enfocar={enfocarCab === c.id} resolver={piezaDeTexto} onAviso={avisar} onPieza={(cod) => { const r = escanearEnCaballete(c.id, cod); avisar(r.ok, r.texto); return r; }} />}
+            {c.estado !== "fuera" && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+                <span>Largo útil</span>
+                <select value={String(capDe(c))} onChange={(e) => { const n = parseInt(e.target.value, 10); guardarCab({ ...c, largoCm: n === capacidadMax ? null : n, historial: hist(c, `Largo útil de ${c.numero}: ${n} cm`) }); volverAEscanear(); }} className="border border-slate-300 rounded px-1 py-0.5 bg-white text-slate-700">
+                  {[...new Set([30, 40, 50, 60, 70, 80, 90, 100, 110, 120, capacidadMax, capDe(c)])].sort((x, y) => x - y).map((n) => <option key={n} value={n}>{n} cm{n === capacidadMax ? " (normal)" : ""}</option>)}
+                </select>
+                <span>{c.largoCm ? "· cambiado a mano en este caballete" : ""}</span>
+                {usadoCm(c) > capDe(c) + 0.0001 && <span className="font-semibold text-rose-600">¡ya lleva {Math.round(usadoCm(c))} cm!</span>}
+              </div>
+            )}
             {toArray(c.ventanas).length > 0 && (
               <div className="rounded-md border border-emerald-200 bg-emerald-50/50">
-                <div className="px-2 py-1 text-[11px] font-semibold text-emerald-800 border-b border-emerald-200">{toArray(c.ventanas).length} ventana{toArray(c.ventanas).length === 1 ? "" : "s"} con pistola · {huecosCaballeteFab(c, capC0)}/{capacidadMax} huecos</div>
+                <div className="px-2 py-1 text-[11px] font-semibold text-emerald-800 border-b border-emerald-200">{toArray(c.ventanas).length} ventana{toArray(c.ventanas).length === 1 ? "" : "s"} con pistola · {Math.round(usadoCm(c))} / {capDe(c)} cm</div>
                 <div className="divide-y divide-emerald-100">
                   {toArray(c.ventanas).map((w) => {
                     const n = toArray(w.escaneadas).length; const ok = w.total > 0 && n >= w.total;
@@ -31264,6 +31645,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
                         <span className="font-bold text-slate-900">{w.pos}</span>
                         <span className="text-slate-500">nº {w.num} · lote {w.fab}{w.color ? ` · ${w.color}` : ""}</span>
                         <span className={ok ? "text-emerald-700 font-semibold" : "text-amber-700"}>{n}/{w.total} piezas{ok ? " ✓" : ""}</span>
+                        {!String(w.pos || "").toUpperCase().startsWith("P") && c.estado !== "fuera" && (
+                          <select value={w.persiana === true ? "con" : w.persiana === false ? "sin" : ""} onChange={(e) => { const val = e.target.value === "con" ? true : e.target.value === "sin" ? false : null; guardarCab({ ...c, ventanas: toArray(c.ventanas).map((x) => (mismaVentana(x, w) ? { ...x, persiana: val } : x)) }); volverAEscanear(); }} className="text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white text-slate-600" title="Con persiana ocupa más sitio en el caballete">
+                            <option value="">¿persiana?</option><option value="con">con persiana</option><option value="sin">sin persiana</option>
+                          </select>
+                        )}
                         {c.estado !== "fuera" && (
                           <>
                             <select value="" onChange={(e) => { if (e.target.value) cambiarCaballete(w, c.obra, e.target.value); volverAEscanear(); }} className="ml-auto text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white">
@@ -31282,12 +31668,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
             {(c.estado || "libre") === "libre" && toArray(c.lineas).length === 0 && toArray(c.ventanas).length === 0 && <div className="text-xs text-slate-400 italic">Vacío · pulsa "Cargar ventanas" para meterle las ventanas de una obra.</div>}
             <div className="flex flex-wrap gap-2 text-xs">
               {(c.estado || "libre") === "libre" && <button onClick={() => empezarCarga(c)} className="font-semibold text-[#2E8B57] hover:underline">Cargar ventanas</button>}
+              {puedeSacarSinObra(c) && <button onClick={() => sacarSinObra(c)} className="font-semibold text-amber-700 hover:underline">Sacar sin obra</button>}
+              {c.estado === "fuera" && c.salida && c.salida.sinObra && puedeBorrar(c) && <button onClick={() => quitarLlevado(c)} className="font-semibold text-rose-600 hover:underline">Ya se lo han llevado: quitarlo</button>}
               {(c.estado || "libre") === "libre" && c.reserva && <button onClick={() => onGuardar({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) })} className="text-slate-400 hover:underline">Quitar reserva</button>}
               {c.estado === "cargado" && <>
                 <button onClick={() => imprimirPackingCaballete({ ...c, almacenNombre: nombreAlmacen(almacenDe(c)) })} className="flex items-center gap-1 font-semibold text-slate-700 hover:underline"><Printer size={12} /> Packing list</button>
                 <button onClick={() => setEditando({ ...c, lineas: toArray(c.lineas) })} className="font-semibold text-slate-600 hover:underline">Editar</button>
                 <button onClick={() => { if (confirm(`¿Sale el caballete ${c.numero} con ${c.obra ? c.obra.nombre : "la obra"}? Quedará pendiente de devolver.`)) onGuardar({ ...c, estado: "fuera", salida: { fecha: hoy, cliente: c.obra ? c.obra.cliente : "", obra: c.obra ? c.obra.nombre : "", direccion: c.obra ? c.obra.direccion : "" }, historial: hist(c, `Sale con ${c.obra ? c.obra.nombre : ""}`) }); }} className="font-semibold text-amber-700 hover:underline">Sale con la obra</button>
-                <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
+                <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
               </>}
               {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) devolver(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
               {puedeBorrar(c) && <button onClick={() => borrarCab(c)} className="ml-auto flex items-center gap-1 text-rose-500 hover:underline"><Trash2 size={12} /> Borrar caballete</button>}
