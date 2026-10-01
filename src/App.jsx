@@ -30454,7 +30454,7 @@ function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
 
 // Lector con la cámara del móvil (Chrome en Android). En otros navegadores se usa la
 // pistola lectora o se escribe el código.
-function LectorCamara({ onLeido, onCerrar }) {
+function LectorCamara({ onLeido, onCerrar, modo = "caballete" }) {
   const videoRef = useRef(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -30462,7 +30462,10 @@ function LectorCamara({ onLeido, onCerrar }) {
     (async () => {
       try {
         if (!("BarcodeDetector" in window)) { setError("Este navegador no puede leer códigos con la cámara. Usa Chrome en el móvil Android, una pistola lectora o escribe el número."); return; }
-        const det = new window.BarcodeDetector({ formats: ["code_128", "qr_code", "ean_13", "code_39"] });
+        // Las etiquetas de la línea pueden ser de otro tipo (p. ej. 2 de 5 intercalado, "itf"): se piden todos los que el navegador sepa leer
+        let formatos = ["code_128", "code_39", "itf", "ean_13", "ean_8", "upc_a", "upc_e", "code_93", "codabar", "qr_code", "data_matrix"];
+        try { const soportados = await window.BarcodeDetector.getSupportedFormats(); if (soportados && soportados.length) formatos = soportados; } catch (e) { /* se usa la lista por defecto */ }
+        const det = new window.BarcodeDetector({ formats: formatos });
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
         if (parar) return;
         videoRef.current.srcObject = stream;
@@ -30484,7 +30487,7 @@ function LectorCamara({ onLeido, onCerrar }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4 gap-3">
       {error ? <p className="text-white text-center max-w-sm">{error}</p> : <video ref={videoRef} playsInline muted className="w-full max-w-md rounded-lg" />}
-      {!error && <p className="text-white text-sm">Apunta al código de barras del caballete</p>}
+      {!error && <p className="text-white text-sm text-center">{modo === "ventana" ? "Apunta al código de barras de la etiqueta de la ventana (a unos 15-25 cm)" : "Apunta al código de barras del caballete"}</p>}
       <button onClick={onCerrar} className="px-5 py-2 rounded-md bg-white text-slate-800 font-semibold">Cerrar</button>
     </div>
   );
@@ -30962,7 +30965,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const t = String(txt || "").trim().toUpperCase().replace(/^CAB[:\s-]*/, "");
     if (!t) return;
     const c = toArray(caballetes).find((x) => codigoCaballete(x) === t || codigoCaballete(x).replace(/\D/g, "") === t.replace(/\D/g, ""));
-    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); avisar(true, `✓ Caballete ${c.numero}`); } else { avisar(false, `La pistola ha leído "${txt}" pero no hay ningún caballete con ese código.`); setEscaneadoId(null); setOkScan(""); setAvisoScan(`La pistola ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
+    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); avisar(true, `✓ Caballete ${c.numero}`); } else { avisar(false, `Se ha leído "${txt}" pero no hay ningún caballete con ese código.`); setEscaneadoId(null); setOkScan(""); setAvisoScan(`Se ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
     setCodigo("");
     setTimeout(() => { if (inputScanRef.current) inputScanRef.current.focus(); }, 50);
   };
@@ -31447,13 +31450,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <span className="text-sm font-semibold text-slate-700">Escanear caballete:</span>
         <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Pasa la pistola (caballete o etiqueta de una ventana) o escribe C-03 y pulsa Enter" className="flex-1 min-w-[220px] border border-slate-300 rounded-md px-3 py-2 text-sm" />
         <button onClick={() => buscarCodigo(codigo)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 hover:bg-slate-50">Buscar</button>
-        <button onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Cámara</button>
+        <button onClick={() => setCamara("caballete")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Caballete</button>
+        <button onClick={() => setCamara("ventana")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Ventana</button>
         {escaneadoId && <><span className="text-xs font-semibold text-emerald-700">{okScan}</span><button onClick={() => { setEscaneadoId(null); setOkScan(""); }} className="text-xs text-slate-500 hover:underline">Ver todos</button></>}
         {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
         <div className="w-full text-[11px] text-slate-400">{ultimaLectura ? `Última lectura de la pistola: ${ultimaLectura}` : "Aún no ha llegado ninguna lectura. Haz clic en la caja y pasa la pistola: si el código aparece escrito, la pistola funciona."}</div>
       </div>
       {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
-      {camara && <LectorCamara onLeido={(v) => { setCamara(false); buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
+      {camara && <LectorCamara modo={camara === "ventana" ? "ventana" : "caballete"} onLeido={(v) => { const modoCam = camara; setCamara(false); if (modoCam === "ventana" && !piezaDeTexto(v)) { const tx = `La cámara ha leído "${v}", pero no es una etiqueta de ventana (debe ser un número de 12 cifras). Si es un caballete, usa el botón "Caballete".`; setUltimaLectura(`${String(v).trim()} · ${new Date().toLocaleTimeString("es-ES")}`); setOkScan(""); setAvisoScan(tx); avisar(false, tx); return; } buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
       {onGuardarEtiquetasObra && sugerenciasLotes.map(({ l, o, enCab }) => (
         <div key={l.fab} className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-300 bg-sky-50 px-3 py-2 text-sm text-slate-800">
           <span>El lote <b>{l.fab}</b> (expediente {l.expediente}) estaba <b>sin obra</b> y ya existe <b>{o.nombre}</b>{enCab ? ` · ${enCab} ventana${enCab === 1 ? "" : "s"} suya${enCab === 1 ? "" : "s"} ya está${enCab === 1 ? "" : "n"} en caballetes` : ""}.</span>
