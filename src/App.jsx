@@ -11745,13 +11745,23 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     const existentes = {};
     cristales.forEach((c) => { const k = claveLote(c.lote); if (k) existentes[k] = c; });
     const fusiones = {};
+    const resumenFus = {}; // por caballete existente: cuántos cristales se añaden y cuántos se descartan por repetidos
     const claveP = (p) => `${claveLote(p.pedido)}|${claveLote(p.ref)}|${parseFloat(p.ancho) || ""}|${parseFloat(p.alto) || ""}|${p.pos || ""}`;
+    const decisiones = {}; // por nº de caballete repetido: true = añadir al existente, false = crear uno nuevo aparte
+    const lotesAparte = [];
     items = items.filter((it) => {
-      const ex = existentes[claveLote(it.lote)];
+      const kLote = claveLote(it.lote);
+      const ex = existentes[kLote];
       if (!ex) return true;
+      if (!(kLote in decisiones)) {
+        decisiones[kLote] = !window.confirm(`El caballete ${ex.lote} YA EXISTE en el almacén (${(ex.piezas || []).length} cristales${ex.expediente ? ` · ${ex.expediente}` : ""}).\n\nAceptar = crear un caballete NUEVO aparte con este packing list.\nCancelar = añadirlo al que ya existe.`);
+        if (!decisiones[kLote]) lotesAparte.push(ex.lote);
+      }
+      if (!decisiones[kLote]) return true;
       const base = fusiones[ex.id] || { piezas: [...(ex.piezas || [])], expediente: ex.expediente || "", secuencia: ex.secuencia || "" };
       const ya = new Set(base.piezas.map(claveP));
-      (it.piezas || []).forEach((p) => { if (!ya.has(claveP(p))) { base.piezas.push(p); ya.add(claveP(p)); } });
+      const rs = resumenFus[ex.id] || (resumenFus[ex.id] = { lote: ex.lote, antes: (ex.piezas || []).length, nuevas: 0, repetidas: 0 });
+      (it.piezas || []).forEach((p) => { if (!ya.has(claveP(p))) { base.piezas.push(p); ya.add(claveP(p)); rs.nuevas++; } else rs.repetidas++; });
       const unir = (a, b) => [...new Set(`${a}, ${b}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
       base.expediente = unir(base.expediente, it.expediente || "");
       base.secuencia = unir(base.secuencia, it.secuencia || "");
@@ -11804,8 +11814,14 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     const ctxPacking = ctxAlmacen?.guardarPackingCaballetes;
     if (ctxPacking) ctxPacking(aGuardar, fusiones);
     else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
+    if (lotesAparte.length > 0 && nFusionados === 0) {
+      setAvisoOk(`Creado como caballete nuevo aparte (ya existía otro con el nº ${lotesAparte.join(", ")}). Ahora hay dos con el mismo número: conviene cambiar el nº de uno.`);
+    }
     if (nFusionados > 0) {
-      setAvisoOk(`${nFusionados} caballete(s) ya existían en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro). No es un error.`);
+      const lineas = Object.values(resumenFus).map((r) => `caballete ${r.lote}: ${r.nuevas > 0 ? `+${r.nuevas} cristal(es) añadidos (ahora ${r.antes + r.nuevas})` : "no se ha añadido ninguno"}${r.repetidas > 0 ? `, ${r.repetidas} descartado(s) por repetidos (misma vivienda, medida y posición)` : ""}`);
+      const nada = Object.values(resumenFus).every((r) => r.nuevas === 0);
+      if (nada) setErrorPacking(`No se ha añadido nada: ${lineas.join(" · ")}. Si son cristales distintos con la misma vivienda y medida, avísame.`);
+      else setAvisoOk(lineas.join(" · "));
     }
     if (sinHueco > 0) {
       setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
