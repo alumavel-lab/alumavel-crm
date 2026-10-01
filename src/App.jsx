@@ -11651,11 +11651,60 @@ function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCe
   );
 }
 
+// ---- Buscadores del almacén de cristales: caballete / vivienda / expediente (+ "otro") ----
+// Cada caja filtra SOLO su campo y se combinan todas con AND. Así "343" en Caballete no
+// se mezcla con un expediente 343 ni con una medida.
+const normBusq = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
+const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", otro: "" };
+const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.otro));
+function textoFiltrosCristales(f) {
+  return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
+}
+// ¿Esta línea de cristal (pieza) cumple los filtros? (la usa la pestaña "Cristales")
+function piezaCoincideFiltros(c, p, f) {
+  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normBusq(f.exp), otro = normBusq(f.otro);
+  if (cab && !normBusq(c.lote).includes(cab)) return false;
+  if (viv && !normBusq(p.ref).includes(viv)) return false;
+  if (exp && !normBusq(p.expediente || c.expediente).includes(exp)) return false;
+  if (otro && !normBusq(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
+  return true;
+}
+// ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
+function cristalCoincideFiltros(c, f) {
+  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normBusq(f.exp), otro = normBusq(f.otro);
+  if (cab && !normBusq(c.lote).includes(cab)) return false;
+  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
+  if (!viv && !exp) return true;
+  const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
+  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normBusq(p.expediente || c.expediente).includes(exp)));
+}
+function BuscadoresCristales({ filtros, setFiltros }) {
+  const campo = (k, placeholder, ancho) => (
+    <div className={`relative ${ancho}`}>
+      <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+      <input value={filtros[k]} onChange={(e) => setFiltros({ ...filtros, [k]: e.target.value })} placeholder={placeholder} className={inputCls + " pl-8"} />
+    </div>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[280px]">
+      {campo("cab", "Caballete (ej. 343)", "flex-1 min-w-[130px]")}
+      {campo("viv", "Vivienda (ej. V03.103)", "flex-1 min-w-[130px]")}
+      {campo("exp", "Expediente (ej. 662)", "flex-1 min-w-[130px]")}
+      {campo("otro", "Otro: medida, cliente, pedido", "flex-1 min-w-[150px]")}
+      {hayFiltroCristales(filtros) && (
+        <button type="button" onClick={() => setFiltros(FILTROS_CRISTALES_VACIOS)} className="text-xs font-semibold text-slate-500 hover:text-slate-800 px-2 py-1.5">Limpiar</button>
+      )}
+    </div>
+  );
+}
+
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
-  const [q, setQ] = useState("");
+  const [filtros, setFiltros] = useState(FILTROS_CRISTALES_VACIOS);
+  const hayFiltro = hayFiltroCristales(filtros);
+  const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const [asignando, setAsignando] = useState(null); // cristal object being located right now
   const [verDetalle, setVerDetalle] = useState(null); // ubicación { zona, fila, hueco } to show contents of
   const [leyendoPacking, setLeyendoPacking] = useState(false);
@@ -11666,12 +11715,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [numeroFotos, setNumeroFotos] = useState("");
   const inputPackingRef = useRef(null);
 
-  const normalizar = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
-  const filtered = useMemo(() => {
-    if (!q) return cristales;
-    const nq = normalizar(q);
-    return cristales.filter((c) => normalizar(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(nq));
-  }, [cristales, q]);
+  const filtered = useMemo(() => (hayFiltro ? cristales.filter((c) => cristalCoincideFiltros(c, filtros)) : cristales), [cristales, filtros]);
 
   const pendientes = filtered.filter((c) => c.estado === "Pendiente");
   const colocados = cristales.filter((c) => c.estado === "Colocado");
@@ -11761,7 +11805,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     if (ctxPacking) ctxPacking(aGuardar, fusiones);
     else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
     if (nFusionados > 0) {
-      setErrorPacking(`${nFusionados} caballete(s) ya estaban en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro).`);
+      setAvisoOk(`${nFusionados} caballete(s) ya existían en el almacén: sus cristales se han añadido al mismo caballete (no se ha creado otro). No es un error.`);
     }
     if (sinHueco > 0) {
       setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
@@ -11884,10 +11928,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por lote, secuencia, cliente, medida..." className={inputCls + " pl-9"} />
-        </div>
+        <BuscadoresCristales filtros={filtros} setFiltros={setFiltros} />
         <button type="button" onClick={() => inputPackingRef.current?.click()} disabled={leyendoPacking}
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-3.5 py-2 rounded-md">
@@ -12035,11 +12076,11 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         <ReorganizarCristalesPanel cristales={cristales} onCerrar={() => setVerReorganizar(false)} />
       )}
       {subTab === "mapa" && (
-        <MapaAlmacenCristales cristales={cristales} q={q} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
+        <MapaAlmacenCristales cristales={cristales} filtros={filtros} onVerHueco={setVerDetalle} onAsignarDesdeMapa={setAsignando} />
       )}
 
       {subTab === "lista" && (
-        <ListaCristalesSueltos cristales={cristales} q={q} onUpdate={onUpdate} />
+        <ListaCristalesSueltos cristales={cristales} filtros={filtros} onUpdate={onUpdate} />
       )}
 
       {subTab === "estadisticas" && (
@@ -12106,7 +12147,9 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
   );
 }
 
-function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) {
+function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa }) {
+  const hayFiltro = hayFiltroCristales(filtros);
+  const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const cambiarZona = (zonaId, campo, delta) => {
     const cfg = ZONAS_CRISTALES[zonaId];
     const nuevo = (cfg[campo] || 0) + delta;
@@ -12128,11 +12171,10 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
     <button onClick={onClick} title={title} className="w-5 h-5 shrink-0 rounded-full border border-rose-300 text-rose-500 hover:bg-rose-50 text-xs font-bold leading-none flex items-center justify-center">−</button>
   );
   const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
-  const nq = normalizarMapa(q);
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   // texto de búsqueda de un caballete: sus datos + los de cada cristal (vivienda, expediente, medida)
   const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`);
-  const coincidentes = q ? cristales.filter((x) => textoCaballete(x).includes(nq)) : [];
+  const coincidentes = hayFiltro ? cristales.filter((x) => cristalCoincideFiltros(x, filtros)) : [];
   const ubicados = coincidentes.filter((x) => x.ubicacion);
   const sinUbicar = coincidentes.filter((x) => !x.ubicacion);
   return (
@@ -12167,7 +12209,7 @@ function MapaAlmacenCristales({ cristales, q, onVerHueco, onAsignarDesdeMapa }) 
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
                     const cs = ocupantes(zonaId, fila, hueco);
                     const c = cs[0];
-                    const coincide = q && cs.some((x) => textoCaballete(x).includes(nq));
+                    const coincide = hayFiltro && cs.some((x) => cristalCoincideFiltros(x, filtros));
                     const clase = coincide
                       ? "bg-amber-500 text-white ring-2 ring-amber-300 cursor-pointer hover:opacity-80"
                       : c
@@ -12549,16 +12591,16 @@ function PiezasCristalTabla({ cristal, onUpdate }) {
 
 // Lista de todos los cristales sueltos de todos los caballetes, para buscar por vivienda,
 // expediente o medida y ver en qué caballete/hueco está.
-function ListaCristalesSueltos({ cristales, q, onUpdate }) {
+function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
+  const hayFiltro = hayFiltroCristales(filtros);
+  const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const [soloPendientes, setSoloPendientes] = useState(false);
   const [soloIncidencias, setSoloIncidencias] = useState(false);
-  const normalizar = (t) => (t || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
-  const nq = normalizar(q || "");
   const filas = [];
   cristales.forEach((c) => (c.piezas || []).forEach((p, i) => {
     if (soloPendientes && p.puesto) return;
     if (soloIncidencias && !p.incidencia) return;
-    if (nq && !normalizar(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(nq)) return;
+    if (hayFiltro && !piezaCoincideFiltros(c, p, filtros)) return;
     filas.push({ c, p, i });
   }));
   const marcar = (c, i, v) => onUpdate(c.id, { piezas: c.piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
@@ -12566,7 +12608,7 @@ function ListaCristalesSueltos({ cristales, q, onUpdate }) {
   return (
     <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 text-xs text-slate-500">
-        <span>{filas.length} línea(s) de cristal {q ? `que coinciden con "${q}"` : ""}. Usa el buscador de arriba: vivienda (V03.103), expediente (EXP 662) o medida (573).</span>
+        <span>{filas.length} línea(s) de cristal {q ? `que coinciden con "${q}"` : ""}. Usa los buscadores de arriba: caballete, vivienda (V03.103) o expediente (EXP 662); la medida (573) va en "Otro".</span>
         <span className="flex items-center gap-3 shrink-0">
           <label className="flex items-center gap-1"><input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} /> Solo sin poner</label>
           <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencias} onChange={(e) => setSoloIncidencias(e.target.checked)} /> Solo con incidencia</label>
