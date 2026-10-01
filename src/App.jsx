@@ -30223,12 +30223,18 @@ function agruparEtiquetasFab(paginas) {
     const fab = r[3].replace(/\./g, "");
     const exp = (texto.match(/EXPEDIENTE\s*(\d+)/) || [])[1] || "";
     const col = texto.match(/FAB:\s*[\d.]+\s+(\d{3,5})\s+(\S+)/);
+    // Vivienda ("1º IZQ", "BAJO"…) y nombre del cliente de la etiqueta: sirven para no mezclar viviendas en un caballete
+    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/);
+    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/) || [])[1] || "")).replace(/\s+/g, " ").trim();
+    const nom = texto.match(/DIMEN\.REF:\s*[\d.]+\s*mm\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]*?)\s+(?:[A-Z]{1,4}|V)\s+[\d-]+/);
+    const grupo = [exp, viv].filter(Boolean).join(" ");
+    const cliente = nom ? nom[1].trim() : "";
     const tipo = texto.split("\n").map((x) => x.trim()).find((x) => FAB_TIPOS_PIEZA.has(x)) || "";
     let lote = lotes.get(fab);
     if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
     const id = `${fab}|${r[2]}|${r[1]}`;
     let v = lote.ventanas.get(id);
-    if (!v) { v = { id, pos: r[1], num: r[2], color: col ? `${col[1]} ${col[2]}` : "", piezas: [] }; lote.ventanas.set(id, v); }
+    if (!v) { v = { id, pos: r[1], num: r[2], color: col ? `${col[1]} ${col[2]}` : "", grupo, cliente, piezas: [] }; lote.ventanas.set(id, v); }
     v.piezas.push({ c: b[1], t: tipo });
     etiquetas++;
   });
@@ -30324,6 +30330,54 @@ function imprimirEtiquetasCaballetes(lista) {
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
+// Code 128 juego C (pares de cifras) para etiquetas de ventana: 12 cifras = solo 6 símbolos, mucho más corto
+// y robusto que el juego B. Se lee igual con la pistola (sale el mismo texto de 12 cifras).
+function svgCode128CMm(digitos, altoMm = 15, moduloMm = 0.5) {
+  const t = String(digitos);
+  if (!/^\d+$/.test(t) || t.length % 2) return svgCode128Mm(t, altoMm, moduloMm, 62);
+  const vals = [105];
+  for (let i = 0; i < t.length; i += 2) vals.push(parseInt(t.slice(i, i + 2), 10));
+  let suma = 105;
+  vals.slice(1).forEach((v, i) => { suma += v * (i + 1); });
+  vals.push(suma % 103, 106);
+  const anchos = vals.map((v) => C128_PATRONES[v]).join("");
+  let x = 10, barras = "", barra = true;
+  for (const d of anchos) { const w = +d; if (barra) barras += `<rect x="${x}" y="0" width="${w}" height="10"/>`; x += w; barra = !barra; }
+  const modulos = x + 10;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${(modulos * moduloMm).toFixed(2)}mm" height="${altoMm}mm" viewBox="0 0 ${modulos} 10" preserveAspectRatio="none" shape-rendering="crispEdges"><g fill="#000">${barras}</g></svg>`;
+}
+// Reimprime las etiquetas de un lote en la Honeywell (100 x 40 mm), una por pieza, con código bien negro.
+// Texto = el mismo que la etiqueta de la línea (posición, nº, lote, vivienda, cliente, color) + las 12 cifras.
+function imprimirEtiquetasVentanasLote(lote) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const items = [];
+  toArray(lote && lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => items.push({ v, pz })));
+  if (!items.length) return;
+  const etiqueta = ({ v, pz }) => `<div class="et"><div class="marco">
+      <div class="r1"><span>${esc(v.pos)} - ${esc(v.num)} - FAB ${esc(lote.fab)}</span><span class="tp">${esc(pz.t || "")}</span></div>
+      <div class="r2">${esc([v.grupo, v.cliente ? `(${v.cliente})` : ""].filter(Boolean).join(" "))}</div>
+      <div class="r3">${esc(v.color || "")}</div>
+      <div class="bar">${svgCode128CMm(pz.c, 14, 0.5)}</div>
+      <div class="dig">${esc(pz.c)}</div>
+    </div></div>`;
+  const html = `<html><head><meta charset="utf-8"><title>Etiquetas ventanas lote ${esc(lote.fab)}</title><style>
+    @page { size: 100mm 40mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: 100mm; height: 39.5mm; padding: 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
+    .marco { height: 100%; border: 0.4mm solid #000; border-radius: 1.5mm; padding: 1mm 2mm; display: flex; flex-direction: column; align-items: center; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; font-size: 4.6mm; font-weight: bold; line-height: 1.1; }
+    .tp { font-size: 3.6mm; }
+    .r2 { width: 100%; font-size: 3.2mm; line-height: 1.15; white-space: nowrap; overflow: hidden; }
+    .r3 { width: 100%; font-size: 3mm; line-height: 1.15; }
+    .bar { margin-top: 1mm; line-height: 0; }
+    .dig { font-size: 3.4mm; letter-spacing: 0.8mm; line-height: 1.1; margin-top: 0.5mm; }
+  </style></head><body>${items.map(etiqueta).join("")}</body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+}
+
 // Subida del PDF de etiquetas desde el propio Almacén de ventanas. Se puede guardar en una obra
 // o SIN obra (cuando todavía no está en el CRM) y asignarla después. Aquí también se ven y se borran todos los lotes.
 function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, onAsignar }) {
@@ -30340,6 +30394,11 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
     return c.length === 1 ? c[0].key : "";
   };
   const nVent = (l) => toArray(l.ventanas).length;
+  const reimprimirLote = (l) => {
+    const n = toArray(l.ventanas).reduce((a, v) => a + toArray(v.piezas).length, 0);
+    if (!window.confirm(`Se van a imprimir ${n} etiquetas (una por pieza) del lote ${l.fab} en la impresora de etiquetas de 100 x 40 mm. En el diálogo de impresión elige la Honeywell, tamaño real (100 %) y sin márgenes. ¿Continuar?`)) return;
+    imprimirEtiquetasVentanasLote(l);
+  };
   const leer = async (file) => {
     if (!file) return;
     setLeyendo(true); setAviso("Leyendo el PDF…"); setPend(null);
@@ -30404,6 +30463,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                     {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
                   </select>
                   <button onClick={() => { const k = selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente); if (k) onAsignar(l.fab, k); }} disabled={!(selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded font-semibold disabled:opacity-50">Asignar</button>
+                  <button onClick={() => reimprimirLote(l)} className="text-slate-700 hover:underline" title="Imprime en la Honeywell etiquetas nuevas con el código bien negro">🖨 Etiquetas legibles</button>
                   <button onClick={() => quitar(`s-${l.fab}`, "sin obra", l.fab)} className="text-rose-600 hover:underline">Quitar</button>
                 </div>
               ))}
@@ -30415,6 +30475,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
               {lotesTodos.map((o) => o.lotes.map((l) => (
                 <div key={o.key + l.fab} className="flex flex-wrap items-center gap-x-3">
                   <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {nVent(l)} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <button onClick={() => reimprimirLote(l)} className="text-slate-700 hover:underline" title="Imprime en la Honeywell etiquetas nuevas con el código bien negro">🖨 Etiquetas legibles</button>
                   <button onClick={() => quitar(o.key, o.nombre, l.fab)} className="text-rose-600 hover:underline">Quitar</button>
                 </div>
               )))}
@@ -30542,7 +30603,7 @@ const ESTADO_CABALLETE = { libre: { t: "Libre", c: "bg-slate-100 text-slate-600 
 function imprimirPackingCaballete(c) {
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const o = c.obra || {};
-  const lineasPL = [...toArray(c.lineas), ...toArray(c.ventanas).map((w) => ({ modelo: w.pos, descripcion: `Lote ${w.fab} · nº ${w.num}${w.color ? ` · ${w.color}` : ""}`, medidas: "", uds: 1 }))];
+  const lineasPL = [...toArray(c.lineas), ...toArray(c.ventanas).map((w) => ({ modelo: w.pos, descripcion: `${w.grupo ? `${w.grupo}${w.cliente ? ` (${w.cliente})` : ""} · ` : ""}Lote ${w.fab} · nº ${w.num}${w.color ? ` · ${w.color}` : ""}`, medidas: "", uds: 1 }))];
   const html = `<html><head><meta charset="utf-8"><title>Packing list caballete ${esc(c.numero)}</title></head><body style="font-family:Arial;font-size:13px;padding:24px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
       <div style="background:#333645;border-radius:8px;padding:10px 14px;-webkit-print-color-adjust:exact;print-color-adjust:exact"><img src="${LOGO_ECOWIN}" style="height:28px" /></div>
@@ -31204,7 +31265,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   // Caballete que se propone: primero el que ya se está llenando de esa obra; si no, uno reservado para ella
   const caballeteSugerido = (obra, w) => {
     const todos = cabsAhora();
-    const cargados = todos.filter((c) => c.estado === "cargado" && cabObraDe(c, obra) && hayHueco(c, w))
+    // Si la etiqueta trae vivienda (p. ej. "1094 1º IZQ"), solo se usa un caballete que ya lleve esa misma vivienda y no otra;
+    // si no hay, se coge uno libre/reservado y, si no queda ninguno, se crea uno nuevo (nunca se mezclan viviendas).
+    const grupoOk = (c) => { if (!w.grupo) return true; const gs = toArray(c.ventanas).map((x) => x.grupo).filter(Boolean); return gs.length > 0 && gs.every((g) => g === w.grupo); };
+    const cargados = todos.filter((c) => c.estado === "cargado" && cabObraDe(c, obra) && grupoOk(c) && hayHueco(c, w))
       .sort((a, b) => String(b.ultimaVentana || "").localeCompare(String(a.ultimaVentana || "")) || natNum(a, b));
     if (cargados.length) return cargados[0];
     const reservados = todos.filter((c) => (c.estado || "libre") === "libre" && reservaEsDe(c, obra)).sort(natNum);
@@ -31240,7 +31304,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     setAvisoScan("");
     const { dueno, lote, ventana: v, pieza } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
     if (cabCon) {
       const actual = toArray(cabCon.ventanas).find((x) => mismaVentana(x, w));
@@ -31268,7 +31332,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const h = indicePiezas.get(cod);
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
     const { dueno, lote, ventana: v } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const todos = cabsAhora();
     const destino = todos.find((c) => c.id === cabId);
     if (!destino) return { ok: false, texto: "Ese caballete ya no existe." };
@@ -31716,7 +31780,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                     return (
                       <div key={`${w.obraKey || w.proyectoId}-${w.id}`} className="px-2 py-1 text-xs flex flex-wrap items-center gap-x-2 gap-y-1">
                         <span className="font-bold text-slate-900">{w.pos}</span>
-                        <span className="text-slate-500">nº {w.num} · lote {w.fab}{w.color ? ` · ${w.color}` : ""}</span>
+                        <span className="text-slate-500">nº {w.num} · lote {w.fab}{w.color ? ` · ${w.color}` : ""}{w.grupo ? ` · ${w.grupo}${w.cliente ? ` (${w.cliente})` : ""}` : ""}</span>
                         <span className={ok ? "text-emerald-700 font-semibold" : "text-amber-700"}>{n}/{w.total} piezas{ok ? " ✓" : ""}</span>
                         {!String(w.pos || "").toUpperCase().startsWith("P") && c.estado !== "fuera" && (
                           <select value={w.persiana === true ? "con" : w.persiana === false ? "sin" : ""} onChange={(e) => { const val = e.target.value === "con" ? true : e.target.value === "sin" ? false : null; guardarCab({ ...c, ventanas: toArray(c.ventanas).map((x) => (mismaVentana(x, w) ? { ...x, persiana: val } : x)) }); volverAEscanear(); }} className="text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white text-slate-600" title="Con persiana ocupa más sitio en el caballete">
