@@ -31048,6 +31048,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [ventanaEsc, setVentanaEsc] = useState(null); // última ventana leída con la pistola
   const [prepObra, setPrepObra] = useState("");
   const [prepN, setPrepN] = useState("");
+  const [busqV, setBusqV] = useState(""); // buscador de ventanas
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
   const cabsAhora = () => {
     const base = toArray(caballetes); const ids = new Set(base.map((c) => c.id));
@@ -31350,6 +31351,71 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if ((destino.estado || "libre") !== "libre" && !cabObraDe(destino, obra) && !confirm(`${destino.numero} lleva ventanas de ${destino.obra ? destino.obra.nombre : "otra obra"} y esta ventana es de ${obra.nombre}. ¿Meterla igualmente?`)) return { ok: false, texto: "Cancelado: no se ha metido." };
     if (!cambiarCaballete(wReal, obra, cabId)) return { ok: false, texto: "Cancelado: no se ha metido." };
     return { ok: true, texto: `✓ ${w.pos} (nº ${w.num}, ${obra.nombre}) metida en ${destino.numero}${origen ? ` (estaba en ${origen.numero})` : ""} · ${nPiezas}/${w.total} piezas.` };
+  };
+  // Ventanas del PDF que deberían ir en este caballete (misma vivienda que las que ya lleva, o de la obra reservada)
+  // y todavía no están en él. Si están en otro caballete, se indica cuál. Sirven para meterlas a mano sin pistola.
+  const esperadasCaballete = (c) => {
+    const vs = toArray(c.ventanas);
+    const grupos = new Set(vs.map((x) => x.grupo).filter(Boolean));
+    if (vs.length && !grupos.size) return { grupos: [], lista: [] };
+    const keys = new Set([...vs.map((x) => x.obraKey), c.obra && c.obra.key, c.reserva && c.reserva.key].filter((k) => k && k !== "s-libre"));
+    const todos = cabsAhora();
+    const lista = [];
+    keys.forEach((key) => {
+      const lotes = String(key).startsWith("s-") ? toArray(etiquetasSinObra).filter((l) => `s-${l.fab}` === key) : toArray(lotesDe(key));
+      lotes.forEach((l) => toArray(l.ventanas).forEach((v) => {
+        if (grupos.size && !grupos.has(v.grupo)) return;
+        const piezas = toArray(v.piezas); if (!piezas.length) return;
+        const h = indicePiezas.get(String(piezas[0].c)); if (!h) return;
+        const w = { id: v.id, pos: v.pos, num: v.num, fab: l.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: h.dueno.key, proyectoId: h.dueno.proyectoId || "", total: piezas.length, persiana: persianaDeDueno(h.dueno.key), escaneadas: piezas.map((x) => String(x.c)), aMano: true };
+        if (vs.some((x) => mismaVentana(x, w))) return;
+        const en = todos.find((cc) => cc.id !== c.id && toArray(cc.ventanas).some((x) => mismaVentana(x, w)));
+        lista.push({ w, dueno: h.dueno, en });
+      }));
+    });
+    return { grupos: [...grupos], lista };
+  };
+  // Meter a mano una ventana que debería ir en este caballete (se da por completa: todas sus piezas contadas)
+  const meterAMano = (cabId, e) => {
+    cambiarCaballete(e.w, obraDeDueno(e.dueno), cabId);
+    volverAEscanear();
+  };
+  // Buscador de ventanas: por posición, nº, lote, vivienda, cliente, color, obra o código de 12 cifras.
+  // Dice en qué caballete está y, si aún no está en ninguno, a cuál debería ir.
+  const buscarVentanas = (q) => {
+    const norm = (t) => String(t ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const palabras = norm(q).split(/\s+/).filter(Boolean);
+    if (!palabras.length || norm(q).length < 2) return null;
+    const grupos = new Map();
+    indicePiezas.forEach((h, cod) => {
+      const k = `${h.dueno.key}|${h.ventana.id}`;
+      const g = grupos.get(k) || { h, cods: [] };
+      g.cods.push(String(cod)); grupos.set(k, g);
+    });
+    const todos = cabsAhora();
+    const res = [];
+    for (const { h, cods } of grupos.values()) {
+      const v = h.ventana;
+      const texto = norm([v.pos, v.num, h.lote.fab, v.grupo, v.cliente, v.color, h.dueno.nombre, ...cods].join(" "));
+      if (!palabras.every((p) => texto.includes(p))) continue;
+      const w = { id: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: h.dueno.key, proyectoId: h.dueno.proyectoId || "", total: cods.length, persiana: persianaDeDueno(h.dueno.key), escaneadas: cods, aMano: true };
+      const cab = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
+      const previa = cab ? toArray(cab.ventanas).find((x) => mismaVentana(x, w)) : null;
+      const sug = cab ? null : caballeteSugerido(obraDeDueno(h.dueno), w);
+      res.push({ w, dueno: h.dueno, cab, n: previa ? toArray(previa.escaneadas).length : 0, sug });
+      if (res.length >= 25) break;
+    }
+    return res;
+  };
+  const colocarDesdeBuscador = (e) => {
+    const obra = obraDeDueno(e.dueno);
+    const sug = caballeteSugerido(obra, e.w);
+    if (sug) { cambiarCaballete(e.w, obra, sug.id); avisar(true, `✓ ${e.w.pos} → ${sug.numero}`); }
+    else {
+      const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${e.w.pos}`);
+      colocarVentana(e.w, obra, creado.id);
+      avisar(true, `✓ ${e.w.pos} → ${creado.numero} (caballete nuevo)`);
+    }
   };
   // Panel "preparar obra": se elige la obra y cuántos caballetes lleva; se reservan libres para ella
   const obrasPrep = [
@@ -31684,6 +31750,33 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           );
         })()}
       </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
+          <input value={busqV} onChange={(e) => setBusqV(e.target.value)} placeholder="nº (6.227), posición (V02), vivienda (1º IZQ), cliente, lote o código" className="flex-1 min-w-[220px] border border-slate-300 rounded-md px-3 py-2 text-sm" />
+          {busqV && <button onClick={() => setBusqV("")} className="text-xs text-slate-500 hover:underline">Borrar</button>}
+        </div>
+        {(() => {
+          const r = buscarVentanas(busqV);
+          if (r === null) return null;
+          if (!r.length) return <div className="text-xs text-slate-500">No hay ninguna ventana con eso en los PDF subidos.</div>;
+          return (
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-md">
+              {r.map((e) => (
+                <div key={`${e.w.obraKey}-${e.w.id}`} className="px-2 py-1.5 text-xs flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-bold text-slate-900">{e.w.pos}</span>
+                  <span className="text-slate-500">nº {e.w.num} · lote {e.w.fab}{e.w.color ? ` · ${e.w.color}` : ""}{e.w.grupo ? ` · ${e.w.grupo}` : ""}{e.w.cliente ? ` (${e.w.cliente})` : ""}</span>
+                  {e.cab
+                    ? <span className="font-semibold text-emerald-700">está en {e.cab.numero} · {e.n}/{e.w.total} piezas</span>
+                    : e.sug
+                      ? <><span className="font-semibold text-sky-700">sin colocar · debe ir a {e.sug.numero}</span><button onClick={() => colocarDesdeBuscador(e)} className="ml-auto text-[11px] font-semibold border border-slate-300 bg-white rounded px-1.5 py-0.5 hover:bg-slate-50">Meter en {e.sug.numero}</button></>
+                      : <><span className="font-semibold text-amber-700">sin colocar · no queda caballete libre (se crearía uno nuevo)</span><button onClick={() => colocarDesdeBuscador(e)} className="ml-auto text-[11px] font-semibold border border-slate-300 bg-white rounded px-1.5 py-0.5 hover:bg-slate-50">Crear caballete y meterla</button></>}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
       {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={quitarLote} onAsignar={asignarSinObra} />}
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
@@ -31771,6 +31864,26 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                 {usadoCm(c) > capDe(c) + 0.0001 && <span className="font-semibold text-rose-600">¡ya lleva {Math.round(usadoCm(c))} cm!</span>}
               </div>
             )}
+            {c.estado !== "fuera" && (() => {
+              const esp = esperadasCaballete(c);
+              const et = esp.grupos.join(" · ");
+              if (!esp.lista.length) return esp.grupos.length ? <div className="text-[11px] font-semibold text-emerald-700">✓ Están todas las ventanas de {et} en este caballete</div> : null;
+              return (
+                <div className="rounded-md border border-amber-300 bg-amber-50/60">
+                  <div className="px-2 py-1 text-[11px] font-semibold text-amber-900 border-b border-amber-200">Faltan {esp.lista.length} ventana{esp.lista.length === 1 ? "" : "s"}{et ? ` de ${et}` : " de la obra reservada"} · toca "Ya está aquí" en las que veas en el caballete</div>
+                  <div className="divide-y divide-amber-100">
+                    {esp.lista.map((e) => (
+                      <div key={`${e.w.obraKey}-${e.w.id}`} className="px-2 py-1 text-xs flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-bold text-slate-900">{e.w.pos}</span>
+                        <span className="text-slate-500">nº {e.w.num} · lote {e.w.fab}{e.w.color ? ` · ${e.w.color}` : ""}{e.w.cliente ? ` · ${e.w.cliente}` : ""}</span>
+                        <span className={e.en ? "text-sky-700" : "text-rose-600 font-semibold"}>{e.en ? `ahora en ${e.en.numero}` : "sin colocar"}</span>
+                        <button onClick={() => meterAMano(c.id, e)} className="ml-auto text-[11px] font-semibold border border-slate-300 bg-white rounded px-1.5 py-0.5 hover:bg-slate-50">✓ Ya está aquí</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             {toArray(c.ventanas).length > 0 && (
               <div className="rounded-md border border-emerald-200 bg-emerald-50/50">
                 <div className="px-2 py-1 text-[11px] font-semibold text-emerald-800 border-b border-emerald-200">{toArray(c.ventanas).length} ventana{toArray(c.ventanas).length === 1 ? "" : "s"} con pistola · {Math.round(usadoCm(c))} / {capDe(c)} cm</div>
