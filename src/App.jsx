@@ -30180,7 +30180,7 @@ function pitidoCRM(ok) {
   } catch (e) { /* sin sonido */ }
 }
 // Al vaciar un caballete hay que borrar también lo que dejó el escáner
-const CAB_LIMPIO = { ventanas: [], capacidad: null, largoCm: null, cargadoPorEscaner: false, reservaPrevia: null, ultimaVentana: null, fechaCarga: null };
+const CAB_LIMPIO = { plan: [], ventanas: [], capacidad: null, largoCm: null, cargadoPorEscaner: false, reservaPrevia: null, ultimaVentana: null, fechaCarga: null };
 
 // ---- Etiquetas de fabricación (PDF que saca el programa de la línea) ----
 // Cada perfil lleva una etiqueta "V01.401 - 6.363 -FAB:1.275" con un código de barras de 12
@@ -31266,6 +31266,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   // Caballete que se propone: primero el que ya se está llenando de esa obra; si no, uno reservado para ella
   const caballeteSugerido = (obra, w) => {
     const todos = cabsAhora();
+    // Si al subir el PDF ya se le asignó un caballete a esta ventana, es ese
+    const previsto = todos.find((c) => c.estado !== "fuera" && toArray(c.plan).some((p) => p.id === w.id));
+    if (previsto) return previsto;
     // Si la etiqueta trae vivienda (p. ej. "1094 1º IZQ"), solo se usa un caballete que ya lleve esa misma vivienda y no otra;
     // si no hay, se coge uno libre/reservado y, si no queda ninguno, se crea uno nuevo (nunca se mezclan viviendas).
     const grupoOk = (c) => { if (!w.grupo) return true; const gs = toArray(c.ventanas).map((x) => x.grupo).filter(Boolean); return gs.length > 0 && gs.every((g) => g === w.grupo); };
@@ -31356,6 +31359,21 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   // y todavía no están en él. Si están en otro caballete, se indica cuál. Sirven para meterlas a mano sin pistola.
   const esperadasCaballete = (c) => {
     const vs = toArray(c.ventanas);
+    if (toArray(c.plan).length) {
+      const idx = new Map();
+      indicePiezas.forEach((h, cod) => { const g = idx.get(h.ventana.id) || { h, cods: [] }; g.cods.push(String(cod)); idx.set(h.ventana.id, g); });
+      const todosC = cabsAhora();
+      const listaP = [];
+      toArray(c.plan).forEach((pp) => {
+        const g = idx.get(pp.id); if (!g) return;
+        const v = g.h.ventana;
+        const w = { id: v.id, pos: v.pos, num: v.num, fab: g.h.lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: g.h.dueno.key, proyectoId: g.h.dueno.proyectoId || "", total: g.cods.length, persiana: persianaDeDueno(g.h.dueno.key), escaneadas: g.cods, aMano: true };
+        if (vs.some((x) => mismaVentana(x, w))) return;
+        const en = todosC.find((cc) => cc.id !== c.id && toArray(cc.ventanas).some((x) => mismaVentana(x, w)));
+        listaP.push({ w, dueno: g.h.dueno, en });
+      });
+      return { grupos: [...new Set(toArray(c.plan).map((x) => x.grupo).filter(Boolean))], lista: listaP };
+    }
     const grupos = new Set(vs.map((x) => x.grupo).filter(Boolean));
     if (vs.length && !grupos.size) return { grupos: [], lista: [] };
     const keys = new Set([...vs.map((x) => x.obraKey), c.obra && c.obra.key, c.reserva && c.reserva.key].filter((k) => k && k !== "s-libre"));
@@ -31442,7 +31460,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     toma.forEach((c) => guardarCab({ ...c, reserva: { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: obraPrepLimpia.cliente, direccion: obraPrep.direccion || "", fecha: hoy }, historial: hist(c, `Reservado para ${obraPrep.nombre}`) }));
     if (toma.length < faltan) alert(`Solo hay ${toma.length} caballetes libres sin reservar: faltan ${faltan - toma.length}. Reclama los que están fuera o da de alta más.`);
   };
-  const quitarReservasPrep = () => reservadosPrep.forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${obraPrep.nombre}`) }));
+  const quitarReservasPrep = () => reservadosPrep.forEach((c) => guardarCab({ ...c, reserva: null, plan: [], historial: hist(c, `Quitada la reserva de ${obraPrep.nombre}`) }));
   // ---- Lotes de etiquetas: asignados a una obra o sin obra ----
   const obraSin = (fab) => ({ key: `s-${fab}`, proyectoId: "", nombre: `Sin asignar · lote ${fab}`, cliente: "", direccion: "" });
   const lotesTodos = [
@@ -31457,7 +31475,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const quitarLote = (key, fab) => {
     if (String(key).startsWith("s-")) {
       if (onBorrarSinObra) onBorrarSinObra(fab);
-      cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === key).forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) }));
+      cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === key).forEach((c) => guardarCab({ ...c, reserva: null, plan: [], historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) }));
     }
     else onGuardarEtiquetasObra(key, toArray(lotesDe(key)).filter((l) => l.fab !== fab));
   };
@@ -31483,6 +31501,58 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     });
   };
   // Guarda lo leído del PDF en una obra ("" = sin obra). Si el lote ya estaba en otro sitio se mueve (si no, la pistola solo reconocería uno).
+  // Al subir el PDF: calcula cuántos caballetes hacen falta (una vivienda no se mezcla con otra; largo útil y
+  // medidas de persiana como en el resto del almacén), los reserva para la obra (creando los que falten) y deja
+  // apuntado en cada caballete qué ventanas le tocan. Si se vuelve a subir el mismo PDF no duplica nada.
+  const repartirEnCaballetes = (lotes, destinoObra) => {
+    const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+    const yaUbicadas = new Set();
+    cabsAhora().forEach((c) => { toArray(c.ventanas).forEach((x) => yaUbicadas.add(x.id)); toArray(c.plan).forEach((x) => yaUbicadas.add(x.id)); });
+    const grupos = new Map();
+    toArray(lotes).forEach((l) => {
+      const dest = destinoObra || obraSin(l.fab);
+      toArray(l.ventanas).forEach((v) => {
+        if (yaUbicadas.has(v.id)) return;
+        const k = `${dest.key}|${v.grupo || ""}`;
+        const g = grupos.get(k) || { dest, grupo: v.grupo || "", ventanas: [] };
+        g.ventanas.push({ v, fab: l.fab }); grupos.set(k, g);
+      });
+    });
+    if (!grupos.size) return null;
+    const limite = capacidadMax + cabHueco(capC0) + 0.0001;
+    const principal = almacenes[0].id;
+    const usados = [], nuevos = [];
+    const siguienteCab = (dest) => {
+      const todos = cabsAhora().filter((c) => (c.estado || "libre") === "libre" && !toArray(c.plan).length && !usados.includes(c.id));
+      const propio = todos.filter((c) => c.reserva && c.reserva.key === dest.key).sort(natNum)[0];
+      if (propio) return propio;
+      const libre = todos.filter((c) => !c.reserva && (!almacenSel || almacenDe(c) === almacenSel))
+        .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b))[0];
+      if (libre) return libre;
+      const nuevo = crearCaballete(`Alta automática al subir el PDF de ${dest.nombre}`);
+      nuevos.push(nuevo.numero);
+      return nuevo;
+    };
+    let total = 0;
+    [...grupos.values()].sort((a, b) => nat(a.dest.key + a.grupo, b.dest.key + b.grupo)).forEach((g) => {
+      const pers = persianaDeDueno(g.dest.key);
+      const bins = []; let usado = 0, cur = null;
+      g.ventanas.sort((a, b) => nat(a.v.pos, b.v.pos) || nat(a.v.num, b.v.num)).forEach(({ v, fab }) => {
+        const h = huecosVentanaFab({ pos: v.pos, persiana: pers }, capC0);
+        if (!cur || usado + h > limite) { cur = []; bins.push(cur); usado = 0; }
+        cur.push({ id: v.id, pos: v.pos, num: v.num, fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: g.dest.key });
+        usado += h;
+      });
+      bins.forEach((plan) => {
+        const base = siguienteCab(g.dest);
+        const actual = cabsAhora().find((c) => c.id === base.id) || base;
+        usados.push(actual.id); total++;
+        guardarCab({ ...actual, reserva: { key: g.dest.key, proyectoId: g.dest.proyectoId || "", nombre: g.dest.nombre, cliente: g.dest.cliente || "", direccion: g.dest.direccion || "", fecha: hoy }, plan, historial: hist(actual, `Reservado para ${g.dest.nombre}${g.grupo ? ` (${g.grupo})` : ""}: ${plan.length} ventanas`) });
+      });
+    });
+    const nums = usados.map((id) => (cabsAhora().find((c) => c.id === id) || {}).numero).filter(Boolean);
+    return { total, nums, nuevos };
+  };
   const subirLotes = (obraKey, r, archivo) => {
     const destinoObra = obraKey ? obras.find((x) => x.key === obraKey) : null;
     if (obraKey && !destinoObra) return false;
@@ -31496,6 +31566,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if (destinoObra) onGuardarEtiquetasObra(destinoObra.key, mezclarLotesFab(lotesDe(destinoObra.key), r, archivo));
     else r.lotes.forEach((l) => onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoyL, ventanas: l.ventanas }))));
     r.lotes.forEach((l) => relinkarLote(l.fab, destinoObra || obraSin(l.fab)));
+    try {
+      const rep = repartirEnCaballetes(r.lotes, destinoObra);
+      if (rep) avisar(true, `✓ Reservados ${rep.total} caballete${rep.total === 1 ? "" : "s"}: ${rep.nums.join(", ")}${rep.nuevos.length ? ` · nuevos (imprime sus etiquetas): ${rep.nuevos.join(", ")}` : ""}`);
+    } catch (e) { console.error("No se pudieron reservar los caballetes", e); }
     return true;
   };
   // Cuando la obra ya existe en el CRM, los lotes que estaban "sin obra" se le ofrecen con un clic (por el nº de expediente del PDF)
