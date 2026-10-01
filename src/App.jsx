@@ -30454,7 +30454,7 @@ function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
 
 // Lector con la cámara del móvil (Chrome en Android). En otros navegadores se usa la
 // pistola lectora o se escribe el código.
-function LectorCamara({ onLeido, onCerrar, modo = "caballete" }) {
+function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
   const videoRef = useRef(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -30474,7 +30474,9 @@ function LectorCamara({ onLeido, onCerrar, modo = "caballete" }) {
           if (parar) return;
           try {
             const r = await det.detect(videoRef.current);
-            if (r && r.length) { onLeido(r[0].rawValue); return; }
+            // Si en la imagen salen varios códigos (caja, botella, otras etiquetas), se queda con el primero que sirva
+            const buena = r && r.length ? r.find((x) => !acepta || acepta(String(x.rawValue || ""))) : null;
+            if (buena) { onLeido(buena.rawValue); return; }
           } catch (e) { /* sigue intentando */ }
           t = setTimeout(buscar, 300);
         };
@@ -31457,7 +31459,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="w-full text-[11px] text-slate-400">{ultimaLectura ? `Última lectura de la pistola: ${ultimaLectura}` : "Aún no ha llegado ninguna lectura. Haz clic en la caja y pasa la pistola: si el código aparece escrito, la pistola funciona."}</div>
       </div>
       {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
-      {camara && <LectorCamara modo={camara === "ventana" ? "ventana" : "caballete"} onLeido={(v) => { const modoCam = camara; setCamara(false); if (modoCam === "ventana" && !piezaDeTexto(v)) { const tx = `La cámara ha leído "${v}", pero no es una etiqueta de ventana (debe ser un número de 12 cifras). Si es un caballete, usa el botón "Caballete".`; setUltimaLectura(`${String(v).trim()} · ${new Date().toLocaleTimeString("es-ES")}`); setOkScan(""); setAvisoScan(tx); avisar(false, tx); return; } buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
+      {camara && <LectorCamara modo={camara === "ventana" ? "ventana" : "caballete"} acepta={camara === "ventana" ? (v) => !!piezaDeTexto(v) : undefined} onLeido={(v) => { const modoCam = camara; setCamara(false); if (modoCam === "ventana" && !piezaDeTexto(v)) { const tx = `La cámara ha leído "${v}", pero no es una etiqueta de ventana (debe ser un número de 12 cifras). Si es un caballete, usa el botón "Caballete".`; setUltimaLectura(`${String(v).trim()} · ${new Date().toLocaleTimeString("es-ES")}`); setOkScan(""); setAvisoScan(tx); avisar(false, tx); return; } buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
       {onGuardarEtiquetasObra && sugerenciasLotes.map(({ l, o, enCab }) => (
         <div key={l.fab} className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-300 bg-sky-50 px-3 py-2 text-sm text-slate-800">
           <span>El lote <b>{l.fab}</b> (expediente {l.expediente}) estaba <b>sin obra</b> y ya existe <b>{o.nombre}</b>{enCab ? ` · ${enCab} ventana${enCab === 1 ? "" : "s"} suya${enCab === 1 ? "" : "s"} ya está${enCab === 1 ? "" : "n"} en caballetes` : ""}.</span>
