@@ -29796,17 +29796,54 @@ function svgCode128(texto, alto = 70, modulo = 2) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${x + 10 * modulo}" height="${alto}" viewBox="0 0 ${x + 10 * modulo} ${alto}"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${barras}</g></svg>`;
 }
 const codigoCaballete = (c) => String(c.numero || "").toUpperCase();
+// Code 128 para etiquetas de impresora térmica: el tamaño va en MILÍMETROS (no en px), así el
+// navegador no lo reescala al imprimir. Módulo de 0,5 mm = 4 puntos exactos a 203 dpi, que es lo
+// que mejor lee la pistola. Si el código es largo y no cabe en anchoMaxMm, se encoge lo justo.
+function svgCode128Mm(texto, altoMm = 18, moduloMm = 0.5, anchoMaxMm = 54) {
+  const vals = [104];
+  for (const ch of String(texto)) { const v = ch.charCodeAt(0) - 32; vals.push(v >= 0 && v <= 94 ? v : 31); }
+  let suma = 104;
+  vals.slice(1).forEach((v, i) => { suma += v * (i + 1); });
+  vals.push(suma % 103, 106);
+  const anchos = vals.map((v) => C128_PATRONES[v]).join("");
+  let x = 10, barras = "", barra = true;
+  for (const d of anchos) { const w = +d; if (barra) barras += `<rect x="${x}" y="0" width="${w}" height="10"/>`; x += w; barra = !barra; }
+  const modulos = x + 10;
+  const anchoMm = Math.min(modulos * moduloMm, anchoMaxMm);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${anchoMm.toFixed(2)}mm" height="${altoMm}mm" viewBox="0 0 ${modulos} 10" preserveAspectRatio="none" shape-rendering="crispEdges"><g fill="#000">${barras}</g></svg>`;
+}
+// Etiqueta de caballete para la Honeywell PC42d con rollo de 100 x 40 mm (apaisada).
+// Una etiqueta por hoja: @page fija el tamaño real y cada etiqueta lleva su salto de página.
 function imprimirEtiquetasCaballetes(lista) {
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  const etiqueta = (c) => `<div style="border:2px solid #000;border-radius:8px;padding:14px;text-align:center;page-break-inside:avoid;margin-bottom:14px">
-      <div style="font-size:12px;letter-spacing:2px">ECOWIN PVC · CABALLETE</div>
-      <div style="font-size:64px;font-weight:bold;line-height:1.1">${esc(c.numero)}</div>
-      <div>${svgCode128(codigoCaballete(c), 80, 3)}</div>
-      <div style="font-size:12px;margin-top:4px">${esc([c.almacenNombre, c.ubicacion].filter(Boolean).join(" · "))}</div>
-      <div style="font-size:10px;margin-top:4px">Propiedad de ECOWIN PVC — devolver</div>
-    </div>`;
-  const html = `<html><head><meta charset="utf-8"><title>Etiquetas de caballetes</title></head><body style="font-family:Arial;padding:16px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">${lista.map(etiqueta).join("")}</div></body></html>`;
+  const etiqueta = (c) => {
+    const num = String(c.numero ?? "");
+    const tam = num.length <= 4 ? 14 : num.length <= 5 ? 12 : 9; // mm de alto de letra
+    const sitio = [c.almacenNombre, c.ubicacion].filter(Boolean).join(" · ");
+    return `<div class="et"><div class="marco">
+      <div class="cab">ECOWIN PVC · CABALLETE</div>
+      <div class="medio">
+        <div class="num" style="font-size:${tam}mm">${esc(num)}</div>
+        <div class="bar">${svgCode128Mm(codigoCaballete(c), 18, 0.5, 52)}</div>
+      </div>
+      <div class="pie"><span class="sitio">${esc(sitio)}</span><span class="prop">Propiedad de ECOWIN PVC — devolver</span></div>
+    </div></div>`;
+  };
+  const html = `<html><head><meta charset="utf-8"><title>Etiquetas de caballetes</title><style>
+    @page { size: 100mm 40mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: 100mm; height: 39.5mm; padding: 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
+    .marco { height: 100%; border: 0.4mm solid #000; border-radius: 1.5mm; padding: 1mm 2mm; display: flex; flex-direction: column; }
+    .cab { font-size: 2.6mm; letter-spacing: 0.4mm; text-align: center; line-height: 1; }
+    .medio { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 2mm; min-height: 0; }
+    .num { font-weight: bold; line-height: 1; white-space: nowrap; flex: 1; text-align: center; }
+    .bar { flex: none; line-height: 0; }
+    .pie { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; line-height: 1; }
+    .sitio { font-size: 3mm; font-weight: bold; }
+    .prop { font-size: 2.2mm; }
+  </style></head><body>${lista.map(etiqueta).join("")}</body></html>`;
   const w = window.open("", "_blank");
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
