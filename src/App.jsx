@@ -13484,6 +13484,94 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
   return { res, fallo: false };
 }
 
+// Planta + ventana de una persiana, para mostrarla: "P6 · V0100"
+const normPlanta = (p) => {
+  const s = String(p ?? "").trim().toUpperCase().replace(/^PLANTA\s*/, "P").replace(/[\s.\-_]/g, "");
+  if (!s) return "";
+  if (/^\d+$/.test(s)) return `P${s}`;
+  return s;
+};
+// Saca la planta de un texto tipo "EXP. 852 P-8" → "P8"
+const plantaDeTexto = (t) => { const m = String(t || "").toUpperCase().match(/\bP(?:LANTA)?\s*[-.]?\s*(\d{1,2}|B)\b/); return m ? `P${m[1]}` : ""; };
+const ubicPersiana = (x) => [normPlanta(x.planta), String(x.ref || "").trim()].filter(Boolean).join(" · ");
+
+// Clave para detectar la MISMA persiana metida dos veces (dos fotos a la misma etiqueta,
+// o el mismo packing list subido dos veces). Solo vale si tiene algo que la identifique
+// (ventana/vivienda o nº de pieza): sin eso, dos persianas iguales del mismo expediente son legítimas.
+function clavePersiana(x) {
+  const n = (v) => String(v ?? "").replace(/\s/g, "").toUpperCase();
+  const identifica = n(x.ref) || n(x.pieza);
+  if (!identifica) return "";
+  return [n(x.expediente), normPlanta(x.planta), n(x.ref), Math.round(parseFloat(x.largo ?? x.ancho) || 0), Math.round(parseFloat(x.alto) || 0), n(x.pieza)].join("|");
+}
+// Devuelve { id: "lista" | "almacen" } con las que son repetidas: de otra de la misma lista
+// o de una que ya está en el almacén (y no ha salido). Se cuenta por unidades.
+function persianasRepetidas(lista, existentes) {
+  const yaDentro = {};
+  (existentes || []).filter((x) => !x.entregada).forEach((x) => { const k = clavePersiana(x); if (k) yaDentro[k] = (yaDentro[k] || 0) + 1; });
+  const vistas = {};
+  const rep = {};
+  lista.forEach((x) => {
+    if (x.noRepetida) return;
+    const k = clavePersiana(x);
+    if (!k) return;
+    if (yaDentro[k] > 0) { yaDentro[k]--; rep[x.id] = "almacen"; return; }
+    if (vistas[k]) { rep[x.id] = "lista"; return; }
+    vistas[k] = true;
+  });
+  return rep;
+}
+
+// Coloca persianas en el carro (y si se quiere, lado / estante) que elige el usuario.
+// Primero intenta que quepan bien; si no caben por medidas, las pone igual (están ahí de verdad)
+// en el estante más libre de ese carro. destino = { carro, lado?, nivel? }
+function colocarEnCarroElegido(items, exp, estantes, estado, destino) {
+  const mios = estantes.filter((e) => String(e.carro) === String(destino.carro) && (!destino.lado || e.lado === destino.lado) && (!destino.nivel || String(e.nivel) === String(destino.nivel)));
+  if (!mios.length) return { res: {}, fallo: true };
+  const r = colocarGrupoPersianas(items, exp, mios, estado);
+  const res = { ...r.res };
+  items.filter((it) => !res[it.id]).forEach((it) => {
+    const L = largoPersiana(it);
+    const libre = (e) => (e.porUds ? e.capacidad - (estado.uds?.[e.key] || 0) : e.largo - (estado.usado[e.key] || 0));
+    const e = [...mios].sort((a, b) => libre(b) - libre(a))[0];
+    estado.usado[e.key] = (estado.usado[e.key] || 0) + L + ((estado.usado[e.key] || 0) ? HOLGURA_PERSIANA_MM : 0);
+    estado.uds = estado.uds || {};
+    estado.uds[e.key] = (estado.uds[e.key] || 0) + 1;
+    (estado.exps[e.key] = estado.exps[e.key] || new Set()).add(exp);
+    res[it.id] = { carro: e.carro, lado: e.lado, nivel: e.nivel, forzada: true };
+  });
+  return { res, fallo: false };
+}
+
+// Selector de carro / lado / estante. value = null (automático) o { carro, lado, nivel }
+function SelectorCarroPersianas({ carros, value, onChange, permitirAuto = true }) {
+  const ordenados = [...(carros || [])].sort((a, b) => (parseInt(a.numero, 10) || 0) - (parseInt(b.numero, 10) || 0));
+  const c = value ? ordenados.find((x) => String(x.numero) === String(value.carro)) : null;
+  const t = c ? (TIPOS_CARRO_PERSIANA[c.tipo] || {}) : {};
+  const niveles = c ? (t.porUds ? 1 : (parseInt(c.niveles, 10) || t.nivelesDefecto || 4)) : 0;
+  const sel = "border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white";
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <select className={sel} value={value ? String(value.carro) : ""} onChange={(e) => onChange(e.target.value ? { carro: parseInt(e.target.value, 10), lado: "", nivel: "" } : null)}>
+        {permitirAuto ? <option value="">Automático (el CRM busca sitio)</option> : <option value="">— Elige carro —</option>}
+        {ordenados.map((x) => <option key={x.numero} value={String(x.numero)}>Carro {x.numero} · {(TIPOS_CARRO_PERSIANA[x.tipo] || {}).corto || x.tipo}</option>)}
+      </select>
+      {c && (
+        <select className={sel} value={value.lado || ""} onChange={(e) => onChange({ ...value, lado: e.target.value })}>
+          <option value="">Cualquier lado</option>
+          {LADOS_CARRO.map((l) => <option key={l} value={l}>Lado {l}</option>)}
+        </select>
+      )}
+      {c && niveles > 1 && (
+        <select className={sel} value={value.nivel || ""} onChange={(e) => onChange({ ...value, nivel: e.target.value ? parseInt(e.target.value, 10) : "" })}>
+          <option value="">Cualquier estante</option>
+          {Array.from({ length: niveles }, (_, i) => i + 1).map((n) => <option key={n} value={n}>Estante {n}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function estadoOcupacionPersianas(items) {
   const estado = { usado: {}, exps: {}, uds: {} };
   items.filter((x) => x.estante && !x.entregada).forEach((x) => {
@@ -13531,14 +13619,15 @@ async function leerPackingPersianas(file) {
   if (esExcel) {
     filas = leerFilasExcel(await file.arrayBuffer()).map((f) => ({
       expediente: String(valorPorCabeceras(f, ["expediente", "obra", "refclientorder", "refcliente", "pedidocliente", "cliente"]) || "").trim(),
-      ref: String(valorPorCabeceras(f, ["vivienda", "referencia", "ref", "tag", "posicion"]) || "").trim(),
+      ref: String(valorPorCabeceras(f, ["ventana", "vivienda", "referencia", "ref", "tag", "posicion"]) || "").trim(),
+      planta: String(valorPorCabeceras(f, ["planta", "piso", "floor"]) || "").trim(),
       largo: parseFloat(valorPorCabeceras(f, ["ancho", "largo", "longitud", "width", "anchura"])) || 0,
       alto: parseFloat(valorPorCabeceras(f, ["alto", "altura", "height"])) || 0,
       cantidad: parseFloat(valorPorCabeceras(f, ["cantidad", "uds", "unidades", "qty"])) || 1,
       pedido: String(valorPorCabeceras(f, ["pedido", "order", "albaran"]) || "").trim(),
     }));
   } else {
-    const prompt = 'Esto es un packing list, albarán o etiquetas de PERSIANAS (cajones de persiana embalados, por ejemplo de Dealux). Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","filas":[{"expediente":"","ref":"","largo":numero,"alto":numero,"cantidad":numero,"pedido":""}]}. "largo" es el ANCHO / LARGO de la persiana (lo que mide el cajón a lo largo) en MILÍMETROS; si viene en cm o m, pásalo a mm. "alto" en mm. "expediente" es el número de obra / expediente / referencia de cliente. "ref" es la vivienda o posición. Deja en blanco (o 0) lo que no encuentres.';
+    const prompt = 'Esto es un packing list, albarán o etiquetas de PERSIANAS (cajones de persiana embalados, por ejemplo de Dealux). Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","filas":[{"expediente":"","planta":"","ref":"","largo":numero,"alto":numero,"cantidad":numero,"pedido":""}]}. "largo" es el ANCHO / LARGO de la persiana (lo que mide el cajón a lo largo) en MILÍMETROS; si viene en cm o m, pásalo a mm. "alto" en mm. "expediente" es el número de obra / expediente / referencia de cliente. "planta" es la planta o piso (lo que va como P seguido de un número: P6, P-8, PB…), devuélvela como "P6", "P8", "PB". "ref" es la ventana, vivienda o posición (ej. V0100, V04.206). Deja en blanco (o 0) lo que no encuentres.';
     const o = await leerDocumentoCristalConIA(file, prompt);
     filas = (o.filas || []).map((f) => ({ ...f, proveedor: o.proveedor || "" }));
   }
@@ -13548,7 +13637,7 @@ async function leerPackingPersianas(file) {
     const m = String(f.expediente || "").match(/\d{2,}/);
     for (let k = 0; k < n; k++) {
       unidades.push({
-        id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+        id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), planta: normPlanta(f.planta || plantaDeTexto(f.expediente)), ref: String(f.ref || "").trim(),
         largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
         proveedor: String(f.proveedor || "").trim(), fechaEntrada: new Date().toISOString().slice(0, 10),
         estante: null, entregada: false,
@@ -13559,11 +13648,12 @@ async function leerPackingPersianas(file) {
 }
 
 // ---- Entrada de persianas con fotos de las etiquetas (cuando llegan sin packing list) ----
-const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = vivienda o posición (ej. V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","planta":"","obra":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "planta" = la PLANTA o piso: lo que va como P seguido de un número (ej. "EXP. 852 P-8" es "P8", "P6" es "P6", "PB" es "PB", "Planta 2" es "P2"); si no aparece, vacío. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = la VENTANA, vivienda o posición, copiada tal cual (ej. V0100, V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
 const BORRADOR_PERSIANAS_FOTOS = "crm_persianasFotos_borrador";
 
-function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
+function EtiquetasPersianasPorFotos({ onColocar, onCerrar, existentes = [], carros = [], destinoInicial = null }) {
   const [filas, setFilas] = useState([]);
+  const [destino, setDestino] = useState(destinoInicial);
   const [recuperado, setRecuperado] = useState(false);
   const inputCamaraRef = useRef(null);
   const inputGaleriaRef = useRef(null);
@@ -13603,7 +13693,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
     const m = String(e.expediente || "").match(/\d{2,}/);
     return {
       proveedor: String(e.proveedor || "").trim(), cliente: String(e.cliente || "").trim(), pedido: String(e.pedido || "").trim(),
-      expediente: m ? m[0] : String(e.expediente || "").trim(), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
+      expediente: m ? m[0] : String(e.expediente || "").trim(), planta: normPlanta(e.planta || plantaDeTexto(e.expediente)), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
       largo: aMm(e.ancho ?? e.largo), alto: aMm(e.alto), medidaTexto: String(e.medidaTexto || "").trim(), cantidad: Math.max(1, parseInt(e.cantidad, 10) || 1),
       pieza: String(e.pieza || "").trim(), color: String(e.color || "").trim(), descripcion: String(e.descripcion || "").trim(),
     };
@@ -13645,18 +13735,14 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
     siguiente();
   };
 
-  // Posible foto repetida: mismo pedido, expediente, vivienda, medida y nº de pieza
-  const vistos = {};
-  const marcas = {};
-  filas.forEach((f) => {
-    if (f.estado !== "ok") return;
-    const k = [f.proveedor, f.pedido, f.expediente, f.ref, parseFloat(f.largo) || "", parseFloat(f.alto) || "", f.pieza].map((x) => String(x ?? "").replace(/\s/g, "").toUpperCase()).join("|");
-    if (vistos[k]) marcas[f.id] = true; else vistos[k] = f.id;
-  });
+  // Persiana repetida (dos fotos a la misma etiqueta, o ya está en el almacén): BLOQUEADA.
+  // Misma expediente, planta, ventana, medidas y nº de pieza. Solo se mete si se marca "No es repetida".
+  const marcas = persianasRepetidas(filas.filter((f) => f.estado === "ok"), existentes);
+  const repetidas = filas.filter((f) => marcas[f.id]).length;
 
   const leyendo = filas.filter((f) => f.estado === "leyendo").length;
   const conError = filas.filter((f) => f.estado === "error").length;
-  const buenas = filas.filter((f) => f.estado === "ok" && parseFloat(f.largo) > 0);
+  const buenas = filas.filter((f) => f.estado === "ok" && parseFloat(f.largo) > 0 && !marcas[f.id]);
   const sinLargo = filas.filter((f) => f.estado === "ok" && !(parseFloat(f.largo) > 0)).length;
   const totalUds = buenas.reduce((a, f) => a + (Math.max(1, parseInt(f.cantidad, 10) || 1)), 0);
   const expsResumen = [...new Set(buenas.map((f) => f.expediente).filter(Boolean))];
@@ -13667,14 +13753,15 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
     const avisos = [];
     if (conError) avisos.push(`${conError} foto(s) sin leer`);
     if (sinLargo) avisos.push(`${sinLargo} sin largo`);
-    if (avisos.length && !window.confirm(`Hay ${avisos.join(" y ")} que no se guardarán. ¿Seguir?`)) return;
+    if (repetidas) avisos.push(`${repetidas} repetida(s)`);
+    if (avisos.length && !window.confirm(`Hay ${avisos.join(", ")} que no se guardarán. ¿Seguir?`)) return;
     const hoy = new Date().toISOString().slice(0, 10);
     const unidades = [];
     buenas.forEach((f) => {
       const n = Math.max(1, parseInt(f.cantidad, 10) || 1);
       for (let k = 0; k < n; k++) {
         unidades.push({
-          id: uid(), expediente: String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+          id: uid(), expediente: String(f.expediente || "").trim(), planta: normPlanta(f.planta), ref: String(f.ref || "").trim(),
           largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
           proveedor: String(f.proveedor || "").trim(), cliente: String(f.cliente || "").trim(), obra: String(f.obra || "").trim(),
           pieza: String(f.pieza || "").trim(), color: String(f.color || "").trim(), descripcion: String(f.descripcion || "").trim(),
@@ -13683,7 +13770,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
       }
     });
     try { localStorage.removeItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { /* nada */ }
-    onColocar(unidades);
+    onColocar(unidades, destino);
     onCerrar();
   };
   const descartar = () => {
@@ -13723,12 +13810,20 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
           <input ref={inputGaleriaRef} type="file" accept="image/*" multiple className="hidden"
             onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
         </div>
+        {carros.length > 0 && (
+          <div className={`mb-3 p-2.5 rounded-lg border ${destino ? "border-[#2E8B57] bg-[#EEF7E4]" : "border-slate-200 bg-slate-50"}`}>
+            <div className="text-xs font-semibold text-slate-700 mb-1.5">¿Dónde van estas persianas?</div>
+            <SelectorCarroPersianas carros={carros} value={destino} onChange={setDestino} />
+            {destino && <div className="text-[11px] text-slate-600 mt-1">Se meten todas en el carro {destino.carro}{destino.lado ? `, lado ${destino.lado}` : ""}{destino.nivel ? `, estante ${destino.nivel}` : ""}, aunque por medidas no cuadren (si ya están ahí puestas).</div>}
+          </div>
+        )}
 
         <div className="text-xs text-slate-600 mb-2 flex flex-wrap gap-x-4 gap-y-1">
           <span><b>{totalUds}</b> persiana(s) listas</span>
           {leyendo > 0 && <span className="text-sky-700 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> leyendo {leyendo}…</span>}
           {conError > 0 && <span className="text-rose-600">{conError} sin leer</span>}
           {sinLargo > 0 && <span className="text-rose-600">{sinLargo} sin largo</span>}
+          {repetidas > 0 && <span className="text-rose-600 font-semibold">{repetidas} repetida(s), no se meten</span>}
           {expsResumen.length > 0 && <span className="text-slate-500">Expedientes: {expsResumen.map((e) => `EXP ${e}`).join(", ")}</span>}
         </div>
 
@@ -13739,7 +13834,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
           {filas.map((f, i) => {
             const corta = f.estado === "ok" && parseFloat(f.largo) > 0 && parseFloat(f.largo) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm;
             return (
-              <div key={f.id} className={`flex gap-3 p-2 rounded-lg border ${f.estado === "error" ? "border-rose-200 bg-rose-50" : marcas[f.id] || corta ? "border-amber-300 bg-amber-50" : "border-slate-200"}`}>
+              <div key={f.id} className={`flex gap-3 p-2 rounded-lg border ${f.estado === "error" || marcas[f.id] ? "border-rose-300 bg-rose-50" : corta ? "border-amber-300 bg-amber-50" : "border-slate-200"}`}>
                 <div className="shrink-0 w-16 text-center">
                   {f.thumb ? <img src={f.thumb} alt="" className="w-16 h-16 object-cover rounded" /> : <div className="w-16 h-16 rounded bg-slate-100 flex items-center justify-center text-slate-300"><ImageIcon size={18} /></div>}
                   <div className="text-[10px] text-slate-400 mt-0.5">#{i + 1}</div>
@@ -13752,14 +13847,20 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
                       <span className="text-[11px] text-slate-500">Largo (ancho)</span>{campo(f, "largo", "mm", "w-16")}
                       <span className="text-[11px] text-slate-500">Alto</span>{campo(f, "alto", "mm", "w-16")}
                       <span className="text-[11px] text-slate-500">EXP</span>{campo(f, "expediente", "Expediente", "w-20")}
-                      {campo(f, "ref", "Vivienda / ref.", "w-28")}
+                      <span className="text-[11px] text-slate-500">Planta</span>{campo(f, "planta", "P6", "w-14")}
+                      <span className="text-[11px] text-slate-500">Ventana</span>{campo(f, "ref", "V0100", "w-28")}
                       <span className="text-[11px] text-slate-500">Uds</span>{campo(f, "cantidad", "1", "w-10")}
                       {campo(f, "pedido", "Nº pedido", "w-28")}
                       {campo(f, "proveedor", "Proveedor", "w-24")}
                       {campo(f, "color", "Color", "w-24")}
                       {campo(f, "descripcion", "Tipo", "flex-1 min-w-[140px]")}
                       {f.medidaTexto && <div className="w-full text-[11px] text-slate-500">En la etiqueta pone: <b>{f.medidaTexto}</b> → comprueba que el largo y el alto en mm cuadran</div>}
-                      {marcas[f.id] && <span className="text-[11px] font-semibold text-amber-700">⚠ Parece la misma que otra foto: bórrala si está repetida</span>}
+                      {marcas[f.id] && (
+                        <div className="w-full flex flex-wrap items-center gap-2 text-[11px] font-semibold text-rose-700">
+                          ⛔ {marcas[f.id] === "almacen" ? "Esta persiana YA ESTÁ en el almacén" : "Repetida: es la misma etiqueta que otra foto"}. No se va a meter.
+                          <button onClick={() => cambiarFila(f.id, { noRepetida: true })} className="font-normal underline text-slate-600">No es repetida, meterla</button>
+                        </div>
+                      )}
                       {corta && <span className="text-[11px] font-semibold text-amber-700">⚠ Mide menos de 40 cm: no cabe en ningún carro</span>}
                     </div>
                   )}
@@ -13894,7 +13995,7 @@ function AlmacenPersianas() {
                 onClick={() => { setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
                 className={`w-full text-left flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm ${x.estante && !x.entregada ? "hover:bg-[#EEF7E4]" : "opacity-70"}`}>
                 <b>EXP {x.expediente || "—"}</b>
-                <span>{x.ref || ""}</span>
+                <span>{ubicPersiana(x)}</span>
                 <span className="font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</span>
                 <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
                   {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
@@ -13978,6 +14079,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [borrador, setBorrador] = useState(null);
+  const [destinoEntrada, setDestinoEntrada] = useState(null); // carro elegido para la entrada (null = automático)
+  const [mover, setMover] = useState(null); // { ids, titulo, destino }
   const [verFotosEtiquetas, setVerFotosEtiquetasRaw] = useState(() => { try { return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) && (localStorage.getItem(CLAVE_ALMACEN_BORRADOR_FOTOS) || ALMACEN_PRINCIPAL_ID) === almacen.id; } catch (e) { return false; } });
   const setVerFotosEtiquetas = (v) => { if (v) { try { localStorage.setItem(CLAVE_ALMACEN_BORRADOR_FOTOS, almacen.id); } catch (e) { /* nada */ } } setVerFotosEtiquetasRaw(v); };
   const inputRef = useRef(null);
@@ -13999,29 +14102,55 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     finally { setLeyendo(false); }
   };
 
-  const colocar = (lista) => {
-    const estado = estadoOcupacionPersianas(items);
+  // destino = { carro, lado?, nivel? } para meterlas donde diga el usuario; sin destino, automático.
+  // "fuera" = ids que no cuentan como ocupado (las que se están moviendo).
+  const colocar = (lista, destino = null, fuera = null) => {
+    const estado = estadoOcupacionPersianas(fuera ? items.filter((x) => !fuera.has(x.id)) : items);
     const porExp = {};
     lista.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
     const sitio = {};
     let fallan = 0;
     Object.entries(porExp).forEach(([exp, xs]) => {
-      const r = colocarGrupoPersianas(xs, exp, estantes, estado);
+      const r = destino && destino.carro ? colocarEnCarroElegido(xs, exp, estantes, estado, destino) : colocarGrupoPersianas(xs, exp, estantes, estado);
       Object.assign(sitio, r.res);
       fallan += xs.length - Object.keys(r.res).length;
     });
     return { sitio, fallan };
   };
 
-  const confirmarEntrada = (lista) => {
-    const entrada = Array.isArray(lista) ? lista : borrador;
-    const { sitio, fallan } = colocar(entrada);
+  const repBorrador = borrador ? persianasRepetidas(borrador, items) : {};
+  const nRepBorrador = Object.keys(repBorrador).length;
+  const confirmarEntrada = (lista, destinoFotos) => {
+    const deFotos = Array.isArray(lista);
+    const destino = deFotos ? destinoFotos : destinoEntrada;
+    // Las repetidas (ya están en el almacén o salen dos veces) NO entran
+    const rep = persianasRepetidas(deFotos ? lista : borrador, items);
+    const entrada = (deFotos ? lista : borrador).filter((x) => !rep[x.id]).map(({ noRepetida, ...x }) => x);
+    const quitadas = (deFotos ? lista : borrador).length - entrada.length;
+    if (!entrada.length) { setAviso(`No se ha metido nada: ${quitadas ? "todas eran repetidas (ya están en el almacén)" : "no había persianas"}.`); if (!deFotos) setBorrador(null); return; }
+    const { sitio, fallan } = colocar(entrada, destino);
     const nuevas = entrada.map((x) => ({ ...x, almacenId: almacen.id, estante: sitio[x.id] || null }));
     guardarItems([...items, ...nuevas]);
-    if (!Array.isArray(lista)) setBorrador(null);
+    if (!deFotos) { setBorrador(null); setDestinoEntrada(null); }
     const cortas = esMosq ? 0 : nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
-    setAviso(fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas.`);
+    const forzadas = Object.values(sitio).filter((e) => e.forzada).length;
+    const txtRep = quitadas ? ` ${quitadas} repetida(s) no se han metido.` : "";
+    const txtForz = forzadas ? ` Ojo: en el carro ${destino.carro} ${forzadas} no cuadran por medidas, se han puesto igualmente.` : "";
+    setAviso((fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas${destino && destino.carro ? ` en el carro ${destino.carro}` : ""}.`) + txtRep + txtForz);
     setVista(fallan ? "sinsitio" : "mapa");
+    if (!fallan && destino && destino.carro) setCarroAbierto(destino.carro);
+  };
+
+  // Mover una o varias persianas al carro (lado / estante) que diga el usuario
+  const confirmarMover = () => {
+    if (!mover || !mover.destino || !mover.destino.carro) { alert("Elige el carro."); return; }
+    const ids = new Set(mover.ids);
+    const xs = items.filter((x) => ids.has(x.id));
+    const { sitio } = colocar(xs, mover.destino, ids);
+    guardarItems(items.map((x) => (sitio[x.id] ? { ...x, estante: sitio[x.id], enPuesto: "" } : x)));
+    const forzadas = Object.values(sitio).filter((e) => e.forzada).length;
+    setAviso(`${xs.length} ${cosa} movida(s) al carro ${mover.destino.carro}.${forzadas ? ` ${forzadas} no cuadran por medidas, puestas igualmente.` : ""}`);
+    setMover(null);
   };
 
   const devolverDePuesto = (x) => {
@@ -14063,9 +14192,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
       <td className="px-2 font-semibold">EXP {x.expediente || "—"}</td>
-      <td className="px-2">{x.ref || "—"}</td>
+      <td className="px-2">{ubicPersiana(x) || "—"}</td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
-      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? dondeTxt(x.estante) : <span className="text-amber-700">Sin sitio</span>}</td>}
+      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? dondeTxt(x.estante) : <span className="text-amber-700">Sin sitio</span>}
+        {!x.entregada && <button onClick={() => setMover({ ids: [x.id], titulo: `EXP ${x.expediente || "—"}${ubicPersiana(x) ? ` · ${ubicPersiana(x)}` : ""}`, destino: x.estante ? { carro: x.estante.carro, lado: "", nivel: "" } : null })} className="ml-2 text-[#2E8B57] underline">mover</button>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
@@ -14079,7 +14209,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   );
   const cabeceraPersianas = (mostrarSitio = true) => (
     <thead><tr className="text-left text-xs text-slate-400 border-b">
-      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
+      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="px-2">Expediente</th><th className="px-2">Planta · ventana</th><th className="px-2">Largo × alto (mm)</th>
       {mostrarSitio && <th className="px-2">Dónde está</th>}<th className="px-2">Incidencia / comentario</th>
     </tr></thead>
   );
@@ -14113,32 +14243,42 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         ))}
         <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) subir(e.target.files[0]); e.target.value = ""; }} />
-        <button onClick={() => inputRef.current?.click()} disabled={leyendo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+        <button onClick={() => { setDestinoEntrada(null); inputRef.current?.click(); }} disabled={leyendo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
-        <button onClick={() => setVerFotosEtiquetas(true)}
+        <button onClick={() => { setDestinoEntrada(null); setVerFotosEtiquetas(true); }}
           className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
           <Camera size={14} /> Entrada con fotos de etiquetas
         </button>
       </div>
       {verFotosEtiquetas && (
-        <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} onColocar={(unidades) => confirmarEntrada(unidades)} />
+        <EtiquetasPersianasPorFotos onCerrar={() => { setVerFotosEtiquetas(false); setDestinoEntrada(null); }} onColocar={(unidades, destino) => confirmarEntrada(unidades, destino)}
+          existentes={items} carros={carros} destinoInicial={destinoEntrada} />
       )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
 
       {borrador && (
         <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
-          <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
+          <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente, la planta, la ventana o el largo si algo está mal leído.</p>
+          {nRepBorrador > 0 && <p className="text-xs font-semibold text-rose-700 mb-2">⛔ {nRepBorrador} repetida(s) (ya están en el almacén o salen dos veces): no se van a meter.</p>}
+          <div className="mb-2 p-2 rounded-lg bg-white border border-slate-200">
+            <div className="text-xs font-semibold text-slate-700 mb-1">¿Dónde van?</div>
+            <SelectorCarroPersianas carros={carros} value={destinoEntrada} onChange={setDestinoEntrada} />
+          </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th></th></tr></thead>
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Planta</th><th className="pr-2">Ventana</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
-                  <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
+                  <tr key={x.id} className={`border-b border-white ${repBorrador[x.id] ? "bg-rose-100 text-slate-400" : !esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
                     <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
-                    <td className="pr-2">{x.ref || "—"}</td>
+                    <td className="pr-2"><input value={x.planta || ""} placeholder="P6" onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, planta: e.target.value } : y)))} className="w-14 border border-slate-200 rounded px-1" /></td>
+                    <td className="pr-2">
+                      <input value={x.ref || ""} placeholder="V0100" onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, ref: e.target.value } : y)))} className="w-24 border border-slate-200 rounded px-1" />
+                      {repBorrador[x.id] && <div className="text-[10px] font-semibold text-rose-700">⛔ {repBorrador[x.id] === "almacen" ? "Ya está en el almacén" : "Repetida"} · <button onClick={() => setBorrador(borrador.map((y, j) => (j === i ? { ...y, noRepetida: true } : y)))} className="underline font-normal">no es repetida</button></div>}
+                    </td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
                     <td><button onClick={() => setBorrador(borrador.filter((_, j) => j !== i))} className="text-rose-500"><Trash2 size={12} /></button></td>
@@ -14202,8 +14342,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           if (soloSinColocar && x.colocada) return false;
           if (soloIncidencia && !x.incidencia) return false;
           if (!nql) return true;
-          return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql);
-        }).sort((a, b) => String(a.expediente).localeCompare(String(b.expediente)) || String(a.ref).localeCompare(String(b.ref)));
+          return `${x.expediente} ${x.planta || ""} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql);
+        }).sort((a, b) => String(a.expediente).localeCompare(String(b.expediente)) || String(normPlanta(a.planta)).localeCompare(String(normPlanta(b.planta)), "es", { numeric: true }) || String(a.ref).localeCompare(String(b.ref), "es", { numeric: true }));
         const colocadas = items.filter((x) => x.colocada).length;
         const conInc = items.filter((x) => x.incidencia).length;
         return (
@@ -14233,11 +14373,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <>
               <p className="text-sm text-slate-600 mb-2">{Cosa} que no han cabido en ningún {esMosq ? "carro" : "estante (o miden menos de 40 cm)"}. Libera sitio o cambia la configuración de algún carro y pulsa <b>Volver a colocar</b>.</p>
               <table className="w-full text-xs mb-3">
-                <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo</th><th></th></tr></thead>
+                <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Planta · ventana</th><th className="pr-2">Largo</th><th></th></tr></thead>
                 <tbody>{sinSitio.map((x) => (
                   <tr key={x.id} className="border-b border-slate-100">
-                    <td className="py-1 pr-2 font-semibold">EXP {x.expediente || "—"}</td><td className="pr-2">{x.ref || "—"}</td><td className="pr-2">{largoPersiana(x)} mm</td>
-                    <td><button onClick={() => { if (window.confirm(`¿Borrar esta ${esMosq ? "mosquitera" : "persiana"} del almacén?`)) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
+                    <td className="py-1 pr-2 font-semibold">EXP {x.expediente || "—"}</td><td className="pr-2">{ubicPersiana(x) || "—"}</td><td className="pr-2">{largoPersiana(x)} mm</td>
+                    <td className="whitespace-nowrap"><button onClick={() => setMover({ ids: [x.id], titulo: `EXP ${x.expediente || "—"}${ubicPersiana(x) ? ` · ${ubicPersiana(x)}` : ""}`, destino: null })} className="mr-2 text-[#2E8B57] underline">poner en carro…</button><button onClick={() => { if (window.confirm(`¿Borrar esta ${esMosq ? "mosquitera" : "persiana"} del almacén?`)) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
                   </tr>))}
                 </tbody>
               </table>
@@ -14316,6 +14456,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </label>
             {carroSel.movido && <TextInput value={carroSel.notaSitio || ""} onChange={(e) => actualizarCarro(carroSel.numero, { notaSitio: e.target.value })} placeholder="¿Dónde está? Ej: en la zona de carga" />}
 
+            <div className="flex flex-wrap gap-2 mt-3 p-2.5 rounded-lg bg-[#EEF7E4] border border-[#86D325]">
+              <span className="text-xs font-semibold text-slate-700 w-full">Meter {cosa} directamente en este carro:</span>
+              <button onClick={() => { setDestinoEntrada({ carro: carroSel.numero, lado: "", nivel: "" }); setCarroAbierto(null); setVerFotosEtiquetas(true); }}
+                className="flex items-center gap-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3 py-2 rounded-lg"><Camera size={13} /> Con fotos de etiquetas</button>
+              <button onClick={() => { setDestinoEntrada({ carro: carroSel.numero, lado: "", nivel: "" }); setCarroAbierto(null); inputRef.current?.click(); }} disabled={leyendo}
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 bg-white px-3 py-2 rounded-lg hover:bg-slate-50"><Plus size={13} /> Con packing list</button>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
               {LADOS_CARRO.map((lado) => (
                 <div key={lado}>
@@ -14327,7 +14475,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                            <div key={x.id} title={`EXP ${x.expediente} · ${ubicPersiana(x)} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.expediente}
@@ -14350,6 +14498,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    <button onClick={() => setMover({ ids: xs.map((x) => x.id), titulo: `EXP ${exp} (${xs.length} ${cosa} del carro ${carroSel.numero})`, destino: null })}
+                      className="ml-auto text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]">Mover a otro carro</button>
                     <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} ${cosa} del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
                   </div>
@@ -14365,6 +14515,24 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </div>
             <div className="flex justify-end mt-3">
               <button onClick={() => quitarCarro(carroSel.numero)} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar este carro</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mover && (
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4" onClick={() => setMover(null)}>
+          <div className="bg-white rounded-xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-display font-bold text-slate-900">Mover a otro carro</h3>
+              <button onClick={() => setMover(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <p className="text-sm text-slate-600 mb-3">{mover.titulo}</p>
+            <SelectorCarroPersianas carros={carros} value={mover.destino} onChange={(d) => setMover({ ...mover, destino: d })} permitirAuto={false} />
+            <p className="text-[11px] text-slate-400 mt-2">Si no dices lado o estante, se pone en el sitio más libre de ese carro.</p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setMover(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-lg">Cancelar</button>
+              <button onClick={confirmarMover} disabled={!mover.destino} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-40">Mover aquí</button>
             </div>
           </div>
         </div>
