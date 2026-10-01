@@ -30536,7 +30536,33 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const nuevo = () => {
     const n = lista.reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
     const alm = almacenSel || almacenes[0].id;
-    onGuardar({ id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] });
+    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] };
+    onGuardar(cab);
+    // Se imprime solo la etiqueta del caballete nuevo (no todas)
+    if (confirm(`Caballete ${cab.numero} creado. ¿Imprimir ahora su etiqueta?`)) imprimirYMarcar([cab]);
+  };
+  // Imprime solo las etiquetas indicadas y las da por impresas (las nuevas dejan de estar pendientes)
+  const imprimirYMarcar = (cabs) => {
+    imprimirEtiquetasCaballetes(cabs.map((x) => ({ ...x, almacenNombre: nombreAlmacen(almacenDe(x)) })));
+    cabs.forEach((x) => { if (x.etiquetaPendiente) guardarCab({ ...x, etiquetaPendiente: false }); });
+  };
+  const pendientesEtiqueta = toArray(caballetes).filter((x) => x.etiquetaPendiente);
+  // Borrar un caballete: libre → un aviso; con ventanas/obra → avisa de lo que se pierde; fuera → doble aviso
+  const puedeBorrar = (c) => isAdmin || ((c.estado || "libre") === "libre" && !toArray(c.ventanas).length && !toArray(c.lineas).length);
+  const borrarCab = (c) => {
+    const est = c.estado || "libre";
+    const nv = toArray(c.ventanas).length, nl = toArray(c.lineas).length;
+    if (est === "fuera") {
+      const cli = c.salida && c.salida.cliente ? c.salida.cliente : "un cliente";
+      if (!confirm(`⚠ El caballete ${c.numero} está FUERA con ${cli}${c.salida && c.salida.obra ? ` (${c.salida.obra})` : ""}. Si lo borras, el CRM dejará de controlar que vuelva y no podrás reclamarlo. ¿Borrarlo igualmente?`)) return;
+      if (!confirm(`Última comprobación: ¿seguro que quieres borrar ${c.numero}? No se puede deshacer.`)) return;
+    } else if (est === "cargado" || nv || nl) {
+      const que = nv ? `${nv} ventana${nv === 1 ? "" : "s"} escaneada${nv === 1 ? "" : "s"}` : `${nl} línea${nl === 1 ? "" : "s"} de ventanas`;
+      if (!confirm(`El caballete ${c.numero} tiene ${que}${c.obra ? ` de ${c.obra.nombre}` : ""}. Si lo borras se pierde esa asignación (habría que volver a asignarlas a otro caballete). ¿Borrarlo?`)) return;
+    } else if (!confirm(`¿Borrar el caballete ${c.numero}?`)) return;
+    onBorrar(c.id);
+    if (ventanaEsc && ventanaEsc.cabId === c.id) setVentanaEsc(null);
+    if (escaneadoId === c.id) setEscaneadoId(null);
   };
   const hist = (c, accion) => [...toArray(c.historial), { fecha: new Date().toISOString(), accion }];
   const diasDev = diasDevolucionCliente(caballetes, config);
@@ -30767,7 +30793,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
-        {lista.length > 0 && <button onClick={() => imprimirEtiquetasCaballetes((almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista).map((x) => ({ ...x, almacenNombre: nombreAlmacen(almacenDe(x)) })))} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Printer size={14} /> Etiquetas con código de barras</button>}
+        {pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
+        {lista.length > 0 && <button onClick={() => { const todas = almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista; if (confirm(`Se van a imprimir ${todas.length} etiquetas (una por caballete). Para imprimir solo una, usa la impresora de la tarjeta del caballete. ¿Imprimir todas?`)) imprimirYMarcar(todas); }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"><Printer size={13} /> Reimprimir todas</button>}
         <button onClick={nuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Plus size={14} /> Añadir caballete</button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -30903,8 +30930,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
             <div className="flex items-center gap-2">
               <span className="text-lg font-extrabold text-slate-900">{c.numero}</span>
               <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${est.c}`}>{est.t}</span>
-              <button onClick={() => imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)) }])} className="ml-auto text-slate-400 hover:text-slate-700" title="Imprimir etiqueta con código de barras"><Printer size={14} /></button>
-              {isAdmin && (c.estado || "libre") === "libre" && <button onClick={() => { if (confirm(`¿Borrar el caballete ${c.numero}?`)) onBorrar(c.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button>}
+              <button onClick={() => imprimirYMarcar([c])} className={`ml-auto hover:text-slate-700 ${c.etiquetaPendiente ? "text-amber-600" : "text-slate-400"}`} title={c.etiquetaPendiente ? "Etiqueta sin imprimir: imprimir solo la de este caballete" : "Imprimir solo la etiqueta de este caballete"}><Printer size={14} /></button>
             </div>
             {c.estado !== "fuera" && (
               <div className="flex gap-1.5">
@@ -30967,6 +30993,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
                 <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
               </>}
               {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) devolver(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
+              {puedeBorrar(c) && <button onClick={() => borrarCab(c)} className="ml-auto flex items-center gap-1 text-rose-500 hover:underline"><Trash2 size={12} /> Borrar caballete</button>}
             </div>
             {toArray(c.historial).length > 1 && (
               <details className="text-[11px] text-slate-400"><summary className="cursor-pointer">Historial</summary>{[...toArray(c.historial)].reverse().slice(0, 12).map((h, i) => <div key={i}>{fmtDate(String(h.fecha).slice(0, 10))} · {h.accion}</div>)}</details>
