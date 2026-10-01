@@ -30452,11 +30452,50 @@ function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
   );
 }
 
+// Foto de la etiqueta de una ventana: se reduce y se lee con IA el texto impreso (posición, nº, lote y los 12 dígitos
+// de debajo del código de barras). Sirve cuando las barras salen mal impresas y ni la pistola ni la cámara las leen.
+async function reducirImagenParaIA(file, max = 1600) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error("No se pudo abrir la foto")); i.src = url; });
+    const k = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.85);
+  } finally { URL.revokeObjectURL(url); }
+}
+async function leerEtiquetaVentanaConIA(file) {
+  const dataUrl = await reducirImagenParaIA(file);
+  const base64 = dataUrl.split(",")[1];
+  const prompt = [
+    "Esto es la foto de una etiqueta de fabricación de una ventana de PVC.",
+    "Devuelve SOLO JSON, sin texto ni ```: {\"pos\":\"V02.102\",\"num\":\"6.227\",\"fab\":\"1.239\",\"codigo\":\"001239000237\"}",
+    "- pos, num y fab salen en la primera línea de la etiqueta con el formato POS - NUM -FAB:LOTE (por ejemplo V02.102 - 6.227 -FAB:1.239).",
+    "- codigo son los 12 dígitos impresos justo debajo del código de barras, sin espacios.",
+    "- Si hay varias etiquetas, usa la que esté más cerca del centro de la foto.",
+    "- Si no se lee algún dato con seguridad, déjalo en \"\". No inventes cifras.",
+  ].join("\n");
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 300, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{"); const fin = limpio.lastIndexOf("}");
+  const r = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  return { pos: String(r.pos || "").trim().toUpperCase(), num: String(r.num || "").trim(), fab: String(r.fab || "").replace(/\D/g, ""), codigo: String(r.codigo || "").replace(/\D/g, "") };
+}
+
 // Lector con la cámara del móvil (Chrome en Android). En otros navegadores se usa la
 // pistola lectora o se escribe el código.
 function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
   const videoRef = useRef(null);
   const [error, setError] = useState("");
+  const [visto, setVisto] = useState(""); // lo último que ha decodificado la cámara aunque no sirva (para saber qué lee)
   useEffect(() => {
     let stream = null, parar = false, t = null;
     (async () => {
@@ -30467,7 +30506,8 @@ function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
         try { const soportados = await window.BarcodeDetector.getSupportedFormats(); const utiles = (soportados || []).filter((f) => formatos.includes(f)); if (utiles.length) formatos = utiles; } catch (e) { /* se usa la lista por defecto */ }
         let det;
         try { det = new window.BarcodeDetector({ formats: formatos }); } catch (e) { det = new window.BarcodeDetector({ formats: ["code_128", "code_39", "ean_13", "qr_code"] }); } // si el navegador rechaza la lista, la de siempre
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } } });
+        try { const pista = stream.getVideoTracks()[0]; const caps = (pista.getCapabilities && pista.getCapabilities()) || {}; if (caps.focusMode && caps.focusMode.includes("continuous")) await pista.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (e) { /* no todos los móviles lo permiten */ }
         if (parar) return;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -30478,6 +30518,7 @@ function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
             // Si en la imagen salen varios códigos (caja, botella, otras etiquetas), se queda con el primero que sirva
             const buena = r && r.length ? r.find((x) => !acepta || acepta(String(x.rawValue || ""))) : null;
             if (buena) { onLeido(buena.rawValue); return; }
+            if (r && r.length) setVisto(r.map((x) => `${x.rawValue} (${x.format})`).join(" · "));
           } catch (e) { /* sigue intentando */ }
           t = setTimeout(buscar, 300);
         };
@@ -30490,6 +30531,7 @@ function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4 gap-3">
       {error ? <p className="text-white text-center max-w-sm">{error}</p> : <video ref={videoRef} playsInline muted className="w-full max-w-md rounded-lg" />}
+      {!error && modo === "ventana" && <p className="text-amber-200 text-xs text-center max-w-sm break-all">{visto ? `La cámara ve: ${visto} — no vale como etiqueta de ventana. Apunta solo a UNA etiqueta, recta y de cerca.` : "La cámara aún no ha decodificado ningún código. Encuadra solo una etiqueta, de cerca y sin reflejos."}</p>}
       {!error && <p className="text-white text-sm text-center">{modo === "ventana" ? "Apunta al código de barras de la etiqueta de la ventana (a unos 15-25 cm)" : "Apunta al código de barras del caballete"}</p>}
       <button onClick={onCerrar} className="px-5 py-2 rounded-md bg-white text-slate-800 font-semibold">Cerrar</button>
     </div>
@@ -30915,6 +30957,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [codigo, setCodigo] = useState("");
   const [escaneadoId, setEscaneadoId] = useState(null);
   const [camara, setCamara] = useState(false);
+  const [leyendoFoto, setLeyendoFoto] = useState(false);
+  const fotoRef = useRef(null);
   const [avisoScan, setAvisoScan] = useState("");
   const [okScan, setOkScan] = useState("");
   const inputScanRef = useRef(null);
@@ -30971,6 +31015,26 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); avisar(true, `✓ Caballete ${c.numero}`); } else { avisar(false, `Se ha leído "${txt}" pero no hay ningún caballete con ese código.`); setEscaneadoId(null); setOkScan(""); setAvisoScan(`Se ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
     setCodigo("");
     setTimeout(() => { if (inputScanRef.current) inputScanRef.current.focus(); }, 50);
+  };
+  // Foto de la etiqueta de una ventana: primero se busca por el código de 12 cifras; si no cuadra (o se leyó mal una cifra),
+  // por posición + nº + lote, que es lo que identifica la ventana en el PDF de la línea.
+  const leerFotoEtiqueta = async (file) => {
+    if (!file) return;
+    setLeyendoFoto(true); setAvisoScan(""); setOkScan("");
+    try {
+      const r = await leerEtiquetaVentanaConIA(file);
+      let cod = r.codigo && indicePiezas.has(r.codigo) ? r.codigo : null;
+      if (!cod && r.pos && r.num && r.fab) {
+        for (const [k, h] of indicePiezas.entries()) { if (String(h.lote.fab) === r.fab && String(h.ventana.pos).toUpperCase() === r.pos && String(h.ventana.num) === r.num) { cod = k; break; } }
+      }
+      if (cod) { setUltimaLectura(`foto: ${cod} · ${new Date().toLocaleTimeString("es-ES")}`); escanearPieza(cod); }
+      else {
+        const leido = [r.pos, r.num && `nº ${r.num}`, r.fab && `lote ${r.fab}`, r.codigo].filter(Boolean).join(" · ") || "nada con seguridad";
+        const tx = `He leído de la foto: ${leido}. No coincide con ninguna ventana de los PDF subidos. Revisa que el PDF de ese lote esté cargado o repite la foto más de cerca.`;
+        setAvisoScan(tx); avisar(false, tx);
+      }
+    } catch (e) { const tx = "No se pudo leer la foto: " + (e && e.message ? e.message : e); setAvisoScan(tx); avisar(false, tx); }
+    finally { setLeyendoFoto(false); if (fotoRef.current) fotoRef.current.value = ""; }
   };
   const hoy = new Date().toISOString().slice(0, 10);
   const lista = [...toArray(caballetes)].sort((a, b) => String(a.numero).localeCompare(String(b.numero), "es", { numeric: true }));
@@ -31455,6 +31519,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <button onClick={() => buscarCodigo(codigo)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 hover:bg-slate-50">Buscar</button>
         <button onClick={() => setCamara("caballete")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Caballete</button>
         <button onClick={() => setCamara("ventana")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Ventana</button>
+        <button onClick={() => fotoRef.current && fotoRef.current.click()} disabled={leyendoFoto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-60">{leyendoFoto ? "Leyendo foto…" : "📸 Foto etiqueta"}</button>
+        <input ref={fotoRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => leerFotoEtiqueta(e.target.files && e.target.files[0])} />
         {escaneadoId && <><span className="text-xs font-semibold text-emerald-700">{okScan}</span><button onClick={() => { setEscaneadoId(null); setOkScan(""); }} className="text-xs text-slate-500 hover:underline">Ver todos</button></>}
         {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
         <div className="w-full text-[11px] text-slate-400">{ultimaLectura ? `Última lectura de la pistola: ${ultimaLectura}` : "Aún no ha llegado ninguna lectura. Haz clic en la caja y pasa la pistola: si el código aparece escrito, la pistola funciona."}</div>
