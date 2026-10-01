@@ -30464,8 +30464,9 @@ function LectorCamara({ onLeido, onCerrar, modo = "caballete", acepta }) {
         if (!("BarcodeDetector" in window)) { setError("Este navegador no puede leer códigos con la cámara. Usa Chrome en el móvil Android, una pistola lectora o escribe el número."); return; }
         // Las etiquetas de la línea pueden ser de otro tipo (p. ej. 2 de 5 intercalado, "itf"): se piden todos los que el navegador sepa leer
         let formatos = ["code_128", "code_39", "itf", "ean_13", "ean_8", "upc_a", "upc_e", "code_93", "codabar", "qr_code", "data_matrix"];
-        try { const soportados = await window.BarcodeDetector.getSupportedFormats(); if (soportados && soportados.length) formatos = soportados; } catch (e) { /* se usa la lista por defecto */ }
-        const det = new window.BarcodeDetector({ formats: formatos });
+        try { const soportados = await window.BarcodeDetector.getSupportedFormats(); const utiles = (soportados || []).filter((f) => formatos.includes(f)); if (utiles.length) formatos = utiles; } catch (e) { /* se usa la lista por defecto */ }
+        let det;
+        try { det = new window.BarcodeDetector({ formats: formatos }); } catch (e) { det = new window.BarcodeDetector({ formats: ["code_128", "code_39", "ean_13", "qr_code"] }); } // si el navegador rechaza la lista, la de siempre
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
         if (parar) return;
         videoRef.current.srcObject = stream;
