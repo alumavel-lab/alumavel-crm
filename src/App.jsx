@@ -29870,6 +29870,18 @@ function svgCode128(texto, alto = 70, modulo = 2) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${x + 10 * modulo}" height="${alto}" viewBox="0 0 ${x + 10 * modulo} ${alto}"><rect width="100%" height="100%" fill="#fff"/><g fill="#000">${barras}</g></svg>`;
 }
 const codigoCaballete = (c) => String(c.numero || "").toUpperCase();
+// Pitido del ordenador al leer una etiqueta: agudo = bien, grave doble = no se ha podido
+function pitidoCRM(ok) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = pitidoCRM.ctx || (pitidoCRM.ctx = new AC());
+    if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+    const t0 = ctx.currentTime;
+    const tono = (f, ini, dur) => { const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = "sine"; o.frequency.value = f; g.gain.value = 0.15; o.connect(g); g.connect(ctx.destination); o.start(t0 + ini); o.stop(t0 + ini + dur); };
+    if (ok) tono(1300, 0, 0.12); else { tono(320, 0, 0.18); tono(220, 0.22, 0.28); }
+  } catch (e) { /* sin sonido */ }
+}
 // Al vaciar un caballete hay que borrar también lo que dejó el escáner
 const CAB_LIMPIO = { ventanas: [], cargadoPorEscaner: false, reservaPrevia: null, ultimaVentana: null, fechaCarga: null };
 
@@ -30119,7 +30131,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
 
 // Caja de escaneo DENTRO de un caballete: lo que se lea aquí va a ESTE caballete (no se elige otro).
 // Muestra siempre lo que ha llegado, para ver si la pistola está escribiendo.
-function EscanerEnCaballete({ numero, onPieza, enfocar }) {
+function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
   const [v, setV] = useState("");
   const [msg, setMsg] = useState(null); // { ok, texto }
   const ref = useRef(null);
@@ -30127,13 +30139,13 @@ function EscanerEnCaballete({ numero, onPieza, enfocar }) {
   const procesar = (txt) => {
     const t = String(txt || "").trim();
     if (!t) return;
-    const cod = codPiezaFab(t);
-    if (!cod) setMsg({ ok: false, texto: `Ha llegado "${t}", pero no es una etiqueta de ventana (tiene que ser de 12 cifras).` });
+    const cod = (resolver || codPiezaFab)(t);
+    if (!cod) { const m = { ok: false, texto: `Ha llegado "${t}", pero no contiene un código de etiqueta de ventana (12 cifras).` }; setMsg(m); if (onAviso) onAviso(false, m.texto); }
     else setMsg(onPieza(cod));
     setV("");
     setTimeout(() => { if (ref.current) ref.current.focus(); }, 30);
   };
-  useEffect(() => { const t = v.trim(); if (t && codPiezaFab(t)) procesar(t); // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = v.trim(); if (t && (resolver || codPiezaFab)(t)) procesar(t); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v]);
   return (
     <div className="rounded-md border border-emerald-300 bg-emerald-50/40 p-2 space-y-1">
@@ -30557,12 +30569,20 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, etiquetasSinObra), [proyectos, uxExpedientes, etiquetasSinObra]);
   const [ultimaLectura, setUltimaLectura] = useState("");
   const [enfocarCab, setEnfocarCab] = useState(null);
+  const [toastScan, setToastScan] = useState(null);
+  const toastTimer = useRef(null);
+  // Cartel grande arriba + pitido: así se sabe qué ha pasado aunque no se esté mirando la tarjeta
+  const avisar = (ok, texto) => {
+    pitidoCRM(ok); setToastScan({ ok, texto });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastScan(null), ok ? 4500 : 10000);
+  };
   // Hay pistolas que no mandan "Enter" al final: el código de una etiqueta (12 cifras) se procesa en cuanto llega entero,
   // y un "C-03" completo se procesa tras una pausa corta.
   useEffect(() => {
     const v = String(codigo || "").trim();
     if (!v) return undefined;
-    if (codPiezaFab(v)) { buscarCodigo(v); return undefined; }
+    if (piezaDeTexto(v)) { buscarCodigo(v); return undefined; }
     if (/^C-?\d{2,}$/i.test(v)) { const tt = setTimeout(() => buscarCodigo(v), 600); return () => clearTimeout(tt); }
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -30591,12 +30611,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   }, []);
   const buscarCodigo = (txt) => {
     if (String(txt || "").trim()) setUltimaLectura(`${String(txt).trim()} · ${new Date().toLocaleTimeString("es-ES")}`);
-    const cp = codPiezaFab(txt);
+    const cp = piezaDeTexto(txt);
     if (cp) { escanearPieza(cp); return; }
     const t = String(txt || "").trim().toUpperCase().replace(/^CAB[:\s-]*/, "");
     if (!t) return;
     const c = toArray(caballetes).find((x) => codigoCaballete(x) === t || codigoCaballete(x).replace(/\D/g, "") === t.replace(/\D/g, ""));
-    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); } else { setEscaneadoId(null); setOkScan(""); setAvisoScan(`La pistola ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
+    if (c) { setEscaneadoId(c.id); setFiltro(""); setAvisoScan(""); setOkScan(`✓ Leído "${t}" → caballete ${c.numero}`); avisar(true, `✓ Caballete ${c.numero}`); } else { avisar(false, `La pistola ha leído "${txt}" pero no hay ningún caballete con ese código.`); setEscaneadoId(null); setOkScan(""); setAvisoScan(`La pistola ha leído "${txt}" pero no hay ningún caballete con ese código. Si debería ser C-01, C-02…, revisa que la pistola no cambie el guion (-).`); }
     setCodigo("");
     setTimeout(() => { if (inputScanRef.current) inputScanRef.current.focus(); }, 50);
   };
@@ -30770,12 +30790,25 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     return todos.filter((c) => (c.estado || "libre") === "libre" && !c.reserva)
       .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b))[0] || null;
   };
+  // Si la pistola añade algo antes o después del código, se busca igualmente el código de 12 cifras conocido
+  const piezaDeTexto = (txt) => {
+    const exacto = codPiezaFab(txt);
+    if (exacto) return exacto;
+    const dig = String(txt || "").replace(/\D/g, "");
+    if (dig.length > 12) { for (const k of indicePiezas.keys()) if (dig.includes(k)) return k; }
+    return null;
+  };
+  const textoLoteDesconocido = (cod) => {
+    const cargados = [...new Set([...indicePiezas.values()].map((x) => x.lote.fab))];
+    return `Etiqueta ${cod}: es del lote ${parseInt(cod.slice(0, 6), 10) || "?"} y no está en ningún PDF subido. Lotes cargados: ${cargados.length ? cargados.join(", ") : "ninguno"}. Sube el PDF de ese lote (en el proyecto, en el expediente de Uxcar o en "Etiquetas de fabricación").`;
+  };
   const escanearPieza = (cod) => {
     setCodigo(""); setEscaneadoId(null); setOkScan("");
     const h = indicePiezas.get(cod);
     if (!h) {
       setVentanaEsc(null);
-      setAvisoScan(`Etiqueta ${cod} (lote ${parseInt(cod.slice(0, 6), 10) || "?"}): no está en ningún PDF de etiquetas. Súbelo en el proyecto, en el expediente de Uxcar o aquí mismo (apartado "Etiquetas de fabricación").`);
+      const tx = textoLoteDesconocido(cod);
+      setAvisoScan(tx); avisar(false, tx);
       volverAEscanear(); return;
     }
     setAvisoScan("");
@@ -30788,14 +30821,16 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       const nueva = { ...actual, escaneadas: repetida ? toArray(actual.escaneadas) : [...toArray(actual.escaneadas), cod] };
       if (!repetida) guardarCab({ ...cabCon, ventanas: toArray(cabCon.ventanas).map((x) => (mismaVentana(x, w) ? nueva : x)) });
       setVentanaEsc({ w: nueva, dueno, tipo: pieza.t, cabId: cabCon.id, nueva: false, repetida });
+      avisar(true, `${repetida ? "Esa pieza ya estaba contada · " : "✓ "}${w.pos} está en ${cabCon.numero} · ${toArray(nueva.escaneadas).length}/${w.total} piezas`);
     } else {
       const obra = obraDeDueno(dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); }
+      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); }
       else {
         const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al escanear ${w.pos}`);
         colocarVentana(w, obra, creado.id);
         setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: creado.id, nueva: true, creado: true });
+        avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${creado.numero} (caballete nuevo)`);
       }
     }
     volverAEscanear();
@@ -30804,7 +30839,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const escanearEnCaballete = (cabId, cod) => {
     setUltimaLectura(`${cod} · ${new Date().toLocaleTimeString("es-ES")}`);
     const h = indicePiezas.get(cod);
-    if (!h) return { ok: false, texto: `Etiqueta ${cod} (lote ${parseInt(cod.slice(0, 6), 10) || "?"}): no está en ningún PDF subido. Súbelo en el proyecto, en el expediente de Uxcar o en "Etiquetas de fabricación".` };
+    if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
     const { dueno, lote, ventana: v } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, escaneadas: [cod] };
     const todos = cabsAhora();
@@ -31058,6 +31093,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         {avisoScan && <div className="w-full text-xs text-rose-600">{avisoScan}</div>}
         <div className="w-full text-[11px] text-slate-400">{ultimaLectura ? `Última lectura de la pistola: ${ultimaLectura}` : "Aún no ha llegado ninguna lectura. Haz clic en la caja y pasa la pistola: si el código aparece escrito, la pistola funciona."}</div>
       </div>
+      {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
       {camara && <LectorCamara onLeido={(v) => { setCamara(false); buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
       {onGuardarEtiquetasObra && sugerenciasLotes.map(({ l, o, enCab }) => (
         <div key={l.fab} className="flex flex-wrap items-center gap-2 rounded-lg border-2 border-sky-300 bg-sky-50 px-3 py-2 text-sm text-slate-800">
@@ -31228,7 +31264,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                 </div>
               </div>
             )}
-            {c.estado !== "fuera" && <EscanerEnCaballete numero={c.numero} enfocar={enfocarCab === c.id} onPieza={(cod) => escanearEnCaballete(c.id, cod)} />}
+            {c.estado !== "fuera" && <EscanerEnCaballete numero={c.numero} enfocar={enfocarCab === c.id} resolver={piezaDeTexto} onAviso={avisar} onPieza={(cod) => { const r = escanearEnCaballete(c.id, cod); avisar(r.ok, r.texto); return r; }} />}
             {toArray(c.ventanas).length > 0 && (
               <div className="rounded-md border border-emerald-200 bg-emerald-50/50">
                 <div className="px-2 py-1 text-[11px] font-semibold text-emerald-800 border-b border-emerald-200">{toArray(c.ventanas).length} ventana{toArray(c.ventanas).length === 1 ? "" : "s"} con pistola · {huecosCaballeteFab(c, capC0)}/{capacidadMax} huecos</div>
