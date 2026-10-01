@@ -3343,6 +3343,15 @@ export default function App() {
   }, [currentUser?.id]);
   const guardarCaballete = (c) => fbSet(ref(fbDb, `caballetesVentanas/${c.id}`), JSON.parse(JSON.stringify(c))).catch((e) => showToast("No se pudo guardar el caballete: " + e.message, "error"));
   const borrarCaballete = (id) => fbSet(ref(fbDb, `caballetesVentanas/${id}`), null);
+  // Etiquetas de fabricación subidas SIN obra (la obra aún no está en el CRM): "etiquetasFabSinObra/f<lote>"
+  const [etiquetasSinObra, setEtiquetasSinObra] = useState([]);
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, "etiquetasFabSinObra"), (snap) => setEtiquetasSinObra(toArray(snap.val())), () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
+  const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
 
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
@@ -4901,6 +4910,9 @@ export default function App() {
               if (String(key).startsWith("u-")) { const e = uxExpedientes.find((x) => x.id === String(key).slice(2)); if (e) uxActualizar(e, { etiquetasFab: l }); }
               else updateProyectoInline(String(key).slice(2), { etiquetasFab: l });
             }}
+            etiquetasSinObra={etiquetasSinObra}
+            onGuardarSinObra={guardarLoteSinObra}
+            onBorrarSinObra={borrarLoteSinObra}
             onSaveConfigPlanning={(pl) => saveConfigVentanas({ ...configVentanas, planning: pl })}
             onGuardarHorasPlanning={(r, horas) => {
               if (r.tipo === "proyecto") updateProyectoInline(r.id, { horasFabricacion: horas });
@@ -14513,7 +14525,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra}) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("listo");
@@ -14674,7 +14686,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       </div>
 
       {tab === "caballetes" && (
-        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
+        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
 
@@ -29927,11 +29939,12 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
-function indicePiezasFab(proyectos, uxExpedientes) {
+function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
   const m = new Map();
   const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz }))));
   toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "" }, pr.etiquetasFab));
   toArray(uxExpedientes).forEach((e) => meter({ key: `u-${e.id}`, tipo: "u", id: e.id, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, clienteId: "", direccion: "" }, e.etiquetasFab));
+  toArray(sinObra).forEach((l) => meter({ key: `s-${l.fab}`, tipo: "s", id: l.fab, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, clienteId: "", direccion: "" }, [l]));
   return m;
 }
 // Mete los lotes recién leídos en los que ya tenía la obra (si el lote ya estaba, lo sustituye)
@@ -29997,20 +30010,22 @@ function imprimirEtiquetasCaballetes(lista) {
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
-// Subida del PDF de etiquetas desde el propio Almacén de ventanas: se lee, se propone la obra
-// por el nº de expediente del PDF (si coincide con una sola) y se guarda en ella.
-function SubirEtiquetasAlmacen({ obras, lotesDe, onGuardar }) {
+// Subida del PDF de etiquetas desde el propio Almacén de ventanas. Se puede guardar en una obra
+// o SIN obra (cuando todavía no está en el CRM) y asignarla después. Aquí también se ven y se borran todos los lotes.
+function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, onAsignar }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [pend, setPend] = useState(null); // { r, archivo, obraKey }
+  const [selAsignar, setSelAsignar] = useState({});
   const inputRef = useRef(null);
-  const conEtiquetas = obras.filter((o) => toArray(lotesDe(o.key)).length > 0);
-  const [ver, setVer] = useState(conEtiquetas.length === 0);
+  const total = toArray(sinObra).length + lotesTodos.reduce((a, x) => a + x.lotes.length, 0);
+  const [ver, setVer] = useState(total === 0);
   const sugerir = (exp) => {
     if (!exp) return "";
     const c = obras.filter((o) => o.nombre.startsWith(`#${exp} `) || o.nombre === `Uxcar exp. ${exp}`);
     return c.length === 1 ? c[0].key : "";
   };
+  const nVent = (l) => toArray(l.ventanas).length;
   const leer = async (file) => {
     if (!file) return;
     setLeyendo(true); setAviso("Leyendo el PDF…"); setPend(null);
@@ -30022,53 +30037,71 @@ function SubirEtiquetasAlmacen({ obras, lotesDe, onGuardar }) {
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
-  const guardar = () => {
-    if (!pend || !pend.obraKey) return;
-    onGuardar(pend.obraKey, mezclarLotesFab(lotesDe(pend.obraKey), pend.r, pend.archivo));
-    const o = obras.find((x) => x.key === pend.obraKey);
-    setAviso(`Guardado en ${o ? o.nombre : "la obra"}: ${pend.r.etiquetas} etiquetas de ${pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.`);
+  const guardar = (obraKey) => {
+    if (!pend) return;
+    if (!onSubir(obraKey, pend.r, pend.archivo)) return;
+    const o = obras.find((x) => x.key === obraKey);
+    setAviso(`Guardado ${o ? `en ${o.nombre}` : "SIN obra"}: ${pend.r.etiquetas} etiquetas de ${pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.${o ? "" : " Cuando la obra esté en el CRM, la asignas aquí abajo."}`);
     setPend(null);
   };
-  const quitar = (o, fab) => {
-    if (!window.confirm(`¿Quitar las etiquetas del lote ${fab} de ${o.nombre}? Las ventanas que ya estén en caballetes se quedan donde están.`)) return;
-    onGuardar(o.key, toArray(lotesDe(o.key)).filter((l) => l.fab !== fab));
+  const quitar = (key, nombre, fab) => {
+    if (!window.confirm(`¿Quitar las etiquetas del lote ${fab} (${nombre})? Las ventanas que ya estén en caballetes se quedan donde están, pero la pistola dejará de reconocer ese lote.`)) return;
+    onQuitar(key, fab);
   };
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => setVer(!ver)} className="text-sm font-semibold text-slate-700 hover:underline">{ver ? "▾" : "▸"} Etiquetas de fabricación (PDF de la línea)</button>
-        <span className="text-xs text-slate-500">{conEtiquetas.length ? `${conEtiquetas.length} obra${conEtiquetas.length === 1 ? "" : "s"} con etiquetas cargadas` : "Todavía no hay ninguna: sube el PDF para que la pistola reconozca las ventanas."}</span>
+        <span className="text-xs text-slate-500">{total ? `${total} lote${total === 1 ? "" : "s"} cargado${total === 1 ? "" : "s"}${toArray(sinObra).length ? ` · ${toArray(sinObra).length} sin obra` : ""}` : "Todavía no hay ninguno: sube el PDF para que la pistola reconozca las ventanas."}</span>
       </div>
       {ver && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { leer(e.target.files && e.target.files[0]); e.target.value = ""; }} />
             <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir PDF de etiquetas"}
             </button>
-            <span className="text-xs text-slate-500">Se puede subir aquí sin entrar en el proyecto ni en el expediente de Uxcar.</span>
+            <span className="text-xs text-slate-500">Se puede subir sin obra y asignarla después.</span>
           </div>
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
           {pend && (
             <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
               <div className="text-sm text-slate-800">PDF <b>{pend.archivo}</b>: {pend.r.etiquetas} etiquetas · {pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas · lote {pend.r.lotes.map((l) => l.fab).join(", ")}{pend.r.lotes[0].expediente ? ` · expediente ${pend.r.lotes[0].expediente}` : ""}</div>
               <div className="flex flex-wrap items-center gap-2">
-                <select value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[240px] flex-1">
-                  <option value="">— ¿De qué obra o expediente es? —</option>
+                <button onClick={() => guardar("")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar SIN obra (la asigno luego)</button>
+                <span className="text-xs text-slate-500">o</span>
+                <select value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
+                  <option value="">— Guardar directamente en una obra… —</option>
                   {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
                 </select>
-                <button onClick={guardar} disabled={!pend.obraKey} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold disabled:opacity-50">Guardar en esa obra</button>
+                <button onClick={() => guardar(pend.obraKey)} disabled={!pend.obraKey} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white disabled:opacity-50">Guardar en esa obra</button>
                 <button onClick={() => setPend(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
               </div>
-              {!pend.obraKey && <div className="text-xs text-sky-900">{pend.r.lotes[0].expediente ? `No he podido decidir sola la obra del expediente ${pend.r.lotes[0].expediente} (no hay una única coincidencia): elígela.` : "Elige la obra."}</div>}
             </div>
           )}
-          {conEtiquetas.length > 0 && (
+          {toArray(sinObra).length > 0 && (
+            <div className="rounded-md border border-amber-300 bg-amber-50/60 p-2 space-y-1.5">
+              <div className="text-xs font-semibold text-amber-900">Sin obra asignada · las ventanas que escanees van a caballetes "Sin asignar" hasta que elijas la obra</div>
+              {toArray(sinObra).map((l) => (
+                <div key={l.fab} className="flex flex-wrap items-center gap-2 text-xs">
+                  <b className="text-slate-800">Lote {l.fab}</b><span className="text-slate-600">{nVent(l)} ventanas/puertas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <select value={selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente)} onChange={(e) => setSelAsignar({ ...selAsignar, [l.fab]: e.target.value })} className="ml-auto text-xs border border-slate-300 rounded px-1.5 py-1 bg-white min-w-[180px]">
+                    <option value="">— Asignar a la obra… —</option>
+                    {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
+                  </select>
+                  <button onClick={() => { const k = selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente); if (k) onAsignar(l.fab, k); }} disabled={!(selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded font-semibold disabled:opacity-50">Asignar</button>
+                  <button onClick={() => quitar(`s-${l.fab}`, "sin obra", l.fab)} className="text-rose-600 hover:underline">Quitar</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {lotesTodos.length > 0 && (
             <div className="text-xs text-slate-600 space-y-1">
-              {conEtiquetas.map((o) => toArray(lotesDe(o.key)).map((l) => (
+              <div className="font-semibold text-slate-700">Asignados a una obra</div>
+              {lotesTodos.map((o) => o.lotes.map((l) => (
                 <div key={o.key + l.fab} className="flex flex-wrap items-center gap-x-3">
-                  <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {toArray(l.ventanas).length} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
-                  <button onClick={() => quitar(o, l.fab)} className="text-rose-600 hover:underline">Quitar</button>
+                  <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {nVent(l)} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <button onClick={() => quitar(o.key, o.nombre, l.fab)} className="text-rose-600 hover:underline">Quitar</button>
                 </div>
               )))}
             </div>
@@ -30474,7 +30507,7 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
 
-function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
   const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
@@ -30490,13 +30523,16 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const [avisoScan, setAvisoScan] = useState("");
   const [okScan, setOkScan] = useState("");
   const inputScanRef = useRef(null);
-  const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes), [proyectos, uxExpedientes]);
+  const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, etiquetasSinObra), [proyectos, uxExpedientes, etiquetasSinObra]);
   const capC0 = capacidadCaballetes(config);
   const [ventanaEsc, setVentanaEsc] = useState(null); // última ventana leída con la pistola
   const [prepObra, setPrepObra] = useState("");
   const [prepN, setPrepN] = useState("");
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
-  const cabsAhora = () => toArray(caballetes).map((c) => overlayCab.current.get(c.id) || c);
+  const cabsAhora = () => {
+    const base = toArray(caballetes); const ids = new Set(base.map((c) => c.id));
+    return [...base.map((c) => overlayCab.current.get(c.id) || c), ...[...overlayCab.current.values()].filter((c) => !ids.has(c.id))];
+  };
   const guardarCab = (c) => { overlayCab.current.set(c.id, c); setTimeout(() => overlayCab.current.delete(c.id), 6000); onGuardar(c); };
   const volverAEscanear = () => setTimeout(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); if (inputScanRef.current) inputScanRef.current.focus(); }, 60);
   // Si el foco se pierde (se pulsó fuera), la pistola escribiría en el vacío: se recupera la caja al teclear
@@ -30533,11 +30569,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     }),
     ...toArray(uxExpedientes).filter((e) => e.estado !== "entregado").map((e) => ({ key: `u-${e.id}`, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, cliente: "Uxcar", direccion: "", recuento: toArray(e.recuento) })),
   ];
-  const nuevo = () => {
-    const n = lista.reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
+  const crearCaballete = (motivo) => {
+    const n = cabsAhora().reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
     const alm = almacenSel || almacenes[0].id;
-    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: `Alta en ${nombreAlmacen(alm)}` }] };
-    onGuardar(cab);
+    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: motivo || `Alta en ${nombreAlmacen(alm)}` }] };
+    guardarCab(cab);
+    return cab;
+  };
+  const nuevo = () => {
+    const cab = crearCaballete();
     // Se imprime solo la etiqueta del caballete nuevo (no todas)
     if (confirm(`Caballete ${cab.numero} creado. ¿Imprimir ahora su etiqueta?`)) imprimirYMarcar([cab]);
   };
@@ -30560,6 +30600,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       const que = nv ? `${nv} ventana${nv === 1 ? "" : "s"} escaneada${nv === 1 ? "" : "s"}` : `${nl} línea${nl === 1 ? "" : "s"} de ventanas`;
       if (!confirm(`El caballete ${c.numero} tiene ${que}${c.obra ? ` de ${c.obra.nombre}` : ""}. Si lo borras se pierde esa asignación (habría que volver a asignarlas a otro caballete). ¿Borrarlo?`)) return;
     } else if (!confirm(`¿Borrar el caballete ${c.numero}?`)) return;
+    overlayCab.current.delete(c.id);
     onBorrar(c.id);
     if (ventanaEsc && ventanaEsc.cabId === c.id) setVentanaEsc(null);
     if (escaneadoId === c.id) setEscaneadoId(null);
@@ -30582,6 +30623,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const necesariosObra = (obra) => {
     if (!obra) return 0;
     const capC = capacidadCaballetes(config);
+    if (String(obra.key || "").startsWith("s-")) {
+      const lotSin = toArray(etiquetasSinObra).find((x) => `s-${x.fab}` === obra.key);
+      if (!lotSin) return 0;
+      const huecosPdf = toArray(lotSin.ventanas).reduce((a, v) => a + huecosVentanaFab({ pos: v.pos }, capC), 0);
+      return Math.ceil(huecosPdf / (parseFloat(capC.capacidad) || 12));
+    }
     const pr = proyectos.find((x) => x.id === obra.proyectoId);
     const o = obras.find((x) => x.key === obra.key);
     const ex = String(obra.key || "").startsWith("u-") ? toArray(uxExpedientes).find((e) => `u-${e.id}` === obra.key) : null;
@@ -30595,6 +30642,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
   const hayHueco = (c, w) => huecosCaballeteFab(c, capC0) + huecosVentanaFab(w, capC0) <= capacidadMax;
   const claveObraW = (w) => w.obraKey || `p-${w.proyectoId}`;
   const mismaVentana = (x, w) => x.id === w.id && claveObraW(x) === claveObraW(w);
+  const reservaLibre = (c) => !!(c.reserva && c.reserva.key === "s-libre");
   const reservaEsDe = (c, obra) => !!(c.reserva && (c.reserva.key === obra.key || (obra.proyectoId && c.reserva.proyectoId === obra.proyectoId)));
   const lotesDe = (key) => (String(key).startsWith("u-") ? (toArray(uxExpedientes).find((e) => `u-${e.id}` === key) || {}).etiquetasFab : (toArray(proyectos).find((pr) => `p-${pr.id}` === key) || {}).etiquetasFab);
   const natNum = (a, b) => String(a.numero).localeCompare(String(b.numero), "es", { numeric: true });
@@ -30633,13 +30681,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     .sort(natNum);
   const textoOpcion = (c, w, obra) => {
     const libre = (c.estado || "libre") === "libre";
-    const resOtra = libre && c.reserva && !reservaEsDe(c, obra);
-    return `${c.numero} · ${libre ? (c.reserva && !resOtra ? "reservado para esta obra" : "libre") : "con ventanas de esta obra"}${resOtra ? ` · reservado para ${c.reserva.nombre}` : ""}${!hayHueco(c, w) ? " · lleno" : ""}`;
+    const resOtra = libre && c.reserva && !reservaEsDe(c, obra) && !reservaLibre(c);
+    return `${c.numero} · ${libre ? (reservaLibre(c) ? "reservado sin proyecto" : c.reserva && !resOtra ? "reservado para esta obra" : "libre") : "con ventanas de esta obra"}${resOtra ? ` · reservado para ${c.reserva.nombre}` : ""}${!hayHueco(c, w) ? " · lleno" : ""}`;
   };
   const cambiarCaballete = (w, obra, destinoId) => {
     const dest = cabsAhora().find((c) => c.id === destinoId);
     if (!dest) return false;
-    if ((dest.estado || "libre") === "libre" && dest.reserva && !reservaEsDe(dest, obra) && !confirm(`${dest.numero} está reservado para ${dest.reserva.nombre}. ¿Meter aquí esta ventana igualmente?`)) return false;
+    if ((dest.estado || "libre") === "libre" && dest.reserva && !reservaEsDe(dest, obra) && !reservaLibre(dest) && !confirm(`${dest.numero} está reservado para ${dest.reserva.nombre}. ¿Meter aquí esta ventana igualmente?`)) return false;
     if (!hayHueco(dest, w) && !confirm(`${dest.numero} ya está lleno (caben ${capacidadMax} huecos). ¿Meter la ventana igualmente?`)) return false;
     return colocarVentana(w, obra, destinoId);
   };
@@ -30650,7 +30698,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       .sort((a, b) => String(b.ultimaVentana || "").localeCompare(String(a.ultimaVentana || "")) || natNum(a, b));
     if (cargados.length) return cargados[0];
     const reservados = todos.filter((c) => (c.estado || "libre") === "libre" && reservaEsDe(c, obra)).sort(natNum);
-    return reservados[0] || null;
+    if (reservados[0]) return reservados[0];
+    // Reservados "sin proyecto": valen para cualquier obra o lote que aún no tenga los suyos
+    const genericos = todos.filter((c) => (c.estado || "libre") === "libre" && reservaLibre(c)).sort(natNum);
+    if (genericos[0]) return genericos[0];
+    // Sin reservas: el primer caballete libre que nadie ha reservado (si no queda ninguno, se crea uno al escanear)
+    const principal = almacenes[0].id;
+    return todos.filter((c) => (c.estado || "libre") === "libre" && !c.reserva)
+      .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b))[0] || null;
   };
   const escanearPieza = (cod) => {
     setCodigo(""); setEscaneadoId(null); setOkScan("");
@@ -30674,12 +30729,24 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       const obra = obraDeDueno(dueno);
       const sug = caballeteSugerido(obra, w);
       if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); }
-      else setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: null, nueva: true });
+      else {
+        const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al escanear ${w.pos}`);
+        colocarVentana(w, obra, creado.id);
+        setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: creado.id, nueva: true, creado: true });
+      }
     }
     volverAEscanear();
   };
   // Panel "preparar obra": se elige la obra y cuántos caballetes lleva; se reservan libres para ella
-  const obraPrep = obras.find((x) => x.key === prepObra) || null;
+  const obrasPrep = [
+    { key: "s-libre", proyectoId: "", nombre: "SIN PROYECTO (no vinculado a nada)", cliente: "", direccion: "", recuento: [] },
+    ...toArray(etiquetasSinObra).map((l) => ({ key: `s-${l.fab}`, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, cliente: `${toArray(l.ventanas).length} ventanas/puertas del PDF`, direccion: "", recuento: [] })),
+    ...obras,
+  ];
+  const obraPrep = obrasPrep.find((x) => x.key === prepObra) || null;
+  const obraPrepLimpia = obraPrep ? { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: String(obraPrep.key).startsWith("s-") ? "" : (obraPrep.cliente || ""), direccion: obraPrep.direccion || "" } : null;
+  const lotesPrepDe = (key) => (String(key).startsWith("s-") ? toArray(etiquetasSinObra).filter((l) => `s-${l.fab}` === key) : toArray(lotesDe(key)));
+  const ventanasPrep = obraPrep ? lotesPrepDe(obraPrep.key).flatMap((l) => toArray(l.ventanas).map((v) => ({ v, fab: l.fab }))) : [];
   const reservadosPrep = obraPrep ? cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === obraPrep.key) : [];
   const cargadosPrep = obraPrep ? cabsAhora().filter((c) => c.estado === "cargado" && c.obra && (c.obra.key === obraPrep.key || (obraPrep.proyectoId && c.obra.proyectoId === obraPrep.proyectoId))) : [];
   const reservarParaObra = () => {
@@ -30692,10 +30759,72 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
     const libres = cabsAhora().filter((c) => (c.estado || "libre") === "libre" && !c.reserva && (!almacenSel || almacenDe(c) === almacenSel))
       .sort((a, b) => ((almacenDe(a) === principal ? 0 : 1) - (almacenDe(b) === principal ? 0 : 1)) || natNum(a, b));
     const toma = libres.slice(0, faltan);
-    toma.forEach((c) => guardarCab({ ...c, reserva: { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: obraPrep.cliente, direccion: obraPrep.direccion, fecha: hoy }, historial: hist(c, `Reservado para ${obraPrep.nombre}`) }));
+    toma.forEach((c) => guardarCab({ ...c, reserva: { key: obraPrep.key, proyectoId: obraPrep.proyectoId || "", nombre: obraPrep.nombre, cliente: obraPrepLimpia.cliente, direccion: obraPrep.direccion || "", fecha: hoy }, historial: hist(c, `Reservado para ${obraPrep.nombre}`) }));
     if (toma.length < faltan) alert(`Solo hay ${toma.length} caballetes libres sin reservar: faltan ${faltan - toma.length}. Reclama los que están fuera o da de alta más.`);
   };
   const quitarReservasPrep = () => reservadosPrep.forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${obraPrep.nombre}`) }));
+  // ---- Lotes de etiquetas: asignados a una obra o sin obra ----
+  const obraSin = (fab) => ({ key: `s-${fab}`, proyectoId: "", nombre: `Sin asignar · lote ${fab}`, cliente: "", direccion: "" });
+  const lotesTodos = [
+    ...toArray(proyectos).filter((pr) => toArray(pr.etiquetasFab).length).map((pr) => ({ key: `p-${pr.id}`, nombre: `#${pr.numero} ${pr.nombre}`, lotes: toArray(pr.etiquetasFab) })),
+    ...toArray(uxExpedientes).filter((e) => toArray(e.etiquetasFab).length).map((e) => ({ key: `u-${e.id}`, nombre: `Uxcar exp. ${e.numero}`, lotes: toArray(e.etiquetasFab) })),
+  ];
+  const dondeEstaLote = (fab) => {
+    if (toArray(etiquetasSinObra).some((l) => l.fab === fab)) return { key: `s-${fab}`, nombre: "sin asignar" };
+    const t = lotesTodos.find((x) => x.lotes.some((l) => l.fab === fab));
+    return t ? { key: t.key, nombre: t.nombre } : null;
+  };
+  const quitarLote = (key, fab) => {
+    if (String(key).startsWith("s-")) {
+      if (onBorrarSinObra) onBorrarSinObra(fab);
+      cabsAhora().filter((c) => (c.estado || "libre") === "libre" && c.reserva && c.reserva.key === key).forEach((c) => guardarCab({ ...c, reserva: null, historial: hist(c, `Quitada la reserva de ${c.reserva.nombre}`) }));
+    }
+    else onGuardarEtiquetasObra(key, toArray(lotesDe(key)).filter((l) => l.fab !== fab));
+  };
+  // Las ventanas de ese lote que ya estén en caballetes pasan a la obra nueva (o a "sin asignar")
+  const relinkarLote = (fab, obraNueva) => {
+    if (obraNueva.key !== `s-${fab}`) {
+      const nuevaRes = (r) => ({ key: obraNueva.key, proyectoId: obraNueva.proyectoId || "", nombre: obraNueva.nombre, cliente: obraNueva.cliente || "", direccion: obraNueva.direccion || "", fecha: (r && r.fecha) || hoy });
+      cabsAhora().forEach((c) => {
+        const a = c.reserva && c.reserva.key === `s-${fab}`, b = c.reservaPrevia && c.reservaPrevia.key === `s-${fab}`;
+        if (!a && !b) return;
+        guardarCab({ ...c, ...(a ? { reserva: nuevaRes(c.reserva) } : {}), ...(b ? { reservaPrevia: nuevaRes(c.reservaPrevia) } : {}), historial: hist(c, `Reserva: lote ${fab} → ${obraNueva.nombre}`) });
+      });
+    }
+    cabsAhora().forEach((c) => {
+      const vs = toArray(c.ventanas);
+      if (!vs.some((w) => w.fab === fab && claveObraW(w) !== obraNueva.key)) return;
+      const viejas = new Set(vs.filter((w) => w.fab === fab).map(claveObraW));
+      const todasDelLote = vs.every((w) => w.fab === fab);
+      let c2 = { ...c, ventanas: vs.map((w) => (w.fab === fab ? { ...w, obraKey: obraNueva.key, proyectoId: obraNueva.proyectoId || "" } : w)), historial: hist(c, `Lote ${fab} → ${obraNueva.nombre}`) };
+      if (todasDelLote && c.obra && viejas.has(c.obra.key)) c2 = { ...c2, obra: { key: obraNueva.key, proyectoId: obraNueva.proyectoId || "", nombre: obraNueva.nombre, cliente: obraNueva.cliente || "", direccion: obraNueva.direccion || "" } };
+      guardarCab(c2);
+    });
+  };
+  // Guarda lo leído del PDF en una obra ("" = sin obra). Si el lote ya estaba en otro sitio se mueve (si no, la pistola solo reconocería uno).
+  const subirLotes = (obraKey, r, archivo) => {
+    const destinoObra = obraKey ? obras.find((x) => x.key === obraKey) : null;
+    if (obraKey && !destinoObra) return false;
+    for (const lote of r.lotes) {
+      const ya = dondeEstaLote(lote.fab);
+      const destinoKey = obraKey || `s-${lote.fab}`;
+      if (ya && ya.key !== destinoKey && !confirm(`El lote ${lote.fab} ya estaba cargado (${ya.nombre}). ¿Moverlo a ${destinoObra ? destinoObra.nombre : "sin asignar"}? Se quita de donde estaba.`)) return false;
+    }
+    r.lotes.forEach((lote) => { const ya = dondeEstaLote(lote.fab); if (ya && ya.key !== (obraKey || `s-${lote.fab}`)) quitarLote(ya.key, lote.fab); });
+    const hoyL = new Date().toISOString().slice(0, 10);
+    if (destinoObra) onGuardarEtiquetasObra(destinoObra.key, mezclarLotesFab(lotesDe(destinoObra.key), r, archivo));
+    else r.lotes.forEach((l) => onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoyL, ventanas: l.ventanas }))));
+    r.lotes.forEach((l) => relinkarLote(l.fab, destinoObra || obraSin(l.fab)));
+    return true;
+  };
+  const asignarSinObra = (fab, obraKey) => {
+    const l = toArray(etiquetasSinObra).find((x) => x.fab === fab);
+    const o = obras.find((x) => x.key === obraKey);
+    if (!l || !o) return;
+    onGuardarEtiquetasObra(o.key, mezclarLotesFab(lotesDe(o.key), { lotes: [l] }, l.archivo));
+    onBorrarSinObra(fab);
+    relinkarLote(fab, o);
+  };
   const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
   if (editando) {
@@ -30851,6 +30980,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
             ) : (
               <div className="text-sm font-semibold text-amber-900">⚠ No hay ningún caballete reservado con hueco para esta obra. Elige uno (la ventana aún no está asignada):</div>
             )}
+            {ve.creado && cab && cab.etiquetaPendiente && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md bg-amber-100 border border-amber-300 px-2 py-1.5 text-sm text-amber-900">
+                <span>No quedaban caballetes libres: se ha <b>creado {cab.numero}</b> automáticamente. Imprime su etiqueta y pégala en el caballete.</span>
+                <button onClick={() => imprimirYMarcar([cab])} className="ml-auto flex items-center gap-1 font-semibold underline"><Printer size={13} /> Imprimir su etiqueta</button>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <select value="" onChange={(e) => { const id = e.target.value; if (!id) return; if (cambiarCaballete(wAct, obra, id)) setVentanaEsc({ ...ve, cabId: id, w: { ...wAct } }); volverAEscanear(); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
                 <option value="">{cab ? "Cambiar de caballete…" : "Elegir caballete…"}</option>
@@ -30864,9 +30999,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="text-sm font-semibold text-slate-700">Preparar caballetes de una obra</div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={prepObra} onChange={(e) => { const o = obras.find((x) => x.key === e.target.value); setPrepObra(e.target.value); setPrepN(o ? String(necesariosObra(o) || "") : ""); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
-            <option value="">— Elige la obra o expediente que toca —</option>
-            {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
+          <select value={prepObra} onChange={(e) => { const o = obrasPrep.find((x) => x.key === e.target.value); setPrepObra(e.target.value); setPrepN(o ? String(necesariosObra(o) || "") : ""); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
+            <option value="">— Elige la obra, expediente o "Sin asignar" —</option>
+            {obrasPrep.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
           </select>
           <input type="number" min="1" value={prepN} onChange={(e) => setPrepN(e.target.value)} placeholder="Nº caballetes" className="w-32 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
           <button onClick={reservarParaObra} disabled={!obraPrep} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold disabled:opacity-50">Reservar caballetes</button>
@@ -30875,12 +31010,41 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, caballetes, proyectos, client
           <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-3">
             <span>Reservados: <b>{reservadosPrep.length ? reservadosPrep.map((c) => c.numero).join(", ") : "ninguno"}</b></span>
             <span>Con ventanas: <b>{cargadosPrep.length ? cargadosPrep.map((c) => c.numero).join(", ") : "ninguno"}</b></span>
-            {necesariosObra(obraPrep) > 0 && <span>Según su recuento necesita {necesariosObra(obraPrep)}.</span>}
+            {necesariosObra(obraPrep) > 0 && <span>Necesita {necesariosObra(obraPrep)} caballete{necesariosObra(obraPrep) === 1 ? "" : "s"} ({String(obraPrep.key).startsWith("s-") ? "según el PDF" : "según su recuento"}).</span>}
             {reservadosPrep.length > 0 && <button onClick={() => { if (confirm(`¿Quitar las ${reservadosPrep.length} reservas de ${obraPrep.nombre}?`)) quitarReservasPrep(); }} className="text-rose-600 hover:underline">Quitar reservas</button>}
           </div>
         )}
+        {obraPrep && obraPrep.key === "s-libre" && <div className="text-xs text-slate-500">Reserva caballetes sin vincularlos a ninguna obra. Cuando salgan ventanas de la línea y pases la pistola, se meten en ellos; luego ya se asignan a su obra.</div>}
+        {obraPrep && ventanasPrep.length > 0 && (() => {
+          const todos = cabsAhora();
+          const filas = ventanasPrep.map(({ v, fab }) => {
+            const wBase = { id: v.id, pos: v.pos, num: v.num, fab, color: v.color || "", obraKey: obraPrep.key, proyectoId: obraPrep.proyectoId || "", total: toArray(v.piezas).length, escaneadas: [] };
+            const cabW = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, wBase)));
+            const wReal = cabW ? toArray(cabW.ventanas).find((x) => mismaVentana(x, wBase)) : wBase;
+            return { wBase, cabW, wReal };
+          });
+          const sinColocar = filas.filter((f) => !f.cabW).length;
+          return (
+            <details open className="border border-slate-200 rounded-md">
+              <summary className="px-2 py-1.5 text-xs font-semibold text-slate-700 cursor-pointer">Repartir las ventanas a mano · {filas.length} en total · {sinColocar} sin caballete</summary>
+              <div className="px-2 pb-2 grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-1">
+                {filas.map(({ wBase, cabW, wReal }) => (
+                  <div key={wBase.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                    <b className="text-slate-900">{wBase.pos}</b>
+                    <span className="text-slate-500">nº {wBase.num}{wBase.color ? ` · ${wBase.color}` : ""}</span>
+                    <span className={cabW ? "text-emerald-700 font-semibold" : "text-amber-700"}>{cabW ? `en ${cabW.numero}` : "sin caballete"}</span>
+                    <select value="" onChange={(e) => { if (e.target.value) cambiarCaballete(wReal, obraPrepLimpia, e.target.value); volverAEscanear(); }} className="ml-auto text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white">
+                      <option value="">{cabW ? "Mover a…" : "Meter en…"}</option>
+                      {opcionesDestino(obraPrepLimpia, cabW ? cabW.id : null).map((c) => <option key={c.id} value={c.id}>{textoOpcion(c, wBase, obraPrepLimpia)}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </details>
+          );
+        })()}
       </div>
-      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesDe={lotesDe} onGuardar={onGuardarEtiquetasObra} />}
+      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={quitarLote} onAsignar={asignarSinObra} />}
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
         <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
