@@ -4860,6 +4860,8 @@ export default function App() {
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
               saveCristales([...altas, ...cristales.map((c) => (fusiones && fusiones[c.id] ? { ...c, ...fusiones[c.id] } : c))]);
             },
+            pinReorganizarHash: (configVentanas && configVentanas.pinReorganizarHash) || "",
+            esAdmin: isAdmin,
             huecosTrabajo: (configVentanas && configVentanas.huecosTrabajoCristales) || 6,
             setHuecosTrabajo: (n) => saveConfigVentanas({ ...(configVentanas || {}), huecosTrabajoCristales: Math.max(1, Math.min(60, n)) }),
             actualizarPiezasLote: (cambios) => saveCristales(aplicarCambiosPiezas(cristales, cambios)),
@@ -5041,6 +5043,8 @@ export default function App() {
             onUpsert={upsertUsuario}
             onDelete={deleteUsuario}
             onEnviarCambioPassword={enviarCambioPassword}
+            pinReorganizarHash={(configVentanas && configVentanas.pinReorganizarHash) || ""}
+            onGuardarPinReorganizar={(h) => saveConfigVentanas({ ...(configVentanas || {}), pinReorganizarHash: h })}
           />
         )}
       </TarifasVentanasCtx.Provider>
@@ -12069,6 +12073,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
+  const [pidePin, setPidePin] = useState(false);
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
   const [filtros, setFiltros] = useState(FILTROS_CRISTALES_VACIOS);
   const hayFiltro = hayFiltroCristales(filtros);
@@ -12457,11 +12462,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       {subTab === "mapa" && !verReorganizar && (
         <div className="flex justify-end mb-3">
-          <button onClick={() => setVerReorganizar(true)} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
+          <button onClick={() => { if (ctxAlmacen && ctxAlmacen.esAdmin) setVerReorganizar(true); else setPidePin(true); }} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
             <Layers size={14} /> Reorganizar por expediente
           </button>
         </div>
       )}
+      {pidePin && <PinReorganizarModal onOk={() => { setPidePin(false); setVerReorganizar(true); }} onCancelar={() => setPidePin(false)} />}
       {subTab === "mapa" && verReorganizar && (
         <ReorganizarCristalesPanel cristales={cristales} onCerrar={() => setVerReorganizar(false)} />
       )}
@@ -13822,6 +13828,81 @@ function planReorganizarPorExpediente(cristales) {
   return { movimientos, sinResolver };
 }
 
+// PIN para entrar en "Reorganizar por expediente" (evita que se use sin querer). Se guarda solo la huella del PIN.
+// Es una protección contra descuidos, no una seguridad fuerte.
+async function huellaPinReorganizar(pin) {
+  const datos = new TextEncoder().encode("alumavel-reorganizar|" + String(pin));
+  const buf = await crypto.subtle.digest("SHA-256", datos);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function PinReorganizarModal({ onOk, onCancelar }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [trabajando, setTrabajando] = useState(false);
+  const sinPin = !ctx.pinReorganizarHash;
+  const entrar = async () => {
+    setError(""); setTrabajando(true);
+    try {
+      if ((await huellaPinReorganizar(pin)) !== ctx.pinReorganizarHash) { setError("PIN incorrecto."); setTrabajando(false); return; }
+      onOk(); return;
+    } catch (e) { setError("No se pudo comprobar el PIN: " + (e.message || e)); }
+    setTrabajando(false);
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onCancelar}>
+      <div className="bg-white rounded-lg p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-bold text-slate-800 mb-1">{sinPin ? "Reorganizar bloqueado" : "Introduce el PIN"}</h3>
+        {sinPin ? (
+          <>
+            <p className="text-xs text-slate-500 mb-3">Todavía no hay un PIN para reorganizar los caballetes. Pídele al administrador que lo cree en Administración.</p>
+            <button onClick={onCancelar} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">Cerrar</button>
+          </>
+        ) : (
+          <>
+            <p className="text-xs text-slate-500 mb-3">Hace falta para reorganizar los caballetes del mapa.</p>
+            <input type="password" inputMode="numeric" autoComplete="off" autoFocus maxLength={8} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); entrar(); } }} className="w-full border border-slate-300 rounded-md px-3 py-2 text-lg tracking-widest mb-2" />
+            {error && <div className="text-xs text-rose-600 mb-2">{error}</div>}
+            <div className="flex items-center gap-2">
+              <button onClick={entrar} disabled={trabajando || !pin} className="text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-md disabled:opacity-50">Entrar</button>
+              <button onClick={onCancelar} className="text-sm font-semibold text-slate-500 px-3 py-2 rounded-md hover:bg-slate-100">Cancelar</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+// Caja de Administración: el administrador crea, cambia o quita el PIN sin necesitar el anterior
+function PinReorganizarAdmin({ hash, onGuardar }) {
+  const [nuevo, setNuevo] = useState("");
+  const [repetir, setRepetir] = useState("");
+  const [msg, setMsg] = useState("");
+  const guardar = async () => {
+    setMsg("");
+    if (!/^\d{4,8}$/.test(nuevo)) { setMsg("El PIN debe tener entre 4 y 8 cifras."); return; }
+    if (nuevo !== repetir) { setMsg("Los dos PIN no coinciden."); return; }
+    try { onGuardar(await huellaPinReorganizar(nuevo)); setNuevo(""); setRepetir(""); setMsg("PIN guardado."); } catch (e) { setMsg("No se pudo guardar: " + (e.message || e)); }
+  };
+  const quitar = () => {
+    if (!window.confirm("¿Quitar el PIN? Nadie, salvo los administradores, podrá reorganizar los caballetes hasta que crees otro.")) return;
+    onGuardar(""); setMsg("PIN quitado.");
+  };
+  const caja = (v, set, ph) => <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} value={v} onChange={(e) => set(e.target.value.replace(/\D/g, ""))} placeholder={ph} className="border border-slate-300 rounded-md px-3 py-2 text-sm w-40" />;
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <h2 className="font-display font-bold text-slate-800 text-sm mb-1">PIN para reorganizar los caballetes de cristal</h2>
+      <p className="text-xs text-slate-500 mb-3">Protege el botón "Reorganizar por expediente" del almacén de cristales. Los administradores entran siempre sin PIN, así que no se pierde el acceso aunque se olvide. {hash ? <b className="text-emerald-700">Ahora hay un PIN puesto.</b> : <b className="text-amber-700">Ahora no hay PIN: solo los administradores pueden reorganizar.</b>}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        {caja(nuevo, setNuevo, "PIN nuevo")}
+        {caja(repetir, setRepetir, "Repite el PIN")}
+        <button onClick={guardar} disabled={!nuevo} className="text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-md disabled:opacity-50">{hash ? "Cambiar PIN" : "Crear PIN"}</button>
+        {hash && <button onClick={quitar} className="text-sm font-semibold text-rose-600 border border-rose-200 px-3 py-2 rounded-md hover:bg-rose-50">Quitar PIN</button>}
+      </div>
+      {msg && <div className={`text-xs mt-2 ${/guardado|quitado/.test(msg) ? "text-emerald-700" : "text-rose-600"}`}>{msg}</div>}
+    </div>
+  );
+}
 function ReorganizarCristalesPanel({ cristales, onCerrar }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const plan = useMemo(() => planReorganizarPorExpediente(cristales), [cristales]);
@@ -34344,7 +34425,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
   );
 }
 
-function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword }) {
+function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword, pinReorganizarHash, onGuardarPinReorganizar }) {
   const [view, setView] = useState("list");
   const [editId, setEditId] = useState(null);
   const [descargandoBackup, setDescargandoBackup] = useState(false);
@@ -34404,6 +34485,8 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
           <Download size={15} /> {descargandoBackup ? "Descargando..." : "Descargar copia de seguridad ahora"}
         </button>
       </div>
+
+      {onGuardarPinReorganizar && <PinReorganizarAdmin hash={pinReorganizarHash} onGuardar={onGuardarPinReorganizar} />}
 
       {onRestaurarCopia && <RecuperarDesdeCopia datosActuales={datosRecuperables || {}} onRestaurar={onRestaurarCopia} />}
 
