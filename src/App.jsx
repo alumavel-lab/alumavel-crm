@@ -11943,6 +11943,129 @@ function TrabajoCristales({ cristales, filtros }) {
   );
 }
 
+// ---- Escáner de pegatinas de cristal: pasas la pistola, la cámara o una foto por la pegatina y te dice en qué caballete está ----
+// Busca lo leído (caballete, pedido, expediente, vivienda, medida) entre los cristales que NO están ya puestos.
+// Si no hay coincidencia clara no enseña "el más parecido": un cristal equivocado es peor que no encontrarlo.
+function buscarPegatinaCristal(cristales, d) {
+  const num = (x) => parseInt(String(x ?? "").replace(/\D/g, ""), 10) || 0;
+  const toks = new Set([...String(d.texto || "").split(/[\s,;|:]+/), d.codigo, d.caballete, d.pedido].map((t) => normBusq(t)).filter((t) => t.length >= 3));
+  const exp = normBusq(d.expediente), viv = normBusq(d.vivienda), caba = normBusq(d.caballete);
+  const an = num(d.ancho), al = num(d.alto);
+  const cerca = (a, b) => a && b && Math.abs(a - b) <= 2;
+  const res = [];
+  (cristales || []).forEach((c) => {
+    const lote = normBusq(c.lote);
+    const cabHit = lote.length >= 3 && (toks.has(lote) || caba === lote);
+    const piezas = [];
+    (c.piezas || []).forEach((p, i) => {
+      if (p.puesto) return; // ya colocado en obra: no está en el almacén
+      let score = 0; const motivos = [];
+      const pedido = normBusq(p.pedido);
+      if (pedido.length >= 4 && toks.has(pedido)) { score += 40; motivos.push("pedido"); }
+      const ex = normBusq(p.expediente || c.expediente);
+      if (exp && ex && exp === ex) { score += 20; motivos.push("expediente"); } else if (!exp && ex.length >= 3 && toks.has(ex)) { score += 15; motivos.push("expediente"); }
+      const ref = normBusq(p.ref);
+      if (viv && ref && Math.min(ref.length, viv.length) >= 3 && (ref.includes(viv) || viv.includes(ref))) { score += 20; motivos.push("vivienda"); } else if (!viv && ref.length >= 4 && toks.has(ref)) { score += 20; motivos.push("vivienda"); }
+      const pa = num(p.ancho), pl = num(p.alto);
+      if (an && al && ((cerca(pa, an) && cerca(pl, al)) || (cerca(pa, al) && cerca(pl, an)))) { score += 30; motivos.push("medida"); }
+      if (score > 0 || cabHit) piezas.push({ p, i, score, motivos });
+    });
+    const mejor = piezas.reduce((m, x) => Math.max(m, x.score), 0);
+    const total = (cabHit ? 100 : 0) + mejor;
+    if (total >= 40) res.push({ c, score: total, cabHit, piezas: piezas.sort((a, b) => b.score - a.score).slice(0, 6) });
+  });
+  return res.sort((a, b) => b.score - a.score).slice(0, 6);
+}
+async function leerPegatinaCristalConIA(file) {
+  const dataUrl = await reducirImagenParaIA(file);
+  const base64 = dataUrl.split(",")[1];
+  const prompt = [
+    "Esto es la foto de la pegatina de un cristal (vidrio) de ventana, o de su etiqueta.",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"caballete\":\"\",\"expediente\":\"\",\"vivienda\":\"\",\"ancho\":\"\",\"alto\":\"\",\"pedido\":\"\",\"codigo\":\"\",\"texto\":\"\"}",
+    "- caballete: el número de caballete si aparece. expediente: número de expediente. vivienda: referencia o posición de la vivienda (por ejemplo V03.103 o 2ºB).",
+    "- ancho y alto: medidas en mm, solo cifras. pedido: número de pedido. codigo: las cifras impresas bajo el código de barras.",
+    "- texto: TODO el texto legible de la pegatina en una sola línea.",
+    "- La pegatina puede estar girada o torcida: gira la imagen mentalmente antes de leer. Si hay varias, usa la más cercana al centro.",
+    "- Copia SOLO lo que veas en esta foto. Si no se lee algo con seguridad, déjalo en \"\". NUNCA inventes cifras ni uses datos de ejemplo.",
+  ].join("\n");
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{"); const fin = limpio.lastIndexOf("}");
+  const r = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const t = (x) => String(x || "").trim();
+  return { caballete: t(r.caballete), expediente: t(r.expediente), vivienda: t(r.vivienda), ancho: t(r.ancho), alto: t(r.alto), pedido: t(r.pedido), codigo: t(r.codigo), texto: t(r.texto) };
+}
+function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
+  const [texto, setTexto] = useState("");
+  const [res, setRes] = useState(null);
+  const [leido, setLeido] = useState("");
+  const [camara, setCamara] = useState(false);
+  const [leyendo, setLeyendo] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+  const fotoRef = useRef(null);
+  const buscar = (d, resumen) => { setError(""); setLeido(resumen); setRes(buscarPegatinaCristal(cristales, d)); };
+  const desdeTexto = (t) => { const v = String(t || "").trim(); if (!v) return; buscar({ texto: v }, v); setTexto(""); };
+  const desdeFoto = async (file) => {
+    setLeyendo(true); setError(""); setRes(null);
+    try {
+      const d = await leerPegatinaCristalConIA(file);
+      const partes = [d.caballete && `caballete ${d.caballete}`, d.expediente && `exp. ${d.expediente}`, d.vivienda && `vivienda ${d.vivienda}`, (d.ancho || d.alto) && `${d.ancho}×${d.alto}`, d.pedido && `pedido ${d.pedido}`, d.codigo && `código ${d.codigo}`];
+      const resumen = partes.filter(Boolean).join(" · ");
+      if (!resumen && !d.texto) { setError("No he podido leer nada en la foto. Repítela más cerca, recta y sin reflejos."); }
+      else buscar(d, resumen || d.texto);
+    } catch (e) { setError("No se pudo leer la foto: " + (e.message || e)); }
+    setLeyendo(false);
+  };
+  const lug = (c) => (c.ubicacion ? `zona ${c.ubicacion.zona} · fila ${c.ubicacion.fila} · hueco ${c.ubicacion.hueco}` : "sin ubicar en el mapa");
+  const unico = res && res.length > 0 && res[0].score >= 50 && (res.length === 1 || res[0].score > res[1].score);
+  return (
+    <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">📷 Escanear pegatina del cristal:</span>
+        <input ref={inputRef} value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); desdeTexto(texto); } }} placeholder="Pasa la pistola por la pegatina (o escribe el código) y Enter" className={inputCls + " flex-1 min-w-[220px]"} />
+        <button type="button" onClick={() => desdeTexto(texto)} className="text-sm font-semibold border border-slate-300 bg-white rounded-md px-3 py-1.5 hover:bg-slate-50">Buscar</button>
+        <button type="button" onClick={() => setCamara((v) => !v)} className="text-sm font-semibold text-white rounded-md px-3 py-1.5" style={{ backgroundColor: "#2E8B57" }}>📷 Cámara</button>
+        <button type="button" disabled={leyendo} onClick={() => fotoRef.current && fotoRef.current.click()} className="text-sm font-semibold text-white rounded-md px-3 py-1.5 disabled:opacity-50" style={{ backgroundColor: "#2E8B57" }}>{leyendo ? "Leyendo..." : "📸 Foto pegatina"}</button>
+        <input ref={fotoRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { if (e.target.files && e.target.files[0]) desdeFoto(e.target.files[0]); e.target.value = ""; }} />
+        {res && <button type="button" onClick={() => { setRes(null); setLeido(""); setError(""); }} className="text-xs text-slate-500 hover:underline">Borrar</button>}
+      </div>
+      {camara && <LectorCamara modo="caballete" acepta={() => true} onLeido={(v) => { setCamara(false); desdeTexto(v); }} onCerrar={() => setCamara(false)} />}
+      {error && <div className="text-xs text-rose-600">{error}</div>}
+      {leido && <div className="text-xs text-slate-500">Leído: {leido}</div>}
+      {res && res.length === 0 && <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">No hay ningún cristal sin colocar en el CRM que case con esto. No te enseño el más parecido porque podría ser otro cristal. Comprueba que el packing list de ese expediente está cargado.</div>}
+      {res && res.length > 0 && (
+        <div className="space-y-2">
+          <div className={`text-xs font-semibold ${unico ? "text-emerald-700" : "text-amber-700"}`}>{unico ? "Está en este caballete:" : `Hay ${res.length} posibles, mira cuál es:`}</div>
+          {res.map((r) => (
+            <div key={r.c.id} className={`rounded-md border px-3 py-2 text-xs ${unico && r === res[0] ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white"}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-base font-bold text-slate-900">Caballete {r.c.lote || "s/n"}</span>
+                <span className="text-slate-500">{lug(r.c)}</span>
+                <button type="button" onClick={() => onVerEnMapa(r.c)} className="ml-auto text-[11px] font-semibold border border-slate-300 bg-white rounded px-2 py-0.5 hover:bg-slate-50">Ver en el mapa</button>
+              </div>
+              {r.piezas.slice(0, 5).map((x) => (
+                <div key={x.i} className="mt-0.5 text-slate-600">
+                  <b>{x.p.ref || "—"}</b> · exp. {x.p.expediente || r.c.expediente || "—"} · {x.p.ancho} × {x.p.alto}{enTrabajoPieza(x.p) ? ` · en el almacén de trabajo (hueco ${x.p.trabajo.hueco})` : ""}
+                  {x.motivos.length > 0 && <span className="text-emerald-700"> ✓ {x.motivos.join(", ")}</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
@@ -12189,6 +12312,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         La ubicación se guarda por <b>caballete completo</b> (no por cristal individual). Arriba van los caballetes de Uxcar (3 filas), abajo los de ALUMAVEL (2 filas), 15 huecos por fila.
       </div>
 
+      <EscanerPegatinaCristal cristales={cristales} onVerEnMapa={(c) => setFiltros({ ...FILTROS_CRISTALES_VACIOS, cab: String(c.lote || "") })} />
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <BuscadoresCristales filtros={filtros} setFiltros={setFiltros} />
         <button type="button" onClick={() => inputPackingRef.current?.click()} disabled={leyendoPacking}
@@ -12373,6 +12497,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
       {verDetalle && (
         <DetalleHuecoModal
+          todos={cristales}
           ubicacion={verDetalle}
           cristalesEnHueco={cristales.filter((c) => c.ubicacion && c.ubicacion.zona === verDetalle.zona && c.ubicacion.fila === verDetalle.fila && c.ubicacion.hueco === verDetalle.hueco)}
           onClose={() => setVerDetalle(null)}
@@ -12779,7 +12904,31 @@ function IncidenciaCristal({ pieza, cristal, onGuardar, etiqueta, dondeEsta }) {
 
 // Cristales de un caballete (vienen del packing list en Excel): medida, vivienda/referencia,
 // expediente y un tic para marcar cuando está puesto.
-function PiezasCristalTabla({ cristal, onUpdate }) {
+// Pasa UN cristal (una línea) a otro caballete: escribes su número (o lo eliges de la lista) y pulsas Pasar.
+function MoverPiezaACaballete({ todos, origenId, indice, etiqueta }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const [dest, setDest] = useState("");
+  const idLista = useRef(`cabs-${Math.random().toString(36).slice(2, 8)}`).current;
+  const clave = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+  const lista = toArray(todos).filter((c) => c.id !== origenId && c.lote);
+  const pasar = () => {
+    const d = clave(dest);
+    if (!d) return;
+    const dst = lista.find((c) => clave(c.lote) === d);
+    if (!dst) { alert(`No existe el caballete "${dest}". Escribe el número de uno que ya esté en el almacén de cristales.`); return; }
+    if (!window.confirm(`¿Pasar ${etiqueta || "este cristal"} al caballete ${dst.lote}?`)) return;
+    if (ctx.moverPiezasACaballete) ctx.moverPiezasACaballete([{ origenId, indice }], dst.id);
+    setDest("");
+  };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input list={idLista} value={dest} onChange={(e) => setDest(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); pasar(); } }} placeholder="Caballete…" className="border border-slate-300 rounded px-1.5 py-0.5 text-[11px] w-24 bg-white" />
+      <datalist id={idLista}>{lista.map((c) => <option key={c.id} value={c.lote}>{[c.expediente, c.ubicacion ? "en mapa" : ""].filter(Boolean).join(" · ")}</option>)}</datalist>
+      <button type="button" onClick={pasar} disabled={!dest.trim()} className="text-[11px] font-semibold border border-slate-300 bg-white rounded px-1.5 py-0.5 hover:bg-slate-50 disabled:opacity-40">Pasar</button>
+    </span>
+  );
+}
+function PiezasCristalTabla({ cristal, onUpdate, todos }) {
   const piezas = cristal.piezas || [];
   const [verAnadir, setVerAnadir] = useState(false);
   const [nuevo, setNuevo] = useState({ ref: "", expediente: "", ancho: "", alto: "", cantidad: 1, pedido: "" });
@@ -12836,7 +12985,7 @@ function PiezasCristalTabla({ cristal, onUpdate }) {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th><th className="pr-2"></th></tr></thead>
+            <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th><th className="pr-2">Pasar a otro caballete</th><th className="pr-2"></th></tr></thead>
             <tbody>
               {piezas.map((p, i) => (
                 <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
@@ -12847,6 +12996,7 @@ function PiezasCristalTabla({ cristal, onUpdate }) {
                   <td className="pr-2">{p.cantidad}</td>
                   <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
                   <td className="pr-2 py-1"><IncidenciaCristal pieza={p} cristal={cristal} onGuardar={(cambios) => guardarIncidencia(i, cambios)} /></td>
+                  <td className="pr-2 py-1">{todos ? <MoverPiezaACaballete todos={todos} origenId={cristal.id} indice={i} etiqueta={`el cristal ${p.ref || `${p.ancho}×${p.alto}`}`} /> : null}</td>
                   <td className="pr-2 py-1"><button onClick={() => quitar(i, p)} className="text-slate-300 hover:text-rose-500" title="Quitar de este caballete"><Trash2 size={13} /></button></td>
                 </tr>
               ))}
@@ -12887,7 +13037,7 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-            <th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Vivienda / ref.</th><th className="px-3 py-2">Expediente</th><th className="px-3 py-2">Medida (mm)</th><th className="px-3 py-2">Uds</th><th className="px-3 py-2">Caballete</th><th className="px-3 py-2">Dónde está</th><th className="px-3 py-2">Incidencia / comentario</th>
+            <th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Vivienda / ref.</th><th className="px-3 py-2">Expediente</th><th className="px-3 py-2">Medida (mm)</th><th className="px-3 py-2">Uds</th><th className="px-3 py-2">Caballete</th><th className="px-3 py-2">Dónde está</th><th className="px-3 py-2">Incidencia / comentario</th><th className="px-3 py-2">Pasar a otro caballete</th>
           </tr></thead>
           <tbody>
             {filas.slice(0, 400).map(({ c, p, i }) => (
@@ -12900,9 +13050,10 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
                 <td className="px-3 py-1.5 font-mono-num">{c.lote}</td>
                 <td className="px-3 py-1.5">{c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? <span className="text-sky-700 font-semibold">En {c.enPuesto} <button onClick={() => { if (window.confirm("¿Devolver este caballete al almacén? Quedará en Pendientes de ubicar.")) onUpdate(c.id, { estado: "Pendiente", enPuesto: "", ubicacion: null }); }} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : <span className="text-amber-700">Pendiente de ubicar</span>}</td>
                 <td className="px-3 py-1.5"><IncidenciaCristal pieza={p} cristal={c} onGuardar={(cambios) => guardarIncidencia(c, i, cambios)} /></td>
+                <td className="px-3 py-1.5"><MoverPiezaACaballete todos={cristales} origenId={c.id} indice={i} etiqueta={`el cristal ${p.ref || `${p.ancho}×${p.alto}`}`} /></td>
               </tr>
             ))}
-            {filas.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">No hay cristales con detalle (solo los que vienen de un packing list en Excel).</td></tr>}
+            {filas.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No hay cristales con detalle (solo los que vienen de un packing list en Excel).</td></tr>}
           </tbody>
         </table>
       </div>
@@ -12910,7 +13061,7 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
   );
 }
 
-function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onUpdate }) {
+function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onUpdate, todos }) {
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
   }, [cristalesEnHueco.length]);
@@ -12935,7 +13086,7 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Medida:</b> {cristal.medida || "—"}</p>
                 <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
               </div>
-              {onUpdate && <PiezasCristalTabla cristal={cristal} onUpdate={onUpdate} />}
+              {onUpdate && <PiezasCristalTabla cristal={cristal} onUpdate={onUpdate} todos={todos} />}
               {cristalesEnHueco.length > 1 && (
                 <button
                   onClick={() => { if (window.confirm(`¿Quitar de este caballete el expediente ${cristal.expediente || cristal.lote || ""} (con todos sus cristales)? El expediente queda pendiente de volver a colocar.`)) onLiberar(cristal.id); }}
@@ -30543,16 +30694,17 @@ async function leerEtiquetaVentanaConIA(file) {
   const base64 = dataUrl.split(",")[1];
   const prompt = [
     "Esto es la foto de una etiqueta de fabricación de una ventana de PVC.",
-    "Devuelve SOLO JSON, sin texto ni ```: {\"pos\":\"V02.102\",\"num\":\"6.227\",\"fab\":\"1.239\",\"codigo\":\"001239000237\"}",
-    "- pos, num y fab salen en la primera línea de la etiqueta con el formato POS - NUM -FAB:LOTE (por ejemplo V02.102 - 6.227 -FAB:1.239).",
-    "- codigo son los 12 dígitos impresos justo debajo del código de barras, sin espacios.",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"pos\":\"\",\"num\":\"\",\"fab\":\"\",\"codigo\":\"\"}",
+    "- pos, num y fab salen en la primera línea de la etiqueta con el formato POS - NUM -FAB:LOTE. A veces el lote sale cortado; entonces déjalo en \"\".",
+    "- codigo son los 12 dígitos impresos justo debajo del código de barras (separados por espacios), sin espacios en tu respuesta.",
+    "- La etiqueta puede estar GIRADA 90 grados o torcida: gira la imagen mentalmente antes de leer.",
     "- Si hay varias etiquetas, usa la que esté más cerca del centro de la foto.",
-    "- Si no se lee algún dato con seguridad, déjalo en \"\". No inventes cifras.",
+    "- Copia SOLO lo que veas en esta foto. Si no se lee algún dato con seguridad, déjalo en \"\". NUNCA inventes cifras ni uses datos de ejemplo.",
   ].join("\n");
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 300, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 300, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
   });
   if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
   const data = await response.json();
@@ -30638,6 +30790,36 @@ function imprimirPackingCaballete(c) {
   </body></html>`;
   const w = window.open("", "_blank");
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
+}
+
+// Hoja de preparación: una página por caballete con las ventanas que le tocan (ya puestas ✔ y pendientes ☐).
+// Se puede imprimir ANTES de preparar el caballete, para que quien lo prepara vaya siguiendo la lista en papel.
+function imprimirHojasPreparacion(caballetes) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+  const hojas = toArray(caballetes).map((c) => {
+    const puestas = toArray(c.ventanas).map((w) => ({ ok: true, w, piezas: `${toArray(w.escaneadas).length}/${w.total || "?"}` }));
+    const pend = toArray(c.plan).filter((x) => !toArray(c.ventanas).some((w) => w.id === x.id)).map((w) => ({ ok: false, w, piezas: "" }));
+    const filas = [...puestas, ...pend].sort((a, b) => nat(a.w.grupo || "", b.w.grupo || "") || nat(a.w.pos, b.w.pos));
+    const o = c.obra || c.reserva || {};
+    const clientes = [...new Set(filas.map((f) => f.w.cliente).filter(Boolean))].join(" · ");
+    const td = "border:1px solid #bbb;padding:6px 8px";
+    return `<div style="page-break-after:always;break-after:page;padding:24px;font-family:Arial;font-size:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div><div style="font-size:13px;color:#555">HOJA DE PREPARACIÓN</div><div style="font-size:34px;font-weight:bold">CABALLETE ${esc(c.numero)}</div><div style="margin-top:4px">${esc(o.nombre || "")}</div><div style="font-size:18px;font-weight:bold;margin-top:2px">${esc(clientes)}</div></div>
+        <div style="text-align:right">${svgCode128(codigoCaballete(c), 50, 2)}<div style="font-size:12px">${new Date().toLocaleDateString("es-ES")}</div></div>
+      </div>
+      <table style="width:100%;margin-top:18px;border-collapse:collapse">
+        <tr>${["", "Posición", "Nº", "Lote", "Color", "Vivienda / cliente", "Piezas"].map((h) => `<th style="${td};background:#f1f5f9;text-align:left">${h}</th>`).join("")}</tr>
+        ${filas.map((f) => `<tr><td style="${td};font-size:20px;text-align:center;width:34px">${f.ok ? "✔" : "☐"}</td><td style="${td};font-weight:bold;font-size:16px">${esc(f.w.pos)}</td><td style="${td}">${esc(f.w.num)}</td><td style="${td}">${esc(f.w.fab)}</td><td style="${td}">${esc(f.w.color)}</td><td style="${td}">${esc([f.w.grupo, f.w.cliente ? `(${f.w.cliente})` : ""].filter(Boolean).join(" "))}</td><td style="${td};text-align:right">${esc(f.piezas)}</td></tr>`).join("")}
+      </table>
+      <p style="margin-top:14px;font-size:13px">${filas.filter((f) => f.ok).length} puestas de ${filas.length}. Marca cada ventana al colocarla en el caballete.</p>
+      <div style="display:flex;gap:16px;margin-top:34px"><div style="flex:1;border-top:1px solid #333;padding-top:4px;font-size:11px">Preparado por</div><div style="flex:1;border-top:1px solid #333;padding-top:4px;font-size:11px">Fecha</div></div>
+    </div>`;
+  }).join("");
+  if (!hojas) return;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(`<html><head><meta charset="utf-8"><title>Hojas de preparación</title></head><body style="margin:0">${hojas}</body></html>`); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
 // Cuántas ventanas caben en un caballete y cuántos caballetes necesita cada obra.
@@ -31098,11 +31280,24 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setLeyendoFoto(true); setAvisoScan(""); setOkScan("");
     try {
       const r = await leerEtiquetaVentanaConIA(file);
+      const loteDeCodigo = r.codigo.length === 12 ? String(parseInt(r.codigo.slice(0, 6), 10)) : "";
+      if (r.codigo && r.codigo.length !== 12) r.codigo = ""; // un código que no tiene 12 cifras es una lectura mala
+      if (r.fab && loteDeCodigo && r.fab !== loteDeCodigo && r.fab.length >= 4) r.codigo = ""; // el lote del texto y el del código no cuadran
       let cod = r.codigo && indicePiezas.has(r.codigo) ? r.codigo : null;
+      // Una sola cifra mal leída: si solo hay UN código cargado que difiere en una cifra, se propone ese
+      if (!cod && r.codigo) {
+        const cercanos = [...indicePiezas.keys()].filter((k) => k.slice(0, 6) === r.codigo.slice(0, 6) && [...k].filter((ch, i) => ch !== r.codigo[i]).length === 1);
+        if (cercanos.length === 1) cod = cercanos[0];
+      }
       if (!cod && r.pos && r.num && r.fab) {
         for (const [k, h] of indicePiezas.entries()) { if (String(h.lote.fab) === r.fab && String(h.ventana.pos).toUpperCase() === r.pos && String(h.ventana.num) === r.num) { cod = k; break; } }
       }
-      if (cod) { setUltimaLectura(`foto: ${cod} · ${new Date().toLocaleTimeString("es-ES")}`); escanearPieza(cod); }
+      if (cod) {
+        const h = indicePiezas.get(cod);
+        const quien = h ? `${h.ventana.pos} · nº ${h.ventana.num} · lote ${h.lote.fab}${h.ventana.cliente ? ` · ${h.ventana.cliente}` : ""}` : cod;
+        if (!window.confirm(`Lectura por foto: ${quien} (${cod}).\n¿Es la ventana de tu etiqueta?`)) { setAvisoScan("Lectura cancelada. Repite la foto más de cerca y con la etiqueta recta."); return; }
+        setUltimaLectura(`foto: ${cod} · ${new Date().toLocaleTimeString("es-ES")}`); escanearPieza(cod);
+      }
       else {
         const leido = [r.pos, r.num && `nº ${r.num}`, r.fab && `lote ${r.fab}`, r.codigo].filter(Boolean).join(" · ") || "nada con seguridad";
         const tx = `He leído de la foto: ${leido}. No coincide con ninguna ventana de los PDF subidos. Revisa que el PDF de ese lote esté cargado o repite la foto más de cerca.`;
@@ -31902,6 +32097,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           );
         })()}
       </div>
+      {(() => {
+        const prev = cabsAhora().filter((c) => (c.estado || "libre") !== "fuera" && (toArray(c.plan).length > 0 || toArray(c.ventanas).length > 0)).sort(natNum);
+        return prev.length ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => imprimirHojasPreparacion(prev)} className="flex items-center gap-1 text-sm font-semibold border border-slate-300 bg-white rounded-md px-3 py-1.5 hover:bg-slate-50"><Printer size={14} /> Imprimir hojas de preparación ({prev.length} caballete{prev.length === 1 ? "" : "s"})</button>
+            <span className="text-xs text-slate-500">Una hoja por caballete con las ventanas que le tocan, para preparar siguiendo el papel.</span>
+          </div>
+        ) : null;
+      })()}
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
@@ -32089,6 +32293,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                 <button onClick={() => { if (confirm(`¿Vaciar el caballete ${c.numero} sin que salga (por ejemplo, se descarga aquí)?`)) onGuardar({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], historial: hist(c, "Vaciado en fábrica") }); }} className="text-slate-400 hover:underline">Vaciar</button>
               </>}
               {c.estado === "fuera" && <button onClick={() => { if (confirm(`¿Ha vuelto el caballete ${c.numero}?`)) devolver(c, `Devuelto a ${nombreAlmacen(almacenSel || almacenDe(c))}`); }} className="font-semibold text-[#2E8B57] hover:underline">Devuelto</button>}
+              {c.estado !== "fuera" && (toArray(c.ventanas).length > 0 || toArray(c.plan).length > 0) && <button onClick={() => imprimirHojasPreparacion([c])} className="flex items-center gap-1 font-semibold text-slate-700 hover:underline"><Printer size={12} /> Hoja de preparación</button>}
               {c.estado !== "fuera" && (toArray(c.ventanas).length > 0 || toArray(c.plan).length > 0) && (
                 <select value="" onChange={(e) => { if (e.target.value) juntarCaballete(c, e.target.value); }} className="text-[11px] border border-slate-200 rounded px-1 py-0.5 bg-white text-slate-600">
                   <option value="">Juntar en…</option>
