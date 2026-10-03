@@ -33424,6 +33424,12 @@ function piezasSoldadora(items, hojasOv = {}, pilOv = {}) {
 // Manda las pegatinas de una en una (cada una es su propio trabajo) con una pausa entre ellas. Panel abajo a la derecha con botón Parar.
 function imprimirSecuencia(htmls) {
   const PAUSA_MS = 2500;
+  // Se imprime desde la propia página (no desde un marco oculto): un contenedor que solo se ve al imprimir y el resto de la página oculto.
+  const estilo = document.createElement("style");
+  const cont = document.createElement("div");
+  cont.id = "pegatina-print";
+  document.head.appendChild(estilo);
+  document.body.appendChild(cont);
   const caja = document.createElement("div");
   caja.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;background:#1e293b;color:#fff;padding:12px 14px;border-radius:10px;font:14px Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);display:flex;gap:12px;align-items:center";
   const txt = document.createElement("span");
@@ -33435,26 +33441,31 @@ function imprimirSecuencia(htmls) {
   caja.append(txt, btn);
   document.body.appendChild(caja);
   const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  const limpiar = () => { try { estilo.remove(); cont.remove(); caja.remove(); } catch (e) { /* nada */ } };
   (async () => {
     let hechas = 0;
     for (let i = 0; i < htmls.length && !parar; i++) {
       txt.textContent = `Imprimiendo pegatina ${i + 1} de ${htmls.length}…`;
-      const f = document.createElement("iframe");
-      f.style.cssText = "position:fixed;left:-9999px;top:0;width:300px;height:300px;border:0";
-      await new Promise((res) => { f.onload = res; f.srcdoc = htmls[i]; document.body.appendChild(f); });
-      await espera(250);
-      try { f.contentWindow.focus(); f.contentWindow.print(); hechas += 1; }
-      catch (e) { txt.textContent = "No se pudo imprimir: " + e.message; parar = true; await espera(3000); }
+      try {
+        const doc = new DOMParser().parseFromString(htmls[i], "text/html");
+        const css = (doc.querySelector("style") || { textContent: "" }).textContent;
+        const pagina = (css.match(/@page[^}]*}/) || [""])[0];
+        const resto = css.replace(/@page[^}]*}/, "");
+        estilo.textContent = `${pagina}\n#pegatina-print{display:none}\n@media print{ body > *:not(#pegatina-print){display:none !important} #pegatina-print{display:block !important} ${resto} }`;
+        cont.innerHTML = doc.body.innerHTML;
+        await espera(400);
+        window.print();
+        hechas += 1;
+      } catch (e) { txt.textContent = "No se pudo imprimir: " + e.message; parar = true; await espera(3000); }
       await espera(PAUSA_MS);
-      f.remove();
     }
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
     btn.textContent = "Cerrar";
-    btn.onclick = () => caja.remove();
-    setTimeout(() => { if (caja.parentNode) caja.remove(); }, 8000);
+    btn.onclick = limpiar;
+    cont.innerHTML = "";
+    setTimeout(limpiar, 8000);
   })();
 }
-
 function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}, solo = null) {
   dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
