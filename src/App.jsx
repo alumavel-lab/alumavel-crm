@@ -33424,6 +33424,8 @@ function piezasSoldadora(items, hojasOv = {}, pilOv = {}) {
 // Manda las pegatinas de una en una (cada una es su propio trabajo) con una pausa entre ellas. Panel abajo a la derecha con botón Parar.
 function imprimirSecuencia(htmls) {
   const PAUSA_MS = 4000;
+  // el botón pulsado conserva el foco: la pistola escribe el código + Enter y ese Enter volvería a pulsarlo (imprimiría otra pegatina)
+  try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* nada */ }
   // Se imprime desde la propia página (no desde un marco oculto): un contenedor que solo se ve al imprimir y el resto de la página oculto.
   const estilo = document.createElement("style");
   const cont = document.createElement("div");
