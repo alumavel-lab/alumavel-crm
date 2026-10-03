@@ -15321,6 +15321,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         <div className="space-y-6">
           <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} admin={isAdminFab} />
           <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={isAdminFab} />
+          <ParadasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
           {isAdminFab && <MovimientosCaballetes />}
           {isAdminFab && <LecturasLineaAdmin />}
@@ -30676,7 +30677,10 @@ function agruparCargaMaterial(paginas) {
   const vistos = new Set();
   const mm = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
   let numero = "", ref = "", cliente = "";
+  const bloques = [];
   paginas.forEach((items) => {
+    const tipsPag = [];
+    bloques.push(tipsPag);
     const lineas = items.join("").split("\n").map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
     const todo = lineas.join("\n");
     if (!/CARGA MATERIAL/i.test(todo)) { ignoradas++; return; }
@@ -30685,6 +30689,7 @@ function agruparCargaMaterial(paginas) {
     const mC = todo.match(/Cliente\s*:\s*([^\n]+)/i); if (mC) cliente = mC[1].trim().replace(/^\d+\s*-\s*/, "");
     const idx = [];
     lineas.forEach((l, i) => { if (/^Modelo\s*:/i.test(l)) idx.push(i); });
+    idx.forEach((i, k) => { const fin = k + 1 < idx.length ? idx[k + 1] : lineas.length; tipsPag.push(((lineas.slice(i, fin).join("\n").match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").trim()); });
     const fab = numero.replace(/\D/g, "");
     const mE = ref.match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*(.*)$/i);
     const exp = mE ? mE[1] : fab; // sin "EXP nnn" en la referencia (p. ej. "PVC 5 ventanas madera") se usa el número del pedido
@@ -30717,7 +30722,7 @@ function agruparCargaMaterial(paginas) {
         const id = `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
         let lote = lotes.get(fab);
         if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
-        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, piezas: [{ c: code, t: "Ventana" }] });
+        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, piezas: [{ c: code, t: "Ventana" }] });
         etiquetas++;
       }
     });
@@ -30725,8 +30730,84 @@ function agruparCargaMaterial(paginas) {
   const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
   return {
     lotes: [...lotes.values()].map((l) => ({ fab: l.fab, expediente: l.expediente, ventanas: [...l.ventanas.values()].sort((a, b) => nat(a.grupo, b.grupo) || nat(a.pos, b.pos)) })),
-    etiquetas, ignoradas, repetidas, persianas, modelo: true, carga: true,
+    etiquetas, ignoradas, repetidas, persianas, modelo: true, carga: true, bloques,
   };
+}
+// ---- Dibujos de las ventanas (se recortan del PDF de carga de material y se guardan aparte, por lote) ----
+const guardarLinea = (ruta, valor) => fbSet(ref(fbDb, ruta), valor).catch((e) => alert(`No se pudo guardar (${ruta.split("/")[0]}): ${(e && e.message) || e}. Si pone "permission denied", hay que abrir esa ruta en las reglas de Firebase.`));
+const claveDibujo = (tip) => String(tip || "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+// Calcula el recuadro de cada dibujo: desde debajo de "Medidas" hasta la primera línea "Vid"/"Tap" de su columna.
+// items: [{ s, x, y, h }] en puntos PDF (y hacia arriba). Devuelve rectángulos con el origen arriba a la izquierda.
+function rectDibujosCarga(items, tips, alturaPagina, x0Pagina = 0) {
+  const modelos = items.filter((i) => /^Modelo\s*:?/i.test(i.s));
+  if (!modelos.length || modelos.length !== tips.length) return [];
+  const out = [];
+  modelos.forEach((m, k) => {
+    const clave = claveDibujo(tips[k]);
+    if (!clave) return;
+    const col = items.filter((i) => Math.abs(i.x - m.x) <= 4 && i.y < m.y);
+    const med = col.filter((i) => /^Medidas/i.test(i.s)).sort((a, b) => b.y - a.y)[0];
+    if (!med) return;
+    const yMed = med.y - med.h * 0.25;
+    const bajo = col.filter((i) => /^(Vid|Tap)\b/i.test(i.s) && i.y < yMed).sort((a, b) => b.y - a.y)[0];
+    const yFin = bajo ? bajo.y + bajo.h * 0.9 : yMed - 150;
+    const sig = modelos.filter((o) => Math.abs(o.y - m.y) < 3 && o.x > m.x + 5).map((o) => o.x).sort((a, b) => a - b)[0];
+    const xr = sig ? sig - 4 : m.x + 170;
+    const w = xr - m.x + 3;
+    const alto = (yMed - 2) - (yFin + 2);
+    if (w < 40 || alto < 40) return;
+    out.push({ clave, x: m.x - 3 - x0Pagina, top: alturaPagina - (yMed - 2), w, alto });
+  });
+  return out;
+}
+async function guardarDibujosCarga(doc, r) {
+  try {
+    const fab = r.lotes[0] && r.lotes[0].fab;
+    if (!fab || !r.bloques) return;
+    const S = 1.6;
+    const hechos = {};
+    for (let n = 1; n <= doc.numPages; n++) {
+      const tips = r.bloques[n - 1] || [];
+      if (!tips.length) continue;
+      const pg = await doc.getPage(n);
+      if (pg.rotate) continue;
+      const tc = await pg.getTextContent();
+      const items = tc.items.filter((i) => i.str && i.str.trim()).map((i) => ({ s: i.str.trim(), x: i.transform[4], y: i.transform[5], h: i.height || Math.abs(i.transform[3]) || 9 }));
+      const H = pg.view[3] - pg.view[1];
+      const rects = rectDibujosCarga(items, tips, H, pg.view[0]).filter((q) => !hechos[q.clave]);
+      if (!rects.length) continue;
+      const vp = pg.getViewport({ scale: S });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+      await pg.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+      rects.forEach((q) => {
+        const sc = Math.min(1, 240 / (q.w * S));
+        const c2 = document.createElement("canvas");
+        c2.width = Math.max(1, Math.round(q.w * S * sc)); c2.height = Math.max(1, Math.round(q.alto * S * sc));
+        c2.getContext("2d").drawImage(canvas, q.x * S, q.top * S, q.w * S, q.alto * S, 0, 0, c2.width, c2.height);
+        hechos[q.clave] = c2.toDataURL("image/jpeg", 0.72);
+      });
+      canvas.width = 0;
+    }
+    await Promise.all(Object.entries(hechos).map(([c, d]) => fbSet(ref(fbDb, `dibujosVentana/${fab}/${c}`), d)));
+  } catch (e) { /* los dibujos son un extra: si algo falla, la subida del PDF sigue igual */ }
+}
+// Dibujo pequeño de la ventana (se amplía al tocarlo)
+function DibujoCargaVentana({ fab, tip, alto = 56 }) {
+  const [src, setSrc] = useState("");
+  const [grande, setGrande] = useState(false);
+  const clave = claveDibujo(tip);
+  useEffect(() => {
+    if (!fab || !clave) return undefined;
+    return onValue(ref(fbDb, `dibujosVentana/${fab}/${clave}`), (sn) => setSrc(sn.val() || ""), () => setSrc(""));
+  }, [fab, clave]);
+  if (!src) return null;
+  return (
+    <>
+      <img src={src} alt={tip} onClick={() => setGrande(true)} style={{ height: alto }} className="rounded border border-slate-200 bg-white cursor-zoom-in" />
+      {grande && <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => setGrande(false)}><img src={src} alt={tip} className="max-h-[85vh] max-w-full bg-white rounded-lg" /></div>}
+    </>
+  );
 }
 async function leerEtiquetasFabPdf(file, onProgreso) {
   const lib = await cargarPdfJs();
@@ -30741,7 +30822,7 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
   }
   const r = agruparEtiquetasFab(paginas);
   if (!r.lotes.length) { const r2 = agruparEtiquetasModelo(paginas); if (r2.lotes.length) return r2; }
-  if (!r.lotes.length) { const r3 = agruparCargaMaterial(paginas); if (r3.lotes.length) return r3; }
+  if (!r.lotes.length) { const r3 = agruparCargaMaterial(paginas); if (r3.lotes.length) { await guardarDibujosCarga(doc, r3); return r3; } }
   return r;
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
@@ -31553,6 +31634,45 @@ function EstanteriasTerminadas({ indice, isAdmin }) {
   );
 }
 
+// Ventanas guardadas en un caballete a las que les falta alguna pegatina por leer (marco u hoja)
+function IncompletasAlmacen({ caballetes, indice }) {
+  const hojasOv = useObjetoFb("hojasLinea");
+  const porVentana = useMemo(() => { const m = new Map(); indice.forEach((h) => { if (!m.has(h.ventana.id)) m.set(h.ventana.id, h); }); return m; }, [indice]);
+  const filas = [];
+  toArray(caballetes).forEach((c) => toArray(c.ventanas).forEach((w) => {
+    const esc = toArray(w.escaneadas).map(String);
+    if (!(w.total > 0) || esc.length >= w.total) return;
+    const h = porVentana.get(w.id);
+    let faltan = `${w.total - esc.length} pieza${w.total - esc.length === 1 ? "" : "s"}`;
+    if (h && h.ventana.modelo) {
+      const base = baseDe(h.ventana);
+      const nh = hojasDe(h.ventana, hojasOv);
+      const f = [];
+      if (!esc.includes(base)) f.push("MARCO");
+      for (let k = 1; k <= nh; k++) if (!esc.includes(codHoja(base, k))) f.push(nombreHoja(k, nh));
+      if (f.length) faltan = f.join(" y ");
+    }
+    filas.push({ cab: c.numero, pos: w.pos, grupo: w.grupo || "", cliente: w.cliente || "", n: esc.length, total: w.total, faltan, fab: w.fab, tip: (h && (h.ventana.tipo || h.ventana.pos)) || w.pos });
+  }));
+  return (
+    <div className={`border rounded-lg p-3 space-y-2 ${filas.length ? "border-amber-300 bg-amber-50/60" : "border-slate-200 bg-white"}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">⚠ Ventanas incompletas en el almacén ({filas.length})</span>
+      </div>
+      {filas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: todas las ventanas guardadas tienen todas sus piezas leídas.</p> : (
+        <div className="space-y-1.5">
+          {filas.map((f, k) => (
+            <div key={k} className="flex items-center gap-2 text-xs text-slate-700">
+              <DibujoCargaVentana fab={f.fab} tip={f.tip} alto={36} />
+              <span><b>{f.cab}</b> · {f.pos}{f.grupo ? ` · ${f.grupo}` : ""}{f.cliente ? ` · ${f.cliente}` : ""} · {f.n}/{f.total} piezas · <b className="text-amber-800">faltan: {f.faltan}</b></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
@@ -31572,6 +31692,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [okScan, setOkScan] = useState("");
   const inputScanRef = useRef(null);
   const indicePiezas = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, etiquetasSinObra), [proyectos, uxExpedientes, etiquetasSinObra]);
+  // Ventanas hechas con las pegatinas del CRM: marco + hojas (activa, pasiva…). Se cuentan todas para dar la ventana por completa.
+  const hojasOvAlm = useObjetoFb("hojasLinea");
+  const totalVentana = (v) => (v.modelo ? 1 + hojasDe(v, hojasOvAlm) : toArray(v.piezas).length);
+  const hojaSobra = (h) => { if (!h.ventana.modelo) return false; const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return !!m && parseInt(m[1], 10) > hojasDe(h.ventana, hojasOvAlm); };
   const [ultimaLectura, setUltimaLectura] = useState("");
   const [enfocarCab, setEnfocarCab] = useState(null);
   const [toastScan, setToastScan] = useState(null);
@@ -31870,7 +31994,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setAvisoScan("");
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v, pieza } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
     if (cabCon) {
       const actual = toArray(cabCon.ventanas).find((x) => mismaVentana(x, w));
@@ -31899,7 +32023,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const todos = cabsAhora();
     const destino = todos.find((c) => c.id === cabId);
     if (!destino) return { ok: false, texto: "Ese caballete ya no existe." };
@@ -31924,7 +32048,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const vs = toArray(c.ventanas);
     if (toArray(c.plan).length) {
       const idx = new Map();
-      indicePiezas.forEach((h, cod) => { const g = idx.get(h.ventana.id) || { h, cods: [] }; g.cods.push(String(cod)); idx.set(h.ventana.id, g); });
+      indicePiezas.forEach((h, cod) => { if (hojaSobra(h)) return; const g = idx.get(h.ventana.id) || { h, cods: [] }; g.cods.push(String(cod)); idx.set(h.ventana.id, g); });
       const todosC = cabsAhora();
       const listaP = [];
       toArray(c.plan).forEach((pp) => {
@@ -31948,7 +32072,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         if (grupos.size && !grupos.has(v.grupo)) return;
         const piezas = toArray(v.piezas); if (!piezas.length) return;
         const h = indicePiezas.get(String(piezas[0].c)); if (!h) return;
-        const w = { id: v.id, pos: v.pos, num: v.num, fab: l.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: h.dueno.key, proyectoId: h.dueno.proyectoId || "", total: piezas.length, persiana: persianaDeDueno(h.dueno.key), escaneadas: piezas.map((x) => String(x.c)), aMano: true };
+        const w = { id: v.id, pos: v.pos, num: v.num, fab: l.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: h.dueno.key, proyectoId: h.dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(h.dueno.key), escaneadas: piezas.map((x) => String(x.c)), aMano: true };
         if (vs.some((x) => mismaVentana(x, w))) return;
         const en = todos.find((cc) => cc.id !== c.id && toArray(cc.ventanas).some((x) => mismaVentana(x, w)));
         lista.push({ w, dueno: h.dueno, en });
@@ -31999,6 +32123,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if (!palabras.length || norm(q).length < 2) return null;
     const grupos = new Map();
     indicePiezas.forEach((h, cod) => {
+      if (hojaSobra(h)) return;
       const k = `${h.dueno.key}|${h.ventana.id}`;
       const g = grupos.get(k) || { h, cods: [] };
       g.cods.push(String(cod)); grupos.set(k, g);
@@ -32426,7 +32551,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         {obraPrep && ventanasPrep.length > 0 && (() => {
           const todos = cabsAhora();
           const filas = ventanasPrep.map(({ v, fab }) => {
-            const wBase = { id: v.id, pos: v.pos, num: v.num, fab, color: v.color || "", obraKey: obraPrep.key, proyectoId: obraPrep.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(obraPrep.key), escaneadas: [] };
+            const wBase = { id: v.id, pos: v.pos, num: v.num, fab, color: v.color || "", obraKey: obraPrep.key, proyectoId: obraPrep.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(obraPrep.key), escaneadas: [] };
             const cabW = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, wBase)));
             const wReal = cabW ? toArray(cabW.ventanas).find((x) => mismaVentana(x, wBase)) : wBase;
             return { wBase, cabW, wReal };
@@ -32462,6 +32587,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         ) : null;
       })()}
       <EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} />
+      <IncompletasAlmacen caballetes={caballetes} indice={indicePiezas} />
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
@@ -32991,6 +33117,9 @@ const hojasDe = (v, ov) => {
   if (o >= 1 && o <= 3) return o;
   return v && v.hojas >= 1 && v.hojas <= 3 ? v.hojas : hojasSugeridas(v);
 };
+// Nombre de cada hoja: con 1 hoja es la activa; con 2, activa y pasiva (con 3, la tercera se llama "HOJA 3")
+const nombreHoja = (k, n) => (k === 1 ? "HOJA ACTIVA" : k === 2 ? "HOJA PASIVA" : `HOJA ${k}`);
+const cortoHoja = (k) => (k === 1 ? "act." : k === 2 ? "pas." : `H${k}`);
 const esPuertaLinea = (v) => /^P/i.test(String((v && v.pos) || ""));
 const baseDe = (v) => String(v.piezas[0].c);
 const codHoja = (base, k) => ({ 1: "8", 2: "7", 3: "6" })[k] + String(base).slice(1);
@@ -33050,7 +33179,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
   const nHoja = mh ? parseInt(mh[1], 10) : 0;
   const nHojas = hojasDe(v, hojasOv);
   const puerta = esPuertaLinea(v);
-  const etq = esHoja ? `HOJA ${nHoja}` : "MARCO";
+  const etq = esHoja ? nombreHoja(nHoja, nHojas) : "MARCO";
   const zona = (id) => zonas.find((z) => z.id === id);
   const nom = (id) => (zona(id) ? zona(id).nombre : id);
   const donde = (u) => (u ? `${nom(u.zonaId)} · estantería ${u.hueco}${u.slot > 1 ? ` (sitio ${u.slot})` : ""}` : "sin ubicar");
@@ -33079,11 +33208,11 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
   if (puestoId === "herraje") {
     if (!esHoja) return { ok: false, texto: `En herraje solo se leen HOJAS. Esto es el MARCO ${v.pos}.` };
     const u0 = await ubicDe(cod);
-    if (u0 && u0.zonaId === "hojasHerraje") return { ok: true, aviso: true, texto: `Ya estaba: HOJA ${nHoja} ${v.pos} → ${donde(u0)}`, zona: u0 };
-    if (estricto && !(u0 && (u0.zonaId === "hojas" || u0.zonaId === "puertas"))) return { ok: false, texto: `⛔ HOJA ${nHoja} ${v.pos}: la soldadora aún no la ha leído. No se puede coger.` };
+    if (u0 && u0.zonaId === "hojasHerraje") return { ok: true, aviso: true, texto: `Ya estaba: ${nombreHoja(nHoja, nHojas)} ${v.pos} → ${donde(u0)}`, zona: u0 };
+    if (estricto && !(u0 && (u0.zonaId === "hojas" || u0.zonaId === "puertas"))) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${v.pos}: la soldadora aún no la ha leído. No se puede coger.` };
     const n = await poner("hojasHerraje", cod);
-    if (!n) return llena("hojasHerraje", `HOJA ${nHoja} ${v.pos}`);
-    return { ok: true, texto: `✓ HOJA ${nHoja} ${v.pos} con herraje → ${nom("hojasHerraje")} · ESTANTERÍA ${n}${sitio()}${u0 ? ` (libera ${donde(u0)})` : " · aviso: no estaba en la estantería de hojas"}`, zona: { zonaId: "hojasHerraje", hueco: n } };
+    if (!n) return llena("hojasHerraje", `${nombreHoja(nHoja, nHojas)} ${v.pos}`);
+    return { ok: true, texto: `✓ ${nombreHoja(nHoja, nHojas)} ${v.pos} con herraje → ${nom("hojasHerraje")} · ESTANTERÍA ${n}${sitio()}${u0 ? ` (libera ${donde(u0)})` : " · aviso: no estaba en la estantería de hojas"}`, zona: { zonaId: "hojasHerraje", hueco: n } };
   }
   if (puestoId === "colgado") {
     const ubMarco = await ubicDe(base);
@@ -33091,7 +33220,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
     if (ubMarco && ["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas", "solape", "espera", "especiales"].includes(ubMarco.zonaId)) return { ok: true, aviso: true, texto: `Ya estaba unida: ${v.pos} → ${donde(ubMarco)}`, zona: ubMarco };
     if (estricto) {
       const ubPieza = esHoja ? await ubicDe(cod) : ubMarco;
-      if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ HOJA ${nHoja} ${v.pos}: aún no ha pasado por herraje. No se puede colgar.` };
+      if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${v.pos}: aún no ha pasado por herraje. No se puede colgar.` };
       if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || ubPieza.zonaId === "puertas"))) return { ok: false, texto: `⛔ MARCO ${v.pos}: la soldadora aún no lo ha leído. No se puede colgar.` };
     }
     const clave = esHoja ? `h${nHoja}` : "m";
@@ -33099,7 +33228,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
     const vistos = Object.keys((await fbGet(ref(fbDb, `colgadoLinea/${base}`))).val() || {});
     const req = ["m", ...Array.from({ length: nHojas }, (_, i) => `h${i + 1}`)];
     const faltan = req.filter((k) => !vistos.includes(k));
-    if (faltan.length) return { ok: true, aviso: true, texto: `Colgado ${v.pos}: leída ${etq}. FALTAN: ${faltan.map(nombrePiezaClave).join(" y ")}` };
+    if (faltan.length) return { ok: true, aviso: true, texto: `Colgado ${v.pos}: leída ${etq}. FALTAN: ${faltan.map((k) => (k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), nHojas))).join(" y ")}` };
     let destino = puerta ? "bancoPuerta" : "colgadoA";
     let n = await poner(destino, base);
     if (!n && !puerta) { destino = "colgadoB"; n = await poner(destino, base); }
@@ -33136,7 +33265,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
   }
   const rg = REGLAS_PUESTO_LINEA[puestoId];
   if (rg) {
-    if (puestoId === "pilastra" && esHoja) return { ok: false, texto: `En pilastra se lee el MARCO. Esto es la HOJA ${nHoja} de ${v.pos}.` };
+    if (puestoId === "pilastra" && esHoja) return { ok: false, texto: `En pilastra se lee el MARCO. Esto es la ${nombreHoja(nHoja, nHojas)} de ${v.pos}.` };
     const u = await ubicDe(base);
     if (u && u.zonaId === rg.deja) return { ok: true, aviso: true, texto: `Ya estaba: ${v.pos} → ${donde(u)}`, zona: u };
     if (estricto && rg.desde && !u) return { ok: false, texto: `⛔ ${v.pos}: el puesto anterior aún no la ha leído. No se puede coger.` };
@@ -33167,12 +33296,12 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
       <div className="border border-amber-300 bg-amber-50/60 rounded-lg p-3">
         <div className="text-sm font-semibold text-amber-900 mb-1">Con pilastra / travesaño: por hacer ({pendientes.length})</div>
-        {pendientes.length === 0 ? <p className="text-xs text-slate-500">Ninguna pendiente.</p> : <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">{pendientes.map((x) => <li key={x.cod}>{fila(x)}</li>)}</ol>}
+        {pendientes.length === 0 ? <p className="text-xs text-slate-500">Ninguna pendiente.</p> : <div className="text-xs text-slate-700 space-y-1">{pendientes.map((x, k) => <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{fila(x)}</span></div>)}</div>}
       </div>
       {puestoId === "colgado" && (
         <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
           <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para colgar ({listas.length})</div>
-          {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">{listas.map((x) => <li key={x.cod}>{fila(x)}</li>)}</ol>}
+          {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <div className="text-xs text-slate-700 space-y-1">{listas.map((x, k) => <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{fila(x)}</span></div>)}</div>}
         </div>
       )}
     </div>
@@ -33182,6 +33311,7 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
 // Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
 const PREPARADAS_POR_PUESTO = { herraje: ["hojas", "puertas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["bancoPuerta"], cristales: ["persianaA", "persianaB"], solape: ["solape"] };
 function ListaPreparadas({ puestoId, ubic, indice }) {
+  const hojasOv = useObjetoFb("hojasLinea");
   const zs = PREPARADAS_POR_PUESTO[puestoId];
   if (!zs) return null;
   const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || "")))).sort((a, b) => a.u.ts - b.u.ts);
@@ -33189,9 +33319,9 @@ function ListaPreparadas({ puestoId, ubic, indice }) {
     <div className="mt-4 border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
       <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para coger ({lista.length})</div>
       {lista.length === 0 ? <p className="text-xs text-slate-500">Ninguna: el puesto anterior aún no ha leído nada.</p> : (
-        <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">
-          {lista.slice(0, 40).map((x) => <li key={x.cod}>{x.h.ventana.pos}{/^Hoja (\d)/.test(String(x.h.pieza.t || "")) ? ` ${x.h.pieza.t}` : ""} · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería {x.u.hueco}</li>)}
-        </ol>
+        <div className="text-xs text-slate-700 space-y-1">
+          {lista.slice(0, 40).map((x, k) => <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{x.h.ventana.pos}{/^Hoja (\d)/.test(String(x.h.pieza.t || "")) ? ` ${nombreHoja(parseInt(String(x.h.pieza.t).slice(5), 10), hojasDe(x.h.ventana, hojasOv))}` : ""} · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería {x.u.hueco}</span></div>)}
+        </div>
       )}
     </div>
   );
@@ -33206,7 +33336,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
   indice.forEach((h) => {
     if (!h.ventana.modelo || h.pieza.t !== "Ventana") return;
     const k = `${h.lote.fab}|${h.ventana.grupo || ""}`;
-    if (!grupos.has(k)) grupos.set(k, { grupo: h.ventana.grupo || "", cliente: h.ventana.cliente || "", ventanas: [] });
+    if (!grupos.has(k)) grupos.set(k, { grupo: h.ventana.grupo || "", cliente: h.ventana.cliente || "", fab: h.lote.fab, ventanas: [] });
     grupos.get(k).ventanas.push({ v: h.ventana, u: ubic[baseDe(h.ventana)] });
   });
   const nom = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
@@ -33219,7 +33349,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
       <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
         <div className="text-sm font-semibold text-emerald-900 mb-1">Viviendas listas para acristalar ({listas.length})</div>
         {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan ventanas por llegar.</p> : listas.map((g) => (
-          <div key={g.grupo + g.cliente} className="text-xs text-slate-700 mb-1.5"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: {g.ventanas.map((x) => `${x.v.pos} (${nom(x.u.zonaId)} · est. ${x.u.hueco})`).join(", ")}</div>
+          <div key={g.grupo + g.cliente} className="text-xs text-slate-700 mb-1.5"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: <div className="flex flex-wrap gap-2 mt-1">{g.ventanas.map((x) => <span key={x.v.id} className="inline-flex items-center gap-1"><DibujoCargaVentana fab={g.fab} tip={x.v.tipo || x.v.pos} alto={36} />{x.v.pos} ({nom(x.u.zonaId)} · est. {x.u.hueco})</span>)}</div></div>
         ))}
       </div>
       <div className="border border-amber-300 bg-amber-50/60 rounded-lg p-3">
@@ -33239,7 +33369,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar }) {
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
-  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${h.ventana.pos}${m ? ` H${m[1]}` : ""}`; };
+  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${h.ventana.pos}${m ? ` ${cortoHoja(parseInt(m[1], 10))}` : ""}`; };
   const lista = zonas.filter((z) => !ids || ids.includes(z.id));
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
@@ -33291,7 +33421,7 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
     if (!c0) return [];
     if (!x.v.modelo) return [{ ...x, cod: c0, tipo: "" }];
     const n = hojasDe(x.v, hojasOv);
-    return [{ ...x, cod: c0, tipo: pilOv[c0] ? "MARCO +PIL" : "MARCO" }, ...Array.from({ length: n }, (_, i) => ({ ...x, cod: codHoja(c0, i + 1), tipo: `HOJA ${i + 1}` }))];
+    return [{ ...x, cod: c0, tipo: pilOv[c0] ? "MARCO +PIL" : "MARCO" }, ...Array.from({ length: n }, (_, i) => ({ ...x, cod: codHoja(c0, i + 1), tipo: nombreHoja(i + 1, n) }))];
   });
   const etiqueta = ({ v, lote, dueno, cod, tipo }) => {
     const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
@@ -33392,17 +33522,19 @@ function PegatinasSoldadora({ indice, escaneos }) {
                   </div>
                   {xs.map((x) => (
               <div key={x.v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+                <DibujoCargaVentana fab={x.lote.fab} tip={x.v.tipo || x.v.pos} alto={48} />
                 <span className="font-semibold text-slate-800 w-24">{x.v.pos}</span>
                 <span className="text-slate-500 w-16">{x.v.num}</span>
                 <span className="flex-1 text-slate-600 truncate">{x.v.grupo || ""}</span>
                 {x.v.modelo && (
-                  <select value={hojasDe(x.v, hojasOv)} onChange={(e) => fbSet(ref(fbDb, `hojasLinea/${baseDe(x.v)}`), parseInt(e.target.value, 10)).catch(() => {})} className="text-xs border border-slate-300 rounded px-1 py-0.5 bg-white" title="Hojas de la ventana: sale 1 pegatina de marco + 1 por hoja">
+                  <select value={hojasDe(x.v, hojasOv)} onChange={(e) => guardarLinea(`hojasLinea/${baseDe(x.v)}`, parseInt(e.target.value, 10))} className="text-xs border border-slate-300 rounded px-1 py-0.5 bg-white" title="Hojas de la ventana: sale 1 pegatina de marco + 1 por hoja">
                     <option value={1}>1 hoja</option><option value={2}>2 hojas</option><option value={3}>3 hojas</option>
                   </select>
                 )}
-                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `mosquiteraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />mosquitera</label>}
-                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `solapeLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />solape / postigo</label>}
-                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `pilastraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />pilastra / trav.</label>}
+                {x.v.modelo && <span className="text-[11px] text-slate-500 whitespace-nowrap">1 marco + {hojasDe(x.v, hojasOv)} hoja{hojasDe(x.v, hojasOv) === 1 ? "" : "s"}</span>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`mosquiteraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />mosquitera</label>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
                 <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
               </div>
@@ -33563,6 +33695,77 @@ function cruzarPersianaVentana(items, guardarItems, h) {
   return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
 }
 
+// Ventanas que llevan más de "horas" paradas en la línea (sin que ninguna de sus piezas se mueva) y por qué
+function calcularParadasLinea({ indice, ubic, hojasOv, zonas, ahora, horas }) {
+  const nom = (id) => (zonas.find((z) => z.id === id) || {}).nombre || id;
+  const sitio = (u) => `${nom(u.zonaId)} · est. ${u.hueco}`;
+  const porVentana = new Map();
+  Object.entries(ubic).forEach(([cod, u]) => {
+    if (!u || !u.zonaId) return;
+    const base = `9${String(cod).slice(1)}`;
+    const h = indice.get(base);
+    if (!h || !h.ventana.modelo) return;
+    const g = porVentana.get(base) || { h, piezas: [] };
+    g.piezas.push({ cod: String(cod), u });
+    porVentana.set(base, g);
+  });
+  const unidas = ["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas", "solape"];
+  const filas = [];
+  porVentana.forEach((g, base) => {
+    const v = g.h.ventana;
+    if (g.piezas.some((p) => p.u.zonaId === "espera")) return; // ya terminada
+    const ultimo = Math.max(...g.piezas.map((p) => p.u.ts || 0));
+    if (!ultimo || ahora - ultimo < horas * 3600000) return;
+    const unida = g.piezas.find((p) => p.cod === base && unidas.includes(p.u.zonaId));
+    let donde, motivo;
+    if (unida) {
+      donde = sitio(unida.u);
+      motivo = "unida, esperando el siguiente puesto";
+      if (["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas"].includes(unida.u.zonaId)) {
+        const faltan = toArray(g.h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).filter((w) => { const u = ubic[baseDe(w)]; return !u || !["persianaA", "persianaB", "puertasTerminadas", "solape", "espera"].includes(u.zonaId); });
+        if (faltan.length) motivo = `espera a la vivienda: faltan ${faltan.map((w) => w.pos).join(", ")}`;
+      }
+    } else {
+      const nh = hojasDe(v, hojasOv);
+      const esperadas = [{ cod: base, n: "MARCO" }, ...Array.from({ length: nh }, (_, i) => ({ cod: codHoja(base, i + 1), n: nombreHoja(i + 1, nh) }))];
+      donde = esperadas.map((e) => `${e.n}: ${ubic[e.cod] ? sitio(ubic[e.cod]) : "sin leer"}`).join(" · ");
+      motivo = "falta unirla en el colgado";
+    }
+    filas.push({ pos: v.pos, grupo: v.grupo || "", cliente: v.cliente || "", fab: g.h.lote.fab, tip: v.tipo || v.pos, horas: Math.floor((ahora - ultimo) / 3600000), donde, motivo });
+  });
+  return filas.sort((a, b) => b.horas - a.horas);
+}
+function ParadasLinea({ proyectos, uxExpedientes, sinObra }) {
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const hojasOv = useObjetoFb("hojasLinea");
+  const zonas = useZonasLinea();
+  const [horas, setHoras] = useState(() => { try { return parseInt(localStorage.getItem("alumavel_paradas_horas"), 10) || 4; } catch (e) { return 4; } });
+  const filas = calcularParadasLinea({ indice, ubic, hojasOv, zonas, ahora: Date.now(), horas });
+  const cambiar = (h) => { setHoras(h); try { localStorage.setItem("alumavel_paradas_horas", String(h)); } catch (e) { /* nada */ } };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Ventanas paradas en la línea ({filas.length})</h3>
+        <label className="text-xs text-slate-500">Parada más de
+          <select value={horas} onChange={(e) => cambiar(parseInt(e.target.value, 10))} className="mx-1 border border-slate-300 rounded px-1 py-0.5 text-xs bg-white">{[1, 2, 4, 8, 24].map((h) => <option key={h} value={h}>{h} h</option>)}</select>
+        </label>
+      </div>
+      <p className="text-xs text-slate-500 mb-2">Una ventana incompleta no llega al final: se queda aquí, en la línea. Esta lista dice dónde está cada una y qué le falta.</p>
+      {filas.length === 0 ? <p className="text-sm text-slate-500">Ninguna ventana lleva más de {horas} h sin moverse.</p> : (
+        <div className="space-y-2">
+          {filas.map((f, k) => (
+            <div key={k} className="flex items-center gap-2 text-xs text-slate-700 border border-amber-200 bg-amber-50/60 rounded-md p-2">
+              <DibujoCargaVentana fab={f.fab} tip={f.tip} alto={40} />
+              <div><b>{f.pos}</b>{f.grupo ? ` · ${f.grupo}` : ""}{f.cliente ? ` · ${f.cliente}` : ""} · <b className="text-amber-800">{f.horas} h parada</b><div className="text-slate-600">{f.donde}</div><div className="text-amber-800">{f.motivo}</div></div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PanelEstanteriasLinea({ proyectos, uxExpedientes, sinObra, admin }) {
   const cfgLinea = useObjetoFb("configLinea");
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
@@ -33643,7 +33846,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisar(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
-    setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco } : u));
+    setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
   };
   return (
     <div className="space-y-6">
@@ -33658,7 +33861,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={`Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {ultimo && (
-          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.foco && onIrA && (
+          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
