@@ -32804,15 +32804,14 @@ async function registrarEscaneoLinea({ puestoId, h, por }) {
 }
 // Pegatina pequeña para la salida de la soldadora: una por ventana, con el código de una de sus piezas.
 // El módulo del código se ajusta al ancho de la etiqueta (múltiplos de 0,125 mm = 1 punto a 203 dpi).
-function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0) {
-  dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
+function imprimirPegatinasSoldadora(items, anchoMm, altoMm) {
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
   const etiqueta = ({ v, lote, dueno }) => {
     const cod = toArray(v.piezas)[0] && toArray(v.piezas)[0].c;
     if (!cod) return "";
     const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
-    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1 - Math.max(0, dy));
+    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1);
     return `<div class="et"><div class="r1"><span>${esc(v.pos)}</span><span>${esc(v.num)}</span></div>
       <div class="r2">${esc(v.grupo || dueno.nombre)}</div>
       ${extra ? `<div class="r3">${esc(extra)}</div>` : ""}
@@ -32823,7 +32822,7 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0) {
     @page { size: ${anchoMm}mm ${altoMm}mm; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
-    .et { width: ${anchoMm}mm; height: ${altoMm - 0.5}mm; padding: ${Math.max(0, 1.2 + dy)}mm ${Math.max(0, 1.5 - dx)}mm 1.2mm ${Math.max(0, 1.5 + dx)}mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; display: flex; flex-direction: column; align-items: center; }
+    .et { width: ${anchoMm}mm; height: ${altoMm - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; display: flex; flex-direction: column; align-items: center; }
     .et:last-child { page-break-after: auto; break-after: auto; }
     .r1 { width: 100%; display: flex; justify-content: space-between; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
     .r2 { width: 100%; font-size: 3.4mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
@@ -32837,7 +32836,7 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0) {
 
 function PegatinasSoldadora({ indice, escaneos }) {
   const [obraKey, setObraKey] = useState("");
-  const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
+  const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return x; } catch (e) { /* nada */ } return { a: 70, h: 32 }; });
   const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
   const obras = useMemo(() => {
     const m = new Map();
@@ -32873,24 +32872,15 @@ function PegatinasSoldadora({ indice, escaneos }) {
             <input type="number" value={mm.h} onChange={(e) => cambiarMm("h", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
           </div>
         </div>
-        <div>
-          <label className="text-xs text-slate-500">Ajuste fino (mm)</label>
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-slate-400">↓</span>
-            <input type="number" step="0.5" value={mm.dy} onChange={(e) => cambiarMm("dy", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
-            <span className="text-xs text-slate-400 ml-1">→</span>
-            <input type="number" step="0.5" value={mm.dx} onChange={(e) => cambiarMm("dx", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
-          </div>
-        </div>
       </div>
       {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
           <div className="flex flex-wrap gap-2 mb-3">
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h, mm.dx, mm.dy)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
-            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h, mm.dx, mm.dy)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h, mm.dx, mm.dy)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
+            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
             {lista.map((x) => (
@@ -32899,7 +32889,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 <span className="text-slate-500 w-16">{x.v.num}</span>
                 <span className="flex-1 text-slate-600 truncate">{x.v.grupo || ""}</span>
                 {hechas.has(x.v.id) ? <span className="text-emerald-700 text-xs font-semibold">✓ leída</span> : <span className="text-slate-400 text-xs">sin leer</span>}
-                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
+                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
               </div>
             ))}
           </div>
