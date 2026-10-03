@@ -3353,6 +3353,43 @@ export default function App() {
     return onValue(ref(fbDb, "etiquetasFabSinObra"), (snap) => setEtiquetasSinObra(toArray(snap.val())), () => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
+  // Incidencias de fábrica (internas, aparte de las de postventa). Se guardan una a una
+  // en Firebase ("incidenciasFabrica/<id>") y se leen en tiempo real para que el aviso
+  // llegue al momento a quien las tiene que resolver.
+  const [incidenciasFabrica, setIncidenciasFabrica] = useState([]);
+  const [incFabForm, setIncFabForm] = useState(null); // null = cerrado; objeto = datos precargados
+  const [, setTickInc] = useState(0);
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncidenciasFabrica(toArray(snap.val())), () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  useEffect(() => {
+    const t = setInterval(() => setTickInc((n) => n + 1), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const guardarIncFab = (inc) => fbSet(ref(fbDb, `incidenciasFabrica/${inc.id}`), JSON.parse(JSON.stringify(inc))).catch((e) => showToast("No se pudo guardar la incidencia: " + e.message, "error"));
+  const crearIncidenciaFabrica = (data) => {
+    const ahora = Date.now();
+    const nueva = {
+      id: uid(), ...data, estado: "Abierta", asignadoA: "",
+      creadaTs: ahora, venceTs: ahora + PLAZO_INC_FABRICA_MS,
+      creadaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
+    };
+    guardarIncFab(nueva);
+    setIncFabForm(null);
+    showToast("Incidencia enviada");
+  };
+  const actualizarIncFab = (id, patch) => {
+    const actual = incidenciasFabrica.find((i) => i.id === id);
+    if (actual) guardarIncFab({ ...actual, ...patch });
+  };
+  const asignarIncFab = (id, userId) => actualizarIncFab(id, { asignadoA: userId || "", asignadaTs: userId ? Date.now() : null });
+  const resolverIncFab = (id, nota) => actualizarIncFab(id, {
+    estado: "Resuelta", resueltaTs: Date.now(), notaResolucion: nota || "",
+    resueltaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
+  });
+  const reabrirIncFab = (id) => actualizarIncFab(id, { estado: "Abierta", resueltaTs: null, resueltaPor: null, notaResolucion: "" });
   const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
   const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
 
@@ -3950,7 +3987,17 @@ export default function App() {
   const modulosPermitidos = isAdmin
     ? MODULOS_DISPONIBLES.map((m) => m.id)
     : (currentUser?.modulos || MODULOS_DISPONIBLES.map((m) => m.id));
-  const tieneAcceso = (id) => modulosPermitidos.includes(id);
+  // Áreas de trabajo del usuario (Montaje / Fábrica). Sin área marcada: ve lo de siempre
+  // (postventa) y no puede abrir incidencias de fábrica. Los administradores ven todo.
+  const areasUsuario = (currentUser && currentUser.areas) || {};
+  const sinArea = !areasUsuario.montaje && !areasUsuario.fabrica;
+  const veMontaje = isAdmin || sinArea || !!areasUsuario.montaje;
+  const veFabrica = isAdmin || !!areasUsuario.fabrica;
+  const tieneAcceso = (id) => {
+    if (id === "incfabrica") return veFabrica;
+    if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
+    return modulosPermitidos.includes(id);
+  };
   const misTareasPendientes = tareas.filter((t) =>
     (t.asignadoA === currentUser?.id && t.estado === "Pendiente") ||
     (t.asignadoPor === currentUser?.id && t.estado === "Pendiente de confirmar")
@@ -4158,6 +4205,21 @@ export default function App() {
             <AlertOctagon size={16} /> Incidencias
           </button>
           )}
+          {tieneAcceso("incfabrica") && (
+          <button
+            onClick={() => setModulo("incfabrica")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "incfabrica" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <AlertOctagon size={16} /> Incidencias de fábrica
+            {incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === (currentUser && currentUser.id))).length > 0 && (
+              <Badge className="ml-auto bg-rose-500/20 text-rose-200 ring-rose-400/30 !py-0">
+                {incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === (currentUser && currentUser.id))).length}
+              </Badge>
+            )}
+          </button>
+          )}
           {tieneAcceso("calendario") && (
           <button
             onClick={() => setModulo("calendario")}
@@ -4342,9 +4404,28 @@ export default function App() {
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
         {(() => {
+          if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
+          const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === currentUser.id));
+          if (abiertasF.length === 0) return null;
+          const vencidas = abiertasF.filter((i) => i.venceTs < Date.now()).length;
+          const sinAsignar = isAdmin ? abiertasF.filter((i) => !i.asignadoA).length : 0;
+          return (
+            <button
+              onClick={() => setModulo("incfabrica")}
+              className={`w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition ${vencidas > 0 ? "bg-rose-100 text-rose-800 hover:bg-rose-200" : "bg-amber-50 text-amber-700 hover:bg-amber-100"}`}
+            >
+              <AlertOctagon size={15} />
+              {isAdmin ? "Incidencias de fábrica" : "Tienes incidencias de fábrica"}: {abiertasF.length} abierta{abiertasF.length === 1 ? "" : "s"}
+              {vencidas > 0 && ` · ${vencidas} fuera de plazo`}
+              {sinAsignar > 0 && ` · ${sinAsignar} sin asignar`}
+              . Toca para verlas →
+            </button>
+          );
+        })()}
+        {(() => {
           const incidenciasAbiertas = incidencias.filter((i) => i.estadoIncidencia !== "Solucionado");
           const incidenciasAntiguas = incidenciasAbiertas.filter((i) => i.fecha && daysDiff(i.fecha, new Date().toISOString().slice(0, 10)) > 7);
-          if (incidenciasAbiertas.length === 0 || modulo === "incidencias") return null;
+          if (incidenciasAbiertas.length === 0 || modulo === "incidencias" || !tieneAcceso("incidencias")) return null;
           return (
             <button
               onClick={() => setModulo("incidencias")}
@@ -4644,6 +4725,15 @@ export default function App() {
             onClearSolicitudPrefill={() => setSolicitudPrefill(null)}
           />
         )}
+        {modulo === "incfabrica" && veFabrica && (
+          <div className="p-4 sm:p-8 max-w-4xl">
+            <Header icon={<AlertOctagon size={20} className="text-[#2E8B57]" />} title="Incidencias de fábrica" subtitle="Avisos internos de los puestos. Hay que resolverlas en menos de 1 hora" />
+            <IncidenciasFabricaModulo
+              incidencias={incidenciasFabrica} usuarios={usuarios} currentUser={currentUser} isAdmin={isAdmin}
+              onAsignar={asignarIncFab} onResolver={resolverIncFab} onReabrir={reabrirIncFab}
+            />
+          </div>
+        )}
         {modulo === "incidencias" && (
           <IncidenciasModulo
             onMandarMontadores={(inc) => {
@@ -4874,6 +4964,7 @@ export default function App() {
           />
         )}
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
+          <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
             incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
@@ -4970,6 +5061,8 @@ export default function App() {
             </div>
           )}
           </IncidenciasCristalCtx.Provider>
+          <BotonIncidenciaFabrica flotante />
+          </IncFabricaCtx.Provider>
         )}
         {modulo === "instalaciones" && (
           <InstalacionesModulo
@@ -5087,6 +5180,10 @@ export default function App() {
         )}
       </TarifasVentanasCtx.Provider>
       </main>
+
+      {incFabForm && (
+        <FormIncidenciaFabrica prefill={incFabForm} onGuardar={crearIncidenciaFabrica} onCancelar={() => setIncFabForm(null)} />
+      )}
 
       {toast && (
         <div
@@ -33883,10 +33980,70 @@ function PanelEstanteriasLinea({ proyectos, uxExpedientes, sinObra, admin }) {
   );
 }
 
+// Ficha de consulta de una ventana (Escáner): qué es, qué lleva, dónde está cada pieza y por qué puestos ha pasado. Solo lee, no registra nada.
+function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, sinPersOv, onCerrar }) {
+  const v = h.ventana;
+  const c0 = v.piezas && v.piezas[0] ? String(v.piezas[0].c) : String(h.pieza.c);
+  const nZona = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
+  const n = v.modelo ? hojasDe(v, hojasOv) : 0;
+  const piezas = v.modelo
+    ? [{ cod: c0, nombre: pilOv[c0] ? "MARCO + PILASTRA" : "MARCO" }, ...Array.from({ length: n }, (_, i) => ({ cod: codHoja(c0, i + 1), nombre: nombreHoja(i + 1, n) }))]
+    : [{ cod: c0, nombre: String(h.pieza.t || "Pieza") }];
+  const pasos = escaneos.filter((x) => x.ventanaId === v.id).sort((a, b) => a.ts - b.ts);
+  const puestos = [...new Map(pasos.map((x) => [x.puestoId, x])).values()];
+  const leida = String(h.pieza.c);
+  return (
+    <div className="mt-3 border-2 border-sky-300 bg-sky-50/60 rounded-lg p-4">
+      <div className="flex items-start gap-3">
+        <DibujoCargaVentana fab={h.lote.fab} tip={v.tipo || v.pos} alto={64} />
+        <div className="flex-1 min-w-0">
+          <div className="text-lg font-bold text-slate-800">{v.pos}{v.num ? ` · ${v.num}` : ""}</div>
+          <div className="text-sm text-slate-600">{v.grupo || h.dueno.nombre}{v.cliente ? ` · ${v.cliente}` : ""}</div>
+          <div className="text-xs text-slate-500">Obra: {h.dueno.nombre}{h.lote.fab ? ` · lote ${h.lote.fab}` : ""}{v.medida ? ` · ${v.medida}` : ""}{v.tipo ? ` · tipo ${v.tipo}` : ""}</div>
+        </div>
+        <div className="flex flex-col gap-1.5 items-end">
+          <BotonIncidenciaFabrica prefill={{ ventanaId: v.id, ventana: `${v.pos}${v.num ? " · " + v.num : ""}${v.medida ? " · " + v.medida : ""}`, obra: h.dueno.nombre }} />
+          <button type="button" onClick={onCerrar} className="text-xs font-semibold text-slate-500 border border-slate-300 rounded px-2 py-1 bg-white">Cerrar</button>
+        </div>
+      </div>
+      {v.modelo && (
+        <div className="flex flex-wrap gap-2 mt-3 text-xs font-semibold">
+          <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
+          <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
+          <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
+          <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
+          <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
+        </div>
+      )}
+      <div className="mt-3 text-xs font-semibold text-slate-700">Dónde está cada pieza</div>
+      <div className="divide-y divide-slate-100 border border-slate-200 rounded-md bg-white mt-1">
+        {piezas.map((pz) => {
+          const u = ubic[pz.cod];
+          return (
+            <div key={pz.cod} className="flex flex-wrap items-center gap-x-3 px-3 py-1.5 text-xs">
+              <span className="font-semibold text-slate-800 w-32">{pz.nombre}{pz.cod === leida ? " (la leída)" : ""}</span>
+              <span className="text-slate-400">{pz.cod}</span>
+              <span className="flex-1 text-slate-700">{u && u.zonaId ? `${nZona(u.zonaId)} · hueco ${u.hueco}` : "sin ubicar"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 text-xs font-semibold text-slate-700">Puestos por los que ha pasado</div>
+      {puestos.length === 0 ? <p className="text-xs text-slate-500 mt-1">Todavía no se ha leído en ningún puesto.</p> : (
+        <div className="flex flex-wrap gap-2 mt-1">
+          {puestos.map((x) => <span key={x.puestoId} className="px-2 py-1 rounded bg-white border border-slate-200 text-[11px] text-slate-700"><b>{x.puestoNombre || nombrePuestoLinea(x.puestoId)}</b> · {new Date(x.ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}{x.por ? ` · ${String(x.por).split("@")[0]}` : ""}</span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoId, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
+  const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
+  const [ficha, setFicha] = useState(null);
   const inputRef = useRef(null);
   const escaneos = useEscaneosLinea();
   const zonas = useZonasLinea();
@@ -33903,7 +34060,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
-  const elegir = (id) => { setPuestoId(id); setUltimo(null); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
+  const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
   const avisar = (ok, texto, repetida) => { setUltimo({ ok, texto, repetida }); pitidoCRM(ok); enfocar(); };
   const piezaDeTexto = (txt) => {
     const exacto = codPiezaFab(txt);
@@ -33920,6 +34077,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     if (!cod) { avisar(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
     const h = indice.get(cod);
     if (!h) { avisar(false, `Etiqueta ${cod}: su lote no está en ningún PDF subido. Sube el PDF en el proyecto o en Almacén ventanas.`); return; }
+    if (consulta) { setConsulta(false); setUltimo(null); setFicha(h); pitidoCRM(true); enfocar(); return; } // Escáner: solo consulta (una lectura) y vuelve al modo normal del puesto
+    setFicha(null);
     const v = h.ventana;
     const yaVentana = escaneos.some((x) => x.puestoId === puestoId && x.ventanaId === v.id);
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
@@ -33957,13 +34116,19 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
+          <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
+        </div>
+        {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
-          placeholder={`Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
+          placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {ultimo && (
           <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
+        {ficha && <FichaVentanaLinea h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
@@ -36186,6 +36351,11 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
                   <Badge className={u.rol === "Administrador" ? "bg-sky-50 text-sky-700 ring-sky-200" : "bg-slate-100 text-slate-600 ring-slate-200"}>
                     {u.rol === "Administrador" && <ShieldCheck size={11} />} {u.rol}
                   </Badge>
+                  {u.rol !== "Administrador" && (
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {u.areas && (u.areas.montaje || u.areas.fabrica) ? [u.areas.montaje && "Montaje", u.areas.fabrica && "Fábrica"].filter(Boolean).join(" + ") : "Sin área"}
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex items-center justify-end gap-3">
@@ -36199,6 +36369,171 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+const IncFabricaCtx = React.createContext(null);
+const PLAZO_INC_FABRICA_MS = 60 * 60 * 1000; // 1 hora para resolver
+const TIPOS_INC_FABRICA = ["Pieza mal / defecto", "Falta material", "Avería de máquina", "Error de medidas / plano", "Otro"];
+
+function textoTiempoInc(ms) {
+  const m = Math.floor(Math.abs(ms) / 60000);
+  const h = Math.floor(m / 60);
+  return h > 0 ? `${h} h ${m % 60} min` : `${m} min`;
+}
+
+// Botón "Incidencia" de los puestos de fábrica (y de la ficha del Escáner).
+function BotonIncidenciaFabrica({ prefill, flotante }) {
+  const ctx = React.useContext(IncFabricaCtx);
+  if (!ctx || !ctx.puede) return null;
+  const cls = flotante
+    ? "fixed bottom-4 right-4 z-40 flex items-center gap-1.5 text-sm font-bold px-4 py-3 rounded-full shadow-lg bg-rose-600 text-white hover:bg-rose-700"
+    : "flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded border border-rose-300 bg-white text-rose-700 hover:bg-rose-50";
+  return (
+    <button type="button" onClick={() => ctx.abrir(prefill || {})} className={cls}>
+      <AlertOctagon size={flotante ? 16 : 13} /> Incidencia
+    </button>
+  );
+}
+
+function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
+  const [texto, setTexto] = useState("");
+  const [tipo, setTipo] = useState("");
+  const [puesto, setPuesto] = useState(prefill.puesto || "");
+  const [foto, setFoto] = useState("");
+  const [error, setError] = useState("");
+  const elegirFoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try { setFoto(await comprimirFotoMontaje(file, 800, 0.5)); } catch (err) { setError("No se ha podido leer la foto."); }
+  };
+  const enviar = () => {
+    if (!texto.trim()) { setError("Escribe qué ha pasado."); return; }
+    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "" });
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center gap-2 text-base font-bold text-slate-800"><AlertOctagon size={18} className="text-rose-600" /> Incidencia de fábrica</div>
+        {(prefill.ventana || prefill.obra) && (
+          <div className="text-xs bg-sky-50 border border-sky-200 rounded-md px-3 py-2 text-sky-900">
+            {prefill.ventana ? <div><b>Ventana:</b> {prefill.ventana}</div> : null}
+            {prefill.obra ? <div><b>Obra:</b> {prefill.obra}</div> : null}
+          </div>
+        )}
+        <Field label="¿Qué ha pasado?" required>
+          <TextArea rows={4} value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="Describe el problema" />
+        </Field>
+        <Field label="Tipo (opcional)">
+          <Select value={tipo} onChange={(e) => setTipo(e.target.value)}>
+            <option value="">—</option>
+            {TIPOS_INC_FABRICA.map((t) => <option key={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Puesto (opcional)">
+          <TextInput value={puesto} onChange={(e) => setPuesto(e.target.value)} placeholder="Ej.: soldadora, herraje, banco de persiana" />
+        </Field>
+        <Field label="Foto (opcional)">
+          <input type="file" accept="image/*" capture="environment" onChange={elegirFoto} className="text-sm" />
+          {foto && <img src={foto} alt="" className="mt-2 max-h-40 rounded border border-slate-200" />}
+        </Field>
+        {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onCancelar} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          <button type="button" onClick={enviar} className="px-5 py-2.5 rounded-md text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700">Enviar incidencia</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IncidenciasFabricaModulo({ incidencias, usuarios, currentUser, isAdmin, onAsignar, onResolver, onReabrir }) {
+  const [tab, setTab] = useState("abiertas");
+  const [ahora, setAhora] = useState(Date.now());
+  const [resolviendoId, setResolviendoId] = useState(null);
+  const [nota, setNota] = useState("");
+  useEffect(() => {
+    const t = setInterval(() => setAhora(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const miId = currentUser ? currentUser.id : "";
+  const visibles = incidencias.filter((i) => isAdmin || i.asignadoA === miId || (i.creadaPor && i.creadaPor.id === miId));
+  const abiertas = visibles.filter((i) => i.estado !== "Resuelta").sort((a, b) => (a.venceTs || 0) - (b.venceTs || 0));
+  const resueltas = visibles.filter((i) => i.estado === "Resuelta").sort((a, b) => (b.resueltaTs || 0) - (a.resueltaTs || 0));
+  const lista = tab === "abiertas" ? abiertas : resueltas;
+  const nombreU = (id) => { const u = usuarios.find((x) => x.id === id); return u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "—"; };
+  const asignables = usuarios.filter((u) => u.rol === "Administrador" || (u.areas && u.areas.fabrica));
+  const fmt = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        {[{ id: "abiertas", t: `Abiertas (${abiertas.length})` }, { id: "resueltas", t: `Resueltas (${resueltas.length})` }].map((x) => (
+          <button key={x.id} type="button" onClick={() => setTab(x.id)} className={`px-3 py-1.5 rounded-md text-sm font-semibold border ${tab === x.id ? "bg-[#2E8B57] text-white border-[#256E46]" : "bg-white text-slate-600 border-slate-300"}`}>{x.t}</button>
+        ))}
+      </div>
+      {lista.length === 0 && <p className="text-sm text-slate-500">{tab === "abiertas" ? "No hay incidencias abiertas." : "Todavía no hay incidencias resueltas."}</p>}
+      <div className="space-y-3">
+        {lista.map((i) => {
+          const resto = (i.venceTs || 0) - ahora;
+          const vencida = i.estado !== "Resuelta" && resto < 0;
+          const puedeResolver = i.estado !== "Resuelta" && (isAdmin || i.asignadoA === miId);
+          return (
+            <div key={i.id} className={`border-2 rounded-lg p-4 bg-white ${vencida ? "border-rose-400" : "border-slate-200"}`}>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                {i.estado === "Resuelta" ? (
+                  <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Resuelta en {textoTiempoInc((i.resueltaTs || 0) - (i.creadaTs || 0))}{(i.resueltaTs || 0) > (i.venceTs || 0) ? " · fuera de plazo" : ""}</Badge>
+                ) : vencida ? (
+                  <Badge className="bg-rose-50 text-rose-700 ring-rose-200">FUERA DE PLAZO hace {textoTiempoInc(resto)}</Badge>
+                ) : (
+                  <Badge className="bg-amber-50 text-amber-700 ring-amber-200">Quedan {textoTiempoInc(resto)}</Badge>
+                )}
+                {i.tipo ? <Badge className="bg-slate-100 text-slate-600 ring-slate-200">{i.tipo}</Badge> : null}
+                {i.puesto ? <span className="text-xs text-slate-500">Puesto: {i.puesto}</span> : null}
+                <span className="text-xs text-slate-400 ml-auto">{fmt(i.creadaTs || 0)} · {i.creadaPor ? i.creadaPor.nombre : "—"}</span>
+              </div>
+              <p className="text-sm text-slate-800 whitespace-pre-wrap">{i.texto}</p>
+              {(i.ventana || i.obra) && (
+                <div className="text-xs text-sky-900 bg-sky-50 border border-sky-200 rounded px-2 py-1 mt-2 inline-block">
+                  {i.ventana ? `Ventana: ${i.ventana}` : ""}{i.ventana && i.obra ? " · " : ""}{i.obra ? `Obra: ${i.obra}` : ""}
+                </div>
+              )}
+              {i.foto ? <a href={i.foto} target="_blank" rel="noreferrer"><img src={i.foto} alt="" className="mt-2 max-h-32 rounded border border-slate-200" /></a> : null}
+              <div className="flex flex-wrap items-center gap-3 mt-3">
+                {isAdmin && i.estado !== "Resuelta" ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-600">Asignada a</span>
+                    <Select value={i.asignadoA || ""} onChange={(e) => onAsignar(i.id, e.target.value)}>
+                      <option value="">Sin asignar</option>
+                      {asignables.map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
+                    </Select>
+                  </div>
+                ) : (
+                  <span className="text-xs text-slate-600">{i.asignadoA ? `Asignada a ${nombreU(i.asignadoA)}` : "Sin asignar (la ve el administrador)"}</span>
+                )}
+                {puedeResolver && resolviendoId !== i.id && (
+                  <button type="button" onClick={() => { setResolviendoId(i.id); setNota(""); }} className="ml-auto text-sm font-semibold px-3 py-1.5 rounded-md bg-[#2E8B57] text-white hover:bg-[#256E46]">Marcar como resuelta</button>
+                )}
+                {isAdmin && i.estado === "Resuelta" && (
+                  <button type="button" onClick={() => onReabrir(i.id)} className="ml-auto text-xs font-semibold text-slate-500 hover:underline">Reabrir</button>
+                )}
+              </div>
+              {i.estado === "Resuelta" && (
+                <p className="text-xs text-slate-500 mt-2">Resuelta por {i.resueltaPor ? i.resueltaPor.nombre : "—"} · {fmt(i.resueltaTs || 0)}{i.notaResolucion ? ` · ${i.notaResolucion}` : ""}</p>
+              )}
+              {resolviendoId === i.id && (
+                <div className="mt-3 space-y-2">
+                  <TextArea rows={2} value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Qué se ha hecho (opcional)" />
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setResolviendoId(null)} className="px-3 py-1.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+                    <button type="button" onClick={() => { onResolver(i.id, nota.trim()); setResolviendoId(null); }} className="px-4 py-1.5 rounded-md text-sm font-semibold bg-[#2E8B57] text-white">Confirmar resuelta</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -36264,6 +36599,21 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
           </Field>
         </div>
 
+        {f.rol !== "Administrador" && (
+          <Field label="Área de trabajo">
+            <div className="flex flex-wrap gap-5 bg-slate-50 border border-slate-200 rounded-md p-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={!!(f.areas && f.areas.montaje)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), montaje: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                Montaje
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={!!(f.areas && f.areas.fabrica)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), fabrica: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                Fábrica
+              </label>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
+          </Field>
+        )}
         {f.rol !== "Administrador" && (
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-md p-3 cursor-pointer">
             <input type="checkbox" checked={!!f.responsablePedidos} onChange={(e) => setF({ ...f, responsablePedidos: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
