@@ -34030,6 +34030,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
+  const [camara, setCamara] = useState(false); // lectura con la cámara del móvil
   const [ficha, setFicha] = useState(null);
   const inputRef = useRef(null);
   const escaneos = useEscaneosLinea();
@@ -34056,8 +34057,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     if (dig.length > 12) { for (const k of indice.keys()) if (dig.includes(k)) return k; }
     return null;
   };
-  const procesar = async () => {
-    const txt = codigo.trim();
+  const procesar = async (textoCam) => {
+    const txt = (typeof textoCam === "string" ? textoCam : codigo).trim();
     setCodigo("");
     if (!txt) return;
     const cod = piezaDeTexto(txt);
@@ -34104,12 +34105,14 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 mb-3">
+          <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
           <span className="text-xs text-slate-500">Vale en cualquier puesto: lee una etiqueta y te enseña la ficha de la ventana, sin registrar nada. Después vuelve solo al modo normal.</span>
         </div>
         {consulta && <div className="mb-3 px-4 py-2 rounded-lg bg-sky-100 border border-sky-300 text-sky-900 text-sm font-semibold">MODO CONSULTA: la próxima lectura solo enseña la ventana, NO se registra en {nombrePuestoLinea(puestoId)}.</div>}
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
+        {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); procesar(v); }} onCerrar={() => { setCamara(false); enfocar(); }} />}
         {ultimo && (
           <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
