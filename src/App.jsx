@@ -3390,6 +3390,11 @@ export default function App() {
     resueltaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
   });
   const reabrirIncFab = (id) => actualizarIncFab(id, { estado: "Abierta", resueltaTs: null, resueltaPor: null, notaResolucion: "" });
+  const guardarEtiquetasObra = (key, lotes) => {
+    const l = JSON.parse(JSON.stringify(lotes));
+    if (String(key).startsWith("u-")) { const e = uxExpedientes.find((x) => x.id === String(key).slice(2)); if (e) uxActualizar(e, { etiquetasFab: l }); }
+    else updateProyectoInline(String(key).slice(2), { etiquetasFab: l });
+  };
   const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
   const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
 
@@ -5032,11 +5037,7 @@ export default function App() {
             caballetesVentanas={caballetesVentanas}
             onGuardarCaballete={guardarCaballete}
             onBorrarCaballete={borrarCaballete}
-            onGuardarEtiquetasObra={(key, lotes) => {
-              const l = JSON.parse(JSON.stringify(lotes));
-              if (String(key).startsWith("u-")) { const e = uxExpedientes.find((x) => x.id === String(key).slice(2)); if (e) uxActualizar(e, { etiquetasFab: l }); }
-              else updateProyectoInline(String(key).slice(2), { etiquetasFab: l });
-            }}
+            onGuardarEtiquetasObra={guardarEtiquetasObra}
             etiquetasSinObra={etiquetasSinObra}
             onGuardarSinObra={guardarLoteSinObra}
             onBorrarSinObra={borrarLoteSinObra}
@@ -5056,8 +5057,19 @@ export default function App() {
           )}
           {modulo === "lineapistola" && (
             <div className="p-4 sm:p-8 max-w-4xl">
-              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" subtitle="Lee la etiqueta de cada ventana en tu puesto" />
-              <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} cristales={cristales} onUpdateCristal={updateCristal} admin={isAdmin} />
+              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" subtitle="Puesto, almacén de ventanas y estanterías, todo en un sitio" />
+              <LineaModulo
+                proyectos={proyectos} uxExpedientes={uxExpedientes} etiquetasSinObra={etiquetasSinObra}
+                quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
+                cristales={cristales} onUpdateCristal={updateCristal} admin={isAdmin}
+                verMas={tieneAcceso("fabrica")}
+                onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }}
+                caballetes={caballetesVentanas} clientes={clientes} pedidos={pedidos} uxPedidos={uxPedidos}
+                onGuardarEtiquetasObra={guardarEtiquetasObra} onGuardarSinObra={guardarLoteSinObra} onBorrarSinObra={borrarLoteSinObra}
+                onGuardarCaballete={guardarCaballete} onBorrarCaballete={borrarCaballete}
+                config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
+                onMoverEstado={moverEstadoProyecto}
+              />
             </div>
           )}
           </IncidenciasCristalCtx.Provider>
@@ -6560,7 +6572,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
       const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
       setAviso(`Leídas ${r.etiquetas} etiquetas de ${nv} ventanas/puertas (lote${r.lotes.length > 1 ? "s" : ""} ${r.lotes.map((l) => l.fab).join(", ")}).${r.ignoradas ? ` ${r.ignoradas} páginas no tenían etiqueta.` : ""}${r.repetidas ? ` ${r.repetidas} códigos repetidos ignorados.` : ""}`);
       if (r.carga) setAviso((a) => `${a} Es una CARGA DE MATERIAL (no trae lote de fabricación): se usa el número del pedido como lote.`);
-      if (r.modelo) setAviso((a) => `${a} Etiquetas sin código de barras: el CRM les ha generado uno propio de 12 cifras (se imprime desde Fábrica → Línea (pistola) → Pegatinas).${r.persianas ? ` ${r.persianas} persiana(s) no llevan código y se han dejado fuera.` : ""}`);
+      if (r.modelo) setAviso((a) => `${a} Etiquetas sin código de barras: el CRM les ha generado uno propio de 12 cifras (se imprime desde Línea (pistola) → Puesto → Pegatinas).${r.persianas ? ` ${r.persianas} persiana(s) no llevan código y se han dejado fuera.` : ""}`);
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
@@ -15242,7 +15254,7 @@ function EstadisticasCristales({ cristales }) {
 function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState("listo");
+  const [tab, setTab] = useState(() => { const t = tabInicialFabrica.actual; tabInicialFabrica.actual = null; return t || "listo"; });
   const proveedorNombre = (id) => proveedores.find((p) => p.id === id)?.nombre || "—";
   const materialInfo = (id) => materiales.find((m) => m.id === id);
 
@@ -15367,18 +15379,9 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Albarán de salida
           {enviosProceso.filter((e) => e.estado === "Fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{enviosProceso.filter((e) => e.estado === "Fuera").length}</Badge>}
         </button>
-        <button onClick={() => setTab("caballetes")}
-          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "caballetes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-          Almacén ventanas
-          {toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length} fuera</Badge>}
-        </button>
         <button onClick={() => setTab("prepMaterial")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "prepMaterial" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Preparación material
-        </button>
-        <button onClick={() => setTab("linea")}
-          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "linea" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-          Línea (pistola)
         </button>
         <button onClick={() => setTab("puestos")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "puestos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -15407,23 +15410,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         )}
       </div>
 
-      {tab === "caballetes" && (
-        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
-          pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
-      )}
-
       {tab === "prepMaterial" && <PuestoPreparacionMaterial cristales={cristales} />}
-
-      {tab === "linea" && (
-        <div className="space-y-6">
-          <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} admin={isAdminFab} />
-          <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={isAdminFab} />
-          <ParadasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
-          <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
-          {isAdminFab && <MovimientosCaballetes />}
-          {isAdminFab && <LecturasLineaAdmin />}
-        </div>
-      )}
 
       {tab === "puestos" && (
         <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
@@ -36535,6 +36522,72 @@ function IncidenciasFabricaModulo({ incidencias, usuarios, currentUser, isAdmin,
           );
         })}
       </div>
+    </div>
+  );
+}
+
+const tabInicialFabrica = { actual: null };
+
+function calcListoParaFabricar(proyectos, pedidos) {
+  return proyectos.filter((p) => {
+    if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+    const misPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
+    if (misPedidos.length === 0) return false;
+    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
+    const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
+    const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
+    return oficinaOk && fabricaOk && checklistOk;
+  });
+}
+
+// Pantalla única de la línea: puesto (pistola), almacén de ventanas y estanterías/informes.
+// Solo hay UNA pestaña montada a la vez, así la pistola nunca lee en dos sitios a la vez.
+function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado }) {
+  const [tab, setTab] = useState("puesto");
+  const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
+  const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
+  const tabs = [
+    { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
+    ...(verMas ? [
+      { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
+      { id: "estanterias", t: "Estanterías e informes", aviso: "" },
+    ] : []),
+  ];
+  const actual = tabs.find((x) => x.id === tab) || tabs[0];
+  return (
+    <div>
+      {tabs.length > 1 && (
+        <div className="flex flex-wrap gap-1 border-b border-slate-200 mb-3">
+          {tabs.map((x) => (
+            <button key={x.id} type="button" onClick={() => setTab(x.id)}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === x.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+              {x.t}
+              {x.extra ? <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{x.extra}</Badge> : null}
+            </button>
+          ))}
+        </div>
+      )}
+      {actual.aviso && tabs.length > 1 && (
+        <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
+      )}
+      {actual.id === "puesto" && (
+        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
+      )}
+      {actual.id === "almacen" && (
+        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+          proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
+          pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
+      )}
+      {actual.id === "estanterias" && (
+        <div className="space-y-6">
+          <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={admin} />
+          <ParadasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
+          <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
+          {admin && <MovimientosCaballetes />}
+          {admin && <LecturasLineaAdmin />}
+        </div>
+      )}
     </div>
   );
 }
