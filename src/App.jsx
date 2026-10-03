@@ -33422,8 +33422,10 @@ function piezasSoldadora(items, hojasOv = {}, pilOv = {}) {
   });
 }
 // Manda las pegatinas de una en una (cada una es su propio trabajo) con una pausa entre ellas. Panel abajo a la derecha con botón Parar.
-function imprimirSecuencia(htmls) {
+// opc (opcional) = { codigos, leidas }: modo "una a una con pistola". Tras imprimir cada pegatina se espera a que la pistola lea esa pieza en la soldadora (o a pulsar Saltar) antes de sacar la siguiente.
+function imprimirSecuencia(htmls, opc = null) {
   const PAUSA_MS = 4000;
+  const modoPistola = !!(opc && opc.leidas && Array.isArray(opc.codigos));
   // el botón pulsado conserva el foco: la pistola escribe el código + Enter y ese Enter volvería a pulsarlo (imprimiría otra pegatina)
   try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* nada */ }
   // Se imprime desde la propia página (no desde un marco oculto): un contenedor que solo se ve al imprimir y el resto de la página oculto.
@@ -33440,9 +33442,16 @@ function imprimirSecuencia(htmls) {
   btn.style.cssText = "background:#e11d48;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-weight:bold;cursor:pointer";
   let parar = false;
   btn.onclick = () => { parar = true; };
-  caja.append(txt, btn);
+  let saltar = false;
+  const btnSaltar = document.createElement("button");
+  btnSaltar.textContent = "Saltar";
+  btnSaltar.style.cssText = "display:none;background:#475569;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-weight:bold;cursor:pointer";
+  btnSaltar.onclick = () => { saltar = true; };
+  caja.append(txt, btnSaltar, btn);
   document.body.appendChild(caja);
   const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  // el cursor tiene que estar en el campo de la pistola, si no la lectura se pierde
+  const enfocarLector = () => { try { const el = document.querySelector('input[placeholder^="Pasa la pistola por la etiqueta"]'); if (el && document.activeElement !== el) el.focus(); } catch (e) { /* nada */ } };
   const limpiar = () => { try { estilo.remove(); cont.remove(); caja.remove(); } catch (e) { /* nada */ } };
   (async () => {
     let hechas = 0;
@@ -33466,7 +33475,19 @@ function imprimirSecuencia(htmls) {
         });
         hechas += 1;
       } catch (e) { txt.textContent = "No se pudo imprimir: " + e.message; parar = true; await espera(3000); }
-      await espera(PAUSA_MS);
+      if (modoPistola) {
+        // sin pausa fija: la siguiente sale cuando se lee esta con la pistola (la última no espera)
+        if (i < htmls.length - 1 && !parar) {
+          saltar = false;
+          btnSaltar.style.display = "inline-block";
+          txt.textContent = `Pegatina ${i + 1} de ${htmls.length} impresa: pégala y pásale la pistola para sacar la siguiente`;
+          await espera(500);
+          while (!parar && !saltar && !opc.leidas().has(String(opc.codigos[i]))) { enfocarLector(); await espera(300); }
+          btnSaltar.style.display = "none";
+        }
+      } else {
+        await espera(PAUSA_MS);
+      }
     }
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
     btn.textContent = "Cerrar";
@@ -33475,7 +33496,7 @@ function imprimirSecuencia(htmls) {
     setTimeout(limpiar, 8000);
   })();
 }
-function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}, solo = null) {
+function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}, solo = null, opc = null) {
   dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
@@ -33504,7 +33525,7 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
   </style></head><body>${cuerpo}</body></html>`;
   if (!piezas.length) { alert("No hay pegatinas que imprimir."); return; }
   // una pegatina por trabajo de impresión: tras la primera pulsación van saliendo solas
-  imprimirSecuencia(piezas.map((p) => docHtml(etiqueta(p))));
+  imprimirSecuencia(piezas.map((p) => docHtml(etiqueta(p))), opc && opc.leidas ? { leidas: opc.leidas, codigos: piezas.map((p) => p.cod) } : null);
 }
 
 function PegatinasSoldadora({ indice, escaneos }) {
@@ -33514,6 +33535,11 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const solOv = useObjetoFb("solapeLinea");
   const mosqOv = useObjetoFb("mosquiteraLinea");
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
+  const [modo, setModo] = useState(() => { try { return localStorage.getItem("alumavel_pegatina_modo") === "golpe" ? "golpe" : "pistola"; } catch (e) { return "pistola"; } });
+  const cambiarModo = (m) => { setModo(m); try { localStorage.setItem("alumavel_pegatina_modo", m); } catch (e) { /* nada */ } };
+  const leidasRef = useRef(new Set());
+  leidasRef.current = new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => String(x.cod)));
+  const imp = (items, solo = null) => imprimirPegatinasSoldadora(items, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv, solo, modo === "pistola" ? { leidas: () => leidasRef.current } : null);
   const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
   const obras = useMemo(() => {
     const m = new Map();
@@ -33561,14 +33587,20 @@ function PegatinasSoldadora({ indice, escaneos }) {
           </div>
         </div>
       </div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="text-xs text-slate-500">Modo:</span>
+        <button type="button" onClick={() => cambiarModo("pistola")} className={`px-3 py-1.5 rounded-md text-xs font-semibold border ${modo === "pistola" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Una a una con pistola</button>
+        <button type="button" onClick={() => cambiarModo("golpe")} className={`px-3 py-1.5 rounded-md text-xs font-semibold border ${modo === "golpe" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Todas de golpe</button>
+        <span className="text-[11px] text-slate-500">{modo === "pistola" ? "Sale la primera; al pasar la pistola por ella sale la siguiente. Botón Saltar si una no se puede leer." : "Salen todas seguidas, con una pausa entre ellas."}</span>
+      </div>
       {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
           <div className="flex flex-wrap gap-2 mb-3">
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
-            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imp([faltan[0] || lista[0]])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
+            <button disabled={!medidaOk || !faltan.length} onClick={() => imp(faltan)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imp(lista)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
             {agruparPorVivienda(lista.map((x) => x.v)).map((g) => {
@@ -33577,7 +33609,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 <div key={g.grupo}>
                   <div className="flex items-center gap-3 px-3 py-1.5 bg-slate-50 text-xs font-semibold text-slate-700">
                     <span className="mr-auto">{g.grupo}{g.cliente ? ` · ${g.cliente}` : ""} ({xs.length})</span>
-                    <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora(xs, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-[#2E8B57] underline disabled:opacity-40">Imprimir esta vivienda</button>
+                    <button disabled={!medidaOk} onClick={() => imp(xs)} className="text-[#2E8B57] underline disabled:opacity-40">Imprimir esta vivienda</button>
                   </div>
                   {xs.map((x) => (
               <div key={x.v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
@@ -33595,12 +33627,12 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
-                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
+                <button disabled={!medidaOk} onClick={() => imp([x])} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
                 {x.v.modelo && (
                   <span className="flex items-center gap-1 text-[11px] text-slate-500">
                     ¿Se perdió una? Reimprimir:
                     {piezasSoldadora([x], hojasOv, pilOv).map((pz) => (
-                      <button key={pz.cod} disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv, [pz.cod])} className="px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 font-semibold disabled:opacity-40">{pz.tipo}</button>
+                      <button key={pz.cod} disabled={!medidaOk} onClick={() => imp([x], [pz.cod])} className="px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 font-semibold disabled:opacity-40">{pz.tipo}</button>
                     ))}
                   </span>
                 )}
