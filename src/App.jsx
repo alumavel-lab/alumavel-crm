@@ -31528,6 +31528,31 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
 
+// Estanterías de ventanas terminadas (36) y solape (36): para saber dónde está cada ventana desde el almacén
+function EstanteriasTerminadas({ indice, isAdmin }) {
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(false);
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const enZonas = Object.entries(ubic).filter(([, u]) => u && (u.zonaId === "espera" || u.zonaId === "solape"));
+  const norm = (t) => String(t || "").toLowerCase();
+  const encontradas = q.trim() ? enZonas.map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && norm(`${x.h.ventana.pos} ${x.h.ventana.num} ${x.h.ventana.grupo} ${x.h.ventana.cliente} ${x.h.lote.fab}`).includes(norm(q.trim()))) : [];
+  const nombreZona = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold text-slate-700">🪟 Ventanas terminadas en estanterías:</span>
+        <span className="text-xs text-slate-500">{enZonas.length} en solape / terminadas</span>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="posición, nº, vivienda o cliente" className="flex-1 min-w-[200px] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        <button onClick={() => setAbierto(!abierto)} className="text-xs font-semibold text-[#2E8B57] underline">{abierto ? "Ocultar mapa" : "Ver mapa"}</button>
+      </div>
+      {q.trim() && (encontradas.length === 0 ? <p className="text-xs text-slate-500">Ninguna ventana terminada coincide.</p> : (
+        <ul className="text-xs text-slate-700 space-y-0.5">{encontradas.slice(0, 20).map((x) => <li key={x.cod}><b>{x.h.ventana.pos}</b> · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} → {nombreZona(x.u.zonaId)} · estantería <b>{x.u.hueco}</b></li>)}</ul>
+      ))}
+      {abierto && <MapaZonasLinea ids={["solape", "espera"]} indice={indice} admin={isAdmin} destacar={encontradas[0] ? encontradas[0].u : null} />}
+    </div>
+  );
+}
+
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
@@ -32436,6 +32461,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
         ) : null;
       })()}
+      <EstanteriasTerminadas indice={indicePiezas} isAdmin={isAdmin} />
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-slate-700">🔎 Buscar ventana:</span>
@@ -32881,7 +32907,7 @@ const PUESTOS_LINEA = [
   { id: "persianaB", nombre: "Persiana B", corto: "Pers. B" },
   { id: "puerta", nombre: "Puerta", corto: "Puerta" },
   { id: "cristales", nombre: "Cristales", corto: "Cristales" },
-  { id: "solape", nombre: "Solape", corto: "Solape" },
+  { id: "solape", nombre: "Solape / postigo", corto: "Solape" },
   { id: "especiales", nombre: "Especiales", corto: "Especiales" },
   { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
 ];
@@ -32921,8 +32947,8 @@ const ZONAS_LINEA_DEFECTO = [
   { id: "persianaB", nombre: "Persiana B (salida)", huecos: 12 },
   { id: "bancoPuerta", nombre: "Banco de puerta", huecos: 12 },
   { id: "puertasTerminadas", nombre: "Puertas terminadas", huecos: 12 },
-  { id: "solape", nombre: "Solape", huecos: 36 },
-  { id: "espera", nombre: "Espera / paletizado", huecos: 36 },
+  { id: "solape", nombre: "Solape / postigo", huecos: 36 },
+  { id: "espera", nombre: "Ventanas terminadas (almacén de espera)", huecos: 36 },
   { id: "especiales", nombre: "Especiales", huecos: 12 },
 ];
 const ZONAS_POR_PUESTO = {
@@ -32943,7 +32969,6 @@ const REGLAS_PUESTO_LINEA = {
   persianaA: { desde: ["colgadoA"], deja: "persianaA" },
   persianaB: { desde: ["colgadoB"], deja: "persianaB" },
   puerta: { desde: ["bancoPuerta"], deja: "puertasTerminadas" },
-  cristales: { desde: ["persianaA", "persianaB"], deja: "solape" },
   solape: { desde: ["solape"], deja: "espera" },
   especiales: { desde: null, deja: "especiales" },
 };
@@ -33000,6 +33025,12 @@ async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = nu
   }
   return null;
 }
+async function colocarVentanaLinea(zonaId, h, zonas, ubic, por) {
+  const z = zonas.find((x) => x.id === zonaId);
+  if (!z) return null;
+  const r = await ocuparHuecoLinea(z, baseDe(h.ventana), por, ubic, 1, null, 1);
+  return r ? r.hueco : null;
+}
 // Cuando una ventana se carga, deja libres todas sus estanterías
 async function liberarVentanaLinea(h) {
   const v = h && h.ventana;
@@ -33010,7 +33041,7 @@ async function liberarVentanaLinea(h) {
   await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
 }
 // La regla de cada puesto: dónde deja la pieza que lees y de dónde la saca. Devuelve { ok, aviso, texto, zona }.
-async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, por, estricto = true }) {
+async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv = {}, mosqOv = {}, sinPersOv = {}, por, estricto = true }) {
   const v = h.ventana;
   const base = baseDe(v);
   const cod = String(h.pieza.c);
@@ -33077,6 +33108,32 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, por, 
     await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
     return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId: destino, hueco: n } };
   }
+  // Las demás ventanas de la misma vivienda (mismo lote y mismo grupo) y si ya están todas en "ventanas terminadas"
+  const matesVivienda = () => toArray(h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).map((w) => ({ w, u: ubic[baseDe(w)] }));
+  const textoCaballete = (mates) => `Coge también las de ventanas terminadas (estanterías ${mates.map((m) => m.u.hueco).join(", ")}) y escanéalas en Almacén ventanas.`;
+  if (puestoId === "cristales") {
+    const u = await ubicDe(base);
+    if (u && (u.zonaId === "solape" || u.zonaId === "espera")) return { ok: true, aviso: true, texto: `Ya estaba: ${v.pos} → ${donde(u)}`, zona: u };
+    const salidaPers = ["persianaA", "persianaB", "puertasTerminadas"];
+    const sinPersiana = (c) => !!sinPersOv[c] && ["colgadoA", "colgadoB", "bancoPuerta"].includes(c === base ? (u && u.zonaId) : (ubic[c] && ubic[c].zonaId));
+    if (estricto && !(u && (salidaPers.includes(u.zonaId) || sinPersiana(base)))) return { ok: false, texto: `⛔ ${v.pos}: aún no ha pasado por persiana. No se puede acristalar.` };
+    const pasadas = [...salidaPers, "solape", "espera"];
+    const faltanViv = matesVivienda().filter((m) => { const z = m.u && m.u.zonaId; return !z || !(pasadas.includes(z) || sinPersiana(baseDe(m.w))); });
+    if (estricto && faltanViv.length) return { ok: false, texto: `⛔ ${v.pos}: la vivienda ${v.grupo || ""} aún no está completa para acristalar. Faltan: ${faltanViv.map((m) => `${m.w.pos}${m.u ? ` (en ${nom(m.u.zonaId)})` : " (sin leer)"}`).join(", ")}.` };
+    if (solOv[base]) {
+      const n = await poner("solape", base);
+      if (!n) return llena("solape", v.pos);
+      return { ok: true, texto: `✓ ${v.pos} acristalada · LLEVA SOLAPE / POSTIGO → ${nom("solape")} · ESTANTERÍA ${n}`, zona: { zonaId: "solape", hueco: n } };
+    }
+    const mates = matesVivienda();
+    if (mates.length > 0 && mates.every((m) => m.u && m.u.zonaId === "espera")) {
+      await liberarCodigoLinea(base);
+      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`, zona: null };
+    }
+    const n = await poner("espera", base);
+    if (!n) return llena("espera", v.pos);
+    return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE → ${nom("espera")} · ESTANTERÍA ${n}`, zona: { zonaId: "espera", hueco: n } };
+  }
   const rg = REGLAS_PUESTO_LINEA[puestoId];
   if (rg) {
     if (puestoId === "pilastra" && esHoja) return { ok: false, texto: `En pilastra se lee el MARCO. Esto es la HOJA ${nHoja} de ${v.pos}.` };
@@ -33086,7 +33143,13 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, por, 
     if (u && rg.desde && !rg.desde.includes(u.zonaId)) return { ok: false, texto: `⚠ ${v.pos} está en ${donde(u)}, no en ${rg.desde.map(nom).join(" / ")}. Revisa el puesto.` };
     const n = await poner(rg.deja, base);
     if (!n) return llena(rg.deja, v.pos);
-    return { ok: true, texto: `✓ ${v.pos} → ${nom(rg.deja)} · ESTANTERÍA ${n}${sitio()}${u ? ` (libera ${donde(u)})` : " · aviso: no estaba registrada en el banco anterior"}`, zona: { zonaId: rg.deja, hueco: n } };
+    let extra = "";
+    if (puestoId === "solape") {
+      const mates = matesVivienda();
+      if (mates.length > 0 && mates.every((m) => m.u && m.u.zonaId === "espera")) extra = ` · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`;
+    }
+    const mosq = (puestoId === "persianaA" || puestoId === "persianaB") && mosqOv[base] ? "🦟 LLEVA MOSQUITERA: ponla también. " : "";
+    return { ok: true, texto: `${mosq}✓ ${v.pos} → ${nom(rg.deja)} · ESTANTERÍA ${n}${sitio()}${u ? ` (libera ${donde(u)})` : " · aviso: no estaba registrada en el banco anterior"}${extra}`, zona: { zonaId: rg.deja, hueco: n } };
   }
   return null;
 }
@@ -33130,6 +33193,43 @@ function ListaPreparadas({ puestoId, ubic, indice }) {
           {lista.slice(0, 40).map((x) => <li key={x.cod}>{x.h.ventana.pos}{/^Hoja (\d)/.test(String(x.h.pieza.t || "")) ? ` ${x.h.pieza.t}` : ""} · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería {x.u.hueco}</li>)}
         </ol>
       )}
+    </div>
+  );
+}
+
+// Viviendas que ya tienen todas sus ventanas listas (salida de persiana o puerta): ahí se manda a acristalar
+function ListaAcristalar({ ubic, indice, sinPersOv }) {
+  const salida = ["persianaA", "persianaB", "puertasTerminadas"];
+  const enCurso = ["colgadoA", "colgadoB", "bancoPuerta", ...salida];
+  const pasadas = [...salida, "solape", "espera"];
+  const grupos = new Map();
+  indice.forEach((h) => {
+    if (!h.ventana.modelo || h.pieza.t !== "Ventana") return;
+    const k = `${h.lote.fab}|${h.ventana.grupo || ""}`;
+    if (!grupos.has(k)) grupos.set(k, { grupo: h.ventana.grupo || "", cliente: h.ventana.cliente || "", ventanas: [] });
+    grupos.get(k).ventanas.push({ v: h.ventana, u: ubic[baseDe(h.ventana)] });
+  });
+  const nom = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
+  const lista = [...grupos.values()].filter((g) => g.ventanas.some((x) => x.u && enCurso.includes(x.u.zonaId)));
+  const listo = (x) => x.u && (pasadas.includes(x.u.zonaId) || (sinPersOv[baseDe(x.v)] && ["colgadoA", "colgadoB", "bancoPuerta"].includes(x.u.zonaId)));
+  const listas = lista.filter((g) => g.ventanas.every(listo) && g.ventanas.some((x) => x.u && salida.includes(x.u.zonaId) || (x.u && sinPersOv[baseDe(x.v)])));
+  const faltan = lista.filter((g) => !g.ventanas.every(listo));
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+      <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
+        <div className="text-sm font-semibold text-emerald-900 mb-1">Viviendas listas para acristalar ({listas.length})</div>
+        {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan ventanas por llegar.</p> : listas.map((g) => (
+          <div key={g.grupo + g.cliente} className="text-xs text-slate-700 mb-1.5"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: {g.ventanas.map((x) => `${x.v.pos} (${nom(x.u.zonaId)} · est. ${x.u.hueco})`).join(", ")}</div>
+        ))}
+      </div>
+      <div className="border border-amber-300 bg-amber-50/60 rounded-lg p-3">
+        <div className="text-sm font-semibold text-amber-900 mb-1">En camino: faltan ventanas ({faltan.length})</div>
+        {faltan.length === 0 ? <p className="text-xs text-slate-500">Ninguna.</p> : faltan.map((g) => (
+          <div key={g.grupo + g.cliente} className="text-xs text-slate-700 mb-1.5"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: faltan {g.ventanas.filter((x) => !listo(x)).map((x) => (
+            <span key={x.v.id} className="mr-2">{x.v.pos} ({x.u ? `${nom(x.u.zonaId)} · est. ${x.u.hueco}` : "sin leer"}){x.u && ["colgadoA", "colgadoB", "bancoPuerta"].includes(x.u.zonaId) && <button onClick={() => fbSet(ref(fbDb, `sinPersianaLinea/${baseDe(x.v)}`), true).catch(() => {})} className="ml-1 underline text-[#2E8B57]">no lleva persiana</button>}</span>
+          ))}</div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -33222,6 +33322,8 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const [obraKey, setObraKey] = useState("");
   const hojasOv = useObjetoFb("hojasLinea");
   const pilOv = useObjetoFb("pilastraLinea");
+  const solOv = useObjetoFb("solapeLinea");
+  const mosqOv = useObjetoFb("mosquiteraLinea");
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
   const obras = useMemo(() => {
@@ -33298,6 +33400,8 @@ function PegatinasSoldadora({ indice, escaneos }) {
                     <option value={1}>1 hoja</option><option value={2}>2 hojas</option><option value={3}>3 hojas</option>
                   </select>
                 )}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `mosquiteraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />mosquitera</label>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `solapeLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `pilastraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
                 <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
@@ -33487,6 +33591,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
   const ubic = useObjetoFb("ubicacionesLinea");
   const hojasOv = useObjetoFb("hojasLinea");
   const pilOv = useObjetoFb("pilastraLinea");
+  const solOv = useObjetoFb("solapeLinea");
+  const mosqOv = useObjetoFb("mosquiteraLinea");
+  const sinPersOv = useObjetoFb("sinPersianaLinea");
   const cfgLinea = useObjetoFb("configLinea");
   const estricto = cfgLinea.estricto !== false;
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
@@ -33516,7 +33623,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
     let z = null;
     if (v.modelo) {
-      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, por: quien, estricto }); }
+      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, solOv, mosqOv, sinPersOv, por: quien, estricto }); }
       catch (e) { z = { ok: false, texto: `No se pudieron actualizar las estanterías (${(e && e.message) || e}). La lectura NO se ha guardado.` }; }
       if (z && !z.ok) { avisar(false, z.texto); return; }
     }
@@ -33555,7 +33662,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
-        {puestoId !== "pilastra" && puestoId !== "colgado" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
+        {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
+        {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4"><MapaZonasLinea ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} destacar={ultimo && ultimo.zona} /></div>
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
