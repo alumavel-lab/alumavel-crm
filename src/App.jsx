@@ -4966,7 +4966,7 @@ export default function App() {
           {modulo === "lineapistola" && (
             <div className="p-4 sm:p-8 max-w-4xl">
               <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" subtitle="Lee la etiqueta de cada ventana en tu puesto" />
-              <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} cristales={cristales} onUpdateCristal={updateCristal} />
+              <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} cristales={cristales} onUpdateCristal={updateCristal} admin={isAdmin} />
             </div>
           )}
           </IncidenciasCristalCtx.Provider>
@@ -6462,6 +6462,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
       guardarRef.current(mezclarLotesFab(lotesRef.current, r, file.name));
       const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
       setAviso(`Leídas ${r.etiquetas} etiquetas de ${nv} ventanas/puertas (lote${r.lotes.length > 1 ? "s" : ""} ${r.lotes.map((l) => l.fab).join(", ")}).${r.ignoradas ? ` ${r.ignoradas} páginas no tenían etiqueta.` : ""}${r.repetidas ? ` ${r.repetidas} códigos repetidos ignorados.` : ""}`);
+      if (r.carga) setAviso((a) => `${a} Es una CARGA DE MATERIAL (no trae lote de fabricación): se usa el número del pedido como lote.`);
       if (r.modelo) setAviso((a) => `${a} Etiquetas sin código de barras: el CRM les ha generado uno propio de 12 cifras (se imprime desde Fábrica → Línea (pistola) → Pegatinas).${r.persianas ? ` ${r.persianas} persiana(s) no llevan código y se han dejado fuera.` : ""}`);
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
@@ -6491,7 +6492,12 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
             {!portal && <button onClick={(e) => { e.preventDefault(); quitar(l.fab); }} className="ml-auto text-xs text-rose-600 hover:underline">Quitar</button>}
           </summary>
           <div className="px-3 pb-2 text-xs text-slate-600 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-            {toArray(l.ventanas).map((v) => <div key={v.id}><b>{v.pos}</b> · nº {v.num}{v.color ? ` · ${v.color}` : ""} · {toArray(v.piezas).length} piezas</div>)}
+            {agruparPorVivienda(l.ventanas).map((g) => (
+              <React.Fragment key={g.grupo}>
+                <div className="sm:col-span-2 font-semibold text-slate-700 mt-1.5">{g.grupo}{g.cliente ? ` · ${g.cliente}` : ""} ({g.ventanas.length})</div>
+                {g.ventanas.map((v) => <div key={v.id}><b>{v.pos}</b> · nº {v.num}{v.color ? ` · ${v.color}` : ""}{v.medida ? ` · ${v.medida}` : ""} · {toArray(v.piezas).length} piezas</div>)}
+              </React.Fragment>
+            ))}
           </div>
         </details>
       ))}
@@ -15313,7 +15319,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 
       {tab === "linea" && (
         <div className="space-y-6">
-          <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} />
+          <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} admin={isAdminFab} />
+          <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={isAdminFab} />
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
           {isAdminFab && <MovimientosCaballetes />}
           {isAdminFab && <LecturasLineaAdmin />}
@@ -30589,12 +30596,33 @@ function agruparEtiquetasFab(paginas) {
     etiquetas, ignoradas, repetidas,
   };
 }
+function agruparPorVivienda(ventanas) {
+  const m = new Map();
+  toArray(ventanas).forEach((v) => {
+    const k = v.grupo || "Sin vivienda";
+    const g = m.get(k) || { grupo: k, cliente: v.cliente || "", ventanas: [] };
+    g.ventanas.push(v);
+    m.set(k, g);
+  });
+  return [...m.values()].sort((a, b) => String(a.grupo).localeCompare(String(b.grupo), "es", { numeric: true }));
+}
+function ViviendasResumen({ ventanas }) {
+  const gs = agruparPorVivienda(ventanas);
+  if (!gs.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1">
+      {gs.map((g) => (
+        <span key={g.grupo} className="px-2 py-0.5 rounded-full bg-white border border-slate-200 text-[11px] text-slate-700"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: {g.ventanas.length}</span>
+      ))}
+    </div>
+  );
+}
 // ---- Etiquetas "modelos unidad" (una por ventana, SIN código de barras, con dibujo, nombre, REF. OBRA y TIPOLOGIA) ----
 // El CRM les genera un código de 12 cifras propio (empieza por 9: FAB 4 + expediente 4 + nº de la tipología 3) y las
 // guarda con la misma estructura que las etiquetas de perfil, así la pistola, las pegatinas y el informe funcionan igual.
 function agruparEtiquetasModelo(paginas) {
   const lotes = new Map();
-  let etiquetas = 0, ignoradas = 0, repetidas = 0, persianas = 0;
+  let etiquetas = 0, ignoradas = 0, repetidas = 0, persianas = 0, extrasSinNumero = 0;
   const vistos = new Set();
   const mm = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
   paginas.forEach((items) => {
@@ -30608,14 +30636,20 @@ function agruparEtiquetasModelo(paginas) {
       const bloque = lineas.slice(i + 1, fin);
       const texto = bloque.join("\n");
       const ref = (bloque.find((l) => !/^TIPOLOG/i.test(l)) || "").trim();
-      const tip = ((texto.match(/TIPOLOG[IÍ]A:\s*(\S+)/i) || [])[1] || "").trim();
+      const tip = ((texto.match(/TIPOLOG[IÍ]A:\s*([^\n]+)/i) || [])[1] || "").replace(/\s+/g, " ").trim();
       const med = texto.match(/([\d.]+,\d+)\s*x\s*([\d.]+,\d+)/);
       const fab = ((texto.match(/FAB:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, ""); // "1.271" → "1271", como el resto de lotes (Firebase no admite el punto en una clave)
       const exp = ((ref.match(/EXP\.?\s*(\d+)/i) || [])[1]) || "";
       const planta = ((ref.match(/EXP\.?\s*\d+\s*(.*)$/i) || [])[1] || "").trim();
-      const m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
+      let m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
       if (!tip || !fab || !exp) { ignoradas++; return; }
-      if (!m) { if (/persiana/i.test(tip)) persianas++; else ignoradas++; return; } // las persianas no son ventanas: no llevan código
+      if (!m && /^persiana/i.test(tip)) { persianas++; return; } // las persianas no son ventanas: no llevan código
+      if (!m) {
+        // "Extras" (EXTRA COCINA 1, correderas…): no traen número de tipología. Se les da 9xx con el número del nombre (o el orden), para que también lleven pegatina.
+        const nTxt = (tip.match(/(\d+)\s*$/) || [])[1];
+        const n = nTxt ? parseInt(nTxt, 10) % 100 : ++extrasSinNumero;
+        m = [tip, tip, String(900 + n)];
+      }
       const code = "9" + fab.replace(/\D/g, "").slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + m[2].slice(-3).padStart(3, "0");
       const id = `${fab}|${exp}|${tip}`;
       if (vistos.has(code)) { repetidas++; return; }
@@ -30623,7 +30657,8 @@ function agruparEtiquetasModelo(paginas) {
       let lote = lotes.get(fab);
       if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
       const a = med ? mm(med[1]) : null, h = med ? mm(med[2]) : null;
-      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: a && h ? `${a} x ${h}` : "", piezas: [{ c: code, t: "Ventana" }] });
+      const medidaTxt = a && h ? `${a} x ${h}` : "";
+      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: medidaTxt, modelo: true, hojas: hojasSugeridas({ medida: medidaTxt }), piezas: [{ c: code, t: "Ventana" }] });
       etiquetas++;
     });
   });
@@ -30631,6 +30666,66 @@ function agruparEtiquetasModelo(paginas) {
   return {
     lotes: [...lotes.values()].map((l) => ({ fab: l.fab, expediente: l.expediente, ventanas: [...l.ventanas.values()].sort((a, b) => nat(a.grupo, b.grupo) || nat(a.pos, b.pos)) })),
     etiquetas, ignoradas, repetidas, persianas, modelo: true,
+  };
+}
+// ---- "Carga de material" (un pedido: número, referencia y sus ventanas): sirve para crear pegatinas cuando no hay PDF de etiquetas ----
+// No trae lote de fabricación: se usa el número del pedido (6.305 → lote 6305). Los códigos se generan igual que en "modelos unidad".
+function agruparCargaMaterial(paginas) {
+  const lotes = new Map();
+  let etiquetas = 0, ignoradas = 0, repetidas = 0, persianas = 0, extrasSinNumero = 0;
+  const vistos = new Set();
+  const mm = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
+  let numero = "", ref = "", cliente = "";
+  paginas.forEach((items) => {
+    const lineas = items.join("").split("\n").map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
+    const todo = lineas.join("\n");
+    if (!/CARGA MATERIAL/i.test(todo)) { ignoradas++; return; }
+    const mN = todo.match(/N[uú]mero\s*:\s*([\d.]+)/i); if (mN) numero = mN[1];
+    const mR = todo.match(/Referenc[ií]a\s*:\s*([^\n]+)/i); if (mR) ref = mR[1].trim();
+    const mC = todo.match(/Cliente\s*:\s*([^\n]+)/i); if (mC) cliente = mC[1].trim().replace(/^\d+\s*-\s*/, "");
+    const idx = [];
+    lineas.forEach((l, i) => { if (/^Modelo\s*:/i.test(l)) idx.push(i); });
+    const fab = numero.replace(/\D/g, "");
+    const mE = ref.match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*(.*)$/i);
+    const exp = mE ? mE[1] : fab; // sin "EXP nnn" en la referencia (p. ej. "PVC 5 ventanas madera") se usa el número del pedido
+    const planta = mE ? (mE[2] || "").trim() : "";
+    if (!fab || !exp) { if (idx.length) ignoradas++; return; }
+    idx.forEach((i, k) => {
+      const fin = k + 1 < idx.length ? idx[k + 1] : lineas.length;
+      const bloque = lineas.slice(i, fin).join("\n");
+      const tip = ((bloque.match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").trim();
+      const color = ((bloque.match(/Color\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+      const uds = Math.max(1, Math.min(9, parseInt((bloque.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1));
+      const med = bloque.match(/Medidas\s*:\s*([\d.]+)\s*mm\s*,\s*([\d.]+)\s*mm/i);
+      if (!tip) { ignoradas++; return; }
+      if (/^persiana/i.test(tip)) { persianas++; return; }
+      const m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
+      let seqBase;
+      if (m) seqBase = parseInt(m[2], 10);
+      else { const nTxt = (tip.match(/(\d+)\s*$/) || [])[1]; seqBase = 900 + (nTxt ? parseInt(nTxt, 10) % 100 : ++extrasSinNumero); }
+      const a = med ? mm(med[1]) : null, h = med ? mm(med[2]) : null;
+      const medidaTxt = a && h ? `${a} x ${h}` : "";
+      // Hojas = vidrios "grandes" de la ventana (se ignora la tira inferior de unos 170 mm); si no hay datos, se estima por el ancho
+      let sumaVid = 0;
+      lineas.slice(i, fin).forEach((l) => { const mv = l.match(/^Vid\s*:.*?([\d.]+)\s*x\s*([\d.]+)\s+ud\s*:\s*(\d+)/i); if (mv && mm(mv[2]) > 300) sumaVid += parseInt(mv[3], 10); });
+      const hojasCarga = sumaVid >= 1 && sumaVid <= 3 ? sumaVid : hojasSugeridas({ medida: medidaTxt });
+      for (let u = 1; u <= uds; u++) {
+        const seq = String((seqBase + 100 * (u - 1)) % 1000).padStart(3, "0");
+        const code = "9" + fab.slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + seq;
+        if (vistos.has(code)) { repetidas++; continue; }
+        vistos.add(code);
+        const id = `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
+        let lote = lotes.get(fab);
+        if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
+        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, piezas: [{ c: code, t: "Ventana" }] });
+        etiquetas++;
+      }
+    });
+  });
+  const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+  return {
+    lotes: [...lotes.values()].map((l) => ({ fab: l.fab, expediente: l.expediente, ventanas: [...l.ventanas.values()].sort((a, b) => nat(a.grupo, b.grupo) || nat(a.pos, b.pos)) })),
+    etiquetas, ignoradas, repetidas, persianas, modelo: true, carga: true,
   };
 }
 async function leerEtiquetasFabPdf(file, onProgreso) {
@@ -30646,13 +30741,17 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
   }
   const r = agruparEtiquetasFab(paginas);
   if (!r.lotes.length) { const r2 = agruparEtiquetasModelo(paginas); if (r2.lotes.length) return r2; }
+  if (!r.lotes.length) { const r3 = agruparCargaMaterial(paginas); if (r3.lotes.length) return r3; }
   return r;
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
 function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
   const m = new Map();
-  const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz }))));
+  const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => {
+    m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz });
+    if (v.modelo && String(pz.c)[0] === "9") [1, 2, 3].forEach((k) => { const c = codHoja(String(pz.c), k); m.set(c, { dueno, lote, ventana: v, pieza: { c, t: `Hoja ${k}` } }); });
+  })));
   toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "" }, pr.etiquetasFab));
   toArray(uxExpedientes).forEach((e) => meter({ key: `u-${e.id}`, tipo: "u", id: e.id, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, clienteId: "", direccion: "" }, e.etiquetasFab));
   toArray(sinObra).forEach((l) => meter({ key: `s-${l.fab}`, tipo: "s", id: l.fab, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, clienteId: "", direccion: "" }, [l]));
@@ -30830,6 +30929,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
           {pend && (
             <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
               <div className="text-sm text-slate-800">PDF <b>{pend.archivo}</b>: {pend.r.etiquetas} etiquetas · {pend.r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas · lote {pend.r.lotes.map((l) => l.fab).join(", ")}{pend.r.lotes[0].expediente ? ` · expediente ${pend.r.lotes[0].expediente}` : ""}</div>
+              <ViviendasResumen ventanas={pend.r.lotes.flatMap((l) => toArray(l.ventanas))} />
               <div className="flex flex-wrap items-center gap-2">
                 <button onClick={() => guardar("")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar SIN obra (la asigno luego)</button>
                 <span className="text-xs text-slate-500">o</span>
@@ -30848,6 +30948,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
               {toArray(sinObra).map((l) => (
                 <div key={l.fab} className="flex flex-wrap items-center gap-2 text-xs">
                   <b className="text-slate-800">Lote {l.fab}</b><span className="text-slate-600">{nVent(l)} ventanas/puertas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <div className="w-full"><ViviendasResumen ventanas={l.ventanas} /></div>
                   <select value={selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente)} onChange={(e) => setSelAsignar({ ...selAsignar, [l.fab]: e.target.value })} className="ml-auto text-xs border border-slate-300 rounded px-1.5 py-1 bg-white min-w-[180px]">
                     <option value="">— Asignar a la obra… —</option>
                     {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
@@ -30865,6 +30966,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
               {lotesTodos.map((o) => o.lotes.map((l) => (
                 <div key={o.key + l.fab} className="flex flex-wrap items-center gap-x-3">
                   <b className="text-slate-800">{o.nombre}</b><span>lote {l.fab} · {nVent(l)} ventanas/puertas{l.archivo ? ` · ${l.archivo}` : ""}</span>
+                  <div className="w-full"><ViviendasResumen ventanas={l.ventanas} /></div>
                   <button onClick={() => reimprimirLote(l)} className="text-slate-700 hover:underline" title="Imprime en la Honeywell etiquetas nuevas con el código bien negro">🖨 Etiquetas legibles</button>
                   <button onClick={() => quitar(o.key, o.nombre, l.fab)} className="text-rose-600 hover:underline">Eliminar</button>
                 </div>
@@ -31741,7 +31843,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       volverAEscanear(); return;
     }
     setAvisoScan("");
-    registrarEscaneoLinea({ puestoId: "carga", h });
+    registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v, pieza } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
@@ -31770,7 +31872,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setUltimaLectura(`${cod} · ${new Date().toLocaleTimeString("es-ES")}`);
     const h = indicePiezas.get(cod);
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
-    registrarEscaneoLinea({ puestoId: "carga", h });
+    registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const todos = cabsAhora();
@@ -32773,10 +32875,14 @@ function PlanningMontajes({ instalaciones, proyectos, clientes, pedidos = [], co
 const PUESTOS_LINEA = [
   { id: "soldadora", nombre: "Salida de soldadora", corto: "Soldadora" },
   { id: "herraje", nombre: "Herraje", corto: "Herraje" },
+  { id: "pilastra", nombre: "Pilastra / travesaño", corto: "Pilastra" },
   { id: "colgado", nombre: "Colgado", corto: "Colgado" },
-  { id: "persiana", nombre: "Persiana", corto: "Persiana" },
+  { id: "persianaA", nombre: "Persiana A", corto: "Pers. A" },
+  { id: "persianaB", nombre: "Persiana B", corto: "Pers. B" },
+  { id: "puerta", nombre: "Puerta", corto: "Puerta" },
   { id: "cristales", nombre: "Cristales", corto: "Cristales" },
   { id: "solape", nombre: "Solape", corto: "Solape" },
+  { id: "especiales", nombre: "Especiales", corto: "Especiales" },
   { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
 ];
 const nombrePuestoLinea = (id) => (PUESTOS_LINEA.find((p) => p.id === id) || {}).nombre || id;
@@ -32790,10 +32896,10 @@ const useEscaneosLinea = () => {
 async function registrarEscaneoLinea({ puestoId, h, por }) {
   try {
     const v = h.ventana;
-    const clave = claveEscaneoLinea(puestoId, v.id);
+    const clave = claveLecturaLinea(puestoId, h);
     const rec = {
       id: clave, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), puestoId, puestoNombre: nombrePuestoLinea(puestoId),
-      cod: String(h.pieza.c), ventanaId: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, obraKey: h.dueno.key, obraNombre: h.dueno.nombre,
+      cod: String(h.pieza.c), pieza: h.pieza.t || "", ventanaId: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, obraKey: h.dueno.key, obraNombre: h.dueno.nombre,
       grupo: v.grupo || "", por: por || (fbAuth.currentUser && fbAuth.currentUser.email) || "",
     };
     const r = await runTransaction(ref(fbDb, `escaneosLinea/${clave}`), (actual) => (actual ? undefined : rec));
@@ -32802,17 +32908,295 @@ async function registrarEscaneoLinea({ puestoId, h, por }) {
     return `error: ${(e && e.message) || e}`;
   }
 }
+/* ---------- ZONAS DE LA LÍNEA: estanterías con huecos numerados (qué pieza está dónde) ---------- */
+const ZONAS_LINEA_DEFECTO = [
+  { id: "marcos", nombre: "Marcos (soldadora)", huecos: 24 },
+  { id: "marcosPilastra", nombre: "Marcos con pilastra / travesaño (esperan)", huecos: 12 },
+  { id: "hojas", nombre: "Hojas (soldadora)", huecos: 24, cap: 2 },
+  { id: "puertas", nombre: "Puertas (marco 1-6 · hoja 7-12)", huecos: 12 },
+  { id: "hojasHerraje", nombre: "Hojas con herraje", huecos: 24, cap: 2 },
+  { id: "colgadoA", nombre: "Banco persiana A (sale del colgado)", huecos: 12 },
+  { id: "colgadoB", nombre: "Banco persiana B (sale del colgado)", huecos: 12 },
+  { id: "persianaA", nombre: "Persiana A (salida)", huecos: 12 },
+  { id: "persianaB", nombre: "Persiana B (salida)", huecos: 12 },
+  { id: "bancoPuerta", nombre: "Banco de puerta", huecos: 12 },
+  { id: "puertasTerminadas", nombre: "Puertas terminadas", huecos: 12 },
+  { id: "solape", nombre: "Solape", huecos: 36 },
+  { id: "espera", nombre: "Espera / paletizado", huecos: 36 },
+  { id: "especiales", nombre: "Especiales", huecos: 12 },
+];
+const ZONAS_POR_PUESTO = {
+  soldadora: ["marcos", "marcosPilastra", "hojas", "puertas"],
+  pilastra: ["marcosPilastra", "marcos"],
+  herraje: ["hojas", "hojasHerraje"],
+  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "puertas", "colgadoA", "colgadoB", "bancoPuerta"],
+  persianaA: ["colgadoA", "persianaA"],
+  persianaB: ["colgadoB", "persianaB"],
+  puerta: ["bancoPuerta", "puertasTerminadas"],
+  cristales: ["persianaA", "persianaB", "solape"],
+  solape: ["solape", "espera"],
+  especiales: ["especiales"],
+  carga: ["espera"],
+};
+const REGLAS_PUESTO_LINEA = {
+  pilastra: { desde: ["marcosPilastra"], deja: "marcos" },
+  persianaA: { desde: ["colgadoA"], deja: "persianaA" },
+  persianaB: { desde: ["colgadoB"], deja: "persianaB" },
+  puerta: { desde: ["bancoPuerta"], deja: "puertasTerminadas" },
+  cristales: { desde: ["persianaA", "persianaB"], deja: "solape" },
+  solape: { desde: ["solape"], deja: "espera" },
+  especiales: { desde: null, deja: "especiales" },
+};
+// Piezas que caben en cada hueco: 1 marco por estantería, 2 hojas por estantería (en puertas: 1 pieza por estantería, marco o hoja)
+const capPieza = (z, esHoja) => (z.id === "puertas" ? 1 : z.cap || 1);
+const useObjetoFb = (ruta) => {
+  const [o, setO] = useState({});
+  useEffect(() => onValue(ref(fbDb, ruta), (s) => setO(s.val() || {}), () => setO({})), [ruta]);
+  return o;
+};
+const useZonasLinea = () => {
+  const cfg = useObjetoFb("configZonasLinea");
+  return useMemo(() => ZONAS_LINEA_DEFECTO.map((z) => ({ ...z, huecos: Math.max(1, parseInt(cfg[z.id], 10) || z.huecos) })), [cfg]);
+};
+// Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
+const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : a <= 1500 ? 2 : 3) : 2; };
+const hojasDe = (v, ov) => {
+  const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
+  const o = ov && base ? parseInt(ov[base], 10) : 0;
+  if (o >= 1 && o <= 3) return o;
+  return v && v.hojas >= 1 && v.hojas <= 3 ? v.hojas : hojasSugeridas(v);
+};
+const esPuertaLinea = (v) => /^P/i.test(String((v && v.pos) || ""));
+const baseDe = (v) => String(v.piezas[0].c);
+const codHoja = (base, k) => ({ 1: "8", 2: "7", 3: "6" })[k] + String(base).slice(1);
+const nombrePiezaClave = (k) => (k === "m" ? "MARCO" : `HOJA ${k.slice(1)}`);
+const claveLecturaLinea = (puestoId, h) => claveEscaneoLinea(puestoId, h.ventana.modelo ? h.pieza.c : h.ventana.id);
+
+// Quita una pieza de su estantería (libera el hueco y borra su ubicación)
+async function liberarCodigoLinea(cod) {
+  const snap = await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`));
+  const u = snap.val();
+  if (u && u.zonaId) await runTransaction(ref(fbDb, `ocupacionLinea/${u.zonaId}/${u.hueco}_${u.slot || 1}`), (cur) => (cur === cod ? null : undefined));
+  await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), null);
+  return u || null;
+}
+// Coloca (o mueve) una pieza en el primer sitio libre de una zona; cada hueco admite "cap" piezas (marco 1, hojas 2).
+// El sitio se reserva con una transacción: dos ordenadores no pueden asignar el mismo. Si no hay sitio, no cambia nada.
+async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = null, cap = 1) {
+  const max = Math.min(hasta || zona.huecos, zona.huecos);
+  const ocupados = new Set(Object.values(ubicLocal || {}).filter((u) => u && u.zonaId === zona.id).map((u) => `${u.hueco}_${u.slot || 1}`));
+  const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
+  const claveprev = prev && prev.zonaId ? `${prev.zonaId}/${prev.hueco}_${prev.slot || 1}` : "";
+  for (let h = desde; h <= max; h++) {
+    for (let sl = 1; sl <= cap; sl++) {
+      const k = `${h}_${sl}`;
+      if (ocupados.has(k) && claveprev !== `${zona.id}/${k}`) continue;
+      const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${k}`), (cur) => (cur ? undefined : cod));
+      if (!r.committed) continue;
+      if (claveprev && claveprev !== `${zona.id}/${k}`) await runTransaction(ref(fbDb, `ocupacionLinea/${claveprev}`), (cur) => (cur === cod ? null : undefined));
+      await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: h, slot: sl, ts: Date.now(), por: por || "" });
+      return { hueco: h, slot: sl, cap };
+    }
+  }
+  return null;
+}
+// Cuando una ventana se carga, deja libres todas sus estanterías
+async function liberarVentanaLinea(h) {
+  const v = h && h.ventana;
+  if (!v || !v.modelo || !toArray(v.piezas)[0]) return;
+  const base = baseDe(v);
+  await liberarCodigoLinea(base);
+  for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
+  await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
+}
+// La regla de cada puesto: dónde deja la pieza que lees y de dónde la saca. Devuelve { ok, aviso, texto, zona }.
+async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, por, estricto = true }) {
+  const v = h.ventana;
+  const base = baseDe(v);
+  const cod = String(h.pieza.c);
+  const mh = /^Hoja (\d)/.exec(String(h.pieza.t || ""));
+  const esHoja = !!mh;
+  const nHoja = mh ? parseInt(mh[1], 10) : 0;
+  const nHojas = hojasDe(v, hojasOv);
+  const puerta = esPuertaLinea(v);
+  const etq = esHoja ? `HOJA ${nHoja}` : "MARCO";
+  const zona = (id) => zonas.find((z) => z.id === id);
+  const nom = (id) => (zona(id) ? zona(id).nombre : id);
+  const donde = (u) => (u ? `${nom(u.zonaId)} · estantería ${u.hueco}${u.slot > 1 ? ` (sitio ${u.slot})` : ""}` : "sin ubicar");
+  let ult = { slot: 1, cap: 1 };
+  const poner = async (zonaId, codigo, desde, hasta) => {
+    const z = zona(zonaId);
+    const r = await ocuparHuecoLinea(z, codigo, por, ubic, desde, hasta, capPieza(z, codigo !== base && esHoja));
+    if (!r) return null;
+    ult = { slot: r.slot, cap: r.cap };
+    return r.hueco;
+  };
+  const sitio = () => (ult.cap > 1 ? ` (sitio ${ult.slot} de ${ult.cap})` : "");
+  const llena = (zonaId, que) => ({ ok: false, texto: `⚠ ${nom(zonaId)} LLENA. ${que} NO se ha movido: libera una estantería o pulsa «+» para añadir más.` });
+  const ubicDe = async (c) => (await fbGet(ref(fbDb, `ubicacionesLinea/${c}`))).val();
+
+  if (puestoId === "soldadora") {
+    const zonaId = puerta ? "puertas" : esHoja ? "hojas" : pilOv[base] ? "marcosPilastra" : "marcos";
+    const desde = puerta && esHoja ? 7 : 1;
+    const hasta = puerta && !esHoja ? 6 : null;
+    const u0 = await ubicDe(cod);
+    if (u0 && u0.zonaId === zonaId) return { ok: true, aviso: true, texto: `Ya estaba: ${etq} ${v.pos} → ${donde(u0)}`, zona: u0 };
+    const n = await poner(zonaId, cod, desde, hasta);
+    if (!n) return llena(zonaId, `${etq} ${v.pos}`);
+    return { ok: true, texto: `✓ ${etq} ${v.pos} → ${nom(zonaId)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId, hueco: n } };
+  }
+  if (puestoId === "herraje") {
+    if (!esHoja) return { ok: false, texto: `En herraje solo se leen HOJAS. Esto es el MARCO ${v.pos}.` };
+    const u0 = await ubicDe(cod);
+    if (u0 && u0.zonaId === "hojasHerraje") return { ok: true, aviso: true, texto: `Ya estaba: HOJA ${nHoja} ${v.pos} → ${donde(u0)}`, zona: u0 };
+    if (estricto && !(u0 && (u0.zonaId === "hojas" || u0.zonaId === "puertas"))) return { ok: false, texto: `⛔ HOJA ${nHoja} ${v.pos}: la soldadora aún no la ha leído. No se puede coger.` };
+    const n = await poner("hojasHerraje", cod);
+    if (!n) return llena("hojasHerraje", `HOJA ${nHoja} ${v.pos}`);
+    return { ok: true, texto: `✓ HOJA ${nHoja} ${v.pos} con herraje → ${nom("hojasHerraje")} · ESTANTERÍA ${n}${sitio()}${u0 ? ` (libera ${donde(u0)})` : " · aviso: no estaba en la estantería de hojas"}`, zona: { zonaId: "hojasHerraje", hueco: n } };
+  }
+  if (puestoId === "colgado") {
+    const ubMarco = await ubicDe(base);
+    if (ubMarco && ubMarco.zonaId === "marcosPilastra") return { ok: false, texto: `⚠ ${v.pos} lleva pilastra / travesaño y su marco sigue en el banco de pilastra: pásalo primero por el puesto Pilastra.` };
+    if (ubMarco && ["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas", "solape", "espera", "especiales"].includes(ubMarco.zonaId)) return { ok: true, aviso: true, texto: `Ya estaba unida: ${v.pos} → ${donde(ubMarco)}`, zona: ubMarco };
+    if (estricto) {
+      const ubPieza = esHoja ? await ubicDe(cod) : ubMarco;
+      if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ HOJA ${nHoja} ${v.pos}: aún no ha pasado por herraje. No se puede colgar.` };
+      if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || ubPieza.zonaId === "puertas"))) return { ok: false, texto: `⛔ MARCO ${v.pos}: la soldadora aún no lo ha leído. No se puede colgar.` };
+    }
+    const clave = esHoja ? `h${nHoja}` : "m";
+    await fbSet(ref(fbDb, `colgadoLinea/${base}/${clave}`), Date.now());
+    const vistos = Object.keys((await fbGet(ref(fbDb, `colgadoLinea/${base}`))).val() || {});
+    const req = ["m", ...Array.from({ length: nHojas }, (_, i) => `h${i + 1}`)];
+    const faltan = req.filter((k) => !vistos.includes(k));
+    if (faltan.length) return { ok: true, aviso: true, texto: `Colgado ${v.pos}: leída ${etq}. FALTAN: ${faltan.map(nombrePiezaClave).join(" y ")}` };
+    let destino = puerta ? "bancoPuerta" : "colgadoA";
+    let n = await poner(destino, base);
+    if (!n && !puerta) { destino = "colgadoB"; n = await poner(destino, base); }
+    if (!n) return { ok: false, texto: `⚠ ${puerta ? nom("bancoPuerta") : "Los bancos A y B están llenos"}. La ventana ${v.pos} está completa pero NO tiene sitio: libera estanterías o pulsa «+».` };
+    for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
+    await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
+    return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId: destino, hueco: n } };
+  }
+  const rg = REGLAS_PUESTO_LINEA[puestoId];
+  if (rg) {
+    if (puestoId === "pilastra" && esHoja) return { ok: false, texto: `En pilastra se lee el MARCO. Esto es la HOJA ${nHoja} de ${v.pos}.` };
+    const u = await ubicDe(base);
+    if (u && u.zonaId === rg.deja) return { ok: true, aviso: true, texto: `Ya estaba: ${v.pos} → ${donde(u)}`, zona: u };
+    if (estricto && rg.desde && !u) return { ok: false, texto: `⛔ ${v.pos}: el puesto anterior aún no la ha leído. No se puede coger.` };
+    if (u && rg.desde && !rg.desde.includes(u.zonaId)) return { ok: false, texto: `⚠ ${v.pos} está en ${donde(u)}, no en ${rg.desde.map(nom).join(" / ")}. Revisa el puesto.` };
+    const n = await poner(rg.deja, base);
+    if (!n) return llena(rg.deja, v.pos);
+    return { ok: true, texto: `✓ ${v.pos} → ${nom(rg.deja)} · ESTANTERÍA ${n}${sitio()}${u ? ` (libera ${donde(u)})` : " · aviso: no estaba registrada en el banco anterior"}`, zona: { zonaId: rg.deja, hueco: n } };
+  }
+  return null;
+}
+
+// Listas de trabajo para el colgado: las que llevan pilastra / travesaño (se hacen primero, una a una) y las que ya se pueden colgar
+function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
+  const fila = (x) => `${x.h.ventana.pos} · ${x.h.ventana.grupo || ""}${x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería ${x.u.hueco}`;
+  const pendientes = Object.entries(ubic).filter(([, u]) => u && u.zonaId === "marcosPilastra").map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h).sort((a, b) => a.u.ts - b.u.ts);
+  const listas = Object.entries(ubic).filter(([, u]) => u && u.zonaId === "marcos").map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && x.h.ventana.modelo).filter((x) => {
+    const n = hojasDe(x.h.ventana, hojasOv);
+    for (let k = 1; k <= n; k++) { const uh = ubic[codHoja(x.cod, k)]; if (!uh || uh.zonaId !== "hojasHerraje") return false; }
+    return true;
+  }).sort((a, b) => a.u.ts - b.u.ts);
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+      <div className="border border-amber-300 bg-amber-50/60 rounded-lg p-3">
+        <div className="text-sm font-semibold text-amber-900 mb-1">Con pilastra / travesaño: por hacer ({pendientes.length})</div>
+        {pendientes.length === 0 ? <p className="text-xs text-slate-500">Ninguna pendiente.</p> : <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">{pendientes.map((x) => <li key={x.cod}>{fila(x)}</li>)}</ol>}
+      </div>
+      {puestoId === "colgado" && (
+        <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
+          <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para colgar ({listas.length})</div>
+          {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">{listas.map((x) => <li key={x.cod}>{fila(x)}</li>)}</ol>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
+const PREPARADAS_POR_PUESTO = { herraje: ["hojas", "puertas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["bancoPuerta"], cristales: ["persianaA", "persianaB"], solape: ["solape"] };
+function ListaPreparadas({ puestoId, ubic, indice }) {
+  const zs = PREPARADAS_POR_PUESTO[puestoId];
+  if (!zs) return null;
+  const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || "")))).sort((a, b) => a.u.ts - b.u.ts);
+  return (
+    <div className="mt-4 border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
+      <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para coger ({lista.length})</div>
+      {lista.length === 0 ? <p className="text-xs text-slate-500">Ninguna: el puesto anterior aún no ha leído nada.</p> : (
+        <ol className="text-xs text-slate-700 space-y-0.5 list-decimal pl-4">
+          {lista.slice(0, 40).map((x) => <li key={x.cod}>{x.h.ventana.pos}{/^Hoja (\d)/.test(String(x.h.pieza.t || "")) ? ` ${x.h.pieza.t}` : ""} · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería {x.u.hueco}</li>)}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+// Mapa de estanterías: cada hueco con su pieza. Los administradores pueden añadir huecos con «+».
+function MapaZonasLinea({ ids, indice, admin, destacar }) {
+  const zonas = useZonasLinea();
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
+  const etiquetaDe = (cod) => { const h = indice && indice.get(cod); if (!h) return cod.slice(-4); const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return `${h.ventana.pos}${m ? ` H${m[1]}` : ""}`; };
+  const lista = zonas.filter((z) => !ids || ids.includes(z.id));
+  const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
+  const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
+  const vaciar = async () => {
+    if (!window.confirm("¿Vaciar TODAS las estanterías? Borra qué pieza hay en cada hueco (sirve para limpiar pruebas). No toca las lecturas del informe.")) return;
+    await Promise.all(["ubicacionesLinea", "ocupacionLinea", "colgadoLinea"].map((r) => fbSet(ref(fbDb, r), null))).catch((e) => alert("No se pudo vaciar: " + e.message));
+  };
+  return (
+    <div className="space-y-3">
+      {admin && !ids && <div className="flex justify-end"><button onClick={vaciar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50">Vaciar todas las estanterías (pruebas)</button></div>}
+      {lista.map((z) => {
+        const oc = porZona[z.id] || {};
+        const n = Object.keys(oc).length;
+        const capZ = z.cap || 1;
+        return (
+          <div key={z.id} className="border border-slate-200 rounded-lg p-3 bg-white">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-semibold text-slate-800 mr-auto">{z.nombre}</span>
+              <span className={`text-xs font-semibold ${n >= z.huecos ? "text-rose-600" : "text-slate-500"}`}>{n}/{z.huecos}{capZ > 1 ? ` · ${capZ} por hueco` : ""}</span>
+              {admin && <><button onClick={() => mas(z, 1)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+1</button><button onClick={() => mas(z, 6)} className="text-xs font-semibold text-[#2E8B57] border border-emerald-300 px-2 py-0.5 rounded-md">+6</button></>}
+            </div>
+            <div className="grid grid-cols-6 sm:grid-cols-12 gap-1">
+              {Array.from({ length: z.huecos }, (_, i) => i + 1).map((hu) => {
+                const piezas = oc[hu] || [];
+                const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
+                return (
+                  <div key={hu} onClick={() => { if (admin && piezas.length) liberar(z, hu, piezas); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? "bg-amber-50 border-amber-300 text-slate-700" : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                    <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Pegatina pequeña para la salida de la soldadora: una por ventana, con el código de una de sus piezas.
 // El módulo del código se ajusta al ancho de la etiqueta (múltiplos de 0,125 mm = 1 punto a 203 dpi).
-function imprimirPegatinasSoldadora(items, anchoMm, altoMm) {
+function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}) {
+  dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
-  const etiqueta = ({ v, lote, dueno }) => {
-    const cod = toArray(v.piezas)[0] && toArray(v.piezas)[0].c;
-    if (!cod) return "";
+  // una pegatina por pieza: el marco y cada hoja (las ventanas de formato antiguo llevan una sola)
+  const piezas = items.flatMap((x) => {
+    const c0 = toArray(x.v.piezas)[0] && toArray(x.v.piezas)[0].c;
+    if (!c0) return [];
+    if (!x.v.modelo) return [{ ...x, cod: c0, tipo: "" }];
+    const n = hojasDe(x.v, hojasOv);
+    return [{ ...x, cod: c0, tipo: pilOv[c0] ? "MARCO +PIL" : "MARCO" }, ...Array.from({ length: n }, (_, i) => ({ ...x, cod: codHoja(c0, i + 1), tipo: `HOJA ${i + 1}` }))];
+  });
+  const etiqueta = ({ v, lote, dueno, cod, tipo }) => {
     const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
-    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1);
-    return `<div class="et"><div class="r1"><span>${esc(v.pos)}</span><span>${esc(v.num)}</span></div>
+    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1 - Math.max(0, dy));
+    return `<div class="et"><div class="r1"><span${String(v.pos).length > 9 ? ' style="font-size:3.2mm"' : ""}>${esc(v.pos)}</span><span>${esc(tipo || v.num)}</span></div>
       <div class="r2">${esc(v.grupo || dueno.nombre)}</div>
       ${extra ? `<div class="r3">${esc(extra)}</div>` : ""}
       <div class="bar">${svgCode128CMm(cod, altoBar, modulo)}</div>
@@ -32822,21 +33206,23 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm) {
     @page { size: ${anchoMm}mm ${altoMm}mm; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
-    .et { width: ${anchoMm}mm; height: ${altoMm - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; display: flex; flex-direction: column; align-items: center; }
+    .et { width: ${anchoMm}mm; height: ${altoMm - 0.5}mm; padding: ${Math.max(0, 1.2 + dy)}mm ${Math.max(0, 1.5 - dx)}mm 1.2mm ${Math.max(0, 1.5 + dx)}mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; display: flex; flex-direction: column; align-items: center; }
     .et:last-child { page-break-after: auto; break-after: auto; }
-    .r1 { width: 100%; display: flex; justify-content: space-between; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
     .r2 { width: 100%; font-size: 3.4mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
     .r3 { width: 100%; font-size: 3mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
     .bar { margin-top: 0.8mm; line-height: 0; }
     .dig { font-size: 3.2mm; letter-spacing: 0.6mm; line-height: 1.1; margin-top: 0.4mm; }
-  </style></head><body>${items.map(etiqueta).join("")}</body></html>`;
+  </style></head><body>${piezas.map(etiqueta).join("")}</body></html>`;
   const w = window.open("", "_blank");
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
 function PegatinasSoldadora({ indice, escaneos }) {
   const [obraKey, setObraKey] = useState("");
-  const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return x; } catch (e) { /* nada */ } return { a: 70, h: 32 }; });
+  const hojasOv = useObjetoFb("hojasLinea");
+  const pilOv = useObjetoFb("pilastraLinea");
+  const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
   const obras = useMemo(() => {
     const m = new Map();
@@ -32847,10 +33233,12 @@ function PegatinasSoldadora({ indice, escaneos }) {
     });
     return [...m.values()].sort((a, b) => String(a.dueno.nombre).localeCompare(String(b.dueno.nombre), "es", { numeric: true }));
   }, [indice]);
-  const hechas = useMemo(() => new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => x.ventanaId)), [escaneos]);
+  const leidasPor = useMemo(() => { const m = new Map(); escaneos.filter((x) => x.puestoId === "soldadora").forEach((x) => m.set(x.ventanaId, (m.get(x.ventanaId) || 0) + 1)); return m; }, [escaneos]);
+  const totalPiezas = (x) => (x.v.modelo ? 1 + hojasDe(x.v, hojasOv) : 1);
+  const completa = (x) => (leidasPor.get(x.v.id) || 0) >= totalPiezas(x);
   const obra = obras.find((o) => o.dueno.key === obraKey) || null;
   const lista = obra ? [...obra.ventanas.values()].sort((a, b) => String(a.v.pos).localeCompare(String(b.v.pos), "es", { numeric: true })) : [];
-  const faltan = lista.filter((x) => !hechas.has(x.v.id));
+  const faltan = lista.filter((x) => !completa(x));
   const medidaOk = mm.a >= 40 && mm.h >= 20;
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5">
@@ -32872,26 +33260,52 @@ function PegatinasSoldadora({ indice, escaneos }) {
             <input type="number" value={mm.h} onChange={(e) => cambiarMm("h", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
           </div>
         </div>
+        <div>
+          <label className="text-xs text-slate-500">Ajuste fino (mm)</label>
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-slate-400">↓</span>
+            <input type="number" step="0.5" value={mm.dy} onChange={(e) => cambiarMm("dy", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
+            <span className="text-xs text-slate-400 ml-1">→</span>
+            <input type="number" step="0.5" value={mm.dx} onChange={(e) => cambiarMm("dx", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
+          </div>
+        </div>
       </div>
       {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
           <div className="flex flex-wrap gap-2 mb-3">
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
-            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
-            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
+            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
-            {lista.map((x) => (
+            {agruparPorVivienda(lista.map((x) => x.v)).map((g) => {
+              const xs = lista.filter((x) => (x.v.grupo || "Sin vivienda") === g.grupo);
+              return (
+                <div key={g.grupo}>
+                  <div className="flex items-center gap-3 px-3 py-1.5 bg-slate-50 text-xs font-semibold text-slate-700">
+                    <span className="mr-auto">{g.grupo}{g.cliente ? ` · ${g.cliente}` : ""} ({xs.length})</span>
+                    <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora(xs, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-[#2E8B57] underline disabled:opacity-40">Imprimir esta vivienda</button>
+                  </div>
+                  {xs.map((x) => (
               <div key={x.v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
                 <span className="font-semibold text-slate-800 w-24">{x.v.pos}</span>
                 <span className="text-slate-500 w-16">{x.v.num}</span>
                 <span className="flex-1 text-slate-600 truncate">{x.v.grupo || ""}</span>
-                {hechas.has(x.v.id) ? <span className="text-emerald-700 text-xs font-semibold">✓ leída</span> : <span className="text-slate-400 text-xs">sin leer</span>}
-                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
+                {x.v.modelo && (
+                  <select value={hojasDe(x.v, hojasOv)} onChange={(e) => fbSet(ref(fbDb, `hojasLinea/${baseDe(x.v)}`), parseInt(e.target.value, 10)).catch(() => {})} className="text-xs border border-slate-300 rounded px-1 py-0.5 bg-white" title="Hojas de la ventana: sale 1 pegatina de marco + 1 por hoja">
+                    <option value={1}>1 hoja</option><option value={2}>2 hojas</option><option value={3}>3 hojas</option>
+                  </select>
+                )}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `pilastraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />pilastra / trav.</label>}
+                {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
+                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
               </div>
-            ))}
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -33045,12 +33459,36 @@ function cruzarPersianaVentana(items, guardarItems, h) {
   return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
 }
 
-function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales = [], onUpdateCristal, onIrA }) {
+function PanelEstanteriasLinea({ proyectos, uxExpedientes, sinObra, admin }) {
+  const cfgLinea = useObjetoFb("configLinea");
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <h3 className="font-display font-bold text-slate-800 mb-1">Estanterías de la línea</h3>
+      <p className="text-xs text-slate-500 mb-3">Qué pieza hay en cada estantería. {admin ? "Pulsa una ocupada para liberarla, o «+» para añadir estanterías a una zona." : ""}</p>
+      {admin && (
+        <label className="flex items-center gap-2 text-xs text-slate-700 mb-3">
+          <input type="checkbox" checked={cfgLinea.estricto !== false} onChange={(e) => fbSet(ref(fbDb, "configLinea/estricto"), e.target.checked).catch(() => {})} />
+          Exigir que el puesto anterior haya leído la pieza (si lo quitas, solo avisa: útil para pruebas con una ventana suelta)
+        </label>
+      )}
+      <MapaZonasLinea indice={indice} admin={admin} />
+    </div>
+  );
+}
+
+function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoId, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
   const inputRef = useRef(null);
   const escaneos = useEscaneosLinea();
+  const zonas = useZonasLinea();
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const hojasOv = useObjetoFb("hojasLinea");
+  const pilOv = useObjetoFb("pilastraLinea");
+  const cfgLinea = useObjetoFb("configLinea");
+  const estricto = cfgLinea.estricto !== false;
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
   const hoy = new Date().toISOString().slice(0, 10);
@@ -33073,24 +33511,38 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     if (!cod) { avisar(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
     const h = indice.get(cod);
     if (!h) { avisar(false, `Etiqueta ${cod}: su lote no está en ningún PDF subido. Sube el PDF en el proyecto o en Almacén ventanas.`); return; }
-    const r = await registrarEscaneoLinea({ puestoId, h, por: quien });
-    const desc = `${h.ventana.pos} · ${h.ventana.grupo || h.dueno.nombre}`;
-    if (r === "nuevo") {
-      let cruce = null;
-      if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h);
-      else if (puestoId === "persiana") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
-      if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveEscaneoLinea(puestoId, h.ventana.id)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
-      avisar(!cruce || cruce.ok, `✓ ${desc} registrada en ${nombrePuestoLinea(puestoId)}${cruce ? (cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`) : ""}`, !!cruce && !cruce.ok);
-      setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null } : u));
+    const v = h.ventana;
+    const yaVentana = escaneos.some((x) => x.puestoId === puestoId && x.ventanaId === v.id);
+    // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
+    let z = null;
+    if (v.modelo) {
+      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, por: quien, estricto }); }
+      catch (e) { z = { ok: false, texto: `No se pudieron actualizar las estanterías (${(e && e.message) || e}). La lectura NO se ha guardado.` }; }
+      if (z && !z.ok) { avisar(false, z.texto); return; }
     }
-    else if (r === "repetida") avisar(true, `Ya estaba registrada en este puesto: ${desc}`, true);
-    else avisar(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`);
+    const r = await registrarEscaneoLinea({ puestoId, h, por: quien });
+    if (r !== "nuevo" && r !== "repetida") { avisar(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`); return; }
+    const desc = `${v.pos} · ${v.grupo || h.dueno.nombre}`;
+    let texto = r === "nuevo" ? `✓ ${desc} registrada en ${nombrePuestoLinea(puestoId)}` : `Ya estaba registrada en este puesto: ${desc}`;
+    let ok = true;
+    let aviso = r === "repetida";
+    let zonaFoco = null;
+    if (z) { texto = z.texto; aviso = !!z.aviso; zonaFoco = z.zona || null; }
+    let cruce = null;
+    if (r === "nuevo" && !yaVentana) {
+      if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h);
+      else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
+      if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
+    }
+    if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
+    avisar(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
+    setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco } : u));
   };
   return (
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
-        <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Una ventana cuenta una sola vez en cada puesto.</p>
+        <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
           {PUESTOS_LINEA.filter((p) => p.id !== "carga").map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
@@ -33103,6 +33555,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
+        {puestoId !== "pilastra" && puestoId !== "colgado" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
+        {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
+        <div className="mt-4"><MapaZonasLinea ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} destacar={ultimo && ultimo.zona} /></div>
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -33173,7 +33628,7 @@ function InformeLineaPuestos({ proyectos, uxExpedientes, sinObra }) {
       </div>
       <div className="overflow-x-auto border border-slate-200 rounded-lg mb-5">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50"><tr><th className={th}>Puesto</th><th className={th}>Ventanas leídas</th><th className={th}>Primera</th><th className={th}>Última</th><th className={th}>Ritmo (vent./h)</th><th className={th}>Personas</th></tr></thead>
+          <thead className="bg-slate-50"><tr><th className={th}>Puesto</th><th className={th}>Lecturas</th><th className={th}>Primera</th><th className={th}>Última</th><th className={th}>Ritmo (vent./h)</th><th className={th}>Personas</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
             {filas.map((f) => (
               <tr key={f.p.id}>
@@ -33211,9 +33666,9 @@ function InformeLineaPuestos({ proyectos, uxExpedientes, sinObra }) {
       <p className="text-[11px] text-slate-400 -mt-3 mb-5">En amarillo: obras con menos ventanas en Carga que en la salida de soldadora. Herraje, colgado, persiana, cristales y solape no tienen por qué pasar todas las ventanas, así que no se marcan.</p>
       <h4 className="font-semibold text-slate-800 text-sm mb-2">Enlace con los almacenes de cristales y persianas</h4>
       {(() => {
-        const cruzados = delPeriodo.filter((x) => (x.puestoId === "cristales" || x.puestoId === "persiana") && x.enlace);
+        const cruzados = delPeriodo.filter((x) => (x.puestoId === "cristales" || x.puestoId === "persianaA" || x.puestoId === "persianaB") && x.enlace);
         if (!cruzados.length) return <p className="text-sm text-slate-400 mb-5">Todavía no hay lecturas en cristales ni persiana en este periodo.</p>;
-        const resumen = ["cristales", "persiana"].map((id) => { const xs = cruzados.filter((x) => x.puestoId === id); const ok = xs.filter((x) => x.enlace === "ok").length; return { id, n: xs.length, ok, pct: xs.length ? Math.round((ok / xs.length) * 100) : 0 }; }).filter((r) => r.n > 0);
+        const resumen = ["cristales", "persianaA", "persianaB"].map((id) => { const xs = cruzados.filter((x) => x.puestoId === id); const ok = xs.filter((x) => x.enlace === "ok").length; return { id, n: xs.length, ok, pct: xs.length ? Math.round((ok / xs.length) * 100) : 0 }; }).filter((r) => r.n > 0);
         const sin = cruzados.filter((x) => x.enlace !== "ok").sort((a, b) => b.ts - a.ts);
         return (
           <div className="mb-5">
