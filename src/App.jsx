@@ -30659,7 +30659,7 @@ function agruparEtiquetasModelo(paginas) {
       if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
       const a = med ? mm(med[1]) : null, h = med ? mm(med[2]) : null;
       const medidaTxt = a && h ? `${a} x ${h}` : "";
-      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: medidaTxt, modelo: true, hojas: hojasSugeridas({ medida: medidaTxt }), piezas: [{ c: code, t: "Ventana" }] });
+      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: medidaTxt, modelo: true, hojas: hojasSugeridas({ medida: medidaTxt }), hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
       etiquetas++;
     });
   });
@@ -30722,7 +30722,7 @@ function agruparCargaMaterial(paginas) {
         const id = `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
         let lote = lotes.get(fab);
         if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
-        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, piezas: [{ c: code, t: "Ventana" }] });
+        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
         etiquetas++;
       }
     });
@@ -33115,7 +33115,7 @@ const hojasDe = (v, ov) => {
   const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
   const o = ov && base ? parseInt(ov[base], 10) : 0;
   if (o >= 1 && o <= 3) return o;
-  return v && v.hojas >= 1 && v.hojas <= 3 ? v.hojas : hojasSugeridas(v);
+  return v && v.hojasV >= 2 && v.hojas >= 1 && v.hojas <= 3 ? v.hojas : hojasSugeridas(v); // los lotes subidos con versiones anteriores traen un número viejo (a veces 3): se ignora
 };
 // Nombre de cada hoja: con 1 hoja es la activa; con 2, activa y pasiva (con 3, la tercera se llama "HOJA 3")
 const nombreHoja = (k, n) => (k === 1 ? "HOJA ACTIVA" : k === 2 ? "HOJA PASIVA" : `HOJA ${k}`);
