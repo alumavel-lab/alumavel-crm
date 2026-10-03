@@ -30707,7 +30707,7 @@ function agruparCargaMaterial(paginas) {
       const medidaTxt = a && h ? `${a} x ${h}` : "";
       // Hojas = vidrios "grandes" de la ventana (se ignora la tira inferior de unos 170 mm); si no hay datos, se estima por el ancho
       let sumaVid = 0;
-      lineas.slice(i, fin).forEach((l) => { const mv = l.match(/^Vid\s*:.*?([\d.]+)\s*x\s*([\d.]+)\s+ud\s*:\s*(\d+)/i); if (mv && mm(mv[2]) > 300) sumaVid += parseInt(mv[3], 10); });
+      lineas.slice(i, fin).forEach((l) => { const mv = l.match(/^Vid\s*:.*?([\d.]+)\s*x\s*([\d.]+)\s*ud\s*:\s*(\d+)/i); if (mv && mm(mv[2]) > 300) sumaVid += parseInt(mv[3], 10); });
       const hojasCarga = sumaVid >= 1 && sumaVid <= 3 ? sumaVid : hojasSugeridas({ medida: medidaTxt });
       for (let u = 1; u <= uds; u++) {
         const seq = String((seqBase + 100 * (u - 1)) % 1000).padStart(3, "0");
@@ -32984,7 +32984,7 @@ const useZonasLinea = () => {
   return useMemo(() => ZONAS_LINEA_DEFECTO.map((z) => ({ ...z, huecos: Math.max(1, parseInt(cfg[z.id], 10) || z.huecos) })), [cfg]);
 };
 // Hojas de una ventana: lo que se haya puesto a mano; si no, lo que salga del PDF; si no, una sugerencia por el ancho
-const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : a <= 1500 ? 2 : 3) : 2; };
+const hojasSugeridas = (v) => { const m = String((v && v.medida) || "").match(/^(\d+)/); const a = m ? parseInt(m[1], 10) : 0; return a ? (a <= 695 ? 1 : 2) : 2; }; // sin otro dato se supone 2 hojas: una hoja de más inventa una pegatina que bloquea el colgado (3 hojas se pone a mano)
 const hojasDe = (v, ov) => {
   const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
   const o = ov && base ? parseInt(ov[base], 10) : 0;
@@ -33404,7 +33404,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `solapeLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => fbSet(ref(fbDb, `pilastraLinea/${baseDe(x.v)}`), e.target.checked ? true : null).catch(() => {})} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
-                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
+                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
               </div>
                   ))}
                 </div>
