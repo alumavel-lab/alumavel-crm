@@ -3379,16 +3379,25 @@ export default function App() {
     guardarIncFab(nueva);
     setIncFabForm(null);
     showToast("Incidencia enviada");
+    if (data.apartar && data.ventanaBase) {
+      apartarVentanaIncidencia(data.ventanaBase, nueva.id, nueva.creadaPor.nombre).then((r) => showToast(r.texto, r.ok ? "ok" : "error"));
+    }
   };
   const actualizarIncFab = (id, patch) => {
     const actual = incidenciasFabrica.find((i) => i.id === id);
     if (actual) guardarIncFab({ ...actual, ...patch });
   };
   const asignarIncFab = (id, userId) => actualizarIncFab(id, { asignadoA: userId || "", asignadaTs: userId ? Date.now() : null });
-  const resolverIncFab = (id, nota) => actualizarIncFab(id, {
-    estado: "Resuelta", resueltaTs: Date.now(), notaResolucion: nota || "",
-    resueltaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
-  });
+  const resolverIncFab = (id, nota) => {
+    const inc = incidenciasFabrica.find((i) => i.id === id);
+    actualizarIncFab(id, {
+      estado: "Resuelta", resueltaTs: Date.now(), notaResolucion: nota || "",
+      resueltaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
+    });
+    if (inc && inc.apartar && inc.ventanaBase) {
+      devolverVentanaIncidencia(inc.ventanaBase, currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "").then((r) => { if (r.texto) showToast(`Ventana ${inc.ventana || ""}: ${r.texto}`, r.ok ? "ok" : "error"); });
+    }
+  };
   const reabrirIncFab = (id) => actualizarIncFab(id, { estado: "Abierta", resueltaTs: null, resueltaPor: null, notaResolucion: "" });
   const guardarEtiquetasObra = (key, lotes) => {
     const l = JSON.parse(JSON.stringify(lotes));
@@ -33112,7 +33121,7 @@ const PUESTOS_LINEA = [
   { id: "soldadora", nombre: "Salida de soldadora", corto: "Soldadora" },
   { id: "herraje", nombre: "Herraje", corto: "Herraje" },
   { id: "pilastra", nombre: "Pilastra / travesaño", corto: "Pilastra" },
-  { id: "colgado", nombre: "Colgado", corto: "Colgado" },
+  { id: "colgado", nombre: "Matrimonio", corto: "Matrimonio" },
   { id: "persianaA", nombre: "Persiana A", corto: "Pers. A" },
   { id: "persianaB", nombre: "Persiana B", corto: "Pers. B" },
   { id: "puerta", nombre: "Puerta", corto: "Puerta" },
@@ -33151,11 +33160,12 @@ const ZONAS_LINEA_DEFECTO = [
   { id: "hojas", nombre: "Hojas (soldadora)", huecos: 24, cap: 2 },
   { id: "puertas", nombre: "Puertas (marco 1-6 · hoja 7-12)", huecos: 12 },
   { id: "hojasHerraje", nombre: "Hojas con herraje", huecos: 24, cap: 2 },
-  { id: "colgadoA", nombre: "Banco persiana A (sale del colgado)", huecos: 12 },
-  { id: "colgadoB", nombre: "Banco persiana B (sale del colgado)", huecos: 12 },
+  { id: "colgadoA", nombre: "Banco persiana A (sale de Matrimonio)", huecos: 12 },
+  { id: "colgadoB", nombre: "Banco persiana B (sale de Matrimonio)", huecos: 12 },
   { id: "persianaA", nombre: "Persiana A (salida)", huecos: 12 },
   { id: "persianaB", nombre: "Persiana B (salida)", huecos: 12 },
   { id: "bancoPuerta", nombre: "Banco de puerta", huecos: 12 },
+  { id: "sinPersiana", nombre: "Sin persiana (van directas a cristales)", huecos: 36 },
   { id: "puertasTerminadas", nombre: "Puertas terminadas", huecos: 12 },
   { id: "solape", nombre: "Solape / postigo", huecos: 36 },
   { id: "espera", nombre: "Ventanas terminadas (almacén de espera)", huecos: 36 },
@@ -33165,11 +33175,11 @@ const ZONAS_POR_PUESTO = {
   soldadora: ["marcos", "marcosPilastra", "hojas", "puertas"],
   pilastra: ["marcosPilastra", "marcos"],
   herraje: ["hojas", "hojasHerraje"],
-  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "puertas", "colgadoA", "colgadoB", "bancoPuerta"],
+  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "puertas", "colgadoA", "colgadoB", "bancoPuerta", "sinPersiana"],
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
   puerta: ["bancoPuerta", "puertasTerminadas"],
-  cristales: ["persianaA", "persianaB", "solape"],
+  cristales: ["persianaA", "persianaB", "sinPersiana", "solape"],
   solape: ["solape", "espera"],
   especiales: ["especiales"],
   carga: ["espera"],
@@ -33301,38 +33311,41 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
   if (puestoId === "colgado") {
     const ubMarco = await ubicDe(base);
     if (ubMarco && ubMarco.zonaId === "marcosPilastra") return { ok: false, texto: `⚠ ${v.pos} lleva pilastra / travesaño y su marco sigue en el banco de pilastra: pásalo primero por el puesto Pilastra.` };
-    if (ubMarco && ["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas", "solape", "espera", "especiales"].includes(ubMarco.zonaId)) return { ok: true, aviso: true, texto: `Ya estaba unida: ${v.pos} → ${donde(ubMarco)}`, zona: ubMarco };
+    if (ubMarco && ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", "persianaA", "persianaB", "puertasTerminadas", "solape", "espera", "especiales"].includes(ubMarco.zonaId)) return { ok: true, aviso: true, texto: `Ya estaba unida: ${v.pos} → ${donde(ubMarco)}`, zona: ubMarco };
     if (estricto) {
       const ubPieza = esHoja ? await ubicDe(cod) : ubMarco;
-      if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${v.pos}: aún no ha pasado por herraje. No se puede colgar.` };
-      if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || ubPieza.zonaId === "puertas"))) return { ok: false, texto: `⛔ MARCO ${v.pos}: la soldadora aún no lo ha leído. No se puede colgar.` };
+      if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${v.pos}: aún no ha pasado por herraje. No se puede juntar en Matrimonio.` };
+      if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || ubPieza.zonaId === "puertas"))) return { ok: false, texto: `⛔ MARCO ${v.pos}: la soldadora aún no lo ha leído. No se puede juntar en Matrimonio.` };
     }
     const clave = esHoja ? `h${nHoja}` : "m";
     await fbSet(ref(fbDb, `colgadoLinea/${base}/${clave}`), Date.now());
     const vistos = Object.keys((await fbGet(ref(fbDb, `colgadoLinea/${base}`))).val() || {});
     const req = ["m", ...Array.from({ length: nHojas }, (_, i) => `h${i + 1}`)];
     const faltan = req.filter((k) => !vistos.includes(k));
-    if (faltan.length) return { ok: true, aviso: true, texto: `Colgado ${v.pos}: leída ${etq}. FALTAN: ${faltan.map((k) => (k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), nHojas))).join(" y ")}` };
-    let destino = puerta ? "bancoPuerta" : "colgadoA";
+    if (faltan.length) return { ok: true, aviso: true, texto: `Matrimonio ${v.pos}: leída ${etq}. FALTAN: ${faltan.map((k) => (k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), nHojas))).join(" y ")}` };
+    const sinPers = !puerta && !!sinPersOv[base];
+    let destino = puerta ? "bancoPuerta" : sinPers ? "sinPersiana" : "colgadoA";
     let n = await poner(destino, base);
-    if (!n && !puerta) { destino = "colgadoB"; n = await poner(destino, base); }
-    if (!n) return { ok: false, texto: `⚠ ${puerta ? nom("bancoPuerta") : "Los bancos A y B están llenos"}. La ventana ${v.pos} está completa pero NO tiene sitio: libera estanterías o pulsa «+».` };
+    if (!n && destino === "colgadoA") { destino = "colgadoB"; n = await poner(destino, base); }
+    if (!n) return { ok: false, texto: `⚠ ${puerta ? nom("bancoPuerta") : sinPers ? nom("sinPersiana") : "Los bancos A y B están llenos"}. La ventana ${v.pos} está completa pero NO tiene sitio: libera estanterías o pulsa «+».` };
     for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
     await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
-    return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId: destino, hueco: n } };
+    return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}${sinPers ? " · NO LLEVA PERSIANA: no pasa por el banco A/B, va directa a cristales" : ""}`, zona: { zonaId: destino, hueco: n } };
   }
   // Las demás ventanas de la misma vivienda (mismo lote y mismo grupo) y si ya están todas en "ventanas terminadas"
   const matesVivienda = () => toArray(h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).map((w) => ({ w, u: ubic[baseDe(w)] }));
   const textoCaballete = (mates) => `Coge también las de ventanas terminadas (estanterías ${mates.map((m) => m.u.hueco).join(", ")}) y escanéalas en Almacén ventanas.`;
   if (puestoId === "cristales") {
+    const flagsInc = (await fbGet(ref(fbDb, "incidenciaVentanaLinea"))).val() || {};
+    if (flagsInc[base]) return { ok: false, texto: `⛔ ${v.pos}: tiene una INCIDENCIA ABIERTA (apartada en Persiana A/B salida). No se puede acristalar hasta que se resuelva.` };
     const u = await ubicDe(base);
     if (u && (u.zonaId === "solape" || u.zonaId === "espera")) return { ok: true, aviso: true, texto: `Ya estaba: ${v.pos} → ${donde(u)}`, zona: u };
     const salidaPers = ["persianaA", "persianaB", "puertasTerminadas"];
-    const sinPersiana = (c) => !!sinPersOv[c] && ["colgadoA", "colgadoB", "bancoPuerta"].includes(c === base ? (u && u.zonaId) : (ubic[c] && ubic[c].zonaId));
+    const sinPersiana = (c) => !!sinPersOv[c] && ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana"].includes(c === base ? (u && u.zonaId) : (ubic[c] && ubic[c].zonaId));
     if (estricto && !(u && (salidaPers.includes(u.zonaId) || sinPersiana(base)))) return { ok: false, texto: `⛔ ${v.pos}: aún no ha pasado por persiana. No se puede acristalar.` };
     const pasadas = [...salidaPers, "solape", "espera"];
-    const faltanViv = matesVivienda().filter((m) => { const z = m.u && m.u.zonaId; return !z || !(pasadas.includes(z) || sinPersiana(baseDe(m.w))); });
-    if (estricto && faltanViv.length) return { ok: false, texto: `⛔ ${v.pos}: la vivienda ${v.grupo || ""} aún no está completa para acristalar. Faltan: ${faltanViv.map((m) => `${m.w.pos}${m.u ? ` (en ${nom(m.u.zonaId)})` : " (sin leer)"}`).join(", ")}.` };
+    const faltanViv = matesVivienda().filter((m) => { if (flagsInc[baseDe(m.w)]) return true; const z = m.u && m.u.zonaId; return !z || !(pasadas.includes(z) || sinPersiana(baseDe(m.w))); });
+    if (estricto && faltanViv.length) return { ok: false, texto: `⛔ ${v.pos}: la vivienda ${v.grupo || ""} aún no está completa para acristalar. Faltan: ${faltanViv.map((m) => `${m.w.pos}${flagsInc[baseDe(m.w)] ? " (con INCIDENCIA abierta)" : m.u ? ` (en ${nom(m.u.zonaId)})` : " (sin leer)"}`).join(", ")}.` };
     if (solOv[base]) {
       const n = await poner("solape", base);
       if (!n) return llena("solape", v.pos);
@@ -33367,7 +33380,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, solOv
   return null;
 }
 
-// Listas de trabajo para el colgado: las que llevan pilastra / travesaño (se hacen primero, una a una) y las que ya se pueden colgar
+// Listas de trabajo para el Matrimonio: las que llevan pilastra / travesaño (se hacen primero, una a una) y las que ya se pueden juntar
 function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
   const fila = (x) => `${x.h.ventana.pos} · ${x.h.ventana.grupo || ""}${x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · estantería ${x.u.hueco}`;
   const pendientes = Object.entries(ubic).filter(([, u]) => u && u.zonaId === "marcosPilastra").map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h).sort((a, b) => a.u.ts - b.u.ts);
@@ -33384,7 +33397,7 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
       </div>
       {puestoId === "colgado" && (
         <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
-          <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para colgar ({listas.length})</div>
+          <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para el Matrimonio ({listas.length})</div>
           {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <div className="text-xs text-slate-700 space-y-1">{listas.map((x, k) => <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{fila(x)}</span></div>)}</div>}
         </div>
       )}
@@ -33393,12 +33406,13 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
 }
 
 // Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
-const PREPARADAS_POR_PUESTO = { herraje: ["hojas", "puertas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["bancoPuerta"], cristales: ["persianaA", "persianaB"], solape: ["solape"] };
+const PREPARADAS_POR_PUESTO = { herraje: ["hojas", "puertas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana"], solape: ["solape"] };
 function ListaPreparadas({ puestoId, ubic, indice }) {
   const hojasOv = useObjetoFb("hojasLinea");
+  const flagsInc = useObjetoFb("incidenciaVentanaLinea");
   const zs = PREPARADAS_POR_PUESTO[puestoId];
   if (!zs) return null;
-  const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || "")))).sort((a, b) => a.u.ts - b.u.ts);
+  const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || ""))) && !(puestoId === "cristales" && flagsInc[x.cod])).sort((a, b) => a.u.ts - b.u.ts);
   return (
     <div className="mt-4 border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
       <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para coger ({lista.length})</div>
@@ -33413,8 +33427,21 @@ function ListaPreparadas({ puestoId, ubic, indice }) {
 
 // Viviendas que ya tienen todas sus ventanas listas (salida de persiana o puerta): ahí se manda a acristalar
 function ListaAcristalar({ ubic, indice, sinPersOv }) {
+  const zonasL = useZonasLinea();
+  const flagsInc = useObjetoFb("incidenciaVentanaLinea");
+  // "No lleva persiana": se marca y, si la ventana estaba ocupando hueco en el banco A/B, pasa a "Sin persiana" para liberarlo
+  const marcarSinPersiana = async (x) => {
+    const base = baseDe(x.v);
+    try {
+      await fbSet(ref(fbDb, `sinPersianaLinea/${base}`), true);
+      if (x.u && (x.u.zonaId === "colgadoA" || x.u.zonaId === "colgadoB")) {
+        const z = zonasL.find((q) => q.id === "sinPersiana");
+        if (z) await ocuparHuecoLinea(z, base, "CRM", ubic, 1, null, 1);
+      }
+    } catch (e) { /* nada */ }
+  };
   const salida = ["persianaA", "persianaB", "puertasTerminadas"];
-  const enCurso = ["colgadoA", "colgadoB", "bancoPuerta", ...salida];
+  const enCurso = ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", ...salida];
   const pasadas = [...salida, "solape", "espera"];
   const grupos = new Map();
   indice.forEach((h) => {
@@ -33425,7 +33452,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
   });
   const nom = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
   const lista = [...grupos.values()].filter((g) => g.ventanas.some((x) => x.u && enCurso.includes(x.u.zonaId)));
-  const listo = (x) => x.u && (pasadas.includes(x.u.zonaId) || (sinPersOv[baseDe(x.v)] && ["colgadoA", "colgadoB", "bancoPuerta"].includes(x.u.zonaId)));
+  const listo = (x) => x.u && !flagsInc[baseDe(x.v)] && (pasadas.includes(x.u.zonaId) || (sinPersOv[baseDe(x.v)] && ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana"].includes(x.u.zonaId)));
   const listas = lista.filter((g) => g.ventanas.every(listo) && g.ventanas.some((x) => x.u && salida.includes(x.u.zonaId) || (x.u && sinPersOv[baseDe(x.v)])));
   const faltan = lista.filter((g) => !g.ventanas.every(listo));
   return (
@@ -33440,7 +33467,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
         <div className="text-sm font-semibold text-amber-900 mb-1">En camino: faltan ventanas ({faltan.length})</div>
         {faltan.length === 0 ? <p className="text-xs text-slate-500">Ninguna.</p> : faltan.map((g) => (
           <div key={g.grupo + g.cliente} className="text-xs text-slate-700 mb-1.5"><b>{g.grupo}</b>{g.cliente ? ` · ${g.cliente}` : ""}: faltan {g.ventanas.filter((x) => !listo(x)).map((x) => (
-            <span key={x.v.id} className="mr-2">{x.v.pos} ({x.u ? `${nom(x.u.zonaId)} · est. ${x.u.hueco}` : "sin leer"}){x.u && ["colgadoA", "colgadoB", "bancoPuerta"].includes(x.u.zonaId) && <button onClick={() => fbSet(ref(fbDb, `sinPersianaLinea/${baseDe(x.v)}`), true).catch(() => {})} className="ml-1 underline text-[#2E8B57]">no lleva persiana</button>}</span>
+            <span key={x.v.id} className="mr-2">{x.v.pos}{flagsInc[baseDe(x.v)] ? <b className="text-rose-600"> ⚠ INCIDENCIA</b> : null} ({x.u ? `${nom(x.u.zonaId)} · est. ${x.u.hueco}` : "sin leer"}){x.u && ["colgadoA", "colgadoB", "bancoPuerta"].includes(x.u.zonaId) && <button onClick={() => marcarSinPersiana(x)} className="ml-1 underline text-[#2E8B57]">no lleva persiana</button>}</span>
           ))}</div>
         ))}
       </div>
@@ -33892,7 +33919,7 @@ function calcularParadasLinea({ indice, ubic, hojasOv, zonas, ahora, horas }) {
     g.piezas.push({ cod: String(cod), u });
     porVentana.set(base, g);
   });
-  const unidas = ["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas", "solape"];
+  const unidas = ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", "persianaA", "persianaB", "puertasTerminadas", "solape"];
   const filas = [];
   porVentana.forEach((g, base) => {
     const v = g.h.ventana;
@@ -33904,7 +33931,7 @@ function calcularParadasLinea({ indice, ubic, hojasOv, zonas, ahora, horas }) {
     if (unida) {
       donde = sitio(unida.u);
       motivo = "unida, esperando el siguiente puesto";
-      if (["colgadoA", "colgadoB", "bancoPuerta", "persianaA", "persianaB", "puertasTerminadas"].includes(unida.u.zonaId)) {
+      if (["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", "persianaA", "persianaB", "puertasTerminadas"].includes(unida.u.zonaId)) {
         const faltan = toArray(g.h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).filter((w) => { const u = ubic[baseDe(w)]; return !u || !["persianaA", "persianaB", "puertasTerminadas", "solape", "espera"].includes(u.zonaId); });
         if (faltan.length) motivo = `espera a la vivienda: faltan ${faltan.map((w) => w.pos).join(", ")}`;
       }
@@ -33912,7 +33939,7 @@ function calcularParadasLinea({ indice, ubic, hojasOv, zonas, ahora, horas }) {
       const nh = hojasDe(v, hojasOv);
       const esperadas = [{ cod: base, n: "MARCO" }, ...Array.from({ length: nh }, (_, i) => ({ cod: codHoja(base, i + 1), n: nombreHoja(i + 1, nh) }))];
       donde = esperadas.map((e) => `${e.n}: ${ubic[e.cod] ? sitio(ubic[e.cod]) : "sin leer"}`).join(" · ");
-      motivo = "falta unirla en el colgado";
+      motivo = "falta unirla en Matrimonio";
     }
     filas.push({ pos: v.pos, grupo: v.grupo || "", cliente: v.cliente || "", fab: g.h.lote.fab, tip: v.tipo || v.pos, horas: Math.floor((ahora - ultimo) / 3600000), donde, motivo });
   });
@@ -33968,8 +33995,10 @@ function PanelEstanteriasLinea({ proyectos, uxExpedientes, sinObra, admin }) {
 }
 
 // Ficha de consulta de una ventana (Escáner): qué es, qué lleva, dónde está cada pieza y por qué puestos ha pasado. Solo lee, no registra nada.
-function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, sinPersOv, onCerrar }) {
+function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, sinPersOv, onCerrar, admin = false }) {
   const v = h.ventana;
+  const flagsInc = useObjetoFb("incidenciaVentanaLinea");
+  const [msgInc, setMsgInc] = useState("");
   const c0 = v.piezas && v.piezas[0] ? String(v.piezas[0].c) : String(h.pieza.c);
   const nZona = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
   const n = v.modelo ? hojasDe(v, hojasOv) : 0;
@@ -33990,9 +34019,19 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
         </div>
         <div className="flex flex-col gap-1.5 items-end">
           <BotonIncidenciaFabrica prefill={{ ventanaId: v.id, ventana: `${v.pos}${v.num ? " · " + v.num : ""}${v.medida ? " · " + v.medida : ""}`, obra: h.dueno.nombre }} />
+          {v.modelo && !flagsInc[c0] && <BotonIncidenciaFabrica prefill={{ ventanaId: v.id, ventana: `${v.pos}${v.num ? " · " + v.num : ""}${v.medida ? " · " + v.medida : ""}`, obra: h.dueno.nombre, ventanaBase: c0, apartar: true }} />}
           <button type="button" onClick={onCerrar} className="text-xs font-semibold text-slate-500 border border-slate-300 rounded px-2 py-1 bg-white">Cerrar</button>
         </div>
       </div>
+      {v.modelo && flagsInc[c0] && (
+        <div className="mt-3 px-3 py-2 rounded-md bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold">
+          ⚠ INCIDENCIA ABIERTA: ventana apartada en Persiana A/B (salida). Bloqueada: no se puede acristalar ni cargar hasta que se resuelva.
+          {admin && (
+            <button type="button" onClick={async () => { const r = await devolverVentanaIncidencia(c0, "CRM (admin)"); setMsgInc(r.texto || ""); }} className="ml-2 underline font-semibold">Devolver a su sitio y desbloquear (admin)</button>
+          )}
+          {msgInc ? <div className="mt-1 font-semibold">{msgInc}</div> : null}
+        </div>
+      )}
       {v.modelo && (
         <div className="flex flex-wrap gap-2 mt-3 text-xs font-semibold">
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
@@ -34118,7 +34157,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
-        {ficha && <FichaVentanaLinea h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
+        {ficha && <FichaVentanaLinea admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
@@ -34228,7 +34267,7 @@ function InformeLineaPuestos({ proyectos, uxExpedientes, sinObra }) {
           </table>
         </div>
       )}
-      <p className="text-[11px] text-slate-400 -mt-3 mb-5">En amarillo: obras con menos ventanas en Carga que en la salida de soldadora. Herraje, colgado, persiana, cristales y solape no tienen por qué pasar todas las ventanas, así que no se marcan.</p>
+      <p className="text-[11px] text-slate-400 -mt-3 mb-5">En amarillo: obras con menos ventanas en Carga que en la salida de soldadora. Herraje, matrimonio, persiana, cristales y solape no tienen por qué pasar todas las ventanas, así que no se marcan.</p>
       <h4 className="font-semibold text-slate-800 text-sm mb-2">Enlace con los almacenes de cristales y persianas</h4>
       {(() => {
         const cruzados = delPeriodo.filter((x) => (x.puestoId === "cristales" || x.puestoId === "persianaA" || x.puestoId === "persianaB") && x.enlace);
@@ -36378,12 +36417,13 @@ function textoTiempoInc(ms) {
 function BotonIncidenciaFabrica({ prefill, flotante }) {
   const ctx = React.useContext(IncFabricaCtx);
   if (!ctx || !ctx.puede) return null;
+  const etiqueta = prefill && prefill.apartar ? "Apartar por incidencia" : "Incidencia";
   const cls = flotante
     ? "fixed bottom-4 right-4 z-40 flex items-center gap-1.5 text-sm font-bold px-4 py-3 rounded-full shadow-lg bg-rose-600 text-white hover:bg-rose-700"
     : "flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded border border-rose-300 bg-white text-rose-700 hover:bg-rose-50";
   return (
     <button type="button" onClick={() => ctx.abrir(prefill || {})} className={cls}>
-      <AlertOctagon size={flotante ? 16 : 13} /> Incidencia
+      <AlertOctagon size={flotante ? 16 : 13} /> {etiqueta}
     </button>
   );
 }
@@ -36401,7 +36441,7 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
   };
   const enviar = () => {
     if (!texto.trim()) { setError("Escribe qué ha pasado."); return; }
-    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "" });
+    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar });
   };
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3">
@@ -36411,6 +36451,11 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
           <div className="text-xs bg-sky-50 border border-sky-200 rounded-md px-3 py-2 text-sky-900">
             {prefill.ventana ? <div><b>Ventana:</b> {prefill.ventana}</div> : null}
             {prefill.obra ? <div><b>Obra:</b> {prefill.obra}</div> : null}
+          </div>
+        )}
+        {prefill.apartar && (
+          <div className="text-xs bg-rose-50 border border-rose-300 rounded-md px-3 py-2 text-rose-800 font-semibold">
+            Al enviar, la ventana se saca de la línea y se aparta en Persiana A/B (salida). Queda BLOQUEADA (no se puede acristalar ni cargar) hasta que se resuelva la incidencia; entonces vuelve sola a su sitio.
           </div>
         )}
         <Field label="¿Qué ha pasado?" required>
@@ -36489,6 +36534,7 @@ function IncidenciasFabricaModulo({ incidencias, usuarios, currentUser, isAdmin,
                   {i.ventana ? `Ventana: ${i.ventana}` : ""}{i.ventana && i.obra ? " · " : ""}{i.obra ? `Obra: ${i.obra}` : ""}
                 </div>
               )}
+              {i.apartar && i.ventanaBase ? <div className="text-xs text-rose-700 font-semibold mt-2">Ventana apartada en Persiana A/B (salida) y bloqueada hasta resolver. Al marcarla como resuelta vuelve a su sitio.</div> : null}
               {i.foto ? <a href={i.foto} target="_blank" rel="noreferrer"><img src={i.foto} alt="" className="mt-2 max-h-32 rounded border border-slate-200" /></a> : null}
               <div className="flex flex-wrap items-center gap-3 mt-3">
                 {isAdmin && i.estado !== "Resuelta" ? (
@@ -36527,6 +36573,54 @@ function IncidenciasFabricaModulo({ incidencias, usuarios, currentUser, isAdmin,
       </div>
     </div>
   );
+}
+
+// ---- Ventanas apartadas por incidencia (antes de cristalar) ----
+const ZONAS_APARTAR_OK = ["sinPersiana", "colgadoA", "colgadoB", "persianaA", "persianaB"];
+async function zonaLineaPorId(id) {
+  const def = ZONAS_LINEA_DEFECTO.find((z) => z.id === id);
+  if (!def) return null;
+  let cfg = {};
+  try { cfg = (await fbGet(ref(fbDb, "configZonasLinea"))).val() || {}; } catch (e) { /* nada */ }
+  return { ...def, huecos: Math.max(1, parseInt(cfg[id], 10) || def.huecos) };
+}
+// Saca la ventana de su sitio y la deja en Persiana A/B (salida), marcada como BLOQUEADA hasta resolver la incidencia.
+async function apartarVentanaIncidencia(base, incId, por) {
+  try {
+    const u = (await fbGet(ref(fbDb, `ubicacionesLinea/${base}`))).val();
+    if (!u || !ZONAS_APARTAR_OK.includes(u.zonaId)) return { ok: false, texto: "La ventana no está unida todavía (o ya está acristalada), así que no se ha apartado. La incidencia sí queda registrada." };
+    const yaFlag = (await fbGet(ref(fbDb, `incidenciaVentanaLinea/${base}`))).val();
+    if (yaFlag) return { ok: true, texto: "Esa ventana ya estaba apartada por otra incidencia." };
+    // Primero se bloquea (si esto falla no se mueve nada), después se mueve
+    await fbSet(ref(fbDb, `incidenciaVentanaLinea/${base}`), { incId, origen: u.zonaId, destino: u.zonaId, ts: Date.now(), por: por || "" });
+    if (u.zonaId === "persianaA" || u.zonaId === "persianaB") return { ok: true, texto: "Ventana BLOQUEADA por incidencia (ya estaba en Persiana A/B salida)." };
+    for (const zid of ["persianaA", "persianaB"]) {
+      const z = await zonaLineaPorId(zid);
+      const r = z ? await ocuparHuecoLinea(z, base, por || "", {}, 1, null, 1) : null;
+      if (r) {
+        await fbSet(ref(fbDb, `incidenciaVentanaLinea/${base}/destino`), zid);
+        return { ok: true, texto: `Ventana apartada → ${z.nombre} · estantería ${r.hueco}. BLOQUEADA hasta resolver la incidencia.` };
+      }
+    }
+    return { ok: false, texto: "Persiana A y B (salida) están llenas: la ventana se queda donde estaba, pero queda BLOQUEADA. Libera estanterías para apartarla." };
+  } catch (e) {
+    return { ok: false, texto: `No se pudo apartar la ventana (${(e && e.message) || e}). Si pone "permission denied", hay que abrir la ruta incidenciaVentanaLinea en las reglas de Firebase.` };
+  }
+}
+// Al resolver la incidencia: desbloquea y devuelve la ventana a su sitio de antes (si no hay sitio, se queda en Persiana A/B ya desbloqueada)
+async function devolverVentanaIncidencia(base, por) {
+  try {
+    const f = (await fbGet(ref(fbDb, `incidenciaVentanaLinea/${base}`))).val();
+    if (!f) return { ok: true, texto: "" };
+    await fbSet(ref(fbDb, `incidenciaVentanaLinea/${base}`), null);
+    if (!f.origen || f.origen === f.destino) return { ok: true, texto: "desbloqueada." };
+    const z = await zonaLineaPorId(f.origen);
+    const r = z ? await ocuparHuecoLinea(z, base, por || "", {}, 1, null, 1) : null;
+    if (r) return { ok: true, texto: `desbloqueada y devuelta a ${z.nombre} · estantería ${r.hueco}.` };
+    return { ok: false, texto: `desbloqueada, pero no había sitio en ${z ? z.nombre : f.origen}: se queda en Persiana A/B (salida).` };
+  } catch (e) {
+    return { ok: false, texto: `No se pudo devolver la ventana (${(e && e.message) || e}).` };
+  }
 }
 
 const tabInicialFabrica = { actual: null };
