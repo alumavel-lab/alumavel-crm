@@ -30610,7 +30610,7 @@ function agruparEtiquetasModelo(paginas) {
       const ref = (bloque.find((l) => !/^TIPOLOG/i.test(l)) || "").trim();
       const tip = ((texto.match(/TIPOLOG[IÍ]A:\s*(\S+)/i) || [])[1] || "").trim();
       const med = texto.match(/([\d.]+,\d+)\s*x\s*([\d.]+,\d+)/);
-      const fab = ((texto.match(/FAB:\s*([\d.]+)/i) || [])[1] || "").replace(/\.$/, "");
+      const fab = ((texto.match(/FAB:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, ""); // "1.271" → "1271", como el resto de lotes (Firebase no admite el punto en una clave)
       const exp = ((ref.match(/EXP\.?\s*(\d+)/i) || [])[1]) || "";
       const planta = ((ref.match(/EXP\.?\s*\d+\s*(.*)$/i) || [])[1] || "").trim();
       const m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
