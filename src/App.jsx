@@ -100,6 +100,8 @@ const MODULOS_DISPONIBLES = [
   { id: "uxcar", label: "Uxcar (portal)" },
   { id: "albaranes", label: "Albaranes (chófer)" },
   { id: "mipuesto", label: "Mi puesto de trabajo" },
+  { id: "prepmaterial", label: "Preparación de material (puesto)" },
+  { id: "lineapistola", label: "Línea (pistola) · puesto" },
 ];
 
 // Configuración física del almacén de cristales dentro de Fábrica. La ubicación se
@@ -108,6 +110,7 @@ const MODULOS_DISPONIBLES = [
 const ZONAS_CRISTALES = {
   arriba: { label: "Arriba (Uxcar)", filas: 3, huecos: 15 },
   abajo: { label: "Abajo (ALUMAVEL)", filas: 2, huecos: 15 },
+  taller: { label: "Taller", filas: 2, huecos: 10 },
 };
 // Tamaño de cada zona guardado en Firebase ("zonasCristales"): se amplía con los "+" rojos
 // del mapa (más huecos a la derecha o una fila más). Se aplica encima de lo de arriba.
@@ -122,7 +125,7 @@ function aplicarZonasCristales(v) {
 // para poder agrupar más los expedientes. Si algún día se quiere reservar una, se pone
 // aquí, por ejemplo { arriba: 3 }.
 const FILA_RESERVA = {};
-const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
+const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : u.zona === "taller" ? "Taller" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 // Firebase Realtime Database a veces devuelve un objeto en vez de un array (por huecos
@@ -2241,7 +2244,7 @@ export default function App() {
   };
 
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
-  const saveCristales = (next) => { setCristales(next); persist("cristales", next); };
+  const saveCristales = (next) => { registrarMovimientosCaballetes(cristales, next, (fbAuth.currentUser && fbAuth.currentUser.email) || ""); setCristales(next); persist("cristales", next); };
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
@@ -4228,6 +4231,26 @@ export default function App() {
             <Wrench size={16} /> Mi puesto
           </button>
           )}
+          {tieneAcceso("prepmaterial") && (
+          <button
+            onClick={() => setModulo("prepmaterial")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "prepmaterial" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Wrench size={16} /> Preparación material
+          </button>
+          )}
+          {tieneAcceso("lineapistola") && (
+          <button
+            onClick={() => setModulo("lineapistola")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "lineapistola" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Wrench size={16} /> Línea (pistola)
+          </button>
+          )}
           {tieneAcceso("albaranes") && (
           <button
             onClick={() => setModulo("albaranes")}
@@ -4833,6 +4856,7 @@ export default function App() {
         {modulo === "informes" && (
           <InformesModulo
             uxExpedientes={uxExpedientes}
+            etiquetasSinObra={etiquetasSinObra}
             puestosInforme={puestosDe(configVentanas)}
             etiquetaInforme={etiquetaAdicional(configVentanas)}
             proyectos={proyectos}
@@ -4849,7 +4873,7 @@ export default function App() {
             isAdmin={isAdmin}
           />
         )}
-        {modulo === "fabrica" && (
+        {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncidenciasCristalCtx.Provider value={{
             incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
@@ -4877,6 +4901,7 @@ export default function App() {
               showToast(`${movs.length} caballete(s) cambiados de sitio`);
             },
           }}>
+          {modulo === "fabrica" && (
           <FabricaModulo
             proyectos={proyectos}
             pedidos={pedidos}
@@ -4931,6 +4956,19 @@ export default function App() {
             }}
             nombreUsuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
           />
+          )}
+          {modulo === "prepmaterial" && (
+            <div className="p-4 sm:p-8 max-w-5xl">
+              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Preparación de material" subtitle="El material de las obras del día o de la semana, junto" />
+              <PuestoPreparacionMaterial cristales={cristales} />
+            </div>
+          )}
+          {modulo === "lineapistola" && (
+            <div className="p-4 sm:p-8 max-w-4xl">
+              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" subtitle="Lee la etiqueta de cada ventana en tu puesto" />
+              <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} cristales={cristales} onUpdateCristal={updateCristal} />
+            </div>
+          )}
           </IncidenciasCristalCtx.Provider>
         )}
         {modulo === "instalaciones" && (
@@ -12029,7 +12067,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
     } catch (e) { setError("No se pudo leer la foto: " + (e.message || e)); }
     setLeyendo(false);
   };
-  const lug = (c) => (c.ubicacion ? `zona ${c.ubicacion.zona} · fila ${c.ubicacion.fila} · hueco ${c.ubicacion.hueco}` : "sin ubicar en el mapa");
+  const lug = (c) => (c.ubicacion ? ubicacionTexto(c.ubicacion) : "sin ubicar en el mapa");
   const unico = res && res.length > 0 && res[0].score >= 50 && (res.length === 1 || res[0].score > res[1].score);
   return (
     <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 space-y-2">
@@ -12075,10 +12113,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
-  const [filtros, setFiltros] = useState(FILTROS_CRISTALES_VACIOS);
+  const [filtros, setFiltros] = useState(() => {
+    const f = focoAlmacen.actual;
+    if (f && f.tipo === "cristal") return { ...FILTROS_CRISTALES_VACIOS, exp: f.exp || "", viv: f.viv || "" };
+    return FILTROS_CRISTALES_VACIOS;
+  });
+  useEffect(() => { if (focoAlmacen.actual && focoAlmacen.actual.tipo === "cristal") focoAlmacen.actual = null; }, []);
   const hayFiltro = hayFiltroCristales(filtros);
   const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const [asignando, setAsignando] = useState(null); // cristal object being located right now
+  const [zonaForzada, setZonaForzada] = useState(null); // "taller" cuando se pulsa "Pasar al taller"
   const [verDetalle, setVerDetalle] = useState(null); // ubicación { zona, fila, hueco } to show contents of
   const [leyendoPacking, setLeyendoPacking] = useState(false);
   const [errorPacking, setErrorPacking] = useState("");
@@ -12495,9 +12539,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         <UbicacionPicker
           cristal={asignando}
           cristales={cristales}
+          zonaInicial={zonaForzada}
           sugerencia={sugerirUbicacion(asignando)}
-          onClose={() => setAsignando(null)}
-          onConfirmar={(ubicacion) => { const ok = onUbicar(asignando.id, ubicacion); if (ok) setAsignando(null); }}
+          onClose={() => { setAsignando(null); setZonaForzada(null); }}
+          onConfirmar={(ubicacion) => { const ok = onUbicar(asignando.id, ubicacion); if (ok) { setAsignando(null); setZonaForzada(null); } }}
         />
       )}
 
@@ -12509,7 +12554,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           onClose={() => setVerDetalle(null)}
           onLiberar={(id) => onLiberar(id)}
           onEliminar={(id) => onDelete(id)}
-          onMover={(cristal) => { setVerDetalle(null); setAsignando(cristal); }}
+          onMover={(cristal) => { setVerDetalle(null); setZonaForzada(null); setAsignando(cristal); }}
+          onMoverTaller={(cristal) => { setVerDetalle(null); setZonaForzada("taller"); setAsignando(cristal); }}
           onUpdate={onUpdate}
         />
       )}
@@ -12655,8 +12701,9 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
   );
 }
 
-function UbicacionPicker({ cristal, cristales, sugerencia, onClose, onConfirmar }) {
-  const [zona, setZona] = useState(sugerencia?.zona || "arriba");
+function UbicacionPicker({ cristal, cristales, sugerencia: sugerenciaIn, zonaInicial, onClose, onConfirmar }) {
+  const sugerencia = zonaInicial ? null : sugerenciaIn;
+  const [zona, setZona] = useState(zonaInicial || sugerencia?.zona || "arriba");
   const ocupantesEn = (z, fila, hueco) => cristales.filter((c) => c.id !== cristal.id && c.ubicacion && c.ubicacion.zona === z && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   const cfg = ZONAS_CRISTALES[zona];
 
@@ -13067,7 +13114,7 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
   );
 }
 
-function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onUpdate, todos }) {
+function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onMoverTaller, onUpdate, todos }) {
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
   }, [cristalesEnHueco.length]);
@@ -13105,6 +13152,11 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <button onClick={() => onMover(cristal)} className="flex-1 text-xs font-semibold text-sky-700 border border-sky-300 px-3 py-1.5 rounded-md hover:bg-sky-50">
                   Mover a otro hueco
                 </button>
+                {onMoverTaller && (
+                  <button onClick={() => onMoverTaller(cristal)} className="flex-1 text-xs font-semibold text-violet-700 border border-violet-300 px-3 py-1.5 rounded-md hover:bg-violet-50">
+                    Pasar al taller (elegir hueco)
+                  </button>
+                )}
                 <button onClick={() => onLiberar(cristal.id)} className="flex-1 text-xs font-semibold text-amber-700 border border-amber-300 px-3 py-1.5 rounded-md hover:bg-amber-50">
                   Liberar (vuelve a pendiente)
                 </button>
@@ -14403,6 +14455,10 @@ function AlmacenPersianas() {
   const [form, setForm] = useState(null);
   const [busca, setBusca] = useState("");
   const [irA, setIrA] = useState(null);
+  useEffect(() => {
+    const f = focoAlmacen.actual;
+    if (f && f.tipo === "persiana") { focoAlmacen.actual = null; setSelId(f.almacenId); setIrA({ almacenId: f.almacenId, carro: f.carro, t: Date.now() }); }
+  }, []);
   const almacen = almacenes.find((a) => a.id === selId) || almacenes[0];
   // Busca en TODOS los almacenes: expediente, referencia/vivienda, medidas, color, comentario, incidencia…
   // Varias palabras = tienen que estar todas. "1200x1400" busca las dos medidas.
@@ -14569,6 +14625,22 @@ function AlmacenPersianas() {
 }
 
 function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarItems, variosAlmacenes, irA }) {
+  const ctxM = React.useContext(IncidenciasCristalCtx) || {};
+  const otrosAlmacenes = toArray(ctxM.almacenesPersianas).filter((a) => a.id !== almacen.id && (a.tipo || "persiana") === (almacen.tipo || "persiana"));
+  // Pasa todas las piezas de un expediente de este almacén a otro, colocándolas solas en los carros de destino.
+  const pasarGrupoAOtroAlmacen = (exp, xs, destId) => {
+    const dest = otrosAlmacenes.find((a) => a.id === destId);
+    if (!dest || !ctxM.savePersianasAlmacen) return;
+    if (!window.confirm(`¿Pasar las ${xs.length} piezas del EXP ${exp} a "${dest.nombre}"? Se colocan solas en sus carros; las que no quepan quedan en "Sin sitio" de ese almacén.`)) return;
+    const todos = toArray(ctxM.persianasAlmacen);
+    const ids = new Set(xs.map((x) => x.id));
+    const estado = estadoOcupacionPersianas(todos.filter((x) => almacenDe(x) === dest.id && !ids.has(x.id)));
+    const r = colocarGrupoPersianas(xs, String(exp), estantesAlmacenPersianas(toArray(ctxM.carrosPersianas).filter((c) => almacenDe(c) === dest.id)), estado);
+    const colocadas = Object.keys(r.res).length;
+    ctxM.savePersianasAlmacen(todos.map((x) => (ids.has(x.id) ? { ...x, almacenId: dest.id, estante: r.res[x.id] || null, enPuesto: "", fechaPreparacion: new Date().toISOString().slice(0, 10) } : x)));
+    setCarroAbierto(null);
+    setAviso(colocadas === xs.length ? `EXP ${exp}: ${xs.length} piezas pasadas a ${dest.nombre} y colocadas.` : `EXP ${exp}: pasadas a ${dest.nombre}; ${xs.length - colocadas} no caben y están en "Sin sitio" de ese almacén.`);
+  };
   const esMosq = almacen.tipo === "mosquitera";
   const cosa = esMosq ? "mosquiteras" : "persianas";
   const Cosa = esMosq ? "Mosquiteras" : "Persianas";
@@ -14953,6 +15025,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    {otrosAlmacenes.length > 0 && (
+                      <select value="" onChange={(e) => { if (e.target.value) pasarGrupoAOtroAlmacen(exp, xs, e.target.value); }} className="text-xs font-semibold text-violet-700 border border-violet-300 rounded-lg px-2 py-1 bg-white">
+                        <option value="">Pasar a otro almacén…</option>
+                        {otrosAlmacenes.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+                      </select>
+                    )}
                     <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} ${cosa} del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
                   </div>
@@ -15190,6 +15268,14 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Almacén ventanas
           {toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{toArray(caballetesVentanas).filter((c) => c.estado === "fuera").length} fuera</Badge>}
         </button>
+        <button onClick={() => setTab("prepMaterial")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "prepMaterial" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Preparación material
+        </button>
+        <button onClick={() => setTab("linea")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "linea" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Línea (pistola)
+        </button>
         <button onClick={() => setTab("puestos")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "puestos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Puestos y partes
@@ -15210,7 +15296,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida").length}</Badge>
           )}
         </button>
-        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "caballetes" && (
+        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "linea" && tab !== "prepMaterial" && tab !== "caballetes" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
@@ -15220,6 +15306,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       {tab === "caballetes" && (
         <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetesVentanas} proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={isAdminFab} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
+      )}
+
+      {tab === "prepMaterial" && <PuestoPreparacionMaterial cristales={cristales} />}
+
+      {tab === "linea" && (
+        <div className="space-y-6">
+          <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} />
+          <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
+          {isAdminFab && <MovimientosCaballetes />}
+        </div>
       )}
 
       {tab === "puestos" && (
@@ -26699,7 +26795,7 @@ function ObrasAceptadasDia({ presupuestos, proyectos }) {
   );
 }
 
-function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin, uxExpedientes = [], puestosInforme = [], etiquetaInforme = "Adicional" }) {
+function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidencias, pedidos, clientes, materiales, instalaciones, usuarios, sesionesUsuario, isAdmin, uxExpedientes = [], etiquetasSinObra = [], puestosInforme = [], etiquetaInforme = "Adicional" }) {
   const COLOR_ESTADO = { Pendiente: "#f59e0b", Aceptado: "#10b981", Rechazado: "#f43f5e", "En espera": "#94a3b8" };
   const [periodo, setPeriodo] = useState("mes");
   const rango = rangoPeriodo(periodo, 0);
@@ -27019,6 +27115,7 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
       <Header icon={<BarChart3 size={20} className="text-[#2E8B57]" />} title="Informes" manualKey="informes" subtitle="Vista general de proyectos, presupuestos y dinero" />
       <ObrasAceptadasDia presupuestos={presupuestos} proyectos={proyectos} />
       <ParteDiarioVentanas proyectos={proyectos} uxExpedientes={uxExpedientes} clientes={clientes} />
+      <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
       <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6"><PartesTrabajoPanel puestos={puestosInforme} titulo="Partes de trabajo de fábrica" etiqueta={etiquetaInforme} /></div>
 
       <div className="flex flex-wrap items-center gap-2 mb-6">
@@ -31596,6 +31693,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       volverAEscanear(); return;
     }
     setAvisoScan("");
+    registrarEscaneoLinea({ puestoId: "carga", h });
     const { dueno, lote, ventana: v, pieza } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
@@ -31624,6 +31722,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setUltimaLectura(`${cod} · ${new Date().toLocaleTimeString("es-ES")}`);
     const h = indicePiezas.get(cod);
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
+    registrarEscaneoLinea({ puestoId: "carga", h });
     const { dueno, lote, ventana: v } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: toArray(v.piezas).length, persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
     const todos = cabsAhora();
@@ -32618,6 +32717,478 @@ function PlanningMontajes({ instalaciones, proyectos, clientes, pedidos = [], co
   );
 }
 
+/* ---------- SEGUIMIENTO DE LÍNEA: pistola por puestos + pegatina de salida de soldadora ---------- */
+// Cada ventana se identifica con el MISMO código de 12 cifras que ya usa el Almacén de ventanas
+// (vale cualquier pieza de la ventana). Cada lectura en un puesto se guarda en "escaneosLinea",
+// UNA sola vez por ventana y puesto (cuenta la primera hora). La "Carga" se registra sola al
+// escanear en el Almacén de ventanas.
+const PUESTOS_LINEA = [
+  { id: "soldadora", nombre: "Salida de soldadora", corto: "Soldadora" },
+  { id: "herraje", nombre: "Herraje", corto: "Herraje" },
+  { id: "colgado", nombre: "Colgado", corto: "Colgado" },
+  { id: "persiana", nombre: "Persiana", corto: "Persiana" },
+  { id: "cristales", nombre: "Cristales", corto: "Cristales" },
+  { id: "solape", nombre: "Solape", corto: "Solape" },
+  { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
+];
+const nombrePuestoLinea = (id) => (PUESTOS_LINEA.find((p) => p.id === id) || {}).nombre || id;
+const claveEscaneoLinea = (puestoId, ventanaId) => `${puestoId}__${String(ventanaId).replace(/[.#$\[\]\/|\s]/g, "_")}`;
+const useEscaneosLinea = () => {
+  const [lista, setLista] = useState([]);
+  useEffect(() => onValue(ref(fbDb, "escaneosLinea"), (snap) => setLista(toArray(snap.val())), () => setLista([])), []);
+  return lista;
+};
+// Guarda la lectura (solo si esa ventana no estaba ya en ese puesto). Devuelve "nuevo" | "repetida" | "error: ..."
+async function registrarEscaneoLinea({ puestoId, h, por }) {
+  try {
+    const v = h.ventana;
+    const clave = claveEscaneoLinea(puestoId, v.id);
+    const rec = {
+      id: clave, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), puestoId, puestoNombre: nombrePuestoLinea(puestoId),
+      cod: String(h.pieza.c), ventanaId: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, obraKey: h.dueno.key, obraNombre: h.dueno.nombre,
+      grupo: v.grupo || "", por: por || (fbAuth.currentUser && fbAuth.currentUser.email) || "",
+    };
+    const r = await runTransaction(ref(fbDb, `escaneosLinea/${clave}`), (actual) => (actual ? undefined : rec));
+    return r && r.committed ? "nuevo" : "repetida";
+  } catch (e) {
+    return `error: ${(e && e.message) || e}`;
+  }
+}
+// Pegatina pequeña para la salida de la soldadora: una por ventana, con el código de una de sus piezas.
+// El módulo del código se ajusta al ancho de la etiqueta (múltiplos de 0,125 mm = 1 punto a 203 dpi).
+function imprimirPegatinasSoldadora(items, anchoMm, altoMm) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
+  const etiqueta = ({ v, lote, dueno }) => {
+    const cod = toArray(v.piezas)[0] && toArray(v.piezas)[0].c;
+    if (!cod) return "";
+    const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
+    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1);
+    return `<div class="et"><div class="r1"><span>${esc(v.pos)}</span><span>${esc(v.num)}</span></div>
+      <div class="r2">${esc(v.grupo || dueno.nombre)}</div>
+      ${extra ? `<div class="r3">${esc(extra)}</div>` : ""}
+      <div class="bar">${svgCode128CMm(cod, altoBar, modulo)}</div>
+      <div class="dig">${esc(cod)}</div></div>`;
+  };
+  const html = `<html><head><meta charset="utf-8"><title>Pegatinas soldadora</title><style>
+    @page { size: ${anchoMm}mm ${altoMm}mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: ${anchoMm}mm; height: ${altoMm - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; display: flex; flex-direction: column; align-items: center; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
+    .r2 { width: 100%; font-size: 3.4mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
+    .r3 { width: 100%; font-size: 3mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
+    .bar { margin-top: 0.8mm; line-height: 0; }
+    .dig { font-size: 3.2mm; letter-spacing: 0.6mm; line-height: 1.1; margin-top: 0.4mm; }
+  </style></head><body>${items.map(etiqueta).join("")}</body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+}
+
+function PegatinasSoldadora({ indice, escaneos }) {
+  const [obraKey, setObraKey] = useState("");
+  const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return x; } catch (e) { /* nada */ } return { a: 70, h: 32 }; });
+  const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
+  const obras = useMemo(() => {
+    const m = new Map();
+    indice.forEach((h) => {
+      let o = m.get(h.dueno.key);
+      if (!o) { o = { dueno: h.dueno, ventanas: new Map() }; m.set(h.dueno.key, o); }
+      if (!o.ventanas.has(h.ventana.id)) o.ventanas.set(h.ventana.id, { v: h.ventana, lote: h.lote, dueno: h.dueno });
+    });
+    return [...m.values()].sort((a, b) => String(a.dueno.nombre).localeCompare(String(b.dueno.nombre), "es", { numeric: true }));
+  }, [indice]);
+  const hechas = useMemo(() => new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => x.ventanaId)), [escaneos]);
+  const obra = obras.find((o) => o.dueno.key === obraKey) || null;
+  const lista = obra ? [...obra.ventanas.values()].sort((a, b) => String(a.v.pos).localeCompare(String(b.v.pos), "es", { numeric: true })) : [];
+  const faltan = lista.filter((x) => !hechas.has(x.v.id));
+  const medidaOk = mm.a >= 40 && mm.h >= 20;
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <h3 className="font-display font-bold text-slate-800 mb-1">Pegatinas para la salida de soldadora</h3>
+      <p className="text-xs text-slate-500 mb-3">Imprime la pegatina de cada ventana, pégala y pasa la pistola por ella: esa lectura es la que registra la ventana en este puesto.</p>
+      <div className="flex flex-wrap items-end gap-3 mb-3">
+        <div className="flex-1 min-w-[220px]">
+          <label className="text-xs text-slate-500">Obra</label>
+          <select value={obraKey} onChange={(e) => setObraKey(e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
+            <option value="">Elige la obra…</option>
+            {obras.map((o) => <option key={o.dueno.key} value={o.dueno.key}>{o.dueno.nombre} ({o.ventanas.size} ventanas)</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-slate-500">Etiqueta (mm)</label>
+          <div className="flex items-center gap-1">
+            <input type="number" value={mm.a} onChange={(e) => cambiarMm("a", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
+            <span className="text-slate-400">x</span>
+            <input type="number" value={mm.h} onChange={(e) => cambiarMm("h", e.target.value)} className="w-16 border border-slate-300 rounded-md px-2 py-2 text-sm" />
+          </div>
+        </div>
+      </div>
+      {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
+      {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
+      {obra && (
+        <>
+          <div className="flex flex-wrap gap-2 mb-3">
+            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
+          </div>
+          <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
+            {lista.map((x) => (
+              <div key={x.v.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <span className="font-semibold text-slate-800 w-24">{x.v.pos}</span>
+                <span className="text-slate-500 w-16">{x.v.num}</span>
+                <span className="flex-1 text-slate-600 truncate">{x.v.grupo || ""}</span>
+                {hechas.has(x.v.id) ? <span className="text-emerald-700 text-xs font-semibold">✓ leída</span> : <span className="text-slate-400 text-xs">sin leer</span>}
+                <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir</button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Foco pendiente: la pantalla de línea lo deja aquí y el almacén (cristales/persianas) lo recoge al abrirse para encender el sitio.
+const focoAlmacen = { actual: null };
+// Registro de quién mueve cada caballete (ruta propia, solo se añaden filas: no pisa el array de cristales).
+const textoSitioCab = (c) => (c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar");
+function registrarMovimientosCaballetes(antes, despues, por) {
+  try {
+    const prev = new Map(toArray(antes).map((c) => [c.id, c]));
+    toArray(despues).forEach((c) => {
+      const a = prev.get(c.id);
+      if (!a) return;
+      const ua = (a.ubicacion ? `${a.ubicacion.zona}|${a.ubicacion.fila}|${a.ubicacion.hueco}` : "") + "|" + (a.enPuesto || "");
+      const ub = (c.ubicacion ? `${c.ubicacion.zona}|${c.ubicacion.fila}|${c.ubicacion.hueco}` : "") + "|" + (c.enPuesto || "");
+      if (ua === ub) return;
+      const id = uid();
+      fbSet(ref(fbDb, `movimientosCaballetes/${id}`), JSON.parse(JSON.stringify({
+        id, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), por: por || "", cabId: c.id, lote: c.lote || "", expediente: c.expediente || "", cliente: c.cliente || "",
+        de: textoSitioCab(a), a: textoSitioCab(c), zonaDe: a.ubicacion ? a.ubicacion.zona : (a.enPuesto || ""), zonaA: c.ubicacion ? c.ubicacion.zona : (c.enPuesto || ""),
+      }))).catch(() => {});
+    });
+  } catch (e) { /* el registro nunca debe impedir guardar */ }
+}
+const useMovimientosCaballetes = () => {
+  const [lista, setLista] = useState([]);
+  useEffect(() => onValue(ref(fbDb, "movimientosCaballetes"), (snap) => setLista(toArray(snap.val())), () => setLista([])), []);
+  return lista;
+};
+function MovimientosCaballetes() {
+  const movs = useMovimientosCaballetes();
+  const [dias, setDias] = useState(1);
+  const desde = Date.now() - dias * 86400000;
+  const xs = movs.filter((m) => m.ts >= desde).sort((a, b) => b.ts - a.ts);
+  const porPersona = {};
+  xs.forEach((m) => { const k = m.por || "sin identificar"; porPersona[k] = (porPersona[k] || 0) + 1; });
+  const hora = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <div className="flex items-center gap-3 mb-2">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Quién mueve los caballetes</h3>
+        <select value={dias} onChange={(e) => setDias(parseInt(e.target.value, 10))} className="border border-slate-300 rounded-md px-2 py-1 text-sm">
+          <option value={1}>Últimas 24 h</option><option value={7}>7 días</option><option value={30}>30 días</option>
+        </select>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Cada cambio de sitio de un caballete en el mapa queda con hora y usuario. Identifica la <b>cuenta</b> con la que se entró, no a la persona: si varios comparten sesión, aparecerá el mismo nombre.</p>
+      {xs.length === 0 ? <p className="text-sm text-slate-400">Sin movimientos en este periodo (se empiezan a guardar desde que se instala esta versión).</p> : (
+        <>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {Object.entries(porPersona).sort((a, b) => b[1] - a[1]).map(([k, n]) => <span key={k} className="px-2.5 py-1 rounded-full bg-slate-100 text-xs text-slate-700"><b>{k}</b>: {n}</span>)}
+          </div>
+          <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-72 overflow-y-auto">
+            {xs.slice(0, 100).map((m) => (
+              <div key={m.id} className="px-3 py-2 text-xs">
+                <span className="text-slate-400">{hora(m.ts)}</span> <span className="font-semibold text-slate-800">{m.por || "sin identificar"}</span>
+                <span className="text-slate-600"> · caballete {m.lote || "?"}{m.expediente ? ` (exp ${m.expediente})` : ""}</span>
+                <div className={`${m.zonaDe && m.zonaA && m.zonaDe !== m.zonaA ? "text-amber-800 font-semibold" : "text-slate-500"}`}>{m.de} → {m.a}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- Cruce con los almacenes: una lectura en el puesto de cristales/persianas también marca la pieza ----
+// No hay un identificador común entre la ventana y su cristal/persiana, así que se casan por EXPEDIENTE + VIVIENDA
+// (o la posición V01…). Se marca UNA pieza por ventana leída; si no hay casamiento claro no se marca nada y se avisa.
+const normVivLinea = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+function datosVentanaLinea(h) {
+  const v = h.ventana;
+  const exp = (String(h.lote.expediente || "").match(/\d{2,}/) || String(v.grupo || "").match(/\d{2,}/) || [""])[0];
+  const viv = normVivLinea(String(v.grupo || "").replace(/^\s*\d+\s*/, ""));
+  const pos = normVivLinea(v.pos);
+  const casa = (refTxt) => {
+    const r = normVivLinea(refTxt);
+    if (!r) return false;
+    return [viv, pos].some((a) => a && (r === a || (a.length >= 2 && r.includes(a)) || (r.length >= 3 && a.includes(r))));
+  };
+  return { exp, viv, casa };
+}
+function cruzarCristalVentana(cristales, onUpdateCristal, h) {
+  const d = datosVentanaLinea(h);
+  if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
+  let variasUnidades = false;
+  for (const c of toArray(cristales)) {
+    const ps = toArray(c.piezas);
+    for (let i = 0; i < ps.length; i++) {
+      const p = ps[i];
+      if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) continue;
+      if ((parseFloat(p.cantidad) || 1) > 1) { variasUnidades = true; continue; }
+      if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
+      onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
+      const donde = c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto} (sin hueco en el mapa)` : "sin ubicar en el mapa";
+      return { ok: true, foco: { tipo: "cristal", exp: d.exp, viv: String(p.ref || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
+    }
+  }
+  return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
+}
+function cruzarPersianaVentana(items, guardarItems, h) {
+  const d = datosVentanaLinea(h);
+  if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
+  const lista = toArray(items);
+  const x = lista.find((y) => !y.entregada && !y.colocadaVentana && numsExpediente(y.expediente).includes(d.exp) && d.casa(y.ref));
+  if (!x) return { ok: false, texto: "no he encontrado su persiana en el almacén (o ya estaba marcada)" };
+  if (!guardarItems) return { ok: false, texto: "no tengo acceso al almacén de persianas desde aquí" };
+  const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? "ya estaba en el puesto" : "sin sitio asignado";
+  guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
+  return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
+}
+
+function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales = [], onUpdateCristal, onIrA }) {
+  const [puestoId, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
+  const [codigo, setCodigo] = useState("");
+  const [ultimo, setUltimo] = useState(null); // { ok, texto }
+  const inputRef = useRef(null);
+  const escaneos = useEscaneosLinea();
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
+  const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
+  const elegir = (id) => { setPuestoId(id); setUltimo(null); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
+  const avisar = (ok, texto, repetida) => { setUltimo({ ok, texto, repetida }); pitidoCRM(ok); enfocar(); };
+  const piezaDeTexto = (txt) => {
+    const exacto = codPiezaFab(txt);
+    if (exacto) return exacto;
+    const dig = String(txt || "").replace(/\D/g, "");
+    if (dig.length > 12) { for (const k of indice.keys()) if (dig.includes(k)) return k; }
+    return null;
+  };
+  const procesar = async () => {
+    const txt = codigo.trim();
+    setCodigo("");
+    if (!txt) return;
+    const cod = piezaDeTexto(txt);
+    if (!cod) { avisar(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
+    const h = indice.get(cod);
+    if (!h) { avisar(false, `Etiqueta ${cod}: su lote no está en ningún PDF subido. Sube el PDF en el proyecto o en Almacén ventanas.`); return; }
+    const r = await registrarEscaneoLinea({ puestoId, h, por: quien });
+    const desc = `${h.ventana.pos} · ${h.ventana.grupo || h.dueno.nombre}`;
+    if (r === "nuevo") {
+      let cruce = null;
+      if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h);
+      else if (puestoId === "persiana") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
+      if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveEscaneoLinea(puestoId, h.ventana.id)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
+      avisar(!cruce || cruce.ok, `✓ ${desc} registrada en ${nombrePuestoLinea(puestoId)}${cruce ? (cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`) : ""}`, !!cruce && !cruce.ok);
+      setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null } : u));
+    }
+    else if (r === "repetida") avisar(true, `Ya estaba registrada en este puesto: ${desc}`, true);
+    else avisar(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`);
+  };
+  return (
+    <div className="space-y-6">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
+        <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Una ventana cuenta una sola vez en cada puesto.</p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {PUESTOS_LINEA.filter((p) => p.id !== "carga").map((p) => (
+            <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
+          ))}
+        </div>
+        <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
+          placeholder={`Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
+        {ultimo && (
+          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.foco && onIrA && (
+            <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
+          )}</div>
+        )}
+        <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
+        {hoyAqui.length > 0 && (
+          <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
+            {hoyAqui.slice(0, 15).map((x) => (
+              <div key={x.id} className="flex items-center gap-3 px-3 py-1.5 text-xs">
+                <span className="text-slate-400 w-12">{new Date(x.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>
+                <span className="font-semibold text-slate-700 w-20">{x.pos}</span>
+                <span className="flex-1 text-slate-600 truncate">{x.grupo || x.obraNombre}</span>
+                <span className="text-slate-400 truncate">{x.por}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {puestoId === "soldadora" && <PegatinasSoldadora indice={indice} escaneos={escaneos} />}
+    </div>
+  );
+}
+
+// Informe: qué hace cada puesto (lecturas de pistola + partes de trabajo), embudo por obra y ventanas paradas
+function InformeLineaPuestos({ proyectos, uxExpedientes, sinObra }) {
+  const escaneos = useEscaneosLinea();
+  const partes = usePartesTrabajo();
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const [dia, setDia] = useState(new Date().toISOString().slice(0, 10));
+  const [semana, setSemana] = useState(false);
+  const [horasParada, setHorasParada] = useState(4);
+  const lunes = lunesDe(dia);
+  const finSemana = (() => { const d = new Date(lunes + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+  const enPeriodo = (f) => (semana ? f >= lunes && f <= finSemana : f === dia);
+  const hora = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  const delPeriodo = escaneos.filter((x) => enPeriodo(x.fecha));
+  const filas = PUESTOS_LINEA.map((p) => {
+    const xs = delPeriodo.filter((x) => x.puestoId === p.id).sort((a, b) => a.ts - b.ts);
+    const primera = xs[0]; const ultima = xs[xs.length - 1];
+    const horas = primera && ultima ? (ultima.ts - primera.ts) / 3600000 : 0;
+    const ritmo = !semana && xs.length >= 3 && horas >= 0.25 ? Math.round((xs.length / horas) * 10) / 10 : null;
+    return { p, n: xs.length, primera, ultima, ritmo, personas: new Set(xs.map((x) => x.por).filter(Boolean)).size };
+  });
+  // Embudo por obra: obras con alguna lectura en el periodo; se cuentan todas sus lecturas
+  const totalPorObra = useMemo(() => { const m = new Map(); indice.forEach((h) => { const s = m.get(h.dueno.key) || new Set(); s.add(h.ventana.id); m.set(h.dueno.key, s); }); return m; }, [indice]);
+  const obrasActivas = [...new Map(delPeriodo.map((x) => [x.obraKey, x.obraNombre])).entries()];
+  const embudo = obrasActivas.map(([key, nombre]) => {
+    const cuenta = {};
+    PUESTOS_LINEA.forEach((p) => { cuenta[p.id] = new Set(escaneos.filter((x) => x.obraKey === key && x.puestoId === p.id).map((x) => x.ventanaId)).size; });
+    return { key, nombre, total: (totalPorObra.get(key) || new Set()).size, cuenta };
+  }).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
+  // Ventanas paradas: pasaron por algún puesto, no han llegado a Carga y llevan más de X horas sin moverse (últimos 14 días)
+  const cargadas = new Set(escaneos.filter((x) => x.puestoId === "carga").map((x) => x.ventanaId));
+  const ultimaPorVentana = new Map();
+  escaneos.forEach((x) => { const a = ultimaPorVentana.get(x.ventanaId); if (!a || x.ts > a.ts) ultimaPorVentana.set(x.ventanaId, x); });
+  const ahora = Date.now();
+  const paradas = [...ultimaPorVentana.values()].filter((x) => !cargadas.has(x.ventanaId) && x.ts < ahora - horasParada * 3600000 && x.ts > ahora - 14 * 86400000).sort((a, b) => a.ts - b.ts);
+  // Partes de trabajo por puesto
+  const partesPeriodo = partes.filter((x) => enPeriodo(x.fecha));
+  const porPuestoParte = {};
+  partesPeriodo.forEach((x) => { const k = x.puestoNombre || "—"; const o = porPuestoParte[k] || { n: 0, horas: 0, unidades: 0, incidencias: 0 }; o.n += 1; o.horas += parseFloat(x.horas) || 0; o.unidades += parseFloat(x.unidades) || 0; if (x.incidencia) o.incidencias += 1; porPuestoParte[k] = o; });
+  const th = "px-3 py-2 text-left text-xs uppercase text-slate-500";
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3 mb-3">
+        <h3 className="font-display font-bold text-slate-800 mr-auto">Línea de fabricación: lo que hace cada puesto</h3>
+        <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm">
+          <button onClick={() => setSemana(false)} className={`px-3 py-1.5 ${!semana ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Día</button>
+          <button onClick={() => setSemana(true)} className={`px-3 py-1.5 ${semana ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Semana</button>
+        </div>
+        <TextInput type="date" value={dia} onChange={(e) => setDia(e.target.value)} className="!w-40" />
+      </div>
+      <div className="overflow-x-auto border border-slate-200 rounded-lg mb-5">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50"><tr><th className={th}>Puesto</th><th className={th}>Ventanas leídas</th><th className={th}>Primera</th><th className={th}>Última</th><th className={th}>Ritmo (vent./h)</th><th className={th}>Personas</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {filas.map((f) => (
+              <tr key={f.p.id}>
+                <td className="px-3 py-2 font-semibold text-slate-800">{f.p.nombre}</td>
+                <td className="px-3 py-2 font-bold">{f.n}</td>
+                <td className="px-3 py-2 text-slate-600">{f.primera ? hora(f.primera.ts) : "—"}</td>
+                <td className="px-3 py-2 text-slate-600">{f.ultima ? hora(f.ultima.ts) : "—"}</td>
+                <td className="px-3 py-2 text-slate-600">{f.ritmo !== null ? f.ritmo : "—"}</td>
+                <td className="px-3 py-2 text-slate-600">{f.personas || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <h4 className="font-semibold text-slate-800 text-sm mb-2">Dónde se quedan las ventanas de cada obra</h4>
+      {embudo.length === 0 ? <p className="text-sm text-slate-400 mb-5">Sin lecturas en este periodo.</p> : (
+        <div className="overflow-x-auto border border-slate-200 rounded-lg mb-5">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Total</th>{PUESTOS_LINEA.map((p) => <th key={p.id} className={th}>{p.corto}</th>)}</tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {embudo.map((o) => (
+                <tr key={o.key}>
+                  <td className="px-3 py-2 font-semibold text-slate-800">{o.nombre}</td>
+                  <td className="px-3 py-2 text-slate-600">{o.total || "—"}</td>
+                  {PUESTOS_LINEA.map((p) => {
+                    const mal = p.id === "carga" && o.cuenta.carga < o.cuenta.soldadora;
+                    return <td key={p.id} className={`px-3 py-2 ${mal ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{o.cuenta[p.id] || "·"}</td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-[11px] text-slate-400 -mt-3 mb-5">En amarillo: obras con menos ventanas en Carga que en la salida de soldadora. Herraje, colgado, persiana, cristales y solape no tienen por qué pasar todas las ventanas, así que no se marcan.</p>
+      <h4 className="font-semibold text-slate-800 text-sm mb-2">Enlace con los almacenes de cristales y persianas</h4>
+      {(() => {
+        const cruzados = delPeriodo.filter((x) => (x.puestoId === "cristales" || x.puestoId === "persiana") && x.enlace);
+        if (!cruzados.length) return <p className="text-sm text-slate-400 mb-5">Todavía no hay lecturas en cristales ni persiana en este periodo.</p>;
+        const resumen = ["cristales", "persiana"].map((id) => { const xs = cruzados.filter((x) => x.puestoId === id); const ok = xs.filter((x) => x.enlace === "ok").length; return { id, n: xs.length, ok, pct: xs.length ? Math.round((ok / xs.length) * 100) : 0 }; }).filter((r) => r.n > 0);
+        const sin = cruzados.filter((x) => x.enlace !== "ok").sort((a, b) => b.ts - a.ts);
+        return (
+          <div className="mb-5">
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {resumen.map((r) => (
+                <div key={r.id} className={`rounded-lg p-3 ${r.pct >= 80 ? "bg-emerald-50" : "bg-amber-50"}`}>
+                  <div className="text-2xl font-extrabold text-slate-800">{r.pct}%</div>
+                  <div className="text-xs uppercase text-slate-500">{nombrePuestoLinea(r.id)}: {r.ok} de {r.n} enlazadas</div>
+                </div>
+              ))}
+            </div>
+            {sin.length > 0 && (
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-72 overflow-y-auto">
+                {sin.map((x) => (
+                  <div key={x.id} className="px-3 py-2 text-xs">
+                    <span className="font-semibold text-slate-800">{x.pos}</span> <span className="text-slate-500">· {x.obraNombre}{x.grupo ? ` · ${x.grupo}` : ""} · {x.puestoNombre}</span>
+                    <div className="text-amber-800">{x.enlaceTexto || "sin enlazar"}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-slate-400 mt-2">Si el porcentaje baja del 80 %, mira los avisos de abajo: dicen si falta el packing list, si la vivienda no coincide o si el cristal viene con varias unidades.</p>
+          </div>
+        );
+      })()}
+      <div className="flex items-center gap-3 mb-2">
+        <h4 className="font-semibold text-slate-800 text-sm mr-auto">Ventanas paradas ({paradas.length})</h4>
+        <label className="text-xs text-slate-500">Sin moverse más de</label>
+        <select value={horasParada} onChange={(e) => setHorasParada(parseInt(e.target.value, 10))} className="border border-slate-300 rounded-md px-2 py-1 text-sm">
+          {[2, 4, 8, 24, 48].map((h) => <option key={h} value={h}>{h} h</option>)}
+        </select>
+      </div>
+      {paradas.length === 0 ? <p className="text-sm text-slate-400 mb-5">Ninguna: todo lo leído ha llegado a Carga o se ha movido hace poco.</p> : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-72 overflow-y-auto mb-1">
+          {paradas.map((x) => (
+            <div key={x.ventanaId} className="flex items-center gap-3 px-3 py-2 text-sm">
+              <span className="font-semibold text-slate-800 w-20">{x.pos}</span>
+              <span className="flex-1 text-slate-600 truncate">{x.obraNombre}{x.grupo ? ` · ${x.grupo}` : ""}</span>
+              <span className="text-slate-500 text-xs">última lectura: {x.puestoNombre}, {fmtDate(x.fecha)} {hora(x.ts)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-slate-400 mb-5">Cuenta también noches y fines de semana: el lunes por la mañana saldrán las del viernes.</p>
+      <h4 className="font-semibold text-slate-800 text-sm mb-2">Partes de trabajo por puesto</h4>
+      {Object.keys(porPuestoParte).length === 0 ? <p className="text-sm text-slate-400">Sin partes en este periodo.</p> : (
+        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50"><tr><th className={th}>Puesto</th><th className={th}>Partes</th><th className={th}>Horas</th><th className={th}>Unidades</th><th className={th}>Incidencias</th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {Object.entries(porPuestoParte).sort((a, b) => b[1].horas - a[1].horas).map(([k, o]) => (
+                <tr key={k}><td className="px-3 py-2 font-semibold text-slate-800">{k}</td><td className="px-3 py-2">{o.n}</td><td className="px-3 py-2">{Math.round(o.horas * 10) / 10}</td><td className="px-3 py-2">{o.unidades}</td><td className="px-3 py-2">{o.incidencias || "—"}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- PUESTOS DE TRABAJO ---------- */
 // Puestos (soldadora, corte, montaje…) con su código y los empleados asignados. Cada
 // empleado ve en "Mi puesto" las obras del día (del planning confirmado), ficha, manda
@@ -32637,6 +33208,150 @@ const usePlanningPublicado = () => {
   useEffect(() => onValue(ref(fbDb, "planningPublicado"), (snap) => setPlan(snap.val()), () => setPlan(null)), []);
   return plan;
 };
+
+/* ---------- PUESTO DE PREPARACIÓN DE MATERIAL: lo de todas las obras del día (o de la semana), junto, y "todo puesto" ---------- */
+const addDiasISO = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+function PuestoPreparacionMaterial({ cristales = [] }) {
+  const plan = usePlanningPublicado();
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const itemsP = toArray(ctx.persianasAlmacen);
+  const { f: siguiente } = siguienteDiaLaborable();
+  const hoyMadrid = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" }));
+  const esJueves = hoyMadrid.getDay() === 4;
+  const hoyISO2 = `${hoyMadrid.getFullYear()}-${String(hoyMadrid.getMonth() + 1).padStart(2, "0")}-${String(hoyMadrid.getDate()).padStart(2, "0")}`;
+  const [modo, setModo] = useState(esJueves ? "semana" : "dia");
+  const [base, setBase] = useState(esJueves ? addDiasISO(lunesDe(hoyISO2), 7) : siguiente);
+  const [estado, setEstado] = useState({});
+  const quien = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
+  const clave = modo === "dia" ? base : `semana-${lunesDe(base)}`;
+  useEffect(() => onValue(ref(fbDb, `preparacionTodoPuesto/${clave}`), (snap) => setEstado(snap.val() || {}), () => setEstado({})), [clave]);
+  const dias = modo === "dia" ? [base] : [0, 1, 2, 3, 4].map((i) => addDiasISO(lunesDe(base), i));
+  const deObraL = (expNums, exp) => numsExpediente(exp).some((n) => (expNums || []).includes(n));
+  const vistas = new Set();
+  const obras = [];
+  dias.forEach((d) => toArray(plan && plan.dias && plan.dias[d]).forEach((t) => {
+    const o = (plan.obras || {})[t.id];
+    if (!o || vistas.has(t.id)) return;
+    if (o.inicio && o.inicio !== d) return;
+    vistas.add(t.id);
+    obras.push({ id: t.id, dia: d, obra: o });
+  }));
+  const juntos = juntarListados(obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas } })), ["perfiles", "refuerzo", "herraje", "accesorios"]);
+  const grupos = new Map();
+  juntos.forEach((l) => {
+    const alm = l.almacen || "Sin almacén asignado";
+    const est = l.estanteria || "Sin estantería";
+    const gk = `${alm} · ${est}`;
+    if (!grupos.has(gk)) grupos.set(gk, { gk, alm, est, lineas: [] });
+    grupos.get(gk).lineas.push(l);
+  });
+  const listaGrupos = [...grupos.values()].sort((a, b) => a.alm.localeCompare(b.alm, "es") || a.est.localeCompare(b.est, "es", { numeric: true }));
+  listaGrupos.forEach((g) => g.lineas.sort((a, b) => String(a.descripcion || "").localeCompare(String(b.descripcion || ""), "es", { numeric: true })));
+  const claveGrupo = (gk) => String(gk).replace(/[.#$\[\]\/]/g, "_");
+  const hechosG = estado.grupos || {};
+  const nHechos = listaGrupos.filter((g) => hechosG[claveGrupo(g.gk)]).length;
+  const esperadas = (o, sec) => toArray(o.lineas).filter((l) => l.seccion === sec).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
+  const llegPers = (o) => itemsP.filter((x) => !x.entregada && deObraL(o.expNums, x.expediente)).length;
+  const llegCris = (o) => cristales.reduce((a, c) => {
+    const ps = toArray(c.piezas).filter((p) => deObraL(o.expNums, p.expediente || c.expediente));
+    if (ps.length) return a + ps.reduce((b, p) => b + (parseFloat(p.cantidad) || 1), 0);
+    return deObraL(o.expNums, c.expediente) ? a + (parseFloat(c.cantidad) || 0) : a;
+  }, 0);
+  const filasObra = obras.map((x) => ({ ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra) }));
+  const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce).length;
+  const hora = (ts) => new Date(ts).toLocaleString("es-ES", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const ruta = (sub) => ref(fbDb, `preparacionTodoPuesto/${clave}/${sub}`);
+  const tick = (gk) => fbSet(ruta(`grupos/${claveGrupo(gk)}`), hechosG[claveGrupo(gk)] ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const todoPuesto = () => {
+    const sinMarcar = listaGrupos.length - nHechos;
+    const aviso = [sinMarcar ? `${sinMarcar} estantería(s) sin marcar` : "", faltan ? `${faltan} obra(s) con persianas o cristales sin llegar del todo` : ""].filter(Boolean).join(" y ");
+    if (aviso && !window.confirm(`Ojo: hay ${aviso}. ¿Confirmas igualmente que está todo puesto?`)) return;
+    fbSet(ruta("todo"), { por: quien, en: Date.now(), sinMarcar, obrasConFaltas: faltan, obras: obras.length }).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const quitarTodo = () => { if (window.confirm("¿Quitar la confirmación de \"todo puesto\"?")) fbSet(ruta("todo"), null).catch(() => {}); };
+  const th = "px-3 py-2 text-left text-xs uppercase text-slate-500";
+  return (
+    <div className="space-y-5">
+      <div className="bg-white border border-slate-200 rounded-xl p-5">
+        <div className="flex flex-wrap items-center gap-3 mb-1">
+          <h3 className="font-display font-bold text-slate-800 mr-auto">Preparación de material {modo === "dia" ? "del día" : "de la semana"}</h3>
+          <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm">
+            <button onClick={() => setModo("dia")} className={`px-3 py-1.5 ${modo === "dia" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Día</button>
+            <button onClick={() => setModo("semana")} className={`px-3 py-1.5 ${modo === "semana" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Semana</button>
+          </div>
+          <TextInput type="date" value={base} onChange={(e) => setBase(e.target.value || siguiente)} className="!w-40" />
+        </div>
+        <p className="text-xs text-slate-500">Junta el material de todas las obras que <b>empiezan</b> {modo === "dia" ? "ese día" : `entre el ${fmtDate(dias[0])} y el ${fmtDate(dias[4])}`} según el planning confirmado. {esJueves && modo === "semana" ? "Es jueves: se enseña la semana siguiente." : ""}</p>
+      </div>
+      {!plan ? <p className="text-sm text-slate-400">No hay ningún planning confirmado.</p> : obras.length === 0 ? <p className="text-sm text-slate-400">No empieza ninguna obra en este periodo según el planning confirmado.</p> : (
+        <>
+          <div className={`rounded-xl p-5 border ${estado.todo ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+            {estado.todo ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-lg font-extrabold text-emerald-800">✓ TODO PUESTO</span>
+                <span className="text-sm text-emerald-800">{(estado.todo.por || "").split("@")[0]} · {hora(estado.todo.en)}{estado.todo.sinMarcar || estado.todo.obrasConFaltas ? ` · con avisos (${estado.todo.sinMarcar || 0} sin marcar, ${estado.todo.obrasConFaltas || 0} obras con faltas)` : ""}</span>
+                <button onClick={quitarTodo} className="ml-auto text-xs text-slate-500 underline">quitar</button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="text-sm text-slate-600 mr-auto"><b>{obras.length}</b> obras · estanterías marcadas <b>{nHechos}/{listaGrupos.length}</b>{faltan > 0 ? <span className="text-amber-700 font-semibold"> · {faltan} obra(s) con persianas o cristales sin llegar</span> : ""}</div>
+                <button onClick={todoPuesto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-5 py-3 rounded-lg text-base font-bold">Todo puesto</button>
+              </div>
+            )}
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <h4 className="font-semibold text-slate-800 text-sm mb-2">Persianas y cristales por obra (llegado / esperado)</h4>
+            <div className="overflow-x-auto border border-slate-200 rounded-lg">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Persianas</th><th className={th}>Cristales</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filasObra.map((x) => (
+                    <tr key={x.id}>
+                      <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
+                      <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
+                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe || x.pl ? `${x.pl} / ${x.pe}` : "—"}</td>
+                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce || x.cl ? `${x.cl} / ${x.ce}` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-5">
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Perfiles, herrajes y accesorios, juntos por estantería</h4>
+            <p className="text-xs text-slate-500 mb-3">Marca cada estantería cuando esté preparada. Aquí no se comprueba si el material ha llegado: mira el pedido.</p>
+            {listaGrupos.length === 0 ? <p className="text-sm text-slate-400">Las obras de este periodo no tienen listado de materiales cargado.</p> : (
+              <div className="space-y-3">
+                {listaGrupos.map((g) => {
+                  const h = hechosG[claveGrupo(g.gk)];
+                  return (
+                    <div key={g.gk} className={`border rounded-lg ${h ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
+                      <div className="flex items-center gap-3 px-3 py-2">
+                        <span className="font-semibold text-slate-800 mr-auto">{g.alm} · {g.est} <span className="text-slate-400 font-normal">({g.lineas.length})</span></span>
+                        {h ? <span className="text-xs text-emerald-700 font-semibold">✓ {(h.por || "").split("@")[0]}</span> : null}
+                        <button onClick={() => tick(g.gk)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparada"}</button>
+                      </div>
+                      <div className="divide-y divide-slate-100 border-t border-slate-100">
+                        {g.lineas.map((l) => (
+                          <div key={l.id} className="flex flex-wrap items-baseline gap-x-3 px-3 py-1.5 text-sm">
+                            <span className="font-bold text-slate-800 w-12 text-right">{Math.round(l.uds * 100) / 100}</span>
+                            <span className="text-slate-700 flex-1 min-w-[180px]">{l.descripcion}{l.color ? ` · ${l.color}` : ""} <span className="text-slate-400 text-xs">{l.codigo}</span></span>
+                            <span className="text-[11px] text-slate-400">{l.obras.map((o) => `${o.nombre} (${o.uds})`).join(" · ")}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ---------- PREPARACIÓN DEL PRÓXIMO DÍA: dónde dejar cada material ---------- */
 // Cada material tiene un sitio fijo donde se deja lo del día siguiente (un puesto de
