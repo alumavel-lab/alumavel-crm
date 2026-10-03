@@ -6462,6 +6462,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
       guardarRef.current(mezclarLotesFab(lotesRef.current, r, file.name));
       const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
       setAviso(`Leídas ${r.etiquetas} etiquetas de ${nv} ventanas/puertas (lote${r.lotes.length > 1 ? "s" : ""} ${r.lotes.map((l) => l.fab).join(", ")}).${r.ignoradas ? ` ${r.ignoradas} páginas no tenían etiqueta.` : ""}${r.repetidas ? ` ${r.repetidas} códigos repetidos ignorados.` : ""}`);
+      if (r.modelo) setAviso((a) => `${a} Etiquetas sin código de barras: el CRM les ha generado uno propio de 12 cifras (se imprime desde Fábrica → Línea (pistola) → Pegatinas).${r.persianas ? ` ${r.persianas} persiana(s) no llevan código y se han dejado fuera.` : ""}`);
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
@@ -15315,6 +15316,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={nombreUsuario} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={(t) => setTab(t)} />
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
           {isAdminFab && <MovimientosCaballetes />}
+          {isAdminFab && <LecturasLineaAdmin />}
         </div>
       )}
 
@@ -30587,6 +30589,50 @@ function agruparEtiquetasFab(paginas) {
     etiquetas, ignoradas, repetidas,
   };
 }
+// ---- Etiquetas "modelos unidad" (una por ventana, SIN código de barras, con dibujo, nombre, REF. OBRA y TIPOLOGIA) ----
+// El CRM les genera un código de 12 cifras propio (empieza por 9: FAB 4 + expediente 4 + nº de la tipología 3) y las
+// guarda con la misma estructura que las etiquetas de perfil, así la pistola, las pegatinas y el informe funcionan igual.
+function agruparEtiquetasModelo(paginas) {
+  const lotes = new Map();
+  let etiquetas = 0, ignoradas = 0, repetidas = 0, persianas = 0;
+  const vistos = new Set();
+  const mm = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
+  paginas.forEach((items) => {
+    const lineas = items.join("").split("\n").map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
+    const idx = [];
+    lineas.forEach((l, i) => { if (i > 0 && /^REF\.? ?OBRA/i.test(l)) idx.push(i); });
+    if (!idx.length) { ignoradas++; return; }
+    idx.forEach((i, k) => {
+      const fin = k + 1 < idx.length ? idx[k + 1] - 1 : lineas.length;
+      const nombre = lineas[i - 1];
+      const bloque = lineas.slice(i + 1, fin);
+      const texto = bloque.join("\n");
+      const ref = (bloque.find((l) => !/^TIPOLOG/i.test(l)) || "").trim();
+      const tip = ((texto.match(/TIPOLOG[IÍ]A:\s*(\S+)/i) || [])[1] || "").trim();
+      const med = texto.match(/([\d.]+,\d+)\s*x\s*([\d.]+,\d+)/);
+      const fab = ((texto.match(/FAB:\s*([\d.]+)/i) || [])[1] || "").replace(/\.$/, "");
+      const exp = ((ref.match(/EXP\.?\s*(\d+)/i) || [])[1]) || "";
+      const planta = ((ref.match(/EXP\.?\s*\d+\s*(.*)$/i) || [])[1] || "").trim();
+      const m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
+      if (!tip || !fab || !exp) { ignoradas++; return; }
+      if (!m) { if (/persiana/i.test(tip)) persianas++; else ignoradas++; return; } // las persianas no son ventanas: no llevan código
+      const code = "9" + fab.replace(/\D/g, "").slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + m[2].slice(-3).padStart(3, "0");
+      const id = `${fab}|${exp}|${tip}`;
+      if (vistos.has(code)) { repetidas++; return; }
+      vistos.add(code);
+      let lote = lotes.get(fab);
+      if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
+      const a = med ? mm(med[1]) : null, h = med ? mm(med[2]) : null;
+      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: a && h ? `${a} x ${h}` : "", piezas: [{ c: code, t: "Ventana" }] });
+      etiquetas++;
+    });
+  });
+  const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+  return {
+    lotes: [...lotes.values()].map((l) => ({ fab: l.fab, expediente: l.expediente, ventanas: [...l.ventanas.values()].sort((a, b) => nat(a.grupo, b.grupo) || nat(a.pos, b.pos)) })),
+    etiquetas, ignoradas, repetidas, persianas, modelo: true,
+  };
+}
 async function leerEtiquetasFabPdf(file, onProgreso) {
   const lib = await cargarPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
@@ -30598,7 +30644,9 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
     paginas.push(tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")));
     if (onProgreso && n % 25 === 0) onProgreso(n, doc.numPages);
   }
-  return agruparEtiquetasFab(paginas);
+  const r = agruparEtiquetasFab(paginas);
+  if (!r.lotes.length) { const r2 = agruparEtiquetasModelo(paginas); if (r2.lotes.length) return r2; }
+  return r;
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
@@ -32876,6 +32924,43 @@ const useMovimientosCaballetes = () => {
   useEffect(() => onValue(ref(fbDb, "movimientosCaballetes"), (snap) => setLista(toArray(snap.val())), () => setLista([])), []);
   return lista;
 };
+// Solo administradores: borra las lecturas de la pistola de un lote (para limpiar pruebas). No toca cristales, persianas ni caballetes.
+function LecturasLineaAdmin() {
+  const escaneos = useEscaneosLinea();
+  const [borrando, setBorrando] = useState("");
+  const grupos = useMemo(() => {
+    const m = new Map();
+    escaneos.forEach((x) => { const k = x.fab || "(sin lote)"; const g = m.get(k) || { fab: k, obra: x.obraNombre || "", n: 0, desde: x.ts, hasta: x.ts }; g.n += 1; g.desde = Math.min(g.desde, x.ts); g.hasta = Math.max(g.hasta, x.ts); m.set(k, g); });
+    return [...m.values()].sort((a, b) => b.hasta - a.hasta);
+  }, [escaneos]);
+  const borrar = async (g) => {
+    if (!window.confirm(`¿Borrar las ${g.n} lecturas del lote ${g.fab}? Solo se quitan del informe de línea; no se deshace nada en cristales, persianas ni caballetes.`)) return;
+    setBorrando(g.fab);
+    try { await Promise.all(escaneos.filter((x) => (x.fab || "(sin lote)") === g.fab).map((x) => fbSet(ref(fbDb, `escaneosLinea/${x.id}`), null))); }
+    catch (e) { alert("No se pudo borrar: " + e.message); }
+    setBorrando("");
+  };
+  const fecha = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <h3 className="font-display font-bold text-slate-800 mb-1">Lecturas guardadas (limpiar pruebas)</h3>
+      <p className="text-xs text-slate-500 mb-3">Borra del informe las lecturas de la pistola de un lote. No revierte lo que esas lecturas hayan marcado en los almacenes de cristales o persianas.</p>
+      {grupos.length === 0 ? <p className="text-sm text-slate-400">No hay lecturas guardadas.</p> : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-md">
+          {grupos.map((g) => (
+            <div key={g.fab} className="flex items-center gap-3 px-3 py-2 text-sm">
+              <span className="font-semibold text-slate-800 w-24">Lote {g.fab}</span>
+              <span className="flex-1 text-slate-600 truncate">{g.obra}</span>
+              <span className="text-xs text-slate-500">{g.n} lecturas · {fecha(g.desde)} – {fecha(g.hasta)}</span>
+              <button disabled={borrando === g.fab} onClick={() => borrar(g)} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50 disabled:opacity-40">{borrando === g.fab ? "Borrando…" : "Borrar"}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MovimientosCaballetes() {
   const movs = useMovimientosCaballetes();
   const [dias, setDias] = useState(1);
