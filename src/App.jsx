@@ -32878,12 +32878,13 @@ function PegatinasSoldadora({ indice, escaneos }) {
       {obra && (
         <>
           <div className="flex flex-wrap gap-2 mb-3">
-            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora([faltan[0] || lista[0]], mm.a, mm.h)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
+            <button disabled={!medidaOk || !faltan.length} onClick={() => imprimirPegatinasSoldadora(faltan, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
             <button disabled={!medidaOk || !lista.length} onClick={() => imprimirPegatinasSoldadora(lista, mm.a, mm.h)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
             {lista.map((x) => (
-              <div key={x.v.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+              <div key={x.v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
                 <span className="font-semibold text-slate-800 w-24">{x.v.pos}</span>
                 <span className="text-slate-500 w-16">{x.v.num}</span>
                 <span className="flex-1 text-slate-600 truncate">{x.v.grupo || ""}</span>
