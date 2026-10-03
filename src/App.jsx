@@ -33411,18 +33411,56 @@ function MapaZonasLinea({ ids, indice, admin, destacar }) {
 
 // Pegatina pequeña para la salida de la soldadora: una por ventana, con el código de una de sus piezas.
 // El módulo del código se ajusta al ancho de la etiqueta (múltiplos de 0,125 mm = 1 punto a 203 dpi).
-function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}) {
-  dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
-  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
-  // una pegatina por pieza: el marco y cada hoja (las ventanas de formato antiguo llevan una sola)
-  const piezas = items.flatMap((x) => {
+// Piezas que lleva cada ventana: una pegatina de marco y una por hoja (las de formato antiguo llevan una sola).
+function piezasSoldadora(items, hojasOv = {}, pilOv = {}) {
+  return items.flatMap((x) => {
     const c0 = toArray(x.v.piezas)[0] && toArray(x.v.piezas)[0].c;
     if (!c0) return [];
     if (!x.v.modelo) return [{ ...x, cod: c0, tipo: "" }];
     const n = hojasDe(x.v, hojasOv);
     return [{ ...x, cod: c0, tipo: pilOv[c0] ? "MARCO +PIL" : "MARCO" }, ...Array.from({ length: n }, (_, i) => ({ ...x, cod: codHoja(c0, i + 1), tipo: nombreHoja(i + 1, n) }))];
   });
+}
+// Manda las pegatinas de una en una (cada una es su propio trabajo) con una pausa entre ellas. Panel abajo a la derecha con botón Parar.
+function imprimirSecuencia(htmls) {
+  const PAUSA_MS = 2500;
+  const caja = document.createElement("div");
+  caja.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;background:#1e293b;color:#fff;padding:12px 14px;border-radius:10px;font:14px Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);display:flex;gap:12px;align-items:center";
+  const txt = document.createElement("span");
+  const btn = document.createElement("button");
+  btn.textContent = "Parar";
+  btn.style.cssText = "background:#e11d48;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-weight:bold;cursor:pointer";
+  let parar = false;
+  btn.onclick = () => { parar = true; };
+  caja.append(txt, btn);
+  document.body.appendChild(caja);
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  (async () => {
+    let hechas = 0;
+    for (let i = 0; i < htmls.length && !parar; i++) {
+      txt.textContent = `Imprimiendo pegatina ${i + 1} de ${htmls.length}…`;
+      const f = document.createElement("iframe");
+      f.style.cssText = "position:fixed;left:-9999px;top:0;width:300px;height:300px;border:0";
+      await new Promise((res) => { f.onload = res; f.srcdoc = htmls[i]; document.body.appendChild(f); });
+      await espera(250);
+      try { f.contentWindow.focus(); f.contentWindow.print(); hechas += 1; }
+      catch (e) { txt.textContent = "No se pudo imprimir: " + e.message; parar = true; await espera(3000); }
+      await espera(PAUSA_MS);
+      f.remove();
+    }
+    txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
+    btn.textContent = "Cerrar";
+    btn.onclick = () => caja.remove();
+    setTimeout(() => { if (caja.parentNode) caja.remove(); }, 8000);
+  })();
+}
+
+function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hojasOv = {}, pilOv = {}, solo = null) {
+  dx = parseFloat(dx) || 0; dy = parseFloat(dy) || 0; // mm: dy baja el contenido, dx lo mueve a la derecha (negativo = izquierda)
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const modulo = Math.max(0.25, Math.min(0.5, Math.floor(((anchoMm - 4) / 121) / 0.125) * 0.125));
+  // una pegatina por pieza; "solo" = lista de códigos para reimprimir únicamente esas (marco u hoja perdida)
+  const piezas = piezasSoldadora(items, hojasOv, pilOv).filter((p) => !solo || solo.includes(p.cod));
   const etiqueta = ({ v, lote, dueno, cod, tipo }) => {
     const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
     const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1 - Math.max(0, dy));
@@ -33432,7 +33470,7 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
       <div class="bar">${svgCode128CMm(cod, altoBar, modulo)}</div>
       <div class="dig">${esc(cod)}</div></div>`;
   };
-  const html = `<html><head><meta charset="utf-8"><title>Pegatinas soldadora</title><style>
+  const docHtml = (cuerpo) => `<html><head><meta charset="utf-8"><title>Pegatinas soldadora</title><style>
     @page { size: ${anchoMm}mm ${altoMm}mm; margin: 0; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
@@ -33443,9 +33481,10 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
     .r3 { width: 100%; font-size: 3mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
     .bar { margin-top: 0.8mm; line-height: 0; }
     .dig { font-size: 3.2mm; letter-spacing: 0.6mm; line-height: 1.1; margin-top: 0.4mm; }
-  </style></head><body>${piezas.map(etiqueta).join("")}</body></html>`;
-  const w = window.open("", "_blank");
-  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+  </style></head><body>${cuerpo}</body></html>`;
+  if (!piezas.length) { alert("No hay pegatinas que imprimir."); return; }
+  // una pegatina por trabajo de impresión: tras la primera pulsación van saliendo solas
+  imprimirSecuencia(piezas.map((p) => docHtml(etiqueta(p))));
 }
 
 function PegatinasSoldadora({ indice, escaneos }) {
@@ -33537,6 +33576,14 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
                 <button disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
+                {x.v.modelo && (
+                  <span className="flex items-center gap-1 text-[11px] text-slate-500">
+                    ¿Se perdió una? Reimprimir:
+                    {piezasSoldadora([x], hojasOv, pilOv).map((pz) => (
+                      <button key={pz.cod} disabled={!medidaOk} onClick={() => imprimirPegatinasSoldadora([x], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv, [pz.cod])} className="px-1.5 py-0.5 rounded border border-slate-300 text-slate-700 font-semibold disabled:opacity-40">{pz.tipo}</button>
+                    ))}
+                  </span>
+                )}
               </div>
                   ))}
                 </div>
