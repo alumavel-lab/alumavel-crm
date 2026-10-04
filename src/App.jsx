@@ -37276,10 +37276,15 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [] }) {
 
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
-  const [tab, setTab] = useState("puesto");
+  const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
+  const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
-  const tabs = [
+  const tabs = soloAlmacen ? [
+    { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "" },
+    ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
+    ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
+  ] : [
     { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
@@ -37409,6 +37414,7 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             <Select value={f.puestoFijo || ""} onChange={(e) => setF({ ...f, puestoFijo: e.target.value })}>
               <option value="">Sin puesto fijo (puede cambiar de puesto)</option>
               {PUESTOS_LINEA.filter((q) => q.id !== "carga").map((q) => <option key={q.id} value={q.id}>{q.nombre}</option>)}
+              <option value="almacenventanas">Almacén de ventanas (carga y caballetes)</option>
             </Select>
             <p className="text-xs text-slate-500 mt-1">Si lo eliges, en Línea (pistola) solo verá ese puesto y no podrá leer en otros.</p>
           </Field>
