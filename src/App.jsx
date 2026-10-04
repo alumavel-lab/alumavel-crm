@@ -33661,7 +33661,7 @@ function imprimirSecuencia(htmls, opc = null) {
   document.head.appendChild(estilo);
   document.body.appendChild(cont);
   const caja = document.createElement("div");
-  caja.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:99999;background:#1e293b;color:#fff;padding:12px 14px;border-radius:10px;font:14px Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);display:flex;gap:12px;align-items:center";
+  caja.style.cssText = "position:fixed;right:16px;bottom:140px;z-index:99999;background:#1e293b;color:#fff;padding:12px 14px;border-radius:10px;font:14px Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);display:flex;gap:12px;align-items:center";
   const txt = document.createElement("span");
   const btn = document.createElement("button");
   btn.textContent = "Parar";
@@ -36735,7 +36735,7 @@ function BotonIncidenciaFabrica({ prefill, flotante }) {
   if (!ctx || !ctx.puede) return null;
   const etiqueta = prefill && prefill.apartar ? "Apartar por incidencia" : "Incidencia";
   const cls = flotante
-    ? "fixed bottom-4 right-4 z-40 flex items-center gap-1.5 text-sm font-bold px-4 py-3 rounded-full shadow-lg bg-rose-600 text-white hover:bg-rose-700"
+    ? "fixed bottom-20 right-4 z-40 flex items-center gap-1.5 text-sm font-bold px-4 py-3 rounded-full shadow-lg bg-rose-600 text-white hover:bg-rose-700"
     : "flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded border border-rose-300 bg-white text-rose-700 hover:bg-rose-50";
   return (
     <button type="button" onClick={() => ctx.abrir(prefill || {})} className={cls}>
