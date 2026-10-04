@@ -33843,7 +33843,29 @@ function PegatinasSoldadora({ indice, escaneos }) {
         return (
           <div className="mb-4 border border-amber-300 bg-amber-50 rounded-lg p-3">
             <div className="text-sm font-bold text-amber-900 mb-1">¿Falta una pegatina? Imprímela aquí</div>
-            <p className="text-[11px] text-amber-800 mb-2">Busca la ventana (posición, expediente, cliente, medida u obra) y pulsa la pieza que falta: marco u hoja. Sale solo esa pegatina, con el mismo código que tenía.</p>
+            {obra ? (() => {
+              const pend = lista.map((x) => ({ x, pz: piezasSoldadora([x], hojasOv, pilOv).filter((q) => !leidasRef.current.has(String(q.cod))) })).filter((e) => e.pz.length);
+              return (
+                <div className="mb-3">
+                  <div className="text-[11px] text-amber-800 mb-1">Piezas de «{obra.dueno.nombre}» que todavía no se han leído en la soldadora ({pend.reduce((a, e) => a + e.pz.length, 0)}):</div>
+                  {pend.length === 0 ? <p className="text-xs text-emerald-700 font-semibold">No queda ninguna: todo lo de esta obra está leído.</p> : (
+                    <div className="space-y-1 max-h-56 overflow-y-auto">
+                      {pend.slice(0, 20).map(({ x, pz }) => (
+                        <div key={x.v.id} className="flex flex-wrap items-center gap-2 bg-white border border-amber-200 rounded-md px-3 py-1 text-sm">
+                          <span className="font-semibold text-slate-800">{x.v.pos}</span>
+                          <span className="text-xs text-slate-500">{x.v.medida || ""}</span>
+                          <span className="ml-auto flex flex-wrap gap-1.5">
+                            {pz.map((q) => <button key={q.cod} type="button" disabled={!medidaOk} onClick={() => imp([x], [q.cod])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded-md text-xs font-semibold disabled:opacity-40">Imprimir {q.tipo || "etiqueta"}</button>)}
+                          </span>
+                        </div>
+                      ))}
+                      {pend.length > 20 && <p className="text-[11px] text-amber-800">Y {pend.length - 20} ventanas más: usa el buscador de abajo.</p>}
+                    </div>
+                  )}
+                </div>
+              );
+            })() : <p className="text-[11px] text-amber-800 mb-2">Elige la obra arriba y aquí te salen directamente las piezas que faltan por leer.</p>}
+            <p className="text-[11px] text-amber-800 mb-2">O busca una ventana concreta (posición, expediente, cliente, medida u obra) y pulsa la pieza que falta. Sale solo esa pegatina, con el mismo código que tenía.</p>
             <input value={buscaR} onChange={(e) => setBuscaR(e.target.value)} placeholder="Ej.: V3, 6305, 1200 x 1000, nombre de la obra…" className="w-full border border-amber-300 rounded-md px-3 py-2 text-sm bg-white" />
             {nq.length >= 2 && todas.length === 0 && <p className="text-xs text-slate-500 mt-2">No encuentro ninguna ventana con eso.</p>}
             {todas.length > 0 && (
@@ -34268,6 +34290,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     if (consulta) { setConsulta(false); setUltimo(null); setFicha(h); pitidoCRM(true); enfocar(); return; } // Escáner: solo consulta (una lectura) y vuelve al modo normal del puesto
     setFicha(null);
     const v = h.ventana;
+    // Una pieza solo se lee UNA vez en cada puesto: la segunda lectura se rechaza (no se mueve nada)
+    const previa = escaneos.find((x) => x.id === claveLecturaLinea(puestoId, h));
+    if (previa) {
+      const hora = previa.ts ? new Date(previa.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "";
+      avisar(false, `⛔ YA LEÍDA: ${v.pos} ${h.pieza.t || "MARCO"} ya se leyó en ${nombrePuestoLinea(puestoId)}${hora ? ` a las ${hora}` : ""}${previa.por ? ` (${previa.por})` : ""}. No se puede leer otra vez. Si es una unidad más con la misma pegatina, avisa: no es una pieza nueva.`);
+      return;
+    }
     const yaVentana = escaneos.some((x) => x.puestoId === puestoId && x.ventanaId === v.id);
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
     let z = null;
