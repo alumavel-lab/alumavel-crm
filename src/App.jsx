@@ -31828,6 +31828,16 @@ function IncompletasAlmacen({ caballetes, indice }) {
   );
 }
 
+// Incidencias de fábrica abiertas ligadas a una ventana (ventanaId → motivo corto)
+function useIncidenciasAbiertasVentana() {
+  const [incsF, setIncsF] = useState([]);
+  useEffect(() => onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncsF(toArray(snap.val())), () => setIncsF([])), []);
+  return useMemo(() => {
+    const m = new Map();
+    incsF.filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).forEach((i) => { if (!m.has(i.ventanaId)) m.set(i.ventanaId, String(i.tipo || i.texto || "").slice(0, 40)); });
+    return m;
+  }, [incsF]);
+}
 // Ventanas acristaladas que van DIRECTAS por la línea a carga (sin estantería): se ven por vivienda hasta que se leen en Almacén ventanas.
 // Se calcula con lecturas que ya existen (no escribe nada): acristalada (puesto Cristales) + sin leer en Carga + sin estantería.
 function PanelVienenPorLinea({ indice }) {
@@ -31835,15 +31845,10 @@ function PanelVienenPorLinea({ indice }) {
   const ubic = useObjetoFb("ubicacionesLinea");
   const flagsInc = useObjetoFb("incidenciaVentanaLinea");
   // Incidencias de fábrica abiertas que se crearon desde la ficha de una ventana (cualquier tipo: cristal roto, rayón en una hoja, etc.)
-  const [incsF, setIncsF] = useState([]);
-  useEffect(() => onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncsF(toArray(snap.val())), () => setIncsF([])), []);
-  const incAbiertas = useMemo(() => {
-    const m = new Map();
-    incsF.filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).forEach((i) => { if (!m.has(i.ventanaId)) m.set(i.ventanaId, String(i.tipo || i.texto || "").slice(0, 40)); });
-    return m;
-  }, [incsF]);
+  const incAbiertas = useIncidenciasAbiertasVentana();
   const grupos = useMemo(() => {
     const acrist = new Set(escaneos.filter((x) => x.puestoId === "cristales").map((x) => x.ventanaId));
+    const tsAcrist = new Map(); escaneos.filter((x) => x.puestoId === "cristales").forEach((x) => { if (!tsAcrist.has(x.ventanaId) || x.ts < tsAcrist.get(x.ventanaId)) tsAcrist.set(x.ventanaId, x.ts || 0); });
     const cargadas = new Set(escaneos.filter((x) => x.puestoId === "carga").map((x) => x.ventanaId));
     const m = new Map();
     const vistas = new Set();
@@ -31855,9 +31860,9 @@ function PanelVienenPorLinea({ indice }) {
       if (!m.has(k)) m.set(k, { obra: h.dueno.nombre, grupo: w.grupo || "", cliente: w.cliente || "", todas: [] });
       const base = baseDe(w);
       const enAlmacen = ubic[base] && ["espera", "solape"].includes(ubic[base].zonaId);
-      m.get(k).todas.push({ pos: w.pos, ac: acrist.has(w.id), carg: cargadas.has(w.id), enAlmacen: !!enAlmacen, inc: !!flagsInc[base] || incAbiertas.has(w.id), motivo: incAbiertas.get(w.id) || "" });
+      m.get(k).todas.push({ pos: w.pos, ts: tsAcrist.get(w.id) || 0, ac: acrist.has(w.id), carg: cargadas.has(w.id), enAlmacen: !!enAlmacen, inc: !!flagsInc[base] || incAbiertas.has(w.id), motivo: incAbiertas.get(w.id) || "" });
     }
-    return [...m.values()].map((g) => ({ ...g, enLinea: g.todas.filter((x) => x.ac && !x.carg && !x.enAlmacen), conInc: g.todas.filter((x) => x.inc && !x.carg) }))
+    return [...m.values()].map((g) => ({ ...g, enLinea: g.todas.filter((x) => x.ac && !x.carg && !x.enAlmacen).sort((p, q) => p.ts - q.ts), conInc: g.todas.filter((x) => x.inc && !x.carg) }))
       .filter((g) => g.enLinea.length > 0 || (g.conInc.length > 0 && g.todas.some((x) => x.ac || x.carg)));
   }, [escaneos, ubic, flagsInc, incAbiertas, indice]);
   if (!grupos.length) return null;
@@ -31869,7 +31874,7 @@ function PanelVienenPorLinea({ indice }) {
         {grupos.map((g, i) => (
           <div key={i} className={`text-sm rounded-md px-3 py-2 border ${g.conInc.length ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-white border-slate-200 text-slate-700"}`}>
             <div className="font-semibold">{g.obra}{g.grupo ? ` · ${g.grupo}` : ""}{g.cliente ? ` · ${g.cliente}` : ""}</div>
-            <div className="text-xs">Acristaladas: {g.todas.filter((x) => x.ac).length} de {g.todas.length} · en la línea ahora: <b>{g.enLinea.map((x) => x.pos).join(", ") || "ninguna"}</b></div>
+            <div className="text-xs">Acristaladas: {g.todas.filter((x) => x.ac).length} de {g.todas.length} · en la línea ahora, por orden de llegada: <b>{g.enLinea.map((x, i) => `${i + 1}. ${x.pos}`).join("  ·  ") || "ninguna"}</b></div>
             {g.conInc.length > 0 && <div className="text-xs font-bold mt-1">⚠ INCIDENCIA en {g.conInc.map((x) => (x.motivo ? `${x.pos} (${x.motivo})` : x.pos)).join(", ")}: guarda en la línea las de esta vivienda que ya han salido hasta que se resuelva; no cierres el caballete.</div>}
           </div>
         ))}
@@ -31879,6 +31884,11 @@ function PanelVienenPorLinea({ indice }) {
 }
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false }) {
   const [verTodo, setVerTodo] = useState(false);
+  const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
+  const incAbiertasAlm = useIncidenciasAbiertasVentana();
+  const flagsIncAlm = useObjetoFb("incidenciaVentanaLinea");
+  const zonasAlm = useZonasLinea();
+  const ubicAlm = useObjetoFb("ubicacionesLinea");
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
   const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
@@ -32202,6 +32212,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       volverAEscanear(); return;
     }
     setAvisoScan("");
+    { const bv = h.ventana && h.ventana.modelo && h.ventana.piezas && h.ventana.piezas[0] ? baseDe(h.ventana) : null;
+      if (incAbiertasAlm.has(h.ventana.id) || (bv && flagsIncAlm[bv])) { setVentanaEsc(null); setIncVentana({ h, motivo: incAbiertasAlm.get(h.ventana.id) || "", hueco: null, msg: "" }); volverAEscanear(); return; } }
+    setIncVentana(null);
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v, pieza } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: piezasALeer(v, cod) };
@@ -32233,6 +32246,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setUltimaLectura(`${cod} · ${new Date().toLocaleTimeString("es-ES")}`);
     const h = indicePiezas.get(cod);
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
+    { const bv = h.ventana && h.ventana.modelo && h.ventana.piezas && h.ventana.piezas[0] ? baseDe(h.ventana) : null;
+      if (incAbiertasAlm.has(h.ventana.id) || (bv && flagsIncAlm[bv])) return { ok: false, texto: `⚠ ${h.ventana.pos} tiene una INCIDENCIA abierta: no se carga. Guárdala en el almacén de ventanas terminadas (lee su etiqueta en la pantalla principal).` }; }
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v } = h;
     const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: piezasALeer(v, cod) };
@@ -32652,6 +32667,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     );
   }
 
+  const guardarIncEnEspera = async () => {
+    if (!incVentana) return;
+    try {
+      const n = await colocarVentanaLinea("espera", incVentana.h, zonasAlm, ubicAlm, "Carga");
+      if (!n) setIncVentana({ ...incVentana, msg: "El almacén de espera está LLENO: libera una estantería o pulsa «+» en su mapa." });
+      else setIncVentana({ ...incVentana, hueco: n, msg: "" });
+    } catch (e) { setIncVentana({ ...incVentana, msg: "No se pudo guardar: " + ((e && e.message) || e) }); }
+  };
   // Pantalla SIMPLE para el que carga (puesto fijo "Almacén de ventanas"): pasa la pistola por la ventana y le sale el caballete donde la deja.
   if (simple && !verTodo && !escaneadoId) {
     const ve = ventanaEsc;
@@ -32665,6 +32688,23 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {avisoScan && <div className="mt-2 text-sm font-semibold text-rose-600">{avisoScan}</div>}
           {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); if (!piezaDeTexto(v)) { const tx = `La cámara ha leído "${v}", pero no es una etiqueta de ventana (debe ser un número de 12 cifras).`; setAvisoScan(tx); avisar(false, tx); return; } buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
         </div>
+        {incVentana && (
+          <div className="rounded-xl border-4 border-rose-500 bg-rose-50 p-5 text-center space-y-2">
+            <div className="text-sm text-slate-700"><b>{incVentana.h.ventana.pos}</b> · {incVentana.h.dueno.nombre}</div>
+            <div className="text-xl font-extrabold text-rose-700">⚠ TIENE UNA INCIDENCIA{incVentana.motivo ? ` (${incVentana.motivo})` : ""}</div>
+            <div className="text-sm font-semibold text-rose-800">No la cargues. Guárdala en el almacén de ventanas terminadas.</div>
+            {incVentana.hueco ? (
+              <>
+                <div className="text-xs font-bold uppercase text-emerald-700">Déjala en el almacén de espera · estantería</div>
+                <div className="text-7xl font-extrabold text-slate-900 leading-none">{incVentana.hueco}</div>
+              </>
+            ) : (
+              <button onClick={guardarIncEnEspera} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-3 rounded-lg text-base font-bold">Guardar en el almacén de espera</button>
+            )}
+            {incVentana.msg && <div className="text-sm font-semibold text-rose-700">{incVentana.msg}</div>}
+            <button onClick={() => setIncVentana(null)} className="block mx-auto text-xs text-slate-500 hover:underline">Cerrar</button>
+          </div>
+        )}
         {ve && (() => {
           const cab = ve.cabId ? cabsAhora().find((c) => c.id === ve.cabId) : null;
           const wAct = (cab && toArray(cab.ventanas).find((x) => mismaVentana(x, ve.w))) || ve.w;
