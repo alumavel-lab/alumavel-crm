@@ -32826,7 +32826,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
-        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 21:00</div>
+        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 21:20</div>
       </div>
     );
   }
@@ -33515,7 +33515,7 @@ const hojasDe = (v, ov) => {
 // Nombre de cada hoja: con 1 hoja es la activa; con 2, activa y pasiva (con 3, la tercera se llama "HOJA 3")
 const nombreHoja = (k, n) => (k === 1 ? "HOJA ACTIVA" : k === 2 ? "HOJA PASIVA" : `HOJA ${k}`);
 const cortoHoja = (k) => (k === 1 ? "act." : k === 2 ? "pas." : `H${k}`);
-const esPuertaLinea = (v) => /^P/i.test(String((v && v.pos) || ""));
+const esPuertaLinea = (v) => /^P(?!os\b)/i.test(String((v && v.pos) || "")); // las puertas empiezan por P (P01…); "Pos 2" (posición de un listado de dibujos) es una ventana normal
 const baseDe = (v) => String(v.piezas[0].c);
 const codHoja = (base, k) => ({ 1: "8", 2: "7", 3: "6" })[k] + String(base).slice(1);
 const nombrePiezaClave = (k) => (k === "m" ? "MARCO" : `HOJA ${k.slice(1)}`);
