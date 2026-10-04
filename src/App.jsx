@@ -30974,6 +30974,7 @@ function agruparHojaCorte(paginas) {
   const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
   const version = cab && cab[2] ? cab[2] : "";
   const ref = ((todo.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const cliente = ((todo.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
   const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
   const modelos = [];
   partes.forEach((b) => {
@@ -30993,7 +30994,7 @@ function agruparHojaCorte(paginas) {
     else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
     modelos.push({ modelo, uds, hojas, persiana, mosq });
   });
-  return { modelos, presupuesto, version, referencia: ref };
+  return { modelos, presupuesto, version, referencia: ref, cliente };
 }
 // Aplica la hoja de corte a los lotes de una obra: por nombre de modelo EXACTO (CS2 y CS02 son modelos distintos). Devuelve { lotes, aplicadas, modelosSinVentana }.
 function aplicarCorteALotes(lotes, corte) {
@@ -31006,7 +31007,7 @@ function aplicarCorteALotes(lotes, corte) {
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
-      const w = { ...v, corte: { presupuesto: corte.presupuesto, version: corte.version || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0 } };
+      const w = { ...v, cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0 } };
       if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
       return w;
     }),
@@ -31038,7 +31039,7 @@ function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
     m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz });
     if (v.modelo && String(pz.c)[0] === "9") [1, 2, 3].forEach((k) => { const c = codHoja(String(pz.c), k); m.set(c, { dueno, lote, ventana: v, pieza: { c, t: `Hoja ${k}` } }); });
   })));
-  toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "" }, pr.etiquetasFab));
+  toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "", presupuesto: pr.presupuestoNumero || "" }, pr.etiquetasFab));
   toArray(uxExpedientes).forEach((e) => meter({ key: `u-${e.id}`, tipo: "u", id: e.id, proyectoId: e.proyectoId || "", nombre: `Uxcar exp. ${e.numero}`, clienteId: "", direccion: "" }, e.etiquetasFab));
   toArray(sinObra).forEach((l) => meter({ key: `s-${l.fab}`, tipo: "s", id: l.fab, proyectoId: "", nombre: `Sin asignar · lote ${l.fab}`, clienteId: "", direccion: "" }, [l]));
   return m;
@@ -32826,7 +32827,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
-        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 21:20</div>
+        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 22:10</div>
       </div>
     );
   }
@@ -33624,7 +33625,18 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     const vistos = Object.keys((await fbGet(ref(fbDb, `colgadoLinea/${base}`))).val() || {});
     const req = ["m", ...Array.from({ length: nHojas }, (_, i) => `h${i + 1}`)];
     const faltan = req.filter((k) => !vistos.includes(k));
-    if (faltan.length) return { ok: true, aviso: true, texto: `Matrimonio ${v.pos}: leída ${etq}. FALTAN: ${faltan.map((k) => (k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), nHojas))).join(" y ")}` };
+    if (faltan.length) {
+      // dónde está cada pieza que falta (estantería de marcos / de hojas con herraje), para ir a cogerla
+      const detalle = []; let primera = null;
+      for (const k of faltan) {
+        const cp = k === "m" ? base : codHoja(base, parseInt(k.slice(1), 10));
+        const up = await ubicDe(cp);
+        const nomP = k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), nHojas);
+        detalle.push(`${nomP} → ${up ? donde(up) : "aún no está en ninguna estantería (no ha pasado por su puesto anterior)"}`);
+        if (up && !primera) primera = { zonaId: up.zonaId, hueco: up.hueco, slot: up.slot };
+      }
+      return { ok: true, aviso: true, texto: `Matrimonio ${v.pos}: leída ${etq}. FALTAN:\n${detalle.join("\n")}`, zona: primera };
+    }
     const sinPers = !puerta && !!sinPersOv[base];
     let destino = puerta ? "bancoPuerta" : sinPers ? "sinPersiana" : "colgadoA";
     let n = await poner(destino, base);
@@ -33713,7 +33725,7 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
       {puestoId === "colgado" && (
         <div className="border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
           <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para el Matrimonio ({listas.length})</div>
-          {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <div className="text-xs text-slate-700 space-y-1">{listas.map((x, k) => <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{fila(x)}</span></div>)}</div>}
+          {listas.length === 0 ? <p className="text-xs text-slate-500">Ninguna: faltan marco u hojas con herraje.</p> : <div className="text-xs text-slate-700 space-y-1">{listas.map((x, k) => { const nH = hojasDe(x.h.ventana, hojasOv); const est = (u) => `est. ${u.hueco}${u.slot > 1 ? ` (sitio ${u.slot})` : ""}`; return <div key={x.cod} className="flex items-center gap-2"><span className="text-slate-400 w-5">{k + 1}.</span><DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={40} /><span>{x.h.ventana.pos} · {x.h.ventana.grupo || ""}{x.h.ventana.cliente ? ` · ${x.h.ventana.cliente}` : ""} · <b>MARCO {est(x.u)}</b>{Array.from({ length: nH }, (_, i) => { const uh = ubic[codHoja(x.cod, i + 1)]; return uh ? <span key={i}> · <b>{nombreHoja(i + 1, nH)} {est(uh)}</b></span> : null; })}</span></div>; })}</div>}
         </div>
       )}
     </div>
@@ -33907,7 +33919,25 @@ function piezasSoldadora(items, hojasOv = {}, pilOv = {}) {
 }
 // Manda las pegatinas de una en una (cada una es su propio trabajo) con una pausa entre ellas. Panel abajo a la derecha con botón Parar.
 // opc (opcional) = { codigos, leidas }: modo "una a una con pistola". Tras imprimir cada pegatina se espera a que la pistola lea esa pieza en la soldadora (o a pulsar Saltar) antes de sacar la siguiente.
-function imprimirSecuencia(htmls, opc = null) {
+// Aviso al terminar una tanda de pegatinas: cartel grande que se queda hasta pulsar «Aceptar» (por si no estás delante), pitidos y una voz que lo dice.
+function anunciarFinImpresion(texto, cuantas) {
+  try {
+    const cartel = document.createElement("div");
+    cartel.style.cssText = "position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:100000;background:#059669;color:#fff;padding:22px 30px;border-radius:16px;font:bold 26px Arial,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.45);text-align:center;max-width:90vw";
+    const t = document.createElement("div"); t.textContent = `✓ HAS TERMINADO ${String(texto).toUpperCase()}`;
+    const d = document.createElement("div"); d.style.cssText = "font:16px Arial,sans-serif;margin-top:6px;font-weight:normal"; d.textContent = `${cuantas} pegatina${cuantas === 1 ? "" : "s"} enviada${cuantas === 1 ? "" : "s"} a la impresora`;
+    const b = document.createElement("button"); b.textContent = "Aceptar"; b.style.cssText = "margin-top:14px;background:#fff;color:#065f46;border:0;border-radius:8px;padding:8px 22px;font:bold 16px Arial,sans-serif;cursor:pointer";
+    b.onclick = () => { try { cartel.remove(); } catch (e) { /* nada */ } };
+    cartel.append(t, d, b);
+    document.body.appendChild(cartel);
+    pitidoCRM(true); setTimeout(() => pitidoCRM(true), 250); setTimeout(() => pitidoCRM(true), 500);
+    if (window.speechSynthesis && window.SpeechSynthesisUtterance) {
+      const u = new window.SpeechSynthesisUtterance(`Has terminado ${texto}`); u.lang = "es-ES";
+      setTimeout(() => { try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); } catch (e) { /* sin voz */ } }, 700);
+    }
+  } catch (e) { /* sin aviso */ }
+}
+function imprimirSecuencia(htmls, opc = null, finTxt = "") {
   const PAUSA_MS = 4000;
   const modoPistola = !!(opc && opc.leidas && Array.isArray(opc.codigos));
   // el botón pulsado conserva el foco: la pistola escribe el código + Enter y ese Enter volvería a pulsarlo (imprimiría otra pegatina)
@@ -33974,6 +34004,7 @@ function imprimirSecuencia(htmls, opc = null) {
       }
     }
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
+    if (!parar && hechas > 0) anunciarFinImpresion(finTxt || "las pegatinas", hechas);
     btn.textContent = "Cerrar";
     btn.onclick = limpiar;
     cont.innerHTML = "";
@@ -33987,10 +34018,15 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
   // una pegatina por pieza; "solo" = lista de códigos para reimprimir únicamente esas (marco u hoja perdida)
   const piezas = piezasSoldadora(items, hojasOv, pilOv).filter((p) => !solo || solo.includes(p.cod));
   const etiqueta = ({ v, lote, dueno, cod, tipo }) => {
-    const extra = [v.cliente, v.medida].filter(Boolean).join(" · ");
-    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - 1 - Math.max(0, dy));
+    const recorta = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + "…" : String(t));
+    const ppto = (v.corte && v.corte.presupuesto) || digitosPresu(dueno.presupuesto) || "";
+    const refTxt = (v.corte && v.corte.referencia) || "";
+    const l3 = ppto ? `Ppto ${ppto}${refTxt ? ` · ${recorta(refTxt, 24)}` : ""}` : "";
+    const extra = [v.cliente || (v.corte && v.corte.cliente), v.tipo, v.medida].filter(Boolean).join(" · ");
+    const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - (l3 ? 3.2 : 0) - 1 - Math.max(0, dy));
     return `<div class="et"><div class="r1"><span${String(v.pos).length > 9 ? ' style="font-size:3.2mm"' : ""}>${esc(v.pos)}</span><span>${esc(tipo || v.num)}</span></div>
       <div class="r2">${esc(v.grupo || dueno.nombre)}</div>
+      ${l3 ? `<div class="r3">${esc(l3)}</div>` : ""}
       ${extra ? `<div class="r3">${esc(extra)}</div>` : ""}
       <div class="bar">${svgCode128CMm(cod, altoBar, modulo)}</div>
       <div class="dig">${esc(cod)}</div></div>`;
@@ -34009,7 +34045,8 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
   </style></head><body>${cuerpo}</body></html>`;
   if (!piezas.length) { alert("No hay pegatinas que imprimir."); return; }
   // una pegatina por trabajo de impresión: tras la primera pulsación van saliendo solas
-  imprimirSecuencia(piezas.map((p) => docHtml(etiqueta(p))), opc && opc.leidas ? { leidas: opc.leidas, codigos: piezas.map((p) => p.cod) } : null);
+  const soloHojas = piezas.every((p) => /^HOJA/i.test(p.tipo || "")), soloMarcos = piezas.every((p) => /^MARCO/i.test(p.tipo || ""));
+  imprimirSecuencia(piezas.map((p) => docHtml(etiqueta(p))), opc && opc.leidas ? { leidas: opc.leidas, codigos: piezas.map((p) => p.cod) } : null, soloHojas ? "las hojas" : soloMarcos ? "los marcos" : "las pegatinas");
 }
 
 function PegatinasSoldadora({ indice, escaneos }) {
@@ -34618,7 +34655,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); procesar(v); }} onCerrar={() => { setCamara(false); enfocar(); }} />}
         {ultimo && (
-          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.zona && ultimo.zona.hueco && (
+          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold whitespace-pre-line ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.zona && ultimo.zona.hueco && (
             <div className="mt-2 flex items-center gap-3 text-slate-800">
               <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{ultimo.zona.hueco}</span>
               <span className="text-base font-bold">ESTANTERÍA{ultimo.zona.slot > 1 ? ` (sitio ${ultimo.zona.slot})` : ""} · {(zonas.find((x) => x.id === ultimo.zona.zonaId) || {}).nombre || ""}</span>
