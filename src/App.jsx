@@ -4455,7 +4455,7 @@ export default function App() {
           );
         })()}
         {(() => {
-          if (!currentUser) return null;
+          if (!currentUser || !tieneAcceso("pedidos")) return null;
           const hoy = new Date().toISOString().slice(0, 10);
           const pedidosRetrasados = pedidos.filter((p) =>
             p.avisos?.retraso && p.avisos?.usuarioId === currentUser.id &&
@@ -4548,7 +4548,8 @@ export default function App() {
           );
         })()}
         {(() => {
-          // Aviso arriba: obras entregadas sin facturar y proformas del mes por juntar
+          // Aviso arriba: obras entregadas sin facturar y proformas del mes por juntar (solo a quien tiene acceso a Facturas)
+          if (!tieneAcceso("facturas")) return null;
           const pend = pendientesDeFacturar(proyectos, facturas);
           const vivas = facturas.filter((f) => f.tipo === "Proforma" && !f.convertidaFacturaId && !f.anulada);
           if (!pend.length && !vivas.length) return null;
@@ -5072,6 +5073,7 @@ export default function App() {
               <LineaModulo
                 proyectos={proyectos} uxExpedientes={uxExpedientes} etiquetasSinObra={etiquetasSinObra}
                 quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
+                quienId={currentUser ? currentUser.id : ""} puestoFijo={isAdmin ? "" : (currentUser && currentUser.puestoFijo) || ""}
                 cristales={cristales} onUpdateCristal={updateCristal} admin={isAdmin}
                 verMas={tieneAcceso("fabrica")}
                 onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }}
@@ -33140,14 +33142,14 @@ const useEscaneosLinea = () => {
   return lista;
 };
 // Guarda la lectura (solo si esa ventana no estaba ya en ese puesto). Devuelve "nuevo" | "repetida" | "error: ..."
-async function registrarEscaneoLinea({ puestoId, h, por }) {
+async function registrarEscaneoLinea({ puestoId, h, por, porId = "" }) {
   try {
     const v = h.ventana;
     const clave = claveLecturaLinea(puestoId, h);
     const rec = {
       id: clave, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), puestoId, puestoNombre: nombrePuestoLinea(puestoId),
       cod: String(h.pieza.c), pieza: h.pieza.t || "", ventanaId: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, obraKey: h.dueno.key, obraNombre: h.dueno.nombre,
-      grupo: v.grupo || "", por: por || (fbAuth.currentUser && fbAuth.currentUser.email) || "",
+      grupo: v.grupo || "", por: por || (fbAuth.currentUser && fbAuth.currentUser.email) || "", porId: porId || "",
     };
     const r = await runTransaction(ref(fbDb, `escaneosLinea/${clave}`), (actual) => (actual ? undefined : rec));
     return r && r.committed ? "nuevo" : "repetida";
@@ -34091,8 +34093,9 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
   );
 }
 
-function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales = [], onUpdateCristal, onIrA, admin = false }) {
-  const [puestoId, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
+function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", cristales = [], onUpdateCristal, onIrA, admin = false }) {
+  const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
+  const puestoId = puestoFijo || puestoSel; // con "puesto fijo" el operario no puede cambiar de puesto
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
@@ -34142,7 +34145,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
       catch (e) { z = { ok: false, texto: `No se pudieron actualizar las estanterías (${(e && e.message) || e}). La lectura NO se ha guardado.` }; }
       if (z && !z.ok) { avisar(false, z.texto); return; }
     }
-    const r = await registrarEscaneoLinea({ puestoId, h, por: quien });
+    const r = await registrarEscaneoLinea({ puestoId, h, por: quien, porId: quienId });
     if (r !== "nuevo" && r !== "repetida") { avisar(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`); return; }
     const desc = `${v.pos} · ${v.grupo || h.dueno.nombre}`;
     let texto = r === "nuevo" ? `✓ ${desc} registrada en ${nombrePuestoLinea(puestoId)}` : `Ya estaba registrada en este puesto: ${desc}`;
@@ -34167,7 +34170,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
-          {PUESTOS_LINEA.filter((p) => p.id !== "carga").map((p) => (
+          {PUESTOS_LINEA.filter((p) => p.id !== "carga" && (!puestoFijo || p.id === puestoFijo)).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
         </div>
@@ -36316,6 +36319,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
 function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, currentUser, onUpsert, onDelete, onEnviarCambioPassword, pinReorganizarHash, onGuardarPinReorganizar }) {
   const [view, setView] = useState("list");
   const [editId, setEditId] = useState(null);
+  const [actividadU, setActividadU] = useState(null);
   const [descargandoBackup, setDescargandoBackup] = useState(false);
 
   const descargarCopiaSeguridad = async () => {
@@ -36385,6 +36389,7 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
         <Plus size={22} /> NUEVO USUARIO
       </button>
 
+      {actividadU && <ActividadUsuarioModal u={actividadU} onCerrar={() => setActividadU(null)} />}
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -36416,6 +36421,7 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex items-center justify-end gap-3">
+                    {u.rol !== "Administrador" && <button onClick={() => setActividadU(u)} className="text-xs font-semibold text-[#2E8B57] underline">Actividad</button>}
                     <button onClick={() => { setEditId(u.id); setView("form"); }} className="text-slate-300 hover:text-[#2E8B57]"><Pencil size={15} /></button>
                     {u.id !== currentUser.id && (
                       <button onClick={() => { if (confirm(`¿Eliminar a ${u.nombre}?`)) onDelete(u.id); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
@@ -36426,6 +36432,78 @@ function AdministracionModulo({ datosRecuperables, onRestaurarCopia, usuarios, c
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// Historial de un operario: todo lo que ha leído en la línea y las incidencias que ha creado o resuelto. Se puede descargar en CSV.
+function ActividadUsuarioModal({ u, onCerrar }) {
+  const [escaneos, setEscaneos] = useState([]);
+  const [incs, setIncs] = useState([]);
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  useEffect(() => {
+    const a = onValue(ref(fbDb, "escaneosLinea"), (snap) => setEscaneos(toArray(snap.val())), () => {});
+    const b = onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncs(toArray(snap.val())), () => {});
+    return () => { a(); b(); };
+  }, []);
+  const nombre = `${u.nombre} ${u.apellidos || ""}`.trim();
+  const fechaDe = (ts) => new Date(ts).toLocaleDateString("sv-SE");
+  const enRango = (ts) => (!desde || fechaDe(ts) >= desde) && (!hasta || fechaDe(ts) <= hasta);
+  const filas = [];
+  escaneos.forEach((x) => {
+    const mio = x.porId ? x.porId === u.id : String(x.por || "").trim() === nombre; // las lecturas antiguas no guardaban el id: se reconocen por el nombre
+    if (mio && enRango(x.ts)) filas.push({ ts: x.ts, tipo: "Lectura", puesto: x.puestoNombre || x.puestoId, obra: x.obraNombre || "", detalle: `${x.pos || ""} ${x.pieza || ""}`.trim(), aviso: x.porId ? "" : "(identificada por nombre)" });
+  });
+  incs.forEach((i) => {
+    if (i.creadaPor && i.creadaPor.id === u.id && enRango(i.creadaTs)) filas.push({ ts: i.creadaTs, tipo: "Incidencia creada", puesto: i.puesto || "", obra: i.obra || "", detalle: `${i.tipo ? i.tipo + ": " : ""}${i.texto || ""}`, aviso: "" });
+    if (i.resueltaPor && i.resueltaPor.id === u.id && enRango(i.resueltaTs)) filas.push({ ts: i.resueltaTs, tipo: "Incidencia resuelta", puesto: i.puesto || "", obra: i.obra || "", detalle: `${i.texto || ""}${i.notaResolucion ? " → " + i.notaResolucion : ""}`, aviso: "" });
+  });
+  filas.sort((a, b) => b.ts - a.ts);
+  const fmtF = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const csv = () => {
+    const esc = (t) => `"${String(t ?? "").replace(/"/g, '""')}"`;
+    const cuerpo = [["Fecha y hora", "Usuario", "Tipo", "Puesto", "Obra", "Detalle", "Nota"].map(esc).join(";"), ...filas.map((f) => [fmtF(f.ts), nombre, f.tipo, f.puesto, f.obra, f.detalle, f.aviso].map(esc).join(";"))].join("\r\n");
+    const blob = new Blob(["\ufeff" + cuerpo], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `actividad-${nombre.replace(/\s+/g, "_")}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] flex flex-col">
+        <div className="flex items-center gap-3 p-4 border-b border-slate-200">
+          <div className="font-bold text-slate-800">Actividad de {nombre}</div>
+          <span className="text-xs text-slate-500">{filas.length} registro{filas.length === 1 ? "" : "s"}</span>
+          <button type="button" onClick={onCerrar} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 p-4 border-b border-slate-100">
+          <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+          <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+          <button type="button" disabled={!filas.length} onClick={csv} className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 disabled:opacity-40"><Download size={14} /> Descargar CSV</button>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {filas.length === 0 ? <p className="p-4 text-sm text-slate-500">No hay registros en ese periodo.</p> : (
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-left text-slate-500 sticky top-0"><tr><th className="px-3 py-2">Fecha y hora</th><th className="px-3 py-2">Qué</th><th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Obra</th><th className="px-3 py-2">Detalle</th></tr></thead>
+              <tbody>
+                {filas.slice(0, 500).map((f, k) => (
+                  <tr key={k} className="border-b border-slate-100 align-top">
+                    <td className="px-3 py-1.5 whitespace-nowrap text-slate-700">{fmtF(f.ts)}</td>
+                    <td className="px-3 py-1.5 font-semibold text-slate-700">{f.tipo}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{f.puesto}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{f.obra}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{f.detalle}{f.aviso ? <span className="text-slate-400"> {f.aviso}</span> : null}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {filas.length > 500 && <p className="p-3 text-xs text-slate-500">Se muestran las 500 más recientes; el CSV las incluye todas.</p>}
+        </div>
       </div>
     </div>
   );
@@ -36830,7 +36908,7 @@ function calcListoParaFabricar(proyectos, pedidos) {
 
 // Pantalla única de la línea: puesto (pistola), almacén de ventanas y estanterías/informes.
 // Solo hay UNA pestaña montada a la vez, así la pistola nunca lee en dos sitios a la vez.
-function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
+function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado }) {
   const [tab, setTab] = useState("puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
@@ -36860,7 +36938,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, crista
         <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
       )}
       {actual.id === "puesto" && (
-        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
+        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
       {actual.id === "almacen" && (
         <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
@@ -36953,6 +37031,15 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
               </label>
             </div>
             <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
+          </Field>
+        )}
+        {f.rol !== "Administrador" && (
+          <Field label="Puesto fijo en la línea (opcional)">
+            <Select value={f.puestoFijo || ""} onChange={(e) => setF({ ...f, puestoFijo: e.target.value })}>
+              <option value="">Sin puesto fijo (puede cambiar de puesto)</option>
+              {PUESTOS_LINEA.filter((q) => q.id !== "carga").map((q) => <option key={q.id} value={q.id}>{q.nombre}</option>)}
+            </Select>
+            <p className="text-xs text-slate-500 mt-1">Si lo eliges, en Línea (pistola) solo verá ese puesto y no podrá leer en otros.</p>
           </Field>
         )}
         {f.rol !== "Administrador" && (
