@@ -31840,7 +31840,7 @@ function useIncidenciasAbiertasVentana() {
 }
 // Ventanas acristaladas que van DIRECTAS por la línea a carga (sin estantería): se ven por vivienda hasta que se leen en Almacén ventanas.
 // Se calcula con lecturas que ya existen (no escribe nada): acristalada (puesto Cristales) + sin leer en Carga + sin estantería.
-function PanelVienenPorLinea({ indice }) {
+function PanelVienenPorLinea({ indice, siempre = false }) {
   const escaneos = useEscaneosLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const flagsInc = useObjetoFb("incidenciaVentanaLinea");
@@ -31865,7 +31865,12 @@ function PanelVienenPorLinea({ indice }) {
     return [...m.values()].map((g) => ({ ...g, enLinea: g.todas.filter((x) => x.ac && !x.carg && !x.enAlmacen).sort((p, q) => p.ts - q.ts), conInc: g.todas.filter((x) => x.inc && !x.carg) }))
       .filter((g) => g.enLinea.length > 0 || (g.conInc.length > 0 && g.todas.some((x) => x.ac || x.carg)));
   }, [escaneos, ubic, flagsInc, incAbiertas, indice]);
-  if (!grupos.length) return null;
+  if (!grupos.length) return siempre ? (
+    <div className="border border-sky-200 bg-sky-50/50 rounded-lg p-3">
+      <div className="text-sm font-semibold text-sky-900">Vienen por la línea (0)</div>
+      <p className="text-xs text-slate-500">Ninguna ahora mismo. Aquí saldrán, por orden de llegada, las ventanas acristaladas que vayan directas a carga.</p>
+    </div>
+  ) : null;
   return (
     <div className="border border-sky-300 bg-sky-50 rounded-lg p-3">
       <div className="text-sm font-semibold text-sky-900 mb-1">Vienen por la línea ({grupos.reduce((a, g) => a + g.enLinea.length, 0)})</div>
@@ -32738,9 +32743,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             </div>
           );
         })()}
+        <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
-        <PanelVienenPorLinea indice={indicePiezas} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
+        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 19:55</div>
       </div>
     );
   }
@@ -33572,10 +33578,10 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
       await liberarCodigoLinea(base);
       return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`, zona: null };
     }
-    // Vivienda de varias ventanas en la que NINGUNA lleva solape (y no hay ninguna esperando ya en el almacén de espera): llegan seguidas por la línea y van directas a carga, sin estantería
-    if (mates.length > 0 && !mates.some((m) => solOv[baseDe(m.w)] || (m.u && m.u.zonaId === "espera"))) {
+    // Vivienda (de una o varias ventanas) en la que NINGUNA lleva solape (y no hay ninguna esperando ya en el almacén de espera): van directas por la línea a carga, sin estantería
+    if (!mates.some((m) => solOv[baseDe(m.w)] || (m.u && m.u.zonaId === "espera"))) {
       await liberarCodigoLinea(base);
-      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · LA VIVIENDA NO LLEVA SOLAPE → VA DIRECTA POR LA LÍNEA a carga (sin estantería). Son ${mates.length + 1} ventanas de la vivienda: van llegando seguidas.`, zona: null };
+      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE → VA DIRECTA POR LA LÍNEA a carga (sin estantería). ${mates.length > 0 ? `Son ${mates.length + 1} ventanas de la vivienda: van llegando seguidas.` : "Es la única ventana de su vivienda."}`, zona: null };
     }
     const n = await poner("espera", base);
     if (!n) return llena("espera", v.pos);
