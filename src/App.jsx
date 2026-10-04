@@ -4417,6 +4417,8 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
+        {isAdmin && <AvisoSoldaduraLinea />}
+        {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
           if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
           const abiertasF = incidenciasFabrica.filter((i) => i.estado !== "Resuelta" && (isAdmin || i.asignadoA === currentUser.id));
@@ -33648,8 +33650,24 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const [modo, setModo] = useState(() => { try { return localStorage.getItem("alumavel_pegatina_modo") === "golpe" ? "golpe" : "pistola"; } catch (e) { return "pistola"; } });
   const cambiarModo = (m) => { setModo(m); try { localStorage.setItem("alumavel_pegatina_modo", m); } catch (e) { /* nada */ } };
+  const [que, setQue] = useState(() => { try { const q = localStorage.getItem("alumavel_pegatina_que"); return q === "hojas" || q === "marcos" ? q : "todo"; } catch (e) { return "todo"; } });
+  const cambiarQue = (q) => { setQue(q); try { localStorage.setItem("alumavel_pegatina_que", q); } catch (e) { /* nada */ } };
   const leidasRef = useRef(new Set());
   leidasRef.current = new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => String(x.cod)));
+  // Códigos de las pegatinas que tocan según "qué imprimir" (hojas / marcos / todo). pendientes = solo las que aún no se han leído en la soldadora.
+  const codsQue = (items, pendientes, queArg = que) => piezasSoldadora(items, hojasOv, pilOv).filter((pz) => {
+    const c0 = toArray(pz.v.piezas)[0].c;
+    const esHoja = pz.cod !== c0;
+    if (queArg === "hojas" && !esHoja) return false;
+    if (queArg === "marcos" && esHoja) return false;
+    if (pendientes && leidasRef.current.has(String(pz.cod))) return false;
+    return true;
+  }).map((pz) => pz.cod);
+  const impQue = (items, pendientes) => {
+    const cods = codsQue(items, pendientes);
+    if (!cods.length) { alert(pendientes ? "No queda ninguna pegatina de ese tipo pendiente de leer." : "No hay pegatinas de ese tipo."); return; }
+    imp(items, cods);
+  };
   const imp = (items, solo = null) => imprimirPegatinasSoldadora(items, mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv, solo, modo === "pistola" ? { leidas: () => leidasRef.current } : null);
   const cambiarMm = (k, valor) => { const n = { ...mm, [k]: parseFloat(valor) || 0 }; setMm(n); try { localStorage.setItem("alumavel_pegatina_mm", JSON.stringify(n)); } catch (e) { /* nada */ } };
   const obras = useMemo(() => {
@@ -33704,14 +33722,23 @@ function PegatinasSoldadora({ indice, escaneos }) {
         <button type="button" onClick={() => cambiarModo("golpe")} className={`px-3 py-1.5 rounded-md text-xs font-semibold border ${modo === "golpe" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Todas de golpe</button>
         <span className="text-[11px] text-slate-500">{modo === "pistola" ? "Sale la primera; al pasar la pistola por ella sale la siguiente. Botón Saltar si una no se puede leer." : "Salen todas seguidas, con una pausa entre ellas."}</span>
       </div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="text-xs text-slate-500">Qué imprimir:</span>
+        {[{ id: "todo", t: "Todo (marco + hojas)" }, { id: "hojas", t: "Solo hojas" }, { id: "marcos", t: "Solo marcos" }].map((o) => (
+          <button key={o.id} type="button" onClick={() => cambiarQue(o.id)} className={`px-3 py-1.5 rounded-md text-xs font-semibold border ${que === o.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>
+            {o.t}{obra ? ` · ${codsQue(lista, true, o.id).length} pend.` : ""}
+          </button>
+        ))}
+        <span className="text-[11px] text-slate-500">Imprime primero las hojas de un expediente y vuelve cuando quieras a por los marcos: «pend.» = pegatinas que aún no se han leído en la soldadora.</span>
+      </div>
       {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
           <div className="flex flex-wrap gap-2 mb-3">
-            <button disabled={!medidaOk || !lista.length} onClick={() => imp([faltan[0] || lista[0]])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
-            <button disabled={!medidaOk || !faltan.length} onClick={() => imp(faltan)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir las que faltan ({faltan.length})</button>
-            <button disabled={!medidaOk || !lista.length} onClick={() => imp(lista)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({lista.length})</button>
+            <button disabled={!medidaOk || !lista.length} onClick={() => impQue([faltan[0] || lista[0]], false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
+            <button disabled={!medidaOk || !codsQue(lista, true).length} onClick={() => impQue(lista, true)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir lo que falta por leer ({codsQue(lista, true).length})</button>
+            <button disabled={!medidaOk || !codsQue(lista, false).length} onClick={() => impQue(lista, false)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({codsQue(lista, false).length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
             {agruparPorVivienda(lista.map((x) => x.v)).map((g) => {
@@ -33720,7 +33747,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 <div key={g.grupo}>
                   <div className="flex items-center gap-3 px-3 py-1.5 bg-slate-50 text-xs font-semibold text-slate-700">
                     <span className="mr-auto">{g.grupo}{g.cliente ? ` · ${g.cliente}` : ""} ({xs.length})</span>
-                    <button disabled={!medidaOk} onClick={() => imp(xs)} className="text-[#2E8B57] underline disabled:opacity-40">Imprimir esta vivienda</button>
+                    <button disabled={!medidaOk || !codsQue(xs, false).length} onClick={() => impQue(xs, false)} className="text-[#2E8B57] underline disabled:opacity-40">Imprimir esta vivienda</button>
                   </div>
                   {xs.map((x) => (
               <div key={x.v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
@@ -33738,7 +33765,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
                 {completa(x) ? <span className="text-emerald-700 text-xs font-semibold">✓ completa</span> : (leidasPor.get(x.v.id) || 0) > 0 ? <span className="text-amber-700 text-xs font-semibold">{leidasPor.get(x.v.id)}/{totalPiezas(x)} leídas</span> : <span className="text-slate-400 text-xs">sin leer</span>}
-                <button disabled={!medidaOk} onClick={() => imp([x])} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {totalPiezas(x)} pegatina{totalPiezas(x) === 1 ? "" : "s"}</button>
+                <button disabled={!medidaOk || !codsQue([x], false).length} onClick={() => impQue([x], false)} className="text-xs font-semibold text-[#2E8B57] underline disabled:opacity-40">Imprimir {codsQue([x], false).length} pegatina{codsQue([x], false).length === 1 ? "" : "s"}</button>
                 {x.v.modelo && (
                   <span className="flex items-center gap-1 text-[11px] text-slate-500">
                     ¿Se perdió una? Reimprimir:
@@ -34123,6 +34150,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, cristales 
     let aviso = r === "repetida";
     let zonaFoco = null;
     if (z) { texto = z.texto; aviso = !!z.aviso; zonaFoco = z.zona || null; }
+    if (r === "nuevo" && puestoId === "soldadora") revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por: quien });
     let cruce = null;
     if (r === "nuevo" && !yaVentana) {
       if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h);
@@ -36571,6 +36599,169 @@ function IncidenciasFabricaModulo({ incidencias, usuarios, currentUser, isAdmin,
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ---- Avisos automáticos: un puesto cambia de obra sin haber terminado la anterior ----
+function ventanasDeObraLinea(indice, obraKey) {
+  const m = new Map();
+  indice.forEach((h) => { if (h.dueno.key === obraKey && !m.has(h.ventana.id)) m.set(h.ventana.id, { v: h.ventana, lote: h.lote, dueno: h.dueno }); });
+  return [...m.values()];
+}
+// Qué se ha quedado sin pasar de esa obra en ese puesto (lista de textos). Cada puesto mira las piezas de la obra que están esperando en SUS zonas de origen.
+function pendientesObraPuesto({ puestoId, obraKey, indice, ubic, escaneos, hojasOv, pilOv }) {
+  const out = [];
+  const zonaDe = (cod) => (ubic[cod] && ubic[cod].zonaId) || "";
+  const leidasSold = new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => String(x.cod)));
+  ventanasDeObraLinea(indice, obraKey).forEach((x) => {
+    const piezas = piezasSoldadora([x], hojasOv, pilOv);
+    if (!piezas.length) return;
+    const c0 = piezas[0].cod;
+    const hojas = piezas.filter((pz) => pz.cod !== c0);
+    const etiqueta = x.v.pos;
+    if (puestoId === "soldadora") {
+      piezas.filter((pz) => !leidasSold.has(String(pz.cod))).forEach((pz) => out.push(`${etiqueta}${pz.tipo ? " " + pz.tipo : ""}`));
+    } else if (puestoId === "herraje") {
+      hojas.filter((pz) => ["hojas", "puertas"].includes(zonaDe(pz.cod))).forEach((pz) => out.push(`${etiqueta} ${pz.tipo}`));
+    } else if (puestoId === "pilastra") {
+      if (zonaDe(c0) === "marcosPilastra") out.push(etiqueta);
+    } else if (puestoId === "colgado") {
+      const marcoListo = ["marcos", "puertas"].includes(zonaDe(c0));
+      const hojasListas = hojas.every((pz) => ["hojasHerraje", "puertas"].includes(zonaDe(pz.cod)));
+      if (marcoListo && hojasListas) out.push(etiqueta);
+    } else if (puestoId === "persianaA") {
+      if (zonaDe(c0) === "colgadoA") out.push(etiqueta);
+    } else if (puestoId === "persianaB") {
+      if (zonaDe(c0) === "colgadoB") out.push(etiqueta);
+    } else if (puestoId === "puerta") {
+      if (zonaDe(c0) === "bancoPuerta") out.push(etiqueta);
+    } else if (puestoId === "cristales") {
+      if (["persianaA", "persianaB", "sinPersiana"].includes(zonaDe(c0))) out.push(etiqueta);
+    } else if (puestoId === "solape") {
+      if (zonaDe(c0) === "solape") out.push(etiqueta);
+    }
+  });
+  return out;
+}
+// ---- Soldadora: aviso EN DIRECTO si cambian de obra sin haber terminado de soldar sus marcos ----
+// Las hojas se sueldan primero (de todo el expediente) y los marcos después: cambiar de obra durante las hojas es normal; durante los marcos, no.
+async function revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por }) {
+  try {
+    const curKey = h.dueno.key;
+    const miClave = claveLecturaLinea("soldadora", h);
+    const leidas = new Set(escaneos.filter((x) => x.puestoId === "soldadora").map((x) => String(x.cod)));
+    leidas.add(String(h.pieza.c));
+    const marcosPendientes = (obraKey) => ventanasDeObraLinea(indice, obraKey).filter((x) => {
+      const pz = piezasSoldadora([x], hojasOv, pilOv);
+      return pz.length && !leidas.has(String(pz[0].cod));
+    }).map((x) => x.v.pos);
+    // 1) cerrar avisos de esta obra si ya están todos sus marcos
+    const todas = (await fbGet(ref(fbDb, "alertasLinea"))).val() || {};
+    for (const a of Object.values(todas)) {
+      if (a && a.estado === "abierta" && a.puestoId === "soldadora" && a.obraKey === curKey && marcosPendientes(curKey).length === 0) {
+        await fbUpdate(ref(fbDb, `alertasLinea/${a.id}`), { estado: "cerrada", cierreTs: Date.now() });
+      }
+    }
+    // 2) ¿venían de otra obra, soldando marcos, sin terminarla?
+    const prev = escaneos.filter((x) => x.puestoId === "soldadora" && x.id !== miClave).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+    if (!prev || !prev.obraKey || prev.obraKey === curKey) return;
+    if (/^Hoja/i.test(String(prev.pieza || ""))) return; // venían de hojas: es normal
+    const pend = marcosPendientes(prev.obraKey);
+    if (!pend.length) return;
+    const fecha = new Date().toISOString().slice(0, 10);
+    const id = `soldadora__${String(prev.obraKey).replace(/[.#$\[\]\/|\s]/g, "_")}__${fecha}`;
+    const rec = { id, ts: Date.now(), fecha, puestoId: "soldadora", obraKey: prev.obraKey, obraNombre: prev.obraNombre || prev.obraKey, nuevaObraNombre: h.dueno.nombre, n: pend.length, pendientes: pend.slice(0, 40), estado: "abierta", por: por || "" };
+    await runTransaction(ref(fbDb, `alertasLinea/${id}`), (actual) => (actual && actual.estado !== "abierta" ? undefined : rec));
+  } catch (e) { /* si las reglas de Firebase no permiten la ruta alertasLinea, no hay aviso */ }
+}
+function AvisoSoldaduraLinea() {
+  const [lista, setLista] = useState([]);
+  const [abierto, setAbierto] = useState(true);
+  const vistas = useRef(null);
+  useEffect(() => onValue(ref(fbDb, "alertasLinea"), (snap) => {
+    const arr = toArray(snap.val()).filter((a) => a && a.puestoId === "soldadora" && a.estado === "abierta");
+    const ids = new Set(arr.map((a) => a.id));
+    if (vistas.current && arr.some((a) => !vistas.current.has(a.id))) { try { pitidoCRM(false); } catch (e) { /* nada */ } }
+    vistas.current = ids;
+    setLista(arr);
+  }, () => {}), []);
+  if (lista.length === 0) return null;
+  const ord = [...lista].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const hora = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-rose-100 text-rose-900 border-b border-rose-300">
+      <div className="flex flex-wrap items-center gap-3 px-6 py-2.5 text-sm font-semibold">
+        <AlertOctagon size={15} />
+        <span>Soldadora: {ord.length} obra{ord.length === 1 ? "" : "s"} con los marcos sin terminar. Última: pasaron a «{ord[0].nuevaObraNombre}» dejando «{ord[0].obraNombre}» ({ord[0].n} marco{ord[0].n === 1 ? "" : "s"} sin soldar).</span>
+        <button type="button" onClick={() => setAbierto((a) => !a)} className="underline ml-auto">{abierto ? "Ocultar" : "Ver detalle"}</button>
+      </div>
+      {abierto && (
+        <div className="px-6 pb-3 space-y-1.5">
+          {ord.map((a) => (
+            <div key={a.id} className="flex flex-wrap items-center gap-2 bg-white border border-rose-200 rounded-md px-3 py-2 text-sm text-slate-800">
+              <span><b>{a.obraNombre}</b>: faltan <b>{a.n}</b> marco{a.n === 1 ? "" : "s"} por soldar ({(a.pendientes || []).slice(0, 12).join(", ")}{(a.pendientes || []).length > 12 ? "…" : ""}). A las {hora(a.ts || 0)} cambiaron a «{a.nuevaObraNombre}».</span>
+              <button type="button" onClick={() => fbUpdate(ref(fbDb, `alertasLinea/${a.id}`), { estado: "descartada", cierreTs: Date.now() }).catch(() => {})} className="ml-auto text-xs underline text-slate-500">Visto</button>
+            </div>
+          ))}
+          <p className="text-[11px] text-slate-500">Se cierra solo cuando vuelven a soldar un marco de esa obra y ya están todos.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FIN_DIA_HORA = 18; // a partir de esta hora (hora local) se revisa si ha quedado algo a medias
+
+// Antes de la hora de cierre no hace nada (ni siquiera carga datos). Después, mira lo trabajado HOY y avisa solo si algún puesto dejó una obra a medias.
+function AvisoFinDiaLinea({ proyectos, uxExpedientes, sinObra }) {
+  const [ahora, setAhora] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setAhora(new Date()), 60000); return () => clearInterval(t); }, []);
+  const hoy = ahora.toISOString().slice(0, 10);
+  const [visto, setVisto] = useState(() => { try { return localStorage.getItem("alumavel_findia_visto") || ""; } catch (e) { return ""; } });
+  if (ahora.getHours() < FIN_DIA_HORA || visto === hoy) return null;
+  return <ResumenFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} hoy={hoy} onVisto={() => { setVisto(hoy); try { localStorage.setItem("alumavel_findia_visto", hoy); } catch (e) { /* nada */ } }} />;
+}
+function ResumenFinDiaLinea({ proyectos, uxExpedientes, sinObra, hoy, onVisto }) {
+  const [abierto, setAbierto] = useState(false);
+  const escaneos = useEscaneosLinea();
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const hojasOv = useObjetoFb("hojasLinea");
+  const pilOv = useObjetoFb("pilastraLinea");
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const items = useMemo(() => {
+    const out = [];
+    // Desde herraje en adelante: la soldadora no cuenta (lo que falta por soldar no es "a medias")
+    ["herraje", "pilastra", "colgado", "persianaA", "persianaB", "puerta", "cristales", "solape"].forEach((puestoId) => {
+      const deHoy = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy);
+      const obras = new Map();
+      deHoy.forEach((x) => { if (!obras.has(x.obraKey)) obras.set(x.obraKey, { nombre: x.obraNombre || x.obraKey, cods: new Set() }); obras.get(x.obraKey).cods.add(x.cod); });
+      obras.forEach((o, obraKey) => {
+        const pend = pendientesObraPuesto({ puestoId, obraKey, indice, ubic, escaneos, hojasOv, pilOv });
+        if (pend.length) out.push({ key: `${puestoId}__${obraKey}`, puesto: nombrePuestoLinea(puestoId), obra: o.nombre, hechas: o.cods.size, pend });
+      });
+    });
+    return out;
+  }, [escaneos, ubic, hojasOv, pilOv, indice, hoy]);
+  if (items.length === 0) return null;
+  const obrasDistintas = new Set(items.map((i) => i.obra)).size;
+  return (
+    <div className="bg-amber-100 text-amber-900 border-b border-amber-300">
+      <div className="flex flex-wrap items-center gap-3 px-6 py-2.5 text-sm font-semibold">
+        <AlertOctagon size={15} />
+        <span>Fin de día: {obrasDistintas} obra{obrasDistintas === 1 ? "" : "s"} con trabajo a medias en la línea.</span>
+        <button type="button" onClick={() => setAbierto((a) => !a)} className="underline">{abierto ? "Ocultar detalle" : "Ver detalle"}</button>
+        <button type="button" onClick={onVisto} className="ml-auto text-xs underline">Entendido (hasta mañana)</button>
+      </div>
+      {abierto && (
+        <div className="px-6 pb-3 space-y-1.5">
+          {items.map((i) => (
+            <div key={i.key} className="bg-white border border-amber-200 rounded-md px-3 py-2 text-sm text-slate-800">
+              <b>{i.puesto}</b> · {i.obra}: hoy pasaron {i.hechas} y quedan <b>{i.pend.length}</b> esperando: <span className="text-slate-600">{i.pend.slice(0, 12).join(", ")}{i.pend.length > 12 ? "…" : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
