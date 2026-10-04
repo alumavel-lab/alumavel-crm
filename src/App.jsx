@@ -32630,7 +32630,24 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const dig = corte.presupuesto;
     if (!dig) return "He leído la hoja de corte pero no encuentro el número de presupuesto. No la aplico.";
     const cand = proyectos.filter((pr) => digitosPresu(pr.presupuestoNumero) === dig);
-    if (cand.length === 0) return `No hay ninguna obra con el presupuesto ${dig}. Crea o abre esa obra, sube su listado de dibujos o etiquetas y vuelve a subir la hoja de corte.`;
+    if (cand.length === 0) {
+      // Ninguna obra tiene ese nº de presupuesto: se mira si hay UN lote (sin obra o en una obra) con los mismos modelos y se ofrece aplicárselo
+      const encontrados = [
+        ...toArray(etiquetasSinObra).map((l) => ({ key: `s-${l.fab}`, nombre: "sin asignar", lote: l })),
+        ...lotesTodos.flatMap((o) => o.lotes.map((l) => ({ key: o.key, nombre: o.nombre, lote: l }))),
+      ].map((x) => ({ ...x, ap: aplicarCorteALotes([x.lote], corte) })).filter((x) => x.ap.aplicadas > 0 && x.ap.modelosSinVentana.length === 0);
+      if (encontrados.length === 1) {
+        const x = encontrados[0];
+        if (!window.confirm(`Ninguna obra del CRM tiene el presupuesto ${dig}.\n\nPero el lote ${x.lote.fab} (${x.nombre}, ${toArray(x.lote.ventanas).length} ventanas) tiene los mismos modelos (${corte.modelos.map((m) => m.modelo).join(", ")}).\n\n¿Aplicarle la hoja de corte (presupuesto ${dig}${corte.version ? `, versión ${corte.version}` : ""}, cliente ${corte.cliente || "—"})?`)) return "No he aplicado la hoja de corte.";
+        const nuevoLote = x.ap.lotes[0];
+        if (String(x.key).startsWith("s-")) onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify(nuevoLote)));
+        else onGuardarEtiquetasObra(x.key, JSON.parse(JSON.stringify(toArray(lotesDe(x.key)).map((l) => (l.fab === x.lote.fab ? nuevoLote : l)))));
+        return `Hoja de corte del presupuesto ${dig}${corte.version ? ` (versión ${corte.version})` : ""} aplicada al lote ${x.lote.fab} (${x.nombre}): ${x.ap.aplicadas} ventanas.`;
+      }
+      return encontrados.length > 1
+        ? `No hay ninguna obra con el presupuesto ${dig} y hay ${encontrados.length} lotes con esos modelos (${encontrados.map((e) => e.lote.fab).join(", ")}). Sube la hoja de corte desde dentro de la obra correcta.`
+        : `No hay ninguna obra con el presupuesto ${dig} ni ningún lote cargado con los modelos ${corte.modelos.map((m) => m.modelo).join(", ")}. Sube antes el listado de dibujos o las etiquetas.`;
+    }
     if (cand.length > 1) return `Hay ${cand.length} obras con el presupuesto ${dig} (${cand.map((c) => "#" + c.numero).join(", ")}). Sube la hoja de corte desde dentro de la obra correcta.`;
     const key = `p-${cand[0].id}`;
     const lotes = lotesDe(key);
@@ -32827,7 +32844,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
-        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 22:10</div>
+        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 22:35</div>
       </div>
     );
   }
@@ -34021,10 +34038,12 @@ function imprimirPegatinasSoldadora(items, anchoMm, altoMm, dx = 0, dy = 0, hoja
     const recorta = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + "…" : String(t));
     const ppto = (v.corte && v.corte.presupuesto) || digitosPresu(dueno.presupuesto) || "";
     const refTxt = (v.corte && v.corte.referencia) || "";
-    const l3 = ppto ? `Ppto ${ppto}${refTxt ? ` · ${recorta(refTxt, 24)}` : ""}` : "";
-    const extra = [v.cliente || (v.corte && v.corte.cliente), v.tipo, v.medida].filter(Boolean).join(" · ");
+    const verTxt = v.corte && v.corte.version ? ` v${v.corte.version}` : "";
+    const l3 = ppto ? `Ppto ${ppto}${verTxt}${refTxt ? ` · ${recorta(refTxt, 26)}` : ""}` : "";
+    const extra = [v.cliente || (v.corte && v.corte.cliente), v.color, v.medida].filter(Boolean).join(" · ");
+    const nombreV = v.tipo && v.tipo !== v.pos ? `${v.tipo} · ${v.pos}` : v.pos;
     const altoBar = Math.max(7, altoMm - 2.4 - 4.8 - 3.8 - 3.4 - (extra ? 3.2 : 0) - (l3 ? 3.2 : 0) - 1 - Math.max(0, dy));
-    return `<div class="et"><div class="r1"><span${String(v.pos).length > 9 ? ' style="font-size:3.2mm"' : ""}>${esc(v.pos)}</span><span>${esc(tipo || v.num)}</span></div>
+    return `<div class="et"><div class="r1"><span${String(nombreV).length > 9 ? ' style="font-size:3.4mm"' : ""}>${esc(nombreV)}</span><span>${esc(tipo || v.num)}</span></div>
       <div class="r2">${esc(v.grupo || dueno.nombre)}</div>
       ${l3 ? `<div class="r3">${esc(l3)}</div>` : ""}
       ${extra ? `<div class="r3">${esc(extra)}</div>` : ""}
