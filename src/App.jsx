@@ -31814,6 +31814,55 @@ function IncompletasAlmacen({ caballetes, indice }) {
   );
 }
 
+// Ventanas acristaladas que van DIRECTAS por la línea a carga (sin estantería): se ven por vivienda hasta que se leen en Almacén ventanas.
+// Se calcula con lecturas que ya existen (no escribe nada): acristalada (puesto Cristales) + sin leer en Carga + sin estantería.
+function PanelVienenPorLinea({ indice }) {
+  const escaneos = useEscaneosLinea();
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const flagsInc = useObjetoFb("incidenciaVentanaLinea");
+  // Incidencias de fábrica abiertas que se crearon desde la ficha de una ventana (cualquier tipo: cristal roto, rayón en una hoja, etc.)
+  const [incsF, setIncsF] = useState([]);
+  useEffect(() => onValue(ref(fbDb, "incidenciasFabrica"), (snap) => setIncsF(toArray(snap.val())), () => setIncsF([])), []);
+  const incAbiertas = useMemo(() => {
+    const m = new Map();
+    incsF.filter((i) => i && i.estado !== "Resuelta" && i.ventanaId).forEach((i) => { if (!m.has(i.ventanaId)) m.set(i.ventanaId, String(i.tipo || i.texto || "").slice(0, 40)); });
+    return m;
+  }, [incsF]);
+  const grupos = useMemo(() => {
+    const acrist = new Set(escaneos.filter((x) => x.puestoId === "cristales").map((x) => x.ventanaId));
+    const cargadas = new Set(escaneos.filter((x) => x.puestoId === "carga").map((x) => x.ventanaId));
+    const m = new Map();
+    const vistas = new Set();
+    for (const h of indice.values()) {
+      const w = h.ventana;
+      if (!w || !w.modelo || vistas.has(w.id)) continue;
+      vistas.add(w.id);
+      const k = `${h.dueno.key}|${w.grupo || ""}`;
+      if (!m.has(k)) m.set(k, { obra: h.dueno.nombre, grupo: w.grupo || "", cliente: w.cliente || "", todas: [] });
+      const base = baseDe(w);
+      const enAlmacen = ubic[base] && ["espera", "solape"].includes(ubic[base].zonaId);
+      m.get(k).todas.push({ pos: w.pos, ac: acrist.has(w.id), carg: cargadas.has(w.id), enAlmacen: !!enAlmacen, inc: !!flagsInc[base] || incAbiertas.has(w.id), motivo: incAbiertas.get(w.id) || "" });
+    }
+    return [...m.values()].map((g) => ({ ...g, enLinea: g.todas.filter((x) => x.ac && !x.carg && !x.enAlmacen), conInc: g.todas.filter((x) => x.inc && !x.carg) }))
+      .filter((g) => g.enLinea.length > 0 || (g.conInc.length > 0 && g.todas.some((x) => x.ac || x.carg)));
+  }, [escaneos, ubic, flagsInc, incAbiertas, indice]);
+  if (!grupos.length) return null;
+  return (
+    <div className="border border-sky-300 bg-sky-50 rounded-lg p-3">
+      <div className="text-sm font-semibold text-sky-900 mb-1">Vienen por la línea ({grupos.reduce((a, g) => a + g.enLinea.length, 0)})</div>
+      <p className="text-xs text-slate-600 mb-2">Acristaladas que van directas a carga, sin estantería. Desaparecen de aquí al leerlas en el almacén.</p>
+      <div className="space-y-2">
+        {grupos.map((g, i) => (
+          <div key={i} className={`text-sm rounded-md px-3 py-2 border ${g.conInc.length ? "bg-rose-50 border-rose-300 text-rose-800" : "bg-white border-slate-200 text-slate-700"}`}>
+            <div className="font-semibold">{g.obra}{g.grupo ? ` · ${g.grupo}` : ""}{g.cliente ? ` · ${g.cliente}` : ""}</div>
+            <div className="text-xs">Acristaladas: {g.todas.filter((x) => x.ac).length} de {g.todas.length} · en la línea ahora: <b>{g.enLinea.map((x) => x.pos).join(", ") || "ninguna"}</b></div>
+            {g.conInc.length > 0 && <div className="text-xs font-bold mt-1">⚠ INCIDENCIA en {g.conInc.map((x) => (x.motivo ? `${x.pos} (${x.motivo})` : x.pos)).join(", ")}: guarda en la línea las de esta vivienda que ya han salido hasta que se resuelva; no cierres el caballete.</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
@@ -32582,6 +32631,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
 
   return (
     <div className="space-y-5">
+      <PanelVienenPorLinea indice={indicePiezas} />
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
         {pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
@@ -33405,6 +33455,11 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     if (mates.length > 0 && mates.every((m) => m.u && m.u.zonaId === "espera")) {
       await liberarCodigoLinea(base);
       return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`, zona: null };
+    }
+    // Vivienda de varias ventanas en la que NINGUNA lleva solape (y no hay ninguna esperando ya en el almacén de espera): llegan seguidas por la línea y van directas a carga, sin estantería
+    if (mates.length > 0 && !mates.some((m) => solOv[baseDe(m.w)] || (m.u && m.u.zonaId === "espera"))) {
+      await liberarCodigoLinea(base);
+      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · LA VIVIENDA NO LLEVA SOLAPE → VA DIRECTA POR LA LÍNEA a carga (sin estantería). Son ${mates.length + 1} ventanas de la vivienda: van llegando seguidas.`, zona: null };
     }
     const n = await poner("espera", base);
     if (!n) return llena("espera", v.pos);
