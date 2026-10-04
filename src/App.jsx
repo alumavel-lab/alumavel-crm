@@ -5083,7 +5083,7 @@ export default function App() {
                 config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
                 onMoverEstado={moverEstadoProyecto}
                 renderParte={() => (
-                  <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
+                  <MiPuesto sinFichar currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
                     onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
                 )}
               />
@@ -33653,6 +33653,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const pilOv = useObjetoFb("pilastraLinea");
   const solOv = useObjetoFb("solapeLinea");
   const mosqOv = useObjetoFb("mosquiteraLinea");
+  const sinPersOvP = useObjetoFb("sinPersianaLinea");
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const [modo, setModo] = useState(() => { try { return localStorage.getItem("alumavel_pegatina_modo") === "golpe" ? "golpe" : "pistola"; } catch (e) { return "pistola"; } });
   const cambiarModo = (m) => { setModo(m); try { localStorage.setItem("alumavel_pegatina_modo", m); } catch (e) { /* nada */ } };
@@ -33767,6 +33768,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                   </select>
                 )}
                 {x.v.modelo && <span className="text-[11px] text-slate-500 whitespace-nowrap">1 marco + {hojasDe(x.v, hojasOv)} hoja{hojasDe(x.v, hojasOv) === 1 ? "" : "s"}</span>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="No lleva persiana: al unirla en Matrimonio no pasa por el banco A/B y va directa a cristales"><input type="checkbox" checked={!!sinPersOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`sinPersianaLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />Sin persiana</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`mosquiteraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />mosquitera</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
@@ -34170,6 +34172,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   };
   return (
     <div className="space-y-6">
+      <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
@@ -34921,7 +34924,7 @@ function PuestosTrabajoAdmin({ usuarios, config, onSaveConfig, isAdmin }) {
 }
 
 // Pantalla del empleado: su puesto, las obras del día, fichar, parte e incidencias
-function MiPuesto({ currentUser, usuarios, config, proyectos, fichajes, onFichar, onGuardarParte, onIncidencia }) {
+function MiPuesto({ sinFichar = false, currentUser, usuarios, config, proyectos, fichajes, onFichar, onGuardarParte, onIncidencia }) {
   const puestos = puestosDe(config);
   const plan = usePlanningPublicado();
   const partes = usePartesTrabajo();
@@ -34981,8 +34984,8 @@ function MiPuesto({ currentUser, usuarios, config, proyectos, fichajes, onFichar
         </Field>
       )}
 
-      {/* Fichar */}
-      <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+      {/* Fichar (se oculta si la empresa ficha en otro sistema) */}
+      {!sinFichar && <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
         <div className="text-sm font-bold text-slate-800">Fichar · {nombreEmp}</div>
         <div className="text-xs text-slate-500">{estadoFichaje === "sin_entrada" ? "Todavía no has fichado hoy." : estadoFichaje === "trabajando" ? `Trabajando desde las ${new Date(fichaje.entrada).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : estadoFichaje === "descanso" ? "En descanso" : "Jornada terminada"}</div>
         <div className="flex gap-2">
@@ -34990,7 +34993,7 @@ function MiPuesto({ currentUser, usuarios, config, proyectos, fichajes, onFichar
           {estadoFichaje === "trabajando" && <>{btn("Descanso", "inicio_descanso", "#d97706")}{btn("Salida", "salida", "#be123c")}</>}
           {estadoFichaje === "descanso" && btn("Volver del descanso", "fin_descanso", "#2E8B57")}
         </div>
-      </div>
+      </div>}
 
       {/* Obras de hoy */}
       <div>
@@ -36465,6 +36468,21 @@ function ActividadUsuarioModal({ u, onCerrar }) {
     if (i.resueltaPor && i.resueltaPor.id === u.id && enRango(i.resueltaTs)) filas.push({ ts: i.resueltaTs, tipo: "Incidencia resuelta", puesto: i.puesto || "", obra: i.obra || "", detalle: `${i.texto || ""}${i.notaResolucion ? " → " + i.notaResolucion : ""}`, aviso: "" });
   });
   filas.sort((a, b) => b.ts - a.ts);
+  // Resumen por día: lo leído en la línea y las horas del día repartidas entre las obras en las que ha leído
+  const [horasDia, setHorasDia] = useState(() => { try { return parseFloat(localStorage.getItem("alumavel_horas_dia_reparto")) || 8; } catch (e) { return 8; } });
+  const cambiarHoras = (v) => { const n = parseFloat(v) || 0; setHorasDia(n); try { localStorage.setItem("alumavel_horas_dia_reparto", String(n)); } catch (e) { /* nada */ } };
+  const dias = {};
+  const dia = (f) => (dias[f] = dias[f] || { fecha: f, lecturas: 0, ventanas: new Set(), puestos: {}, obras: {} });
+  escaneos.forEach((x) => {
+    const mio = x.porId ? x.porId === u.id : String(x.por || "").trim() === nombre;
+    if (!mio || !enRango(x.ts)) return;
+    const d = dia(fechaDe(x.ts));
+    d.lecturas += 1; d.ventanas.add(x.ventanaId);
+    const pn = x.puestoNombre || x.puestoId; d.puestos[pn] = (d.puestos[pn] || 0) + 1;
+    const on = x.obraNombre || x.obraKey || "—"; d.obras[on] = (d.obras[on] || 0) + 1;
+  });
+  const resumen = Object.values(dias).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const horasObras = (d) => Object.entries(d.obras).map(([k, v]) => `${k}: ${(horasDia * v / d.lecturas).toFixed(1)} h`).join(" · ");
   const fmtF = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const csv = () => {
     const esc = (t) => `"${String(t ?? "").replace(/"/g, '""')}"`;
@@ -36490,6 +36508,26 @@ function ActividadUsuarioModal({ u, onCerrar }) {
           <button type="button" disabled={!filas.length} onClick={csv} className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 disabled:opacity-40"><Download size={14} /> Descargar CSV</button>
         </div>
         <div className="overflow-y-auto flex-1">
+          {resumen.length > 0 && (
+            <div className="p-4 border-b border-slate-100">
+              <div className="flex items-center gap-3 mb-2"><span className="text-xs font-bold text-slate-700">Resumen por día</span><label className="text-xs text-slate-500 flex items-center gap-1">Horas al día a repartir <input type="number" min="0" step="0.5" value={horasDia} onChange={(e) => cambiarHoras(e.target.value)} className="w-16 border border-slate-300 rounded px-1.5 py-0.5 text-xs" /></label></div>
+              <table className="w-full text-xs">
+                <thead className="text-left text-slate-500"><tr><th className="py-1 pr-3">Día</th><th className="pr-3">Piezas leídas</th><th className="pr-3">Ventanas</th><th className="pr-3">Por puesto</th><th>Horas asignadas a cada obra</th></tr></thead>
+                <tbody>
+                  {resumen.map((d) => (
+                    <tr key={d.fecha} className="border-t border-slate-100 align-top">
+                      <td className="py-1 pr-3 whitespace-nowrap text-slate-700">{d.fecha}</td>
+                      <td className="pr-3 font-semibold text-slate-800">{d.lecturas}</td>
+                      <td className="pr-3 text-slate-600">{d.ventanas.size}</td>
+                      <td className="pr-3 text-slate-600">{Object.entries(d.puestos).map(([k, v]) => `${k}: ${v}`).join(" · ")}</td>
+                      <td className="text-slate-800 font-semibold">{horasObras(d)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-[11px] text-slate-400 mt-2">Las horas del día se reparten entre las obras en proporción a las piezas leídas en cada una (marcos y hojas cuentan por separado). Es un reparto estimado: el CRM no sabe cuánto tiempo ha tardado en cada pieza.</p>
+            </div>
+          )}
           {filas.length === 0 ? <p className="p-4 text-sm text-slate-500">No hay registros en ese periodo.</p> : (
             <table className="w-full text-xs">
               <thead className="bg-slate-50 text-left text-slate-500 sticky top-0"><tr><th className="px-3 py-2">Fecha y hora</th><th className="px-3 py-2">Qué</th><th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Obra</th><th className="px-3 py-2">Detalle</th></tr></thead>
@@ -36912,6 +36950,82 @@ function calcListoParaFabricar(proyectos, pedidos) {
 
 // Pantalla única de la línea: puesto (pistola), almacén de ventanas y estanterías/informes.
 // Solo hay UNA pestaña montada a la vez, así la pistola nunca lee en dos sitios a la vez.
+// Lo que ha hecho HOY el operario que tiene la sesión abierta (se cuenta solo, con sus lecturas)
+function UnidadesHoyLinea({ escaneos, quien, quienId }) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const mias = escaneos.filter((x) => x.fecha === hoy && (x.porId ? x.porId === quienId : String(x.por || "").trim() === String(quien || "").trim()));
+  if (!mias.length) return (
+    <div className="mb-4 px-4 py-3 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-500">Hoy todavía no has leído ninguna pieza.</div>
+  );
+  const porPuesto = {};
+  mias.forEach((x) => { const n = x.puestoNombre || x.puestoId; porPuesto[n] = (porPuesto[n] || 0) + 1; });
+  const ventanas = new Set(mias.map((x) => x.ventanaId)).size;
+  return (
+    <div className="mb-4 px-4 py-3 rounded-lg bg-emerald-50 border border-emerald-200">
+      <div className="text-sm font-bold text-emerald-900">Hoy llevas {mias.length} pieza{mias.length === 1 ? "" : "s"} ({ventanas} ventana{ventanas === 1 ? "" : "s"})</div>
+      <div className="text-xs text-emerald-800 mt-0.5">{Object.entries(porPuesto).map(([k, v]) => `${k}: ${v}`).join(" · ")}</div>
+    </div>
+  );
+}
+// Horas por obra: las horas de cada persona y día se reparten entre las obras en las que leyó piezas ese día
+function HorasPorObraLinea() {
+  const escaneos = useEscaneosLinea();
+  const hoy = new Date().toLocaleDateString("sv-SE");
+  const hace7 = new Date(Date.now() - 6 * 86400000).toLocaleDateString("sv-SE");
+  const [desde, setDesde] = useState(hace7);
+  const [hasta, setHasta] = useState(hoy);
+  const [horasDia, setHorasDia] = useState(() => { try { return parseFloat(localStorage.getItem("alumavel_horas_dia_reparto")) || 8; } catch (e) { return 8; } });
+  const cambiarHoras = (v) => { const n = parseFloat(v) || 0; setHorasDia(n); try { localStorage.setItem("alumavel_horas_dia_reparto", String(n)); } catch (e) { /* nada */ } };
+  const { filas, personasDia } = useMemo(() => {
+    const pd = {};
+    escaneos.forEach((x) => {
+      const f = new Date(x.ts).toLocaleDateString("sv-SE");
+      if (f < desde || f > hasta) return;
+      const persona = x.porId || String(x.por || "").trim() || "—";
+      const k = `${persona}__${f}`;
+      const d = (pd[k] = pd[k] || { total: 0, obras: {} });
+      d.total += 1;
+      const on = x.obraNombre || x.obraKey || "—";
+      d.obras[on] = (d.obras[on] || 0) + 1;
+    });
+    const por = {};
+    Object.values(pd).forEach((d) => Object.entries(d.obras).forEach(([on, n]) => {
+      const o = (por[on] = por[on] || { obra: on, horas: 0, piezas: 0, personasDia: 0 });
+      o.horas += horasDia * n / d.total; o.piezas += n; o.personasDia += 1;
+    }));
+    return { filas: Object.values(por).sort((a, b) => b.horas - a.horas), personasDia: Object.keys(pd).length };
+  }, [escaneos, desde, hasta, horasDia]);
+  const total = filas.reduce((a, f) => a + f.horas, 0);
+  const csv = () => {
+    const esc = (t) => `"${String(t ?? "").replace(/"/g, '""')}"`;
+    const cuerpo = [["Obra", "Horas (reparto)", "Piezas leídas", "Persona-días"].map(esc).join(";"), ...filas.map((f) => [f.obra, f.horas.toFixed(1).replace(".", ","), f.piezas, f.personasDia].map(esc).join(";"))].join("\r\n");
+    const blob = new Blob(["\ufeff" + cuerpo], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `horas-por-obra-${desde}_${hasta}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <h3 className="font-display font-bold text-slate-800 mb-1">Horas por obra (reparto automático)</h3>
+      <p className="text-xs text-slate-500 mb-3">Cada persona y día reparte sus horas entre las obras en las que ha leído piezas, en proporción a las piezas leídas. Es una estimación: no mide el tiempo real de cada pieza ni lo que se hace sin leer (limpiar, esperar material).</p>
+      <div className="flex flex-wrap items-end gap-3 mb-3">
+        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+        <div><label className="text-xs text-slate-500 block">Horas por persona y día</label><input type="number" min="0" step="0.5" value={horasDia} onChange={(e) => cambiarHoras(e.target.value)} className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
+        <button type="button" disabled={!filas.length} onClick={csv} className="ml-auto text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 disabled:opacity-40">Descargar CSV</button>
+      </div>
+      {filas.length === 0 ? <p className="text-sm text-slate-400">No hay lecturas en ese periodo.</p> : (
+        <table className="w-full text-sm">
+          <thead className="text-left text-xs text-slate-500"><tr><th className="py-1">Obra</th><th>Horas</th><th>Piezas leídas</th></tr></thead>
+          <tbody>
+            {filas.map((f) => (<tr key={f.obra} className="border-t border-slate-100"><td className="py-1.5 text-slate-800">{f.obra}</td><td className="font-semibold text-slate-800">{f.horas.toFixed(1)} h</td><td className="text-slate-600">{f.piezas}</td></tr>))}
+            <tr className="border-t-2 border-slate-200 font-bold"><td className="py-1.5">Total ({personasDia} persona-día{personasDia === 1 ? "" : "s"})</td><td>{total.toFixed(1)} h</td><td></td></tr>
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null }) {
   const [tab, setTab] = useState("puesto");
@@ -36956,6 +37070,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
           <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={admin} />
           <ParadasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
+          {admin && <HorasPorObraLinea />}
           {admin && <MovimientosCaballetes />}
           {admin && <LecturasLineaAdmin />}
         </div>
