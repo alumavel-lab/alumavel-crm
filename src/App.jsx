@@ -5082,6 +5082,10 @@ export default function App() {
                 onGuardarCaballete={guardarCaballete} onBorrarCaballete={borrarCaballete}
                 config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
                 onMoverEstado={moverEstadoProyecto}
+                renderParte={() => (
+                  <MiPuesto currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
+                    onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
+                )}
               />
             </div>
           )}
@@ -36909,12 +36913,13 @@ function calcListoParaFabricar(proyectos, pedidos) {
 // Pantalla única de la línea: puesto (pistola), almacén de ventanas y estanterías/informes.
 // Solo hay UNA pestaña montada a la vez, así la pistola nunca lee en dos sitios a la vez.
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
-  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado }) {
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null }) {
   const [tab, setTab] = useState("puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = [
     { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
+    ...(renderParte ? [{ id: "parte", t: "Fichar y parte del día", aviso: "" }] : []),
     ...(verMas ? [
       { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
       { id: "estanterias", t: "Estanterías e informes", aviso: "" },
@@ -36940,6 +36945,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
+      {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "almacen" && (
         <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
