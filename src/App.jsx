@@ -31863,7 +31863,8 @@ function PanelVienenPorLinea({ indice }) {
     </div>
   );
 }
-function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false }) {
+  const [verTodo, setVerTodo] = useState(false);
   const [vistaPrev, setVistaPrev] = useState("semanas");
   const almacenes = almacenesCaballetes(config);
   const [almacenSel, setAlmacenSel] = useState(""); // "" = todos
@@ -32629,8 +32630,58 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     );
   }
 
+  // Pantalla SIMPLE para el que carga (puesto fijo "Almacén de ventanas"): pasa la pistola por la ventana y le sale el caballete donde la deja.
+  if (simple && !verTodo && !escaneadoId) {
+    const ve = ventanaEsc;
+    return (
+      <div className="space-y-4">
+        {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
+        <PanelVienenPorLinea indice={indicePiezas} />
+        <div className="bg-white border-2 border-slate-300 rounded-xl p-4">
+          <div className="text-base font-bold text-slate-800 mb-2">Pasa la pistola por la etiqueta de la ventana</div>
+          <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Etiqueta de la ventana…" className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
+          {avisoScan && <div className="mt-2 text-sm font-semibold text-rose-600">{avisoScan}</div>}
+        </div>
+        {ve && (() => {
+          const cab = ve.cabId ? cabsAhora().find((c) => c.id === ve.cabId) : null;
+          const wAct = (cab && toArray(cab.ventanas).find((x) => mismaVentana(x, ve.w))) || ve.w;
+          const n = toArray(wAct.escaneadas).length;
+          const completa = wAct.total > 0 && n >= wAct.total;
+          const obra = obraDeDueno(ve.dueno);
+          const opciones = opcionesDestino(obra, ve.cabId);
+          return (
+            <div className={`rounded-xl border-4 p-5 text-center space-y-2 ${cab ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"}`}>
+              <div className="text-sm text-slate-700"><b>{wAct.pos}</b> · {ve.dueno.nombre} · {n}/{wAct.total} piezas{completa ? " ✓ completa" : ""}</div>
+              {cab ? (
+                <>
+                  <div className="text-xs font-bold uppercase text-emerald-700">{ve.nueva ? "Déjala en el caballete" : ve.repetida ? "Esa pieza ya estaba contada · está en el caballete" : "Ya estaba en el caballete"}</div>
+                  <div className="text-7xl font-extrabold text-slate-900 leading-none">{cab.numero}</div>
+                  {cab.ubicacion ? <div className="text-sm text-slate-600">{cab.ubicacion}</div> : null}
+                  <div className="flex flex-wrap justify-center gap-2 pt-1">
+                    <button onClick={() => imprimirYMarcar([cab])} className="flex items-center gap-1.5 text-sm font-semibold border border-slate-300 bg-white rounded-md px-3 py-2"><Printer size={14} /> Imprimir etiqueta del caballete</button>
+                  </div>
+                </>
+              ) : (
+                <div className="text-base font-bold text-amber-900">⚠ No hay caballete reservado con hueco para esta obra. Elige uno:</div>
+              )}
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                <select value="" onChange={(e) => { const id = e.target.value; if (!id) return; if (cambiarCaballete(wAct, obra, id)) setVentanaEsc({ ...ve, cabId: id, w: { ...wAct } }); volverAEscanear(); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+                  <option value="">{cab ? "Cambiar de caballete…" : "Elegir caballete…"}</option>
+                  {opciones.map((c) => <option key={c.id} value={c.id}>{textoOpcion(c, wAct, obra)}</option>)}
+                </select>
+                {cab && <button onClick={() => { quitarVentana(wAct); setVentanaEsc({ ...ve, cabId: null, nueva: true }); volverAEscanear(); }} className="text-xs font-semibold text-rose-600 hover:underline">Deshacer (sacarla del caballete)</button>}
+                <button onClick={() => setVentanaEsc(null)} className="text-xs text-slate-500 hover:underline">Cerrar</button>
+              </div>
+            </div>
+          );
+        })()}
+        <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
+      </div>
+    );
+  }
   return (
     <div className="space-y-5">
+      {simple && verTodo && <button onClick={() => setVerTodo(false)} className="text-xs underline text-slate-500">← Volver a la pantalla simple</button>}
       <PanelVienenPorLinea indice={indicePiezas} />
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
@@ -37378,7 +37429,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "almacen" && (
-        <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+        <AlmacenVentanas simple={soloAlmacen} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
