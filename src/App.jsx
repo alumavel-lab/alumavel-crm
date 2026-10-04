@@ -31206,6 +31206,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
 function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
   const [v, setV] = useState("");
   const [msg, setMsg] = useState(null); // { ok, texto }
+  const [camara, setCamara] = useState(false);
   const ref = useRef(null);
   useEffect(() => { if (enfocar && ref.current) { ref.current.focus(); try { ref.current.scrollIntoView({ block: "center" }); } catch (e) { /* sin scroll */ } } }, [enfocar]);
   const procesar = (txt) => {
@@ -31222,6 +31223,8 @@ function EscanerEnCaballete({ numero, onPieza, enfocar, resolver, onAviso }) {
   return (
     <div className="rounded-md border border-emerald-300 bg-emerald-50/40 p-2 space-y-1">
       <input ref={ref} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") procesar(v); }} placeholder={`📷 Pasa la pistola aquí: la ventana se mete en ${numero}`} className="w-full border border-emerald-300 rounded px-2 py-1.5 text-xs bg-white" />
+      <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold rounded-md px-3 py-1.5">📷 Leer con la cámara del móvil</button>
+      {camara && <LectorCamara modo="ventana" acepta={(c) => !!(resolver || codPiezaFab)(String(c || "").trim())} onLeido={(t) => { setCamara(false); procesar(t); }} onCerrar={() => setCamara(false)} />}
       {msg && <div className={`text-xs font-semibold ${msg.ok ? "text-emerald-700" : "text-rose-600"}`}>{msg.texto}</div>}
     </div>
   );
@@ -31776,14 +31779,25 @@ function EstanteriasTerminadas({ indice, isAdmin }) {
 }
 
 // Ventanas guardadas en un caballete a las que les falta alguna pegatina por leer (marco u hoja)
+// Una ventana "unida" (ya pasó por Matrimonio) se reconoce con UNA sola etiqueta en carga. Se considera unida si ya la leyó un puesto posterior
+// (persiana, puerta, cristales) o si en Matrimonio (colgado) se leyeron todas sus piezas (marco + todas las hojas).
+function ventanaYaUnida(v, escaneos, hojasOv) {
+  if (!v || !v.modelo) return false;
+  const mias = toArray(escaneos).filter((x) => x.ventanaId === v.id);
+  if (mias.some((x) => ["persianaA", "persianaB", "puerta", "cristales"].includes(x.puestoId))) return true;
+  const enColgado = new Set(mias.filter((x) => x.puestoId === "colgado").map((x) => String(x.cod)));
+  return enColgado.size >= 1 + hojasDe(v, hojasOv || {});
+}
 function IncompletasAlmacen({ caballetes, indice }) {
   const hojasOv = useObjetoFb("hojasLinea");
+  const escaneosU = useEscaneosLinea();
   const porVentana = useMemo(() => { const m = new Map(); indice.forEach((h) => { if (!m.has(h.ventana.id)) m.set(h.ventana.id, h); }); return m; }, [indice]);
   const filas = [];
   toArray(caballetes).forEach((c) => toArray(c.ventanas).forEach((w) => {
     const esc = toArray(w.escaneadas).map(String);
     if (!(w.total > 0) || esc.length >= w.total) return;
     const h = porVentana.get(w.id);
+    if (h && ventanaYaUnida(h.ventana, escaneosU, hojasOv)) return; // ya unida: una etiqueta basta
     let faltan = `${w.total - esc.length} pieza${w.total - esc.length === 1 ? "" : "s"}`;
     if (h && h.ventana.modelo) {
       const base = baseDe(h.ventana);
@@ -31886,6 +31900,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   // Ventanas hechas con las pegatinas del CRM: marco + hojas (activa, pasiva…). Se cuentan todas para dar la ventana por completa.
   const hojasOvAlm = useObjetoFb("hojasLinea");
   const totalVentana = (v) => (v.modelo ? 1 + hojasDe(v, hojasOvAlm) : toArray(v.piezas).length);
+  // Una vez unida la ventana (ya pasó por persiana / puerta / cristales) basta UNA etiqueta: cuenta como todas sus piezas
+  const escaneosLn = useEscaneosLinea();
+  const ventanaUnida = (v) => ventanaYaUnida(v, escaneosLn, hojasOvAlm);
+  const codigosVentana = (v) => { const base = baseDe(v); const nh = hojasDe(v, hojasOvAlm); return [base, ...Array.from({ length: nh }, (_, i) => codHoja(base, i + 1))]; };
+  const piezasALeer = (v, cod) => (ventanaUnida(v) ? codigosVentana(v) : [cod]);
   const hojaSobra = (h) => { if (!h.ventana.modelo) return false; const m = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return !!m && parseInt(m[1], 10) > hojasDe(h.ventana, hojasOvAlm); };
   const [ultimaLectura, setUltimaLectura] = useState("");
   const [enfocarCab, setEnfocarCab] = useState(null);
@@ -32185,12 +32204,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     setAvisoScan("");
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v, pieza } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: piezasALeer(v, cod) };
     const cabCon = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
     if (cabCon) {
       const actual = toArray(cabCon.ventanas).find((x) => mismaVentana(x, w));
-      const repetida = toArray(actual.escaneadas).includes(cod);
-      const nueva = { ...actual, escaneadas: repetida ? toArray(actual.escaneadas) : [...toArray(actual.escaneadas), cod] };
+      const aniadir = piezasALeer(v, cod);
+      const yaEstan = toArray(actual.escaneadas).map(String);
+      const repetida = aniadir.every((c) => yaEstan.includes(c));
+      const nueva = { ...actual, escaneadas: repetida ? toArray(actual.escaneadas) : [...new Set([...yaEstan, ...aniadir])] };
       if (!repetida) guardarCab({ ...cabCon, ventanas: toArray(cabCon.ventanas).map((x) => (mismaVentana(x, w) ? nueva : x)) });
       setVentanaEsc({ w: nueva, dueno, tipo: pieza.t, cabId: cabCon.id, nueva: false, repetida });
       avisar(true, `${repetida ? "Esa pieza ya estaba contada · " : "✓ "}${w.pos} está en ${cabCon.numero} · ${toArray(nueva.escaneadas).length}/${w.total} piezas`);
@@ -32214,15 +32235,16 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     if (!h) return { ok: false, texto: textoLoteDesconocido(cod) };
     registrarEscaneoLinea({ puestoId: "carga", h }).then(() => liberarVentanaLinea(h)).catch(() => {});
     const { dueno, lote, ventana: v } = h;
-    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: [cod] };
+    const w = { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total: totalVentana(v), persiana: persianaDeDueno(dueno.key), escaneadas: piezasALeer(v, cod) };
     const todos = cabsAhora();
     const destino = todos.find((c) => c.id === cabId);
     if (!destino) return { ok: false, texto: "Ese caballete ya no existe." };
     if (destino.estado === "fuera") return { ok: false, texto: `${destino.numero} está fuera: no se le pueden meter ventanas.` };
     const origen = todos.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
     const previa = origen ? toArray(origen.ventanas).find((x) => mismaVentana(x, w)) : null;
-    const yaContada = !!(previa && toArray(previa.escaneadas).includes(cod));
-    const wReal = previa ? { ...previa, escaneadas: yaContada ? toArray(previa.escaneadas) : [...toArray(previa.escaneadas), cod] } : w;
+    const aniadir = piezasALeer(v, cod);
+    const yaContada = !!(previa && aniadir.every((c) => toArray(previa.escaneadas).map(String).includes(c)));
+    const wReal = previa ? { ...previa, escaneadas: yaContada ? toArray(previa.escaneadas) : [...new Set([...toArray(previa.escaneadas).map(String), ...aniadir])] } : w;
     const nPiezas = toArray(wReal.escaneadas).length;
     if (origen && origen.id === destino.id) {
       if (!yaContada) guardarCab({ ...destino, ventanas: toArray(destino.ventanas).map((x) => (mismaVentana(x, w) ? wReal : x)) });
@@ -32636,11 +32658,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     return (
       <div className="space-y-4">
         {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
-        <PanelVienenPorLinea indice={indicePiezas} />
         <div className="bg-white border-2 border-slate-300 rounded-xl p-4">
           <div className="text-base font-bold text-slate-800 mb-2">Pasa la pistola por la etiqueta de la ventana</div>
           <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Etiqueta de la ventana…" className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
+          <button type="button" onClick={() => setCamara("ventana")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-3 w-full px-4 py-3 rounded-lg text-base font-bold">📷 Leer con la cámara del móvil</button>
           {avisoScan && <div className="mt-2 text-sm font-semibold text-rose-600">{avisoScan}</div>}
+          {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); if (!piezaDeTexto(v)) { const tx = `La cámara ha leído "${v}", pero no es una etiqueta de ventana (debe ser un número de 12 cifras).`; setAvisoScan(tx); avisar(false, tx); return; } buscarCodigo(v); }} onCerrar={() => setCamara(false)} />}
         </div>
         {ve && (() => {
           const cab = ve.cabId ? cabsAhora().find((c) => c.id === ve.cabId) : null;
@@ -32675,6 +32698,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             </div>
           );
         })()}
+        <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
+        <PanelVienenPorLinea indice={indicePiezas} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
       </div>
     );
