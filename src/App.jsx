@@ -33228,7 +33228,7 @@ const ZONAS_POR_PUESTO = {
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
   puerta: ["bancoPuerta", "puertasTerminadas"],
-  cristales: ["persianaA", "persianaB", "sinPersiana", "solape"],
+  cristales: ["persianaA", "persianaB", "sinPersiana", "solape", "espera"],
   solape: ["solape", "espera"],
   especiales: ["especiales"],
   carga: ["espera"],
@@ -33544,7 +33544,8 @@ function MapaZonasLinea({ ids, indice, admin, destacar }) {
   const mas = (z, n) => fbSet(ref(fbDb, `configZonasLinea/${z.id}`), z.huecos + n).catch((e) => alert("No se pudo guardar: " + e.message));
   const liberar = async (z, hueco, piezas) => { if (window.confirm(`¿Liberar la estantería ${hueco} de "${z.nombre}" (${piezas.map((x) => etiquetaDe(x.cod)).join(", ")})? Solo quita la marca del CRM.`)) await Promise.all(piezas.map((x) => liberarCodigoLinea(x.cod))).catch(() => {}); };
   const vaciar = async () => {
-    if (!window.confirm("¿Vaciar TODAS las estanterías? Borra qué pieza hay en cada hueco (sirve para limpiar pruebas). No toca las lecturas del informe.")) return;
+    const conf = window.prompt("¿Vaciar TODAS las estanterías?\nBorra qué pieza hay en cada hueco y no se puede deshacer (sirve para limpiar pruebas). No toca las lecturas del informe.\n\nEscribe VACIAR para confirmar:");
+    if (!conf || conf.trim().toUpperCase() !== "VACIAR") return;
     await Promise.all(["ubicacionesLinea", "ocupacionLinea", "colgadoLinea"].map((r) => fbSet(ref(fbDb, r), null))).catch((e) => alert("No se pudo vaciar: " + e.message));
   };
   return (
@@ -34326,6 +34327,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     let aviso = r === "repetida";
     let zonaFoco = null;
     if (z) { texto = z.texto; aviso = !!z.aviso; zonaFoco = z.zona || null; }
+    else if (!v.modelo && (ZONAS_POR_PUESTO[puestoId] || []).length > 0) { texto = `${texto} · ⚠ SIN ESTANTERÍA: esta ventana no tiene modelo en el PDF y no se ha colocado en ningún hueco. Avisa.`; aviso = true; }
     if (r === "nuevo" && puestoId === "soldadora") revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por: quien });
     let cruce = null;
     if (r === "nuevo" && !yaVentana) {
@@ -34358,7 +34360,12 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); procesar(v); }} onCerrar={() => { setCamara(false); enfocar(); }} />}
         {ultimo && (
-          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
+          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.zona && ultimo.zona.hueco && (
+            <div className="mt-2 flex items-center gap-3 text-slate-800">
+              <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{ultimo.zona.hueco}</span>
+              <span className="text-base font-bold">ESTANTERÍA{ultimo.zona.slot > 1 ? ` (sitio ${ultimo.zona.slot})` : ""} · {(zonas.find((x) => x.id === ultimo.zona.zonaId) || {}).nombre || ""}</span>
+            </div>
+          )}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
         )}
