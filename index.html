@@ -1,12 +1,373 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ALUMAVEL · CRM</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ventanas para cargar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#ECEFF2; --panel:#FFFFFF; --ink:#14212B; --muted:#5B6B77; --line:#CBD3DA;
+  --accent:#1D4F73; --accent-ink:#FFFFFF;
+  --c-cristales:#16757A; --c-solape:#B26A00; --c-espera:#2456A8; --c-linea:#2B7D4B; --c-cargada:#6E7B85;
+  --f-head:'Barlow Condensed','Arial Narrow',Arial,sans-serif;
+  --f-body:'Barlow',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F171D; --panel:#18232B; --ink:#E8EEF2; --muted:#9AA9B4; --line:#2D3C47;
+    --accent:#6DB1E0; --accent-ink:#0B1318;
+    --c-cristales:#3FB8BE; --c-solape:#E2A13A; --c-espera:#6C9BE8; --c-linea:#5CC083; --c-cargada:#8E9CA6;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F171D; --panel:#18232B; --ink:#E8EEF2; --muted:#9AA9B4; --line:#2D3C47;
+  --accent:#6DB1E0; --accent-ink:#0B1318;
+  --c-cristales:#3FB8BE; --c-solape:#E2A13A; --c-espera:#6C9BE8; --c-linea:#5CC083; --c-cargada:#8E9CA6;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.4;-webkit-text-size-adjust:100%}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1100px;margin:0 auto;padding:14px 14px 120px}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:space-between;margin-bottom:12px}
+h1{font-family:var(--f-head);font-weight:700;font-size:30px;line-height:1;margin:0}
+.status{font-size:13px;color:var(--muted)}
+.banner{background:var(--panel);border:1px solid var(--c-solape);border-left-width:6px;border-radius:6px;padding:10px 12px;margin:0 0 12px;font-size:14px}
+.tabs{display:flex;gap:6px;margin-bottom:12px;border-bottom:2px solid var(--line)}
+.tab{background:none;border:0;padding:10px 14px;font-family:var(--f-head);font-weight:600;font-size:20px;color:var(--muted);border-bottom:4px solid transparent;margin-bottom:-2px}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+.pill{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:8px 14px;font-size:15px;min-height:40px}
+.pill[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:10px 16px;min-height:44px;font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{border-color:#B3261E;color:#B3261E}
+.btn.small{min-height:36px;padding:6px 12px;font-size:14px}
+
+/* mapa */
+.flow{display:grid;gap:10px;grid-template-columns:1fr}
+@media (min-width:760px){ .flow{grid-template-columns:repeat(5,1fr);align-items:start} }
+.stage{background:var(--panel);border:1px solid var(--line);border-top:8px solid var(--stage);border-radius:8px;padding:10px 10px 12px;position:relative;min-width:0}
+.stage h2{font-family:var(--f-head);font-weight:700;font-size:21px;line-height:1.05;margin:0}
+.stage .count{font-family:var(--f-head);font-weight:700;font-size:40px;line-height:1;color:var(--stage)}
+.stage .hint{font-size:13px;color:var(--muted);margin:2px 0 8px}
+.stage .head{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.grp{margin-top:8px}
+.grp-name{background:none;border:0;padding:2px 0;font-size:13px;font-weight:600;color:var(--muted);text-align:left;text-decoration:underline;text-underline-offset:3px}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.chip{min-width:44px;min-height:44px;padding:0 6px;border-radius:6px;border:2px solid var(--stage);background:var(--panel);font-family:var(--f-head);font-weight:700;font-size:20px;color:var(--ink)}
+.chip[aria-pressed="true"]{background:var(--stage);color:#fff;outline:3px solid var(--ink);outline-offset:1px}
+.empty{font-size:14px;color:var(--muted);margin:6px 0 0}
+.s-cristales{--stage:var(--c-cristales)} .s-solape{--stage:var(--c-solape)} .s-espera{--stage:var(--c-espera)} .s-linea{--stage:var(--c-linea)} .s-cargada{--stage:var(--c-cargada)}
+.legend{font-size:14px;color:var(--muted);margin:0 0 12px;max-width:70ch}
+
+/* ventana terminada */
+section.block{margin-bottom:22px}
+section.block>h2{font-family:var(--f-head);font-weight:700;font-size:26px;margin:0 0 2px}
+section.block>p{margin:0 0 10px;color:var(--muted);font-size:14px}
+.obra{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.obra-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.obra-head strong{font-family:var(--f-head);font-size:22px;font-weight:700}
+.prog{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line);margin:8px 0 6px}
+.prog i{display:block;height:100%}
+.prog-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--muted)}
+.prog-legend b{color:var(--ink)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+.big .chip{min-width:56px;min-height:56px;font-size:26px}
+
+/* formulario */
+.form{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:14px;display:grid;gap:10px;max-width:560px}
+.form label{display:grid;gap:4px;font-size:14px;font-weight:600}
+.form input{font:inherit;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-height:44px}
+.form small{font-weight:400;color:var(--muted)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* barra de acción */
+.action{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:2px solid var(--accent);padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));z-index:5}
+.action-in{max-width:1100px;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.action .n{font-family:var(--f-head);font-weight:700;font-size:22px;margin-right:4px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(90px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:6;max-width:90%}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion: no-preference){ .chip{transition:background .12s} }
+</style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
+<div class="wrap">
+  <header>
+    <h1>Ventanas para cargar</h1>
+    <span class="status" id="status">Conectando…</span>
+  </header>
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-mapa" aria-selected="true" data-tab="mapa">Mapa de recorrido</button>
+    <button class="tab" role="tab" id="tab-term" aria-selected="false" data-tab="term">Ventana terminada</button>
+  </div>
+
+  <div class="bar" id="obraBar"></div>
+  <div id="newObra"></div>
+  <div id="view"></div>
+</div>
+
+<div class="action" id="action" hidden>
+  <div class="action-in" id="actionIn"></div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const ESTADOS = [
+  {id:'cristales', nombre:'Cristales',            hint:'Sin solape: va directo a la línea'},
+  {id:'solape',    nombre:'Almacén de solape',    hint:'Esperan el solape'},
+  {id:'espera',    nombre:'Ventana terminada',    hint:'Almacén de espera: de aquí se cogen'},
+  {id:'linea',     nombre:'Línea',                hint:'Todas juntas, listas para cargar'},
+  {id:'cargada',   nombre:'Cargada',              hint:'Ya está en el camión'}
+];
+const BY = Object.fromEntries(ESTADOS.map(e=>[e.id,e]));
+// destinos recomendados desde cada punto
+const NEXT = {cristales:['linea'], solape:['espera','linea'], espera:['linea','cargada'], linea:['cargada'], cargada:[]};
+
+let obras = {};            // id -> {nombre,total,creada,v:{n:estado}}
+let tab = 'mapa';
+let filtro = 'todas';
+let sel = new Set();       // "obraId|n"
+let dbc = null;            // base de datos compartida
+let canWrite = true;
+let showForm = false;
+let confirmDel = null;
+
+const $ = id => document.getElementById(id);
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>t.hidden=true,2600); }
+
+/* ---------- almacenamiento ---------- */
+function persistLocal(){ try{ localStorage.setItem('obras_ventanas_v1', JSON.stringify(obras)); }catch(e){} }
+function cargarLocal(){ try{ const t=localStorage.getItem('obras_ventanas_v1'); if(t) obras=JSON.parse(t)||{}; }catch(e){ obras={}; } }
+async function guardarObra(id,data){
+  if(dbc){ await dbc.doc('obras/'+id).set(data); }
+  else { obras[id]=data; persistLocal(); render(); }
+}
+async function moverVentanas(id,patch){
+  if(dbc){ await dbc.doc('obras/'+id).update({v:patch}); }
+  else { Object.assign(obras[id].v,patch); persistLocal(); render(); }
+}
+async function borrarObra(id){
+  if(dbc){ await dbc.doc('obras/'+id).delete(); }
+  else { delete obras[id]; persistLocal(); render(); }
+}
+
+/* ---------- utilidades ---------- */
+function ordenObras(){ return Object.entries(obras).sort((a,b)=>(a[1].creada||0)-(b[1].creada||0)); }
+function ventanasDe(id,estado){
+  const v=(obras[id]&&obras[id].v)||{};
+  return Object.keys(v).filter(n=>v[n]===estado).map(Number).sort((a,b)=>a-b);
+}
+function obrasVisibles(){ return ordenObras().filter(([id])=>filtro==='todas'||filtro===id); }
+function parseRango(txt,max){
+  const out=new Set();
+  String(txt||'').split(/[,; ]+/).forEach(p=>{
+    if(!p) return;
+    const m=p.match(/^(\d+)-(\d+)$/);
+    if(m){ let a=+m[1], b=+m[2]; if(a>b)[a,b]=[b,a]; for(let i=a;i<=b;i++) if(i>=1&&i<=max) out.add(i); }
+    else if(/^\d+$/.test(p)){ const n=+p; if(n>=1&&n<=max) out.add(n); }
+  });
+  return out;
+}
+const key=(id,n)=>id+'|'+n;
+
+/* ---------- selección y movimiento ---------- */
+function toggle(id,n){ const k=key(id,n); sel.has(k)?sel.delete(k):sel.add(k); render(); }
+function toggleGrupo(id,estado){
+  const ns=ventanasDe(id,estado);
+  const todas=ns.every(n=>sel.has(key(id,n)));
+  ns.forEach(n=>todas?sel.delete(key(id,n)):sel.add(key(id,n)));
+  render();
+}
+async function mover(destino){
+  if(!canWrite){ toast('Solo lectura: no puedes cambiar estados'); return; }
+  const porObra={};
+  sel.forEach(k=>{ const [id,n]=k.split('|'); (porObra[id]=porObra[id]||{})[n]=destino; });
+  const total=sel.size;
+  sel=new Set();
+  try{
+    for(const id of Object.keys(porObra)) await moverVentanas(id,porObra[id]);
+    toast(total+(total===1?' ventana movida a ':' ventanas movidas a ')+BY[destino].nombre);
+  }catch(e){ toast('No se pudo guardar. Inténtalo otra vez.'); }
+  render();
+}
+
+/* ---------- render ---------- */
+function renderBar(){
+  const bar=$('obraBar');
+  const obs=ordenObras();
+  let h='<button class="pill" aria-pressed="'+(filtro==='todas')+'" data-f="todas">Todas las obras</button>';
+  obs.forEach(([id,o])=>{ h+='<button class="pill" aria-pressed="'+(filtro===id)+'" data-f="'+esc(id)+'">'+esc(o.nombre)+'</button>'; });
+  if(canWrite) h+='<button class="btn small primary" id="btnNueva">Nueva obra</button>';
+  if(canWrite && filtro!=='todas' && obras[filtro]){
+    h+= confirmDel===filtro
+      ? '<button class="btn small danger" id="btnDelOk">Confirmar: borrar esta obra</button><button class="btn small" id="btnDelNo">Cancelar</button>'
+      : '<button class="btn small" id="btnDel">Borrar obra</button>';
+  }
+  bar.innerHTML=h;
+}
+
+function renderForm(){
+  const c=$('newObra');
+  if(!showForm){ c.innerHTML=''; return; }
+  c.innerHTML=
+   '<form class="form" id="formObra" onsubmit="return false">'+
+   '<label>Nombre de la obra<input id="fNombre" type="text" autocomplete="off" placeholder="Ej. Mallorca bloque 2"></label>'+
+   '<label>Número de ventanas<input id="fTotal" type="number" inputmode="numeric" min="1" max="500" value="36"></label>'+
+   '<label>Ventanas que llevan solape <small>Ej. 1-12, 20. Las demás empiezan en Cristales. Déjalo vacío si ninguna lleva solape.</small><input id="fSolape" type="text" autocomplete="off" placeholder="1-12, 20"></label>'+
+   '<div class="row"><button class="btn primary" id="fOk">Crear obra</button><button class="btn" id="fNo">Cancelar</button></div>'+
+   '</form>';
+}
+
+function chipsHtml(id,estado,big){
+  const ns=ventanasDe(id,estado);
+  return ns.map(n=>'<button class="chip" data-id="'+esc(id)+'" data-n="'+n+'" aria-pressed="'+sel.has(key(id,n))+'" aria-label="Ventana '+n+'">'+n+'</button>').join('');
+}
+
+function renderMapa(){
+  const obs=obrasVisibles();
+  let h='<p class="legend">Cada ventana pasa por estos puntos. Toca una ventana para seleccionarla, o el nombre de la obra para seleccionar todas las de ese punto, y elige a dónde mover.</p><div class="flow">';
+  ESTADOS.forEach(e=>{
+    let count=0, body='';
+    obs.forEach(([id,o])=>{
+      const ns=ventanasDe(id,e.id); if(!ns.length) return;
+      count+=ns.length;
+      body+='<div class="grp"><button class="grp-name" data-g="'+esc(id)+'" data-e="'+e.id+'">'+esc(o.nombre)+' ('+ns.length+')</button><div class="chips">'+chipsHtml(id,e.id)+'</div></div>';
+    });
+    h+='<div class="stage s-'+e.id+'"><div class="head"><h2>'+e.nombre+'</h2><span class="count">'+count+'</span></div><div class="hint">'+e.hint+'</div>'+(body||'<p class="empty">Ninguna</p>')+'</div>';
+  });
+  h+='</div>';
+  if(!obs.length) h='<p class="legend">Todavía no hay ninguna obra. Pulsa «Nueva obra», pon cuántas ventanas lleva y cuáles pasan por solape.</p>';
+  return h;
+}
+
+function renderTerm(){
+  const obs=obrasVisibles();
+  if(!obs.length) return '<p class="legend">Todavía no hay ninguna obra. Pulsa «Nueva obra» para empezar.</p>';
+  // A) almacén de espera
+  let esp='', lin='', cam='';
+  obs.forEach(([id,o])=>{
+    const e=ventanasDe(id,'espera'), l=ventanasDe(id,'linea');
+    if(e.length) esp+='<div class="obra big s-espera"><div class="obra-head"><button class="grp-name" data-g="'+esc(id)+'" data-e="espera">'+esc(o.nombre)+'</button><span>'+e.length+' en almacén</span></div><div class="chips">'+chipsHtml(id,'espera')+'</div></div>';
+    if(l.length) lin+='<div class="obra big s-linea"><div class="obra-head"><button class="grp-name" data-g="'+esc(id)+'" data-e="linea">'+esc(o.nombre)+'</button><span>'+l.length+' listas</span></div><div class="chips">'+chipsHtml(id,'linea')+'</div></div>';
+    const total=o.total||Object.keys(o.v||{}).length;
+    const c=ventanasDe(id,'cristales').length, s=ventanasDe(id,'solape').length, ee=e.length, ll=l.length, cg=ventanasDe(id,'cargada').length;
+    const pct=x=>(total?x*100/total:0).toFixed(2)+'%';
+    cam+='<div class="obra"><div class="obra-head"><strong>'+esc(o.nombre)+'</strong><span>'+(ee+ll+cg)+' de '+total+' ya terminadas</span></div>'+
+      '<div class="prog" role="img" aria-label="Progreso de '+esc(o.nombre)+'">'+
+      '<i style="width:'+pct(cg)+';background:var(--c-cargada)"></i><i style="width:'+pct(ll)+';background:var(--c-linea)"></i><i style="width:'+pct(ee)+';background:var(--c-espera)"></i><i style="width:'+pct(s)+';background:var(--c-solape)"></i><i style="width:'+pct(c)+';background:var(--c-cristales)"></i></div>'+
+      '<div class="prog-legend">'+
+      '<span><i class="dot" style="background:var(--c-cristales)"></i>Cristales <b>'+c+'</b></span>'+
+      '<span><i class="dot" style="background:var(--c-solape)"></i>Solape <b>'+s+'</b></span>'+
+      '<span><i class="dot" style="background:var(--c-espera)"></i>Almacén de espera <b>'+ee+'</b></span>'+
+      '<span><i class="dot" style="background:var(--c-linea)"></i>Línea <b>'+ll+'</b></span>'+
+      '<span><i class="dot" style="background:var(--c-cargada)"></i>Cargadas <b>'+cg+'</b></span></div></div>';
+  });
+  return '<section class="block"><h2>En el almacén de espera</h2><p>Ventanas terminadas que puedes coger ahora.</p>'+(esp||'<p class="empty">No hay ninguna ahora mismo.</p>')+'</section>'+
+         '<section class="block"><h2>Ya en línea</h2><p>Todas juntas y listas para cargar.</p>'+(lin||'<p class="empty">No hay ninguna ahora mismo.</p>')+'</section>'+
+         '<section class="block"><h2>Cómo va cada obra</h2><p>Lo que falta por llegar desde Cristales y Solape.</p>'+cam+'</section>';
+}
+
+function renderAction(){
+  const a=$('action'), inn=$('actionIn');
+  if(!sel.size){ a.hidden=true; return; }
+  if(!canWrite){ a.hidden=true; return; }
+  const estados=new Set();
+  sel.forEach(k=>{ const [id,n]=k.split('|'); const e=obras[id]&&obras[id].v&&obras[id].v[n]; if(e) estados.add(e); });
+  const comunes=estados.size===1?[...estados][0]:null;
+  const rec=comunes?NEXT[comunes]:[];
+  let h='<span class="n">'+sel.size+(sel.size===1?' seleccionada':' seleccionadas')+'</span>';
+  ESTADOS.forEach(e=>{
+    if(e.id===comunes) return;
+    h+='<button class="btn'+(rec.includes(e.id)?' primary':'')+'" data-mv="'+e.id+'">Mover a '+e.nombre+'</button>';
+  });
+  h+='<button class="btn" id="btnLimpiar">Quitar selección</button>';
+  inn.innerHTML=h; a.hidden=false;
+}
+
+function render(){
+  // limpiar selecciones de ventanas que ya no existen
+  sel.forEach(k=>{ const [id,n]=k.split('|'); if(!(obras[id]&&obras[id].v&&obras[id].v[n])) sel.delete(k); });
+  if(filtro!=='todas' && !obras[filtro]) filtro='todas';
+  renderBar(); renderForm();
+  $('view').innerHTML = tab==='mapa' ? renderMapa() : renderTerm();
+  document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected', String(t.dataset.tab===tab)));
+  renderAction();
+}
+
+/* ---------- eventos ---------- */
+document.addEventListener('click', async ev=>{
+  const t=ev.target.closest('button'); if(!t) return;
+  if(t.dataset.tab){ tab=t.dataset.tab; render(); return; }
+  if(t.dataset.f){ filtro=t.dataset.f; confirmDel=null; render(); return; }
+  if(t.classList.contains('chip')){ toggle(t.dataset.id,t.dataset.n); return; }
+  if(t.dataset.g){ toggleGrupo(t.dataset.g,t.dataset.e); return; }
+  if(t.dataset.mv){ mover(t.dataset.mv); return; }
+  if(t.id==='btnLimpiar'){ sel=new Set(); render(); return; }
+  if(t.id==='btnNueva'){ showForm=true; render(); const f=$('fNombre'); if(f) f.focus(); return; }
+  if(t.id==='fNo'){ showForm=false; render(); return; }
+  if(t.id==='fOk'){
+    const nombre=$('fNombre').value.trim();
+    const total=Math.max(1,Math.min(500,parseInt($('fTotal').value,10)||0));
+    if(!nombre){ toast('Escribe el nombre de la obra'); return; }
+    if(!total){ toast('Indica cuántas ventanas lleva'); return; }
+    const conSolape=parseRango($('fSolape').value,total);
+    const v={}; for(let i=1;i<=total;i++) v[String(i)]=conSolape.has(i)?'solape':'cristales';
+    const id='o'+Date.now().toString(36);
+    try{ await guardarObra(id,{nombre,total,creada:Date.now(),v}); showForm=false; filtro=id; toast('Obra creada con '+total+' ventanas'); }
+    catch(e){ toast('No se pudo crear la obra'); }
+    render(); return;
+  }
+  if(t.id==='btnDel'){ confirmDel=filtro; render(); return; }
+  if(t.id==='btnDelNo'){ confirmDel=null; render(); return; }
+  if(t.id==='btnDelOk'){
+    const id=confirmDel; confirmDel=null;
+    try{ await borrarObra(id); filtro='todas'; toast('Obra borrada'); }catch(e){ toast('No se pudo borrar'); }
+    render(); return;
+  }
+});
+
+/* ---------- arranque ---------- */
+function setStatus(t){ $('status').textContent=t; }
+render();
+(async()=>{
+  try{
+    const user = window.claude ? await window.claude.use('user') : null;
+    if(user){ const w = await user.can('data.write'); if(w===false) canWrite=false; }
+  }catch(e){}
+  try{
+    dbc = window.claude ? await window.claude.use('db') : null;
+  }catch(e){ dbc=null; }
+  if(!dbc){
+    setStatus('Modo prueba');
+    const b=$('banner'); b.hidden=false;
+    b.textContent='Modo prueba: los datos se guardan solo en este navegador y en este dispositivo. Otros móviles u ordenadores no los ven.';
+    cargarLocal(); render(); return;
+  }
+  if(!canWrite){
+    const b=$('banner'); b.hidden=false;
+    b.textContent='Estás en solo lectura. Para mover ventanas necesitas permiso de colaborador.';
+  }
+  setStatus('En directo');
+  dbc.collection('obras').onSnapshot(snap=>{
+    const nuevo={};
+    snap.docs.forEach(d=>{ nuevo[d.id]=d.data(); });
+    obras=nuevo; render();
+  }, err=>{
+    setStatus('Conexión perdida');
+    toast('Se perdió la conexión con los datos');
+  });
+})();
+</script>
 </body>
 </html>
