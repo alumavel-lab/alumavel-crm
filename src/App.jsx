@@ -6598,7 +6598,7 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
 // (va detrás) y para contar las ventanas por tipo (parte diario e informes).
 // PDF de etiquetas de fabricación (una por perfil) de la obra: sirve para que la pistola
 // reconozca a qué ventana pertenece cada etiqueta en el Almacén de ventanas.
-function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
+function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupuestoNumero = "" }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const inputRef = useRef(null);
@@ -6611,6 +6611,16 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal }) {
     setLeyendo(true); setAviso("Leyendo el PDF…");
     try {
       const r = await leerEtiquetasFabPdf(file, (n, t) => setAviso(`Leyendo el PDF… página ${n} de ${t}`));
+      if (r.corte) {
+        // Hoja de corte: se mira el nº de presupuesto y se aplica a las ventanas de ESTA obra
+        if (presupuestoNumero && digitosPresu(presupuestoNumero) && r.corte.presupuesto && digitosPresu(presupuestoNumero) !== r.corte.presupuesto) { setAviso(`Esta hoja de corte es del presupuesto ${r.corte.presupuesto} y esta obra es del ${presupuestoNumero}. No la he aplicado.`); return; }
+        if (!lotesRef.current.length) { setAviso("Primero sube el listado de dibujos o las etiquetas de esta obra; la hoja de corte se aplica a esas ventanas."); return; }
+        const ap = aplicarCorteALotes(lotesRef.current, r.corte);
+        if (!ap.aplicadas) { setAviso(`Hoja de corte leída (presupuesto ${r.corte.presupuesto}), pero ningún modelo (${r.corte.modelos.map((m) => m.modelo).join(", ")}) coincide con las ventanas de esta obra. No he cambiado nada.`); return; }
+        guardarRef.current(ap.lotes);
+        setAviso(`Hoja de corte del presupuesto ${r.corte.presupuesto}${r.corte.version ? ` (versión ${r.corte.version})` : ""} aplicada a ${ap.aplicadas} ventanas.${ap.modelosSinVentana.length ? ` Sin ventanas en esta obra para: ${ap.modelosSinVentana.join(", ")}.` : ""}`);
+        return;
+      }
       if (!r.lotes.length) { setAviso("No he encontrado etiquetas de fabricación en ese PDF (busco la línea V01.401 - 6.363 -FAB:1.275 y su código de barras)."); return; }
       guardarRef.current(mezclarLotesFab(lotesRef.current, r, file.name));
       const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
@@ -8025,7 +8035,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             )}
             {proyecto.origen !== "portalUxcar" && <TipoPlanoObra proyecto={proyecto} onInlineUpdate={onInlineUpdate} sinBoton={!!onCrearPedidosEspera} />}
           </div>
-          {proyecto.origen !== "portalUxcar" && <EtiquetasFabricacionObra lotes={proyecto.etiquetasFab} onGuardar={(l) => onInlineUpdate(proyecto.id, { etiquetasFab: l })} />}
+          {proyecto.origen !== "portalUxcar" && <EtiquetasFabricacionObra lotes={proyecto.etiquetasFab} presupuestoNumero={proyecto.presupuestoNumero || ""} onGuardar={(l) => onInlineUpdate(proyecto.id, { etiquetasFab: l })} />}
           {checklist.some((c) => !c.estado) && (
             <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
               ⚠ El checklist "Qué lleva la obra" no está completo todavía. No podrás crear un pedido nuevo para este proyecto hasta rellenarlo (pestaña "Qué lleva la obra").
@@ -30824,13 +30834,14 @@ function agruparCargaMaterial(paginas) {
     bloques.push(tipsPag);
     const lineas = items.join("").split("\n").map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
     const todo = lineas.join("\n");
-    if (!/CARGA MATERIAL/i.test(todo)) { ignoradas++; return; }
-    const mN = todo.match(/N[uú]mero\s*:\s*([\d.]+)/i); if (mN) numero = mN[1];
+    const esListado = /LISTADO DIBUJOS/i.test(todo); // "Listado dibujos" del programa de fabricación: mismo formato que la carga de material, pero con "Fabricación" en vez de "Número" y con posiciones
+    if (!/CARGA MATERIAL/i.test(todo) && !esListado) { ignoradas++; return; }
+    const mN = todo.match(/N[uú]mero\s*:\s*([\d.]+)/i) || (esListado ? todo.match(/Fabricaci[oó]n\s*:\s*([\d.]+)/i) : null); if (mN) numero = mN[1];
     const mR = todo.match(/Referenc[ií]a\s*:\s*([^\n]+)/i); if (mR) ref = mR[1].trim();
     const mC = todo.match(/Cliente\s*:\s*([^\n]+)/i); if (mC) cliente = mC[1].trim().replace(/^\d+\s*-\s*/, "");
     const idx = [];
     lineas.forEach((l, i) => { if (/^Modelo\s*:/i.test(l)) idx.push(i); });
-    idx.forEach((i, k) => { const fin = k + 1 < idx.length ? idx[k + 1] : lineas.length; tipsPag.push(((lineas.slice(i, fin).join("\n").match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").trim()); });
+    idx.forEach((i, k) => { const fin = k + 1 < idx.length ? idx[k + 1] : lineas.length; tipsPag.push(((lineas.slice(i, fin).join("\n").match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").replace(/\s*Uds\s*:.*$/i, "").trim()); });
     const fab = numero.replace(/\D/g, "");
     const mE = ref.match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*(.*)$/i);
     const exp = mE ? mE[1] : fab; // sin "EXP nnn" en la referencia (p. ej. "PVC 5 ventanas madera") se usa el número del pedido
@@ -30839,9 +30850,10 @@ function agruparCargaMaterial(paginas) {
     idx.forEach((i, k) => {
       const fin = k + 1 < idx.length ? idx[k + 1] : lineas.length;
       const bloque = lineas.slice(i, fin).join("\n");
-      const tip = ((bloque.match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").trim();
+      const tip = ((bloque.match(/^Modelo\s*:\s*(.+)/im) || [])[1] || "").replace(/\s+/g, " ").replace(/\s*Uds\s*:.*$/i, "").trim();
       const color = ((bloque.match(/Color\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
-      const uds = Math.max(1, Math.min(9, parseInt((bloque.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1));
+      const uds = Math.max(1, Math.min(esListado ? 99 : 9, parseInt((bloque.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1));
+      const posIni = esListado ? (parseInt((bloque.match(/Posici[oó]n\s*:\s*(\d+)/i) || [])[1], 10) || 0) : 0; // en el listado cada ventana tiene su número de posición (1, 2, 3…)
       const med = bloque.match(/Medidas\s*:\s*([\d.]+)\s*mm\s*,\s*([\d.]+)\s*mm/i);
       if (!tip) { ignoradas++; return; }
       if (/^persiana/i.test(tip)) { persianas++; return; }
@@ -30856,14 +30868,15 @@ function agruparCargaMaterial(paginas) {
       lineas.slice(i, fin).forEach((l) => { const mv = l.match(/^Vid\s*:.*?([\d.]+)\s*x\s*([\d.]+)\s*ud\s*:\s*(\d+)/i); if (mv && mm(mv[2]) > 300) sumaVid += parseInt(mv[3], 10); });
       const hojasCarga = sumaVid >= 1 && sumaVid <= 3 ? sumaVid : hojasSugeridas({ medida: medidaTxt });
       for (let u = 1; u <= uds; u++) {
-        const seq = String((seqBase + 100 * (u - 1)) % 1000).padStart(3, "0");
+        const posN = posIni > 0 ? posIni + u - 1 : 0;
+        const seq = posN > 0 ? String(posN % 1000).padStart(3, "0") : String((seqBase + 100 * (u - 1)) % 1000).padStart(3, "0");
         const code = "9" + fab.slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + seq;
         if (vistos.has(code)) { repetidas++; continue; }
         vistos.add(code);
-        const id = `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
+        const id = posN > 0 ? `${fab}|${exp}|P${posN}` : `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
         let lote = lotes.get(fab);
         if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
-        lote.ventanas.set(id, { id, pos: uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
+        lote.ventanas.set(id, { id, pos: posN > 0 ? `Pos ${posN}` : uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
         etiquetas++;
       }
     });
@@ -30950,6 +30963,56 @@ function DibujoCargaVentana({ fab, tip, alto = 56 }) {
     </>
   );
 }
+// ---- "Hoja de corte" del programa de fabricación: una por modelo (CS1, CS2…). Trae el nº de PRESUPUESTO (con él se localiza la obra), las hojas
+// ("OB 2H" = 2 hojas), si lleva persiana y, a veces, una nota de mosquiteras ("SOLO 4 LLEVAN MOSQUITERA"). No trae nº de fabricación.
+const NUM_PALABRAS = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
+const digitosPresu = (t) => String(t || "").split("-")[0].replace(/\D/g, "");
+function agruparHojaCorte(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  if (!/HOJA DE CORTE/i.test(todo)) return { modelos: [], presupuesto: "", version: "" };
+  const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
+  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
+  const version = cab && cab[2] ? cab[2] : "";
+  const ref = ((todo.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
+  const modelos = [];
+  partes.forEach((b) => {
+    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
+    if (!mm) return;
+    const modelo = mm[1];
+    const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 0;
+    const mh = b.match(/\bOB\s*(\d)\s*H\b/i);
+    const hojas = mh ? parseInt(mh[1], 10) : null;
+    // Persiana: con señal clara (cajón / compacto / sección PERSIANA) = lleva; si el campo "Persiana:" está y no hay ninguna señal = no lleva; si no se sabe = null
+    const señal = /CAJ[OÓ]N|CJ_|Compacto|\n\s*PERSIANA\s*\n/i.test(b);
+    const persiana = señal ? true : (/Persiana\s*:/i.test(b) ? false : null);
+    // Mosquiteras: "SOLO 4 LLEVAN MOSQUITERA" / "4 mosquiteras" → ese nº para ese modelo; si lo dice sin número → todas
+    let mosq = null;
+    const m1 = b.match(/(\d+|un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\s+(?:LLEVAN?\s+)?MOSQUITERAS?/i);
+    if (m1) { const n = /^\d+$/.test(m1[1]) ? parseInt(m1[1], 10) : NUM_PALABRAS[m1[1].toLowerCase()]; mosq = { n: n || null, texto: m1[0].replace(/\s+/g, " ").trim() }; }
+    else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
+    modelos.push({ modelo, uds, hojas, persiana, mosq });
+  });
+  return { modelos, presupuesto, version, referencia: ref };
+}
+// Aplica la hoja de corte a los lotes de una obra: por nombre de modelo EXACTO (CS2 y CS02 son modelos distintos). Devuelve { lotes, aplicadas, modelosSinVentana }.
+function aplicarCorteALotes(lotes, corte) {
+  const porModelo = new Map(corte.modelos.map((m) => [m.modelo.toUpperCase(), m]));
+  const usados = new Set();
+  let aplicadas = 0;
+  const nuevos = toArray(lotes).map((l) => ({
+    ...l,
+    ventanas: toArray(l.ventanas).map((v) => {
+      const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
+      if (!m) return v;
+      usados.add(m.modelo.toUpperCase()); aplicadas++;
+      const w = { ...v, corte: { presupuesto: corte.presupuesto, version: corte.version || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0 } };
+      if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
+      return w;
+    }),
+  }));
+  return { lotes: JSON.parse(JSON.stringify(nuevos)), aplicadas, modelosSinVentana: corte.modelos.filter((m) => !usados.has(m.modelo.toUpperCase())).map((m) => m.modelo) };
+}
 async function leerEtiquetasFabPdf(file, onProgreso) {
   const lib = await cargarPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
@@ -30964,6 +31027,7 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
   const r = agruparEtiquetasFab(paginas);
   if (!r.lotes.length) { const r2 = agruparEtiquetasModelo(paginas); if (r2.lotes.length) return r2; }
   if (!r.lotes.length) { const r3 = agruparCargaMaterial(paginas); if (r3.lotes.length) { await guardarDibujosCarga(doc, r3); return r3; } }
+  if (!r.lotes.length) { const rc = agruparHojaCorte(paginas); if (rc.modelos.length) return { lotes: [], etiquetas: 0, ignoradas: 0, repetidas: 0, corte: rc }; }
   return r;
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
@@ -31092,7 +31156,7 @@ function imprimirEtiquetasVentanasLote(lote) {
 
 // Subida del PDF de etiquetas desde el propio Almacén de ventanas. Se puede guardar en una obra
 // o SIN obra (cuando todavía no está en el CRM) y asignarla después. Aquí también se ven y se borran todos los lotes.
-function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, onAsignar }) {
+function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, onAsignar, onCorte }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [pend, setPend] = useState(null); // { r, archivo, obraKey }
@@ -31116,6 +31180,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
     setLeyendo(true); setAviso("Leyendo el PDF…"); setPend(null);
     try {
       const r = await leerEtiquetasFabPdf(file, (n, t) => setAviso(`Leyendo el PDF… página ${n} de ${t}`));
+      if (r.corte) { setAviso(onCorte ? onCorte(r.corte) : "Hoja de corte leída, pero aquí no se puede aplicar."); return; }
       if (!r.lotes.length) { setAviso("No he encontrado etiquetas de fabricación en ese PDF."); return; }
       setPend({ r, archivo: file.name, obraKey: sugerir(r.lotes[0].expediente) });
       setAviso("");
@@ -32559,6 +32624,21 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     return true;
   };
   // Cuando la obra ya existe en el CRM, los lotes que estaban "sin obra" se le ofrecen con un clic (por el nº de expediente del PDF)
+  // Hoja de corte subida en el almacén: se busca la obra por el Nº DE PRESUPUESTO y se aplica a los lotes de esa obra
+  const aplicarCorte = (corte) => {
+    const dig = corte.presupuesto;
+    if (!dig) return "He leído la hoja de corte pero no encuentro el número de presupuesto. No la aplico.";
+    const cand = proyectos.filter((pr) => digitosPresu(pr.presupuestoNumero) === dig);
+    if (cand.length === 0) return `No hay ninguna obra con el presupuesto ${dig}. Crea o abre esa obra, sube su listado de dibujos o etiquetas y vuelve a subir la hoja de corte.`;
+    if (cand.length > 1) return `Hay ${cand.length} obras con el presupuesto ${dig} (${cand.map((c) => "#" + c.numero).join(", ")}). Sube la hoja de corte desde dentro de la obra correcta.`;
+    const key = `p-${cand[0].id}`;
+    const lotes = lotesDe(key);
+    if (!toArray(lotes).length) return `La obra #${cand[0].numero} (presupuesto ${dig}) aún no tiene ventanas cargadas. Sube antes el listado de dibujos o las etiquetas.`;
+    const ap = aplicarCorteALotes(lotes, corte);
+    if (!ap.aplicadas) return `Hoja de corte leída (presupuesto ${dig}), pero ningún modelo (${corte.modelos.map((m) => m.modelo).join(", ")}) coincide con las ventanas de la obra #${cand[0].numero}. No he cambiado nada.`;
+    onGuardarEtiquetasObra(key, ap.lotes);
+    return `Hoja de corte del presupuesto ${dig}${corte.version ? ` (versión ${corte.version})` : ""} aplicada a ${ap.aplicadas} ventanas de la obra #${cand[0].numero}.${ap.modelosSinVentana.length ? ` Sin ventanas en la obra para: ${ap.modelosSinVentana.join(", ")}.` : ""}`;
+  };
   const [aparcados, setAparcados] = useState([]);
   const sugerirObraLote = (exp) => {
     if (!exp) return null;
@@ -32746,7 +32826,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
-        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 19:55</div>
+        <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 21:00</div>
       </div>
     );
   }
@@ -32928,7 +33008,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           );
         })()}
       </div>
-      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} />}
+      {onGuardarEtiquetasObra && <SubirEtiquetasAlmacen onCorte={aplicarCorte} obras={obras} lotesTodos={lotesTodos} sinObra={etiquetasSinObra} onSubir={subirLotes} onQuitar={eliminarLote} onAsignar={asignarSinObra} />}
       <div className="flex rounded-md border border-slate-300 overflow-hidden text-sm w-fit">
         <button onClick={() => setVistaPrev("semanas")} className={`px-3 py-1.5 ${vistaPrev === "semanas" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Planning por semanas</button>
         <button onClick={() => setVistaPrev("dias")} className={`px-3 py-1.5 ${vistaPrev === "dias" ? "bg-[#2E8B57] text-white" : "bg-white text-slate-600"}`}>Próximas cargas (días)</button>
@@ -34409,6 +34489,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
           <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
+          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
           <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
         </div>
