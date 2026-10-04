@@ -1845,6 +1845,26 @@ export default function App() {
   };
   // Parte de trabajo desde "Mi puesto": se guarda en partesTrabajo; las horas pasan al
   // registro horario del proyecto y, si hay incidencia, se crea una incidencia de la obra.
+  // Escribe en el registro horario de cada obra el reparto automático de horas de la línea.
+  // Es repetible: lo que se escribió antes por este camino en esas fechas se sustituye, no se duplica.
+  const asignarHorasLinea = (items, desde, hasta) => {
+    const porProy = {};
+    items.forEach((it) => { (porProy[it.proyectoId] = porProy[it.proyectoId] || []).push(it); });
+    let tocadas = 0;
+    proyectos.forEach((pr) => {
+      const its = porProy[pr.id] || [];
+      const habiaAuto = toArray(pr.registroHorario).some((e) => e.autoLinea && e.fecha >= desde && e.fecha <= hasta);
+      if (!its.length && !habiaAuto) return;
+      const acum = {};
+      its.forEach((it) => { const k = `${it.persona}__${it.fecha}`; acum[k] = acum[k] || { ...it, horas: 0 }; acum[k].horas += it.horas; });
+      const previas = toArray(pr.registroHorario).filter((e) => !(e.autoLinea && e.fecha >= desde && e.fecha <= hasta));
+      const nuevas = Object.entries(acum).map(([k, it]) => ({ id: `autolinea_${pr.id}_${k}`.replace(/[^\w-]/g, "_"), fecha: it.fecha, tarea: "Línea de fábrica (reparto automático)", tiempo: Math.round(it.horas * 100) / 100, empleado: it.nombre, costeHora: "", autoLinea: true }));
+      updateProyectoInline(pr.id, { registroHorario: [...previas, ...nuevas] });
+      tocadas += 1;
+    });
+    showToast(`Horas asignadas a ${tocadas} obra${tocadas === 1 ? "" : "s"}`);
+    return tocadas;
+  };
   const guardarParteTrabajo = async ({ obra, horas, unidades, texto, terminado, incidencia, puesto, empleado, nombreEmp, adicional }) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const snap = await fbGet(ref(fbDb, "planningPublicado")).catch(() => null);
@@ -5082,6 +5102,13 @@ export default function App() {
                 onGuardarCaballete={guardarCaballete} onBorrarCaballete={borrarCaballete}
                 config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
                 onMoverEstado={moverEstadoProyecto}
+                usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
+                renderIncidencias={veFabrica ? () => (
+                  <IncidenciasFabricaModulo
+                    incidencias={incidenciasFabrica} usuarios={usuarios} currentUser={currentUser} isAdmin={isAdmin}
+                    onAsignar={asignarIncFab} onResolver={resolverIncFab} onReabrir={reabrirIncFab}
+                  />
+                ) : null}
                 renderParte={() => (
                   <MiPuesto sinFichar currentUser={currentUser} usuarios={usuarios} config={configVentanas} proyectos={proyectos} fichajes={fichajes}
                     onFichar={registrarFichaje} onGuardarParte={guardarParteTrabajo} />
@@ -33498,6 +33525,7 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
 
 // Mapa de estanterías: cada hueco con su pieza. Los administradores pueden añadir huecos con «+».
 function MapaZonasLinea({ ids, indice, admin, destacar }) {
+  const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
   const porZona = useMemo(() => { const m = {}; Object.entries(ubic).forEach(([cod, u]) => { if (u && u.zonaId) { const z = (m[u.zonaId] = m[u.zonaId] || {}); (z[u.hueco] = z[u.hueco] || []).push({ cod, slot: u.slot || 1 }); } }); Object.values(m).forEach((z) => Object.values(z).forEach((a) => a.sort((x, y) => x.slot - y.slot))); return m; }, [ubic]);
@@ -33528,7 +33556,7 @@ function MapaZonasLinea({ ids, indice, admin, destacar }) {
                 const piezas = oc[hu] || [];
                 const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
                 return (
-                  <div key={hu} onClick={() => { if (admin && piezas.length) liberar(z, hu, piezas); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? "bg-amber-50 border-amber-300 text-slate-700" : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? "bg-amber-50 border-amber-300 text-slate-700" : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -33537,6 +33565,62 @@ function MapaZonasLinea({ ids, indice, admin, destacar }) {
           </div>
         );
       })}
+      {abierto && (
+        <HuecoLineaModal zonaNombre={abierto.z.nombre} hueco={abierto.hu} piezas={abierto.piezas} indice={indice} admin={admin}
+          onLiberar={() => { const { z, hu, piezas } = abierto; setAbierto(null); liberar(z, hu, piezas); }} onCerrar={() => setAbierto(null)} />
+      )}
+    </div>
+  );
+}
+
+// Detalle de una estantería: la ventana completa (dibujo, piezas, dónde está cada una, historial) y reimprimir la pegatina de cada pieza
+function HuecoLineaModal({ zonaNombre, hueco, piezas, indice, admin, onLiberar, onCerrar }) {
+  const escaneos = useEscaneosLinea();
+  const ubic = useObjetoFb("ubicacionesLinea");
+  const hojasOv = useObjetoFb("hojasLinea");
+  const pilOv = useObjetoFb("pilastraLinea");
+  const solOv = useObjetoFb("solapeLinea");
+  const mosqOv = useObjetoFb("mosquiteraLinea");
+  const sinPersOv = useObjetoFb("sinPersianaLinea");
+  const mm = (() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; })();
+  const vistas = new Set();
+  const ventanas = [];
+  piezas.forEach((x) => { const h = indice && indice.get(x.cod); if (h && !vistas.has(h.ventana.id)) { vistas.add(h.ventana.id); ventanas.push(h); } });
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onCerrar}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 p-4 border-b border-slate-200">
+          <div className="font-bold text-slate-800">{zonaNombre} · estantería {hueco}</div>
+          {admin && <button type="button" onClick={onLiberar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50">Liberar estantería</button>}
+          <button type="button" onClick={onCerrar} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
+        </div>
+        <div className="overflow-y-auto p-4 space-y-5">
+          {ventanas.length === 0 && <p className="text-sm text-slate-500">No encuentro los datos de esta pieza (su PDF de etiquetas no está cargado).</p>}
+          {ventanas.map((h) => {
+            const v = h.ventana;
+            const pzs = piezasSoldadora([{ v, lote: h.lote, dueno: h.dueno }], hojasOv, pilOv);
+            return (
+              <div key={v.id} className="border border-slate-200 rounded-lg p-3 space-y-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <DibujoCargaVentana fab={h.lote.fab} tip={v.tipo || v.pos} alto={150} />
+                  <div className="flex-1 min-w-[200px]">
+                    <div className="text-sm font-bold text-slate-800">{v.pos}{v.num ? ` · ${v.num}` : ""}</div>
+                    <div className="text-xs text-slate-500">{h.dueno.nombre}</div>
+                    <div className="text-xs font-semibold text-slate-600 mt-2 mb-1">Reimprimir pegatina de:</div>
+                    <div className="flex flex-wrap gap-2">
+                      {pzs.map((pz) => (
+                        <button key={pz.cod} type="button" title="Imprimir esta pegatina" onClick={() => imprimirPegatinasSoldadora([{ v, lote: h.lote, dueno: h.dueno }], mm.a, mm.h, mm.dx, mm.dy, hojasOv, pilOv, [pz.cod], null)}
+                          className="flex items-center gap-1.5 text-xs font-semibold border border-slate-300 rounded-md px-2.5 py-1.5 text-slate-700 hover:bg-slate-50">🖨 {pz.tipo || "Pegatina"}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <FichaVentanaLinea h={h} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={onCerrar} admin={admin} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -33670,6 +33754,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const [modo, setModo] = useState(() => { try { return localStorage.getItem("alumavel_pegatina_modo") === "golpe" ? "golpe" : "pistola"; } catch (e) { return "pistola"; } });
   const cambiarModo = (m) => { setModo(m); try { localStorage.setItem("alumavel_pegatina_modo", m); } catch (e) { /* nada */ } };
+  const [buscaR, setBuscaR] = useState("");
   const [que, setQue] = useState(() => { try { const q = localStorage.getItem("alumavel_pegatina_que"); return q === "hojas" || q === "marcos" ? q : "todo"; } catch (e) { return "todo"; } });
   const cambiarQue = (q) => { setQue(q); try { localStorage.setItem("alumavel_pegatina_que", q); } catch (e) { /* nada */ } };
   const leidasRef = useRef(new Set());
@@ -33752,6 +33837,33 @@ function PegatinasSoldadora({ indice, escaneos }) {
         <span className="text-[11px] text-slate-500">Imprime primero las hojas de un expediente y vuelve cuando quieras a por los marcos: «pend.» = pegatinas que aún no se han leído en la soldadora.</span>
       </div>
       {!medidaOk && <p className="text-xs text-rose-600 mb-2">El código necesita al menos 40 mm de ancho y 20 mm de alto: con menos no cabe bien y la pistola puede no leerlo.</p>}
+      {obras.length > 0 && (() => {
+        const nq = buscaR.trim().toLowerCase();
+        const todas = nq.length >= 2 ? obras.flatMap((o) => [...o.ventanas.values()]).filter((x) => `${x.v.pos} ${x.v.num} ${x.v.grupo || ""} ${x.v.cliente || ""} ${x.v.medida || ""} ${x.dueno.nombre}`.toLowerCase().includes(nq)).slice(0, 12) : [];
+        return (
+          <div className="mb-4 border border-amber-300 bg-amber-50 rounded-lg p-3">
+            <div className="text-sm font-bold text-amber-900 mb-1">¿Falta una pegatina? Imprímela aquí</div>
+            <p className="text-[11px] text-amber-800 mb-2">Busca la ventana (posición, expediente, cliente, medida u obra) y pulsa la pieza que falta: marco u hoja. Sale solo esa pegatina, con el mismo código que tenía.</p>
+            <input value={buscaR} onChange={(e) => setBuscaR(e.target.value)} placeholder="Ej.: V3, 6305, 1200 x 1000, nombre de la obra…" className="w-full border border-amber-300 rounded-md px-3 py-2 text-sm bg-white" />
+            {nq.length >= 2 && todas.length === 0 && <p className="text-xs text-slate-500 mt-2">No encuentro ninguna ventana con eso.</p>}
+            {todas.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {todas.map((x) => (
+                  <div key={x.v.id} className="flex flex-wrap items-center gap-2 bg-white border border-amber-200 rounded-md px-3 py-1.5 text-sm">
+                    <span className="font-semibold text-slate-800">{x.v.pos}</span>
+                    <span className="text-xs text-slate-500">{x.dueno.nombre}{x.v.medida ? ` · ${x.v.medida}` : ""}{(leidasPor.get(x.v.id) || 0) > 0 ? ` · ${leidasPor.get(x.v.id)}/${totalPiezas(x)} leídas` : ""}</span>
+                    <span className="ml-auto flex flex-wrap gap-1.5">
+                      {piezasSoldadora([x], hojasOv, pilOv).map((pz) => (
+                        <button key={pz.cod} type="button" disabled={!medidaOk} onClick={() => imp([x], [pz.cod])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded-md text-xs font-semibold disabled:opacity-40">Imprimir {pz.tipo || "etiqueta"}</button>
+                      ))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
@@ -36981,7 +37093,7 @@ function UnidadesHoyLinea({ escaneos, quien, quienId }) {
   );
 }
 // Horas por obra: las horas de cada persona y día se reparten entre las obras en las que leyó piezas ese día
-function HorasPorObraLinea() {
+function HorasPorObraLinea({ proyectos = [], uxExpedientes = [], usuarios = [], onAsignar = null }) {
   const escaneos = useEscaneosLinea();
   const hoy = new Date().toLocaleDateString("sv-SE");
   const hace7 = new Date(Date.now() - 6 * 86400000).toLocaleDateString("sv-SE");
@@ -36989,25 +37101,43 @@ function HorasPorObraLinea() {
   const [hasta, setHasta] = useState(hoy);
   const [horasDia, setHorasDia] = useState(() => { try { return parseFloat(localStorage.getItem("alumavel_horas_dia_reparto")) || 8; } catch (e) { return 8; } });
   const cambiarHoras = (v) => { const n = parseFloat(v) || 0; setHorasDia(n); try { localStorage.setItem("alumavel_horas_dia_reparto", String(n)); } catch (e) { /* nada */ } };
-  const { filas, personasDia } = useMemo(() => {
+  const { filas, personasDia, detalle } = useMemo(() => {
     const pd = {};
     escaneos.forEach((x) => {
       const f = new Date(x.ts).toLocaleDateString("sv-SE");
       if (f < desde || f > hasta) return;
       const persona = x.porId || String(x.por || "").trim() || "—";
       const k = `${persona}__${f}`;
-      const d = (pd[k] = pd[k] || { total: 0, obras: {} });
+      const d = (pd[k] = pd[k] || { persona, fecha: f, nombre: String(x.por || "").trim(), total: 0, obras: {} });
       d.total += 1;
       const on = x.obraNombre || x.obraKey || "—";
-      d.obras[on] = (d.obras[on] || 0) + 1;
+      const o = (d.obras[on] = d.obras[on] || { n: 0, key: x.obraKey || "" });
+      o.n += 1;
     });
     const por = {};
-    Object.values(pd).forEach((d) => Object.entries(d.obras).forEach(([on, n]) => {
-      const o = (por[on] = por[on] || { obra: on, horas: 0, piezas: 0, personasDia: 0 });
-      o.horas += horasDia * n / d.total; o.piezas += n; o.personasDia += 1;
+    const det = [];
+    Object.values(pd).forEach((d) => Object.entries(d.obras).forEach(([on, o]) => {
+      const h = horasDia * o.n / d.total;
+      const r = (por[on] = por[on] || { obra: on, horas: 0, piezas: 0, personasDia: 0 });
+      r.horas += h; r.piezas += o.n; r.personasDia += 1;
+      det.push({ persona: d.persona, nombre: (usuarios.find((u) => u.id === d.persona) ? nombreUsuario(usuarios.find((u) => u.id === d.persona)) : d.nombre) || d.persona, fecha: d.fecha, obraKey: o.key, obraNombre: on, horas: h });
     }));
-    return { filas: Object.values(por).sort((a, b) => b.horas - a.horas), personasDia: Object.keys(pd).length };
-  }, [escaneos, desde, hasta, horasDia]);
+    return { filas: Object.values(por).sort((a, b) => b.horas - a.horas), personasDia: Object.keys(pd).length, detalle: det };
+  }, [escaneos, desde, hasta, horasDia, usuarios]);
+  const proyectoDeKey = (key) => {
+    if (String(key).startsWith("p-")) return String(key).slice(2);
+    if (String(key).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x.id === String(key).slice(2)); return (e && e.proyectoId) || ""; }
+    return "";
+  };
+  const asignar = () => {
+    const items = []; let sinObra = 0;
+    detalle.forEach((d) => { const pid = proyectoDeKey(d.obraKey); if (pid && toArray(proyectos).some((x) => x.id === pid)) items.push({ proyectoId: pid, persona: d.persona, nombre: d.nombre, fecha: d.fecha, horas: d.horas }); else sinObra += d.horas; });
+    const total = items.reduce((a, i) => a + i.horas, 0);
+    const nObras = new Set(items.map((i) => i.proyectoId)).size;
+    if (!items.length) { alert("No hay horas que asignar a obras del CRM en ese periodo."); return; }
+    if (!window.confirm(`Se asignarán ${total.toFixed(1)} h a ${nObras} obra${nObras === 1 ? "" : "s"} (entre el ${desde} y el ${hasta}).${sinObra > 0.05 ? `\n${sinObra.toFixed(1)} h son de lotes «Sin asignar» u obras que no están en el CRM y NO se asignan.` : ""}\nLo asignado antes por este botón en esas fechas se sustituye, no se duplica. ¿Seguir?`)) return;
+    onAsignar(items, desde, hasta);
+  };
   const total = filas.reduce((a, f) => a + f.horas, 0);
   const csv = () => {
     const esc = (t) => `"${String(t ?? "").replace(/"/g, '""')}"`;
@@ -37025,6 +37155,7 @@ function HorasPorObraLinea() {
         <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
         <div><label className="text-xs text-slate-500 block">Horas por persona y día</label><input type="number" min="0" step="0.5" value={horasDia} onChange={(e) => cambiarHoras(e.target.value)} className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm" /></div>
         <button type="button" disabled={!filas.length} onClick={csv} className="ml-auto text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50 disabled:opacity-40">Descargar CSV</button>
+        {onAsignar && <button type="button" disabled={!filas.length} onClick={asignar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3 py-2 rounded-md disabled:opacity-40">Asignar estas horas a las obras</button>}
       </div>
       {filas.length === 0 ? <p className="text-sm text-slate-400">No hay lecturas en ese periodo.</p> : (
         <table className="w-full text-sm">
@@ -37040,13 +37171,14 @@ function HorasPorObraLinea() {
 }
 
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
-  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null }) {
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const [tab, setTab] = useState("puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = [
     { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
-    ...(renderParte ? [{ id: "parte", t: "Fichar y parte del día", aviso: "" }] : []),
+    ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
+    ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
     ...(verMas ? [
       { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
       { id: "estanterias", t: "Estanterías e informes", aviso: "" },
@@ -37073,6 +37205,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
       {actual.id === "parte" && renderParte && renderParte()}
+      {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "almacen" && (
         <AlmacenVentanas onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
@@ -37083,7 +37216,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
           <PanelEstanteriasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} admin={admin} />
           <ParadasLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
-          {admin && <HorasPorObraLinea />}
+          {admin && <HorasPorObraLinea proyectos={proyectos} uxExpedientes={uxExpedientes} usuarios={usuarios} onAsignar={onAsignarHoras} />}
           {admin && <MovimientosCaballetes />}
           {admin && <LecturasLineaAdmin />}
         </div>
