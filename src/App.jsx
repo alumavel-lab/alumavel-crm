@@ -7301,9 +7301,9 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs border border-slate-200 rounded-md p-2.5 bg-slate-50"><div className="sm:col-span-2 font-semibold text-slate-700 text-xs mb-0.5">Documentos de la obra</div>
           {estadoDocumentosObra(proyecto).map((d) => (
             <div key={d.nombre} className="flex items-start gap-1.5">
-              <span className={`font-bold ${d.ok ? "text-emerald-600" : d.noHace ? "text-slate-400" : "text-rose-600"}`}>{d.ok ? "✓" : d.noHace ? "–" : "✗"}</span>
-              <span className={d.ok ? "text-slate-700" : d.noHace ? "text-slate-400" : "text-rose-700 font-semibold"}>
-                {d.nombre}{d.noHace ? " (no lleva persiana)" : !d.ok ? " — falta" : ""}
+              <span className={`font-bold ${d.ok ? "text-emerald-600" : d.noHace || d.opcional ? "text-slate-400" : "text-rose-600"}`}>{d.ok ? "✓" : d.noHace || d.opcional ? "–" : "✗"}</span>
+              <span className={d.ok ? "text-slate-700" : d.noHace || d.opcional ? "text-slate-400" : "text-rose-700 font-semibold"}>
+                {d.nombre}{d.noHace ? " (no lleva persiana)" : !d.ok && !d.opcional ? " — falta" : ""}
                 {d.nota && <span className="block text-[11px] text-slate-400 font-normal truncate max-w-[260px]">{d.nota}</span>}
               </span>
             </div>
@@ -29906,23 +29906,26 @@ const uxCarpLabel = (t) => (UX_CARP_TIPOS.find(([k]) => k === t) || [t, t])[1];
 const uxGrupoCarp = (l) => {
   const t = l.tipo || "otro";
   if (t === "mosquitera" || t === "otro") return uxCarpLabel(t);
-  const h = parseInt(l.hojas, 10) || 0;
+  // Ventanas unidas: se cuentan por separado, cada una con su parte de las hojas
+  const juntas = Math.max(1, parseInt(l.juntas, 10) || 1);
+  const h = Math.round((parseInt(l.hojas, 10) || 0) / juntas);
   let nombre = t === "ventana" ? "Ventana" : t === "puerta" ? "Puerta" : uxCarpLabel(t);
   if (t !== "fijo" && h > 0) nombre += ` de ${h} hoja${h === 1 ? "" : "s"}`;
   if (t !== "puerta" || l.persiana) nombre += l.persiana ? " · con persiana" : " · sin persiana";
   if (l.cerradura) nombre += " · con cerradura";
+  if (parseInt(l.fijos, 10) > 0 && t !== "fijo") nombre += " · con fijo";
   return nombre;
 };
 const uxAgruparRecuento = (lineas) => {
   const g = {};
-  toArray(lineas).forEach((l) => { const k = uxGrupoCarp(l); g[k] = (g[k] || 0) + (parseFloat(l.uds) || 0); });
+  toArray(lineas).forEach((l) => { const k = uxGrupoCarp(l); g[k] = (g[k] || 0) + (parseFloat(l.uds) || 0) * Math.max(1, parseInt(l.juntas, 10) || 1); });
   return Object.entries(g).sort((a, b) => b[1] - a[1]);
 };
 // Totales para los campos del expediente
 const uxTotalesRecuento = (lineas) => {
   let ventanas = 0, puertas = 0, osciloParalelas = 0, mosquiteras = 0;
   toArray(lineas).forEach((l) => {
-    const u = parseFloat(l.uds) || 0;
+    const u = (parseFloat(l.uds) || 0) * (l.tipo === "mosquitera" ? 1 : Math.max(1, parseInt(l.juntas, 10) || 1)); // ventanas unidas cuentan por separado
     if (l.tipo === "puerta") puertas += u;
     else if (l.tipo === "osciloparalela") osciloParalelas += u;
     else if (l.tipo === "mosquitera") mosquiteras += u;
@@ -35886,7 +35889,9 @@ const horasObra = (recuento, totales, horasManual, tiempos, horasListado) => {
   let h = 0;
   if (r.length) {
     r.forEach((l) => {
-      const u = parseFloat(l.uds) || 0, hojas = parseInt(l.hojas, 10) || 0;
+      // Ventanas unidas (juntas = 2, 3…): cuentan como esas ventanas por separado, con las hojas repartidas
+      const juntas = Math.max(1, parseInt(l.juntas, 10) || 1);
+      const u = (parseFloat(l.uds) || 0) * juntas, hojas = Math.round((parseInt(l.hojas, 10) || 0) / juntas);
       let base;
       if (l.tipo === "ventana") base = hojas >= 3 ? t.ventana3 : hojas === 2 ? t.ventana2 : t.ventana1;
       else if (l.tipo === "puerta") base = hojas >= 2 ? t.puerta2 : t.puerta1;
@@ -36627,7 +36632,12 @@ async function aplicarPdfEtiquetasObra(file, lotesPrevios, presupuestoNumero) {
 /* ---------- Documentos del programa de ventanas que le faltan a una obra ----------
    Para el aviso de arriba. Solo cuenta las obras que ya tienen ALGÚN documento del
    programa (así sabemos que son de ventanas): el resto no avisa. */
-const tipoListadoPorNombre = (nombre) => (/cristal|vidrio/i.test(nombre || "") ? "cristales" : /persiana|caj[oó]n|cajas/i.test(nombre || "") ? "persianas" : "");
+// Por el nombre del archivo solo si no es otro documento (p. ej. "Presupuesto … con persiana.pdf" NO es un listado de persianas)
+const tipoListadoPorNombre = (nombre) => {
+  const n = String(nombre || "");
+  if (/presupuesto|etiqueta|hoja\s*de\s*corte|dibujo|an[aá]li(sis|tica)|mano\s*de\s*obra/i.test(n)) return "";
+  return /cristal|vidrio/i.test(n) ? "cristales" : /persiana|caj[oó]n|cajas/i.test(n) ? "persianas" : "";
+};
 const tipoListadoPorLineas = (refs) => {
   const t = refs.join(" \n ");
   const c = (t.match(/vidrio|cristal|\b\d+\/\d+\/\d+\b|laminar|templad|emisiv/gi) || []).length;
@@ -36653,6 +36663,11 @@ function estadoDocumentosObra(p) {
     { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
     { nombre: "Etiquetas", ok: lotes.length > 0, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
     { nombre: "Hoja de corte", ok: lotesConCorte(lotes), nota: lotesConCorte(lotes) ? "aplicada" : lotes.length ? "" : "va después de las etiquetas" },
+    parseFloat(p.horasFabricacion) > 0
+      ? { nombre: "Horas de fabricación", ok: true, nota: `${p.horasFabricacion} h puestas a mano` }
+      : lis && parseFloat(lis.horas) > 0
+        ? { nombre: "Listado de mano de obra (horas)", ok: true, nota: `${lis.horas} h para el planning` }
+        : { nombre: "Listado de mano de obra (horas)", ok: false, opcional: true, nota: "opcional: sin él, las horas se calculan con el recuento" },
   ];
 }
 function documentosQueFaltanObra(p) {
@@ -37055,7 +37070,7 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 3, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 4, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
@@ -37067,9 +37082,16 @@ Todos los documentos de una obra se suben **de una vez, con un solo botón**, de
 | Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
 | Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
 | Etiquetas de la línea | La pistola reconoce cada ventana y su caballete | No |
-| Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera | No |
+| Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
+| Listado de mano de obra (si el programa lo saca) | **Horas de fabricación exactas** para el planning | No |
 
-Si la obra **no lleva persiana**, no hay listado de persianas y no hace falta. La mosquitera enrollable no cuenta como persiana.
+Encima del botón está la lista **"Documentos de la obra"**: ✓ lo que está, ✗ lo que falta. Si la obra **no lleva persiana**, no hay listado de persianas y no hace falta. La mosquitera enrollable no cuenta como persiana.
+
+## Horas de fabricación (para el planning)
+El planning reparte las obras por días según sus horas. Salen así, por este orden:
+1. **Puestas a mano** en la obra, si alguien las ha escrito.
+2. Del **listado de mano de obra** del programa (total de horas de la obra). Es lo más exacto: súbelo con los demás PDF.
+3. Si no hay ninguna de las dos, el CRM las **calcula con el recuento** (horas por tipo de ventana que se ajustan en Fábrica → Planning). Por eso el recuento tiene que estar bien: con la hoja de corte sale exacto.
 
 ## Antes de subir nada
 - [ ] Todos los PDF tienen el **mismo nº de presupuesto** (p. ej. 6.703) y la **misma versión** (p. ej. Versión 2). Mira la cabecera de cada uno.
@@ -37117,7 +37139,7 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, version: 2, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 3, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
 Cuando la obra tiene sus 6 documentos subidos, empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
@@ -37155,7 +37177,7 @@ Cuando llega el camión, se comprueba lo que viene contra lo pedido.
 ## 3. Planning de la semana
 La semana antes se eligen las obras a fabricar.
 1. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
-2. Elige las obras (tuyas y de Uxcar). Puedes cambiar el orden y las horas.
+2. Elige las obras (tuyas y de Uxcar). Puedes cambiar el orden y las horas. Las horas de cada obra salen del **listado de mano de obra** si se subió; si no, del recuento de ventanas.
 3. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
 4. Confirma el planning.
 5. Imprime la **Hoja de preparación por almacén** para preparar el material.
