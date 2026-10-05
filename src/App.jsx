@@ -7,7 +7,7 @@ import {
   ChevronRight, Save, Truck, Boxes, AlertTriangle, ArrowDownCircle, ArrowUpCircle, Package, AlertOctagon,
   CalendarDays, Layers, Ruler, LogIn, LogOut, Coffee, Download, FileSpreadsheet, Wallet, Lock, UserCog, ShieldCheck,
   Globe, MessageCircle, BarChart3, Factory, Wrench, Copy, Image as ImageIcon, Camera, Square, Upload, Menu, Send, Printer, Calculator,
-  UserPlus, PhoneCall, Scale
+  UserPlus, PhoneCall, Scale, BookOpen
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -4370,6 +4370,14 @@ export default function App() {
             )}
           </button>
           )}
+          <button
+            onClick={() => setModulo("condiciones")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "condiciones" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <BookOpen size={16} /> Condiciones
+          </button>
           <div className="pt-2 mt-2 border-t border-white/10" />
           {isAdmin && (
             <>
@@ -5184,6 +5192,7 @@ export default function App() {
             onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
           />
         )}
+        {modulo === "condiciones" && <CondicionesModulo isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
         {modulo === "uxcar" && (
           <UxcarModulo
             tarifaUx={uxTarifa(configVentanas)}
@@ -36240,6 +36249,378 @@ function UxSubirInformes({ expedientes, onGuardar }) {
   );
 }
 
+/* ---------- Condiciones: guías y normas para que todo el mundo las tenga a mano ----------
+   Dos sitios en Firebase:
+   · "condiciones"               → solo el equipo (lo ve todo el CRM)
+   · "portalUxcar/condiciones"   → lo ve también Uxcar en su portal (pestaña Condiciones)
+   Solo el administrador crea, edita y borra. El texto se escribe con marcas sencillas:
+   "## Título", "- punto", "- [ ] casilla", "1. paso", "**negrita**" y tablas con |. */
+const COND_RUTAS = { equipo: "condiciones", uxcar: "portalUxcar/condiciones" };
+const condEsc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const condInline = (s) => condEsc(s).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+function condMdAHtml(texto) {
+  const lineas = String(texto || "").replace(/\r/g, "").split("\n");
+  let html = "";
+  let lista = null; // "ul" | "ol" | "chk"
+  let tabla = null;
+  const cerrarLista = () => { if (lista) { html += lista === "ol" ? "</ol>" : "</ul>"; lista = null; } };
+  const cerrarTabla = () => {
+    if (!tabla) return;
+    const filas = tabla.filter((f) => !/^\s*\|?\s*:?-{2,}/.test(f));
+    const celdas = (f) => f.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => condInline(c.trim()));
+    html += "<table>";
+    filas.forEach((f, i) => { html += "<tr>" + celdas(f).map((c) => (i === 0 ? `<th>${c}</th>` : `<td>${c}</td>`)).join("") + "</tr>"; });
+    html += "</table>";
+    tabla = null;
+  };
+  for (const raw of lineas) {
+    const l = raw.replace(/\s+$/, "");
+    if (/^\s*\|/.test(l)) { cerrarLista(); (tabla = tabla || []).push(l); continue; }
+    cerrarTabla();
+    if (!l.trim()) { cerrarLista(); continue; }
+    const sub = /^\s{2,}[-*]\s+/.test(l);
+    let m;
+    if ((m = l.match(/^#{1,2}\s+(.*)/))) { cerrarLista(); html += `<h2>${condInline(m[1])}</h2>`; continue; }
+    if ((m = l.match(/^#{3,}\s+(.*)/))) { cerrarLista(); html += `<h3>${condInline(m[1])}</h3>`; continue; }
+    if ((m = l.match(/^\s*[-*]\s+\[[ xX]?\]\s+(.*)/))) {
+      if (lista !== "chk") { cerrarLista(); html += '<ul class="chk">'; lista = "chk"; }
+      html += `<li><span class="caja"></span>${condInline(m[1])}</li>`; continue;
+    }
+    if (sub && (m = l.match(/^\s+[-*]\s+(.*)/))) { html += `<li class="sub">${condInline(m[1])}</li>`; continue; }
+    if ((m = l.match(/^\s*[-*]\s+(.*)/))) {
+      if (lista !== "ul") { cerrarLista(); html += "<ul>"; lista = "ul"; }
+      html += `<li>${condInline(m[1])}</li>`; continue;
+    }
+    if ((m = l.match(/^\s*\d+[.)]\s+(.*)/))) {
+      if (lista !== "ol") { cerrarLista(); html += "<ol>"; lista = "ol"; }
+      html += `<li>${condInline(m[1])}</li>`; continue;
+    }
+    cerrarLista();
+    html += `<p>${condInline(l)}</p>`;
+  }
+  cerrarLista(); cerrarTabla();
+  return html;
+}
+const COND_CSS = `
+.cond-md h2{font-size:1.05rem;font-weight:800;color:#0f172a;margin:1.1rem 0 .4rem}
+.cond-md h3{font-size:.95rem;font-weight:700;color:#0f172a;margin:.9rem 0 .3rem}
+.cond-md p{font-size:.875rem;color:#334155;margin:.35rem 0;line-height:1.45}
+.cond-md ul,.cond-md ol{font-size:.875rem;color:#334155;margin:.35rem 0 .35rem 1.3rem;line-height:1.45}
+.cond-md ul{list-style:disc}.cond-md ol{list-style:decimal}
+.cond-md ul.chk{list-style:none;margin-left:.2rem}
+.cond-md ul.chk li{display:flex;gap:.5rem;align-items:flex-start;margin:.2rem 0}
+.cond-md .caja{flex:0 0 auto;width:.85rem;height:.85rem;border:1.5px solid #64748b;border-radius:3px;margin-top:.2rem}
+.cond-md li.sub{list-style:circle;margin-left:1.2rem}
+.cond-md table{border-collapse:collapse;width:100%;font-size:.8rem;margin:.5rem 0}
+.cond-md th,.cond-md td{border:1px solid #cbd5e1;padding:.35rem .5rem;text-align:left;vertical-align:top}
+.cond-md th{background:#f1f5f9;font-weight:700}
+`;
+function condImprimir(doc, marca) {
+  const w = window.open("", "_blank");
+  if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para este sitio."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${condEsc(doc.titulo)}</title><style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#0f172a}
+    .cab{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid ${marca === "uxcar" ? "#7ac943" : "#6d28d9"};padding-bottom:8px;margin-bottom:12px}
+    .cab h1{font-size:20px;margin:0}.cab .m{font-weight:800;font-size:14px;color:${marca === "uxcar" ? "#2E8B57" : "#6d28d9"}}
+    .f{font-size:11px;color:#64748b;margin-bottom:6px}${COND_CSS}</style></head><body>
+    <div class="cab"><h1>${condEsc(doc.titulo)}</h1><div class="m">${marca === "uxcar" ? "Ecowin PVC" : "Alumavel"}</div></div>
+    <div class="f">Actualizado el ${condEsc(fmtDate(doc.actualizado || doc.fecha))}</div>
+    <div class="cond-md">${condMdAHtml(doc.contenido)}</div></body></html>`);
+  w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 300);
+}
+
+// Vista de un documento (CRM y portal)
+function CondicionesDoc({ doc, marca, onVolver, acciones }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-4xl">
+      <style>{COND_CSS}</style>
+      <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-3"><ChevronLeft size={16} /> Volver</button>
+      <div className="flex flex-wrap items-start gap-2 mb-1">
+        <h2 className="text-xl font-extrabold text-slate-900 mr-auto">{doc.titulo}</h2>
+        <button onClick={() => condImprimir(doc, marca)} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50"><Printer size={14} /> Imprimir / PDF</button>
+        {acciones}
+      </div>
+      <div className="text-xs text-slate-400 mb-3">Actualizado el {fmtDate(doc.actualizado || doc.fecha)}</div>
+      {(doc.enlace || doc.archivoUrl) && (
+        <div className="flex flex-wrap gap-3 mb-3 text-sm">
+          {doc.archivoUrl && <a href={doc.archivoUrl} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57] hover:underline flex items-center gap-1"><FileText size={14} /> {doc.archivoNombre || "Abrir PDF adjunto"}</a>}
+          {doc.enlace && <a href={doc.enlace} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57] hover:underline flex items-center gap-1"><Globe size={14} /> Abrir enlace</a>}
+        </div>
+      )}
+      <div className="cond-md" dangerouslySetInnerHTML={{ __html: condMdAHtml(doc.contenido) }} />
+    </div>
+  );
+}
+
+// Lista de documentos (CRM y portal)
+function CondicionesLista({ docs, onAbrir, vacio }) {
+  const lista = toArray(docs).slice().sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || String(a.titulo).localeCompare(String(b.titulo)));
+  if (lista.length === 0) return <p className="text-sm text-slate-500">{vacio || "Todavía no hay documentos."}</p>;
+  return (
+    <div className="grid gap-2 max-w-4xl">
+      {lista.map((d) => (
+        <button key={d.id} onClick={() => onAbrir(d.id)} className="text-left bg-white border border-slate-200 rounded-lg px-4 py-3 hover:border-[#2E8B57] flex items-center gap-3">
+          <FileText size={18} className="text-[#2E8B57] shrink-0" />
+          <div className="min-w-0">
+            <div className="font-semibold text-slate-800 truncate">{d.titulo}</div>
+            <div className="text-xs text-slate-400">Actualizado el {fmtDate(d.actualizado || d.fecha)}{d.archivoUrl ? " · PDF adjunto" : ""}</div>
+          </div>
+          <ChevronRight size={16} className="ml-auto text-slate-300" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Formulario (solo administrador)
+function CondicionesForm({ inicial, para, onCancel, onGuardar }) {
+  const [f, setF] = useState(() => ({ titulo: "", contenido: "", enlace: "", orden: "", ...(inicial || {}), para: (inicial && inicial.para) || para }));
+  const [archivo, setArchivo] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const guardar = async () => {
+    if (!f.titulo.trim()) { setError("Pon un título."); return; }
+    setGuardando(true); setError("");
+    const ok = await onGuardar(f, archivo);
+    setGuardando(false);
+    if (!ok) setError("No se pudo guardar. Prueba otra vez.");
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-4xl space-y-3">
+      <div className="font-bold text-slate-800">{inicial ? "Editar documento" : "Nuevo documento"}</div>
+      <label className="block text-sm"><span className="font-semibold text-slate-700">Título</span>
+        <input value={f.titulo} onChange={(e) => set("titulo", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" /></label>
+      <div className="text-sm">
+        <span className="font-semibold text-slate-700">¿Quién lo ve?</span>
+        <div className="flex flex-wrap gap-4 mt-1">
+          <label className="flex items-center gap-1.5"><input type="radio" checked={f.para === "equipo"} onChange={() => set("para", "equipo")} /> Solo el equipo</label>
+          <label className="flex items-center gap-1.5"><input type="radio" checked={f.para === "uxcar"} onChange={() => set("para", "uxcar")} /> El equipo y Uxcar (sale en su portal)</label>
+        </div>
+        {f.para === "uxcar" && <p className="text-[11px] text-amber-700 mt-1">Lo verá Uxcar: escribe solo con la marca Ecowin PVC y sin datos internos.</p>}
+      </div>
+      <label className="block text-sm"><span className="font-semibold text-slate-700">Texto</span>
+        <textarea value={f.contenido} onChange={(e) => set("contenido", e.target.value)} rows={16} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm font-mono" />
+        <span className="text-[11px] text-slate-400">## Título de apartado · - punto · - [ ] casilla · 1. paso · **negrita** · tablas con | columna | columna |</span></label>
+      <div className="grid sm:grid-cols-3 gap-3">
+        <label className="block text-sm sm:col-span-2"><span className="font-semibold text-slate-700">Enlace (opcional)</span>
+          <input value={f.enlace || ""} onChange={(e) => set("enlace", e.target.value)} placeholder="https://…" className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" /></label>
+        <label className="block text-sm"><span className="font-semibold text-slate-700">Orden en la lista</span>
+          <input type="number" value={f.orden ?? ""} onChange={(e) => set("orden", e.target.value)} className="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" /></label>
+      </div>
+      <label className="block text-sm"><span className="font-semibold text-slate-700">PDF adjunto (opcional)</span>
+        <input type="file" accept="application/pdf" onChange={(e) => setArchivo(e.target.files[0] || null)} className="mt-1 block text-sm" />
+        {f.archivoUrl && !archivo && <span className="text-[11px] text-slate-500">Ya tiene: {f.archivoNombre || "PDF"} (si eliges otro, se sustituye)</span>}</label>
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      <div className="flex gap-2">
+        <button disabled={guardando} onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">{guardando ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Guardar</button>
+        <button disabled={guardando} onClick={onCancel} className="text-sm font-semibold px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+// Módulo del CRM
+function CondicionesModulo({ isAdmin, usuario }) {
+  const [docs, setDocs] = useState({ equipo: null, uxcar: null });
+  const [para, setPara] = useState("equipo");
+  const [vista, setVista] = useState("lista"); // lista | ver | editar | nuevo
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [aviso, setAviso] = useState("");
+  useEffect(() => {
+    const u1 = onValue(ref(fbDb, COND_RUTAS.equipo), (s) => setDocs((d) => ({ ...d, equipo: toArray(s.val()) })), () => setDocs((d) => ({ ...d, equipo: [] })));
+    const u2 = onValue(ref(fbDb, COND_RUTAS.uxcar), (s) => setDocs((d) => ({ ...d, uxcar: toArray(s.val()) })), () => setDocs((d) => ({ ...d, uxcar: [] })));
+    return () => { u1(); u2(); };
+  }, []);
+  const avisar = (m) => { setAviso(m); setTimeout(() => setAviso(""), 2600); };
+  const lista = docs[para];
+  const abierto = toArray(lista).find((d) => d.id === abiertoId);
+
+  const guardar = async (f, archivo) => {
+    try {
+      const id = f.id || uid();
+      const ahora = new Date().toISOString().slice(0, 10);
+      const doc = {
+        id, titulo: f.titulo.trim(), contenido: f.contenido || "", enlace: (f.enlace || "").trim(), para: f.para,
+        orden: f.orden === "" || f.orden == null ? 99 : Number(f.orden),
+        fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
+        archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "",
+      };
+      if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
+      const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
+      // Si cambia de "quién lo ve", se quita del otro sitio para que no quede duplicado
+      if (f.id && f.para !== para) patch[`${COND_RUTAS[para]}/${id}`] = null;
+      await fbUpdate(ref(fbDb), patch);
+      setPara(f.para); setAbiertoId(id); setVista("ver");
+      avisar("Documento guardado");
+      return true;
+    } catch (e) { return false; }
+  };
+  const borrar = async (d) => {
+    if (!window.confirm(`¿Borrar "${d.titulo}"? Dejará de verse${para === "uxcar" ? " también en el portal de Uxcar" : ""}.`)) return;
+    try { await fbSet(ref(fbDb, `${COND_RUTAS[para]}/${d.id}`), null); setVista("lista"); avisar("Documento borrado"); } catch (e) { avisar("No se pudo borrar"); }
+  };
+  const cargarGuias = async () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const patch = {};
+    COND_GUIAS_INICIALES.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, id, fecha: hoy, actualizado: hoy, actualizadoPor: usuario || "" }; });
+    try { await fbUpdate(ref(fbDb), patch); avisar("Guías cargadas"); } catch (e) { avisar("No se pudieron cargar"); }
+  };
+  const nadaTodavia = docs.equipo && docs.uxcar && docs.equipo.length === 0 && docs.uxcar.length === 0;
+
+  return (
+    <div className="p-4 md:p-6">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <h1 className="text-2xl font-extrabold text-slate-900 mr-auto">Condiciones</h1>
+        {isAdmin && vista === "lista" && (
+          <button onClick={() => { setAbiertoId(null); setVista("nuevo"); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg"><Plus size={14} /> Nuevo documento</button>
+        )}
+      </div>
+      <p className="text-sm text-slate-500 mb-4">Guías y normas de trabajo para tenerlas siempre a mano. Lo de la pestaña "Para Uxcar" también lo ven ellos en su portal.</p>
+      {vista === "lista" && (
+        <div className="flex gap-1 mb-4">
+          {[["equipo", "Para el equipo"], ["uxcar", "Para Uxcar"]].map(([k, t]) => (
+            <button key={k} onClick={() => setPara(k)} className={`text-sm font-semibold px-3 py-1.5 rounded-md ${para === k ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
+              {t}{docs[k] ? ` (${docs[k].length})` : ""}
+            </button>
+          ))}
+        </div>
+      )}
+      {aviso && <div className="mb-3 text-sm font-semibold text-[#2E8B57]">{aviso}</div>}
+      {lista === null ? (
+        <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
+      ) : vista === "nuevo" ? (
+        <CondicionesForm para={para} onCancel={() => setVista("lista")} onGuardar={guardar} />
+      ) : vista === "editar" && abierto ? (
+        <CondicionesForm inicial={{ ...abierto, para }} para={para} onCancel={() => setVista("ver")} onGuardar={guardar} />
+      ) : vista === "ver" && abierto ? (
+        <CondicionesDoc doc={abierto} marca={para} onVolver={() => setVista("lista")}
+          acciones={isAdmin && (<>
+            <button onClick={() => setVista("editar")} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Editar</button>
+            <button onClick={() => borrar(abierto)} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-md border border-rose-200 text-rose-600 hover:bg-rose-50"><Trash2 size={14} /> Borrar</button>
+          </>)} />
+      ) : (
+        <>
+          <CondicionesLista docs={lista} onAbrir={(id) => { setAbiertoId(id); setVista("ver"); }}
+            vacio={para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
+          {isAdmin && nadaTodavia && (
+            <button onClick={cargarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50">
+              <Upload size={14} /> Cargar las guías de subida de documentos (equipo y Uxcar)
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Pestaña "Condiciones" del portal de Uxcar (solo lectura)
+function UxCondiciones({ docs }) {
+  const [abiertoId, setAbiertoId] = useState(null);
+  const abierto = toArray(docs).find((d) => d.id === abiertoId);
+  if (abierto) return <CondicionesDoc doc={abierto} marca="uxcar" onVolver={() => setAbiertoId(null)} />;
+  return <CondicionesLista docs={docs} onAbrir={setAbiertoId} vacio="Todavía no hay documentos." />;
+}
+
+const COND_GUIAS_INICIALES = [
+  {
+    para: "equipo", orden: 1, titulo: "Guía del equipo: subir los documentos de una obra",
+    contenido: `## Qué se sube y para qué
+Cada obra entra en el CRM con 6 PDF sacados del programa de ventanas, siempre de la misma obra (mismo nº de presupuesto). Con ellos el CRM cuenta las ventanas, crea los pedidos en espera, calcula las horas para el planning y prepara la pistola del almacén.
+
+| PDF del programa | Qué hace en el CRM |
+| --- | --- |
+| Análisis de materiales | Material de la obra, pedidos en espera de lo que falta y "Qué lleva la obra" |
+| Listado de dibujos | Se guarda como tipo plano (va con el albarán de entrega) y cuenta las ventanas |
+| Listado de cristales | Pedido de cristales de la obra |
+| Listado de persianas | Pedido de persianas/cajones de la obra |
+| Etiquetas de la línea | La pistola reconoce cada ventana y la manda a su caballete |
+| Hoja de corte | Marca en cada ventana si lleva persiana y mosquitera |
+
+## Antes de subir nada
+- [ ] Los 6 PDF tienen el **mismo nº de presupuesto** (arriba de cada hoja, p. ej. 6.703).
+- [ ] Todos son de la **misma versión**. Si uno es de otra versión, se pregunta cuál es la buena antes de subirlo.
+- [ ] La obra ya existe en **Proyectos** y tiene puesto ese mismo **nº de presupuesto**. Si no coincide, la hoja de corte se rechaza.
+- [ ] La obra **no es de Uxcar**. Las de Uxcar van por su portal (último apartado).
+- [ ] Nadie ha subido ya estos PDF en otra obra. **Nunca se sube lo mismo en dos sitios**: el material se pediría dos veces y las etiquetas se quitarían de la primera obra.
+
+## Paso a paso en el proyecto
+Todo se hace dentro de la obra, en la **pestaña Pedidos**, y siempre en este orden. La hoja de corte va la última.
+1. Abre **Proyectos** y entra en la obra.
+2. Ve a la **pestaña Pedidos** y busca el recuadro **"Documentación de la obra"**.
+3. Pulsa **"Subir documentos de la obra"** y elige **a la vez** (con Ctrl pulsado) estos 4 PDF: Análisis de materiales, Listado de dibujos, Listado de cristales y Listado de persianas.
+4. Espera. Pone "Leyendo…" y puede tardar **un par de minutos**. No cierres ni cambies de pantalla.
+5. Más abajo, en **"Etiquetas de fabricación (para la pistola)"**, pulsa **"Subir PDF de etiquetas"** y elige el PDF de **etiquetas**.
+6. En ese mismo recuadro, sube ahora la **hoja de corte** ("Añadir otro PDF").
+7. Lee el aviso que sale después de cada paso. Si dice algo raro, para y avisa.
+
+## Qué revisar después
+- [ ] **Tipo plano y ventanas de la obra**: el nº de ventanas coincide con el listado de dibujos, con persiana y sin persiana bien separadas.
+- [ ] **Pedidos en espera**: hay pedidos de lo que falta (perfiles, herraje, cristales, persianas). No debe haber dos pedidos iguales.
+- [ ] **"Qué lleva la obra"** está relleno solo.
+- [ ] **Etiquetas**: el aviso dice cuántas ventanas ha leído y de qué lote (FAB). Ese número es el de ventanas de la obra.
+- [ ] **Hoja de corte**: el aviso dice "aplicada a X ventanas". X tiene que ser el total de ventanas.
+
+## Si algo sale mal
+Ante cualquier aviso raro: **no lo vuelvas a subir**. Haz una captura del aviso y mándasela a Miguel.
+
+| Aviso o problema | Qué pasa | Qué hacer |
+| --- | --- | --- |
+| "Esta hoja de corte es del presupuesto X y esta obra es del Y" | El nº de presupuesto de la obra no coincide | Corrige el nº en la obra o revisa que el PDF sea el bueno |
+| "Primero sube el listado de dibujos o las etiquetas" | Has subido la hoja de corte antes de tiempo | Sube las etiquetas y después la hoja de corte |
+| "Ningún modelo coincide" | La hoja de corte es de otra versión u otra obra | Comprueba versión y número |
+| "No se pudo leer el PDF" o se queda leyendo más de 5 min | Falla la lectura automática | Recarga la página y prueba una vez más; si repite, avisa |
+| Hay pedidos repetidos | Se ha subido dos veces el mismo PDF | No pidas nada y avisa para borrar el sobrante |
+
+## Expedientes de Uxcar
+Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subimos en Proyectos, para no duplicar pedidos ni etiquetas.
+- Lo que meten aparece solo en el módulo **Uxcar** del CRM, en la ficha de cada expediente.
+- Si Uxcar no ha subido las **etiquetas** y las ventanas ya van a la línea, súbelas tú desde la ficha del expediente en el módulo Uxcar. Antes, mira que no estén ya subidas.
+- Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
+  },
+  {
+    para: "uxcar", orden: 1, titulo: "Guía para Uxcar: subir un expediente",
+    contenido: `## Qué se sube y dónde
+Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa de ventanas. Con ellos sabemos cuántas ventanas son, qué material preparar y cuándo estarán listas.
+
+| PDF | Dónde se sube en el portal |
+| --- | --- |
+| Listado de dibujos | **+ Nuevo expediente**, en el recuento de ventanas |
+| Análisis de materiales | Pestaña **Informe de materiales** |
+| Listado de cristales | **Pedidos → nuevo pedido** de cristales |
+| Listado de persianas | **Pedidos → nuevo pedido** de persianas |
+| Etiquetas de la línea | Ficha del expediente, recuadro de **etiquetas** |
+| Hoja de corte | Ficha del expediente, mismo recuadro, **después** de las etiquetas |
+
+## Antes de empezar
+- [ ] Los 6 PDF son del **mismo expediente** y de la **misma versión**.
+- [ ] El **número de expediente** que ponéis en el portal es el mismo que sale en los PDF. Si no coincide, el informe de materiales no encuentra el expediente.
+- [ ] Cada PDF se sube **una sola vez**. Si lo subís dos veces, el material se pide dos veces.
+- [ ] Tenéis dados de alta vuestros proveedores en la pestaña **Proveedores**.
+
+## Paso a paso
+En este orden. La hoja de corte va siempre la última.
+1. Entra en el portal con tu usuario y contraseña.
+2. **+ Nuevo expediente**: pon el número de expediente y el tipo, y sube el **listado de dibujos** para que se cuenten las ventanas solas. Revisa el recuento y guarda.
+3. Pestaña **Informe de materiales**: sube el **análisis de materiales**. Comprueba que lo asigna a tu expediente y guarda.
+4. Pestaña **Pedidos → nuevo pedido**: tipo cristales, elige proveedor y expediente, y sube el **listado de cristales** en "Documento del pedido".
+5. Otro **nuevo pedido**, ahora de persianas, con el **listado de persianas**.
+6. Abre el expediente en **Mis expedientes**. En el recuadro de etiquetas sube el PDF de **etiquetas**.
+7. En ese mismo recuadro sube la **hoja de corte**.
+
+La lectura de cada PDF puede tardar un par de minutos. No cierres la página mientras pone "Leyendo…".
+
+## Comprobar y avisar
+- [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
+- [ ] Aparecen los dos pedidos (cristales y persianas) con su fecha.
+- [ ] Las etiquetas dicen cuántas ventanas se han leído y coinciden con el total.
+
+Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
+  },
+];
+
+
 function PortalUxcar({ authUser, perfil, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -36365,6 +36746,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("materiales", "Informe de materiales")}
           {tab("proveedores", "Proveedores")}
           {tab("resumen", "Resumen")}
+          {tab("condiciones", "Condiciones")}
         </div>
         {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
         {!datos ? (
@@ -36372,6 +36754,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         ) : vista === "nuevo" ? (
           tipos.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay tipos de expediente configurados. Avisa a Ecowin PVC.</p>
             : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
+        ) : vista === "condiciones" ? (
+          <UxCondiciones docs={datos.condiciones} />
         ) : vista === "resumen" ? (
           <UxResumen expedientes={expedientes} />
         ) : vista === "materiales" ? (
