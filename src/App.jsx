@@ -2258,6 +2258,16 @@ export default function App() {
   // Confirmación INDEPENDIENTE desde el almacén/fábrica de que un material ha llegado.
   // No toca el estado de oficina (pedido.estado / línea.estado) ni el stock — es un
   // segundo control aparte, pensado para comparar luego contra lo que dice oficina.
+  // "Ha llegado todo": confirma de una vez todas las líneas de un pedido (en un solo guardado)
+  const confirmarPedidoEnteroFabrica = (pedidoId) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica";
+    savePedidos(pedidos.map((p) => (p.id !== pedidoId ? p : {
+      ...p,
+      lineas: toArray(p.lineas).map((l) => (l.confirmadoFabrica ? l : { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: quien })),
+    })));
+    showToast("Pedido confirmado: ha llegado todo");
+  };
   const confirmarLineaFabrica = (pedidoId, lineaId, confirmado) => {
     const next = pedidos.map((p) => {
       if (p.id !== pedidoId) return p;
@@ -5160,6 +5170,7 @@ export default function App() {
             materiales={materiales}
             clientes={clientes}
             onConfirmarLinea={confirmarLineaFabrica}
+            onConfirmarPedidoEntero={confirmarPedidoEnteroFabrica}
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
@@ -7285,6 +7296,20 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   const porSeccion = Object.keys(LISTADO_SECCIONES).map((k) => [k, filas.filter((f) => f.seccion === k)]).filter(([, fs]) => fs.length > 0);
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+      {/* Qué documentos tiene la obra y cuáles faltan (justo encima de "Documentación de la obra") */}
+      {proyecto.origen !== "portalUxcar" && (
+        <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs border border-slate-200 rounded-md p-2.5 bg-slate-50"><div className="sm:col-span-2 font-semibold text-slate-700 text-xs mb-0.5">Documentos de la obra</div>
+          {estadoDocumentosObra(proyecto).map((d) => (
+            <div key={d.nombre} className="flex items-start gap-1.5">
+              <span className={`font-bold ${d.ok ? "text-emerald-600" : d.noHace ? "text-slate-400" : "text-rose-600"}`}>{d.ok ? "✓" : d.noHace ? "–" : "✗"}</span>
+              <span className={d.ok ? "text-slate-700" : d.noHace ? "text-slate-400" : "text-rose-700 font-semibold"}>
+                {d.nombre}{d.noHace ? " (no lleva persiana)" : !d.ok ? " — falta" : ""}
+                {d.nota && <span className="block text-[11px] text-slate-400 font-normal truncate max-w-[260px]">{d.nota}</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Documentación de la obra</div>
@@ -15537,7 +15562,7 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState(() => { const t = tabInicialFabrica.actual; tabInicialFabrica.actual = null; return t || "listo"; });
@@ -15827,7 +15852,18 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                       <span className="ml-2 font-semibold text-slate-700">{(pedido.proveedorExterno || proveedorNombre(pedido.proveedorId))}</span>
                       {proyecto && <span className="ml-2 text-xs text-slate-500">Proyecto #{proyecto.numero} — {proyecto.nombre}</span>}
                     </div>
-                    <span className="text-xs text-slate-400">Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-slate-400">Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}</span>
+                      {onConfirmarPedidoEntero && (pedido.lineas || []).some((l) => !l.confirmadoFabrica) && (
+                        <button
+                          onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id); }}
+                          style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90"
+                        >
+                          <CheckCircle2 size={14} /> Ha llegado todo
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="divide-y divide-slate-100">
                     {pedido.lineas.map((l) => {
@@ -31263,9 +31299,28 @@ function aplicarCorteALotes(lotes, corte) {
       usados.add(m.modelo.toUpperCase()); aplicadas++;
       const w = { ...v, cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
       if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
-      return w;
-    }),
+      if (m.tipo === "fijo") { w.hojas = 0; w.hojasV = 2; } // un fijo no lleva hojas: sin pegatinas de hoja y no espera hojas en el colgado
+      // Ventanas unidas (2 ventanas en un mismo modelo, unidas con tapajuntas): cada una es un marco que se
+      // fabrica y se carga por separado. Las etiquetas "modelo" traen una sola por modelo, así que se reparte
+      // en tantas ventanas como manillas (parte 1/2, 2/2…), cada una con su código para la pistola.
+      const nJ = m.juntas >= 2 && m.juntas <= 5 && v.modelo && !v.parteDe ? m.juntas : 0;
+      if (!nJ) return w;
+      const cod0 = String(((v.piezas || [])[0] || {}).c || "");
+      const n = parseInt(cod0.slice(-3), 10) % 100;
+      const hojasParte = m.hojas && m.hojas % nJ === 0 && m.hojas / nJ <= 3 ? m.hojas / nJ : null;
+      const partes = [];
+      for (let k = 1; k <= nJ; k++) {
+        const c = k === 1 ? cod0 : cod0.slice(0, -3) + String(400 + 100 * (k - 1) + n).padStart(3, "0");
+        const p = { ...w, id: k === 1 ? w.id : `${w.id}|P${k}`, parte: `${k}/${nJ}`, parteDe: w.id, piezas: [{ c, t: "Ventana" }] };
+        if (hojasParte) { p.hojas = hojasParte; p.hojasV = 2; }
+        partes.push(p);
+      }
+      aplicadas += nJ - 1;
+      return partes;
+    }).flat(),
   }));
+  // Si la hoja de corte se aplica otra vez, las partes ya creadas se quedan como están (no se duplican)
+  nuevos.forEach((l) => { const vistos = new Set(); l.ventanas = l.ventanas.filter((v) => (vistos.has(v.id) ? false : (vistos.add(v.id), true))); });
   return { lotes: JSON.parse(JSON.stringify(nuevos)), aplicadas, modelosSinVentana: corte.modelos.filter((m) => !usados.has(m.modelo.toUpperCase())).map((m) => m.modelo) };
 }
 async function leerEtiquetasFabPdf(file, onProgreso) {
@@ -33782,6 +33837,7 @@ const hojasDe = (v, ov) => {
   const base = v && v.piezas && v.piezas[0] ? String(v.piezas[0].c) : "";
   const o = ov && base ? parseInt(ov[base], 10) : 0;
   if (o >= 1 && o <= 3) return o;
+  if (v && v.hojasV >= 2 && v.hojas === 0 && v.corte && v.corte.tipo === "fijo") return 0; // fijo (según la hoja de corte): solo marco, sin hojas
   return v && v.hojasV >= 2 && v.hojas >= 1 && v.hojas <= 3 ? v.hojas : hojasSugeridas(v); // los lotes subidos con versiones anteriores traen un número viejo (a veces 3): se ignora
 };
 // Nombre de cada hoja: con 1 hoja es la activa; con 2, activa y pasiva (con 3, la tercera se llama "HOJA 3")
@@ -34799,7 +34855,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
           <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
-          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
+          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
           <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
         </div>
@@ -36580,6 +36636,25 @@ const tipoListadoPorLineas = (refs) => {
 };
 const lotesConCorte = (lotes) => toArray(lotes).some((l) => toArray(l.ventanas).some((v) => v && v.corte));
 const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas" && !/mosquit|con tela|\btela\b/i.test(`${l.codigo || ""} ${l.descripcion || ""}`));
+// Lista de los documentos de la obra: cuáles están y cuáles faltan (recuadro "Documentación de la obra")
+function estadoDocumentosObra(p) {
+  const lis = p.listadoMateriales;
+  const docs = toArray(p.documentos);
+  const tipoDoc = (d) => d.tipoListado || tipoListadoPorNombre(d.nombre);
+  const lotes = toArray(p.etiquetasFab);
+  const nVent = lotes.reduce((a, l) => a + toArray(l.ventanas).length, 0);
+  const persianaNecesaria = !lis || llevaPersianas(p.recuento, lis);
+  const tienePers = docs.some((d) => tipoDoc(d) === "persianas") || toArray(lis && lis.tiposDocs).includes("cajas");
+  return [
+    { nombre: "Presupuesto", ok: !!p.presupuestoId || docs.some((d) => /presupuesto/i.test(d.nombre || "")) },
+    { nombre: "Análisis de materiales", ok: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))), nota: lis && lis.archivo ? lis.archivo : "" },
+    { nombre: "Listado de dibujos (tipo plano)", ok: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length), nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" },
+    { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
+    { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
+    { nombre: "Etiquetas", ok: lotes.length > 0, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
+    { nombre: "Hoja de corte", ok: lotesConCorte(lotes), nota: lotesConCorte(lotes) ? "aplicada" : lotes.length ? "" : "va después de las etiquetas" },
+  ];
+}
 function documentosQueFaltanObra(p) {
   const lis = p.listadoMateriales;
   const docs = toArray(p.documentos);
