@@ -1208,7 +1208,18 @@ export default function App() {
     saveClientes([...nuevosClientes, ...clientes]);
     showToast(`${nuevosClientes.length} contacto(s) importado(s)`);
   };
-  const saveProyectos = (next) => { setProyectos(next); persist("proyectos", next); };
+  // proyectosRef: lo último de Proyectos, para que varios cambios seguidos sobre la misma obra
+  // (p. ej. subir varios documentos a la vez) no se pisen entre sí con datos viejos.
+  const proyectosRef = useRef(proyectos);
+  proyectosRef.current = proyectos;
+  // Cada obra nueva lleva la fecha en que se creó (creadoEn). Las de antes no la tienen: así el aviso
+  // de "Faltan documentos" solo cuenta las obras creadas a partir de ahora.
+  const saveProyectos = (next) => {
+    const antes = new Set(toArray(proyectosRef.current).map((p) => p && p.id));
+    const ahora = Date.now();
+    if (antes.size) next = next.map((p) => (p && p.id && !antes.has(p.id) && !p.creadoEn ? { ...p, creadoEn: ahora } : p));
+    proyectosRef.current = next; setProyectos(next); persist("proyectos", next);
+  };
 
   const upsertCliente = (data) => {
     let next;
@@ -1607,7 +1618,7 @@ export default function App() {
   };
 
   const updateProyectoInline = (id, patch) => {
-    const next = proyectos.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    const next = proyectosRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p));
     saveProyectos(next);
   };
 
@@ -3434,6 +3445,7 @@ export default function App() {
   const autoPresRef = useRef(false);
   const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
   const [avisoDocsAbierto, setAvisoDocsAbierto] = useState(false);
+
   useEffect(() => {
     if (!currentUser || loading || autoPresRef.current) return;
     const desde = tarifasPersianas && tarifasPersianas.autoPedidosDesde;
@@ -4593,6 +4605,7 @@ export default function App() {
           // Obras y expedientes de Uxcar a los que les falta algún documento del programa de ventanas
           if (!currentUser || !(isAdmin || tieneAcceso("proyectos"))) return null;
           const activos = ["Pendiente de aceptación", "En proceso"];
+          // Todas las obras activas (también las de antes): Miguel quiere que se les suban los documentos
           const obras = proyectos.filter((p) => p.origen !== "portalUxcar" && activos.includes(p.estadoTrabajo || "Pendiente de aceptación"))
             .map((p) => ({ p, faltan: documentosQueFaltanObra(p) })).filter((x) => x.faltan && x.faltan.length);
           const exps = tieneAcceso("uxcar") ? uxExpedientes.filter((e) => ["virtual", "produccion"].includes(e.estado))
@@ -7097,16 +7110,63 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       //  · listado de dibujos / tipo plano → tipo plano de la obra (y cuenta las ventanas)
       //  · presupuesto → se guarda en los documentos de la obra
       //  · hoja o foto de medidas → pedido de esas medidas (lo de antes de "Subir medidas")
-      const esDibujos = (f) => /dibujo|tipo[\s_-]*plano/i.test(f.name || "");
+      // Primero se mira la cabecera de cada PDF (rápido y sin IA); si no se reconoce, se lee con IA como antes
       const avisos = [];
-      const dibujos = todos.filter(esDibujos);
-      const presupuestos = [], medidas = [], leidos = [], files = [];
-      for (const f of todos.filter((x) => !esDibujos(x))) {
-        const r = await leerListadoMateriales(f);
-        if (r.tipo === "dibujos") dibujos.push(f);
-        else if (r.tipo === "presupuesto") presupuestos.push(f);
-        else if (r.tipo === "medidas" || r.tipo === "otro") medidas.push(f);
-        else { leidos.push(r); files.push(f); }
+      let corteParaRecuento = null;
+      const dibujos = [], presupuestos = [], medidas = [], leidos = [], files = [], etiquetas = [], cortes = [];
+      for (const f of todos) {
+        const tipo = await clasificarPdfObra(f);
+        if (tipo === "dibujos") dibujos.push(f);
+        else if (tipo === "presupuesto") presupuestos.push(f);
+        else if (tipo === "cristales" || tipo === "persianas") medidas.push({ f, tipo });
+        else if (tipo === "etiquetas") etiquetas.push(f);
+        else if (tipo === "corte") cortes.push(f);
+        else if (!tipo && /dibujo|tipo[\s_-]*plano/i.test(f.name || "")) dibujos.push(f);
+        else {
+          // Si la IA no puede leer un PDF, se avisa y se sigue con los demás (antes se paraba todo)
+          let r;
+          try { r = await leerListadoMateriales(f); } catch (e) { avisos.push(`⚠ ${f.name}: no lo he reconocido ni he podido leerlo (${e.message}). Los demás sí se han subido.`); continue; }
+          if (r.tipo === "dibujos") dibujos.push(f);
+          else if (r.tipo === "presupuesto") presupuestos.push(f);
+          else if (r.tipo === "medidas" || r.tipo === "otro") medidas.push({ f, tipo: "" });
+          else { leidos.push({ ...r, tipo: r.tipo || tipo }); files.push(f); }
+        }
+      }
+      // Versiones: todos los PDF deben ser de la misma versión del presupuesto. Si hay dos listados de
+      // cristales (o de persianas), solo se usa uno (el de la versión buena) para no pedir dos veces.
+      {
+        const ver = (f) => clasificarPdfObra.version.get(f) || "";
+        const cuenta = {};
+        todos.forEach((f) => { const v = ver(f); if (v) cuenta[v] = (cuenta[v] || 0) + 1; });
+        const versiones = Object.keys(cuenta);
+        const buena = versiones.length > 1 ? versiones.slice().sort((a, b) => cuenta[b] - cuenta[a] || Number(b) - Number(a))[0] : versiones[0] || "";
+        if (versiones.length > 1) avisos.push(`⚠ Hay PDF de versiones distintas (${versiones.map((v) => `versión ${v}: ${todos.filter((f) => ver(f) === v).map((f) => f.name).join(", ")}`).join(" · ")}). Tomo como buena la versión ${buena}: revisa los demás.`);
+        ["cristales", "persianas"].forEach((t) => {
+          const deTipo = medidas.filter((m) => m.tipo === t);
+          if (deTipo.length < 2) return;
+          const buenos = deTipo.filter((m) => ver(m.f) === buena);
+          const usar = (buenos.length ? buenos : deTipo)[0];
+          deTipo.filter((m) => m !== usar).forEach((m) => { medidas.splice(medidas.indexOf(m), 1); avisos.push(`No he usado ${m.f.name}: ya hay otro listado de ${t} en esta subida (${usar.f.name}) y no quiero pedirlo dos veces.`); });
+        });
+      }
+      // Etiquetas y hoja de corte (en ese orden: la hoja de corte se aplica a las ventanas de las etiquetas)
+      if ((etiquetas.length || cortes.length) && proyecto.origen === "portalUxcar") {
+        avisos.push("Las etiquetas y la hoja de corte de Uxcar van en su expediente (módulo Uxcar), no aquí. No las he subido.");
+      } else if (etiquetas.length || cortes.length) {
+        let lotes = toArray(proyecto.etiquetasFab);
+        let cambiado = false;
+        let corteLeido = null;
+        for (const f of [...etiquetas, ...cortes]) {
+          try {
+            const r = await aplicarPdfEtiquetasObra(f, lotes, proyecto.presupuestoNumero || "");
+            if (r.lotes) { lotes = r.lotes; cambiado = true; }
+            if (r.corte) corteLeido = r.corte;
+            avisos.push(r.aviso);
+          } catch (e) { avisos.push(`${f.name}: no se pudo leer (${e.message}).`); }
+        }
+        if (cambiado) onGuardarListado(proyecto.id, null, JSON.parse(JSON.stringify({ etiquetasFab: lotes })));
+        // Si en esta misma subida va el listado de dibujos, el recuento se corrige después de contarlo (más abajo)
+        if (corteLeido) corteParaRecuento = corteLeido;
       }
       let extraProyecto = {};
       if (presupuestos.length) {
@@ -7125,15 +7185,25 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
           try { recuento = await uxContarVentanasConClaude(await uxLeerComoDataUrl(fd), mediaType); } catch (e) { recuento = null; }
         }
+        if (recuento && recuento.length && corteParaRecuento) {
+          const cr = corregirRecuentoConCorte(recuento, corteParaRecuento);
+          recuento = cr.recuento; corteParaRecuento = null;
+          if (cr.cambios) avisos.push(`Recuento corregido con la hoja de corte (fijos, puertas, hojas y persianas): ${cr.cambios} dato${cr.cambios > 1 ? "s" : ""}.`);
+        }
         extraProyecto = { ...extraProyecto, documentoEntrega: { nombre: fd.name, url, tipo: "tipo_plano", fecha: new Date().toISOString().slice(0, 10) }, ...(recuento && recuento.length ? { recuento } : {}) };
         avisos.push(recuento && recuento.length ? "Listado de dibujos guardado como tipo plano y ventanas contadas (revísalas en \"Tipo plano\")." : "Listado de dibujos guardado como tipo plano, pero no he podido contar las ventanas: añádelas a mano en \"Tipo plano\".");
       }
+      if (corteParaRecuento && toArray(proyecto.recuento).length) {
+        const cr = corregirRecuentoConCorte(proyecto.recuento, corteParaRecuento);
+        if (cr.cambios) { extraProyecto.recuento = cr.recuento; avisos.push(`Recuento de la obra corregido con la hoja de corte: ${cr.cambios} dato${cr.cambios > 1 ? "s" : ""}.`); }
+      }
       if (medidas.length && onMedidas) {
-        for (const f of medidas) await onMedidas(f);
-        avisos.push("Hoja de medidas leída: arriba te sale el pedido para crearlo.");
+        for (const m of medidas) await onMedidas(m.f, m.tipo);
+        const nombres = medidas.map((m) => (m.tipo === "cristales" ? "listado de cristales" : m.tipo === "persianas" ? "listado de persianas" : "hoja de medidas"));
+        avisos.push(`${[...new Set(nombres)].join(" y ")} leído${medidas.length > 1 ? "s" : ""}: arriba te sale el pedido para crearlo.`);
       }
       if (files.length === 0) {
-        if (Object.keys(extraProyecto).length) onGuardarListado(proyecto.id, listado || null, extraProyecto);
+        if (Object.keys(extraProyecto).length) onGuardarListado(proyecto.id, null, extraProyecto);
         setError(avisos.join(" "));
         return;
       }
@@ -7206,7 +7276,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Documentación de la obra</div>
-          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube aquí TODO lo de la obra a la vez (con Ctrl pulsado): análisis de materiales, mano de obra, listado de dibujos, presupuesto u hojas de medidas. Cada documento se reconoce solo y va a su sitio: pedidos en espera de lo que falta, horas para el planning, ventanas contadas y \"Qué lleva la obra\"."}</div>
+          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube aquí TODO lo de la obra a la vez (con Ctrl pulsado): presupuesto, análisis de materiales, listado de dibujos, listado de cristales, listado de persianas, etiquetas y hoja de corte (también mano de obra u hojas de medidas). Cada documento se reconoce solo y va a su sitio: pedidos en espera de lo que falta, horas para el planning, ventanas contadas y \"Qué lleva la obra\"."}</div>
         </div>
         <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
@@ -7339,7 +7409,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
     onInlineUpdate(proyecto.id, { documentos: lista });
     setTimeout(() => { marca.pendiente = false; }, 4000);
   };
-  const manejarSubidaPdfMedidas = async (file) => {
+  const manejarSubidaPdfMedidas = async (file, tipoSabido = "") => {
     if (!file) return;
     let docMedidasId = null;
     // Los listados del programa de ventanas (análisis de materiales, mano de obra,
@@ -7369,7 +7439,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
       try {
         const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
         docMedidasId = uid();
-        guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoListadoPorNombre(file.name) }]);
+        guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
       } catch (errSubida) {
         console.error("No se pudo subir el documento a Storage:", errSubida);
         setErrorPdfMedidas("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
@@ -7391,7 +7461,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
 
       // Qué es (cristales o persianas) por lo que trae dentro, para el aviso de documentos que faltan
       const tipoLeido = tipoListadoPorLineas(nuevas.map((l) => l.referencia));
-      if (docMedidasId && tipoLeido) {
+      if (docMedidasId && tipoLeido && !tipoSabido) {
         const lista = documentosObraRef.current.lista;
         const d = lista.find((x) => x.id === docMedidasId);
         if (d && d.tipoListado !== tipoLeido) guardarDocumentosObra(lista.map((x) => (x.id === docMedidasId ? { ...x, tipoListado: tipoLeido } : x)));
@@ -29867,7 +29937,7 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     "- uds: las unidades (\"Uds:\" o columna UDS). Si la casilla de unidades está VACÍA o no aparece, uds = 1 (el programa no escribe el 1): NO te saltes ese modelo. Si el número de unidades solo viene escrito en la descripción o en el texto del recuadro, cógelo de ahí.",
     "- tipo, uno de: ventana, corredera, puerta, fijo, osciloparalela, mosquitera, otro.",
     "  · corredera: la serie (Pos) empieza por CORR, o el dibujo tiene flechas horizontales de desplazamiento (1 → ← 2).",
-    "  · puerta: la serie es de puerta (p.ej. LINEAR-P), el modelo lleva P de puerta (p.ej. B2-P01D) o el tipo dice Puerta / Puerta Entrada.",
+    "  · puerta: la serie es de puerta (p.ej. LINEAR-P), la Pos lleva -P- (p.ej. S8000-P-01), el modelo lleva P de puerta (p.ej. B2-P01D) o el tipo dice Puerta / Puerta Entrada.",
     "  · fijo: ningún cristal tiene líneas en diagonal (nada abre).",
     "  · mosquitera: el dibujo es una malla/rejilla de cuadritos.",
     "  · osciloparalela: solo si lo indica claramente.",
@@ -31119,17 +31189,41 @@ function agruparHojaCorte(paginas) {
     if (!mm) return;
     const modelo = mm[1];
     const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 0;
-    const mh = b.match(/\bOB\s*(\d)\s*H\b/i);
-    const hojas = mh ? parseInt(mh[1], 10) : null;
+    // Nº de hojas = barras del perfil de HOJA / 4 (cada hoja tiene 4 lados). Es lo más fiable: "OB 1H / OB 2H"
+    // sale una sola vez aunque haya varias ventanas iguales en el modelo.
+    const barrasHoja = b.split("\n").reduce((a, l) => { const mb = l.match(/HOJA\s+\d{2,3}\s*MM.*?\d{4,5}\s+(\d+)\s*$/i); return a + (mb ? parseInt(mb[1], 10) : 0); }, 0);
+    const obs = [...b.matchAll(/\bOB\s*(\d)\s*H\b/gi)].map((x) => parseInt(x[1], 10));
+    const mh = barrasHoja >= 4 ? [null, String(Math.round(barrasHoja / 4))] : obs.length ? [null, String(obs.reduce((a, n) => a + n, 0))] : null;
+    // Nº de ventanas unidas en el modelo = nº de manillas (cada ventana lleva una; la hoja pasiva no). "22" = Ud 2 · ToT 2
+    const manillas = b.split("\n").reduce((a, l) => {
+      const mm2 = l.match(/MANILLA\s+DE\s+VENTANA[^\n]*?(\d+)\s*$/i); if (!mm2) return a;
+      const d = mm2[1]; const mitad = d.length % 2 === 0 && d.slice(0, d.length / 2) === d.slice(d.length / 2) ? d.slice(0, d.length / 2) : d;
+      const nm = parseInt(mitad, 10) || 0; return a + (nm <= 20 ? nm : 0);
+    }, 0);
+    const juntas = manillas > 1 ? manillas : null;
+    // Fijos y puertas: la puerta trae "PUERTA 1 HOJA", umbral (KOMBISCHWELLE) o bombillo; un fijo no lleva ningún perfil de HOJA
+    const mp = b.match(/PUERTA\s*(\d)\s*HOJAS?/i);
+    const esPuerta = !!mp || /KOMBISCHWELLE|UMBRAL/i.test(b);
+    const esCorredera = /CORREDER/i.test(b);
+    const perfilHoja = /HOJA\s+\d{2,3}\s*MM/i.test(b);
+    const hojas = mh ? parseInt(mh[1], 10) : mp ? parseInt(mp[1], 10) : (!perfilHoja && !esPuerta && !esCorredera ? 0 : null);
+    const tipo = esPuerta ? "puerta" : esCorredera ? "corredera" : hojas === 0 ? "fijo" : perfilHoja ? "ventana" : null;
+    const cerradura = /BOMBILLO|CERRADURA|CILINDRO/i.test(b);
+    // Cristales del modelo (sección SUPERFICIES: "4/16/4 4/16/4 TRANSPARENTE 2 …"). En un fijo, cada
+    // cristal es un hueco; en una puerta o ventana, los cristales que sobran de las hojas son fijos unidos.
+    const vidrios = b.split("\n").reduce((a, l) => { const mv = l.match(/^\s*[\d.+]+\/[\d.]+\/[\d.+]+\b.*?\s(\d+)\s+[\d.]+,\d\d/); return a + (mv ? parseInt(mv[1], 10) : 0); }, 0);
     // Persiana: con señal clara (cajón / compacto / sección PERSIANA) = lleva; si el campo "Persiana:" está y no hay ninguna señal = no lleva; si no se sabe = null
-    const señal = /CAJ[OÓ]N|CJ_|Compacto|\n\s*PERSIANA\s*\n/i.test(b);
+    // El cajón de la mosquitera enrollable ("PLX-42 Cajón con Tela") NO es persiana
+    const señal = b.split("\n").some((l) => /CAJ[OÓ]N|CJ_|Compacto|\bLAMAS?\b/i.test(l) && !/TELA|MOSQUIT/i.test(l));
     const persiana = señal ? true : (/Persiana\s*:/i.test(b) ? false : null);
     // Mosquiteras: "SOLO 4 LLEVAN MOSQUITERA" / "4 mosquiteras" → ese nº para ese modelo; si lo dice sin número → todas
     let mosq = null;
     const m1 = b.match(/(\d+|un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\s+(?:LLEVAN?\s+)?MOSQUITERAS?/i);
     if (m1) { const n = /^\d+$/.test(m1[1]) ? parseInt(m1[1], 10) : NUM_PALABRAS[m1[1].toLowerCase()]; mosq = { n: n || null, texto: m1[0].replace(/\s+/g, " ").trim() }; }
     else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
-    modelos.push({ modelo, uds, hojas, persiana, mosq });
+    const huecos = tipo === "fijo" && vidrios ? vidrios : null;
+    const fijosUnidos = (tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null;
+    modelos.push({ modelo, uds, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos });
   });
   return { modelos, presupuesto, version, referencia: ref, cliente };
 }
@@ -31144,7 +31238,7 @@ function aplicarCorteALotes(lotes, corte) {
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
-      const w = { ...v, cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0 } };
+      const w = { ...v, cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
       if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
       return w;
     }),
@@ -34682,7 +34776,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
           <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
-          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
+          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
           <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
         </div>
@@ -36378,6 +36472,79 @@ function UxSubirInformes({ expedientes, onGuardar }) {
 }
 
 
+
+/* ---------- Reconocer cada PDF del programa de ventanas por su cabecera (sin IA) ----------
+   Lee el texto de las 2 primeras páginas y mira el título que pone el programa. Si no
+   lo reconoce devuelve "" y se sigue leyendo con IA como antes. */
+async function clasificarPdfObra(file) {
+  const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
+  if (!esPdf) return "";
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    let t = "";
+    for (let n = 1; n <= Math.min(2, doc.numPages); n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      t += tc.items.map((i) => i.str).join(" ") + "\n";
+    }
+    const T = t.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ");
+    // Versión del presupuesto: "Versión: 3" o "Pres: 6.703-2"
+    const mv = T.match(/VERSION\s*:?\s*\.?\s*(\d+)/) || T.match(/PRES(?:UPUESTO)?\s*:?\s*[\d.]+-(\d+)/);
+    clasificarPdfObra.version.set(file, mv ? mv[1] : "");
+    if (/HOJA DE CORTE/.test(T)) return "corte";
+    if (/TIPOLOGIA ?:/.test(T) && /FAB ?:/.test(T)) return "etiquetas";
+    if (/V\d{2}\.\d+ ?- ?\d[\d.]* ?-FAB ?:/.test(T)) return "etiquetas";
+    if (/ANALISIS (DE )?MATERIALES/.test(T)) return "analisis";
+    if (/LISTADO (DE )?MANO DE OBRA/.test(T)) return "mano_obra";
+    if (/LISTADO (DE )?CAJAS/.test(T)) return "cajas";
+    if (/LISTADO (DE )?DIBUJOS/.test(T)) return "dibujos";
+    if (/LISTADO (DE )?VIDRIOS|LISTADO (DE )?CRISTALES/.test(T)) return "cristales";
+    if (/PEDIDO COMPRA/.test(T) && /PERSIANA|CAJON|LAMA|GUIAS?/.test(T)) return "persianas";
+    if (/PEDIDO COMPRA/.test(T) && /VIDRIO|CRISTAL|\d+\/\d+\/\d+/.test(T)) return "cristales";
+    if (/PRESUPUESTO/.test(T) && /IMPORTE ?\/ ?UD/.test(T)) return "presupuesto";
+    return "";
+  } catch (e) { return ""; }
+}
+
+// La hoja de corte dice con certeza si cada modelo es fijo, puerta (y si lleva cerradura),
+// cuántas hojas abre y si lleva persiana: se corrige con ella el recuento sacado de los dibujos.
+function corregirRecuentoConCorte(recuento, corte) {
+  const porModelo = new Map(toArray(corte && corte.modelos).map((m) => [String(m.modelo).trim().toUpperCase(), m]));
+  let cambios = 0;
+  const nuevo = toArray(recuento).map((l) => {
+    const m = porModelo.get(String((l && l.modelo) || "").trim().toUpperCase());
+    if (!m) return l;
+    const n = { ...l };
+    if (m.tipo && m.tipo !== "ventana" && n.tipo !== m.tipo) { n.tipo = m.tipo; cambios++; }
+    if (m.tipo === "ventana" && ["fijo", "puerta"].includes(n.tipo)) { n.tipo = "ventana"; cambios++; }
+    if (m.hojas != null && n.hojas !== m.hojas) { n.hojas = m.hojas; cambios++; }
+    if (m.tipo === "puerta" && !!n.cerradura !== !!m.cerradura) { n.cerradura = !!m.cerradura; cambios++; }
+    if (m.persiana != null && !!n.persiana !== m.persiana) { n.persiana = m.persiana; cambios++; }
+    if (m.juntas && n.juntas !== m.juntas) { n.juntas = m.juntas; cambios++; }
+    if (m.fijosUnidos != null && (n.fijos || 0) !== m.fijosUnidos) { n.fijos = m.fijosUnidos; cambios++; }
+    if (m.huecos && n.huecos !== m.huecos) { n.huecos = m.huecos; cambios++; }
+    return n;
+  });
+  return { recuento: nuevo, cambios };
+}
+clasificarPdfObra.version = new WeakMap();
+// Etiquetas o hoja de corte subidas desde "Subir documentos de la obra": mismo trabajo que el
+// recuadro "Etiquetas de fabricación". Devuelve { lotes, aviso } (lotes = null si no cambia nada).
+async function aplicarPdfEtiquetasObra(file, lotesPrevios, presupuestoNumero) {
+  const r = await leerEtiquetasFabPdf(file);
+  if (r.corte) {
+    if (presupuestoNumero && digitosPresu(presupuestoNumero) && r.corte.presupuesto && digitosPresu(presupuestoNumero) !== r.corte.presupuesto) return { lotes: null, aviso: `La hoja de corte es del presupuesto ${r.corte.presupuesto} y esta obra es del ${presupuestoNumero}: no la he aplicado.` };
+    if (!toArray(lotesPrevios).length) return { lotes: null, corte: r.corte, aviso: "Hoja de corte: no hay etiquetas en la obra, así que solo la uso para corregir el recuento (fijos, puertas, hojas). Sube las etiquetas y vuelve a subir la hoja de corte." };
+    const ap = aplicarCorteALotes(toArray(lotesPrevios), r.corte);
+    if (!ap.aplicadas) return { lotes: null, aviso: `Hoja de corte (presupuesto ${r.corte.presupuesto}): ningún modelo coincide con las ventanas de esta obra. No he cambiado nada.` };
+    const fj = r.corte.modelos.filter((m) => m.tipo === "fijo").length, pu = r.corte.modelos.filter((m) => m.tipo === "puerta").length;
+    return { lotes: ap.lotes, corte: r.corte, aviso: `Hoja de corte aplicada a ${ap.aplicadas} ventanas${fj || pu ? ` (${[fj ? `${fj} fijo${fj > 1 ? "s" : ""}` : "", pu ? `${pu} puerta${pu > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ")})` : ""}.${ap.modelosSinVentana.length ? ` Sin ventanas para: ${ap.modelosSinVentana.join(", ")}.` : ""}` };
+  }
+  if (!r.lotes.length) return { lotes: null, aviso: `${file.name}: no he encontrado etiquetas de fabricación.` };
+  const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
+  return { lotes: mezclarLotesFab(toArray(lotesPrevios), r, file.name), aviso: `Etiquetas: ${nv} ventanas/puertas (lote ${r.lotes.map((l) => l.fab).join(", ")}).` };
+}
+
 /* ---------- Documentos del programa de ventanas que le faltan a una obra ----------
    Para el aviso de arriba. Solo cuenta las obras que ya tienen ALGÚN documento del
    programa (así sabemos que son de ventanas): el resto no avisa. */
@@ -36389,7 +36556,7 @@ const tipoListadoPorLineas = (refs) => {
   return c === 0 && p === 0 ? "" : c >= p ? "cristales" : "persianas";
 };
 const lotesConCorte = (lotes) => toArray(lotes).some((l) => toArray(l.ventanas).some((v) => v && v.corte));
-const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas");
+const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas" && !/mosquit|con tela|\btela\b/i.test(`${l.codigo || ""} ${l.descripcion || ""}`));
 function documentosQueFaltanObra(p) {
   const lis = p.listadoMateriales;
   const docs = toArray(p.documentos);
@@ -36628,7 +36795,7 @@ function CondicionesModulo({ isAdmin, usuario }) {
         id, titulo: f.titulo.trim(), contenido: f.contenido || "", enlace: (f.enlace || "").trim(), para: f.para,
         orden: f.orden === "" || f.orden == null ? 99 : Number(f.orden),
         fecha: f.fecha || ahora, actualizado: ahora, actualizadoPor: usuario || "",
-        archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "",
+        archivoUrl: f.archivoUrl || "", archivoNombre: f.archivoNombre || "", version: f.version || 1,
       };
       if (archivo) { doc.archivoUrl = await subirArchivoAStorage(archivo, "condiciones"); doc.archivoNombre = archivo.name; }
       const patch = { [`${COND_RUTAS[f.para]}/${id}`]: doc };
@@ -36647,11 +36814,21 @@ function CondicionesModulo({ isAdmin, usuario }) {
   const cargarGuias = async () => {
     const hoy = new Date().toISOString().slice(0, 10);
     const patch = {};
-    guiasQueFaltan.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, id, fecha: hoy, actualizado: hoy, actualizadoPor: usuario || "" }; });
+    guiasQueFaltan.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, version: g.version || 1, id, fecha: hoy, actualizado: hoy, actualizadoPor: usuario || "" }; });
     try { await fbUpdate(ref(fbDb), patch); avisar(guiasQueFaltan.length === 1 ? "Guía cargada" : "Guías cargadas"); } catch (e) { avisar("No se pudieron cargar"); }
   };
   // Guías que trae el CRM y todavía no están cargadas (por título): se cargan con un botón
   const guiasQueFaltan = docs.equipo && docs.uxcar ? COND_GUIAS_INICIALES.filter((g) => !toArray(docs[g.para]).some((d) => String(d.titulo).trim() === g.titulo)) : [];
+  // Guías ya cargadas de las que el CRM trae una versión más nueva (se sustituye el texto)
+  const guiasAnticuadas = docs.equipo && docs.uxcar ? COND_GUIAS_INICIALES.map((g) => ({ g, d: toArray(docs[g.para]).find((d) => String(d.titulo).trim() === g.titulo) }))
+    .filter((x) => x.d && (x.d.version || 1) < (x.g.version || 1)) : [];
+  const actualizarGuias = async () => {
+    if (!window.confirm(`Se sustituye el texto de: ${guiasAnticuadas.map((x) => x.g.titulo).join(" · ")}.\nSi le cambiaste algo a mano, se pierde. ¿Seguir?`)) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const patch = {};
+    guiasAnticuadas.forEach(({ g, d }) => { patch[`${COND_RUTAS[g.para]}/${d.id}`] = { ...d, contenido: g.contenido, version: g.version, actualizado: hoy, actualizadoPor: usuario || "" }; });
+    try { await fbUpdate(ref(fbDb), patch); avisar("Guías actualizadas"); } catch (e) { avisar("No se pudieron actualizar"); }
+  };
 
   return (
     <div className="p-4 md:p-6">
@@ -36688,6 +36865,11 @@ function CondicionesModulo({ isAdmin, usuario }) {
         <>
           <CondicionesLista docs={lista} onAbrir={(id) => { setAbiertoId(id); setVista("ver"); }}
             vacio={para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
+          {isAdmin && guiasAnticuadas.length > 0 && (
+            <button onClick={actualizarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-amber-400 text-amber-700 hover:bg-amber-50">
+              <RefreshCw size={14} /> Actualizar {guiasAnticuadas.length === 1 ? "1 guía" : `${guiasAnticuadas.length} guías`} con la versión nueva: {guiasAnticuadas.map((x) => x.g.titulo.replace(/^Guía (del equipo|de fábrica|para Uxcar): /, "")).join(" · ")}
+            </button>
+          )}
           {isAdmin && guiasQueFaltan.length > 0 && (
             <button onClick={cargarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50">
               <Upload size={14} /> Cargar {guiasQueFaltan.length === 1 ? "la guía nueva" : `las ${guiasQueFaltan.length} guías nuevas`}: {guiasQueFaltan.map((g) => g.titulo.replace(/^Guía (del equipo|para Uxcar): /, "")).join(" · ")}
@@ -36775,53 +36957,60 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, titulo: "Guía del equipo: subir los documentos de una obra",
-    contenido: `## Qué se sube y para qué
-Cada obra entra en el CRM con 6 PDF sacados del programa de ventanas, siempre de la misma obra (mismo nº de presupuesto). Con ellos el CRM cuenta las ventanas, crea los pedidos en espera, calcula las horas para el planning y prepara la pistola del almacén.
+    para: "equipo", orden: 2, version: 3, titulo: "Guía del equipo: subir los documentos de una obra",
+    contenido: `## Resumen
+Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
-| PDF del programa | Qué hace en el CRM |
-| --- | --- |
-| Análisis de materiales | Material de la obra, pedidos en espera de lo que falta y "Qué lleva la obra" |
-| Listado de dibujos | Se guarda como tipo plano (va con el albarán de entrega) y cuenta las ventanas |
-| Listado de cristales | Pedido de cristales de la obra |
-| Listado de persianas | Pedido de persianas/cajones de la obra |
-| Etiquetas de la línea | La pistola reconoce cada ventana y la manda a su caballete |
-| Hoja de corte | Marca en cada ventana si lleva persiana y mosquitera |
+| PDF del programa | Qué hace el CRM con él | ¿Crea pedido? |
+| --- | --- | --- |
+| Presupuesto | Lo guarda en los documentos de la obra | No |
+| Análisis de materiales | Material de la obra, horas, "Qué lleva la obra" | Sí: **pedidos en espera** de lo que falta (perfiles, herraje…) |
+| Listado de dibujos | Tipo plano (va con el albarán) y recuento de ventanas | No |
+| Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
+| Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
+| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete | No |
+| Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera | No |
+
+Si la obra **no lleva persiana**, no hay listado de persianas y no hace falta. La mosquitera enrollable no cuenta como persiana.
 
 ## Antes de subir nada
-- [ ] Los 6 PDF tienen el **mismo nº de presupuesto** (arriba de cada hoja, p. ej. 6.703).
-- [ ] Todos son de la **misma versión**. Si uno es de otra versión, se pregunta cuál es la buena antes de subirlo.
-- [ ] La obra ya existe en **Proyectos** y tiene puesto ese mismo **nº de presupuesto**. Si no coincide, la hoja de corte se rechaza.
+- [ ] Todos los PDF tienen el **mismo nº de presupuesto** (p. ej. 6.703) y la **misma versión** (p. ej. Versión 2). Mira la cabecera de cada uno.
+- [ ] Cada archivo es lo que dice su nombre. Ojo: a veces se guarda un listado de vidrios con el nombre de "hoja de corte". El CRM avisa de lo que es de verdad.
+- [ ] **Un solo listado de cristales** por obra. Si hay dos (de versiones distintas), solo usa uno.
+- [ ] La obra ya existe en **Proyectos** y tiene puesto ese **nº de presupuesto**.
 - [ ] La obra **no es de Uxcar**. Las de Uxcar van por su portal (último apartado).
-- [ ] Nadie ha subido ya estos PDF en otra obra. **Nunca se sube lo mismo en dos sitios**: el material se pediría dos veces y las etiquetas se quitarían de la primera obra.
+- [ ] Nadie ha subido ya estos PDF en otra obra. **Nunca se sube lo mismo en dos sitios**.
 
 ## Paso a paso en el proyecto
-Todo se hace dentro de la obra, en la **pestaña Pedidos**, y siempre en este orden. La hoja de corte va la última.
 1. Abre **Proyectos** y entra en la obra.
 2. Ve a la **pestaña Pedidos** y busca el recuadro **"Documentación de la obra"**.
-3. Pulsa **"Subir documentos de la obra"** y elige **a la vez** (con Ctrl pulsado) estos 4 PDF: Análisis de materiales, Listado de dibujos, Listado de cristales y Listado de persianas.
+3. Pulsa **"Subir documentos de la obra"** y elige **todos los PDF a la vez** (con Ctrl pulsado).
 4. Espera. Pone "Leyendo…" y puede tardar **un par de minutos**. No cierres ni cambies de pantalla.
-5. Más abajo, en **"Etiquetas de fabricación (para la pistola)"**, pulsa **"Subir PDF de etiquetas"** y elige el PDF de **etiquetas**.
-6. En ese mismo recuadro, sube ahora la **hoja de corte** ("Añadir otro PDF").
-7. Lee el aviso que sale después de cada paso. Si dice algo raro, para y avisa.
+5. **Lee el aviso** que sale: dice qué ha hecho con cada PDF y si hay **versiones distintas** o un listado repetido que no ha usado.
+6. Arriba sale el **pedido de cristales** (y el de **persianas** si lleva). Revisa las líneas y **confírmalo**. Si cierras sin confirmar, el pedido no se crea.
+7. Si faltaba algún PDF, súbelo luego con el mismo botón. Mientras falte alguno, sale arriba el aviso amarillo **"Faltan documentos"**.
 
 ## Qué revisar después
-- [ ] **Tipo plano y ventanas de la obra**: el nº de ventanas coincide con el listado de dibujos, con persiana y sin persiana bien separadas.
-- [ ] **Pedidos en espera**: hay pedidos de lo que falta (perfiles, herraje, cristales, persianas). No debe haber dos pedidos iguales.
+- [ ] **Recuento de ventanas**: fijos (con sus huecos), puertas (con o sin cerradura), ventanas unidas y nº de hojas, como en el listado de dibujos.
+- [ ] **Pedidos en espera**: hay uno por proveedor con lo que falta. **No debe haber dos pedidos iguales.**
+- [ ] **Pedido de cristales** confirmado (y de persianas si lleva).
 - [ ] **"Qué lleva la obra"** está relleno solo.
-- [ ] **Etiquetas**: el aviso dice cuántas ventanas ha leído y de qué lote (FAB). Ese número es el de ventanas de la obra.
-- [ ] **Hoja de corte**: el aviso dice "aplicada a X ventanas". X tiene que ser el total de ventanas.
+- [ ] **Etiquetas**: el aviso dice cuántas ventanas ha leído; tiene que ser el total de la obra.
+- [ ] **Hoja de corte**: "aplicada a X ventanas (N fijos, N puertas)". X tiene que ser el total.
 
 ## Si algo sale mal
 Ante cualquier aviso raro: **no lo vuelvas a subir**. Haz una captura del aviso y mándasela a Miguel.
 
 | Aviso o problema | Qué pasa | Qué hacer |
 | --- | --- | --- |
-| "Esta hoja de corte es del presupuesto X y esta obra es del Y" | El nº de presupuesto de la obra no coincide | Corrige el nº en la obra o revisa que el PDF sea el bueno |
-| "Primero sube el listado de dibujos o las etiquetas" | Has subido la hoja de corte antes de tiempo | Sube las etiquetas y después la hoja de corte |
+| "Hay PDF de versiones distintas" | Se han mezclado versiones del presupuesto | Saca del programa los que no sean de la versión buena y súbelos otra vez |
+| "No he usado … ya hay otro listado de cristales" | Venían dos listados de cristales | Comprueba que el pedido de cristales sea el de la versión buena |
+| "La hoja de corte es del presupuesto X y esta obra es del Y" | El nº de presupuesto de la obra no coincide | Corrige el nº en la obra o revisa que el PDF sea el bueno |
+| "Hoja de corte: no hay etiquetas en la obra" | Falta el PDF de etiquetas | Sube las etiquetas y después otra vez la hoja de corte |
 | "Ningún modelo coincide" | La hoja de corte es de otra versión u otra obra | Comprueba versión y número |
-| "No se pudo leer el PDF" o se queda leyendo más de 5 min | Falla la lectura automática | Recarga la página y prueba una vez más; si repite, avisa |
-| Hay pedidos repetidos | Se ha subido dos veces el mismo PDF | No pidas nada y avisa para borrar el sobrante |
+| Sigue saliendo "Falta: hoja de corte" | El archivo subido no era una hoja de corte | Saca la hoja de corte buena del programa y súbela |
+| "No se pudo leer el PDF" o se queda leyendo más de 5 min | Falla la lectura | Recarga la página y prueba una vez más; si repite, avisa |
+| Hay pedidos repetidos | Se ha subido dos veces lo mismo | No pidas nada y avisa para borrar el sobrante |
 
 ## Expedientes de Uxcar
 Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subimos en Proyectos, para no duplicar pedidos ni etiquetas.
@@ -36830,7 +37019,7 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 2, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
 Cuando la obra tiene sus 6 documentos subidos, empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
@@ -36846,8 +37035,8 @@ Cuando la obra tiene sus 6 documentos subidos, empieza el trabajo de fábrica. L
 | 8. Facturar y cobrar | Oficina | Facturas y Entrada de dinero | Factura emitida y dinero cobrado |
 
 ## 1. Pedir el material
-Al subir el análisis de materiales, el CRM crea solo los **pedidos en espera** de lo que falta.
-1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra.
+Al subir los documentos de la obra (con el botón único), el CRM crea solo los **pedidos en espera** de lo que falta (perfiles, herraje…) y deja preparados los de **cristales** y **persianas** para confirmar. No se sube nada aparte en Pedidos.
+1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra y comprueba que el de cristales (y persianas si lleva) está confirmado y **no hay ninguno repetido**.
 2. Los de la semana se juntan en un pedido por proveedor (se pide los miércoles o jueves).
 3. Al pedirlo, pon siempre **fecha del pedido** y **fecha aproximada de llegada**.
 4. Si se pide por otra vía (teléfono, web), márcalo como hecho por otra vía para que pase a Realizado.
