@@ -3433,6 +3433,7 @@ export default function App() {
   // un bloqueo en Firebase para que no se haga dos veces si hay varios con el CRM abierto.
   const autoPresRef = useRef(false);
   const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
+  const [avisoDocsAbierto, setAvisoDocsAbierto] = useState(false);
   useEffect(() => {
     if (!currentUser || loading || autoPresRef.current) return;
     const desde = tarifasPersianas && tarifasPersianas.autoPedidosDesde;
@@ -4586,6 +4587,44 @@ export default function App() {
               <Send size={15} />
               {sinEnviar.length} presupuesto{sinEnviar.length === 1 ? "" : "s"} sin enviar al cliente desde hace más de 2 días ({sinEnviar.slice(0, 4).map((p) => p.numero).join(", ")}{sinEnviar.length > 4 ? "…" : ""}). Toca para {sinEnviar.length === 1 ? "abrirlo" : "verlos"} →
             </button>
+          );
+        })()}
+        {(() => {
+          // Obras y expedientes de Uxcar a los que les falta algún documento del programa de ventanas
+          if (!currentUser || !(isAdmin || tieneAcceso("proyectos"))) return null;
+          const activos = ["Pendiente de aceptación", "En proceso"];
+          const obras = proyectos.filter((p) => p.origen !== "portalUxcar" && activos.includes(p.estadoTrabajo || "Pendiente de aceptación"))
+            .map((p) => ({ p, faltan: documentosQueFaltanObra(p) })).filter((x) => x.faltan && x.faltan.length);
+          const exps = tieneAcceso("uxcar") ? uxExpedientes.filter((e) => ["virtual", "produccion"].includes(e.estado))
+            .map((e) => ({ e, faltan: documentosQueFaltanUx(e, uxPedidos) })).filter((x) => x.faltan.length) : [];
+          if (!obras.length && !exps.length) return null;
+          return (
+            <div className="bg-amber-50 text-amber-900 border-b border-amber-100">
+              <button onClick={() => setAvisoDocsAbierto(!avisoDocsAbierto)} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left hover:bg-amber-100 transition">
+                <FileText size={15} />
+                Faltan documentos:
+                {obras.length > 0 && ` ${obras.length} obra${obras.length === 1 ? "" : "s"}`}
+                {obras.length > 0 && exps.length > 0 && " ·"}
+                {exps.length > 0 && ` ${exps.length} expediente${exps.length === 1 ? "" : "s"} de Uxcar`}
+                <span className="ml-auto text-xs font-semibold">{avisoDocsAbierto ? "Ocultar ▲" : "Ver cuáles ▼"}</span>
+              </button>
+              {avisoDocsAbierto && (
+                <div className="px-6 pb-3 space-y-1.5 text-sm">
+                  {obras.map(({ p, faltan }) => (
+                    <button key={p.id} onClick={() => { setModulo("proyectos"); setProyectoDetailId(p.id); setProyectoView("detail"); }} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-amber-200 hover:border-amber-400">
+                      <span className="font-semibold">Obra {p.numero}</span> — {p.nombre || ""}
+                      <span className="block text-xs text-amber-700">Falta: {faltan.join(" · ")}. Se sube en la pestaña Pedidos de la obra. Toca para abrirla →</span>
+                    </button>
+                  ))}
+                  {exps.map(({ e, faltan }) => (
+                    <button key={e.id} onClick={() => setModulo("uxcar")} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-amber-200 hover:border-amber-400">
+                      <span className="font-semibold">Uxcar exp. {e.numero}</span>
+                      <span className="block text-xs text-amber-700">Falta: {faltan.join(" · ")}. Lo sube Uxcar desde su portal. Toca para ir a Uxcar →</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })()}
         {(() => {
@@ -7032,7 +7071,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
   );
 }
 
-function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas }) {
+function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas, onAnadirDocumentos }) {
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [provSinStock, setProvSinStock] = useState("");
@@ -7071,9 +7110,11 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       }
       let extraProyecto = {};
       if (presupuestos.length) {
-        const docs = [...toArray(proyecto.documentos)];
-        for (const f of presupuestos) docs.push({ id: uid(), nombre: f.name, url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
-        extraProyecto.documentos = docs;
+        const nuevosDocs = [];
+        for (const f of presupuestos) nuevosDocs.push({ id: uid(), nombre: f.name, url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
+        // Se añaden a lo último guardado (si no, al subir a la vez las hojas de cristales/persianas se perdían)
+        if (onAnadirDocumentos) onAnadirDocumentos(nuevosDocs);
+        else extraProyecto.documentos = [...toArray(proyecto.documentos), ...nuevosDocs];
         avisos.push(`Presupuesto guardado en los documentos de la obra (${presupuestos.map((f) => f.name).join(", ")}).`);
       }
       if (dibujos.length) {
@@ -7104,6 +7145,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         superficies: leidos.find((x) => x.superficies && x.superficies.m2 > 0)?.superficies || base.superficies,
         lineas: leidos.flatMap((x) => x.lineas),
         archivo: files.map((f) => f.name).join(" + "),
+        tiposDocs: [...new Set(leidos.map((x) => x.tipo).filter(Boolean))],
       };
       if (l.lineas.length === 0) {
         // Solo se ha subido la mano de obra: se guardan las horas en el listado que ya hubiera.
@@ -7286,8 +7328,20 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
   };
 
 
+  // Documentos de la obra "al día": al subir varias hojas seguidas (cristales + persianas)
+  // cada una se añade a lo último guardado, no a lo que había al pulsar el botón.
+  const documentosObraRef = useRef(null);
+  documentosObraRef.current = documentosObraRef.current && documentosObraRef.current.id === proyecto.id && documentosObraRef.current.pendiente
+    ? documentosObraRef.current : { id: proyecto.id, lista: toArray(proyecto.documentos), pendiente: false };
+  const guardarDocumentosObra = (lista) => {
+    const marca = { id: proyecto.id, lista, pendiente: true };
+    documentosObraRef.current = marca;
+    onInlineUpdate(proyecto.id, { documentos: lista });
+    setTimeout(() => { marca.pendiente = false; }, 4000);
+  };
   const manejarSubidaPdfMedidas = async (file) => {
     if (!file) return;
+    let docMedidasId = null;
     // Los listados del programa de ventanas (análisis de materiales, mano de obra,
     // listado de dibujos) no van aquí: van en "Listado de materiales" (pestaña Pedidos),
     // que crea los pedidos por sección, guarda las horas y cuenta las ventanas.
@@ -7314,7 +7368,8 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
       // en base64 dentro de la base de datos) para que no se quede cortado.
       try {
         const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
-        onInlineUpdate(proyecto.id, { documentos: [...(proyecto.documentos || []), { id: uid(), nombre: file.name, url: urlStorage, subidoEn: Date.now() }] });
+        docMedidasId = uid();
+        guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoListadoPorNombre(file.name) }]);
       } catch (errSubida) {
         console.error("No se pudo subir el documento a Storage:", errSubida);
         setErrorPdfMedidas("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
@@ -7333,6 +7388,14 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
         id: uid(), modo: "libre", materialId: "", referencia: it.referencia || "",
         ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
       })).filter((l) => l.referencia);
+
+      // Qué es (cristales o persianas) por lo que trae dentro, para el aviso de documentos que faltan
+      const tipoLeido = tipoListadoPorLineas(nuevas.map((l) => l.referencia));
+      if (docMedidasId && tipoLeido) {
+        const lista = documentosObraRef.current.lista;
+        const d = lista.find((x) => x.id === docMedidasId);
+        if (d && d.tipoListado !== tipoLeido) guardarDocumentosObra(lista.map((x) => (x.id === docMedidasId ? { ...x, tipoListado: tipoLeido } : x)));
+      }
 
       if (nuevas.length === 0) {
         setErrorPdfMedidas("Documento guardado, pero no he encontrado líneas de medidas claras en él.");
@@ -8104,7 +8167,8 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             {onCrearPedidosEspera && (
               <ListadoMaterialesObra proyecto={proyecto} materiales={materiales} proveedores={proveedores} pedidosObra={pedidos}
                 onGuardarListado={(id, l, extra) => onInlineUpdate(id, JSON.parse(JSON.stringify({ ...(l ? { listadoMateriales: l } : {}), ...(extra || {}) })))}
-                onCrearPedidosEspera={onCrearPedidosEspera} onMedidas={manejarSubidaPdfMedidas} />
+                onCrearPedidosEspera={onCrearPedidosEspera} onMedidas={manejarSubidaPdfMedidas}
+                onAnadirDocumentos={(nuevos) => guardarDocumentosObra([...documentosObraRef.current.lista, ...nuevos])} />
             )}
             {proyecto.origen !== "portalUxcar" && <TipoPlanoObra proyecto={proyecto} onInlineUpdate={onInlineUpdate} sinBoton={!!onCrearPedidosEspera} />}
           </div>
@@ -36313,6 +36377,61 @@ function UxSubirInformes({ expedientes, onGuardar }) {
   );
 }
 
+
+/* ---------- Documentos del programa de ventanas que le faltan a una obra ----------
+   Para el aviso de arriba. Solo cuenta las obras que ya tienen ALGÚN documento del
+   programa (así sabemos que son de ventanas): el resto no avisa. */
+const tipoListadoPorNombre = (nombre) => (/cristal|vidrio/i.test(nombre || "") ? "cristales" : /persiana|caj[oó]n|cajas/i.test(nombre || "") ? "persianas" : "");
+const tipoListadoPorLineas = (refs) => {
+  const t = refs.join(" \n ");
+  const c = (t.match(/vidrio|cristal|\b\d+\/\d+\/\d+\b|laminar|templad|emisiv/gi) || []).length;
+  const p = (t.match(/persiana|lama|caj[oó]n|gu[ií]a|compacto|recogedor|cinta|motor/gi) || []).length;
+  return c === 0 && p === 0 ? "" : c >= p ? "cristales" : "persianas";
+};
+const lotesConCorte = (lotes) => toArray(lotes).some((l) => toArray(l.ventanas).some((v) => v && v.corte));
+const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas");
+function documentosQueFaltanObra(p) {
+  const lis = p.listadoMateriales;
+  const docs = toArray(p.documentos);
+  const tiene = {
+    analisis: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))),
+    dibujos: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length),
+    cristales: docs.some((d) => (d.tipoListado || tipoListadoPorNombre(d.nombre)) === "cristales"),
+    persianas: docs.some((d) => (d.tipoListado || tipoListadoPorNombre(d.nombre)) === "persianas") || toArray(lis && lis.tiposDocs).includes("cajas"),
+    etiquetas: toArray(p.etiquetasFab).length > 0,
+    corte: lotesConCorte(p.etiquetasFab),
+  };
+  if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
+  const faltan = [];
+  if (!tiene.analisis) faltan.push("análisis de materiales");
+  if (!tiene.dibujos) faltan.push("listado de dibujos");
+  if (!tiene.cristales) faltan.push("listado de cristales");
+  if (!tiene.persianas && (!lis || llevaPersianas(p.recuento, lis))) faltan.push("listado de persianas");
+  if (!tiene.etiquetas) faltan.push("etiquetas");
+  if (!tiene.corte) faltan.push("hoja de corte");
+  return faltan;
+}
+function documentosQueFaltanUx(e, uxPedidos) {
+  const pedidosDe = (tipo) => toArray(uxPedidos).some((pd) => pd.tipo === tipo && toArray(pd.expedientes).some((x) => x.expedienteId === e.id));
+  const lis = e.listadoMateriales;
+  const tiene = {
+    analisis: !!(lis && toArray(lis.lineas).length),
+    dibujos: toArray(e.recuento).length > 0,
+    cristales: pedidosDe("Cristales"),
+    persianas: pedidosDe("Persianas"),
+    etiquetas: toArray(e.etiquetasFab).length > 0,
+    corte: lotesConCorte(e.etiquetasFab),
+  };
+  const faltan = [];
+  if (!tiene.dibujos) faltan.push("listado de dibujos");
+  if (!tiene.analisis) faltan.push("informe de materiales");
+  if (!tiene.cristales) faltan.push("pedido de cristales");
+  if (!tiene.persianas && (!lis || llevaPersianas(e.recuento, lis))) faltan.push("pedido de persianas");
+  if (!tiene.etiquetas) faltan.push("etiquetas");
+  if (!tiene.corte) faltan.push("hoja de corte");
+  return faltan;
+}
+
 /* ---------- Condiciones: guías y normas para que todo el mundo las tenga a mano ----------
    Dos sitios en Firebase:
    · "condiciones"               → solo el equipo (lo ve todo el CRM)
@@ -36528,10 +36647,11 @@ function CondicionesModulo({ isAdmin, usuario }) {
   const cargarGuias = async () => {
     const hoy = new Date().toISOString().slice(0, 10);
     const patch = {};
-    COND_GUIAS_INICIALES.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, id, fecha: hoy, actualizado: hoy, actualizadoPor: usuario || "" }; });
-    try { await fbUpdate(ref(fbDb), patch); avisar("Guías cargadas"); } catch (e) { avisar("No se pudieron cargar"); }
+    guiasQueFaltan.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, id, fecha: hoy, actualizado: hoy, actualizadoPor: usuario || "" }; });
+    try { await fbUpdate(ref(fbDb), patch); avisar(guiasQueFaltan.length === 1 ? "Guía cargada" : "Guías cargadas"); } catch (e) { avisar("No se pudieron cargar"); }
   };
-  const nadaTodavia = docs.equipo && docs.uxcar && docs.equipo.length === 0 && docs.uxcar.length === 0;
+  // Guías que trae el CRM y todavía no están cargadas (por título): se cargan con un botón
+  const guiasQueFaltan = docs.equipo && docs.uxcar ? COND_GUIAS_INICIALES.filter((g) => !toArray(docs[g.para]).some((d) => String(d.titulo).trim() === g.titulo)) : [];
 
   return (
     <div className="p-4 md:p-6">
@@ -36568,9 +36688,9 @@ function CondicionesModulo({ isAdmin, usuario }) {
         <>
           <CondicionesLista docs={lista} onAbrir={(id) => { setAbiertoId(id); setVista("ver"); }}
             vacio={para === "uxcar" ? "Todavía no hay documentos para Uxcar." : "Todavía no hay documentos para el equipo."} />
-          {isAdmin && nadaTodavia && (
+          {isAdmin && guiasQueFaltan.length > 0 && (
             <button onClick={cargarGuias} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50">
-              <Upload size={14} /> Cargar las guías de subida de documentos (equipo y Uxcar)
+              <Upload size={14} /> Cargar {guiasQueFaltan.length === 1 ? "la guía nueva" : `las ${guiasQueFaltan.length} guías nuevas`}: {guiasQueFaltan.map((g) => g.titulo.replace(/^Guía (del equipo|para Uxcar): /, "")).join(" · ")}
             </button>
           )}
         </>
@@ -36589,7 +36709,73 @@ function UxCondiciones({ docs }) {
 
 const COND_GUIAS_INICIALES = [
   {
-    para: "equipo", orden: 1, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 1, titulo: "Guía del equipo: del cliente al proyecto en marcha",
+    contenido: `## Resumen
+Una obra nueva sigue siempre 5 pasos: **cliente → presupuesto → enviar → firma → proyecto**. Cuando el proyecto está creado, se sigue con la guía "Subir los documentos de una obra".
+
+| Paso | Dónde | Qué queda hecho |
+| --- | --- | --- |
+| 1. Dar de alta el cliente | Clientes | El cliente existe con sus datos |
+| 2. Crear el presupuesto | Presupuestos | Presupuesto con nº, importe y PDF |
+| 3. Enviarlo al cliente | Ficha del presupuesto | Estado "Enviado" y llamada a 7 días |
+| 4. Firma o aceptación | Ficha del presupuesto | Estado "Aceptado" |
+| 5. Crear el proyecto | Ficha del presupuesto | La obra en Proyectos |
+
+## 1. Dar de alta el cliente
+Antes de crear nada, busca el cliente en **Clientes** para no duplicarlo.
+1. Entra en **Clientes** y pulsa **NUEVO CLIENTE**.
+2. Rellena como mínimo: **Nombre / Empresa**, **Móvil**, **Email**, **DNI / CIF** y **Dirección de entrega** (provincia y pueblo).
+3. Si factura a otra dirección, rellena **Dirección fiscal**. Pon también **Forma de pago** si la sabes.
+4. Pulsa **Guardar cliente**.
+
+- [ ] Sin móvil no se puede mandar el presupuesto ni la firma por WhatsApp.
+- [ ] Sin email no se puede mandar por correo.
+
+## 2. Crear el presupuesto
+El presupuesto se hace en el programa de ventanas y luego se sube al CRM.
+1. Saca el **PDF del presupuesto** en el programa de ventanas.
+2. En **Presupuestos**, pulsa **NUEVO PRESUPUESTO**.
+3. Pulsa **"Rellenar (o completar) desde foto/PDF"** y elige el PDF. Rellena solo el **nº de presupuesto**, el **importe sin IVA** y el cliente.
+4. Revisa: **Cliente** (elige el del paso 1), **Nº Presupuesto** igual que el del PDF, **Importe sin IVA** y la casilla **+ IVA** si lleva IVA.
+5. En **Descripción / Obra** pon solo el nº de presupuesto y la referencia (sin textos largos).
+6. Si es parte de una obra ya contratada, elígela en **"Vincular a obra existente"**. Si no, déjalo en "Ninguna".
+7. Pulsa **Guardar presupuesto**.
+
+- [ ] El presupuesto no puede pasar **más de 2 días** sin enviarse. Si pasa, sale un aviso arriba.
+
+## 3. Enviarlo al cliente
+Primero se envía para que lo vea. La firma va después.
+1. Abre el presupuesto.
+2. Pulsa **Enviar presupuesto** (WhatsApp) o **Enviar por email**.
+3. Al enviarlo pasa solo a **Enviado** y se apunta una llamada de seguimiento a los 7 días.
+4. Cada vez que hables con el cliente, usa **Registrar llamada** y apunta qué se ha hablado.
+
+Si el correo da error, pulsa **"Abrir en mi correo"** o mándalo por WhatsApp.
+
+## 4. Firma o aceptación
+Cuando el cliente dice que sí, se firma.
+1. En el presupuesto, pulsa **Enviar a firmar**.
+2. Marca los documentos que tiene que firmar (se juntan en un solo PDF) y pon nombre, email o teléfono del firmante.
+3. Si no tiene email, pulsa **"Mandar enlace de firma por WhatsApp"**.
+4. Cuando firme, el presupuesto pasa solo a **Aceptado** y el PDF firmado queda guardado. Para mirarlo antes, pulsa **"Comprobar si ya ha firmado"**.
+5. Si acepta en papel, de palabra o por WhatsApp, usa **"Confirmar aceptación sin firma digital"** y pon quién lo confirma.
+
+Si el documento no era el correcto: **"Cancelar y volver a enviar"**.
+
+## 5. Crear el proyecto
+Con el presupuesto **Aceptado y firmado** aparece el botón verde.
+1. Pulsa **CREAR PROYECTO DESDE ESTE PRESUPUESTO**.
+2. Pulsa **"Abrir la obra →"** para entrar en el proyecto.
+3. Revisa cliente, dirección y si lleva **envío**, **montaje** o **recoge el cliente**.
+
+- [ ] Ningún presupuesto firmado puede quedarse sin proyecto: si pasa, sale un aviso morado arriba.
+- [ ] Si el cliente pide un cambio después, se hace un **presupuesto nuevo** del mismo cliente vinculado a la misma obra. Nunca se crea un segundo proyecto.
+
+## Siguiente paso
+Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
+  },
+  {
+    para: "equipo", orden: 2, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Qué se sube y para qué
 Cada obra entra en el CRM con 6 PDF sacados del programa de ventanas, siempre de la misma obra (mismo nº de presupuesto). Con ellos el CRM cuenta las ventanas, crea los pedidos en espera, calcula las horas para el planning y prepara la pistola del almacén.
 
@@ -36642,6 +36828,96 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Lo que meten aparece solo en el módulo **Uxcar** del CRM, en la ficha de cada expediente.
 - Si Uxcar no ha subido las **etiquetas** y las ventanas ya van a la línea, súbelas tú desde la ficha del expediente en el módulo Uxcar. Antes, mira que no estén ya subidas.
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
+  },
+  {
+    para: "equipo", orden: 3, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    contenido: `## Resumen
+Cuando la obra tiene sus 6 documentos subidos, empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
+
+| Paso | Quién | Dónde en el CRM | Cuándo está hecho |
+| --- | --- | --- | --- |
+| 1. Pedir el material | Oficina (responsable de pedidos) | Pedidos | Pedidos enviados con fecha de llegada |
+| 2. Recibir el material | Fábrica | Pedidos → Recibir con el albarán | Todo el pedido llegado y confirmado |
+| 3. Planning de la semana | Encargado | Fábrica → Planning | Planning confirmado |
+| 4. Empezar a fabricar | Encargado | Fábrica → Listo para fabricar | Obra "En fabricación" |
+| 5. Fabricar por puestos | Cada operario | Mi puesto de trabajo y Línea (pistola) | Todas las ventanas leídas en la línea |
+| 6. Caballetes y fin de fabricación | Carga | Línea (pistola) y Fábrica → En fabricación | Caballetes cargados y "Fabricación terminada" |
+| 7. Salida y entrega | Chófer o cliente | Albaranes | Albarán de entrega firmado por el cliente |
+| 8. Facturar y cobrar | Oficina | Facturas y Entrada de dinero | Factura emitida y dinero cobrado |
+
+## 1. Pedir el material
+Al subir el análisis de materiales, el CRM crea solo los **pedidos en espera** de lo que falta.
+1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra.
+2. Los de la semana se juntan en un pedido por proveedor (se pide los miércoles o jueves).
+3. Al pedirlo, pon siempre **fecha del pedido** y **fecha aproximada de llegada**.
+4. Si se pide por otra vía (teléfono, web), márcalo como hecho por otra vía para que pase a Realizado.
+
+- [ ] Solo los responsables pueden hacer pedidos. El resto los **solicita**.
+- [ ] Si un pedido no llega en su fecha, sale un aviso azul arriba.
+
+## 2. Recibir el material
+Cuando llega el camión, se comprueba lo que viene contra lo pedido.
+1. En **Pedidos**, abre el pedido y pulsa **Recibir con el albarán**.
+2. Haz una **foto del albarán** (o sube el PDF). El CRM lo compara solo con lo pedido.
+3. Revisa lo que falta, lo que viene roto y lo que ha venido sin pedirlo, y confirma la entrada.
+4. Los **cristales** pasan a Fábrica → Cristales. Colócalos en su caballete del almacén de cristales.
+5. Las **persianas** van a Fábrica → Almacén persianas y mosquiteras.
+
+- [ ] Si falta o viene roto algo, se abre una **incidencia** y queda el pedido de reposición en espera.
+
+## 3. Planning de la semana
+La semana antes se eligen las obras a fabricar.
+1. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
+2. Elige las obras (tuyas y de Uxcar). Puedes cambiar el orden y las horas.
+3. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
+4. Confirma el planning.
+5. Imprime la **Hoja de preparación por almacén** para preparar el material.
+
+Una obra nunca entra antes de que le llegue el material, aunque la pongas antes en el orden.
+
+## 4. Empezar a fabricar
+Una obra está lista cuando se cumplen tres cosas: oficina recibió todos los pedidos, fábrica confirmó todo lo llegado y "Qué lleva la obra" está completo.
+1. En **Fábrica → Listo para fabricar**, pulsa **Empezar a fabricar** en la obra.
+2. Las de Uxcar se pasan a producción desde el módulo Uxcar.
+3. Si la obra no sale ahí, mira **Fábrica → Materiales pendientes**: dice qué le falta.
+
+## 5. Fabricar por puestos
+Cada operario trabaja desde **Mi puesto de trabajo**.
+1. Entra con tu usuario, **ficha** y elige tu puesto (o escribe su código).
+2. En **"Obras de hoy"** salen las obras del planning para tu puesto.
+3. Las **pegatinas de la soldadora** se imprimen en **Línea (pistola) → Puesto → Pegatinas**.
+4. En cada puesto, **lee con la pistola** la etiqueta de cada ventana que pasa.
+5. Si hay un problema (roto, falta algo, mal cortado), pulsa **incidencia**: llega a oficina como incidencia de la obra.
+6. Al acabar, pulsa **"He terminado mi parte en esta obra"** y rellena el **parte de trabajo**.
+
+## 6. Caballetes y fin de fabricación
+Al subir las etiquetas, el CRM ya reserva los caballetes que necesita la obra.
+1. En la carga, **lee la ventana con la pistola**: sale el número de caballete donde va.
+2. Si el caballete es nuevo, pulsa **Imprimir etiqueta del caballete**.
+3. Si una ventana va mal colocada, se puede mover a otro caballete o quitar.
+4. Cuando están todas, en **Fábrica → En fabricación** pulsa **Fabricación terminada** en la obra.
+
+- [ ] Sin el **tipo plano** (listado de dibujos) no se puede terminar: es obligatorio porque va con el albarán de entrega.
+
+## 7. Salida y entrega
+La obra sale de tres formas: reparto, recogida en fábrica (Uxcar casi siempre) o instalación.
+1. En **Fábrica → Salidas** están las obras listas para salir, con sus caballetes.
+2. Al cargar el camión, el chófer firma en **Albaranes**: **"Firma al cargar el camión"**.
+3. En la entrega, el chófer abre el albarán en el móvil y **le da el móvil al cliente para que firme** al recibirlo.
+4. Si recoge el cliente en fábrica, firma el albarán allí mismo.
+5. Los caballetes que se quedan en la obra quedan **pendientes de devolver**.
+
+- [ ] Sin la firma del cliente, la obra no cuenta como entregada ni se puede facturar.
+
+## 8. Facturar y cobrar
+Con el albarán firmado, la obra queda pendiente de facturar.
+1. Arriba sale el aviso **"Pendiente de facturar"**. Al entregar se van creando **facturas proforma**.
+2. A final de mes, en **Facturas**, se juntan las proformas del cliente en una factura (**Crear factura con…**).
+3. Para las obras sueltas, revisa el importe y pulsa **Emitir factura**.
+4. Cuando el cliente pague, en **Entrada de dinero** pulsa **NUEVA ENTRADA DE DINERO**, elige la obra y sube el **justificante** (PDF).
+
+- [ ] Una entrada de dinero **nunca** crea una factura sola: la factura se hace siempre en Facturas.
+- [ ] La obra está cerrada cuando tiene **factura emitida** y el **cobro apuntado** con justificante.`,
   },
   {
     para: "uxcar", orden: 1, titulo: "Guía para Uxcar: subir un expediente",
