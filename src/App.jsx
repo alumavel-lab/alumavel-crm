@@ -3950,6 +3950,68 @@ export default function App() {
     try { await fbSet(ref(fbDb, "portalUxcar/config/tipos"), tipos); showToast("Tipos de expediente guardados"); }
     catch (e) { showToast("No se pudo guardar: " + e.message, "error"); }
   };
+  // BORRADO DE DATOS DE PRUEBA (Administración, solo administrador). Miguel marca qué
+  // zonas borrar. NUNCA toca presupuestos, pedidos, leads, obras propias, clientes ni facturas.
+  // Antes de borrar descarga una copia (.json) de todo lo que va a quitar.
+  const NODOS_LINEA = ["escaneosLinea", "alertasLinea", "incidenciaVentanaLinea", "ubicacionesLinea", "ocupacionLinea", "colgadoLinea", "sinPersianaLinea"];
+  const zonasBorrado = () => {
+    const proysUx = proyectos.filter((p) => p.origen === "portalUxcar");
+    const conEtiquetas = proyectos.filter((p) => p.origen !== "portalUxcar" && toArray(p.etiquetasFab).length);
+    const cabsOcupados = toArray(caballetesVentanas).filter((c) => c.obra || c.reserva || toArray(c.ventanas).length || toArray(c.plan).length || c.estado !== "libre");
+    return [
+      { id: "uxcar", titulo: "Uxcar", detalle: `${uxExpedientes.length} expedientes, ${uxPedidos.length} pedidos de su portal y sus proveedores, y ${proysUx.length} proyectos creados desde el portal. Se quedan tipos de expediente, precios y usuarios del portal.` },
+      { id: "linea", titulo: "Línea (pistola)", detalle: "Lecturas de la pistola, avisos, estanterías e incidencias de línea. Se queda la configuración de puestos y zonas." },
+      { id: "etiquetas", titulo: "Etiquetas de la línea (PDF de lotes)", detalle: `Las etiquetas subidas en ${conEtiquetas.length} obra(s), las subidas sin obra y sus dibujos. Habrá que volver a subir el PDF de las obras reales.` },
+      { id: "caballetes", titulo: "Caballetes de ventanas (vaciar)", detalle: `${cabsOcupados.length} de ${toArray(caballetesVentanas).length} caballetes tienen algo. Se vacían todos y se quedan con su número.` },
+      { id: "cristales", titulo: "Almacén de cristales", detalle: `${cristales.length} cristales (con sus caballetes y packing lists) y ${confirmacionesCristal.length} confirmaciones de pedido de cristal y el historial de quién movió cada caballete de cristal. Se queda el tamaño de las zonas.` },
+      { id: "persianas", titulo: "Almacén de persianas", detalle: `${persianasAlmacen.length} persianas en almacén. Se quedan los carros y los almacenes creados.` },
+      { id: "incfabrica", titulo: "Incidencias de fábrica", detalle: `${toArray(incidenciasFabrica).length} incidencias de fábrica (puestos y línea). Las incidencias de obra/montaje no se tocan.` },
+    ];
+  };
+  const borrarZonas = async (ids) => {
+    const sel = new Set(ids);
+    const hoy = new Date().toISOString().slice(0, 10);
+    const leer = async (r) => { const sn = await fbGet(ref(fbDb, r)); return sn.val() || null; };
+    const proysUx = proyectos.filter((p) => p.origen === "portalUxcar");
+    // 1. Copia de todo lo que se va a quitar
+    try {
+      const copia = { fecha: new Date().toISOString(), zonas: ids };
+      if (sel.has("uxcar")) { const portal = (await leer("portalUxcar")) || {}; copia.uxcar = { expedientes: portal.expedientes || null, pedidos: portal.pedidos || null, proveedores: portal.proveedores || null, proyectos: proysUx }; }
+      if (sel.has("linea")) { copia.linea = {}; for (const n of NODOS_LINEA) copia.linea[n] = await leer(n); }
+      if (sel.has("etiquetas")) copia.etiquetas = { obras: proyectos.filter((p) => toArray(p.etiquetasFab).length).map((p) => ({ id: p.id, numero: p.numero, etiquetasFab: p.etiquetasFab })), sinObra: await leer("etiquetasFabSinObra"), dibujos: await leer("dibujosVentana") };
+      if (sel.has("caballetes")) copia.caballetes = caballetesVentanas;
+      if (sel.has("cristales")) copia.cristales = { cristales, confirmacionesCristal, movimientosCaballetes: await leer("movimientosCaballetes") };
+      if (sel.has("persianas")) copia.persianas = persianasAlmacen;
+      if (sel.has("incfabrica")) copia.incidenciasFabrica = await leer("incidenciasFabrica");
+      const blob = new Blob([JSON.stringify(copia)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = `copia-antes-de-borrar-${hoy}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+    } catch (e) { showToast("No se pudo hacer la copia; no he borrado nada. " + e.message, "error"); return false; }
+    // 2. Borrado
+    try {
+      const patch = {};
+      if (sel.has("uxcar")) Object.assign(patch, { "portalUxcar/expedientes": null, "portalUxcar/pedidos": null, "portalUxcar/proveedores": null });
+      if (sel.has("linea")) NODOS_LINEA.forEach((n) => { patch[n] = null; });
+      if (sel.has("etiquetas")) Object.assign(patch, { etiquetasFabSinObra: null, dibujosVentana: null });
+      if (sel.has("incfabrica")) patch.incidenciasFabrica = null;
+      if (sel.has("cristales")) patch.movimientosCaballetes = null;
+      if (Object.keys(patch).length) await fbUpdate(ref(fbDb), patch);
+      if (sel.has("uxcar") || sel.has("etiquetas")) {
+        let next = proyectos;
+        if (sel.has("uxcar")) next = next.filter((p) => p.origen !== "portalUxcar");
+        if (sel.has("etiquetas")) next = next.map((p) => (toArray(p.etiquetasFab).length ? { ...p, etiquetasFab: [] } : p));
+        saveProyectos(next);
+      }
+      if (sel.has("caballetes")) toArray(caballetesVentanas).forEach((c) => guardarCaballete({ ...c, ...CAB_LIMPIO, estado: "libre", obra: null, lineas: [], reserva: null, salida: null, historial: [...toArray(c.historial), { fecha: hoy, accion: "Vaciado desde Administración (borrado de datos de prueba)" }] }));
+      // Directo, sin saveCristales, para no apuntar un "movimiento" por cada cristal borrado
+      if (sel.has("cristales")) { setCristales([]); persist("cristales", []); saveConfirmacionesCristal([]); }
+      if (sel.has("persianas")) savePersianasAlmacen([]);
+      showToast("Borrado hecho. Recarga la página (F5).");
+      return true;
+    } catch (e) { showToast("El borrado se ha cortado a medias: " + e.message + ". Tienes la copia descargada.", "error"); return false; }
+  };
+
   const uxBorrar = async (exp) => {
     try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), null); showToast(`Expediente ${exp.numero} borrado`); }
     catch (e) { showToast("No se pudo borrar: " + e.message, "error"); }
@@ -4028,6 +4090,7 @@ export default function App() {
   const veMontaje = isAdmin || sinArea || !!areasUsuario.montaje;
   const veFabrica = isAdmin || !!areasUsuario.fabrica;
   const tieneAcceso = (id) => {
+    if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     if (id === "incfabrica") return veFabrica;
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
     return modulosPermitidos.includes(id);
@@ -5243,6 +5306,7 @@ export default function App() {
             onGuardarPinReorganizar={(h) => saveConfigVentanas({ ...(configVentanas || {}), pinReorganizarHash: h })}
           />
         )}
+        {modulo === "administracion" && isAdmin && <BorradoDatosPrueba zonas={zonasBorrado} onBorrar={borrarZonas} />}
       </TarifasVentanasCtx.Provider>
       </main>
 
@@ -36824,6 +36888,53 @@ function UxPrecioFicha({ exp, tarifa }) {
       {pr.sinRecuento && pr.lineas.length > 0 && <p className="text-[11px] text-amber-700 mt-1">Calculado con los totales, sin recuento: no se saben las persianas ni las ventanas juntas. Sube el listado de dibujos para afinarlo.</p>}
       {pr.sinPrecio > 0 && <p className="text-[11px] text-amber-700 mt-1">{pr.sinPrecio} línea(s) de tipo "otro" sin precio: revísalas en el recuento.</p>}
       <p className="text-[11px] text-slate-400 mt-1">Este importe pasa solo al proyecto del expediente, para facturarlo cuando se entregue.</p>
+    </div>
+  );
+}
+
+// Administración → "Borrar datos de prueba": Miguel marca qué zonas borrar. Pide
+// confirmar con la lista y escribir BORRAR. Presupuestos, pedidos, leads, obras propias,
+// clientes y facturas no aparecen aquí: no se pueden borrar desde este panel.
+function BorradoDatosPrueba({ zonas, onBorrar }) {
+  const [abierto, setAbierto] = useState(false);
+  const [marcadas, setMarcadas] = useState([]);
+  const [borrando, setBorrando] = useState(false);
+  const lista = abierto ? zonas() : [];
+  const toggle = (id) => setMarcadas((m) => (m.includes(id) ? m.filter((x) => x !== id) : [...m, id]));
+  const borrar = async () => {
+    const elegidas = lista.filter((z) => marcadas.includes(z.id));
+    if (!elegidas.length) return;
+    if (!window.confirm("Vas a BORRAR:\n\n" + elegidas.map((z) => `· ${z.titulo}: ${z.detalle}`).join("\n\n") + "\n\nAntes se descarga una copia (.json). No se puede deshacer desde el CRM.")) return;
+    if (String(window.prompt("Para confirmar, escribe BORRAR en mayúsculas:") || "").trim() !== "BORRAR") { alert("No se ha borrado nada."); return; }
+    setBorrando(true);
+    const ok = await onBorrar(elegidas.map((z) => z.id));
+    setBorrando(false);
+    if (ok) { setMarcadas([]); setAbierto(false); }
+  };
+  return (
+    <div className="p-4 sm:p-8 pt-0 sm:pt-0 max-w-4xl">
+      <div className="border border-rose-200 rounded-lg bg-white">
+        <button onClick={() => setAbierto(!abierto)} className="w-full flex items-center gap-2 px-4 py-3 text-left">
+          <Trash2 size={16} className="text-rose-600" />
+          <span className="font-bold text-slate-800">Borrar datos de prueba</span>
+          <span className="text-xs text-slate-400 ml-2">Uxcar, línea, caballetes, cristales…</span>
+          <ChevronDown size={16} className={`ml-auto text-slate-400 transition ${abierto ? "rotate-180" : ""}`} />
+        </button>
+        {abierto && (
+          <div className="px-4 pb-4 space-y-2">
+            <p className="text-xs text-slate-500">Marca solo lo que quieras dejar a cero. <b>Presupuestos, pedidos, leads, tus obras, clientes y facturas no se borran desde aquí.</b> Antes de borrar se descarga una copia.</p>
+            {lista.map((z) => (
+              <label key={z.id} className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer ${marcadas.includes(z.id) ? "border-rose-300 bg-rose-50" : "border-slate-200 hover:bg-slate-50"}`}>
+                <input type="checkbox" className="mt-1" checked={marcadas.includes(z.id)} onChange={() => toggle(z.id)} />
+                <span><span className="font-semibold text-sm text-slate-800">{z.titulo}</span><span className="block text-xs text-slate-500">{z.detalle}</span></span>
+              </label>
+            ))}
+            <button disabled={borrando || marcadas.length === 0} onClick={borrar} className="mt-2 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md bg-rose-600 text-white disabled:opacity-40">
+              {borrando ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Borrar lo marcado ({marcadas.length})
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
