@@ -7095,7 +7095,11 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   // "Listado mano de obra"): se juntan en un solo listado — las líneas de material de
   // todos y las horas de fabricación del que las traiga.
   const subir = async (fileList) => {
-    const todos = Array.from(fileList || []);
+    // El mismo archivo elegido dos veces en la misma subida se usa una sola vez (si no, el
+    // análisis se sumaría dos veces y se pediría el doble)
+    const vistos = new Set();
+    const repetidosSubida = [];
+    const todos = Array.from(fileList || []).filter((f) => { const k = `${f.name}|${f.size}`; if (vistos.has(k)) { repetidosSubida.push(f.name); return false; } vistos.add(k); return true; });
     if (todos.length === 0) return;
     setLeyendo(true); setError("");
     try {
@@ -7113,6 +7117,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // Primero se mira la cabecera de cada PDF (rápido y sin IA); si no se reconoce, se lee con IA como antes
       const avisos = [];
       let corteParaRecuento = null;
+      if (repetidosSubida.length) avisos.push(`Había archivos repetidos en la selección (${[...new Set(repetidosSubida)].join(", ")}): los he usado una sola vez.`);
       const dibujos = [], presupuestos = [], medidas = [], leidos = [], files = [], etiquetas = [], cortes = [];
       for (const f of todos) {
         const tipo = await clasificarPdfObra(f);
@@ -7196,6 +7201,13 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       if (corteParaRecuento && toArray(proyecto.recuento).length) {
         const cr = corregirRecuentoConCorte(proyecto.recuento, corteParaRecuento);
         if (cr.cambios) { extraProyecto.recuento = cr.recuento; avisos.push(`Recuento de la obra corregido con la hoja de corte: ${cr.cambios} dato${cr.cambios > 1 ? "s" : ""}.`); }
+      }
+      // Un listado de cristales/persianas que ya se subió antes en esta obra (mismo nombre) no vuelve a sacar el pedido
+      for (const m of [...medidas]) {
+        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name)))) {
+          medidas.splice(medidas.indexOf(m), 1);
+          avisos.push(`${m.f.name} ya estaba subido en esta obra: no he vuelto a sacar su pedido (para no pedirlo dos veces).`);
+        }
       }
       if (medidas.length && onMedidas) {
         for (const m of medidas) await onMedidas(m.f, m.tipo);
