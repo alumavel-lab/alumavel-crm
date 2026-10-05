@@ -35958,10 +35958,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const h = horasObra(e.recuento, { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, e.horasFabricacion, tiempos, e.listadoMateriales && e.listadoMateriales.horas);
     return { id: `u-${e.id}`, ref: { tipo: "uxcar", id: e.id }, nombre: `Uxcar exp. ${e.numero}`, ventanas: uxNum(e.ventanas) + uxNum(e.puertas) + uxNum(e.osciloParalelas), horas: h.horas, aMano: h.aMano, deListado: h.deListado, entrega: e.fechaEntrega || "", listado: e.listadoMateriales, de: "Uxcar" };
   };
+  // Las obras que ya se han empezado a fabricar (En proceso) siguen en el planning, delante de las demás:
+  // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
+  const enCurso = [
+    ...proyectos.filter((p) => p.origen !== "portalUxcar" && p.estadoTrabajo === "En proceso").map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
+    ...toArray(uxExpedientes).filter((e) => e.estado === "produccion").map((e) => ({ ...obraUx(e), nombre: `${obraUx(e).nombre} · en fabricación`, enCurso: true })),
+  ];
   const listas = [
-    ...listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto),
-    ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraUx),
-  ].sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999"));
+    ...enCurso,
+    ...[
+      ...listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto),
+      ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraUx),
+    ].sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999")),
+  ];
   // Orden a mano: se guarda la lista de ids; lo que no está en ella va detrás en su orden normal
   const orden = toArray(cfg.orden);
   const ordenar = (arr) => [...arr].sort((a, b) => {
