@@ -31010,9 +31010,11 @@ function agruparEtiquetasModelo(paginas) {
       const tip = ((texto.match(/TIPOLOG[IÍ]A:\s*([^\n]+)/i) || [])[1] || "").replace(/\s+/g, " ").trim();
       const med = texto.match(/([\d.]+,\d+)\s*x\s*([\d.]+,\d+)/);
       const fab = ((texto.match(/FAB:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, ""); // "1.271" → "1271", como el resto de lotes (Firebase no admite el punto en una clave)
-      const exp = ((ref.match(/EXP\.?\s*(\d+)/i) || [])[1]) || "";
+      // Uxcar pone "EXP 1234" en la referencia; nuestro programa pone "FAB:1.298,5208,CRM" (lote, nº de pedido, ref.): sin EXP se usa ese nº
+      const exp = ((ref.match(/EXP\.?\s*(\d+)/i) || [])[1]) || ((texto.match(/FAB:\s*[\d.]+\s*,\s*(\d+)/i) || [])[1]) || "";
       const planta = ((ref.match(/EXP\.?\s*\d+\s*(.*)$/i) || [])[1] || "").trim();
       let m = tip.match(/^([A-Za-z]{1,4}\d*)\.(\d+)$/);
+      const sinIndice = !m; // "v01" (sin ".1"): si hay varias unidades del mismo modelo vienen etiquetas iguales, una por unidad
       if (!tip || !fab || !exp) { ignoradas++; return; }
       if (!m && /^persiana/i.test(tip)) { persianas++; return; } // las persianas no son ventanas: no llevan código
       if (!m) {
@@ -31021,8 +31023,17 @@ function agruparEtiquetasModelo(paginas) {
         const n = nTxt ? parseInt(nTxt, 10) % 100 : ++extrasSinNumero;
         m = [tip, tip, String(900 + n)];
       }
-      const code = "9" + fab.replace(/\D/g, "").slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + m[2].slice(-3).padStart(3, "0");
-      const id = `${fab}|${exp}|${tip}`;
+      const base = "9" + fab.replace(/\D/g, "").slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0");
+      let code = base + m[2].slice(-3).padStart(3, "0");
+      let id = `${fab}|${exp}|${tip}`;
+      if (vistos.has(code) && sinIndice) {
+        // Otra unidad del mismo modelo: 2ª → 1nn, 3ª → 2nn… (nn = nº del modelo)
+        const n = parseInt(m[2], 10) % 100;
+        let k = 1;
+        while (vistos.has(base + String(100 * k + n).padStart(3, "0")) && k < 8) k++;
+        code = base + String(100 * k + n).padStart(3, "0");
+        id = `${fab}|${exp}|${tip}|${k + 1}`;
+      }
       if (vistos.has(code)) { repetidas++; return; }
       vistos.add(code);
       let lote = lotes.get(fab);
