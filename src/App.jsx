@@ -31655,7 +31655,7 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
 // ---- EXPEDIENTE RÁPIDO: solo "Listado de vidrios" + "Hoja de corte" ----
 // Del listado de vidrios salen el nº de fabricación (lote), el expediente y los presupuestos; de la hoja de corte, una ventana por UNIDAD
 // (posición, color, medidas, vidrio, sistema, mosquitera, cerradura, apertura exterior). No lee etiquetas ni dibujos, no crea pedidos y no toca el stock.
-const RAPIDO_MIN_ESPECIAL = 440; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
+const RAPIDO_MIN_ESPECIAL = 650; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
 const pptoBonito = (d) => { const s = String(d || "").replace(/\D/g, ""); return s.length > 3 ? `${s.slice(0, -3)}.${s.slice(-3)}` : s; };
 const mmRapido = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
 const normPosRapido = (p) => String(p || "").replace(/\s+/g, "").toUpperCase();
@@ -38022,7 +38022,7 @@ Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de v
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
   },
   {
-    para: "equipo", orden: 4, version: 3, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    para: "equipo", orden: 4, version: 4, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
     contenido: `## Resumen
 Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
 
@@ -38047,7 +38047,7 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 ## Reglas
 - Los presupuestos **no se mezclan**: cada ventana lleva su número de presupuesto y su versión.
 - Las posiciones dobles se separan: V07.012,013 → V07.012 y V07.013; V02.104.103 → V02.104 y V02.103.
-- Una ventana con **ancho o alto menor de 440 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
+- Una ventana con **ancho o alto menor de 650 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
 - El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
 - Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
 - **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y al guardar los **SACA del almacén** (se descuentan; ya no hay que quitarlos a mano). Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Las persianas que salgan también se sacan del almacén de persianas. Subir otra vez el mismo lote NO vuelve a descontar.
