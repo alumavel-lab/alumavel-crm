@@ -6802,8 +6802,13 @@ function PanelRapido({ rap, setRap }) {
             Almacén de cristales: {rap.chk.encontrados} de {rap.chk.pedidos} cristales encontrados{rap.chk.pers.pedidas ? ` · persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}` : ""}
             {rap.chk.faltan.length ? " · se guarda igualmente: los que faltan quedan PENDIENTES en el control" : " · al guardar se SACAN del almacén (se pueden devolver desde el control)"}
           </div>
-          {rap.chk.faltan.map((a, i) => <div key={i} className="text-xs text-amber-800">• {a}</div>)}
-          {rap.chk.faltan.length > 0 && <div className="text-xs text-slate-600">Cuando lleguen los cristales, pulsa "Sacar del almacén" en la tabla naranja de Línea (pistola) → Almacén de ventanas.</div>}
+          {rap.chk.faltan.length > 0 && <div className="text-xs text-slate-600">Sin acción por tu parte: se guardan las ventanas y lo que falta queda pendiente. Cuando lleguen los cristales, pulsa "Sacar del almacén" en la tabla naranja de Línea (pistola) → Almacén de ventanas.</div>}
+          {rap.chk.faltan.length > 0 && (
+            <details className="text-xs text-slate-500">
+              <summary className="cursor-pointer">Ver qué falta ({rap.chk.faltan.length}) · solo informativo</summary>
+              {rap.chk.faltan.map((a, i) => <div key={i}>• {a}</div>)}
+            </details>
+          )}
           {rap.chk.yaSacados.length > 0 && <div className="text-xs text-slate-700">Lote {rap.chk.yaSacados.join(", ")}: ya se sacó del almacén en una subida anterior; no se vuelve a descontar.</div>}
         </div>
       )}
@@ -31767,7 +31772,6 @@ function crearExpedienteRapido(listados, cortes) {
         if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
         const esEsp = false; // las especiales pasan por los almacenes de cristales y persianas igual que el resto
         filas.forEach((f) => { if (!esEsp && f.ancho && f.alto && f.uds) cristalesReq.push({ fab: L.fab, exp, ppto, modelo: f.modelo, ancho: f.ancho, alto: f.alto, uds: f.uds }); });
-        if (c.persianaTexto && !esEsp) avisos.push(`${pptoBonito(ppto)} ${c.pos}: lleva persiana ("${c.persianaTexto.slice(0, 50)}"). Se comprueba en el almacén de persianas.`);
         const posiciones = posicionesRapido(c.pos);
         const uds = Math.max(1, Math.min(99, c.uds || 1));
         let nombres;
