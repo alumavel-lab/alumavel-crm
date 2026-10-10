@@ -32200,6 +32200,12 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
     ...toArray(sinObra).filter((l) => l.rapido).map((l) => ({ key: `s-${l.fab}`, dest: "Sin obra", l })),
     ...lotesTodos.flatMap((o) => o.lotes.filter((l) => l.rapido).map((l) => ({ key: o.key, dest: o.nombre, l }))),
   ].sort((a, b) => String((b.l.control || {}).fecha || b.l.fecha || "").localeCompare(String((a.l.control || {}).fecha || a.l.fecha || "")));
+  // Almacén de especiales (ventanas de menos de 650 mm): salen de los expedientes rápidos y no pasan por los almacenes de cristales ni de persianas
+  const especiales = [
+    ...toArray(sinObra).map((l) => ({ dest: "Sin obra", l })),
+    ...lotesTodos.flatMap((o) => o.lotes.map((l) => ({ dest: o.nombre, l }))),
+  ].filter((x) => x.l.rapido).flatMap((x) => toArray(x.l.ventanas).filter((v) => v.rapido && v.rapido.especial).map((v) => ({ ...x, v })));
+  const [verEsp, setVerEsp] = useState(true);
   const nCrist = (c) => toArray((c || {}).cristales).reduce((a, x) => a + (parseFloat(x.n) || 0), 0);
   const deshacerRapido = (x) => {
     const c = x.l.control;
@@ -32259,6 +32265,25 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                 </table>
               </div>
               <div className="text-[11px] text-slate-500">Los cristales y persianas se sacaron del almacén al guardar. "Deshacer" los devuelve y borra el lote.</div>
+            </div>
+          )}
+          {especiales.length > 0 && (
+            <div className="rounded-md border border-violet-300 bg-violet-50 p-2 space-y-1">
+              <button onClick={() => setVerEsp(!verEsp)} className="text-xs font-bold text-violet-800">{verEsp ? "▾" : "▸"} Almacén de especiales ({especiales.length}) · menos de 650 mm · sin cristal ni persiana de los almacenes</button>
+              {verEsp && (
+                <div className="overflow-x-auto">
+                  <table className="text-xs w-full">
+                    <thead><tr className="text-left text-slate-500"><th className="pr-2">Lote</th><th className="pr-2">Ppto</th><th className="pr-2">Pos.</th><th className="pr-2">Medidas</th><th className="pr-2">Sistema</th><th className="pr-2">Color</th><th className="pr-2">Vidrio</th><th className="pr-2">Cliente</th><th>Destino</th></tr></thead>
+                    <tbody>
+                      {especiales.map((x) => (
+                        <tr key={x.v.id} className="border-t border-violet-200">
+                          <td className="pr-2 font-semibold">{x.l.fab}</td><td className="pr-2">{pptoBonito(x.v.num)}</td><td className="pr-2 font-semibold">{x.v.pos}</td>
+                          <td className="pr-2 whitespace-nowrap">{x.v.rapido.ancho} x {x.v.rapido.alto}</td><td className="pr-2">{x.v.rapido.sistema}</td><td className="pr-2">{x.v.color}</td><td className="pr-2">{x.v.rapido.vidrio}</td><td className="pr-2">{x.v.cliente}</td><td>{x.dest}</td>
+                        </tr>))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
           {pend && (
