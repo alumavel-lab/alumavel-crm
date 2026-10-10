@@ -3488,7 +3488,7 @@ export default function App() {
   const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
   const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
   // Lotes de Expediente rápido que ya sacaron cristales/persianas de los almacenes (para no descontar dos veces al volver a subirlos)
-  almacenRapido.controlPrevio = new Map([...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].filter((l) => l && l.control).map((l) => [l.fab, l.control]));
+  almacenRapido.controlPrevio = new Map([...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].filter((l) => l && l.control && !l.control.pendiente).map((l) => [l.fab, l.control]));
 
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
@@ -6825,7 +6825,7 @@ function PanelRapido({ rap, setRap }) {
 }
 // Botón naranja "Expediente rápido": se usa fuera de las pestañas (arriba de la obra y arriba de Uxcar) y dentro del recuadro de etiquetas.
 // lotes = los que ya tiene la obra/expediente · onGuardar(lotesNuevos) guarda la lista completa.
-function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno }) {
+function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno, sinAlmacen }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [rap, setRap] = useState(null); // vista previa: { r, archivos, colores }
@@ -6839,7 +6839,7 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
     try {
       const r = await leerExpedienteRapidoPdfs(files, setAviso);
       if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
-      const chk = almacenRapido.saveCristales ? comprobarAlmacenRapido(r) : null; // en el portal de Uxcar no hay almacén que comprobar
+      const chk = almacenRapido.saveCristales && !sinAlmacen ? comprobarAlmacenRapido(r) : null; // en el portal de Uxcar no hay almacén que comprobar
       setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {}, chk, saltar: false });
       setAviso("");
     } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
@@ -31873,7 +31873,10 @@ function prepararSalidaAlmacenRapido(r, chk, archivos) {
   const fecha = `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
   const por = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
   const ctl = new Map();
-  r.lotes.forEach((l) => ctl.set(l.fab, previo.has(l.fab) ? previo.get(l.fab) : { fecha, por, archivos: archivos || "", cristales: [], persianas: [], forzado: !!(chk && chk.faltan.length), faltaban: chk ? chk.faltan.slice(0, 30) : [] }));
+  // Sin acceso al almacén (portal de Uxcar) el lote queda "pendiente": Ecowin lo saca del almacén desde el CRM con un clic, con lo pedido guardado en control.req
+  r.lotes.forEach((l) => ctl.set(l.fab, previo.has(l.fab) ? previo.get(l.fab) : chk
+    ? { fecha, por, archivos: archivos || "", cristales: [], persianas: [], forzado: !!chk.faltan.length, faltaban: chk.faltan.slice(0, 30) }
+    : { fecha, por, archivos: archivos || "", pendiente: true, cristales: [], persianas: [], forzado: false, faltaban: [], req: { cristales: toArray(r.cristalesReq).filter((q) => q.fab === l.fab), persianas: toArray(r.persianasReq).filter((q) => q.fab === l.fab) } }));
   let cabsNuevas = null, persNuevas = null;
   if (chk && almacenRapido.saveCristales && chk.reservasCristal.size) {
     const orig = toArray(almacenRapido.cristales);
@@ -32213,6 +32216,19 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
   ].filter((x) => x.l.rapido).flatMap((x) => toArray(x.l.ventanas).filter((v) => v.rapido && v.rapido.especial).map((v) => ({ ...x, v })));
   const [verEsp, setVerEsp] = useState(true);
   const nCrist = (c) => toArray((c || {}).cristales).reduce((a, x) => a + (parseFloat(x.n) || 0), 0);
+  const nPend = rapidos.filter((x) => x.l.control && x.l.control.pendiente).length;
+  const sacarPendiente = (x) => {
+    const c = x.l.control; if (!c || !c.pendiente) return;
+    const r = { lotes: [JSON.parse(JSON.stringify(x.l))], cristalesReq: toArray(c.req && c.req.cristales), persianasReq: toArray(c.req && c.req.persianas) };
+    const chk = comprobarAlmacenRapido(r);
+    if (chk.faltan.length && !window.confirm(`Faltan cosas en los almacenes:\n\n- ${chk.faltan.slice(0, 12).join("\n- ")}\n\n¿Sacar igualmente lo que sí está?`)) return;
+    delete r.lotes[0].control;
+    const prep = prepararSalidaAlmacenRapido(r, chk, c.archivos);
+    if (r.lotes[0].control) r.lotes[0].control.por = c.por || r.lotes[0].control.por;
+    if (!onSubir(String(x.key).startsWith("s-") ? "" : x.key, r, c.archivos)) return;
+    confirmarSalidaAlmacenRapido(prep);
+    setAviso(`Lote ${x.l.fab}: sacados del almacén ${chk.encontrados} de ${chk.pedidos} cristales${chk.pers.pedidas ? ` y ${chk.pers.encontradas} de ${chk.pers.pedidas} persianas` : ""}.`);
+  };
   const deshacerRapido = (x) => {
     const c = x.l.control;
     const msg = c
@@ -32245,7 +32261,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
           {rapidos.length > 0 && (
             <div className="rounded-md border border-orange-300 bg-orange-50 p-2 space-y-1">
-              <div className="text-xs font-bold text-orange-800">Control de expedientes rápidos ({rapidos.length}) · lo que ha entrado por aquí y lo que ha salido de los almacenes</div>
+              <div className="text-xs font-bold text-orange-800">Control de expedientes rápidos ({rapidos.length}) · lo que ha entrado por aquí y lo que ha salido de los almacenes{nPend ? ` · ⏳ ${nPend} pendiente${nPend === 1 ? "" : "s"} de sacar del almacén (los ha metido Uxcar desde su portal)` : ""}</div>
               <div className="overflow-x-auto">
                 <table className="text-xs w-full">
                   <thead><tr className="text-left text-slate-500"><th className="pr-2">Fecha</th><th className="pr-2">Lote</th><th className="pr-2">Exp.</th><th className="pr-2">Destino</th><th className="pr-2">Ventanas</th><th className="pr-2">Cristales sacados</th><th className="pr-2">Persianas</th><th className="pr-2">Quién</th><th className="pr-2">Archivos</th><th></th></tr></thead>
@@ -32257,12 +32273,13 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                         <td className="pr-2">{x.l.expediente}</td>
                         <td className="pr-2">{x.dest}</td>
                         <td className="pr-2">{toArray(x.l.ventanas).length}</td>
-                        <td className="pr-2">{c ? nCrist(c) : "—"}</td>
+                        <td className="pr-2">{c ? (c.pendiente ? <span className="text-amber-700 font-semibold">⏳ pendiente</span> : nCrist(c)) : "—"}</td>
                         <td className="pr-2">{c ? toArray(c.persianas).length : "—"}</td>
                         <td className="pr-2">{c ? (c.por || "").split("@")[0] : "—"}</td>
                         <td className="pr-2 max-w-[220px] truncate" title={c && c.archivos}>{c ? c.archivos : "sin control (subido antes)"}</td>
                         <td className="whitespace-nowrap">
                           {c && c.forzado && <span className="text-rose-700 font-semibold mr-2" title={toArray(c.faltaban).join("\n")}>⚠ guardado con faltas ({toArray(c.faltaban).length})</span>}
+                          {c && c.pendiente && <button onClick={() => sacarPendiente(x)} className="text-emerald-700 font-semibold hover:underline mr-2">Sacar del almacén</button>}
                           <button onClick={() => imprimirPegatinasExpediente([x.l])} className="text-sky-700 hover:underline mr-2">Pegatinas</button>
                           <button onClick={() => deshacerRapido(x)} className="text-rose-700 hover:underline">Deshacer</button>
                         </td>
@@ -38056,7 +38073,7 @@ Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de v
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
   },
   {
-    para: "equipo", orden: 4, version: 6, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    para: "equipo", orden: 4, version: 7, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
     contenido: `## Resumen
 Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
 
@@ -38086,6 +38103,7 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 - Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
 - **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y al guardar los **SACA del almacén** (se descuentan; ya no hay que quitarlos a mano). Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Las persianas que salgan también se sacan del almacén de persianas. Subir otra vez el mismo lote NO vuelve a descontar.
 - Si el CRM no reconoce cristales que sí están (por ejemplo porque el packing list no trae el expediente), hay una casilla para guardar igualmente esa vez. Úsala solo después de comprobarlo a mano: solo se saca lo que sí se ha encontrado y lo que faltaba queda anotado en el control.
+- **Portal de Uxcar:** Uxcar tiene el mismo botón naranja arriba de "Mis expedientes" para sus urgentes (si el expediente no existe, se crea solo con el número del PDF). Su portal no ve vuestros almacenes, así que esos lotes salen en el control como **⏳ pendiente**: pulsa **Sacar del almacén** y se descuentan los cristales y persianas.
 - **Control:** en Línea (pistola) → Almacén de ventanas, bajo "Etiquetas de fabricación", aparece la tabla naranja "Control de expedientes rápidos" con fecha, lote, quién lo metió, cuántos cristales y persianas salieron y los archivos. El botón **Deshacer** devuelve los cristales y persianas al almacén y borra el lote (por si te has equivocado de PDF).
 - No sale el aviso "Faltan documentos" en los lotes hechos así.
 
@@ -38099,6 +38117,46 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 ];
 
 
+// Botón naranja de arriba del portal: Uxcar mete sus expedientes urgentes (listado de vidrios + hoja de corte) sin rellenar el formulario de expediente.
+// Si el expediente no existe se crea solo con el número del PDF. Los cristales y persianas los saca Ecowin del almacén después (el portal no ve los almacenes).
+function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
+  const [sel, setSel] = useState("__nuevo");
+  const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
+  const exp = sel === "__nuevo" ? null : lista.find((e) => e.id === sel) || null;
+  const guardarEn = async (e, ls) => {
+    try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${e.id}`), { etiquetasFab: JSON.parse(JSON.stringify(ls)) }); aviso(`Guardado en el expediente ${e.numero}. Ecowin PVC ya puede fabricarlo.`); } catch (er) { aviso("No se pudo guardar: " + er.message); }
+  };
+  const guardarNuevos = async (ls) => {
+    const por = new Map();
+    toArray(ls).forEach((l) => { const n = String(l.expediente || l.fab); por.set(n, [...(por.get(n) || []), l]); });
+    try {
+      for (const [num, lotes] of por) {
+        const ya = expedientes.find((e) => String(e.numero).replace(/\D/g, "") === num.replace(/\D/g, "") && num.replace(/\D/g, ""));
+        if (ya) { await guardarEn(ya, [...toArray(ya.etiquetasFab).filter((x) => !lotes.some((l) => l.fab === x.fab)), ...lotes]); continue; }
+        const id = uid();
+        await fbSet(ref(fbDb, `portalUxcar/expedientes/${id}`), JSON.parse(JSON.stringify({
+          id, numero: num, tipo: tipos[0] || "", ventanas: lotes.reduce((a, l) => a + toArray(l.ventanas).length, 0), puertas: "", osciloParalelas: "", recuento: [], controlOtros: false,
+          observaciones: "URGENTE · metido con Expediente rápido (listado de vidrios + hoja de corte)", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid, etiquetasFab: lotes,
+        })));
+        aviso(`Expediente ${num} creado y guardado. Ecowin PVC ya puede fabricarlo.`);
+      }
+    } catch (er) { aviso("No se pudo guardar: " + er.message); }
+  };
+  return (
+    <div className="flex flex-wrap items-start gap-2 mb-5 p-3 rounded-lg border border-orange-200 bg-orange-50/60">
+      <div className="w-full text-xs text-slate-600"><b>Expediente urgente:</b> sube el <b>listado de vidrios</b> y la <b>hoja de corte</b> (selecciona los dos a la vez). Se crea una ventana por unidad con su pegatina, sin rellenar nada más.</div>
+      <label className="text-xs text-slate-700 flex items-center gap-1.5 self-center">Guardar en:
+        <select value={exp ? exp.id : "__nuevo"} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+          <option value="__nuevo">Expediente nuevo (con el número del PDF)</option>
+          {lista.map((e) => <option key={e.id} value={e.id}>Expediente {e.numero}</option>)}
+        </select>
+      </label>
+      {exp
+        ? <BotonExpedienteRapido sinAlmacen key={exp.id} lotes={exp.etiquetasFab} onGuardar={(l) => guardarEn(exp, l)} />
+        : <BotonExpedienteRapido sinAlmacen key="nuevo" lotes={[]} onGuardar={guardarNuevos} />}
+    </div>
+  );
+}
 function PortalUxcar({ authUser, perfil, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -38226,6 +38284,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("resumen", "Resumen")}
           {tab("condiciones", "Condiciones")}
         </div>
+        {datos && vista === "lista" && <PortalRapidoArriba expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} aviso={aviso} />}
         {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
         {!datos ? (
           <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
