@@ -38543,6 +38543,11 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
             <h2 className="text-xl font-extrabold text-slate-900">{abierto.numero}</h2>
             <UxEstado estado={abierto.estado} />
             <UxSemaforo exp={abierto} conTexto />
+            {isAdmin && <button onClick={() => {
+              const sacados = toArray(abierto.etiquetasFab).some((l) => l && l.control && !l.control.pendiente && (toArray(l.control.cristales).length || toArray(l.control.persianas).length));
+              if (!confirm(`¿Borrar el expediente ${abierto.numero}? Desaparece también del portal de Uxcar. El proyecto del CRM no se borra.${sacados ? "\n\nOJO: de este expediente ya se sacaron cristales/persianas del almacén y NO se devuelven al borrarlo. Si te has equivocado, cancela y usa primero \"Deshacer\" en Línea (pistola) → Almacén de ventanas." : ""}`)) return;
+              onBorrar(abierto); setVista("lista");
+            }} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>}
           </div>
           <UxControl3 exp={abierto} pedidos={uxPedidos} onCambiarMaterial={onCambiarMaterial} onCambiarControlOtros={onCambiarControlOtros}
             onGuardarListado={onGuardarListadoUx} />
