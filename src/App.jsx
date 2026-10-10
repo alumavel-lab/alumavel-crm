@@ -31760,8 +31760,7 @@ function crearExpedienteRapido(listados, cortes) {
         const codigos = [...new Set(filas.map((f) => f.codigo))];
         const vidrioAv = filas.filter((f) => esVidrioSospechoso(f.codigo));
         if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
-        const esEsp = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL); // las especiales no pasan por el almacén de cristales ni el de persianas
-        if (esEsp) avisos.push(`${pptoBonito(ppto)} ${c.pos} (${c.ancho} x ${c.alto}) es ESPECIAL: su cristal y su persiana no se comprueban ni se sacan de los almacenes.`);
+        const esEsp = false; // las especiales pasan por los almacenes de cristales y persianas igual que el resto
         filas.forEach((f) => { if (!esEsp && f.ancho && f.alto && f.uds) cristalesReq.push({ fab: L.fab, exp, ppto, modelo: f.modelo, ancho: f.ancho, alto: f.alto, uds: f.uds }); });
         if (c.persianaTexto && !esEsp) avisos.push(`${pptoBonito(ppto)} ${c.pos}: lleva persiana ("${c.persianaTexto.slice(0, 50)}"). Se comprueba en el almacén de persianas.`);
         const posiciones = posicionesRapido(c.pos);
@@ -32200,7 +32199,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
     ...toArray(sinObra).filter((l) => l.rapido).map((l) => ({ key: `s-${l.fab}`, dest: "Sin obra", l })),
     ...lotesTodos.flatMap((o) => o.lotes.filter((l) => l.rapido).map((l) => ({ key: o.key, dest: o.nombre, l }))),
   ].sort((a, b) => String((b.l.control || {}).fecha || b.l.fecha || "").localeCompare(String((a.l.control || {}).fecha || a.l.fecha || "")));
-  // Almacén de especiales (ventanas de menos de 650 mm): salen de los expedientes rápidos y no pasan por los almacenes de cristales ni de persianas
+  // Almacén de especiales (ventanas de menos de 650 mm): salen de los expedientes rápidos; sus cristales y persianas se descuentan igual que los demás
   const especiales = [
     ...toArray(sinObra).map((l) => ({ dest: "Sin obra", l })),
     ...lotesTodos.flatMap((o) => o.lotes.map((l) => ({ dest: o.nombre, l }))),
@@ -32269,7 +32268,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
           )}
           {especiales.length > 0 && (
             <div className="rounded-md border border-violet-300 bg-violet-50 p-2 space-y-1">
-              <button onClick={() => setVerEsp(!verEsp)} className="text-xs font-bold text-violet-800">{verEsp ? "▾" : "▸"} Almacén de especiales ({especiales.length}) · menos de 650 mm · sin cristal ni persiana de los almacenes</button>
+              <button onClick={() => setVerEsp(!verEsp)} className="text-xs font-bold text-violet-800">{verEsp ? "▾" : "▸"} Almacén de especiales ({especiales.length}) · menos de 650 mm · su cristal y persiana salen de los almacenes de cristales y persianas como los demás</button>
               {verEsp && (
                 <div className="overflow-x-auto">
                   <table className="text-xs w-full">
@@ -38049,7 +38048,7 @@ Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de v
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
   },
   {
-    para: "equipo", orden: 4, version: 5, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    para: "equipo", orden: 4, version: 6, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
     contenido: `## Resumen
 Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
 
@@ -38074,7 +38073,7 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 ## Reglas
 - Los presupuestos **no se mezclan**: cada ventana lleva su número de presupuesto y su versión.
 - Las posiciones dobles se separan: V07.012,013 → V07.012 y V07.013; V02.104.103 → V02.104 y V02.103.
-- Una ventana con **ancho o alto menor de 650 mm** sale marcada como **ESPECIAL** (el CRM la marca y NO comprueba ni saca su cristal ni su persiana de los almacenes, porque las especiales no pasan por ellos).
+- Una ventana con **ancho o alto menor de 650 mm** sale marcada como **ESPECIAL** (el CRM la marca y la lista en el Almacén de especiales; su cristal y su persiana se comprueban y se sacan de los almacenes igual que las demás).
 - El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
 - Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
 - **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y al guardar los **SACA del almacén** (se descuentan; ya no hay que quitarlos a mano). Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Las persianas que salgan también se sacan del almacén de persianas. Subir otra vez el mismo lote NO vuelve a descontar.
