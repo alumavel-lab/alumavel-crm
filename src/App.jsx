@@ -32138,6 +32138,12 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
   const rapRef = useRef(null);
   const total = toArray(sinObra).length + lotesTodos.reduce((a, x) => a + x.lotes.length, 0);
   const [ver, setVer] = useState(total === 0);
+  const cajaRef = useRef(null);
+  useEffect(() => {
+    const h = () => { setVer(true); setTimeout(() => { if (cajaRef.current) cajaRef.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, 100); };
+    window.addEventListener("abrir-expediente-rapido", h);
+    return () => window.removeEventListener("abrir-expediente-rapido", h);
+  }, []);
   const sugerir = (exp) => {
     if (!exp) return "";
     const c = obras.filter((o) => o.nombre.startsWith(`#${exp} `) || o.nombre === `Uxcar exp. ${exp}`);
@@ -32217,7 +32223,7 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
     setAviso(`Lote ${x.l.fab} deshecho.${c ? ` Devueltos al almacén: ${nCrist(c)} cristales y ${toArray(c.persianas).length} persianas.` : ""}`);
   };
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+    <div ref={cajaRef} className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => setVer(!ver)} className="text-sm font-semibold text-slate-700 hover:underline">{ver ? "▾" : "▸"} Etiquetas de fabricación (PDF de la línea)</button>
         <span className="text-xs text-slate-500">{total ? `${total} lote${total === 1 ? "" : "s"} cargado${total === 1 ? "" : "s"}${toArray(sinObra).length ? ` · ${toArray(sinObra).length} sin obra` : ""}` : "Todavía no hay ninguno: sube el PDF para que la pistola reconozca las ventanas."}</span>
@@ -33928,6 +33934,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <PanelVienenPorLinea indice={indicePiezas} />
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
+        {onGuardarEtiquetasObra && <button onClick={() => window.dispatchEvent(new CustomEvent("abrir-expediente-rapido"))} style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md">⚡ Expediente rápido</button>}
         {pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
         {lista.length > 0 && <button onClick={() => { const todas = almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista; if (confirm(`Se van a imprimir ${todas.length} etiquetas (una por caballete). Para imprimir solo una, usa la impresora de la tarjeta del caballete. ¿Imprimir todas?`)) imprimirYMarcar(todas); }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"><Printer size={13} /> Reimprimir todas</button>}
         <button onClick={nuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Plus size={14} /> Añadir caballete</button>
