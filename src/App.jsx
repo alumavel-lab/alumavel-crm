@@ -31670,7 +31670,11 @@ function posicionesRapido(pos) {
   return [p];
 }
 function esVidrioSospechoso(cod) { const c = String(cod || "").toUpperCase(); return !!c && (!/ARG/.test(c) || !/BE|EMIS/.test(c)); }
-function esListadoVidriosRapido(paginas) { return /LISTADO (DE )?VIDRIOS/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n")); }
+const textoCabeceraRapido = (paginas, n = 3) => paginas.slice(0, n).map((it) => it.join(" ")).join("\n").replace(/\s+/g, " ");
+function esListadoVidriosRapido(paginas) {
+  const t = textoCabeceraRapido(paginas);
+  return /LISTADO\s*(DE\s*)?VIDRIOS/i.test(t) || (/Fabricaci[oó]n\s*:\s*[\d.]+/i.test(t) && /N[uú]mero\s*:\s*[\d.]+\s*Versi/i.test(t) && !/HOJA\s*DE\s*CORTE/i.test(t));
+}
 function agruparVidriosRapido(paginas) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   const fab = ((todo.match(/Fabricaci[oó]n\s*:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, "");
@@ -31953,19 +31957,20 @@ function devolverAlmacenRapido(control) {
 }
 async function leerExpedienteRapidoPdfs(files, onProgreso) {
   const lib = await cargarPdfJs();
-  const listados = [], cortes = [], avisos = [];
+  const listados = [], cortes = [], avisos = [], leidos = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (onProgreso) onProgreso(`Leyendo ${file.name} (${i + 1} de ${files.length})…`);
     const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
     const paginas = [];
     for (let n = 1; n <= doc.numPages; n++) { const tc = await (await doc.getPage(n)).getTextContent(); paginas.push(tc.items.map((it) => it.str + (it.hasEOL ? "\n" : ""))); }
-    if (esListadoVidriosRapido(paginas)) listados.push(agruparVidriosRapido(paginas));
-    else if (/HOJA DE CORTE/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n"))) cortes.push(...agruparCorteRapido(paginas));
-    else avisos.push(`${file.name}: no es un listado de vidrios ni una hoja de corte. No lo he usado.`);
+    const cab = textoCabeceraRapido(paginas);
+    if (/HOJA\s*DE\s*CORTE/i.test(cab)) { cortes.push(...agruparCorteRapido(paginas)); leidos.push(`${file.name}: hoja de corte`); }
+    else if (esListadoVidriosRapido(paginas)) { listados.push(agruparVidriosRapido(paginas)); leidos.push(`${file.name}: listado de vidrios`); }
+    else { avisos.push(`${file.name}: no es un listado de vidrios ni una hoja de corte. No lo he usado.`); leidos.push(`${file.name}: NO RECONOCIDO${cab.trim() ? ` (empieza por «${cab.trim().slice(0, 70)}»)` : " (no tiene texto: ¿es un escaneo o una foto?)"}`); }
   }
-  if (!listados.length) throw new Error("Falta el LISTADO DE VIDRIOS: de él sale el número de fabricación (lote) y el expediente. Selecciona a la vez el listado de vidrios y la hoja de corte.");
-  if (!cortes.length) throw new Error("Falta la HOJA DE CORTE: de ella salen las ventanas una a una. Selecciona a la vez el listado de vidrios y la hoja de corte.");
+  if (!listados.length) throw new Error(`Falta el LISTADO DE VIDRIOS: de él sale el número de fabricación (lote) y el expediente. Selecciona a la vez el listado de vidrios y la hoja de corte. He leído: ${leidos.join(" · ")}.`);
+  if (!cortes.length) throw new Error(`Falta la HOJA DE CORTE: de ella salen las ventanas una a una. Selecciona a la vez el listado de vidrios y la hoja de corte. He leído: ${leidos.join(" · ")}.`);
   const r = crearExpedienteRapido(listados, cortes);
   r.avisos = [...avisos, ...r.avisos];
   return r;
