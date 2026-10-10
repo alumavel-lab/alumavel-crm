@@ -6780,12 +6780,81 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
 // (va detrás) y para contar las ventanas por tipo (parte diario e informes).
 // PDF de etiquetas de fabricación (una por perfil) de la obra: sirve para que la pistola
 // reconozca a qué ventana pertenece cada etiqueta en el Almacén de ventanas.
+// Botón naranja "Expediente rápido": se usa fuera de las pestañas (arriba de la obra y arriba de Uxcar) y dentro del recuadro de etiquetas.
+// lotes = los que ya tiene la obra/expediente · onGuardar(lotesNuevos) guarda la lista completa.
+function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const [rap, setRap] = useState(null); // vista previa: { r, archivos, colores }
+  const inputRef = useRef(null);
+  const lotesRef = useRef(toArray(lotesProp)); lotesRef.current = toArray(lotesProp);
+  const guardarRef = useRef(onGuardar); guardarRef.current = onGuardar;
+  const subirRapido = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length) return;
+    setLeyendo(true); setAviso("Leyendo los PDF…"); setRap(null);
+    try {
+      const r = await leerExpedienteRapidoPdfs(files, setAviso);
+      if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
+      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {} });
+      setAviso("");
+    } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
+    finally { setLeyendo(false); }
+  };
+  const guardarRapido = (imprimir) => {
+    if (!rap) return;
+    const r = JSON.parse(JSON.stringify(rap.r));
+    const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
+    if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está aquí con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
+    r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
+    guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
+    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}). No se ha tocado el stock ni se ha creado ningún pedido.`);
+    setRap(null);
+    if (imprimir) imprimirPegatinasExpediente(r.lotes);
+  };
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { subirRapido(e.target.files); e.target.value = ""; }} />
+      <button disabled={leyendo || deshabilitado} onClick={() => inputRef.current && inputRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
+        {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Expediente rápido (vidrios + hoja de corte)"}
+      </button>
+      {(aviso || avisoExterno) && <p className="w-full text-xs text-amber-700 basis-full">{aviso || avisoExterno}</p>}
+      {rap && (
+        <div className="w-full basis-full rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2 text-left">
+          <div className="text-sm text-slate-800"><b>Expediente rápido</b> · {rap.r.etiquetas} ventanas (una pegatina por unidad) · {rap.r.lotes.map((l) => `lote ${l.fab}${l.expediente ? ` (exp. ${l.expediente}${l.parte ? `, ${l.parte}ª parte` : ""})` : ""}: ${l.ventanas.length}`).join(" · ")}</div>
+          {rap.r.avisos.length > 0 && (
+            <div className="rounded-md border border-rose-300 bg-rose-50 p-2 space-y-0.5">
+              <div className="text-xs font-bold text-rose-700">Revisa antes de guardar ({rap.r.avisos.length}):</div>
+              {rap.r.avisos.map((a, i) => <div key={i} className="text-xs text-rose-700">⚠ {a}</div>)}
+            </div>
+          )}
+          <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
+          <div className="flex flex-wrap gap-2">
+            {[...new Set(rap.r.lotes.flatMap((l) => l.ventanas.map((v) => v.num)))].map((n) => {
+              const c0 = (rap.r.lotes.flatMap((l) => l.ventanas).find((v) => v.num === n) || {}).color;
+              return <label key={n} className="text-xs text-slate-700 flex items-center gap-1">{n}: <input value={(rap.colores || {})[n] ?? ""} placeholder={c0} onChange={(e) => setRap({ ...rap, colores: { ...rap.colores, [n]: e.target.value } })} className="border border-slate-300 rounded px-1.5 py-0.5 w-24 bg-white" /></label>;
+            })}
+          </div>
+          <details className="text-xs text-slate-600">
+            <summary className="cursor-pointer font-semibold">Ver las {rap.r.etiquetas} ventanas</summary>
+            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+              {rap.r.lotes.flatMap((l) => l.ventanas.map((v) => <div key={v.id} className={v.rapido.aviso ? "text-rose-700 font-semibold" : ""}>{l.fab} · {v.num} · <b>{v.pos}</b> · {v.rapido.ancho} x {v.rapido.alto} · {v.rapido.vidrio}{v.rapido.mosquitera ? " · mosquitera" : ""}{v.rapido.cerradura ? " · cerradura" : ""}{v.rapido.aperturaExterior ? " · ap. exterior" : ""}{v.rapido.especial ? " · ESPECIAL" : ""}</div>))}
+            </div>
+          </details>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => guardarRapido(false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar</button>
+            <button onClick={() => guardarRapido(true)} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white">Guardar e imprimir pegatinas</button>
+            <button onClick={() => setRap(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupuestoNumero = "" }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const inputRef = useRef(null);
-  const rapRef = useRef(null);
-  const [rap, setRap] = useState(null); // vista previa del "Expediente rápido": { r, archivos, colores }
   const lotes = toArray(lotesProp);
   // Leer el PDF tarda unos segundos: al terminar se guarda con lo último que haya, no con lo de cuando se eligió el archivo
   const lotesRef = useRef(lotes); lotesRef.current = lotes;
@@ -6814,29 +6883,6 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
-  const subirRapido = async (lista) => {
-    const files = [...(lista || [])];
-    if (!files.length) return;
-    setLeyendo(true); setAviso("Leyendo los PDF…"); setRap(null);
-    try {
-      const r = await leerExpedienteRapidoPdfs(files, setAviso);
-      if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
-      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {} });
-      setAviso("");
-    } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
-    finally { setLeyendo(false); }
-  };
-  const guardarRapido = (imprimir) => {
-    if (!rap) return;
-    const r = JSON.parse(JSON.stringify(rap.r));
-    const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
-    if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está en esta obra con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
-    r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
-    guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
-    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (lote ${r.lotes.map((l) => `${l.fab}: ${l.ventanas.length}`).join(" · ")}). No se ha tocado el stock ni se ha creado ningún pedido.`);
-    setRap(null);
-    if (imprimir) imprimirPegatinasExpediente(r.lotes);
-  };
   const quitar = (fab) => {
     if (!window.confirm(`¿Quitar las etiquetas del lote ${fab}? Las ventanas que ya estén en caballetes se quedan donde están, pero la pistola dejará de reconocer ese lote.`)) return;
     onGuardar(JSON.parse(JSON.stringify(lotes.filter((l) => l.fab !== fab))));
@@ -6852,41 +6898,9 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : lotes.length ? "Añadir otro PDF" : "Subir PDF de etiquetas"}
         </button>
-        <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { subirRapido(e.target.files); e.target.value = ""; }} />
-        <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
-          <Upload size={14} /> Expediente rápido (vidrios + hoja de corte)
-        </button>
+        <BotonExpedienteRapido lotes={lotes} onGuardar={onGuardar} />
       </div>
       {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
-      {rap && (
-        <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
-          <div className="text-sm text-slate-800"><b>Expediente rápido</b> · {rap.r.etiquetas} ventanas (una pegatina por unidad) · {rap.r.lotes.map((l) => `lote ${l.fab}${l.expediente ? ` (exp. ${l.expediente}${l.parte ? `, ${l.parte}ª parte` : ""}): ${l.ventanas.length}` : `: ${l.ventanas.length}`}`).join(" · ")}</div>
-          {rap.r.avisos.length > 0 && (
-            <div className="rounded-md border border-rose-300 bg-rose-50 p-2 space-y-0.5">
-              <div className="text-xs font-bold text-rose-700">Revisa antes de guardar ({rap.r.avisos.length}):</div>
-              {rap.r.avisos.map((a, i) => <div key={i} className="text-xs text-rose-700">⚠ {a}</div>)}
-            </div>
-          )}
-          <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
-          <div className="flex flex-wrap gap-2">
-            {[...new Set(rap.r.lotes.flatMap((l) => l.ventanas.map((v) => v.num)))].map((n) => {
-              const c0 = (rap.r.lotes.flatMap((l) => l.ventanas).find((v) => v.num === n) || {}).color;
-              return <label key={n} className="text-xs text-slate-700 flex items-center gap-1">{n}: <input value={(rap.colores || {})[n] ?? ""} placeholder={c0} onChange={(e) => setRap({ ...rap, colores: { ...rap.colores, [n]: e.target.value } })} className="border border-slate-300 rounded px-1.5 py-0.5 w-24 bg-white" /></label>;
-            })}
-          </div>
-          <details className="text-xs text-slate-600">
-            <summary className="cursor-pointer font-semibold">Ver las {rap.r.etiquetas} ventanas</summary>
-            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-              {rap.r.lotes.flatMap((l) => l.ventanas.map((v) => <div key={v.id} className={v.rapido.aviso ? "text-rose-700 font-semibold" : ""}>{l.fab} · {v.num} · <b>{v.pos}</b> · {v.rapido.ancho} x {v.rapido.alto} · {v.rapido.vidrio}{v.rapido.mosquitera ? " · mosquitera" : ""}{v.rapido.cerradura ? " · cerradura" : ""}{v.rapido.aperturaExterior ? " · ap. exterior" : ""}{v.rapido.especial ? " · ESPECIAL" : ""}</div>))}
-            </div>
-          </details>
-          <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => guardarRapido(false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar</button>
-            <button onClick={() => guardarRapido(true)} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white">Guardar e imprimir pegatinas</button>
-            <button onClick={() => setRap(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
-          </div>
-        </div>
-      )}
       {lotes.map((l) => (
         <details key={l.fab} className="border border-slate-200 rounded-md">
           <summary className="px-3 py-2 text-sm cursor-pointer flex flex-wrap items-center gap-x-3">
@@ -7742,6 +7756,12 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
         </div>
+
+        {proyecto.origen !== "portalUxcar" && (
+          <div className="flex flex-wrap items-start gap-2 mt-3">
+            <BotonExpedienteRapido lotes={proyecto.etiquetasFab} onGuardar={(l) => onInlineUpdate(proyecto.id, { etiquetasFab: l })} />
+          </div>
+        )}
 
         {/* Cifras principales */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">
@@ -37765,7 +37785,7 @@ Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado 
 | Mosquitera, cerradura, apertura exterior | Hoja de corte (campos "Complementos" y "Persiana") |
 
 ## Cómo se hace
-Funciona igual en una **obra propia** y en un **expediente de Uxcar**: en el recuadro **"Etiquetas de fabricación"** pulsa **"Expediente rápido (vidrios + hoja de corte)"**.
+El botón naranja **"Expediente rápido (vidrios + hoja de corte)"** está **fuera de las pestañas**: arriba de cada obra (junto a las etiquetas de estado) y arriba del módulo **Uxcar** (eliges el expediente en el desplegable; si tienes uno abierto usa ese). También sale dentro del recuadro "Etiquetas de fabricación".
 1. Selecciona **a la vez** (con Ctrl pulsado) el listado de vidrios y la hoja de corte. Si el expediente tiene 1ª y 2ª parte, selecciona los 4 PDF juntos.
 2. Espera a que lea. Sale una vista previa con las ventanas creadas.
 3. Lee los **avisos en rojo** y corrige lo que haga falta. Puedes cambiar el color de cada presupuesto.
@@ -38046,6 +38066,25 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
   );
 }
 
+// Botón naranja arriba de todo en Uxcar: eliges el expediente (por defecto el que tienes abierto) y subes listado de vidrios + hoja de corte
+function UxRapidoArriba({ expedientes, abierto, onGuardar }) {
+  const [sel, setSel] = useState("");
+  const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
+  const id = (abierto && abierto.id) || sel || (lista[0] && lista[0].id) || "";
+  const exp = lista.find((e) => e.id === id) || lista[0];
+  if (!exp) return null;
+  return (
+    <div className="flex flex-wrap items-start gap-2 mb-4 p-3 rounded-lg border border-orange-200 bg-orange-50/60">
+      <label className="text-xs text-slate-700 flex items-center gap-1.5 self-center">Expediente:
+        <select value={exp.id} disabled={!!abierto} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+          {lista.map((e) => <option key={e.id} value={e.id}>{e.numero}</option>)}
+        </select>
+      </label>
+      <BotonExpedienteRapido key={exp.id} lotes={exp.etiquetasFab} onGuardar={(l) => onGuardar(exp, l)} />
+    </div>
+  );
+}
+
 function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
   const [vista, setVista] = useState("lista");
   const [abiertoId, setAbiertoId] = useState(null);
@@ -38072,6 +38111,7 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
+      {onGuardarEtiquetasUx && expedientes.length > 0 && <UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} />}
       {pendientesProduccion > 0 && vista === "lista" && (
         <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
           {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
