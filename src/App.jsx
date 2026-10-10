@@ -31741,6 +31741,7 @@ function crearExpedienteRapido(listados, cortes) {
   const lotes = [];
   const cristalesReq = [], persianasReq = [];
   const usadas = new Set();
+  const ordV = new Map(); // orden en que aparecen en la hoja de corte (el mismo que en los papeles); los códigos no cambian
   const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
   listados.forEach((L) => {
     if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
@@ -31786,6 +31787,7 @@ function crearExpedienteRapido(listados, cortes) {
         nombres.forEach((n) => {
           seq++;
           const code = "9" + L.fab.slice(-4).padStart(4, "0") + String(exp).slice(-4).padStart(4, "0") + String(seq % 1000).padStart(3, "0");
+          ordV.set(code, cortes.indexOf(c) * 1000 + seq);
           ventanas.push({
             id: `${L.fab}|${exp}|${ppto}|${n.p}${n.de > 1 ? `#${n.u}` : ""}`,
             pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
@@ -31798,7 +31800,7 @@ function crearExpedienteRapido(listados, cortes) {
       });
       P.filas.forEach((f) => { if (!cs.some((c) => normPosRapido(c.pos) === normPosRapido(f.modelo))) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${f.modelo}: está en el listado de vidrios pero no en la hoja de corte. No se ha creado.`); });
     });
-    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => nat(a.piezas[0].c, b.piezas[0].c)) });
+    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => (ordV.get(a.piezas[0].c) - ordV.get(b.piezas[0].c)) || nat(a.piezas[0].c, b.piezas[0].c)) });
   });
   cortes.filter((c) => !usadas.has(c)).forEach((c) => avisos.push(`Hoja de corte del presupuesto ${pptoBonito(c.ppto)} (${c.pos}): no está en ningún listado de vidrios subido. No se ha creado.`));
   // Color distinto al del resto del lote (p. ej. un presupuesto que sale BLANCO en un expediente EMBERO)
