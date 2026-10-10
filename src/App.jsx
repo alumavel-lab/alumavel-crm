@@ -195,7 +195,32 @@ function leerFilasExcel(arrayBuffer) {
 // Packing list en Excel (el que manda el proveedor de cristal, p. ej. el de Uxcar): una fila
 // por cristal con Rack (caballete), Order, Qty, Width, Height, Ref Client Order (con el nº de
 // EXPEDIENTE) y M2. Se agrupa por caballete, sin IA: exacto y al momento.
-async function packingDesdeExcel(file) {
+// Saca el/los nº de presupuesto de un texto: los que vienen con la palabra ("Presupuesto 6413", "Ppto: 6413")
+// y los que coinciden con un presupuesto que ya está en el CRM (sin confundirlos con un nº de EXPEDIENTE).
+function presupuestoDeTexto(txt, conocidos = []) {
+  const t = String(txt || "");
+  const out = [];
+  const meter = (d) => { d = String(d || "").replace(/\D/g, ""); if (d && !out.includes(d)) out.push(d); };
+  const re = /(?:presupuesto|presu|ppto|pto|oferta|budget|quote)\.?\s*(?:n[ºo°.]*\s*)?[:#-]?\s*(\d{3,6})/gi;
+  let m;
+  while ((m = re.exec(t))) meter(m[1]);
+  const conoc = new Set((conocidos || []).filter(Boolean));
+  if (conoc.size) {
+    const sinExp = t.replace(/EXP(?:EDIENTE)?\.?\s*\d+(?:\s*[-\/,]\s*\d+)*/gi, " ");
+    (sinExp.match(/\d{4,6}/g) || []).forEach((d) => { if (conoc.has(d)) meter(d); });
+  }
+  return out;
+}
+// Nº de presupuesto de un caballete: el suyo y el de sus cristales (sin repetir).
+function presupuestoCab(c) {
+  const set = [];
+  const add = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean).forEach((x) => { if (!set.includes(x)) set.push(x); });
+  add(c && c.presupuesto);
+  (Array.isArray(c && c.piezas) ? c.piezas : []).forEach((p) => add(p && p.presupuesto));
+  return set.join(", ");
+}
+
+async function packingDesdeExcel(file, presupuestosConocidos = []) {
   const filas = leerFilasExcel(await file.arrayBuffer());
   const grupos = {};
   const orden = [];
@@ -211,23 +236,33 @@ async function packingDesdeExcel(file) {
   };
   return orden.map((rack) => {
     const fs = grupos[rack];
-    const piezas = fs.map((f) => ({
-      pedido: String(valorPorCabeceras(f, ["order", "pedido"]) || ""),
-      pos: String(valorPorCabeceras(f, ["pos"]) || ""),
-      cantidad: parseFloat(valorPorCabeceras(f, ["qty", "cantidad", "uds"])) || 1,
-      ancho: parseFloat(valorPorCabeceras(f, ["width", "ancho"])) || "",
-      alto: parseFloat(valorPorCabeceras(f, ["height", "alto"])) || "",
-      m2: parseFloat(valorPorCabeceras(f, ["m2"])) || 0,
-      ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""),
-      expediente: expDe(valorPorCabeceras(f, ["refclientorder", "expediente", "obra"])),
-    }));
+    const piezas = fs.map((f) => {
+      const refOrden = String(valorPorCabeceras(f, ["refclientorder", "expediente", "obra"]) || "");
+      // nº de presupuesto: con la palabra, igual a uno del CRM, en una columna "Presupuesto", o (si no hay EXP) un número suelto de 4-6 cifras en la referencia del pedido
+      const pres = presupuestoDeTexto(`${refOrden} ${valorPorCabeceras(f, ["order", "pedido"]) || ""} ${valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""}`, presupuestosConocidos);
+      const colPres = String(valorPorCabeceras(f, ["presupuesto", "budget", "quote", "oferta"]) || "").replace(/\D/g, "");
+      if (colPres.length >= 3 && !pres.includes(colPres)) pres.push(colPres);
+      if (!pres.length && !expDe(refOrden) && /^\s*\d{4,6}\s*$/.test(refOrden)) pres.push(refOrden.trim());
+      return {
+        pedido: String(valorPorCabeceras(f, ["order", "pedido"]) || ""),
+        pos: String(valorPorCabeceras(f, ["pos"]) || ""),
+        cantidad: parseFloat(valorPorCabeceras(f, ["qty", "cantidad", "uds"])) || 1,
+        ancho: parseFloat(valorPorCabeceras(f, ["width", "ancho"])) || "",
+        alto: parseFloat(valorPorCabeceras(f, ["height", "alto"])) || "",
+        m2: parseFloat(valorPorCabeceras(f, ["m2"])) || 0,
+        ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""),
+        expediente: expDe(refOrden),
+        presupuesto: pres.join(", "),
+      };
+    });
     const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
+    const presus = [...new Set(piezas.flatMap((p) => String(p.presupuesto || "").split(",").map((x) => x.trim()).filter(Boolean)))];
     const pedidos = [...new Set(piezas.map((p) => p.pedido).filter(Boolean))];
     const cantidad = piezas.reduce((s, p) => s + p.cantidad, 0);
     const m2 = piezas.reduce((s, p) => s + p.m2, 0);
     const cliente = String(valorPorCabeceras(fs[0], ["client", "cliente"]) || "").replace(/^\s*\d+\s+/, "").trim();
     return {
-      lote: rack, secuencia: pedidos.join(", "), cliente, proveedor: "", expediente: exps.join(", "),
+      lote: rack, secuencia: pedidos.join(", "), cliente, proveedor: "", expediente: exps.join(", "), presupuesto: presus.join(", "),
       medida: `${cantidad} cristales · ${Math.round(m2 * 100) / 100} m²`, cantidad, piezas,
     };
   });
@@ -256,8 +291,10 @@ function agruparFilasPorCaballete(filas) {
       ancho: parseFloat(f.ancho) || "", alto: parseFloat(f.alto) || "",
       m2: parseFloat(f.m2) || 0,
       ref: limpio(f.ref), expediente: limpio(f.expediente),
+      presupuesto: limpio(f.presupuesto).replace(/[^\d,\s]/g, "").replace(/\s+/g, " ").trim(),
     }));
     const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
+    const presus = [...new Set(piezas.flatMap((p) => String(p.presupuesto || "").split(/[,\s]+/).filter(Boolean)))];
     const pedidos = [...new Set(piezas.map((p) => p.pedido).filter(Boolean))];
     const cantidad = piezas.reduce((acc, p) => acc + p.cantidad, 0);
     const m2 = piezas.reduce((acc, p) => acc + p.m2, 0);
@@ -267,6 +304,7 @@ function agruparFilasPorCaballete(filas) {
       cliente: limpio(fs.find((f) => limpio(f.cliente))?.cliente),
       proveedor: limpio(fs.find((f) => limpio(f.proveedor))?.proveedor),
       expediente: exps.join(", "),
+      presupuesto: presus.join(", "),
       medida: `${cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`,
       cantidad, piezas,
     };
@@ -2289,6 +2327,8 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
+  // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
+  almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
 
   const addCristal = (data) => {
@@ -5156,6 +5196,14 @@ export default function App() {
               saveCristales(r.cristales);
               showToast(r.vaciados.length ? `${r.movidas} cristal(es) reubicados. El caballete ${r.vaciados.join(", ")} se ha quedado sin cristales` : `${r.movidas} cristal(es) reubicados`);
             },
+            // Devuelve varios caballetes a "Pendientes de ubicar" de una sola vez (una sola escritura,
+            // para no partir de una lista antigua en cada uno).
+            liberarCristalesLote: (ids) => {
+              const set = new Set(ids || []);
+              if (!set.size) return;
+              saveCristales(cristales.map((c) => (set.has(c.id) ? { ...c, ubicacion: null, estado: "Pendiente", fechaColocado: "" } : c)));
+              showToast(`${set.size} caballete(s) devueltos a "Pendientes de ubicar"`);
+            },
             moverCristales: (movs) => {
               const porId = Object.fromEntries(movs.map((m) => [m.id, m.ubicacion]));
               saveCristales(cristales.map((c) => (porId[c.id] ? { ...c, ubicacion: porId[c.id], estado: "Colocado" } : c)));
@@ -6734,6 +6782,90 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
 // (va detrás) y para contar las ventanas por tipo (parte diario e informes).
 // PDF de etiquetas de fabricación (una por perfil) de la obra: sirve para que la pistola
 // reconozca a qué ventana pertenece cada etiqueta en el Almacén de ventanas.
+// Botón naranja "Expediente rápido": se usa fuera de las pestañas (arriba de la obra y arriba de Uxcar) y dentro del recuadro de etiquetas.
+// lotes = los que ya tiene la obra/expediente · onGuardar(lotesNuevos) guarda la lista completa.
+function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const [rap, setRap] = useState(null); // vista previa: { r, archivos, colores }
+  const inputRef = useRef(null);
+  const lotesRef = useRef(toArray(lotesProp)); lotesRef.current = toArray(lotesProp);
+  const guardarRef = useRef(onGuardar); guardarRef.current = onGuardar;
+  const subirRapido = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length) return;
+    setLeyendo(true); setAviso("Leyendo los PDF…"); setRap(null);
+    try {
+      const r = await leerExpedienteRapidoPdfs(files, setAviso);
+      if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
+      const chk = almacenRapido.saveCristales ? comprobarAlmacenRapido(r) : null; // en el portal de Uxcar no hay almacén que comprobar
+      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {}, chk, saltar: false });
+      setAviso("");
+    } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
+    finally { setLeyendo(false); }
+  };
+  const guardarRapido = (imprimir) => {
+    if (!rap) return;
+    if (rap.chk && rap.chk.faltan.length && !rap.saltar) { setAviso("No se guarda: faltan cristales o persianas en el almacén (mira la lista en rojo)."); return; }
+    const r = JSON.parse(JSON.stringify(rap.r));
+    const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
+    if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está aquí con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
+    r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
+    guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
+    if (rap.chk) aplicarReservasAlmacenRapido(r, rap.chk);
+    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}).${rap.chk ? ` Cristales reservados en el almacén: ${rap.chk.encontrados} de ${rap.chk.pedidos}.${rap.chk.pers.pedidas ? ` Persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}.` : ""}` : ""} No se ha tocado el stock de perfiles ni de herraje ni se ha creado ningún pedido.`);
+    setRap(null);
+    if (imprimir) imprimirPegatinasExpediente(r.lotes);
+  };
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { subirRapido(e.target.files); e.target.value = ""; }} />
+      <button disabled={leyendo || deshabilitado} onClick={() => inputRef.current && inputRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
+        {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Expediente rápido (vidrios + hoja de corte)"}
+      </button>
+      {(aviso || avisoExterno) && <p className="w-full text-xs text-amber-700 basis-full">{aviso || avisoExterno}</p>}
+      {rap && (
+        <div className="w-full basis-full rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2 text-left">
+          <div className="text-sm text-slate-800"><b>Expediente rápido</b> · {rap.r.etiquetas} ventanas (una pegatina por unidad) · {rap.r.lotes.map((l) => `lote ${l.fab}${l.expediente ? ` (exp. ${l.expediente}${l.parte ? `, ${l.parte}ª parte` : ""})` : ""}: ${l.ventanas.length}`).join(" · ")}</div>
+          {rap.r.avisos.length > 0 && (
+            <div className="rounded-md border border-rose-300 bg-rose-50 p-2 space-y-0.5">
+              <div className="text-xs font-bold text-rose-700">Revisa antes de guardar ({rap.r.avisos.length}):</div>
+              {rap.r.avisos.map((a, i) => <div key={i} className="text-xs text-rose-700">⚠ {a}</div>)}
+            </div>
+          )}
+          {rap.chk && (
+            <div className={`rounded-md border p-2 space-y-0.5 ${rap.chk.faltan.length ? "border-rose-400 bg-rose-50" : "border-emerald-300 bg-emerald-50"}`}>
+              <div className={`text-xs font-bold ${rap.chk.faltan.length ? "text-rose-700" : "text-emerald-700"}`}>
+                Almacén de cristales: {rap.chk.encontrados} de {rap.chk.pedidos} cristales encontrados{rap.chk.pers.pedidas ? ` · persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}` : ""}
+                {rap.chk.faltan.length ? " · NO SE PUEDE GUARDAR hasta que estén" : " · se reservarán al guardar"}
+              </div>
+              {rap.chk.faltan.map((a, i) => <div key={i} className="text-xs text-rose-700">✗ {a}</div>)}
+              {rap.chk.faltan.length > 0 && <label className="text-xs text-slate-600 flex items-center gap-1.5 pt-1"><input type="checkbox" checked={!!rap.saltar} onChange={(e) => setRap({ ...rap, saltar: e.target.checked })} /> Guardar igualmente esta vez (solo si has comprobado que los cristales están y el CRM no los reconoce)</label>}
+            </div>
+          )}
+          <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
+          <div className="flex flex-wrap gap-2">
+            {[...new Set(rap.r.lotes.flatMap((l) => l.ventanas.map((v) => v.num)))].map((n) => {
+              const c0 = (rap.r.lotes.flatMap((l) => l.ventanas).find((v) => v.num === n) || {}).color;
+              return <label key={n} className="text-xs text-slate-700 flex items-center gap-1">{n}: <input value={(rap.colores || {})[n] ?? ""} placeholder={c0} onChange={(e) => setRap({ ...rap, colores: { ...rap.colores, [n]: e.target.value } })} className="border border-slate-300 rounded px-1.5 py-0.5 w-24 bg-white" /></label>;
+            })}
+          </div>
+          <details className="text-xs text-slate-600">
+            <summary className="cursor-pointer font-semibold">Ver las {rap.r.etiquetas} ventanas</summary>
+            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+              {rap.r.lotes.flatMap((l) => l.ventanas.map((v) => <div key={v.id} className={v.rapido.aviso ? "text-rose-700 font-semibold" : ""}>{l.fab} · {v.num} · <b>{v.pos}</b> · {v.rapido.ancho} x {v.rapido.alto} · {v.rapido.vidrio}{v.rapido.mosquitera ? " · mosquitera" : ""}{v.rapido.cerradura ? " · cerradura" : ""}{v.rapido.aperturaExterior ? " · ap. exterior" : ""}{v.rapido.especial ? " · ESPECIAL" : ""}</div>))}
+            </div>
+          </details>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => guardarRapido(false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar</button>
+            <button onClick={() => guardarRapido(true)} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white">Guardar e imprimir pegatinas</button>
+            <button onClick={() => setRap(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupuestoNumero = "" }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
@@ -6781,6 +6913,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : lotes.length ? "Añadir otro PDF" : "Subir PDF de etiquetas"}
         </button>
+        <BotonExpedienteRapido lotes={lotes} onGuardar={onGuardar} />
       </div>
       {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
       {lotes.map((l) => (
@@ -6788,6 +6921,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
           <summary className="px-3 py-2 text-sm cursor-pointer flex flex-wrap items-center gap-x-3">
             <b>Lote {l.fab}</b>
             <span className="text-slate-500">{toArray(l.ventanas).length} ventanas/puertas · {toArray(l.ventanas).reduce((a, v) => a + toArray(v.piezas).length, 0)} etiquetas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
+            {l.rapido && <button onClick={(e) => { e.preventDefault(); if (window.confirm(`Se van a imprimir ${toArray(l.ventanas).length} pegatinas (una por ventana) en la Honeywell de 100 x 40 mm. En el diálogo elige tamaño real (100 %) y sin márgenes. ¿Continuar?`)) imprimirPegatinasExpediente([l]); }} className="text-xs text-[#2E8B57] font-semibold hover:underline">Imprimir pegatinas</button>}
             {!portal && <button onClick={(e) => { e.preventDefault(); quitar(l.fab); }} className="ml-auto text-xs text-rose-600 hover:underline">Quitar</button>}
           </summary>
           <div className="px-3 pb-2 text-xs text-slate-600 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
@@ -7637,6 +7771,12 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
         </div>
+
+        {proyecto.origen !== "portalUxcar" && (
+          <div className="flex flex-wrap items-start gap-2 mt-3">
+            <BotonExpedienteRapido lotes={proyecto.etiquetasFab} onGuardar={(l) => onInlineUpdate(proyecto.id, { etiquetasFab: l })} />
+          </div>
+        )}
 
         {/* Cifras principales */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">
@@ -12526,6 +12666,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [subTab, setSubTab] = useState("pendientes");
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
+  const [verUltimos, setVerUltimos] = useState(false);
+  const [abiertosPend, setAbiertosPend] = useState(() => new Set()); // caballetes pendientes con el detalle de cristales desplegado
+  const alternarPend = (id) => setAbiertosPend((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
   const [filtros, setFiltros] = useState(() => {
     const f = focoAlmacen.actual;
@@ -12570,7 +12713,11 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
 
   // Coloca en el almacén y guarda una lista de caballetes (packing list o fotos de pegatinas).
   // Si el nº de caballete ya existe, sus cristales se juntan con él.
-  const colocarYGuardarCaballetes = (items) => {
+  // Con { sinUbicar: true } (packing list) los caballetes nuevos NO se colocan en el mapa: entran en
+  // "Pendientes de ubicar" para darles hueco a mano.
+  const colocarYGuardarCaballetes = (items, opciones = {}) => {
+    const sinUbicarAuto = !!opciones.sinUbicar;
+    const entradaId = uid(); // marca de esta entrada, para poder identificar la última importación
     // Mismo nº de caballete = MISMO caballete, aunque venga en otra hoja u otra foto:
     // sus cristales se añaden al caballete que ya existe (sin repetir los que ya tenía).
     const claveLote = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
@@ -12597,6 +12744,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const unir = (a, b) => [...new Set(`${a}, ${b}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
       base.expediente = unir(base.expediente, it.expediente || "");
       base.secuencia = unir(base.secuencia, it.secuencia || "");
+      base.presupuesto = unir(base.presupuesto !== undefined ? base.presupuesto : (ex.presupuesto || ""), presupuestoCab(it));
       base.cantidad = base.piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0);
       const m2 = base.piezas.reduce((a, p) => a + (parseFloat(p.m2) || 0), 0);
       base.medida = `${base.cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`;
@@ -12628,12 +12776,20 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     const hoy = new Date().toISOString().slice(0, 10);
     const aGuardar = [];
     items.forEach((it) => {
+      // Con el nº de presupuesto se busca la obra en el CRM para completar cliente y nombre de la obra
+      const presus = presupuestoCab(it).split(",").map((x) => x.trim()).filter(Boolean);
+      const obraCrm = presus.length ? toArray(proyectos).find((p) => presus.includes(digitosPresu(p.presupuestoNumero))) : null;
+      const clienteCrm = obraCrm ? toArray(clientes).find((c) => c.id === obraCrm.clienteId) : null;
       const datosBase = {
-        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || "",
+        lote: it.lote || "", secuencia: it.secuencia || "", cliente: it.cliente || (clienteCrm ? clienteCrm.nombre || "" : ""),
         proveedor: it.proveedor || "", expediente: it.expediente || "", medida: it.medida || "",
         cantidad: it.cantidad || 1,
+        ...(presus.length ? { presupuesto: presus.join(", ") } : {}),
+        ...(obraCrm ? { obra: `#${obraCrm.numero} ${obraCrm.nombre || ""}`.trim() } : {}),
         ...(it.piezas ? { piezas: it.piezas } : {}),
+        entradaId,
       };
+      if (sinUbicarAuto) { aGuardar.push(datosBase); return; }
       const ubicacion = calcularUbicacion(datosBase);
       if (ubicacion) {
         ocupadosSimulado.push({ ...ubicacion, expediente: datosBase.expediente, exps: expedientesDeCaballete(datosBase) });
@@ -12658,6 +12814,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     if (sinHueco > 0) {
       setErrorPacking(`Aviso: el almacén está lleno y ${sinHueco} caballete(s) se han guardado sin ubicar. Colócalos a mano cuando haya sitio.`);
     }
+    if (sinUbicarAuto && aGuardar.length > 0) {
+      setAvisoOk(`${aGuardar.length} caballete(s) del packing list añadidos a "Pendientes de ubicar". Dales hueco desde ahí.${nFusionados > 0 ? " " : ""}${nFusionados > 0 ? Object.values(resumenFus).map((r) => `Caballete ${r.lote}: ${r.nuevas > 0 ? `+${r.nuevas} cristal(es)` : "sin cambios"}.`).join(" ") : ""}`);
+      setSubTab("pendientes");
+    }
   };
 
   const leerPackingList = async (file) => {
@@ -12667,7 +12827,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const esExcel = /\.(xlsx|xls|csv|ods)$/i.test(file.name || "");
       let items;
       if (esExcel) {
-        items = await packingDesdeExcel(file);
+        items = await packingDesdeExcel(file, toArray(proyectos).map((p) => digitosPresu(p.presupuestoNumero)).filter(Boolean));
         // si ya hay un caballete con el mismo nº de rack, sus cristales se juntan con él
         // (más abajo), no se crea otro caballete
         if (!items.length) { setLeyendoPacking(false); setErrorPacking("No he encontrado caballetes en el Excel (busco la columna \"Rack\")."); return; }
@@ -12682,7 +12842,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","filas":[{"caballete":"","pedido":"","expediente":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres.';
+      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","presupuesto":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, ej. 6413; suele ir en la referencia del cliente o del pedido), solo los dígitos. En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
       // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
       // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
@@ -12744,6 +12904,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           caballete: String(f.caballete || "").replace(/\s/g, "") || cab,
           cliente: f.cliente || objetoCabecera.cliente || "",
           proveedor: f.proveedor || objetoCabecera.proveedor || "",
+          presupuesto: f.presupuesto || objetoCabecera.presupuesto || "",
         }));
       } else try {
         items = JSON.parse(jsonCandidato);
@@ -12760,7 +12921,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         setLeyendoPacking(false);
         return;
       }
-      colocarYGuardarCaballetes(items);
+      colocarYGuardarCaballetes(items, { sinUbicar: true });
     } catch (e) {
       console.error("Error leyendo packing list:", e);
       setErrorPacking("No se pudo leer el archivo. Prueba de nuevo con otra foto o PDF. (" + e.message + ")");
@@ -12880,23 +13041,39 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
             <thead>
               <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
                 <th className="px-4 py-2.5 font-semibold">Nº caballete / Nº pedido</th>
-                <th className="px-4 py-2.5 font-semibold">Cliente</th>
+                <th className="px-4 py-2.5 font-semibold">Presupuesto</th>
+                <th className="px-4 py-2.5 font-semibold">Expediente / cliente</th>
+                <th className="px-4 py-2.5 font-semibold">Cristales</th>
                 <th className="px-4 py-2.5 font-semibold">Proveedor</th>
-                <th className="px-4 py-2.5 font-semibold">Medida</th>
                 <th className="px-4 py-2.5 font-semibold">Llegada</th>
                 <th className="px-4 py-2.5 font-semibold text-right">Acción</th>
               </tr>
             </thead>
             <tbody>
-              {pendientes.map((c) => (
-                <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} {c.secuencia && `/ ${c.secuencia}`}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{c.cliente || "—"}</td>
+              {pendientes.map((c) => {
+                const presu = presupuestoCab(c);
+                const piezasC = toArray(c.piezas);
+                const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
+                const abierto = abiertosPend.has(c.id);
+                return (
+                <React.Fragment key={c.id}>
+                <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"}{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}</td>
+                  <td className="px-4 py-2.5">
+                    {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
+                    {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-600">{textoExpedientes(c, 10) || c.expediente || "—"}<div className="text-[11px] text-slate-400">{c.cliente || ""}</div></td>
+                  <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}{viviendas.length > 0 ? <div className="text-[11px] text-slate-400">{viviendas.slice(0, 4).join(", ")}{viviendas.length > 4 ? ` +${viviendas.length - 4}` : ""}</div> : null}</td>
                   <td className="px-4 py-2.5 text-slate-600">{c.proveedor || "—"}</td>
-                  <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}{c.expediente ? <div className="text-[11px] text-slate-400">{c.expediente}</div> : null}</td>
                   <td className="px-4 py-2.5 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex gap-1.5 justify-end">
+                      {piezasC.length > 0 && (
+                        <button onClick={() => alternarPend(c.id)} className="text-xs font-semibold text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">
+                          {abierto ? "Ocultar" : "Ver cristales"}
+                        </button>
+                      )}
                       <button onClick={() => setAsignando(c)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md">
                         Asignar ubicación
                       </button>
@@ -12909,9 +13086,43 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                     </div>
                   </td>
                 </tr>
-              ))}
+                {abierto && (
+                  <tr className="border-b border-slate-100 bg-slate-50">
+                    <td colSpan={7} className="px-4 py-3">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
+                            <th className="py-1 pr-3 font-semibold">Vivienda / ref.</th>
+                            <th className="py-1 pr-3 font-semibold">Medida (mm)</th>
+                            <th className="py-1 pr-3 font-semibold">Cant.</th>
+                            <th className="py-1 pr-3 font-semibold">Expediente</th>
+                            <th className="py-1 pr-3 font-semibold">Presupuesto</th>
+                            <th className="py-1 pr-3 font-semibold">Pedido</th>
+                            <th className="py-1 font-semibold">Pos.</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {piezasC.map((p, i) => (
+                            <tr key={i} className="border-t border-slate-200 text-slate-600">
+                              <td className="py-1 pr-3">{p.ref || "—"}</td>
+                              <td className="py-1 pr-3 font-mono-num">{p.ancho && p.alto ? `${p.ancho} x ${p.alto}` : "—"}</td>
+                              <td className="py-1 pr-3">{p.cantidad || 1}</td>
+                              <td className="py-1 pr-3">{p.expediente || "—"}</td>
+                              <td className="py-1 pr-3 font-mono-num">{p.presupuesto || "—"}</td>
+                              <td className="py-1 pr-3">{p.pedido || "—"}</td>
+                              <td className="py-1">{p.pos || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
               {pendientes.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">No hay caballetes pendientes de ubicar.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400 text-sm">No hay caballetes pendientes de ubicar.</td></tr>
               )}
             </tbody>
           </table>
@@ -12919,11 +13130,26 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       )}
 
       {subTab === "mapa" && !verReorganizar && (
-        <div className="flex justify-end mb-3">
+        <div className="flex flex-wrap justify-end gap-2 mb-3">
+          <button onClick={() => setVerUltimos(true)} className="flex items-center gap-1.5 text-sm font-semibold text-amber-800 bg-amber-50 border border-amber-300 hover:bg-amber-100 px-3.5 py-2 rounded-lg">
+            Devolver últimos a pendientes
+          </button>
           <button onClick={() => { if (ctxAlmacen && ctxAlmacen.esAdmin) setVerReorganizar(true); else setPidePin(true); }} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-3.5 py-2 rounded-lg">
             <Layers size={14} /> Reorganizar por expediente
           </button>
         </div>
+      )}
+      {verUltimos && (
+        <UltimosCaballetesPendientesModal
+          cristales={cristales}
+          onCerrar={() => setVerUltimos(false)}
+          onConfirmar={(ids) => {
+            if (ctxAlmacen && ctxAlmacen.liberarCristalesLote) ctxAlmacen.liberarCristalesLote(ids);
+            else ids.forEach((id) => onLiberar(id));
+            setVerUltimos(false);
+            setAvisoOk(`${ids.length} caballete(s) devueltos a "Pendientes de ubicar".`);
+          }}
+        />
       )}
       {pidePin && <PinReorganizarModal onOk={() => { setPidePin(false); setVerReorganizar(true); }} onCancelar={() => setPidePin(false)} />}
       {subTab === "mapa" && verReorganizar && (
@@ -12973,6 +13199,76 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           onUpdate={onUpdate}
         />
       )}
+    </div>
+  );
+}
+
+// Para cuando se ha importado un packing list mal: lista los últimos caballetes que entraron (los más
+// recientes primero, que es el orden en que se guardan) y deja devolver los marcados a "Pendientes de ubicar".
+function UltimosCaballetesPendientesModal({ cristales, onCerrar, onConfirmar }) {
+  const colocados = useMemo(() => cristales.filter((c) => c.ubicacion).slice(0, 60), [cristales]);
+  const [sel, setSel] = useState(() => new Set());
+  const [n, setN] = useState("");
+  const ultimaEntrada = (colocados.find((c) => c.entradaId) || {}).entradaId;
+  const marcarUltimos = () => {
+    const k = Math.max(0, Math.min(colocados.length, parseInt(n, 10) || 0));
+    setSel(new Set(colocados.slice(0, k).map((c) => c.id)));
+  };
+  const marcarUltimaEntrada = () => setSel(new Set(colocados.filter((c) => c.entradaId === ultimaEntrada).map((c) => c.id)));
+  const alternar = (id) => setSel((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
+  const conPuestos = colocados.filter((c) => sel.has(c.id) && toArray(c.piezas).some((p) => p.puesto)).length;
+  const confirmar = () => {
+    if (!sel.size) return;
+    const aviso = conPuestos > 0 ? `\n\nOJO: ${conPuestos} de ellos ya tienen cristales puestos.` : "";
+    if (!window.confirm(`¿Devolver ${sel.size} caballete(s) a "Pendientes de ubicar"? Dejarán de aparecer en el mapa hasta que les des hueco otra vez.${aviso}`)) return;
+    onConfirmar([...sel]);
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onCerrar}>
+      <div className="bg-white rounded-lg w-full max-w-3xl max-h-[88vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 pt-4 pb-3 border-b border-slate-200">
+          <h3 className="font-bold text-slate-800">Devolver últimos caballetes a pendientes de ubicar</h3>
+          <p className="text-xs text-slate-500 mt-1">Salen los últimos caballetes que entraron (el más reciente arriba). Marca los que quieras sacar del mapa.</p>
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <span className="text-xs text-slate-600">Marcar los últimos</span>
+            <input type="number" min="1" max={colocados.length} value={n} onChange={(e) => setN(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") marcarUltimos(); }} className="w-20 border border-slate-300 rounded-md px-2 py-1 text-sm" />
+            <button type="button" onClick={marcarUltimos} className="text-xs font-semibold text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Marcar</button>
+            {ultimaEntrada && <button type="button" onClick={marcarUltimaEntrada} className="text-xs font-semibold text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Marcar la última importación</button>}
+            {sel.size > 0 && <button type="button" onClick={() => setSel(new Set())} className="text-xs font-semibold text-slate-500 px-2 py-1.5 rounded-md hover:bg-slate-100">Quitar marcas</button>}
+          </div>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-2 w-8"></th>
+                <th className="px-2 py-2 font-semibold">Caballete</th>
+                <th className="px-2 py-2 font-semibold">Expediente / cliente</th>
+                <th className="px-2 py-2 font-semibold">Ubicación</th>
+                <th className="px-2 py-2 font-semibold">Llegada</th>
+              </tr>
+            </thead>
+            <tbody>
+              {colocados.map((c) => (
+                <tr key={c.id} onClick={() => alternar(c.id)} className={`border-b border-slate-100 cursor-pointer ${sel.has(c.id) ? "bg-amber-50" : "hover:bg-slate-50"}`}>
+                  <td className="px-4 py-2"><input type="checkbox" checked={sel.has(c.id)} onChange={() => alternar(c.id)} onClick={(e) => e.stopPropagation()} /></td>
+                  <td className="px-2 py-2 font-medium text-slate-800">{c.lote || c.secuencia || "—"}</td>
+                  <td className="px-2 py-2 text-slate-600">{textoExpedientes(c, 10) || "—"}<div className="text-[11px] text-slate-400">{c.cliente || ""}</div></td>
+                  <td className="px-2 py-2 text-slate-600">{ubicacionTexto(c.ubicacion)}{toArray(c.piezas).some((p) => p.puesto) && <div className="text-[11px] text-rose-600">ya tiene cristales puestos</div>}</td>
+                  <td className="px-2 py-2 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
+                </tr>
+              ))}
+              {colocados.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 text-sm">No hay caballetes colocados en el mapa.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-end gap-2">
+          <button onClick={onCerrar} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
+          <button onClick={confirmar} disabled={!sel.size} className="text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 px-4 py-2 rounded-md disabled:opacity-40">
+            Devolver {sel.size || ""} a pendientes
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -13090,7 +13386,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                       <button
                         key={hueco}
                         onClick={() => c && !soloLectura && onVerHueco && onVerHueco({ zona: zonaId, fila, hueco })}
-                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
+                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
                         className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
                         <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
@@ -13098,7 +13394,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                           <>
                             {vacio && <span className="text-[13px] font-extrabold tracking-wide leading-tight">VACÍO</span>}
                             <span className="font-mono-num text-[12px] leading-tight tracking-tight">{c.lote || c.secuencia || "•"}</span>
-                            {!vacio && textoExpedientes(c) && <span className="text-[10px] font-normal opacity-90 leading-tight">{textoExpedientes(c)}</span>}
+                            {!vacio && (textoExpedientes(c) || presupuestoCab(c)) && <span className="text-[10px] font-normal opacity-90 leading-tight">{textoExpedientes(c) || `Pres. ${presupuestoCab(c)}`}</span>}
                           </>
                         ) : <span className="text-[11px]">libre</span>}
                         {cs.length > 1 && (
@@ -31297,6 +31593,7 @@ function aplicarCorteALotes(lotes, corte) {
   const nuevos = toArray(lotes).map((l) => ({
     ...l,
     ventanas: toArray(l.ventanas).map((v) => {
+      if (v.rapido) return v; // las del "Expediente rápido" ya vienen de su hoja de corte: no se vuelven a repartir
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
@@ -31343,6 +31640,295 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
   if (!r.lotes.length) { const rc = agruparHojaCorte(paginas); if (rc.modelos.length) return { lotes: [], etiquetas: 0, ignoradas: 0, repetidas: 0, corte: rc }; }
   return r;
 }
+// ---- EXPEDIENTE RÁPIDO: solo "Listado de vidrios" + "Hoja de corte" ----
+// Del listado de vidrios salen el nº de fabricación (lote), el expediente y los presupuestos; de la hoja de corte, una ventana por UNIDAD
+// (posición, color, medidas, vidrio, sistema, mosquitera, cerradura, apertura exterior). No lee etiquetas ni dibujos, no crea pedidos y no toca el stock.
+const RAPIDO_MIN_ESPECIAL = 440; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
+const pptoBonito = (d) => { const s = String(d || "").replace(/\D/g, ""); return s.length > 3 ? `${s.slice(0, -3)}.${s.slice(-3)}` : s; };
+const mmRapido = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
+const normPosRapido = (p) => String(p || "").replace(/\s+/g, "").toUpperCase();
+// "V07.012,013" → V07.012 + V07.013 · "V02.104.103" → V02.104 + V02.103 · "COCINA" → COCINA
+function posicionesRapido(pos) {
+  const p = String(pos || "").trim();
+  const mc = p.match(/^([A-Za-z]{1,4}\d+)\.(\d+(?:\s*,\s*\d+)+)$/);
+  if (mc) return mc[2].split(",").map((x) => `${mc[1]}.${x.trim()}`);
+  const mp = p.match(/^([A-Za-z]{1,4}\d+)\.(\d+)\.(\d+)$/);
+  if (mp) return [`${mp[1]}.${mp[2]}`, `${mp[1]}.${mp[3]}`];
+  return [p];
+}
+function esVidrioSospechoso(cod) { const c = String(cod || "").toUpperCase(); return !!c && (!/ARG/.test(c) || !/BE|EMIS/.test(c)); }
+function esListadoVidriosRapido(paginas) { return /LISTADO (DE )?VIDRIOS/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n")); }
+function agruparVidriosRapido(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  const fab = ((todo.match(/Fabricaci[oó]n\s*:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, "");
+  const descripcion = ((todo.match(/Descripci[oó]n\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const expD = (descripcion.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
+  const parte = (descripcion.match(/(\d)\s*[ªa]?\s*PARTE/i) || [])[1] || "";
+  const presupuestos = new Map();
+  todo.split(/(?=N[uú]mero\s*:\s*[\d.]+\s*Versi)/i).forEach((b) => {
+    const mh = b.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\s*\.?\s*(\d+)/i);
+    if (!mh) return;
+    const ppto = mh[1].replace(/\D/g, "");
+    const cliente = ((b.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+    const referencia = ((b.match(/Referenc[ií]a\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+    const filas = [];
+    const lineas = b.split("\n");
+    lineas.forEach((l, i) => {
+      const m = l.match(/^\s*(\d\.\d{3})\s+(\S+)\s+(\S+)\s+\d/);
+      if (!m || m[1].replace(/\D/g, "") !== ppto) return;
+      const mc = l.match(/^\s*\d\.\d{3}\s+\S+\s+\S+\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})(\d{1,2})\s/); // cristal: ancho, alto y nº de cristales (vienen pegados al siguiente número)
+      filas.push({ modelo: m[2], codigo: m[3], texto: (lineas[i + 1] || "").trim(), ancho: mc ? mmRapido(mc[1]) : null, alto: mc ? mmRapido(mc[2]) : null, uds: mc ? parseInt(mc[3], 10) : null });
+    });
+    presupuestos.set(ppto, { ppto, version: mh[2], cliente, referencia, filas });
+  });
+  return { fab, descripcion, expediente: expD, parte, presupuestos };
+}
+function agruparCorteRapido(paginas) {
+  const out = [];
+  paginas.forEach((it, idx) => {
+    const t = it.join("");
+    const mp = t.match(/Presupuesto\s*:\s*([\d.]+)/i);
+    const mpos = t.match(/Pos\s*:\s*([^\n]*?)\s+Color\s*:\s*([^\n]+)/i);
+    if (!mp || !mpos) return;
+    const mm = t.match(/Medidas\s*:\s*([\d.]+)\s*x\s*([\d.]+)\s*Uds\s*:\s*(\d+)/i);
+    const iPer = t.search(/Persiana\s*:/i), iCom = t.search(/Complementos\s*:/i), iVid = t.search(/Vidrios\s*:/i);
+    const segPer = iPer >= 0 && iCom > iPer ? t.slice(iPer, iCom).replace(/^Persiana\s*:/i, "") : "";
+    const segCom = iCom >= 0 && iVid > iCom ? t.slice(iCom, iVid).replace(/^Complementos\s*:/i, "") : "";
+    const persianaRest = segPer.split("\n").map((x) => x.trim()).filter((x) => x && !/^(Añadir cerradura|ES AP\.? EXTERIOR.*)$/i.test(x));
+    const mosq = /MOSQUITERA/i.test(segCom);
+    const plx = (segCom.match(/PLX-?\s*\d+/i) || [""])[0].replace(/\s+/g, "");
+    const corredera = /CORREDER/i.test(t);
+    let sistema = (t.match(/^\s*([A-Z]\d{2,3}\s+[A-Z]+)\s*$/m) || [])[1] || "";
+    if (!sistema && corredera) { const mc = t.match(/(\d{2,3})\s*mm\s*\n\s*Pos\s*:/i); sistema = mc ? `${mc[1]}mm corredera` : "Corredera"; }
+    const barrasHoja = t.split("\n").reduce((a, l) => { const mb = l.match(/HOJA\s+\d{2,3}\s*MM.*?\d{4,5}\s+(\d+)\s*$/i); return a + (mb ? parseInt(mb[1], 10) : 0); }, 0);
+    out.push({
+      pagina: idx + 1,
+      ppto: mp[1].replace(/\D/g, ""),
+      version: ((t.match(/Versi[oó]n\s*:\s*(\d+)/i) || [])[1] || ""),
+      referencia: ((t.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      cliente: ((t.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      pos: mpos[1].trim(), color: mpos[2].trim(),
+      ancho: mm ? mmRapido(mm[1]) : null, alto: mm ? mmRapido(mm[2]) : null, uds: mm ? parseInt(mm[3], 10) || 1 : 1,
+      vidrio: ((t.match(/Vidrios\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      sistema, mosquitera: mosq ? `Mosquitera enrollable${plx ? ` ${plx}` : ""}` : "",
+      cerradura: /A[ñn]adir cerradura/i.test(segPer), aperturaExterior: /AP\.?\s*EXTERIOR/i.test(segPer),
+      persianaTexto: persianaRest.join(" "), corredera,
+      barrasHoja,
+    });
+  });
+  return out;
+}
+// listados: resultados de agruparVidriosRapido · cortes: páginas de agruparCorteRapido (de todos los archivos)
+function crearExpedienteRapido(listados, cortes) {
+  const avisos = [];
+  const lotes = [];
+  const cristalesReq = [], persianasReq = [];
+  const usadas = new Set();
+  const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+  listados.forEach((L) => {
+    if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
+    const exp = L.expediente || ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || L.fab;
+    const ventanas = [];
+    let seq = 0;
+    const dePpto = [...L.presupuestos.keys()];
+    const mias = cortes.filter((c) => L.presupuestos.has(c.ppto));
+    mias.forEach((c) => usadas.add(c));
+    dePpto.forEach((ppto) => {
+      const P = L.presupuestos.get(ppto);
+      const cs = mias.filter((c) => c.ppto === ppto);
+      if (!cs.length) { avisos.push(`Presupuesto ${pptoBonito(ppto)}: está en el listado de vidrios pero no hay hoja de corte. Sus ventanas NO se han creado.`); return; }
+      const vistos = new Set();
+      cs.forEach((c) => {
+        const clavePos = normPosRapido(c.pos);
+        if (vistos.has(clavePos)) { avisos.push(`Presupuesto ${pptoBonito(ppto)}: la posición ${c.pos} sale dos veces en la hoja de corte (pág. ${c.pagina}). He dejado solo la primera.`); return; }
+        vistos.add(clavePos);
+        const filas = P.filas.filter((f) => normPosRapido(f.modelo) === clavePos);
+        if (!filas.length) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${c.pos}: la hoja de corte la tiene pero el listado de vidrios no. Revisa que sean de la misma versión.`);
+        if (P.version && c.version && P.version !== c.version) avisos.push(`Presupuesto ${pptoBonito(ppto)}: el listado de vidrios es versión ${P.version} y la hoja de corte versión ${c.version}.`);
+        const codigos = [...new Set(filas.map((f) => f.codigo))];
+        const vidrioAv = filas.filter((f) => esVidrioSospechoso(f.codigo));
+        if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
+        filas.forEach((f) => { if (f.ancho && f.alto && f.uds) cristalesReq.push({ fab: L.fab, exp, ppto, modelo: f.modelo, ancho: f.ancho, alto: f.alto, uds: f.uds }); });
+        if (c.persianaTexto) avisos.push(`${pptoBonito(ppto)} ${c.pos}: lleva persiana ("${c.persianaTexto.slice(0, 50)}"). Se comprueba en el almacén de persianas.`);
+        const posiciones = posicionesRapido(c.pos);
+        const uds = Math.max(1, Math.min(99, c.uds || 1));
+        let nombres;
+        if (posiciones.length === uds) nombres = posiciones.map((p) => ({ p, u: 1, de: 1 }));
+        else if (posiciones.length === 1) nombres = Array.from({ length: uds }, (_, k) => ({ p: posiciones[0], u: k + 1, de: uds }));
+        else { avisos.push(`${pptoBonito(ppto)} ${c.pos}: trae ${posiciones.length} posiciones pero ${uds} unidades. He creado ${uds} y hay que revisarlas.`); nombres = Array.from({ length: uds }, (_, k) => ({ p: posiciones[k % posiciones.length], u: k + 1, de: uds })); }
+        const mE = (c.referencia || P.referencia).match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*(.*)$/i);
+        const planta = mE ? (mE[2] || "").replace(/\bCORRECCI[OÓ]N\b/i, "").trim() : "";
+        if (/CORRECCI[OÓ]N/i.test(c.referencia || P.referencia) && !avisos.some((a) => a.startsWith(`Presupuesto ${pptoBonito(ppto)} es una CORRECCIÓN`))) avisos.push(`Presupuesto ${pptoBonito(ppto)} es una CORRECCIÓN (${c.referencia}). Si la vivienda ya estaba cargada con otro presupuesto, estas ventanas quedarían duplicadas.`);
+        const vidrio = codigos.length ? codigos.join(" + ") : c.vidrio;
+        const hojasPdf = c.barrasHoja >= 4 ? Math.round(c.barrasHoja / 4) : 0;
+        const medida = c.ancho && c.alto ? `${c.ancho} x ${c.alto}` : "";
+        const hojas = hojasPdf >= 1 && hojasPdf <= 3 ? hojasPdf : hojasSugeridas({ medida });
+        const especial = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL);
+        if (c.persianaTexto) nombres.forEach((n) => persianasReq.push({ fab: L.fab, exp, ppto, pos: n.p, texto: c.persianaTexto }));
+        nombres.forEach((n) => {
+          seq++;
+          const code = "9" + L.fab.slice(-4).padStart(4, "0") + String(exp).slice(-4).padStart(4, "0") + String(seq % 1000).padStart(3, "0");
+          ventanas.push({
+            id: `${L.fab}|${exp}|${ppto}|${n.p}${n.de > 1 ? `#${n.u}` : ""}`,
+            pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
+            grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
+            modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }],
+            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: false, mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
+            rapido: { ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
+          });
+        });
+      });
+      P.filas.forEach((f) => { if (!cs.some((c) => normPosRapido(c.pos) === normPosRapido(f.modelo))) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${f.modelo}: está en el listado de vidrios pero no en la hoja de corte. No se ha creado.`); });
+    });
+    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => nat(a.piezas[0].c, b.piezas[0].c)) });
+  });
+  cortes.filter((c) => !usadas.has(c)).forEach((c) => avisos.push(`Hoja de corte del presupuesto ${pptoBonito(c.ppto)} (${c.pos}): no está en ningún listado de vidrios subido. No se ha creado.`));
+  // Color distinto al del resto del lote (p. ej. un presupuesto que sale BLANCO en un expediente EMBERO)
+  lotes.forEach((l) => {
+    const cuenta = {}; l.ventanas.forEach((v) => { cuenta[v.color] = (cuenta[v.color] || 0) + 1; });
+    const comun = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a])[0];
+    [...new Set(l.ventanas.filter((v) => v.color !== comun).map((v) => v.num))].forEach((n) => avisos.push(`Presupuesto ${n}: la hoja de corte pone color ${(l.ventanas.find((v) => v.num === n) || {}).color} y el resto del lote ${l.fab} es ${comun}. Si no es lo que quieres, cámbialo antes de guardar.`));
+  });
+  const nuevosAvisos = [...new Set(avisos)];
+  return { lotes, avisos: nuevosAvisos, cristalesReq, persianasReq, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
+}
+// ---- Comprobación y reserva en los almacenes de cristales y persianas ----
+const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null }; // lo rellena App en cada pintado
+const digitosExp = (t) => String(t || "").split(/[,;]/).map((x) => x.replace(/\D/g, "")).filter(Boolean);
+// Mira si cada cristal del listado está en el almacén (misma medida, girada o no, ±3 mm, y de este expediente o sin expediente puesto).
+// Devuelve { faltan: [texto], reservas: Map<"idCab|idxPieza", [{fab,ppto,modelo,n}]>, resumen:{pedidos, encontrados} }
+function comprobarAlmacenRapido(r) {
+  const out = { faltan: [], reservasCristal: new Map(), reservasPersiana: new Map(), pedidos: 0, encontrados: 0, pers: { pedidas: 0, encontradas: 0 } };
+  const fabs = new Set(r.lotes.map((l) => l.fab));
+  const disp = new Map(); // disponibilidad que queda por pieza durante esta comprobación
+  const cabs = toArray(almacenRapido.cristales);
+  const libre = (c, p, i) => {
+    const k = `${c.id}|${i}`;
+    if (!disp.has(k)) {
+      const total = parseFloat(p.cantidad) || 1;
+      const mala = p.incidencia ? Math.min(total, parseFloat(p.udsAfectadas ?? p.cantidad) || total) : 0; // rotos o que no llegaron no valen
+      const ajenas = toArray(p.reservas).filter((x) => !fabs.has(x.fab)).reduce((a, x) => a + (parseFloat(x.n) || 0), 0); // lo reservado por OTRO lote ya no está libre
+      disp.set(k, Math.max(0, total - mala - ajenas));
+    }
+    return disp.get(k);
+  };
+  r.cristalesReq.forEach((q) => {
+    out.pedidos += q.uds;
+    const exps = digitosExp(q.exp);
+    const cand = [];
+    cabs.forEach((c) => toArray(c.piezas).forEach((p, i) => {
+      if (p.puesto) return;
+      if (!mismaMedidaCristal(q.ancho, q.alto, p.ancho, p.alto)) return;
+      const ex = digitosExp(p.expediente || c.expediente);
+      if (ex.length && exps.length && !ex.some((e) => exps.some((x) => e.includes(x) || x.includes(e)))) return; // es de otra obra
+      const igualRef = normPedidoCristal(p.ref) && (normPedidoCristal(p.ref).includes(normPedidoCristal(q.modelo)) || normPedidoCristal(q.modelo).includes(normPedidoCristal(p.ref)));
+      cand.push({ c, p, i, pri: igualRef ? 0 : 1 });
+    }));
+    cand.sort((a, b) => a.pri - b.pri);
+    let falta = q.uds;
+    cand.forEach((x) => {
+      if (falta <= 0) return;
+      const l = libre(x.c, x.p, x.i); if (l <= 0) return;
+      const toma = Math.min(l, falta);
+      disp.set(`${x.c.id}|${x.i}`, l - toma); falta -= toma;
+      const k = `${x.c.id}|${x.i}`;
+      out.reservasCristal.set(k, [...(out.reservasCristal.get(k) || []), { fab: q.fab, ppto: q.ppto, modelo: q.modelo, n: toma }]);
+    });
+    out.encontrados += q.uds - falta;
+    if (falta > 0) out.faltan.push(`Cristal ${pptoBonito(q.ppto)} ${q.modelo} (${q.ancho} x ${q.alto}): faltan ${falta} de ${q.uds} en el almacén de cristales.`);
+  });
+  // Persianas: una por ventana que la lleve; se busca en el almacén de persianas por expediente (sin medida: no sé cómo las mide cada proveedor)
+  const per = toArray(almacenRapido.persianas).filter((x) => !x.reservaFab || fabs.has(x.reservaFab.fab));
+  const usadasP = new Set();
+  r.persianasReq.forEach((q) => {
+    out.pers.pedidas++;
+    const exps = digitosExp(q.exp);
+    const it = per.find((x) => !usadasP.has(x.id) && (() => { const ex = digitosExp(x.expediente); return ex.some((e) => exps.some((y) => e.includes(y) || y.includes(e))); })());
+    if (it) { usadasP.add(it.id); out.pers.encontradas++; out.reservasPersiana.set(it.id, { fab: q.fab, ppto: q.ppto, pos: q.pos }); }
+    else out.faltan.push(`Persiana ${pptoBonito(q.ppto)} ${q.pos}: no hay persiana del expediente ${q.exp} libre en el almacén de persianas.`);
+  });
+  return out;
+}
+// Guarda las reservas (cristales y persianas) en los almacenes. Vuelve a repartir lo del mismo lote, así que subir otra vez no duplica.
+function aplicarReservasAlmacenRapido(r, chk) {
+  const fabs = new Set(r.lotes.map((l) => l.fab));
+  if (almacenRapido.saveCristales && toArray(r.cristalesReq).length) {
+    const nuevos = toArray(almacenRapido.cristales).map((c) => ({ ...c, piezas: toArray(c.piezas).map((p, i) => {
+      const previas = toArray(p.reservas).filter((x) => !fabs.has(x.fab));
+      const nuevas = chk.reservasCristal.get(`${c.id}|${i}`) || [];
+      if (!nuevas.length && previas.length === toArray(p.reservas).length) return p;
+      const reservas = [...previas, ...nuevas];
+      const q = { ...p }; if (reservas.length) q.reservas = reservas; else delete q.reservas;
+      return q;
+    }) }));
+    almacenRapido.saveCristales(JSON.parse(JSON.stringify(nuevos)));
+  }
+  if (almacenRapido.savePersianas && toArray(r.persianasReq).length) {
+    const nuevos = toArray(almacenRapido.persianas).map((x) => {
+      const rv = chk.reservasPersiana.get(x.id);
+      if (rv) return { ...x, reservaFab: rv };
+      if (x.reservaFab && fabs.has(x.reservaFab.fab)) { const y = { ...x }; delete y.reservaFab; return y; }
+      return x;
+    });
+    almacenRapido.savePersianas(JSON.parse(JSON.stringify(nuevos)));
+  }
+}
+async function leerExpedienteRapidoPdfs(files, onProgreso) {
+  const lib = await cargarPdfJs();
+  const listados = [], cortes = [], avisos = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (onProgreso) onProgreso(`Leyendo ${file.name} (${i + 1} de ${files.length})…`);
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) { const tc = await (await doc.getPage(n)).getTextContent(); paginas.push(tc.items.map((it) => it.str + (it.hasEOL ? "\n" : ""))); }
+    if (esListadoVidriosRapido(paginas)) listados.push(agruparVidriosRapido(paginas));
+    else if (/HOJA DE CORTE/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n"))) cortes.push(...agruparCorteRapido(paginas));
+    else avisos.push(`${file.name}: no es un listado de vidrios ni una hoja de corte. No lo he usado.`);
+  }
+  if (!listados.length) throw new Error("Falta el LISTADO DE VIDRIOS: de él sale el número de fabricación (lote) y el expediente. Selecciona a la vez el listado de vidrios y la hoja de corte.");
+  if (!cortes.length) throw new Error("Falta la HOJA DE CORTE: de ella salen las ventanas una a una. Selecciona a la vez el listado de vidrios y la hoja de corte.");
+  const r = crearExpedienteRapido(listados, cortes);
+  r.avisos = [...avisos, ...r.avisos];
+  return r;
+}
+// Pegatina de cada ventana física (100 x 40 mm, Honeywell): presupuesto, versión, referencia, cliente, posición, color, medidas, sistema, vidrio, extras + código de la pistola
+function imprimirPegatinasExpediente(lotes) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const items = [];
+  toArray(lotes).forEach((l) => toArray(l.ventanas).forEach((v) => items.push({ l, v })));
+  if (!items.length) return;
+  const etiqueta = ({ l, v }) => {
+    const r = v.rapido || {};
+    const extras = [r.mosquitera ? "MOSQUITERA" : "", r.cerradura ? "CERRADURA" : "", r.aperturaExterior ? "AP. EXTERIOR" : "", r.especial ? "ESPECIAL" : ""].filter(Boolean).join(" · ");
+    return `<div class="et"><div class="marco">
+      <div class="r1"><span>${esc(v.pos)}</span><span class="tp">Ppto ${esc(v.num)}${r.version ? ` v${esc(r.version)}` : ""} · FAB ${esc(l.fab)}</span></div>
+      <div class="r2">${esc([r.referencia, v.cliente].filter(Boolean).join(" · "))}</div>
+      <div class="r2">${esc([v.color, r.ancho && r.alto ? `${r.ancho} x ${r.alto}` : v.medida, r.sistema].filter(Boolean).join(" · "))}</div>
+      <div class="r2">${esc(r.vidrio || "")}</div>
+      <div class="r3${r.aviso ? " av" : ""}">${esc(r.aviso ? `REVISAR: ${r.aviso}` : extras)}</div>
+      <div class="bar">${svgCode128CMm(v.piezas[0].c, 9, 0.5)}</div>
+      <div class="dig">${esc(v.piezas[0].c)}</div>
+    </div></div>`;
+  };
+  const html = `<html><head><meta charset="utf-8"><title>Pegatinas expediente rápido</title><style>
+    @page { size: 100mm 40mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: 100mm; height: 39.5mm; padding: 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
+    .marco { height: 100%; border: 0.4mm solid #000; border-radius: 1.5mm; padding: 0.8mm 2mm; display: flex; flex-direction: column; align-items: center; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; align-items: baseline; font-size: 4.6mm; font-weight: bold; line-height: 1.1; }
+    .tp { font-size: 2.9mm; }
+    .r2 { width: 100%; font-size: 2.9mm; line-height: 1.15; white-space: nowrap; overflow: hidden; }
+    .r3 { width: 100%; font-size: 3mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; }
+    .r3.av { background: #000; color: #fff; }
+    .bar { margin-top: 0.8mm; line-height: 0; }
+    .dig { font-size: 3mm; letter-spacing: 0.7mm; line-height: 1.1; margin-top: 0.3mm; }
+  </style></head><body>${items.map(etiqueta).join("")}</body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+}
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
 function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
@@ -31360,7 +31946,7 @@ function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
 function mezclarLotesFab(previos, r, archivo) {
   const hoy = new Date().toISOString().slice(0, 10);
   const nuevos = toArray(previos).filter((l) => !r.lotes.some((x) => x.fab === l.fab));
-  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ventanas: l.ventanas }));
+  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ventanas: l.ventanas }));
   return JSON.parse(JSON.stringify(nuevos));
 }
 const codPiezaFab = (t) => { const m = String(t || "").trim().match(/^\*?(\d{12})\*?$/); return m ? m[1] : null; };
@@ -36690,6 +37276,7 @@ function documentosQueFaltanObra(p) {
     etiquetas: toArray(p.etiquetasFab).length > 0,
     corte: lotesConCorte(p.etiquetasFab),
   };
+  if (toArray(p.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
   const faltan = [];
   if (!tiene.analisis) faltan.push("análisis de materiales");
@@ -36711,6 +37298,7 @@ function documentosQueFaltanUx(e, uxPedidos) {
     etiquetas: toArray(e.etiquetasFab).length > 0,
     corte: lotesConCorte(e.etiquetasFab),
   };
+  if (toArray(e.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   const faltan = [];
   if (!tiene.dibujos) faltan.push("listado de dibujos");
   if (!tiene.analisis) faltan.push("informe de materiales");
@@ -37079,7 +37667,7 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 4, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 5, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
@@ -37093,6 +37681,8 @@ Todos los documentos de una obra se suben **de una vez, con un solo botón**, de
 | Etiquetas de la línea | La pistola reconoce cada ventana y su caballete | No |
 | Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
 | Listado de mano de obra (si el programa lo saca) | **Horas de fabricación exactas** para el planning | No |
+
+**Atajo:** si la obra solo tiene el listado de vidrios y la hoja de corte (por ejemplo un expediente de Uxcar ya pedido), no hace falta nada más: usa **"Expediente rápido"** (ver la guía "Expediente rápido") y no saldrá el aviso de documentos que faltan.
 
 Encima del botón está la lista **"Documentos de la obra"**: ✓ lo que está, ✗ lo que falta. Si la obra **no lleva persiana**, no hay listado de persianas y no hace falta. La mosquitera enrollable no cuenta como persiana.
 
@@ -37238,7 +37828,7 @@ Con el albarán firmado, la obra queda pendiente de facturar.
 - [ ] La obra está cerrada cuando tiene **factura emitida** y el **cobro apuntado** con justificante.`,
   },
   {
-    para: "uxcar", orden: 1, titulo: "Guía para Uxcar: subir un expediente",
+    para: "uxcar", orden: 1, version: 2, titulo: "Guía para Uxcar: subir un expediente",
     contenido: `## Qué se sube y dónde
 Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa de ventanas. Con ellos sabemos cuántas ventanas son, qué material preparar y cuándo estarán listas.
 
@@ -37269,12 +37859,57 @@ En este orden. La hoja de corte va siempre la última.
 
 La lectura de cada PDF puede tardar un par de minutos. No cierres la página mientras pone "Leyendo…".
 
+## Si solo queréis mandar lo mínimo (expediente rápido)
+Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de vidrios** y la **hoja de corte**. En la ficha del expediente, en el recuadro de etiquetas, pulsa **"Expediente rápido (vidrios + hoja de corte)"** y selecciona los dos a la vez (con Ctrl pulsado). Ecowin PVC saca una pegatina por cada ventana con presupuesto, posición, color, medidas, sistema y vidrio.
+- [ ] Los dos PDF son de la **misma versión** de cada presupuesto.
+- [ ] Si el CRM avisa de algo en rojo (por ejemplo un vidrio sin argón), **no lo guardes**: avisa a Ecowin PVC.
+
 ## Comprobar y avisar
 - [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
 - [ ] Aparecen los dos pedidos (cristales y persianas) con su fecha.
 - [ ] Las etiquetas dicen cuántas ventanas se han leído y coinciden con el total.
 
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
+  },
+  {
+    para: "equipo", orden: 4, version: 2, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    contenido: `## Resumen
+Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
+
+| Qué | De dónde sale |
+| --- | --- |
+| Nº de fabricación (lote) y expediente | Listado de vidrios ("Fabricación" y "EXPEDIENTE 1035 1ª PARTE") |
+| Presupuesto, versión, referencia, cliente | Hoja de corte |
+| Posición, color, medidas, nº de unidades | Hoja de corte |
+| Sistema (A70…), vidrio | Hoja de corte y listado de vidrios |
+| Mosquitera, cerradura, apertura exterior | Hoja de corte (campos "Complementos" y "Persiana") |
+
+## Cómo se hace
+El botón naranja **"Expediente rápido (vidrios + hoja de corte)"** está **fuera de las pestañas**: arriba de cada obra (junto a las etiquetas de estado) y arriba del módulo **Uxcar** (eliges el expediente en el desplegable; si tienes uno abierto usa ese). También sale dentro del recuadro "Etiquetas de fabricación".
+1. Selecciona **a la vez** (con Ctrl pulsado) el listado de vidrios y la hoja de corte. Si el expediente tiene 1ª y 2ª parte, selecciona los 4 PDF juntos.
+2. Espera a que lea. Sale una vista previa con las ventanas creadas.
+3. Lee los **avisos en rojo** y corrige lo que haga falta. Puedes cambiar el color de cada presupuesto.
+4. Pulsa **Guardar** o **Guardar e imprimir pegatinas**.
+
+## Qué trae cada pegatina (100 x 40 mm)
+Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medidas, sistema, vidrio, mosquitera / cerradura / apertura exterior / ESPECIAL y el código de barras de 12 cifras para la pistola. Se reimprimen desde el lote con **"Imprimir pegatinas"**.
+
+## Reglas
+- Los presupuestos **no se mezclan**: cada ventana lleva su número de presupuesto y su versión.
+- Las posiciones dobles se separan: V07.012,013 → V07.012 y V07.013; V02.104.103 → V02.104 y V02.103.
+- Una ventana con **ancho o alto menor de 440 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
+- El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
+- Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
+- **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y los **reserva** para el lote. Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Subir otra vez el mismo lote no duplica las reservas.
+- Si el CRM no reconoce cristales que sí están (por ejemplo porque el packing list no trae el expediente), hay una casilla para guardar igualmente esa vez. Úsala solo después de comprobarlo a mano.
+- No sale el aviso "Faltan documentos" en los lotes hechos así.
+
+## Avisos que debes mirar
+- [ ] **Vidrio sin argón ni bajo emisivo** (por ejemplo "4+4/16/3+3"): es un error probable. Confírmalo antes de fabricar.
+- [ ] **Posición que sale en un PDF y no en el otro**, o **versión distinta** entre el listado y la hoja de corte.
+- [ ] **Presupuesto "CORRECCIÓN"**: si la vivienda ya estaba cargada, quedaría duplicada.
+- [ ] **Color distinto** al del resto del lote.
+- [ ] Si el lote ya tenía etiquetas de la línea, el rápido las **sustituye** (te lo pregunta).`,
   },
 ];
 
@@ -37533,6 +38168,25 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
   );
 }
 
+// Botón naranja arriba de todo en Uxcar: eliges el expediente (por defecto el que tienes abierto) y subes listado de vidrios + hoja de corte
+function UxRapidoArriba({ expedientes, abierto, onGuardar }) {
+  const [sel, setSel] = useState("");
+  const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
+  const id = (abierto && abierto.id) || sel || (lista[0] && lista[0].id) || "";
+  const exp = lista.find((e) => e.id === id) || lista[0];
+  if (!exp) return null;
+  return (
+    <div className="flex flex-wrap items-start gap-2 mb-4 p-3 rounded-lg border border-orange-200 bg-orange-50/60">
+      <label className="text-xs text-slate-700 flex items-center gap-1.5 self-center">Expediente:
+        <select value={exp.id} disabled={!!abierto} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+          {lista.map((e) => <option key={e.id} value={e.id}>{e.numero}</option>)}
+        </select>
+      </label>
+      <BotonExpedienteRapido key={exp.id} lotes={exp.etiquetasFab} onGuardar={(l) => onGuardar(exp, l)} />
+    </div>
+  );
+}
+
 function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
   const [vista, setVista] = useState("lista");
   const [abiertoId, setAbiertoId] = useState(null);
@@ -37559,6 +38213,7 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
+      {onGuardarEtiquetasUx && expedientes.length > 0 && <UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} />}
       {pendientesProduccion > 0 && vista === "lista" && (
         <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
           {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
