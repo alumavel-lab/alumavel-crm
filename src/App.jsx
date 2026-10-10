@@ -6853,7 +6853,7 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : lotes.length ? "Añadir otro PDF" : "Subir PDF de etiquetas"}
         </button>
         <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { subirRapido(e.target.files); e.target.value = ""; }} />
-        <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border-2 border-[#2E8B57] text-[#2E8B57] bg-white disabled:opacity-60">
+        <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           <Upload size={14} /> Expediente rápido (vidrios + hoja de corte)
         </button>
       </div>
