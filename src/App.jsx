@@ -38237,6 +38237,12 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     try { await fbUpdate(ref(fbDb, `portalUxcar/pedidos/${pedidoId}`), datosEnvio); } catch (e) { aviso("No se pudo guardar"); }
   };
 
+  const borrarExpedientePortal = async (e) => {
+    const yaSacados = toArray(e.etiquetasFab).some((l) => l && l.control && !l.control.pendiente && (toArray(l.control.cristales).length || toArray(l.control.persianas).length));
+    if (yaSacados) { aviso("No se puede borrar: Ecowin PVC ya ha sacado sus cristales del almacén. Pídele que lo deshaga primero."); return; }
+    if (!window.confirm(`¿Borrar el expediente ${e.numero}? Desaparece de tu lista y no se puede recuperar.`)) return;
+    try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${e.id}`), null); aviso(`Expediente ${e.numero} borrado`); setVista("lista"); setAbiertoId(null); } catch (er) { aviso("No se pudo borrar: " + er.message); }
+  };
   const guardarNuevo = async (f) => {
     const id = uid();
     const exp = {
@@ -38334,6 +38340,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
               <h2 className="text-xl font-extrabold text-slate-900">{abierto.numero}</h2>
               <UxEstado estado={abierto.estado} />
               <UxSemaforo exp={abierto} conTexto />
+              <button onClick={() => borrarExpedientePortal(abierto)} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
             </div>
             <UxControl3 exp={abierto} pedidos={pedidosUx} onAbrirPedido={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }}
               onGuardarListado={async (exp, lis) => { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); aviso("Listado de materiales guardado"); }} />
