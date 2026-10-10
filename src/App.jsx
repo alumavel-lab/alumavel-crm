@@ -5383,6 +5383,7 @@ export default function App() {
             onCambiarControlOtros={(exp, v) => uxActualizar(exp, { controlOtros: v })}
             onGuardarListadoUx={async (exp, lis) => { await uxActualizar(exp, { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); showToast("Listado de materiales guardado"); }}
             onGuardarEtiquetasUx={(exp, lotes) => uxActualizar(exp, { etiquetasFab: JSON.parse(JSON.stringify(lotes)) })}
+            onGuardarSinObra={guardarLoteSinObra}
             onPasarProduccion={uxPasarProduccion}
             onCambiarEstado={uxCambiarEstado}
             onCambiarEntrega={uxCambiarEntrega}
@@ -38353,25 +38354,29 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
 }
 
 // Botón naranja arriba de todo en Uxcar: eliges el expediente (por defecto el que tienes abierto) y subes listado de vidrios + hoja de corte
-function UxRapidoArriba({ expedientes, abierto, onGuardar }) {
-  const [sel, setSel] = useState("");
+function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
+  const [sel, setSel] = useState("__sin");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
-  const id = (abierto && abierto.id) || sel || (lista[0] && lista[0].id) || "";
-  const exp = lista.find((e) => e.id === id) || lista[0];
-  if (!exp) return null;
+  const id = abierto && abierto.id ? abierto.id : sel;
+  const exp = id === "__sin" ? null : lista.find((e) => e.id === id) || null;
+  if (!exp && !onGuardarSinObra) return null;
   return (
     <div className="flex flex-wrap items-start gap-2 mb-4 p-3 rounded-lg border border-orange-200 bg-orange-50/60">
-      <label className="text-xs text-slate-700 flex items-center gap-1.5 self-center">Expediente:
-        <select value={exp.id} disabled={!!abierto} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
-          {lista.map((e) => <option key={e.id} value={e.id}>{e.numero}</option>)}
+      <label className="text-xs text-slate-700 flex items-center gap-1.5 self-center">Guardar en:
+        <select value={exp ? exp.id : "__sin"} disabled={!!abierto} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+          <option value="__sin">Sin expediente (directo a la línea)</option>
+          {lista.map((e) => <option key={e.id} value={e.id}>Expediente {e.numero}</option>)}
         </select>
       </label>
-      <BotonExpedienteRapido key={exp.id} lotes={exp.etiquetasFab} onGuardar={(l) => onGuardar(exp, l)} />
+      {exp
+        ? <BotonExpedienteRapido key={exp.id} lotes={exp.etiquetasFab} onGuardar={(l) => onGuardar(exp, l)} />
+        : <BotonExpedienteRapido key="sin" lotes={[]} onGuardar={(ls) => toArray(ls).forEach((l) => onGuardarSinObra(l))} />}
+      {!exp && <span className="text-xs text-slate-500 self-center">No crea ningún expediente: deja las ventanas en la línea (Almacén de ventanas → "Sin obra") y saca cristales y persianas de sus almacenes.</span>}
     </div>
   );
 }
 
-function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
   const [vista, setVista] = useState("lista");
   const [abiertoId, setAbiertoId] = useState(null);
   const tipos = config && config.tipos ? toArray(config.tipos) : [];
@@ -38397,7 +38402,7 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
-      {onGuardarEtiquetasUx && expedientes.length > 0 && <UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} />}
+      {(onGuardarEtiquetasUx || onGuardarSinObra) && <UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} onGuardarSinObra={onGuardarSinObra} />}
       {pendientesProduccion > 0 && vista === "lista" && (
         <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
           {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
