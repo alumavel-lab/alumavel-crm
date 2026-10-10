@@ -2327,6 +2327,8 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
+  // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
+  almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
 
   const addCristal = (data) => {
@@ -6796,19 +6798,22 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
     try {
       const r = await leerExpedienteRapidoPdfs(files, setAviso);
       if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
-      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {} });
+      const chk = almacenRapido.saveCristales ? comprobarAlmacenRapido(r) : null; // en el portal de Uxcar no hay almacén que comprobar
+      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {}, chk, saltar: false });
       setAviso("");
     } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
     finally { setLeyendo(false); }
   };
   const guardarRapido = (imprimir) => {
     if (!rap) return;
+    if (rap.chk && rap.chk.faltan.length && !rap.saltar) { setAviso("No se guarda: faltan cristales o persianas en el almacén (mira la lista en rojo)."); return; }
     const r = JSON.parse(JSON.stringify(rap.r));
     const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
     if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está aquí con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
     r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
     guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
-    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}). No se ha tocado el stock ni se ha creado ningún pedido.`);
+    if (rap.chk) aplicarReservasAlmacenRapido(r, rap.chk);
+    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}).${rap.chk ? ` Cristales reservados en el almacén: ${rap.chk.encontrados} de ${rap.chk.pedidos}.${rap.chk.pers.pedidas ? ` Persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}.` : ""}` : ""} No se ha tocado el stock de perfiles ni de herraje ni se ha creado ningún pedido.`);
     setRap(null);
     if (imprimir) imprimirPegatinasExpediente(r.lotes);
   };
@@ -6826,6 +6831,16 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
             <div className="rounded-md border border-rose-300 bg-rose-50 p-2 space-y-0.5">
               <div className="text-xs font-bold text-rose-700">Revisa antes de guardar ({rap.r.avisos.length}):</div>
               {rap.r.avisos.map((a, i) => <div key={i} className="text-xs text-rose-700">⚠ {a}</div>)}
+            </div>
+          )}
+          {rap.chk && (
+            <div className={`rounded-md border p-2 space-y-0.5 ${rap.chk.faltan.length ? "border-rose-400 bg-rose-50" : "border-emerald-300 bg-emerald-50"}`}>
+              <div className={`text-xs font-bold ${rap.chk.faltan.length ? "text-rose-700" : "text-emerald-700"}`}>
+                Almacén de cristales: {rap.chk.encontrados} de {rap.chk.pedidos} cristales encontrados{rap.chk.pers.pedidas ? ` · persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}` : ""}
+                {rap.chk.faltan.length ? " · NO SE PUEDE GUARDAR hasta que estén" : " · se reservarán al guardar"}
+              </div>
+              {rap.chk.faltan.map((a, i) => <div key={i} className="text-xs text-rose-700">✗ {a}</div>)}
+              {rap.chk.faltan.length > 0 && <label className="text-xs text-slate-600 flex items-center gap-1.5 pt-1"><input type="checkbox" checked={!!rap.saltar} onChange={(e) => setRap({ ...rap, saltar: e.target.checked })} /> Guardar igualmente esta vez (solo si has comprobado que los cristales están y el CRM no los reconoce)</label>}
             </div>
           )}
           <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
@@ -31661,7 +31676,8 @@ function agruparVidriosRapido(paginas) {
     lineas.forEach((l, i) => {
       const m = l.match(/^\s*(\d\.\d{3})\s+(\S+)\s+(\S+)\s+\d/);
       if (!m || m[1].replace(/\D/g, "") !== ppto) return;
-      filas.push({ modelo: m[2], codigo: m[3], texto: (lineas[i + 1] || "").trim() });
+      const mc = l.match(/^\s*\d\.\d{3}\s+\S+\s+\S+\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})(\d{1,2})\s/); // cristal: ancho, alto y nº de cristales (vienen pegados al siguiente número)
+      filas.push({ modelo: m[2], codigo: m[3], texto: (lineas[i + 1] || "").trim(), ancho: mc ? mmRapido(mc[1]) : null, alto: mc ? mmRapido(mc[2]) : null, uds: mc ? parseInt(mc[3], 10) : null });
     });
     presupuestos.set(ppto, { ppto, version: mh[2], cliente, referencia, filas });
   });
@@ -31706,6 +31722,7 @@ function agruparCorteRapido(paginas) {
 function crearExpedienteRapido(listados, cortes) {
   const avisos = [];
   const lotes = [];
+  const cristalesReq = [], persianasReq = [];
   const usadas = new Set();
   const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
   listados.forEach((L) => {
@@ -31731,7 +31748,8 @@ function crearExpedienteRapido(listados, cortes) {
         const codigos = [...new Set(filas.map((f) => f.codigo))];
         const vidrioAv = filas.filter((f) => esVidrioSospechoso(f.codigo));
         if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
-        if (c.persianaTexto) avisos.push(`${pptoBonito(ppto)} ${c.pos}: el campo Persiana trae "${c.persianaTexto.slice(0, 60)}". Este modo no prepara persianas: revísalo.`);
+        filas.forEach((f) => { if (f.ancho && f.alto && f.uds) cristalesReq.push({ fab: L.fab, exp, ppto, modelo: f.modelo, ancho: f.ancho, alto: f.alto, uds: f.uds }); });
+        if (c.persianaTexto) avisos.push(`${pptoBonito(ppto)} ${c.pos}: lleva persiana ("${c.persianaTexto.slice(0, 50)}"). Se comprueba en el almacén de persianas.`);
         const posiciones = posicionesRapido(c.pos);
         const uds = Math.max(1, Math.min(99, c.uds || 1));
         let nombres;
@@ -31746,6 +31764,7 @@ function crearExpedienteRapido(listados, cortes) {
         const medida = c.ancho && c.alto ? `${c.ancho} x ${c.alto}` : "";
         const hojas = hojasPdf >= 1 && hojasPdf <= 3 ? hojasPdf : hojasSugeridas({ medida });
         const especial = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL);
+        if (c.persianaTexto) nombres.forEach((n) => persianasReq.push({ fab: L.fab, exp, ppto, pos: n.p, texto: c.persianaTexto }));
         nombres.forEach((n) => {
           seq++;
           const code = "9" + L.fab.slice(-4).padStart(4, "0") + String(exp).slice(-4).padStart(4, "0") + String(seq % 1000).padStart(3, "0");
@@ -31771,7 +31790,88 @@ function crearExpedienteRapido(listados, cortes) {
     [...new Set(l.ventanas.filter((v) => v.color !== comun).map((v) => v.num))].forEach((n) => avisos.push(`Presupuesto ${n}: la hoja de corte pone color ${(l.ventanas.find((v) => v.num === n) || {}).color} y el resto del lote ${l.fab} es ${comun}. Si no es lo que quieres, cámbialo antes de guardar.`));
   });
   const nuevosAvisos = [...new Set(avisos)];
-  return { lotes, avisos: nuevosAvisos, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
+  return { lotes, avisos: nuevosAvisos, cristalesReq, persianasReq, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
+}
+// ---- Comprobación y reserva en los almacenes de cristales y persianas ----
+const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null }; // lo rellena App en cada pintado
+const digitosExp = (t) => String(t || "").split(/[,;]/).map((x) => x.replace(/\D/g, "")).filter(Boolean);
+// Mira si cada cristal del listado está en el almacén (misma medida, girada o no, ±3 mm, y de este expediente o sin expediente puesto).
+// Devuelve { faltan: [texto], reservas: Map<"idCab|idxPieza", [{fab,ppto,modelo,n}]>, resumen:{pedidos, encontrados} }
+function comprobarAlmacenRapido(r) {
+  const out = { faltan: [], reservasCristal: new Map(), reservasPersiana: new Map(), pedidos: 0, encontrados: 0, pers: { pedidas: 0, encontradas: 0 } };
+  const fabs = new Set(r.lotes.map((l) => l.fab));
+  const disp = new Map(); // disponibilidad que queda por pieza durante esta comprobación
+  const cabs = toArray(almacenRapido.cristales);
+  const libre = (c, p, i) => {
+    const k = `${c.id}|${i}`;
+    if (!disp.has(k)) {
+      const total = parseFloat(p.cantidad) || 1;
+      const mala = p.incidencia ? Math.min(total, parseFloat(p.udsAfectadas ?? p.cantidad) || total) : 0; // rotos o que no llegaron no valen
+      const ajenas = toArray(p.reservas).filter((x) => !fabs.has(x.fab)).reduce((a, x) => a + (parseFloat(x.n) || 0), 0); // lo reservado por OTRO lote ya no está libre
+      disp.set(k, Math.max(0, total - mala - ajenas));
+    }
+    return disp.get(k);
+  };
+  r.cristalesReq.forEach((q) => {
+    out.pedidos += q.uds;
+    const exps = digitosExp(q.exp);
+    const cand = [];
+    cabs.forEach((c) => toArray(c.piezas).forEach((p, i) => {
+      if (p.puesto) return;
+      if (!mismaMedidaCristal(q.ancho, q.alto, p.ancho, p.alto)) return;
+      const ex = digitosExp(p.expediente || c.expediente);
+      if (ex.length && exps.length && !ex.some((e) => exps.some((x) => e.includes(x) || x.includes(e)))) return; // es de otra obra
+      const igualRef = normPedidoCristal(p.ref) && (normPedidoCristal(p.ref).includes(normPedidoCristal(q.modelo)) || normPedidoCristal(q.modelo).includes(normPedidoCristal(p.ref)));
+      cand.push({ c, p, i, pri: igualRef ? 0 : 1 });
+    }));
+    cand.sort((a, b) => a.pri - b.pri);
+    let falta = q.uds;
+    cand.forEach((x) => {
+      if (falta <= 0) return;
+      const l = libre(x.c, x.p, x.i); if (l <= 0) return;
+      const toma = Math.min(l, falta);
+      disp.set(`${x.c.id}|${x.i}`, l - toma); falta -= toma;
+      const k = `${x.c.id}|${x.i}`;
+      out.reservasCristal.set(k, [...(out.reservasCristal.get(k) || []), { fab: q.fab, ppto: q.ppto, modelo: q.modelo, n: toma }]);
+    });
+    out.encontrados += q.uds - falta;
+    if (falta > 0) out.faltan.push(`Cristal ${pptoBonito(q.ppto)} ${q.modelo} (${q.ancho} x ${q.alto}): faltan ${falta} de ${q.uds} en el almacén de cristales.`);
+  });
+  // Persianas: una por ventana que la lleve; se busca en el almacén de persianas por expediente (sin medida: no sé cómo las mide cada proveedor)
+  const per = toArray(almacenRapido.persianas).filter((x) => !x.reservaFab || fabs.has(x.reservaFab.fab));
+  const usadasP = new Set();
+  r.persianasReq.forEach((q) => {
+    out.pers.pedidas++;
+    const exps = digitosExp(q.exp);
+    const it = per.find((x) => !usadasP.has(x.id) && (() => { const ex = digitosExp(x.expediente); return ex.some((e) => exps.some((y) => e.includes(y) || y.includes(e))); })());
+    if (it) { usadasP.add(it.id); out.pers.encontradas++; out.reservasPersiana.set(it.id, { fab: q.fab, ppto: q.ppto, pos: q.pos }); }
+    else out.faltan.push(`Persiana ${pptoBonito(q.ppto)} ${q.pos}: no hay persiana del expediente ${q.exp} libre en el almacén de persianas.`);
+  });
+  return out;
+}
+// Guarda las reservas (cristales y persianas) en los almacenes. Vuelve a repartir lo del mismo lote, así que subir otra vez no duplica.
+function aplicarReservasAlmacenRapido(r, chk) {
+  const fabs = new Set(r.lotes.map((l) => l.fab));
+  if (almacenRapido.saveCristales && toArray(r.cristalesReq).length) {
+    const nuevos = toArray(almacenRapido.cristales).map((c) => ({ ...c, piezas: toArray(c.piezas).map((p, i) => {
+      const previas = toArray(p.reservas).filter((x) => !fabs.has(x.fab));
+      const nuevas = chk.reservasCristal.get(`${c.id}|${i}`) || [];
+      if (!nuevas.length && previas.length === toArray(p.reservas).length) return p;
+      const reservas = [...previas, ...nuevas];
+      const q = { ...p }; if (reservas.length) q.reservas = reservas; else delete q.reservas;
+      return q;
+    }) }));
+    almacenRapido.saveCristales(JSON.parse(JSON.stringify(nuevos)));
+  }
+  if (almacenRapido.savePersianas && toArray(r.persianasReq).length) {
+    const nuevos = toArray(almacenRapido.persianas).map((x) => {
+      const rv = chk.reservasPersiana.get(x.id);
+      if (rv) return { ...x, reservaFab: rv };
+      if (x.reservaFab && fabs.has(x.reservaFab.fab)) { const y = { ...x }; delete y.reservaFab; return y; }
+      return x;
+    });
+    almacenRapido.savePersianas(JSON.parse(JSON.stringify(nuevos)));
+  }
 }
 async function leerExpedienteRapidoPdfs(files, onProgreso) {
   const lib = await cargarPdfJs();
@@ -37772,7 +37872,7 @@ Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de v
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
   },
   {
-    para: "equipo", orden: 4, version: 1, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    para: "equipo", orden: 4, version: 2, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
     contenido: `## Resumen
 Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
 
@@ -37799,7 +37899,9 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 - Las posiciones dobles se separan: V07.012,013 → V07.012 y V07.013; V02.104.103 → V02.104 y V02.103.
 - Una ventana con **ancho o alto menor de 440 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
 - El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
-- Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**. Los cristales llegan por su packing list al almacén de cristales.
+- Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
+- **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y los **reserva** para el lote. Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Subir otra vez el mismo lote no duplica las reservas.
+- Si el CRM no reconoce cristales que sí están (por ejemplo porque el packing list no trae el expediente), hay una casilla para guardar igualmente esa vez. Úsala solo después de comprobarlo a mano.
 - No sale el aviso "Faltan documentos" en los lotes hechos así.
 
 ## Avisos que debes mirar
