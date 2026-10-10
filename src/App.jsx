@@ -16043,6 +16043,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       {tab === "preparar" && (
         <Planning proyectos={proyectos} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
+          lotesSinObra={etiquetasSinObra} puestos={puestosDe(configVentanasFab)}
           onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} />
       )}
       {tab === "preparar" && (
@@ -36741,7 +36742,7 @@ const lunesDe = (f) => { const d = new Date(f + "T12:00:00"); const k = (d.getDa
 // Preparar material de la semana: se eligen las obras y expedientes que se van a fabricar,
 // se juntan sus listados de materiales (mismo código y color = una línea), se compara el
 // total con el stock y se saca la hoja de preparación y los pedidos de lo que falta.
-function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras, onIniciarFabricacion, onVerProyecto, onCrearPedidos }) {
+function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [] }) {
   const cfg = config || {};
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
@@ -36760,6 +36761,30 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const h = horasObra(e.recuento, { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, e.horasFabricacion, tiempos, e.listadoMateriales && e.listadoMateriales.horas);
     return { id: `u-${e.id}`, ref: { tipo: "uxcar", id: e.id }, nombre: `Uxcar exp. ${e.numero}`, ventanas: uxNum(e.ventanas) + uxNum(e.puertas) + uxNum(e.osciloParalelas), horas: h.horas, aMano: h.aMano, deListado: h.deListado, entrega: e.fechaEntrega || "", listado: e.listadoMateriales, de: "Uxcar" };
   };
+  // Expedientes rápidos subidos SIN obra (directo a la línea): entran en el planning como una obra más.
+  // Horas: las que pongas a mano o, si no, las de cada ventana según sus hojas (tabla "Horas por tipo de ventana").
+  const fechasPlan = cfg.fechasPlan || {};
+  const horasRap = cfg.horasRapido || {};
+  const hechos = toArray(cfg.planHechos);
+  const obraRapido = (l) => {
+    const vs = toArray(l.ventanas);
+    const calc = vs.reduce((a, v) => { const h = parseInt(v.hojas, 10) || 1; return a + (h >= 3 ? tiempos.ventana3 : h === 2 ? tiempos.ventana2 : tiempos.ventana1); }, 0);
+    const man = parseFloat(horasRap[l.fab]) > 0;
+    return { id: `r-${l.fab}`, ref: { tipo: "rapido", id: String(l.fab) }, nombre: `Rápido lote ${l.fab}${l.expediente ? ` · exp. ${l.expediente}` : ""}`, ventanas: vs.length, horas: man ? parseFloat(horasRap[l.fab]) : Math.round(calc * 10) / 10, aMano: man, entrega: "", listado: null, de: "Rápido" };
+  };
+  const rapidosTodos = toArray(lotesSinObra).filter((l) => l && l.rapido && toArray(l.ventanas).length).map(obraRapido);
+  const rapidos = rapidosTodos.filter((o) => !hechos.includes(o.id));
+  const rapidosHechos = rapidosTodos.filter((o) => hechos.includes(o.id));
+  const guardarHoras = (ref, v) => {
+    if (ref.tipo !== "rapido") return onGuardarHorasProp(ref, v);
+    const n = { ...horasRap }; if (v === null || v === undefined) delete n[ref.id]; else n[ref.id] = v;
+    guardarCfg({ horasRapido: n });
+  };
+  const ponerDia = (id, v) => { const n = { ...fechasPlan }; if (v) n[id] = v; else delete n[id]; guardarCfg({ fechasPlan: n }); };
+  // Horas del taller por día: lo normal y, si algún día hay menos gente, ese día concreto (se guarda como "horas ya ocupadas")
+  const horasEsp = cfg.horasDiaEsp || {};
+  const ocupadoBase = {}; Object.entries(horasEsp).forEach(([f, h]) => { const lib = Math.max(0, parseFloat(h) || 0); ocupadoBase[f] = Math.max(0, horasDia - lib); });
+  const sumaPuestos = toArray(puestos).reduce((a, p) => a + (parseFloat(p.horasDia) || 0), 0);
   // Las obras que ya se han empezado a fabricar (En proceso) siguen en el planning, delante de las demás:
   // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
   const enCurso = [
@@ -36771,6 +36796,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     ...[
       ...listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto),
       ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraUx),
+      ...rapidos,
     ].sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999")),
   ];
   // Orden a mano: se guarda la lista de ids; lo que no está en ella va detrás en su orden normal
@@ -36812,10 +36838,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const sinFecha = ordenar(esperando.filter((o) => o.material === null));
   const esperandoOrd = [...conFecha, ...sinFecha];
   // Reparto: primero las listas, luego las que esperan material (desde el día siguiente a su llegada)
-  const plan1 = repartirPlanning(firmes.map((o) => ({ ...o, disponible: desde })), desde, horasDia);
+  // Las que tienen día elegido van primero y se colocan en ese día (si no cabe todo, lo que sobra pasa al siguiente día laborable);
+  // el resto se reparte después en los huecos, desde "Planificar desde".
+  const conDia = firmes.filter((o) => fechasPlan[o.id]).sort((a, b) => fechasPlan[a.id].localeCompare(fechasPlan[b.id]));
+  const sinDia = firmes.filter((o) => !fechasPlan[o.id]);
+  const desdeEf = [desde, ...conDia.map((o) => fechasPlan[o.id])].sort()[0];
+  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: fechasPlan[o.id] })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
   const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
-  const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
-  const diasFirmes = Object.keys(plan1.dias).sort();
+  const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: fechasPlan[o.id] && fechasPlan[o.id] > (o.material ? sigLaborable(o.material) : desde) ? fechasPlan[o.id] : o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
+  const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
   // Semanas del planning virtual
   const semanas = {};
   Object.entries(plan2.dias).forEach(([f, d]) => {
@@ -36890,9 +36921,16 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
       <span className="text-xs text-slate-500">{o.de} · {o.ventanas ? `${o.ventanas} ventanas` : "ventanas sin contar"}{o.entrega ? ` · entrega ${fmtDate(o.entrega)}` : ""}</span>
       <span className="ml-auto flex items-center gap-1 text-xs">
         <input type="number" min="0" step="0.5" defaultValue={o.aMano ? o.horas : ""} placeholder={String(o.horas)} title="Horas de fabricación (vacío = calculadas por tipo de ventana)"
-          onBlur={(e) => { const v = e.target.value; if (String(v) !== String(o.aMano ? o.horas : "")) onGuardarHoras(o.ref, v === "" ? null : parseFloat(v)); }}
+          onBlur={(e) => { const v = e.target.value; if (String(v) !== String(o.aMano ? o.horas : "")) guardarHoras(o.ref, v === "" ? null : parseFloat(v)); }}
           className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right" /> h{o.aMano ? "" : <span className="text-slate-400"> ({o.deListado ? "del listado" : "calc."})</span>}
       </span>
+      {lista && (
+        <label className="flex items-center gap-1 text-xs text-slate-600" title="Día en que quieres empezar esta obra. Si no cabe en ese día, lo que sobra pasa al siguiente día laborable. Vacío = el programa la coloca donde haya hueco.">
+          Empezar el <input type="date" value={fechasPlan[o.id] || ""} onChange={(e) => ponerDia(o.id, e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
+          {fechasPlan[o.id] && <button onClick={() => ponerDia(o.id, "")} className="text-slate-400 hover:text-rose-500" title="Quitar el día elegido">✕</button>}
+        </label>
+      )}
+      {o.ref.tipo === "rapido" && <button onClick={() => guardarCfg({ planHechos: [...hechos, o.id] })} className="text-xs font-semibold text-slate-500 hover:text-[#2E8B57]" title="Ya está fabricado: se quita del planning">Hecho</button>}
       {lista && lista.length > 1 && (
         <select value="" onChange={(e) => { if (e.target.value) cambiarPor(lista, o.id, e.target.value); }} className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-600" title="Cambiar el orden: intercambiar con otra obra">
           <option value="">Cambiar por…</option>
@@ -36909,6 +36947,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
         <Field label="Horas de trabajo al día (todo el taller)"><TextInput type="number" min="1" step="0.5" defaultValue={horasDia} onBlur={(e) => guardarCfg({ horasDia: parseFloat(e.target.value) || 8 })} className="!w-28" /></Field>
         <Field label="Planificar desde"><TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className="!w-40" /></Field>
         <Field label="Correo de fábrica (avisos)"><TextInput type="email" defaultValue={cfg.emailFabrica || ""} placeholder="fabrica@…" onBlur={(e) => guardarCfg({ emailFabrica: e.target.value.trim() })} className="!w-56" /></Field>
+        {sumaPuestos > 0 && sumaPuestos !== horasDia && <button onClick={() => guardarCfg({ horasDia: sumaPuestos })} className="text-sm font-semibold text-[#2E8B57] hover:underline mb-2" title="Suma de las horas/día de los puestos (Fábrica → Puestos y partes)">Usar las horas de los puestos: {sumaPuestos} h/día</button>}
+        <details className="mb-1 relative">
+          <summary className="text-sm font-semibold text-slate-600 cursor-pointer">Días con menos horas{Object.keys(horasEsp).length ? ` (${Object.keys(horasEsp).length})` : ""}</summary>
+          <div className="absolute z-10 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg p-3 space-y-2 w-72">
+            <p className="text-[11px] text-slate-500">Si un día hay menos gente (vacaciones, baja…), pon aquí las horas que hay ESE día. Los demás usan las horas de arriba.</p>
+            {Object.entries(horasEsp).sort().map(([f, h]) => <div key={f} className="flex items-center gap-2 text-xs"><span className="capitalize">{fmtDia(f)}</span><b>{h} h</b><button onClick={() => { const n = { ...horasEsp }; delete n[f]; guardarCfg({ horasDiaEsp: n }); }} className="ml-auto text-slate-400 hover:text-rose-500">✕</button></div>)}
+            <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); const f = e.target.dia.value, h = parseFloat(e.target.hor.value); if (!f || isNaN(h) || h < 0) return; guardarCfg({ horasDiaEsp: { ...horasEsp, [f]: h } }); e.target.reset(); }}>
+              <input name="dia" type="date" className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
+              <input name="hor" type="number" min="0" step="0.5" placeholder="horas" className="border border-slate-300 rounded px-1.5 py-1 text-xs w-16" />
+              <button className="text-xs font-semibold text-[#2E8B57]">Añadir</button>
+            </form>
+          </div>
+        </details>
         <button onClick={() => setVerTiempos(!verTiempos)} className="text-sm font-semibold text-slate-600 hover:underline mb-2">{verTiempos ? "Ocultar" : "Horas por tipo de ventana"}</button>
         <div className="ml-auto text-sm text-slate-600 mb-2">Listas para fabricar: <b>{Math.round(totalFirmes * 10) / 10} h</b> ≈ <b>{Math.ceil(totalFirmes / horasDia * 10) / 10}</b> días</div>
         {verTiempos && (
@@ -36929,13 +36980,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           {listas.length === 0 && <p className="px-4 py-4 text-sm text-slate-400">No hay obras con todo el material ahora mismo.</p>}
           {listasOrd.map((o, i) => filaObra(o, <input type="checkbox" checked={!quitadas.includes(o.id)} onChange={(e) => setQuitadas(e.target.checked ? quitadas.filter((x) => x !== o.id) : [...quitadas, o.id])} />, listasOrd, i))}
         </div>
+        {rapidosHechos.length > 0 && (
+          <details className="mb-3 text-xs text-slate-500">
+            <summary className="cursor-pointer">Rápidos ya hechos ({rapidosHechos.length})</summary>
+            {rapidosHechos.map((o) => <div key={o.id} className="flex items-center gap-2 py-0.5">{o.nombre} · {o.ventanas} ventanas <button onClick={() => guardarCfg({ planHechos: hechos.filter((x) => x !== o.id) })} className="text-[#2E8B57] font-semibold hover:underline">Volver a ponerlo</button></div>)}
+          </details>
+        )}
         {diasFirmes.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            {diasFirmes.map((f) => { const d = plan1.dias[f]; const pct = Math.min(100, (d.usadas / horasDia) * 100); return (
+            {diasFirmes.map((f) => { const d = plan1.dias[f]; const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const pct = Math.min(100, ((d.usadas - bloq) / capF) * 100); return (
               <div key={f} className="bg-white border border-slate-200 rounded-lg p-3">
                 <div className="text-sm font-bold text-slate-800 capitalize">{fmtDia(f)}</div>
                 <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: "#2E8B57" }} /></div>
-                <div className="text-[11px] text-slate-500 mb-1">{Math.round(d.usadas * 10) / 10} de {horasDia} h</div>
+                <div className="text-[11px] text-slate-500 mb-1">{Math.round((d.usadas - bloq) * 10) / 10} de {Math.round(capF * 10) / 10} h{bloq > 0 ? " (día con menos gente)" : ""}</div>
                 {d.trozos.map((t, i) => <div key={i} className="text-xs text-slate-700">{t.nombre} <span className="text-slate-400">· {t.horas} h</span></div>)}
               </div>
             ); })}
