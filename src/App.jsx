@@ -3487,6 +3487,8 @@ export default function App() {
   };
   const guardarLoteSinObra = (l) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${l.fab}`), JSON.parse(JSON.stringify(l))).catch((e) => showToast("No se pudieron guardar las etiquetas: " + e.message, "error"));
   const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
+  // Lotes de Expediente rápido que ya sacaron cristales/persianas de los almacenes (para no descontar dos veces al volver a subirlos)
+  almacenRapido.controlPrevio = new Map([...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].filter((l) => l && l.control).map((l) => [l.fab, l.control]));
 
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
@@ -6797,10 +6799,11 @@ function PanelRapido({ rap, setRap }) {
         <div className={`rounded-md border p-2 space-y-0.5 ${rap.chk.faltan.length ? "border-rose-400 bg-rose-50" : "border-emerald-300 bg-emerald-50"}`}>
           <div className={`text-xs font-bold ${rap.chk.faltan.length ? "text-rose-700" : "text-emerald-700"}`}>
             Almacén de cristales: {rap.chk.encontrados} de {rap.chk.pedidos} cristales encontrados{rap.chk.pers.pedidas ? ` · persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}` : ""}
-            {rap.chk.faltan.length ? " · NO SE PUEDE GUARDAR hasta que estén" : " · se reservarán al guardar"}
+            {rap.chk.faltan.length ? " · NO SE PUEDE GUARDAR hasta que estén" : " · al guardar se SACAN del almacén (se pueden devolver desde el control)"}
           </div>
           {rap.chk.faltan.map((a, i) => <div key={i} className="text-xs text-rose-700">✗ {a}</div>)}
-          {rap.chk.faltan.length > 0 && <label className="text-xs text-slate-600 flex items-center gap-1.5 pt-1"><input type="checkbox" checked={!!rap.saltar} onChange={(e) => setRap({ ...rap, saltar: e.target.checked })} /> Guardar igualmente esta vez (solo si has comprobado que los cristales están y el CRM no los reconoce)</label>}
+          {rap.chk.yaSacados.length > 0 && <div className="text-xs text-slate-700">Lote {rap.chk.yaSacados.join(", ")}: ya se sacó del almacén en una subida anterior; no se vuelve a descontar.</div>}
+          {rap.chk.faltan.length > 0 && <label className="text-xs text-slate-600 flex items-center gap-1.5 pt-1"><input type="checkbox" checked={!!rap.saltar} onChange={(e) => setRap({ ...rap, saltar: e.target.checked })} /> Guardar igualmente esta vez (solo se sacará del almacén lo que sí he encontrado; lo que falta queda anotado en el control)</label>}
         </div>
       )}
       <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
@@ -6848,9 +6851,10 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
     const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
     if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está aquí con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
     r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
+    const prep = prepararSalidaAlmacenRapido(r, rap.chk, rap.archivos);
     guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
-    if (rap.chk) aplicarReservasAlmacenRapido(r, rap.chk);
-    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}).${rap.chk ? ` Cristales reservados en el almacén: ${rap.chk.encontrados} de ${rap.chk.pedidos}.${rap.chk.pers.pedidas ? ` Persianas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}.` : ""}` : ""} No se ha tocado el stock de perfiles ni de herraje ni se ha creado ningún pedido.`);
+    confirmarSalidaAlmacenRapido(prep);
+    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}).${rap.chk ? ` Sacados del almacén de cristales: ${rap.chk.encontrados} de ${rap.chk.pedidos}.${rap.chk.pers.pedidas ? ` Persianas sacadas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}.` : ""}${rap.chk.yaSacados.length ? ` Lote ${rap.chk.yaSacados.join(", ")}: ya se había sacado antes, no se ha vuelto a descontar.` : ""}` : ""} No se ha tocado el stock de perfiles ni de herraje ni se ha creado ningún pedido.`);
     setRap(null);
     if (imprimir) imprimirPegatinasExpediente(r.lotes);
   };
@@ -31801,13 +31805,15 @@ function crearExpedienteRapido(listados, cortes) {
   return { lotes, avisos: nuevosAvisos, cristalesReq, persianasReq, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
 }
 // ---- Comprobación y reserva en los almacenes de cristales y persianas ----
-const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null }; // lo rellena App en cada pintado
+const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null, controlPrevio: new Map() }; // lo rellena App en cada pintado
 const digitosExp = (t) => String(t || "").split(/[,;]/).map((x) => x.replace(/\D/g, "")).filter(Boolean);
 // Mira si cada cristal del listado está en el almacén (misma medida, girada o no, ±3 mm, y de este expediente o sin expediente puesto).
 // Devuelve { faltan: [texto], reservas: Map<"idCab|idxPieza", [{fab,ppto,modelo,n}]>, resumen:{pedidos, encontrados} }
 function comprobarAlmacenRapido(r) {
-  const out = { faltan: [], reservasCristal: new Map(), reservasPersiana: new Map(), pedidos: 0, encontrados: 0, pers: { pedidas: 0, encontradas: 0 } };
+  const out = { faltan: [], reservasCristal: new Map(), reservasPersiana: new Map(), pedidos: 0, encontrados: 0, pers: { pedidas: 0, encontradas: 0 }, yaSacados: [] };
   const fabs = new Set(r.lotes.map((l) => l.fab));
+  const previo = almacenRapido.controlPrevio || new Map(); // lotes que ya salieron del almacén: no se vuelven a sacar
+  out.yaSacados = [...fabs].filter((f) => previo.has(f));
   const disp = new Map(); // disponibilidad que queda por pieza durante esta comprobación
   const cabs = toArray(almacenRapido.cristales);
   const libre = (c, p, i) => {
@@ -31820,7 +31826,7 @@ function comprobarAlmacenRapido(r) {
     }
     return disp.get(k);
   };
-  r.cristalesReq.forEach((q) => {
+  r.cristalesReq.filter((q) => !previo.has(q.fab)).forEach((q) => {
     out.pedidos += q.uds;
     const exps = digitosExp(q.exp);
     const cand = [];
@@ -31848,7 +31854,7 @@ function comprobarAlmacenRapido(r) {
   // Persianas: una por ventana que la lleve; se busca en el almacén de persianas por expediente (sin medida: no sé cómo las mide cada proveedor)
   const per = toArray(almacenRapido.persianas).filter((x) => !x.reservaFab || fabs.has(x.reservaFab.fab));
   const usadasP = new Set();
-  r.persianasReq.forEach((q) => {
+  r.persianasReq.filter((q) => !previo.has(q.fab)).forEach((q) => {
     out.pers.pedidas++;
     const exps = digitosExp(q.exp);
     const it = per.find((x) => !usadasP.has(x.id) && (() => { const ex = digitosExp(x.expediente); return ex.some((e) => exps.some((y) => e.includes(y) || y.includes(e))); })());
@@ -31857,28 +31863,87 @@ function comprobarAlmacenRapido(r) {
   });
   return out;
 }
-// Guarda las reservas (cristales y persianas) en los almacenes. Vuelve a repartir lo del mismo lote, así que subir otra vez no duplica.
-function aplicarReservasAlmacenRapido(r, chk) {
-  const fabs = new Set(r.lotes.map((l) => l.fab));
-  if (almacenRapido.saveCristales && toArray(r.cristalesReq).length) {
-    const nuevos = toArray(almacenRapido.cristales).map((c) => ({ ...c, piezas: toArray(c.piezas).map((p, i) => {
-      const previas = toArray(p.reservas).filter((x) => !fabs.has(x.fab));
-      const nuevas = chk.reservasCristal.get(`${c.id}|${i}`) || [];
-      if (!nuevas.length && previas.length === toArray(p.reservas).length) return p;
-      const reservas = [...previas, ...nuevas];
-      const q = { ...p }; if (reservas.length) q.reservas = reservas; else delete q.reservas;
-      return q;
-    }) }));
-    almacenRapido.saveCristales(JSON.parse(JSON.stringify(nuevos)));
-  }
-  if (almacenRapido.savePersianas && toArray(r.persianasReq).length) {
-    const nuevos = toArray(almacenRapido.persianas).map((x) => {
-      const rv = chk.reservasPersiana.get(x.id);
-      if (rv) return { ...x, reservaFab: rv };
-      if (x.reservaFab && fabs.has(x.reservaFab.fab)) { const y = { ...x }; delete y.reservaFab; return y; }
-      return x;
+// SACA de los almacenes los cristales y las persianas encontrados (no los reserva: los descuenta) y deja en cada lote un `control`
+// con lo que ha salido, para poder verlo y deshacerlo. Si el lote ya tenía control (se vuelve a subir) NO saca nada otra vez.
+function prepararSalidaAlmacenRapido(r, chk, archivos) {
+  const previo = almacenRapido.controlPrevio || new Map();
+  const d = new Date(), z = (n) => String(n).padStart(2, "0");
+  const fecha = `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+  const por = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
+  const ctl = new Map();
+  r.lotes.forEach((l) => ctl.set(l.fab, previo.has(l.fab) ? previo.get(l.fab) : { fecha, por, archivos: archivos || "", cristales: [], persianas: [], forzado: !!(chk && chk.faltan.length), faltaban: chk ? chk.faltan.slice(0, 30) : [] }));
+  let cabsNuevas = null, persNuevas = null;
+  if (chk && almacenRapido.saveCristales && chk.reservasCristal.size) {
+    const orig = toArray(almacenRapido.cristales);
+    const cabs = JSON.parse(JSON.stringify(orig));
+    const quita = new Map(); // "cab|idx" → n total
+    chk.reservasCristal.forEach((lista, k) => {
+      const cut = k.lastIndexOf("|"), cid = k.slice(0, cut), ix = parseInt(k.slice(cut + 1), 10);
+      const cab = cabs.find((c) => String(c.id) === cid); if (!cab || !cab.piezas || !cab.piezas[ix]) return;
+      lista.forEach((x) => {
+        if (previo.has(x.fab)) return;
+        const c0 = ctl.get(x.fab); if (!c0) return;
+        c0.cristales.push({ cabId: cid, cabNum: cab.numero || cab.lote || "", cab: { ...cab, piezas: [] }, pieza: { ...cab.piezas[ix] }, n: x.n, ppto: x.ppto, modelo: x.modelo });
+        quita.set(k, (quita.get(k) || 0) + x.n);
+      });
     });
-    almacenRapido.savePersianas(JSON.parse(JSON.stringify(nuevos)));
+    const tocadas = new Set();
+    quita.forEach((n, k) => {
+      const cut = k.lastIndexOf("|"), cid = k.slice(0, cut), ix = parseInt(k.slice(cut + 1), 10);
+      const cab = cabs.find((c) => String(c.id) === cid); const pz = cab.piezas[ix];
+      const rest = (parseFloat(pz.cantidad) || 1) - n;
+      if (rest > 0) pz.cantidad = rest; else pz.__quitar = true;
+      tocadas.add(cid);
+    });
+    const finales = [];
+    cabs.forEach((c) => {
+      if (!tocadas.has(String(c.id))) { finales.push(c); return; }
+      const piezas = toArray(c.piezas).filter((pz) => !pz.__quitar);
+      if (piezas.length) finales.push(recalcularCaballete(c, piezas)); // si se queda vacío, el caballete desaparece del almacén
+    });
+    cabsNuevas = finales;
+  }
+  if (chk && almacenRapido.savePersianas && chk.reservasPersiana.size) {
+    const quitar = new Set();
+    toArray(almacenRapido.persianas).forEach((x) => {
+      const rv = chk.reservasPersiana.get(x.id); if (!rv || previo.has(rv.fab)) return;
+      const c0 = ctl.get(rv.fab); if (!c0) return;
+      c0.persianas.push({ item: { ...x }, ppto: rv.ppto, pos: rv.pos }); quitar.add(x.id);
+    });
+    if (quitar.size) persNuevas = toArray(almacenRapido.persianas).filter((x) => !quitar.has(x.id));
+  }
+  r.lotes.forEach((l) => { l.control = JSON.parse(JSON.stringify(ctl.get(l.fab))); });
+  return { cabsNuevas, persNuevas };
+}
+// Confirma lo anterior: escribe los almacenes (llamar solo cuando el lote ya está guardado)
+function confirmarSalidaAlmacenRapido(prep) {
+  if (!prep) return;
+  if (prep.cabsNuevas && almacenRapido.saveCristales) almacenRapido.saveCristales(JSON.parse(JSON.stringify(prep.cabsNuevas)));
+  if (prep.persNuevas && almacenRapido.savePersianas) almacenRapido.savePersianas(JSON.parse(JSON.stringify(prep.persNuevas)));
+}
+// Devuelve a los almacenes lo que sacó un lote (cristales a su caballete —o lo recrea si ya no existe— y persianas)
+function devolverAlmacenRapido(control) {
+  if (!control) return;
+  const cr = toArray(control.cristales), pe = toArray(control.persianas);
+  if (cr.length && almacenRapido.saveCristales) {
+    const cabs = JSON.parse(JSON.stringify(toArray(almacenRapido.cristales)));
+    const misma = (a, b) => String(a.ancho) === String(b.ancho) && String(a.alto) === String(b.alto) && String(a.ref || "") === String(b.ref || "") && String(a.pedido || "") === String(b.pedido || "") && String(a.expediente || "") === String(b.expediente || "");
+    const tocadas = new Set();
+    cr.forEach((x) => {
+      let cab = cabs.find((c) => String(c.id) === String(x.cabId));
+      if (!cab) { cab = { ...JSON.parse(JSON.stringify(x.cab)), piezas: [] }; cabs.push(cab); }
+      cab.piezas = toArray(cab.piezas);
+      const ex = cab.piezas.find((pz) => misma(pz, x.pieza));
+      if (ex) ex.cantidad = (parseFloat(ex.cantidad) || 0) + x.n;
+      else cab.piezas.push({ ...JSON.parse(JSON.stringify(x.pieza)), cantidad: x.n });
+      tocadas.add(String(cab.id));
+    });
+    almacenRapido.saveCristales(cabs.map((c) => (tocadas.has(String(c.id)) ? recalcularCaballete(c, toArray(c.piezas)) : c)));
+  }
+  if (pe.length && almacenRapido.savePersianas) {
+    const act = toArray(almacenRapido.persianas);
+    const vuelven = pe.map((x) => x.item).filter((it) => !act.some((a) => a.id === it.id));
+    if (vuelven.length) almacenRapido.savePersianas(JSON.parse(JSON.stringify([...act, ...vuelven])));
   }
 }
 async function leerExpedienteRapidoPdfs(files, onProgreso) {
@@ -31954,7 +32019,7 @@ function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
 function mezclarLotesFab(previos, r, archivo) {
   const hoy = new Date().toISOString().slice(0, 10);
   const nuevos = toArray(previos).filter((l) => !r.lotes.some((x) => x.fab === l.fab));
-  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ventanas: l.ventanas }));
+  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ...(l.control ? { control: l.control } : {}), ventanas: l.ventanas }));
   return JSON.parse(JSON.stringify(nuevos));
 }
 const codPiezaFab = (t) => { const m = String(t || "").trim().match(/^\*?(\d{12})\*?$/); return m ? m[1] : null; };
@@ -32117,15 +32182,32 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
       r = JSON.parse(JSON.stringify(pend.r));
       r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((pend.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
     }
+    const prep = pend.rapido ? prepararSalidaAlmacenRapido(r, pend.chk, pend.archivo) : null;
     if (!onSubir(obraKey, r, pend.archivo)) return;
-    if (pend.rapido && pend.chk) aplicarReservasAlmacenRapido(r, pend.chk);
+    if (prep) confirmarSalidaAlmacenRapido(prep);
     const o = obras.find((x) => x.key === obraKey);
-    setAviso(`Guardado ${o ? `en ${o.nombre}` : "SIN obra"}: ${r.etiquetas} etiquetas de ${r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.${pend.rapido && pend.chk ? ` Cristales reservados: ${pend.chk.encontrados} de ${pend.chk.pedidos}.` : ""}${o ? "" : " Cuando la obra esté en el CRM, la asignas aquí abajo."}`);
+    setAviso(`Guardado ${o ? `en ${o.nombre}` : "SIN obra"}: ${r.etiquetas} etiquetas de ${r.lotes.reduce((a, l) => a + l.ventanas.length, 0)} ventanas/puertas. Ya puedes escanear.${pend.rapido && pend.chk ? ` Sacados del almacén de cristales: ${pend.chk.encontrados} de ${pend.chk.pedidos}.${pend.chk.pers.pedidas ? ` Persianas: ${pend.chk.pers.encontradas} de ${pend.chk.pers.pedidas}.` : ""}` : ""}${o ? "" : " Cuando la obra esté en el CRM, la asignas aquí abajo."}`);
     if (pend.rapido && imprimir) imprimirPegatinasExpediente(r.lotes);
     setPend(null);
   };
   const quitar = (key, nombre, fab) => {
     onQuitar(key, fab); // pide confirmación y limpia caballetes, reparto y reservas
+  };
+  // Control de Expediente rápido: todo lo que ha entrado por ahí y lo que sacó de los almacenes. "Deshacer" devuelve el stock y quita el lote.
+  const rapidos = [
+    ...toArray(sinObra).filter((l) => l.rapido).map((l) => ({ key: `s-${l.fab}`, dest: "Sin obra", l })),
+    ...lotesTodos.flatMap((o) => o.lotes.filter((l) => l.rapido).map((l) => ({ key: o.key, dest: o.nombre, l }))),
+  ].sort((a, b) => String((b.l.control || {}).fecha || b.l.fecha || "").localeCompare(String((a.l.control || {}).fecha || a.l.fecha || "")));
+  const nCrist = (c) => toArray((c || {}).cristales).reduce((a, x) => a + (parseFloat(x.n) || 0), 0);
+  const deshacerRapido = (x) => {
+    const c = x.l.control;
+    const msg = c
+      ? `¿Deshacer el lote ${x.l.fab}?\n\nSe devuelven al almacén ${nCrist(c)} cristales y ${toArray(c.persianas).length} persianas, y se elimina el lote (${toArray(x.l.ventanas).length} ventanas) con sus caballetes y reparto. Úsalo si te has equivocado de PDF.`
+      : `¿Eliminar el lote ${x.l.fab}? Este lote no tiene control de almacén: no se devuelve nada al almacén de cristales ni de persianas.`;
+    if (!window.confirm(msg)) return;
+    if (c) devolverAlmacenRapido(c);
+    onQuitar(x.key, x.l.fab, true);
+    setAviso(`Lote ${x.l.fab} deshecho.${c ? ` Devueltos al almacén: ${nCrist(c)} cristales y ${toArray(c.persianas).length} persianas.` : ""}`);
   };
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
@@ -32141,12 +32223,42 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
               {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir PDF de etiquetas"}
             </button>
             <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { leerRapido(e.target.files); e.target.value = ""; }} />
-            <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte (selecciona los dos a la vez). Comprueba y reserva los cristales del almacén." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
+            <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte (selecciona los dos a la vez). Comprueba y SACA los cristales y persianas del almacén." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               <Upload size={14} /> Expediente rápido (vidrios + hoja de corte)
             </button>
             <span className="text-xs text-slate-500">Se puede subir sin obra y asignarla después.</span>
           </div>
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
+          {rapidos.length > 0 && (
+            <div className="rounded-md border border-orange-300 bg-orange-50 p-2 space-y-1">
+              <div className="text-xs font-bold text-orange-800">Control de expedientes rápidos ({rapidos.length}) · lo que ha entrado por aquí y lo que ha salido de los almacenes</div>
+              <div className="overflow-x-auto">
+                <table className="text-xs w-full">
+                  <thead><tr className="text-left text-slate-500"><th className="pr-2">Fecha</th><th className="pr-2">Lote</th><th className="pr-2">Exp.</th><th className="pr-2">Destino</th><th className="pr-2">Ventanas</th><th className="pr-2">Cristales sacados</th><th className="pr-2">Persianas</th><th className="pr-2">Quién</th><th className="pr-2">Archivos</th><th></th></tr></thead>
+                  <tbody>
+                    {rapidos.map((x) => { const c = x.l.control; return (
+                      <tr key={x.l.fab} className="border-t border-orange-200 align-top">
+                        <td className="pr-2 whitespace-nowrap">{(c && c.fecha) || x.l.fecha}</td>
+                        <td className="pr-2 font-semibold">{x.l.fab}{x.l.parte ? ` (${x.l.parte}ª)` : ""}</td>
+                        <td className="pr-2">{x.l.expediente}</td>
+                        <td className="pr-2">{x.dest}</td>
+                        <td className="pr-2">{toArray(x.l.ventanas).length}</td>
+                        <td className="pr-2">{c ? nCrist(c) : "—"}</td>
+                        <td className="pr-2">{c ? toArray(c.persianas).length : "—"}</td>
+                        <td className="pr-2">{c ? (c.por || "").split("@")[0] : "—"}</td>
+                        <td className="pr-2 max-w-[220px] truncate" title={c && c.archivos}>{c ? c.archivos : "sin control (subido antes)"}</td>
+                        <td className="whitespace-nowrap">
+                          {c && c.forzado && <span className="text-rose-700 font-semibold mr-2" title={toArray(c.faltaban).join("\n")}>⚠ guardado con faltas ({toArray(c.faltaban).length})</span>}
+                          <button onClick={() => imprimirPegatinasExpediente([x.l])} className="text-sky-700 hover:underline mr-2">Pegatinas</button>
+                          <button onClick={() => deshacerRapido(x)} className="text-rose-700 hover:underline">Deshacer</button>
+                        </td>
+                      </tr>); })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-[11px] text-slate-500">Los cristales y persianas se sacaron del almacén al guardar. "Deshacer" los devuelve y borra el lote.</div>
+            </div>
+          )}
           {pend && (
             <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
               {pend.rapido ? <PanelRapido rap={pend} setRap={setPend} /> : <>
@@ -33434,11 +33546,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   };
   // Elimina un lote del todo: sus etiquetas, sus ventanas puestas en caballetes, el reparto previsto y las reservas.
   // Los caballetes que se quedan vacíos quedan libres. Después se puede volver a subir el PDF desde cero.
-  const eliminarLote = (key, fab) => {
+  const eliminarLote = (key, fab, sinConfirmar) => {
     const afecta = (c) => (c.estado || "libre") !== "fuera";
     const enCab = cabsAhora().filter(afecta).reduce((a, c) => a + toArray(c.ventanas).filter((w) => String(w.fab) === String(fab)).length, 0);
     const enPlan = cabsAhora().filter(afecta).reduce((a, c) => a + toArray(c.plan).filter((w) => String(w.fab) === String(fab)).length, 0);
-    if (!confirm(`¿Eliminar del todo el lote ${fab}?\n\nSe borran sus etiquetas${enCab ? `, se sacan ${enCab} ventana${enCab === 1 ? "" : "s"} de los caballetes` : ""}${enPlan ? ` y se quita el reparto previsto de ${enPlan}` : ""}. Los caballetes que se crearon solos para este lote se borran, y los que ya existían quedan libres. Después puedes volver a subir el PDF.`)) return;
+    if (!sinConfirmar && !confirm(`¿Eliminar del todo el lote ${fab}?\n\nSe borran sus etiquetas${enCab ? `, se sacan ${enCab} ventana${enCab === 1 ? "" : "s"} de los caballetes` : ""}${enPlan ? ` y se quita el reparto previsto de ${enPlan}` : ""}. Los caballetes que se crearon solos para este lote se borran, y los que ya existían quedan libres. Después puedes volver a subir el PDF.`)) return;
     cabsAhora().filter(afecta).forEach((c) => {
       const vs = toArray(c.ventanas), pl = toArray(c.plan);
       const vs2 = vs.filter((w) => String(w.fab) !== String(fab)), pl2 = pl.filter((w) => String(w.fab) !== String(fab));
@@ -33552,7 +33664,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     r.lotes.forEach((lote) => { const ya = dondeEstaLote(lote.fab); if (ya && ya.key !== (obraKey || `s-${lote.fab}`)) quitarLote(ya.key, lote.fab); });
     const hoyL = new Date().toISOString().slice(0, 10);
     if (destinoObra) onGuardarEtiquetasObra(destinoObra.key, mezclarLotesFab(lotesDe(destinoObra.key), r, archivo));
-    else r.lotes.forEach((l) => onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoyL, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ventanas: l.ventanas }))));
+    else r.lotes.forEach((l) => onGuardarSinObra && onGuardarSinObra(JSON.parse(JSON.stringify({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoyL, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ...(l.control ? { control: l.control } : {}), ventanas: l.ventanas }))));
     r.lotes.forEach((l) => relinkarLote(l.fab, destinoObra || obraSin(l.fab)));
     try {
       const rep = repartirEnCaballetes(r.lotes, destinoObra);
@@ -37910,7 +38022,7 @@ Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de v
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
   },
   {
-    para: "equipo", orden: 4, version: 2, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    para: "equipo", orden: 4, version: 3, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
     contenido: `## Resumen
 Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
 
@@ -37938,8 +38050,9 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 - Una ventana con **ancho o alto menor de 440 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
 - El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
 - Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**.
-- **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y los **reserva** para el lote. Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Subir otra vez el mismo lote no duplica las reservas.
-- Si el CRM no reconoce cristales que sí están (por ejemplo porque el packing list no trae el expediente), hay una casilla para guardar igualmente esa vez. Úsala solo después de comprobarlo a mano.
+- **Cristales y persianas:** antes de guardar, el CRM busca en el **almacén de cristales** cada cristal del listado (misma medida, de este expediente) y al guardar los **SACA del almacén** (se descuentan; ya no hay que quitarlos a mano). Si la ventana lleva **persiana**, la busca en el **almacén de persianas**. Si **falta alguno, no deja guardar** y te dice cuál. Las persianas que salgan también se sacan del almacén de persianas. Subir otra vez el mismo lote NO vuelve a descontar.
+- Si el CRM no reconoce cristales que sí están (por ejemplo porque el packing list no trae el expediente), hay una casilla para guardar igualmente esa vez. Úsala solo después de comprobarlo a mano: solo se saca lo que sí se ha encontrado y lo que faltaba queda anotado en el control.
+- **Control:** en Línea (pistola) → Almacén de ventanas, bajo "Etiquetas de fabricación", aparece la tabla naranja "Control de expedientes rápidos" con fecha, lote, quién lo metió, cuántos cristales y persianas salieron y los archivos. El botón **Deshacer** devuelve los cristales y persianas al almacén y borra el lote (por si te has equivocado de PDF).
 - No sale el aviso "Faltan documentos" en los lotes hechos así.
 
 ## Avisos que debes mirar
