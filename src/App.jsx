@@ -6784,6 +6784,8 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const inputRef = useRef(null);
+  const rapRef = useRef(null);
+  const [rap, setRap] = useState(null); // vista previa del "Expediente rápido": { r, archivos, colores }
   const lotes = toArray(lotesProp);
   // Leer el PDF tarda unos segundos: al terminar se guarda con lo último que haya, no con lo de cuando se eligió el archivo
   const lotesRef = useRef(lotes); lotesRef.current = lotes;
@@ -6812,6 +6814,29 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
     } catch (e) { setAviso("No se pudo leer el PDF: " + e.message); }
     finally { setLeyendo(false); }
   };
+  const subirRapido = async (lista) => {
+    const files = [...(lista || [])];
+    if (!files.length) return;
+    setLeyendo(true); setAviso("Leyendo los PDF…"); setRap(null);
+    try {
+      const r = await leerExpedienteRapidoPdfs(files, setAviso);
+      if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
+      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {} });
+      setAviso("");
+    } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
+    finally { setLeyendo(false); }
+  };
+  const guardarRapido = (imprimir) => {
+    if (!rap) return;
+    const r = JSON.parse(JSON.stringify(rap.r));
+    const pisa = r.lotes.filter((l) => lotesRef.current.some((x) => x.fab === l.fab && !x.rapido));
+    if (pisa.length && !window.confirm(`El lote ${pisa.map((l) => l.fab).join(", ")} ya está en esta obra con etiquetas de la línea. Si sigues se sustituye por las ventanas del expediente rápido y las etiquetas de la línea de ese lote dejan de valer. ¿Sustituir?`)) return;
+    r.lotes.forEach((l) => l.ventanas.forEach((v) => { const c = ((rap.colores || {})[v.num] || "").trim(); if (c) v.color = c; }));
+    guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
+    setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (lote ${r.lotes.map((l) => `${l.fab}: ${l.ventanas.length}`).join(" · ")}). No se ha tocado el stock ni se ha creado ningún pedido.`);
+    setRap(null);
+    if (imprimir) imprimirPegatinasExpediente(r.lotes);
+  };
   const quitar = (fab) => {
     if (!window.confirm(`¿Quitar las etiquetas del lote ${fab}? Las ventanas que ya estén en caballetes se quedan donde están, pero la pistola dejará de reconocer ese lote.`)) return;
     onGuardar(JSON.parse(JSON.stringify(lotes.filter((l) => l.fab !== fab))));
@@ -6827,13 +6852,47 @@ function EtiquetasFabricacionObra({ lotes: lotesProp, onGuardar, portal, presupu
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : lotes.length ? "Añadir otro PDF" : "Subir PDF de etiquetas"}
         </button>
+        <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { subirRapido(e.target.files); e.target.value = ""; }} />
+        <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Solo listado de vidrios + hoja de corte: sin etiquetas, dibujos ni persianas. No toca el stock ni crea pedidos." className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border-2 border-[#2E8B57] text-[#2E8B57] bg-white disabled:opacity-60">
+          <Upload size={14} /> Expediente rápido (vidrios + hoja de corte)
+        </button>
       </div>
       {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
+      {rap && (
+        <div className="rounded-md border-2 border-sky-300 bg-sky-50 p-3 space-y-2">
+          <div className="text-sm text-slate-800"><b>Expediente rápido</b> · {rap.r.etiquetas} ventanas (una pegatina por unidad) · {rap.r.lotes.map((l) => `lote ${l.fab}${l.expediente ? ` (exp. ${l.expediente}${l.parte ? `, ${l.parte}ª parte` : ""}): ${l.ventanas.length}` : `: ${l.ventanas.length}`}`).join(" · ")}</div>
+          {rap.r.avisos.length > 0 && (
+            <div className="rounded-md border border-rose-300 bg-rose-50 p-2 space-y-0.5">
+              <div className="text-xs font-bold text-rose-700">Revisa antes de guardar ({rap.r.avisos.length}):</div>
+              {rap.r.avisos.map((a, i) => <div key={i} className="text-xs text-rose-700">⚠ {a}</div>)}
+            </div>
+          )}
+          <div className="text-xs text-slate-600">Color por presupuesto (déjalo vacío para usar el de la hoja de corte):</div>
+          <div className="flex flex-wrap gap-2">
+            {[...new Set(rap.r.lotes.flatMap((l) => l.ventanas.map((v) => v.num)))].map((n) => {
+              const c0 = (rap.r.lotes.flatMap((l) => l.ventanas).find((v) => v.num === n) || {}).color;
+              return <label key={n} className="text-xs text-slate-700 flex items-center gap-1">{n}: <input value={(rap.colores || {})[n] ?? ""} placeholder={c0} onChange={(e) => setRap({ ...rap, colores: { ...rap.colores, [n]: e.target.value } })} className="border border-slate-300 rounded px-1.5 py-0.5 w-24 bg-white" /></label>;
+            })}
+          </div>
+          <details className="text-xs text-slate-600">
+            <summary className="cursor-pointer font-semibold">Ver las {rap.r.etiquetas} ventanas</summary>
+            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+              {rap.r.lotes.flatMap((l) => l.ventanas.map((v) => <div key={v.id} className={v.rapido.aviso ? "text-rose-700 font-semibold" : ""}>{l.fab} · {v.num} · <b>{v.pos}</b> · {v.rapido.ancho} x {v.rapido.alto} · {v.rapido.vidrio}{v.rapido.mosquitera ? " · mosquitera" : ""}{v.rapido.cerradura ? " · cerradura" : ""}{v.rapido.aperturaExterior ? " · ap. exterior" : ""}{v.rapido.especial ? " · ESPECIAL" : ""}</div>))}
+            </div>
+          </details>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => guardarRapido(false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar</button>
+            <button onClick={() => guardarRapido(true)} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white">Guardar e imprimir pegatinas</button>
+            <button onClick={() => setRap(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+          </div>
+        </div>
+      )}
       {lotes.map((l) => (
         <details key={l.fab} className="border border-slate-200 rounded-md">
           <summary className="px-3 py-2 text-sm cursor-pointer flex flex-wrap items-center gap-x-3">
             <b>Lote {l.fab}</b>
             <span className="text-slate-500">{toArray(l.ventanas).length} ventanas/puertas · {toArray(l.ventanas).reduce((a, v) => a + toArray(v.piezas).length, 0)} etiquetas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
+            {l.rapido && <button onClick={(e) => { e.preventDefault(); if (window.confirm(`Se van a imprimir ${toArray(l.ventanas).length} pegatinas (una por ventana) en la Honeywell de 100 x 40 mm. En el diálogo elige tamaño real (100 %) y sin márgenes. ¿Continuar?`)) imprimirPegatinasExpediente([l]); }} className="text-xs text-[#2E8B57] font-semibold hover:underline">Imprimir pegatinas</button>}
             {!portal && <button onClick={(e) => { e.preventDefault(); quitar(l.fab); }} className="ml-auto text-xs text-rose-600 hover:underline">Quitar</button>}
           </summary>
           <div className="px-3 pb-2 text-xs text-slate-600 grid grid-cols-1 sm:grid-cols-2 gap-x-6">
@@ -31499,6 +31558,7 @@ function aplicarCorteALotes(lotes, corte) {
   const nuevos = toArray(lotes).map((l) => ({
     ...l,
     ventanas: toArray(l.ventanas).map((v) => {
+      if (v.rapido) return v; // las del "Expediente rápido" ya vienen de su hoja de corte: no se vuelven a repartir
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
@@ -31545,6 +31605,210 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
   if (!r.lotes.length) { const rc = agruparHojaCorte(paginas); if (rc.modelos.length) return { lotes: [], etiquetas: 0, ignoradas: 0, repetidas: 0, corte: rc }; }
   return r;
 }
+// ---- EXPEDIENTE RÁPIDO: solo "Listado de vidrios" + "Hoja de corte" ----
+// Del listado de vidrios salen el nº de fabricación (lote), el expediente y los presupuestos; de la hoja de corte, una ventana por UNIDAD
+// (posición, color, medidas, vidrio, sistema, mosquitera, cerradura, apertura exterior). No lee etiquetas ni dibujos, no crea pedidos y no toca el stock.
+const RAPIDO_MIN_ESPECIAL = 440; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
+const pptoBonito = (d) => { const s = String(d || "").replace(/\D/g, ""); return s.length > 3 ? `${s.slice(0, -3)}.${s.slice(-3)}` : s; };
+const mmRapido = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
+const normPosRapido = (p) => String(p || "").replace(/\s+/g, "").toUpperCase();
+// "V07.012,013" → V07.012 + V07.013 · "V02.104.103" → V02.104 + V02.103 · "COCINA" → COCINA
+function posicionesRapido(pos) {
+  const p = String(pos || "").trim();
+  const mc = p.match(/^([A-Za-z]{1,4}\d+)\.(\d+(?:\s*,\s*\d+)+)$/);
+  if (mc) return mc[2].split(",").map((x) => `${mc[1]}.${x.trim()}`);
+  const mp = p.match(/^([A-Za-z]{1,4}\d+)\.(\d+)\.(\d+)$/);
+  if (mp) return [`${mp[1]}.${mp[2]}`, `${mp[1]}.${mp[3]}`];
+  return [p];
+}
+function esVidrioSospechoso(cod) { const c = String(cod || "").toUpperCase(); return !!c && (!/ARG/.test(c) || !/BE|EMIS/.test(c)); }
+function esListadoVidriosRapido(paginas) { return /LISTADO (DE )?VIDRIOS/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n")); }
+function agruparVidriosRapido(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  const fab = ((todo.match(/Fabricaci[oó]n\s*:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, "");
+  const descripcion = ((todo.match(/Descripci[oó]n\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const expD = (descripcion.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
+  const parte = (descripcion.match(/(\d)\s*[ªa]?\s*PARTE/i) || [])[1] || "";
+  const presupuestos = new Map();
+  todo.split(/(?=N[uú]mero\s*:\s*[\d.]+\s*Versi)/i).forEach((b) => {
+    const mh = b.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\s*\.?\s*(\d+)/i);
+    if (!mh) return;
+    const ppto = mh[1].replace(/\D/g, "");
+    const cliente = ((b.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+    const referencia = ((b.match(/Referenc[ií]a\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+    const filas = [];
+    const lineas = b.split("\n");
+    lineas.forEach((l, i) => {
+      const m = l.match(/^\s*(\d\.\d{3})\s+(\S+)\s+(\S+)\s+\d/);
+      if (!m || m[1].replace(/\D/g, "") !== ppto) return;
+      filas.push({ modelo: m[2], codigo: m[3], texto: (lineas[i + 1] || "").trim() });
+    });
+    presupuestos.set(ppto, { ppto, version: mh[2], cliente, referencia, filas });
+  });
+  return { fab, descripcion, expediente: expD, parte, presupuestos };
+}
+function agruparCorteRapido(paginas) {
+  const out = [];
+  paginas.forEach((it, idx) => {
+    const t = it.join("");
+    const mp = t.match(/Presupuesto\s*:\s*([\d.]+)/i);
+    const mpos = t.match(/Pos\s*:\s*([^\n]*?)\s+Color\s*:\s*([^\n]+)/i);
+    if (!mp || !mpos) return;
+    const mm = t.match(/Medidas\s*:\s*([\d.]+)\s*x\s*([\d.]+)\s*Uds\s*:\s*(\d+)/i);
+    const iPer = t.search(/Persiana\s*:/i), iCom = t.search(/Complementos\s*:/i), iVid = t.search(/Vidrios\s*:/i);
+    const segPer = iPer >= 0 && iCom > iPer ? t.slice(iPer, iCom).replace(/^Persiana\s*:/i, "") : "";
+    const segCom = iCom >= 0 && iVid > iCom ? t.slice(iCom, iVid).replace(/^Complementos\s*:/i, "") : "";
+    const persianaRest = segPer.split("\n").map((x) => x.trim()).filter((x) => x && !/^(Añadir cerradura|ES AP\.? EXTERIOR.*)$/i.test(x));
+    const mosq = /MOSQUITERA/i.test(segCom);
+    const plx = (segCom.match(/PLX-?\s*\d+/i) || [""])[0].replace(/\s+/g, "");
+    const corredera = /CORREDER/i.test(t);
+    let sistema = (t.match(/^\s*([A-Z]\d{2,3}\s+[A-Z]+)\s*$/m) || [])[1] || "";
+    if (!sistema && corredera) { const mc = t.match(/(\d{2,3})\s*mm\s*\n\s*Pos\s*:/i); sistema = mc ? `${mc[1]}mm corredera` : "Corredera"; }
+    const barrasHoja = t.split("\n").reduce((a, l) => { const mb = l.match(/HOJA\s+\d{2,3}\s*MM.*?\d{4,5}\s+(\d+)\s*$/i); return a + (mb ? parseInt(mb[1], 10) : 0); }, 0);
+    out.push({
+      pagina: idx + 1,
+      ppto: mp[1].replace(/\D/g, ""),
+      version: ((t.match(/Versi[oó]n\s*:\s*(\d+)/i) || [])[1] || ""),
+      referencia: ((t.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      cliente: ((t.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      pos: mpos[1].trim(), color: mpos[2].trim(),
+      ancho: mm ? mmRapido(mm[1]) : null, alto: mm ? mmRapido(mm[2]) : null, uds: mm ? parseInt(mm[3], 10) || 1 : 1,
+      vidrio: ((t.match(/Vidrios\s*:\s*([^\n]+)/i) || [])[1] || "").trim(),
+      sistema, mosquitera: mosq ? `Mosquitera enrollable${plx ? ` ${plx}` : ""}` : "",
+      cerradura: /A[ñn]adir cerradura/i.test(segPer), aperturaExterior: /AP\.?\s*EXTERIOR/i.test(segPer),
+      persianaTexto: persianaRest.join(" "), corredera,
+      barrasHoja,
+    });
+  });
+  return out;
+}
+// listados: resultados de agruparVidriosRapido · cortes: páginas de agruparCorteRapido (de todos los archivos)
+function crearExpedienteRapido(listados, cortes) {
+  const avisos = [];
+  const lotes = [];
+  const usadas = new Set();
+  const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
+  listados.forEach((L) => {
+    if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
+    const exp = L.expediente || ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || L.fab;
+    const ventanas = [];
+    let seq = 0;
+    const dePpto = [...L.presupuestos.keys()];
+    const mias = cortes.filter((c) => L.presupuestos.has(c.ppto));
+    mias.forEach((c) => usadas.add(c));
+    dePpto.forEach((ppto) => {
+      const P = L.presupuestos.get(ppto);
+      const cs = mias.filter((c) => c.ppto === ppto);
+      if (!cs.length) { avisos.push(`Presupuesto ${pptoBonito(ppto)}: está en el listado de vidrios pero no hay hoja de corte. Sus ventanas NO se han creado.`); return; }
+      const vistos = new Set();
+      cs.forEach((c) => {
+        const clavePos = normPosRapido(c.pos);
+        if (vistos.has(clavePos)) { avisos.push(`Presupuesto ${pptoBonito(ppto)}: la posición ${c.pos} sale dos veces en la hoja de corte (pág. ${c.pagina}). He dejado solo la primera.`); return; }
+        vistos.add(clavePos);
+        const filas = P.filas.filter((f) => normPosRapido(f.modelo) === clavePos);
+        if (!filas.length) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${c.pos}: la hoja de corte la tiene pero el listado de vidrios no. Revisa que sean de la misma versión.`);
+        if (P.version && c.version && P.version !== c.version) avisos.push(`Presupuesto ${pptoBonito(ppto)}: el listado de vidrios es versión ${P.version} y la hoja de corte versión ${c.version}.`);
+        const codigos = [...new Set(filas.map((f) => f.codigo))];
+        const vidrioAv = filas.filter((f) => esVidrioSospechoso(f.codigo));
+        if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
+        if (c.persianaTexto) avisos.push(`${pptoBonito(ppto)} ${c.pos}: el campo Persiana trae "${c.persianaTexto.slice(0, 60)}". Este modo no prepara persianas: revísalo.`);
+        const posiciones = posicionesRapido(c.pos);
+        const uds = Math.max(1, Math.min(99, c.uds || 1));
+        let nombres;
+        if (posiciones.length === uds) nombres = posiciones.map((p) => ({ p, u: 1, de: 1 }));
+        else if (posiciones.length === 1) nombres = Array.from({ length: uds }, (_, k) => ({ p: posiciones[0], u: k + 1, de: uds }));
+        else { avisos.push(`${pptoBonito(ppto)} ${c.pos}: trae ${posiciones.length} posiciones pero ${uds} unidades. He creado ${uds} y hay que revisarlas.`); nombres = Array.from({ length: uds }, (_, k) => ({ p: posiciones[k % posiciones.length], u: k + 1, de: uds })); }
+        const mE = (c.referencia || P.referencia).match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*(.*)$/i);
+        const planta = mE ? (mE[2] || "").replace(/\bCORRECCI[OÓ]N\b/i, "").trim() : "";
+        if (/CORRECCI[OÓ]N/i.test(c.referencia || P.referencia) && !avisos.some((a) => a.startsWith(`Presupuesto ${pptoBonito(ppto)} es una CORRECCIÓN`))) avisos.push(`Presupuesto ${pptoBonito(ppto)} es una CORRECCIÓN (${c.referencia}). Si la vivienda ya estaba cargada con otro presupuesto, estas ventanas quedarían duplicadas.`);
+        const vidrio = codigos.length ? codigos.join(" + ") : c.vidrio;
+        const hojasPdf = c.barrasHoja >= 4 ? Math.round(c.barrasHoja / 4) : 0;
+        const medida = c.ancho && c.alto ? `${c.ancho} x ${c.alto}` : "";
+        const hojas = hojasPdf >= 1 && hojasPdf <= 3 ? hojasPdf : hojasSugeridas({ medida });
+        const especial = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL);
+        nombres.forEach((n) => {
+          seq++;
+          const code = "9" + L.fab.slice(-4).padStart(4, "0") + String(exp).slice(-4).padStart(4, "0") + String(seq % 1000).padStart(3, "0");
+          ventanas.push({
+            id: `${L.fab}|${exp}|${ppto}|${n.p}${n.de > 1 ? `#${n.u}` : ""}`,
+            pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
+            grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
+            modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }],
+            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: false, mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
+            rapido: { ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
+          });
+        });
+      });
+      P.filas.forEach((f) => { if (!cs.some((c) => normPosRapido(c.pos) === normPosRapido(f.modelo))) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${f.modelo}: está en el listado de vidrios pero no en la hoja de corte. No se ha creado.`); });
+    });
+    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => nat(a.piezas[0].c, b.piezas[0].c)) });
+  });
+  cortes.filter((c) => !usadas.has(c)).forEach((c) => avisos.push(`Hoja de corte del presupuesto ${pptoBonito(c.ppto)} (${c.pos}): no está en ningún listado de vidrios subido. No se ha creado.`));
+  // Color distinto al del resto del lote (p. ej. un presupuesto que sale BLANCO en un expediente EMBERO)
+  lotes.forEach((l) => {
+    const cuenta = {}; l.ventanas.forEach((v) => { cuenta[v.color] = (cuenta[v.color] || 0) + 1; });
+    const comun = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a])[0];
+    [...new Set(l.ventanas.filter((v) => v.color !== comun).map((v) => v.num))].forEach((n) => avisos.push(`Presupuesto ${n}: la hoja de corte pone color ${(l.ventanas.find((v) => v.num === n) || {}).color} y el resto del lote ${l.fab} es ${comun}. Si no es lo que quieres, cámbialo antes de guardar.`));
+  });
+  const nuevosAvisos = [...new Set(avisos)];
+  return { lotes, avisos: nuevosAvisos, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
+}
+async function leerExpedienteRapidoPdfs(files, onProgreso) {
+  const lib = await cargarPdfJs();
+  const listados = [], cortes = [], avisos = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (onProgreso) onProgreso(`Leyendo ${file.name} (${i + 1} de ${files.length})…`);
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) { const tc = await (await doc.getPage(n)).getTextContent(); paginas.push(tc.items.map((it) => it.str + (it.hasEOL ? "\n" : ""))); }
+    if (esListadoVidriosRapido(paginas)) listados.push(agruparVidriosRapido(paginas));
+    else if (/HOJA DE CORTE/i.test(paginas.slice(0, 2).map((it) => it.join("")).join("\n"))) cortes.push(...agruparCorteRapido(paginas));
+    else avisos.push(`${file.name}: no es un listado de vidrios ni una hoja de corte. No lo he usado.`);
+  }
+  if (!listados.length) throw new Error("Falta el LISTADO DE VIDRIOS: de él sale el número de fabricación (lote) y el expediente. Selecciona a la vez el listado de vidrios y la hoja de corte.");
+  if (!cortes.length) throw new Error("Falta la HOJA DE CORTE: de ella salen las ventanas una a una. Selecciona a la vez el listado de vidrios y la hoja de corte.");
+  const r = crearExpedienteRapido(listados, cortes);
+  r.avisos = [...avisos, ...r.avisos];
+  return r;
+}
+// Pegatina de cada ventana física (100 x 40 mm, Honeywell): presupuesto, versión, referencia, cliente, posición, color, medidas, sistema, vidrio, extras + código de la pistola
+function imprimirPegatinasExpediente(lotes) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const items = [];
+  toArray(lotes).forEach((l) => toArray(l.ventanas).forEach((v) => items.push({ l, v })));
+  if (!items.length) return;
+  const etiqueta = ({ l, v }) => {
+    const r = v.rapido || {};
+    const extras = [r.mosquitera ? "MOSQUITERA" : "", r.cerradura ? "CERRADURA" : "", r.aperturaExterior ? "AP. EXTERIOR" : "", r.especial ? "ESPECIAL" : ""].filter(Boolean).join(" · ");
+    return `<div class="et"><div class="marco">
+      <div class="r1"><span>${esc(v.pos)}</span><span class="tp">Ppto ${esc(v.num)}${r.version ? ` v${esc(r.version)}` : ""} · FAB ${esc(l.fab)}</span></div>
+      <div class="r2">${esc([r.referencia, v.cliente].filter(Boolean).join(" · "))}</div>
+      <div class="r2">${esc([v.color, r.ancho && r.alto ? `${r.ancho} x ${r.alto}` : v.medida, r.sistema].filter(Boolean).join(" · "))}</div>
+      <div class="r2">${esc(r.vidrio || "")}</div>
+      <div class="r3${r.aviso ? " av" : ""}">${esc(r.aviso ? `REVISAR: ${r.aviso}` : extras)}</div>
+      <div class="bar">${svgCode128CMm(v.piezas[0].c, 9, 0.5)}</div>
+      <div class="dig">${esc(v.piezas[0].c)}</div>
+    </div></div>`;
+  };
+  const html = `<html><head><meta charset="utf-8"><title>Pegatinas expediente rápido</title><style>
+    @page { size: 100mm 40mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: 100mm; height: 39.5mm; padding: 1.5mm; overflow: hidden; page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid; }
+    .et:last-child { page-break-after: auto; break-after: auto; }
+    .marco { height: 100%; border: 0.4mm solid #000; border-radius: 1.5mm; padding: 0.8mm 2mm; display: flex; flex-direction: column; align-items: center; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; align-items: baseline; font-size: 4.6mm; font-weight: bold; line-height: 1.1; }
+    .tp { font-size: 2.9mm; }
+    .r2 { width: 100%; font-size: 2.9mm; line-height: 1.15; white-space: nowrap; overflow: hidden; }
+    .r3 { width: 100%; font-size: 3mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; }
+    .r3.av { background: #000; color: #fff; }
+    .bar { margin-top: 0.8mm; line-height: 0; }
+    .dig { font-size: 3mm; letter-spacing: 0.7mm; line-height: 1.1; margin-top: 0.3mm; }
+  </style></head><body>${items.map(etiqueta).join("")}</body></html>`;
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+}
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
 function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
@@ -31562,7 +31826,7 @@ function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
 function mezclarLotesFab(previos, r, archivo) {
   const hoy = new Date().toISOString().slice(0, 10);
   const nuevos = toArray(previos).filter((l) => !r.lotes.some((x) => x.fab === l.fab));
-  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ventanas: l.ventanas }));
+  r.lotes.forEach((l) => nuevos.push({ fab: l.fab, expediente: l.expediente, archivo, fecha: hoy, ...(l.rapido ? { rapido: true, parte: l.parte || "" } : {}), ventanas: l.ventanas }));
   return JSON.parse(JSON.stringify(nuevos));
 }
 const codPiezaFab = (t) => { const m = String(t || "").trim().match(/^\*?(\d{12})\*?$/); return m ? m[1] : null; };
@@ -36892,6 +37156,7 @@ function documentosQueFaltanObra(p) {
     etiquetas: toArray(p.etiquetasFab).length > 0,
     corte: lotesConCorte(p.etiquetasFab),
   };
+  if (toArray(p.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
   const faltan = [];
   if (!tiene.analisis) faltan.push("análisis de materiales");
@@ -36913,6 +37178,7 @@ function documentosQueFaltanUx(e, uxPedidos) {
     etiquetas: toArray(e.etiquetasFab).length > 0,
     corte: lotesConCorte(e.etiquetasFab),
   };
+  if (toArray(e.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   const faltan = [];
   if (!tiene.dibujos) faltan.push("listado de dibujos");
   if (!tiene.analisis) faltan.push("informe de materiales");
@@ -37281,7 +37547,7 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 4, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 5, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
@@ -37295,6 +37561,8 @@ Todos los documentos de una obra se suben **de una vez, con un solo botón**, de
 | Etiquetas de la línea | La pistola reconoce cada ventana y su caballete | No |
 | Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
 | Listado de mano de obra (si el programa lo saca) | **Horas de fabricación exactas** para el planning | No |
+
+**Atajo:** si la obra solo tiene el listado de vidrios y la hoja de corte (por ejemplo un expediente de Uxcar ya pedido), no hace falta nada más: usa **"Expediente rápido"** (ver la guía "Expediente rápido") y no saldrá el aviso de documentos que faltan.
 
 Encima del botón está la lista **"Documentos de la obra"**: ✓ lo que está, ✗ lo que falta. Si la obra **no lleva persiana**, no hay listado de persianas y no hace falta. La mosquitera enrollable no cuenta como persiana.
 
@@ -37440,7 +37708,7 @@ Con el albarán firmado, la obra queda pendiente de facturar.
 - [ ] La obra está cerrada cuando tiene **factura emitida** y el **cobro apuntado** con justificante.`,
   },
   {
-    para: "uxcar", orden: 1, titulo: "Guía para Uxcar: subir un expediente",
+    para: "uxcar", orden: 1, version: 2, titulo: "Guía para Uxcar: subir un expediente",
     contenido: `## Qué se sube y dónde
 Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa de ventanas. Con ellos sabemos cuántas ventanas son, qué material preparar y cuándo estarán listas.
 
@@ -37471,12 +37739,55 @@ En este orden. La hoja de corte va siempre la última.
 
 La lectura de cada PDF puede tardar un par de minutos. No cierres la página mientras pone "Leyendo…".
 
+## Si solo queréis mandar lo mínimo (expediente rápido)
+Para un expediente que ya está pedido, basta con **dos PDF**: el **listado de vidrios** y la **hoja de corte**. En la ficha del expediente, en el recuadro de etiquetas, pulsa **"Expediente rápido (vidrios + hoja de corte)"** y selecciona los dos a la vez (con Ctrl pulsado). Ecowin PVC saca una pegatina por cada ventana con presupuesto, posición, color, medidas, sistema y vidrio.
+- [ ] Los dos PDF son de la **misma versión** de cada presupuesto.
+- [ ] Si el CRM avisa de algo en rojo (por ejemplo un vidrio sin argón), **no lo guardes**: avisa a Ecowin PVC.
+
 ## Comprobar y avisar
 - [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
 - [ ] Aparecen los dos pedidos (cristales y persianas) con su fecha.
 - [ ] Las etiquetas dicen cuántas ventanas se han leído y coinciden con el total.
 
 Si sale un aviso que no entiendes o un dato no cuadra, **no lo subas otra vez**. Haz una captura y mándasela a Ecowin PVC.`,
+  },
+  {
+    para: "equipo", orden: 4, version: 1, titulo: "Guía del equipo: Expediente rápido (listado de vidrios + hoja de corte)",
+    contenido: `## Resumen
+Para un expediente que ya está pedido solo hacen falta **2 PDF**: el **listado de vidrios** y la **hoja de corte**. El CRM crea **una ventana por cada unidad** (2 unidades = 2 ventanas = 2 pegatinas) y las deja listas para la pistola, los caballetes y las pegatinas de la soldadora.
+
+| Qué | De dónde sale |
+| --- | --- |
+| Nº de fabricación (lote) y expediente | Listado de vidrios ("Fabricación" y "EXPEDIENTE 1035 1ª PARTE") |
+| Presupuesto, versión, referencia, cliente | Hoja de corte |
+| Posición, color, medidas, nº de unidades | Hoja de corte |
+| Sistema (A70…), vidrio | Hoja de corte y listado de vidrios |
+| Mosquitera, cerradura, apertura exterior | Hoja de corte (campos "Complementos" y "Persiana") |
+
+## Cómo se hace
+Funciona igual en una **obra propia** y en un **expediente de Uxcar**: en el recuadro **"Etiquetas de fabricación"** pulsa **"Expediente rápido (vidrios + hoja de corte)"**.
+1. Selecciona **a la vez** (con Ctrl pulsado) el listado de vidrios y la hoja de corte. Si el expediente tiene 1ª y 2ª parte, selecciona los 4 PDF juntos.
+2. Espera a que lea. Sale una vista previa con las ventanas creadas.
+3. Lee los **avisos en rojo** y corrige lo que haga falta. Puedes cambiar el color de cada presupuesto.
+4. Pulsa **Guardar** o **Guardar e imprimir pegatinas**.
+
+## Qué trae cada pegatina (100 x 40 mm)
+Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medidas, sistema, vidrio, mosquitera / cerradura / apertura exterior / ESPECIAL y el código de barras de 12 cifras para la pistola. Se reimprimen desde el lote con **"Imprimir pegatinas"**.
+
+## Reglas
+- Los presupuestos **no se mezclan**: cada ventana lleva su número de presupuesto y su versión.
+- Las posiciones dobles se separan: V07.012,013 → V07.012 y V07.013; V02.104.103 → V02.104 y V02.103.
+- Una ventana con **ancho o alto menor de 440 mm** sale marcada como **ESPECIAL** (el CRM solo la marca).
+- El campo "Persiana" de estos PDF puede traer una **mosquitera enrollable**: sale como mosquitera, no como persiana.
+- Este modo **no descuenta stock** de perfiles ni de herraje y **no crea pedidos**. Los cristales llegan por su packing list al almacén de cristales.
+- No sale el aviso "Faltan documentos" en los lotes hechos así.
+
+## Avisos que debes mirar
+- [ ] **Vidrio sin argón ni bajo emisivo** (por ejemplo "4+4/16/3+3"): es un error probable. Confírmalo antes de fabricar.
+- [ ] **Posición que sale en un PDF y no en el otro**, o **versión distinta** entre el listado y la hoja de corte.
+- [ ] **Presupuesto "CORRECCIÓN"**: si la vivienda ya estaba cargada, quedaría duplicada.
+- [ ] **Color distinto** al del resto del lote.
+- [ ] Si el lote ya tenía etiquetas de la línea, el rápido las **sustituye** (te lo pregunta).`,
   },
 ];
 
