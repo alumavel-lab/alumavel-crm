@@ -32028,7 +32028,7 @@ function crearExpedienteRapido(listados, cortes) {
             id: `${L.fab}|${exp}|${ppto}|${n.p}${n.de > 1 ? `#${n.u}` : ""}`,
             pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
             grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
-            modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }],
+            modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }], conPersiana: !!(c.persianaTexto && !esEsp),
             corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: false, mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
             rapido: { pagina: c.pagina, ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
           });
@@ -34848,7 +34848,7 @@ const ZONAS_LINEA_DEFECTO = [
   { id: "persianaA", nombre: "Persiana A (salida)", huecos: 12 },
   { id: "persianaB", nombre: "Persiana B (salida)", huecos: 12 },
   { id: "bancoPuerta", nombre: "Banco de puerta", huecos: 12 },
-  { id: "sinPersiana", nombre: "Sin persiana (van directas a cristales)", huecos: 36 },
+  { id: "sinPersiana", nombre: "Línea (van directas a cristales)", huecos: 36 },
   { id: "puertasTerminadas", nombre: "Puertas terminadas", huecos: 12 },
   { id: "solape", nombre: "Solape / postigo", huecos: 36 },
   { id: "espera", nombre: "Ventanas terminadas (almacén de espera)", huecos: 36 },
@@ -34947,6 +34947,30 @@ async function liberarVentanaLinea(h) {
   for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
   await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
 }
+// ¿Lleva persiana? Lo sabe el CRM por la hoja de corte (nadie lo marca a mano): true = SIN persiana, false = CON persiana, null = no se sabe (se trata como con persiana).
+// Expediente rápido: la hoja de corte trae la sección "Persiana:" (vacía = no lleva). Hoja de corte normal: señal de cajón / compacto / lamas.
+function sinPersianaAuto(v) {
+  if (!v || !v.modelo || !toArray(v.piezas)[0] || esPuertaLinea(v)) return null;
+  if (v.conPersiana === true) return false;
+  if (v.conPersiana === false) return true;
+  const c = v.corte;
+  if (c && !v.rapido && c.persiana === false) return true;
+  if (c && !v.rapido && c.persiana === true) return false;
+  return null;
+}
+// Mapa "sin persiana" efectivo: lo que dice la hoja de corte, y encima lo que se haya puesto a mano (true = sin persiana, false = con persiana)
+function useSinPersianaEfectivo(indice) {
+  const manual = useObjetoFb("sinPersianaLinea");
+  return useMemo(() => {
+    const m = {};
+    if (indice) indice.forEach((h) => {
+      const v = h.ventana; if (!v || !v.modelo || !toArray(v.piezas)[0]) return;
+      const b = baseDe(v); if (String(h.pieza.c) !== b || m[b] !== undefined) return;
+      if (sinPersianaAuto(v) === true) m[b] = true;
+    });
+    return { ...m, ...manual };
+  }, [indice, manual]);
+}
 // ---- Cinta "Sin persiana": las ventanas sin persiana van por la cinta a cristales, pero cristales solo acristala una vivienda cuando están TODAS.
 // Si entra una ventana de otra vivienda y la anterior sigue incompleta, la anterior se saca de la cinta y se deja en las estanterías de
 // Persiana A / B (salida) — el mismo almacén de las persianas terminadas, 1-12 y 1-12 —, donde esperan a que llegue la que falta.
@@ -34999,12 +35023,18 @@ async function ordenarCintaSinPersianaLinea({ h = null, indice, zonas, sinPersOv
       } else if (sacarOtras && k !== miK) {
         const cinta = xs.filter((x) => x.u.zonaId === "sinPersiana");
         const partes = [];
-        for (const x of cinta) { const antes = x.u.hueco; const d = await mover(x); partes.push(d ? `${x.hh.ventana.pos} (cinta ${antes}) → ${d.z.nombre} · ESTANTERÍA ${d.hueco}` : `${x.hh.ventana.pos} (SIN SITIO en Persiana A ni B: libera una estantería)`); }
+        const movidas = [];
+        for (const x of cinta) { const antes = x.u.hueco; const d = await mover(x); partes.push(d ? `${x.hh.ventana.pos} (cinta ${antes}) → ${d.z.nombre} · ESTANTERÍA ${d.hueco}` : `${x.hh.ventana.pos} (SIN SITIO en Persiana A ni B: libera una estantería)`); if (d) movidas.push(`${x.hh.ventana.pos}: Línea ${antes} → ${d.z.nombre} · estantería ${d.hueco}`); }
+        if (movidas.length) {
+          // alarma para TODOS los puestos hasta que alguien pulse «Ya las he sacado»
+          const ts = Date.now(); const id = `sacar_${ts}_${String(k).replace(/[.#$\[\]\/|\s]/g, "_")}`;
+          await fbSet(ref(fbDb, `alertasLinea/${id}`), { id, ts, fecha: new Date().toISOString().slice(0, 10), tipo: "sacarLinea", puestoId: "linea", vivienda: String(nomViv), faltan: faltan.map((w) => w.pos).join(", "), ventanas: movidas, estado: "abierta", por: por || "" });
+        }
         if (partes.length) lineas.push(`⤴ SACA DE LA CINTA las de la vivienda ${nomViv} (aún le faltan: ${faltan.map((w) => w.pos).join(", ")}) y déjalas en el almacén de persianas terminadas: ${partes.join(" · ")}.`);
       }
     }
     return lineas.length ? `\n\n${lineas.join("\n")}` : "";
-  } catch (e) { return `\n\n⚠ No se pudo ordenar la cinta «Sin persiana» (${(e && e.message) || e}).`; }
+  } catch (e) { return `\n\n⚠ No se pudo ordenar la Línea (${(e && e.message) || e}).`; }
 }
 // La regla de cada puesto: dónde deja la pieza que lees y de dónde la saca. Devuelve { ok, aviso, texto, zona }.
 async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHojaOv = {}, solOv = {}, mosqOv = {}, sinPersOv = {}, por, estricto = true, indice = null }) {
@@ -35304,7 +35334,7 @@ function HuecoLineaModal({ zonaNombre, hueco, piezas, indice, admin, onLiberar, 
   const pilOv = useObjetoFb("pilastraLinea");
   const solOv = useObjetoFb("solapeLinea");
   const mosqOv = useObjetoFb("mosquiteraLinea");
-  const sinPersOv = useObjetoFb("sinPersianaLinea");
+  const sinPersOv = useSinPersianaEfectivo(indice);
   const mm = (() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; })();
   const vistas = new Set();
   const ventanas = [];
@@ -35508,7 +35538,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const pilOv = useObjetoFb("pilastraLinea");
   const solOv = useObjetoFb("solapeLinea");
   const mosqOv = useObjetoFb("mosquiteraLinea");
-  const sinPersOvP = useObjetoFb("sinPersianaLinea");
+  const sinPersOvP = useSinPersianaEfectivo(indice);
   const pilHojaOvP = useObjetoFb("pilastraHojaLinea");
   const [mm, setMm] = useState(() => { try { const x = JSON.parse(localStorage.getItem("alumavel_pegatina_mm") || "null"); if (x && x.a && x.h) return { dx: 0, dy: 1.5, ...x }; } catch (e) { /* nada */ } return { a: 70, h: 32, dx: 0, dy: 1.5 }; });
   const [modo, setModo] = useState(() => { try { return localStorage.getItem("alumavel_pegatina_modo") === "golpe" ? "golpe" : "pistola"; } catch (e) { return "pistola"; } });
@@ -35683,7 +35713,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 )}
                 {x.v.modelo && <span className="text-[11px] text-slate-500 whitespace-nowrap">1 marco + {hojasDe(x.v, hojasOv)} hoja{hojasDe(x.v, hojasOv) === 1 ? "" : "s"}</span>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Las hojas llevan pilastra o travesaño: esperan en su banco y pasan por el puesto Pilastra antes de herraje (igual que el marco)"><input type="checkbox" checked={!!pilHojaOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraHojaLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />Pilastra en hoja</label>}
-                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="No lleva persiana: al unirla en Matrimonio no pasa por el banco A/B y va directa a cristales"><input type="checkbox" checked={!!sinPersOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`sinPersianaLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />Sin persiana</label>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="No lleva persiana: al unirla en Matrimonio no pasa por el banco A/B y va directa a cristales"><input type="checkbox" checked={!!sinPersOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`sinPersianaLinea/${baseDe(x.v)}`, e.target.checked ? true : (sinPersianaAuto(x.v) === true ? false : null))} />Sin persiana{sinPersianaAuto(x.v) === true ? " (auto)" : ""}</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`mosquiteraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />mosquitera</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
@@ -36015,6 +36045,37 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
   );
 }
 
+// ---- Alarma «SACA DE LA LÍNEA»: sale en la pantalla de Línea de todos los puestos hasta que alguien confirme que ya las sacó ----
+function AvisoSacarLinea({ quien }) {
+  const [lista, setLista] = useState([]);
+  const vistas = useRef(null);
+  useEffect(() => onValue(ref(fbDb, "alertasLinea"), (snap) => {
+    const arr = toArray(snap.val()).filter((a) => a && a.tipo === "sacarLinea" && a.estado === "abierta").sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (vistas.current && arr.some((a) => !vistas.current.has(a.id))) { try { pitidoCRM(false); setTimeout(() => pitidoCRM(false), 400); } catch (e) { /* nada */ } }
+    vistas.current = new Set(arr.map((a) => a.id));
+    setLista(arr);
+  }, () => {}), []);
+  if (lista.length === 0) return null;
+  const hora = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="space-y-2">
+      {lista.map((a) => (
+        <div key={a.id} className="rounded-xl border-4 border-rose-500 bg-rose-50 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-lg font-extrabold text-rose-700">⚠ SACA DE LA LÍNEA · vivienda {a.vivienda}</span>
+            <span className="text-xs text-rose-700">{a.ts ? hora(a.ts) : ""}{a.por ? ` · avisa ${a.por}` : ""}</span>
+            <button type="button" onClick={() => fbUpdate(ref(fbDb, `alertasLinea/${a.id}`), { estado: "cerrada", cierreTs: Date.now(), cierrePor: quien || "" }).catch(() => {})} className="ml-auto px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-bold">Ya las he sacado</button>
+          </div>
+          <ul className="mt-1 text-sm font-semibold text-slate-800 list-disc pl-5">
+            {toArray(a.ventanas).map((t, i) => <li key={i}>{t}</li>)}
+          </ul>
+          <p className="text-[11px] text-slate-600 mt-1">Esta vivienda sigue incompleta (le faltan: {a.faltan || "—"}). Sácalas de la Línea y déjalas en la estantería indicada.</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   const puestoId = puestoFijo || puestoSel; // con "puesto fijo" el operario no puede cambiar de puesto
@@ -36037,11 +36098,11 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const pilHojaOv = useObjetoFb("pilastraHojaLinea");
   const solOv = useObjetoFb("solapeLinea");
   const mosqOv = useObjetoFb("mosquiteraLinea");
-  const sinPersOv = useObjetoFb("sinPersianaLinea");
   const cfgLinea = useObjetoFb("configLinea");
   const estricto = cfgLinea.estricto !== false;
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const sinPersOv = useSinPersianaEfectivo(indice);
   const hoy = new Date().toISOString().slice(0, 10);
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
@@ -36101,8 +36162,22 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
-    setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
-    if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
+    setUltimo((u) => (u ? { ...u, h, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+    if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], h, foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
+  };
+  // Matrimonio: la ventana fue al banco de persiana A/B pero NO lleva persiana (no estaba marcada la casilla en las pegatinas): se marca y pasa a la Línea
+  const pasarALinea = async (u) => {
+    try {
+      const hh = u && u.h; if (!hh) return;
+      const base = baseDe(hh.ventana);
+      const z = zonas.find((q) => q.id === "sinPersiana");
+      const r = z ? await ocuparHuecoLinea(z, base, quien, ubic, 1, null, 1) : null;
+      if (!r) { avisar(false, `⚠ La Línea está LLENA: ${hh.ventana.pos} se queda donde estaba. Libera una estantería o pulsa «+».`, false, u.mesa); return; }
+      await fbSet(ref(fbDb, `sinPersianaLinea/${base}`), true);
+      const cinta = await ordenarCintaSinPersianaLinea({ h: hh, indice, zonas, sinPersOv: { ...sinPersOv, [base]: true }, por: quien, sacarOtras: true });
+      const nuevo = { ...u, ok: true, repetida: false, texto: `✓ ${hh.ventana.pos} NO LLEVA PERSIANA → ${z.nombre} · ESTANTERÍA ${r.hueco}${cinta}`, zona: { zonaId: "sinPersiana", hueco: r.hueco }, ts: Date.now() };
+      setUltimosMesa((m) => ({ ...m, [u.mesa]: nuevo })); setUltimo(nuevo); pitidoCRM(true); enfocar();
+    } catch (e) { avisar(false, `No se pudo pasar a la Línea: ${(e && e.message) || e}`, false, u && u.mesa); }
   };
   const pintaUltimo = (u, cls) => (
           <div className={`${cls} px-4 py-3 rounded-lg text-sm font-semibold whitespace-pre-line ${u.ok ? (u.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{u.texto}{u.zona && u.zona.hueco && (
@@ -36110,12 +36185,15 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
               <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{u.zona.hueco}</span>
               <span className="text-base font-bold">ESTANTERÍA{u.zona.slot > 1 ? ` (sitio ${u.zona.slot})` : ""} · {(zonas.find((x) => x.id === u.zona.zonaId) || {}).nombre || ""}</span>
             </div>
-          )}{u.dib && <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>}{u.foco && onIrA && (
+          )}{u.dib && <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>}{puestoId === "colgado" && u.h && u.zona && (u.zona.zonaId === "colgadoA" || u.zona.zonaId === "colgadoB") && u.ok && (
+            <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-slate-700 text-white text-sm font-bold">No lleva persiana → pasar a la Línea</button>
+          )}{u.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = u.foco; onIrA(u.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
   );
   return (
     <div className="space-y-6">
+      <AvisoSacarLinea quien={quien} />
       <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
