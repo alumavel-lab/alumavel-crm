@@ -2202,7 +2202,7 @@ export default function App() {
     const nuevasPers = [];
     filas.filter((f) => f.tipo === "persiana").forEach((f) => {
       const bien = bienDe(f);
-      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
+      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
     });
     let sinSitioPers = 0;
     if (nuevasPers.length) {
@@ -11127,7 +11127,7 @@ const tipoLineaRecepcion = (l, pedido) => {
   return "otro";
 };
 async function leerAlbaranRecepcion(file) {
-  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","caballete":""}]}. Reglas: "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece. "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
+  const prompt = 'Esto es un ALBARÁN DE ENTREGA de un proveedor de carpintería (perfiles, herrajes, accesorios, cristales, persianas/cajones u otro material). Revisa el documento entero, todas las páginas, y devuelve TODAS las líneas de material entregado, sin saltarte ninguna ni resumir. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","numeroAlbaran":"","numeroPedido":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":0,"precio":0,"ref":"","refObra":"","pedidoProv":"","caballete":""}]}. Reglas: "codigo" es la referencia o código del artículo si aparece. "ancho" y "alto" en milímetros como número entero (sin puntos de miles: "1.445" es 1445), solo si la línea es a medida (cristales, persianas); si no, 0. En persianas, el largo va en "ancho". "cantidad" son las unidades entregadas. "precio" es el precio por unidad sin IVA si aparece, si no 0. "ref" es la vivienda o referencia de la línea si aparece (columna Ref., p. ej. V01.101). "refObra" es el texto de "Ref/Obra" del bloque de pedido al que pertenece la línea (p. ej. "AENA - EXP. 737 P1"): cada bloque empieza con "Pedido Nº …  Fecha … Ref/Obra: …" y sus líneas van debajo hasta el siguiente bloque. "pedidoProv" es el "Pedido Nº" de ese mismo bloque (p. ej. 26011197). "caballete" es el número de caballete o bastidor si aparece. Números con punto decimal.';
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 16000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
   const trozo = limpio.slice(oi, of + 1);
@@ -11135,7 +11135,7 @@ async function leerAlbaranRecepcion(file) {
   try { o = JSON.parse(trozo); } catch (e) { o = JSON.parse(repararJsonIA(trozo)); }
   return {
     proveedor: String(o.proveedor || "").trim(), numeroAlbaran: String(o.numeroAlbaran || "").trim(), numeroPedido: String(o.numeroPedido || "").trim(),
-    lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
+    lineas: toArray(o.lineas).map((l) => ({ codigo: String(l.codigo || "").trim(), descripcion: String(l.descripcion || "").trim(), ancho: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ref: String(l.ref || "").trim(), refObra: String(l.refObra || "").trim(), pedidoProv: String(l.pedidoProv || "").trim(), caballete: String(l.caballete || "").trim() })).filter((l) => l.cantidad > 0),
   };
 }
 // Cruza lo del albarán con las líneas del pedido que aún están pendientes
@@ -11147,8 +11147,8 @@ const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
     const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
     const tipo = tipoLineaRecepcion(l, pedido);
     const nombre = nombreLinea(l);
-    let llega = 0, precioAlb = 0, caballete = "", ref = "";
-    const toma = (a, n) => { const t = Math.min(a.resto, n); a.resto -= t; llega += t; if (a.precio) precioAlb = a.precio; if (!caballete && a.caballete) caballete = a.caballete; if (!ref && a.ref) ref = a.ref; };
+    let llega = 0, precioAlb = 0, caballete = "", ref = "", refObra = "", pedidoProv = "";
+    const toma = (a, n) => { const t = Math.min(a.resto, n); a.resto -= t; llega += t; if (a.precio) precioAlb = a.precio; if (!caballete && a.caballete) caballete = a.caballete; if (!ref && a.ref) ref = a.ref; if (!refObra && a.refObra) refObra = a.refObra; if (!pedidoProv && a.pedidoProv) pedidoProv = a.pedidoProv; };
     if (pend > 0) {
       if (parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) {
         for (const a of alb) { if (llega >= pend) break; if (a.resto > 0 && mismaMedidaCristal(l.ancho, l.alto, a.ancho, a.alto)) toma(a, pend - llega); }
@@ -11161,7 +11161,7 @@ const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
         if (a) toma(a, pend);
       }
     }
-    return { lineaId: l.id, nombre, tipo, ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb, caballete, ref };
+    return { lineaId: l.id, nombre, tipo, ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb, caballete, ref, refObra, pedidoProv };
   });
   return { filas, sobrantes: alb.filter((a) => a.resto > 0) };
 };
@@ -15674,8 +15674,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"}</td>
-      <td className="px-2">{x.ref || "—"}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"}{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
+      <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
         <select value="" onChange={(e) => { if (e.target.value) moverACarro([x], e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-violet-700 border border-violet-300 rounded px-1 py-0.5 bg-white">
@@ -15970,10 +15970,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
-                              {x.expediente}
+                              {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}</span><span className="text-[10px]">{x.ref}</span></span> : x.expediente}
                             </div>
                           ))}
                         </div>
