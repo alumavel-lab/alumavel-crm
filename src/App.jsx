@@ -14932,9 +14932,12 @@ const TIPOS_CARRO_PERSIANA = {
 const ALMACEN_PRINCIPAL_ID = "principal";
 const ALMACEN_PERSIANAS_PRINCIPAL = { id: ALMACEN_PRINCIPAL_ID, nombre: "Almacén de persianas", ubicacion: "", tipo: "persiana", recepcion: true };
 const almacenDe = (x) => (x && x.almacenId) || ALMACEN_PRINCIPAL_ID;
+// Tipos de almacén: "persiana" (estantes), "mosquitera" y "auxiliar" (carros verticales) y "otro" (lo nombra el usuario, también verticales)
+const esAlmVertical = (a) => !!a && !!a.tipo && a.tipo !== "persiana";
+const tipoAlmEtiqueta = (a) => (!a || !a.tipo || a.tipo === "persiana" ? "Persianas" : a.tipo === "mosquitera" ? "Mosquiteras" : a.tipo === "auxiliar" ? "Auxiliares (guías, solapes…)" : (a.tipoNombre || "Otro"));
 const TIPOS_CARRO_DE_ALMACEN = { persiana: ["gris", "amarillo"], mosquitera: ["vertical"] };
 function almacenRecepcionPersianas(almacenes) {
-  const l = (almacenes || []).filter((a) => a.tipo !== "mosquitera");
+  const l = (almacenes || []).filter((a) => !esAlmVertical(a));
   return (l.find((a) => a.recepcion) || l[0] || ALMACEN_PERSIANAS_PRINCIPAL).id;
 }
 function carrosNuevosAlmacen(almacenId, cuantos) {
@@ -15408,17 +15411,17 @@ function AlmacenPersianas() {
     if (almacenes.some((a) => a.id !== (form.modo === "editar" ? almacen.id : "") && a.nombre.trim().toLowerCase() === nombre.toLowerCase())) { alert("Ya hay un almacén con ese nombre."); return; }
     if (form.modo === "editar") {
       guardarAlmacenes(almacenes.map((a) => {
-        if (a.id === almacen.id) return { ...a, nombre, ubicacion: form.ubicacion, recepcion: a.tipo !== "mosquitera" && !!form.recepcion };
-        return form.recepcion && almacen.tipo !== "mosquitera" ? { ...a, recepcion: false } : a;
+        if (a.id === almacen.id) return { ...a, nombre, ubicacion: form.ubicacion, recepcion: !esAlmVertical(a) && !!form.recepcion };
+        return form.recepcion && !esAlmVertical(almacen) ? { ...a, recepcion: false } : a;
       }));
       setForm(null);
       return;
     }
     const id = uid();
-    const nuevo = { id, nombre, ubicacion: form.ubicacion, tipo: form.tipo, recepcion: false, creado: new Date().toISOString().slice(0, 10) };
+    const nuevo = { id, nombre, ubicacion: form.ubicacion, tipo: form.tipo, ...(form.tipo === "otro" ? { tipoNombre: String(form.tipoNombre || "").trim() || nombre } : {}), recepcion: false, creado: new Date().toISOString().slice(0, 10) };
     const carrosNuevos = form.modo === "duplicar"
       ? carros.map((c) => ({ ...c, id: uid(), almacenId: id, movido: false, notaSitio: "" }))
-      : carrosNuevosAlmacen(id, form.tipo === "mosquitera" ? [["vertical", form.nVertical, form.capacidad]] : [["gris", form.nLargo], ["amarillo", form.nCorto]]);
+      : carrosNuevosAlmacen(id, form.tipo !== "persiana" ? [["vertical", form.nVertical, form.capacidad]] : [["gris", form.nLargo], ["amarillo", form.nCorto]]);
     guardarAlmacenes([...almacenes, nuevo]);
     if (carrosNuevos.length) saveCarros([...todosCarros, ...carrosNuevos]);
     setSelId(id);
@@ -15446,7 +15449,7 @@ function AlmacenPersianas() {
           <button key={a.id} onClick={() => setSelId(a.id)}
             className={`text-left px-3 py-1.5 rounded-lg border-2 text-sm ${a.id === almacen.id ? "border-[#2E8B57] bg-[#EEF7E4]" : "border-slate-200 hover:border-slate-300"}`}>
             <div className="font-semibold text-slate-800">{a.nombre}</div>
-            <div className="text-[11px] text-slate-500">{a.tipo === "mosquitera" ? "Mosquiteras" : "Persianas"}{a.ubicacion ? ` · ${a.ubicacion}` : ""} · {cuenta(a)} dentro{almacenRecepcionPersianas(almacenes) === a.id ? " · recibe pedidos" : ""}</div>
+            <div className="text-[11px] text-slate-500">{tipoAlmEtiqueta(a)}{a.ubicacion ? ` · ${a.ubicacion}` : ""} · {cuenta(a)} dentro{almacenRecepcionPersianas(almacenes) === a.id ? " · recibe pedidos" : ""}</div>
           </button>
         ))}
         <div className="ml-auto flex flex-wrap gap-2">
@@ -15506,12 +15509,15 @@ function AlmacenPersianas() {
                     <Select value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
                       <option value="persiana">Persianas (carros con estantes)</option>
                       <option value="mosquitera">Mosquiteras (carros verticales)</option>
+                      <option value="auxiliar">Auxiliares: guías, solapes, inversores… (carros verticales)</option>
+                      <option value="otro">Otro: lo nombro yo (carros verticales)</option>
                     </Select>
                   </Field>
-                  {form.tipo === "mosquitera" ? (
+                  {form.tipo === "otro" && <Field label="Cómo se llama lo que se guarda"><TextInput value={form.tipoNombre || ""} onChange={(e) => setForm({ ...form, tipoNombre: e.target.value })} placeholder="Ej: Perfiles de mosquitera" /></Field>}
+                  {form.tipo !== "persiana" ? (
                     <div className="grid grid-cols-2 gap-2">
                       <Field label="Carros verticales">{num("nVertical")}</Field>
-                      <Field label="Mosquiteras por lado">{num("capacidad")}</Field>
+                      <Field label="Piezas por lado">{num("capacidad")}</Field>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">
@@ -15522,7 +15528,7 @@ function AlmacenPersianas() {
                   <p className="text-[11px] text-slate-400">Luego puedes añadir o quitar carros y cambiar cada uno desde el mapa.</p>
                 </>
               )}
-              {form.modo === "editar" && almacen.tipo !== "mosquitera" && (
+              {form.modo === "editar" && !esAlmVertical(almacen) && (
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={!!form.recepcion} onChange={(e) => setForm({ ...form, recepcion: e.target.checked })} />
                   Aquí entran las persianas al recibir pedidos
@@ -15559,9 +15565,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setCarroAbierto(null);
     setAviso(colocadas === xs.length ? `EXP ${exp}: ${xs.length} piezas pasadas a ${dest.nombre} y colocadas.` : `EXP ${exp}: pasadas a ${dest.nombre}; ${xs.length - colocadas} no caben y están en "Sin sitio" de ese almacén.`);
   };
-  const esMosq = almacen.tipo === "mosquitera";
-  const cosa = esMosq ? "mosquiteras" : "persianas";
-  const Cosa = esMosq ? "Mosquiteras" : "Persianas";
+  const esMosq = esAlmVertical(almacen);
+  const cosa = !esMosq ? "persianas" : almacen.tipo === "mosquitera" ? "mosquiteras" : almacen.tipo === "auxiliar" ? "auxiliares" : String(almacen.tipoNombre || "piezas").toLowerCase();
+  const Cosa = cosa.charAt(0).toUpperCase() + cosa.slice(1);
   const tiposAqui = TIPOS_CARRO_DE_ALMACEN[esMosq ? "mosquitera" : "persiana"];
   const dondeTxt = (e) => (variosAlmacenes ? `${almacen.nombre} · ` : "") + textoEstante(e);
   const [vista, setVista] = useState("mapa");
@@ -15996,7 +16002,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 </Select>
               </Field>
               {TIPOS_CARRO_PERSIANA[carroSel.tipo]?.porUds ? (
-                <Field label="Mosquiteras por lado">
+                <Field label="Piezas por lado">
                   <TextInput type="number" value={carroSel.capacidad ?? TIPOS_CARRO_PERSIANA[carroSel.tipo].capacidadDefecto} onChange={(e) => actualizarCarro(carroSel.numero, { capacidad: parseInt(e.target.value, 10) || 1 })} />
                 </Field>
               ) : (<>
@@ -35587,12 +35593,12 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
           while (!parar && !saltar && !opc.leidas().has(String(opc.codigos[i]))) { enfocarLector(); await espera(300); }
           btnSaltar.style.display = "none";
         }
-      } else {
+      } else if (i < htmls.length - 1 || !(opc && opc.sinAviso)) {
         await espera(PAUSA_MS);
       }
     }
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
-    if (!parar && hechas > 0) anunciarFinImpresion(finTxt || "las pegatinas", hechas);
+    if (!parar && hechas > 0 && !(opc && opc.sinAviso)) anunciarFinImpresion(finTxt || "las pegatinas", hechas);
     if (_secImpresionActiva === abortar) _secImpresionActiva = null;
     btn.textContent = "Cerrar";
     btn.onclick = limpiar;
@@ -37270,7 +37276,7 @@ function PreparacionProximoDia({ config, onSaveConfig, puestos, cristales = [], 
         <select value={esOtro ? "__otro" : val} onChange={(e) => { const v = e.target.value; if (v === "__otro") { setOtro({ ...otro, [mat]: true }); return; } setOtro({ ...otro, [mat]: false }); guardarDestino(mat, v); }}
           className="border border-slate-300 rounded-md px-2 py-1.5 text-sm min-w-[220px]">
           <option value="">— Sin definir —</option>
-          {mat === "persianas" && <optgroup label="Almacenes de persianas">{almacenes.filter((a) => a.tipo !== "mosquitera").map((a) => <option key={a.id} value={`alm:${a.id}`}>{a.nombre}{a.ubicacion ? ` (${a.ubicacion})` : ""}</option>)}</optgroup>}
+          {mat === "persianas" && <optgroup label="Almacenes de persianas">{almacenes.filter((a) => !esAlmVertical(a)).map((a) => <option key={a.id} value={`alm:${a.id}`}>{a.nombre}{a.ubicacion ? ` (${a.ubicacion})` : ""}</option>)}</optgroup>}
           {mat === "ventanas" && <optgroup label="Almacenes de caballetes">{almCab.map((a) => <option key={a.id} value={`cab:${a.id}`}>{a.nombre}{a.ciudad ? ` (${a.ciudad})` : ""}</option>)}</optgroup>}
           {toArray(puestos).length > 0 && <optgroup label="Puestos de trabajo">{toArray(puestos).map((p) => <option key={p.id || p.nombre} value={`txt:${p.nombre}`}>{p.nombre}</option>)}</optgroup>}
           <option value="__otro">Otro sitio (escribirlo)…</option>
@@ -40753,6 +40759,513 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   );
 }
 
+// ---- AUXILIARES: perfiles que se cortan aparte (doble cabeza) leídos de la "Hoja de corte" ----
+const AUX_NUM = "\\d{1,3}(?:\\.\\d{3})*,\\d{2}";
+const auxNum = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-ZÁÉÍÓÚ ]*|MARR[OÓ]N|BRONCE|ROBLE[A-Z ]*|NOGAL|CREMA|MARFIL|PLATA))/i;
+// Devuelve { presupuesto, version, referencia, cliente, modelos:[{modelo, uds, ancho, alto, filas:[{ref, desc, color, lCorte, lFinal, ud, tot, enMetros}]}] }
+// paginas = [[trozos de texto de pdf.js…], …] (igual que el resto de lectores de PDF del CRM). refs = referencias que se buscan.
+function leerAuxiliaresHojaCorte(paginas, refs) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  if (!/HOJA DE CORTE/i.test(todo)) return null;
+  const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
+  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
+  const version = cab && cab[2] ? cab[2] : "";
+  const referencia = ((todo.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const cliente = ((todo.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean);
+  const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
+  const modelos = [];
+  partes.forEach((b) => {
+    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
+    if (!mm) return;
+    const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1;
+    const med = b.match(/Medidas\s*:\s*([\d.]+)\s*x\s*([\d.]+)/i);
+    const ancho = med ? parseInt(med[1].replace(/\./g, ""), 10) : null;
+    const alto = med ? parseInt(med[2].replace(/\./g, ""), 10) : null;
+    const filas = [];
+    b.split("\n").forEach((linea) => {
+      for (const ref of lista) {
+        const re = auxEsc(ref);
+        let m;
+        // Filas de PERSIANA: "REF descripción … color L.Corte L.Final ToT" (ToT pegado al final)
+        if ((m = linea.match(new RegExp(`^${re}\\s+(.*?)\\s*(${AUX_NUM})\\s*(${AUX_NUM})(\\d+)\\s*$`)))) {
+          const tot = parseInt(m[4], 10);
+          const cm = m[1].match(AUX_COLOR_RE);
+          filas.push({ ref, desc: m[1].replace(AUX_COLOR_RE, "").replace(/\s+\d*\s*$/, "").trim(), color: cm ? cm[1].toUpperCase() : "", lCorte: auxNum(m[2]), lFinal: auxNum(m[3]), tot, ud: uds > 0 && tot % uds === 0 ? tot / uds : tot });
+          return;
+        }
+        // Filas de PERFILES: salen al revés: "ángulo L.Corte L.Final COLOR ToT descripción REF Ud"
+        if ((m = linea.match(new RegExp(`º\\s*(${AUX_NUM})\\s*(${AUX_NUM})(.*?)${re}\\s+(\\d+)\\s*$`)))) {
+          const cm = m[3].match(AUX_COLOR_RE);
+          filas.push({ ref, desc: m[3].replace(AUX_COLOR_RE, "").replace(/^\s*\d+/, "").trim(), color: cm ? cm[1].toUpperCase() : "", lCorte: auxNum(m[1]), lFinal: auxNum(m[2]), tot: parseInt(m[4], 10) * uds, ud: parseInt(m[4], 10) });
+          return;
+        }
+        // Junta de ensanche (sin ángulo): "L.Corte L.Final ToT descripción REF Ud", medidas en metros
+        if ((m = linea.match(new RegExp(`^(${AUX_NUM})(${AUX_NUM})(\\d+)(.*?)${re}\\s+(\\d+)\\s*$`)))) {
+          filas.push({ ref, desc: m[4].trim(), color: "", lCorte: auxNum(m[1]), lFinal: auxNum(m[2]), tot: parseInt(m[3], 10), ud: parseInt(m[5], 10) });
+          return;
+        }
+      }
+    });
+    // Las medidas por debajo de 10 son metros (juntas): se pasan a mm
+    filas.forEach((f) => { if (f.lCorte != null && f.lCorte < 10) { f.lCorte = Math.round(f.lCorte * 1000); f.lFinal = f.lFinal != null ? Math.round(f.lFinal * 1000) : null; f.enMetros = true; } });
+    // La caja "Compacto decorativo - guía aparte" (CJ_DECOR_S/G) viene sin guía: se anota para avisar si falta la guía en la hoja
+    const cajaSinGuia = /CJ_DECOR_S\/G/i.test(b) || /gu[ií]a aparte/i.test(b);
+    modelos.push({ modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas });
+  });
+  return { presupuesto, version, referencia, cliente, modelos };
+}
+
+/* ---------- AUXILIARES: perfiles que se cortan aparte en la doble cabeza (guías, inversor, solape, mosquitera…) ---------- */
+// La lista de referencias, los carros y las medidas de la etiqueta se cambian desde la propia pantalla (Configuración de auxiliares).
+const AUX_CFG_DEFECTO = {
+  refs: [
+    { id: "r1", ref: "C.327020", nombre: "Guía de persiana", pasos: "Felpudo, Bocado", activo: true },
+    { id: "r2", ref: "M05904", nombre: "Guía de mosquitera", pasos: "", activo: true },
+    { id: "r3", ref: "MPLX42240", nombre: "Cabeza de mosquitera", pasos: "", activo: true },
+    { id: "r4", ref: "8080", nombre: "Inversor", pasos: "", activo: true },
+    { id: "r5", ref: "3217", nombre: "Solape", pasos: "", activo: true },
+    { id: "r6", ref: "8038", nombre: "Poste 82", pasos: "", activo: false },
+    { id: "r7", ref: "2304", nombre: "Esquinero 90", pasos: "", activo: false },
+    { id: "r8", ref: "9022010", nombre: "Conector marcos", pasos: "", activo: false },
+    { id: "r9", ref: "3178", nombre: "Junta ensanche marco", pasos: "", activo: false },
+  ],
+  carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
+  bocadoCm: 8, anchoMm: 100, altoMm: 40,
+};
+const auxCfgDe = (c) => {
+  const x = c || {};
+  return {
+    refs: x.editado ? toArray(x.refs) : AUX_CFG_DEFECTO.refs,
+    carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
+    bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
+    anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
+  };
+};
+const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+const auxMed = (n) => (n == null ? "?" : String(Math.round(n * 10) / 10).replace(".", ","));
+const auxPasosDe = (rc, reg) => String((rc && rc.pasos) || "").split(",").map((s) => s.trim()).filter(Boolean).filter((n) => !(reg && reg.sinBocado && /bocado/i.test(n)));
+const auxLista = (rc, reg) => !!(reg && reg.cortada) && auxPasosDe(rc, reg).every((n) => reg.pasos && reg.pasos[auxSlug(n)]);
+const auxCmp = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { numeric: true });
+async function leerHojaAuxPdf(file, refs) {
+  const lib = await cargarPdfJs();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const doc = await lib.getDocument({ data }).promise;
+  const paginas = [];
+  for (let n = 1; n <= doc.numPages; n++) {
+    const pg = await doc.getPage(n);
+    const tc = await pg.getTextContent();
+    paginas.push(tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")));
+  }
+  const sinTexto = paginas.every((p) => !p.join("").trim());
+  return { sinTexto, r: sinTexto ? null : leerAuxiliaresHojaCorte(paginas, refs) };
+}
+// Ventanas del CRM (con su obra) para poner en cada pieza la ventana y el piso
+function auxVentanas(proyectos, uxExpedientes, sinObra) {
+  const out = [];
+  const meter = (dueno, lotes) => toArray(lotes).forEach((l) => toArray(l.ventanas).forEach((v) => {
+    if (v.parteDe && !/^1\//.test(String(v.parte || ""))) return; // ventanas unidas: las piezas son del modelo, solo se cuentan una vez
+    out.push({ dueno, lote: l, v });
+  }));
+  toArray(proyectos).forEach((pr) => meter({ nombre: `#${pr.numero} ${pr.nombre}`, presupuesto: pr.presupuestoNumero || "" }, pr.etiquetasFab));
+  toArray(uxExpedientes).forEach((e) => meter({ nombre: `Uxcar exp. ${e.numero}`, presupuesto: "" }, e.etiquetasFab));
+  toArray(sinObra).forEach((l) => meter({ nombre: `Sin asignar · lote ${l.fab}`, presupuesto: "" }, [l]));
+  return out;
+}
+const auxModeloDe = (v) => String((v && (v.tipo || v.pos)) || "").trim().toUpperCase().split(".")[0];
+// De cada hoja de corte cargada saca las piezas físicas (una por unidad) de las referencias activas, ventana por ventana
+function auxExpandir(hojas, cfg, ventanas) {
+  const activas = new Map(cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).map((r) => [String(r.ref).trim(), r]));
+  const piezas = [], avisos = [];
+  const clave = (t) => String(t).replace(/[.#$/[\]\s]+/g, "_");
+  Object.values(hojas || {}).forEach((h) => {
+    if (!h) return;
+    const ppto = String(h.presupuesto || "");
+    const deHoja = ventanas.filter((x) => digitosPresu(x.v.num) === ppto || (x.v.corte && String(x.v.corte.presupuesto) === ppto) || digitosPresu(x.dueno.presupuesto) === ppto);
+    if (!deHoja.length) avisos.push(`Presupuesto ${pptoBonito(ppto)}: no encuentro sus ventanas en el CRM (sube antes las etiquetas de la obra). Las piezas salen por modelo, sin ventana ni piso.`);
+    toArray(h.modelos).forEach((m) => {
+      const mv = deHoja.filter((x) => auxModeloDe(x.v) === m.modelo);
+      const unidades = mv.length ? mv.map((x) => ({ x, id: x.v.id || `${x.v.pos}-${x.v.num}`, txt: "" })) : Array.from({ length: m.uds || 1 }, (_, i) => ({ x: null, id: `m${i + 1}`, txt: `Modelo ${m.modelo} · ud ${i + 1}/${m.uds || 1}` }));
+      if (mv.length && m.uds && mv.length !== m.uds) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: la hoja dice ${m.uds} ud. y en el CRM hay ${mv.length} ventana${mv.length === 1 ? "" : "s"}. Revisa que las etiquetas y la hoja sean de la misma versión.`);
+      const filasM = toArray(m.filas);
+      if (m.cajaSinGuia && !filasM.some((f) => /gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || ""))) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: lleva caja de persiana "guía aparte" y la hoja no trae la guía. Revísalo antes de cortar.`);
+      const filas = filasM.filter((f) => activas.has(String(f.ref)));
+      unidades.forEach((u) => filas.forEach((f) => {
+        const rc = activas.get(String(f.ref));
+        const n = f.ud || 1;
+        for (let k = 1; k <= n; k++) {
+          piezas.push({
+            id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: f.ref, nombre: rc.nombre || f.desc || f.ref,
+            lCorte: f.lCorte, color: f.color || "", k, n,
+            ventanaPos: u.x ? u.x.v.pos || "" : "", grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
+          });
+        }
+      }));
+    });
+  });
+  piezas.sort((a, b) => auxCmp(a.ppto, b.ppto) || auxCmp(a.grupo, b.grupo) || auxCmp(a.ventanaPos || a.unidad, b.ventanaPos || b.unidad) || auxCmp(a.nombre, b.nombre) || (b.lCorte || 0) - (a.lCorte || 0) || a.k - b.k);
+  return { piezas, avisos };
+}
+// Primer hueco libre: mejor en un carro donde ya haya piezas de la misma obra
+function auxSitioLibre(cfg, est, ppto) {
+  const carros = cfg.carros;
+  const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro);
+  const ocup = new Set(regs.map((e) => `${e.carro}|${e.hueco}`));
+  const orden = [...new Set([...regs.filter((e) => e.ppto === ppto).map((e) => e.carro), ...carros.map((c) => c.id)])];
+  for (const cid of orden) {
+    const c = carros.find((x) => x.id === cid);
+    if (!c) continue;
+    for (let h = 1; h <= (parseInt(c.huecos, 10) || 0); h++) if (!ocup.has(`${cid}|${h}`)) return { carro: cid, carroNombre: c.nombre, hueco: h };
+  }
+  return null;
+}
+function imprimirAux(lista, cfg) {
+  const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const ancho = cfg.anchoMm, alto = cfg.altoMm;
+  const etiqueta = (p) => `<html><head><meta charset="utf-8"><title>Etiqueta auxiliar</title><style>
+    @page { size: ${ancho}mm ${alto}mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
+    .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; align-items: center; }
+    .r1 { width: 100%; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
+    .med { width: 100%; font-size: 7.5mm; font-weight: bold; line-height: 1.05; white-space: nowrap; }
+    .r2 { width: 100%; font-size: 3.2mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
+    .sitio { width: 100%; font-size: 4mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
+    .bar { margin-top: 0.6mm; line-height: 0; }
+    .dig { font-size: 3mm; letter-spacing: 0.5mm; line-height: 1.1; margin-top: 0.3mm; }
+  </style></head><body><div class="et">
+    <div class="r1"><span>${esc(p.ventanaPos || p.modelo)}</span><span>${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
+    <div class="med">${esc(auxMed(p.lCorte))} mm</div>
+    <div class="r2">${esc([p.grupo, p.cliente].filter(Boolean).join(" · ") || p.unidad)}</div>
+    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}`)}</div>
+    <div class="sitio">${esc(`${p.carroNombre || ""} · hueco ${p.hueco ?? ""}`)}${p.pasosTxt ? esc(` · ${p.pasosTxt}`) : ""}</div>
+    <div class="bar">${svgCode128Mm(p.cod, 8, 0.5, ancho - 6)}</div>
+    <div class="dig">${esc(p.cod)}</div>
+  </div></body></html>`;
+  imprimirSecuencia(lista.map(etiqueta), { sinAviso: true }, "las etiquetas");
+}
+
+function AuxConfigPanel({ cfg, onGuardar }) {
+  const [b, setB] = useState(() => JSON.parse(JSON.stringify(cfg)));
+  const upRef = (i, p) => setB({ ...b, refs: b.refs.map((r, j) => (j === i ? { ...r, ...p } : r)) });
+  const upCarro = (i, p) => setB({ ...b, carros: b.carros.map((c, j) => (j === i ? { ...c, ...p } : c)) });
+  const campo = "border border-slate-300 rounded px-2 py-1 text-sm bg-white";
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+      <div>
+        <div className="text-sm font-bold text-slate-800 mb-1">Perfiles auxiliares (los que se cortan en la doble cabeza)</div>
+        <div className="text-xs text-slate-500 mb-2">Pon, quita o cambia lo que quieras. «Pasos» son los procesos que se ticaban después de cortar (separados por comas, p. ej. «Felpudo, Bocado»). Si añades una referencia nueva, vuelve a subir la hoja de corte para que la lea.</div>
+        <div className="space-y-1.5">
+          {b.refs.map((r, i) => (
+            <div key={r.id || i} className="flex flex-wrap items-center gap-2">
+              <input type="checkbox" checked={r.activo !== false} onChange={(e) => upRef(i, { activo: e.target.checked })} title="Activo: genera etiquetas" />
+              <input value={r.ref || ""} onChange={(e) => upRef(i, { ref: e.target.value })} placeholder="Referencia" className={campo + " w-32"} />
+              <input value={r.nombre || ""} onChange={(e) => upRef(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
+              <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
+              <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setB({ ...b, refs: [...b.refs, { id: uid(), ref: "", nombre: "", pasos: "", activo: true }] })} className="mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">+ Añadir perfil</button>
+      </div>
+      <div>
+        <div className="text-sm font-bold text-slate-800 mb-1">Almacén vertical de auxiliares (carros)</div>
+        <div className="space-y-1.5">
+          {b.carros.map((c, i) => (
+            <div key={c.id || i} className="flex flex-wrap items-center gap-2">
+              <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
+              <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
+              <span className="text-xs text-slate-500">huecos</span>
+              <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setB({ ...b, carros: [...b.carros, { id: uid(), nombre: `Carro ${b.carros.length + 1}`, huecos: 20 }] })} className="mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">+ Añadir carro</button>
+      </div>
+      <div className="flex flex-wrap gap-4 text-sm text-slate-700">
+        <label className="flex items-center gap-1.5">Bocado: cm a cada lado del eje <input type="number" value={b.bocadoCm} onChange={(e) => setB({ ...b, bocadoCm: e.target.value })} className={campo + " w-16"} /></label>
+        <label className="flex items-center gap-1.5">Etiqueta (mm) <input type="number" value={b.anchoMm} onChange={(e) => setB({ ...b, anchoMm: e.target.value })} className={campo + " w-16"} /> x <input type="number" value={b.altoMm} onChange={(e) => setB({ ...b, altoMm: e.target.value })} className={campo + " w-16"} /></label>
+      </div>
+      <button type="button" onClick={() => onGuardar(b)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar configuración</button>
+    </div>
+  );
+}
+
+function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin = false }) {
+  const cfgRaw = useObjetoFb("auxiliaresConfig");
+  const hojas = useObjetoFb("auxiliaresHojas");
+  const est = useObjetoFb("auxiliaresPiezas");
+  const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
+  const almsAux = toArray(ctxAux.almacenesPersianas).filter((a) => a && a.tipo === "auxiliar");
+  const carrosAlm = toArray(ctxAux.carrosPersianas);
+  // Si existe algún almacén de tipo «Auxiliares» (creado en Fábrica → almacén de persianas), sus carros SON los carros de auxiliares
+  const cfg = useMemo(() => {
+    const base = auxCfgDe(cfgRaw);
+    const delAlmacen = [];
+    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20) })));
+    return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
+  }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
+  const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas), [hojas, cfg, ventanas]);
+  const [orden, setOrden] = useState("ventana");
+  const [filtro, setFiltro] = useState("");
+  const [msg, setMsg] = useState("");
+  const [leyendo, setLeyendo] = useState(false);
+  const [codigo, setCodigo] = useState("");
+  const [lectura, setLectura] = useState(null);
+  const [verConfig, setVerConfig] = useState(false);
+  const [verListas, setVerListas] = useState(false);
+  const [obraComp, setObraComp] = useState(""); // presupuesto que se está comprobando ("" = cerrado)
+  const [codComp, setCodComp] = useState("");
+  const archivoRef = useRef(null);
+  // Dónde está la persiana de la misma ventana/vivienda en el almacén de persianas (mismo cruce que usa el puesto de persiana)
+  const itemsPers = toArray(ctxAux.persianasAlmacen);
+  const nombreAlmP = (id) => (toArray(ctxAux.almacenesPersianas).find((a) => a.id === id) || {}).nombre || "";
+  const persianaDe = (e) => {
+    const x = ventanas.find((w) => (digitosPresu(w.v.num) === String(e.ppto) || digitosPresu(w.dueno.presupuesto) === String(e.ppto) || (w.v.corte && String(w.v.corte.presupuesto) === String(e.ppto))) && String(w.v.pos || "") === String(e.ventanaPos || "") && String(w.v.grupo || "") === String(e.grupo || ""));
+    if (!x) return { estado: "sinventana" };
+    const d = datosVentanaLinea({ ventana: x.v, lote: x.lote });
+    if (!d.exp) return { estado: "sinventana" };
+    const p = itemsPers.find((y) => !y.entregada && !y.colocadaVentana && y.estante && numsExpediente(y.expediente).includes(d.exp) && d.casa(y.ref));
+    if (!p) return { estado: "sinpersiana" };
+    return { estado: "ok", item: p, donde: `${nombreAlmP(almacenDe(p))} · ${textoEstante(p.estante)}` };
+  };
+  const dejada = (id, donde) => guardarLinea(`auxiliaresPiezas/${id}/dejada`, donde === null ? null : { at: Date.now(), por: quien || "", donde });
+  const refDe = (ref) => cfg.refs.find((r) => String(r.ref).trim() === String(ref).trim());
+  const q = filtro.trim().toLowerCase();
+  const coincide = (p) => !q || [p.ventanaPos, p.grupo, p.cliente, p.obra, p.nombre, p.ref, p.ppto, pptoBonito(p.ppto), p.modelo, p.cod, auxMed(p.lCorte)].join(" ").toLowerCase().includes(q);
+  const pendientes = piezas.filter((p) => !(est[p.id] && est[p.id].cortada) && coincide(p));
+  const todasPend = piezas.filter((p) => !(est[p.id] && est[p.id].cortada)).length;
+  const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
+  const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
+  const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
+  const subir = async (files) => {
+    setLeyendo(true); setMsg("");
+    try {
+      const refs = cfg.refs.map((r) => String(r.ref || "").trim()).filter(Boolean);
+      for (const f of Array.from(files || [])) {
+        const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
+        if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
+        if (!r || !r.modelos.length || !r.presupuesto) { setMsg(`«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones).`); continue; }
+        const previa = hojas && hojas[r.presupuesto];
+        if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
+        const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
+        await fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no hay ninguna de las referencias de la lista.`);
+      }
+    } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
+    finally { setLeyendo(false); if (archivoRef.current) archivoRef.current.value = ""; }
+  };
+  const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
+  const cortar = async (p) => {
+    const sitio = auxSitioLibre(cfg, est, p.ppto);
+    if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
+    try {
+      const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
+      const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
+      imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
+      setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}`);
+      pitidoCRM(true);
+    } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
+  };
+  const reimprimir = (e) => imprimirAux([{ ...e, pasosTxt: auxPasosDe(refDe(e.ref), e).join(" + ") }], cfg);
+  const paso = (id, nombre, v) => guardarLinea(`auxiliaresPiezas/${id}/pasos/${auxSlug(nombre)}`, v ? Date.now() : null);
+  const deshacer = (e) => { if (window.confirm(`¿Deshacer el corte de ${e.nombre} ${auxMed(e.lCorte)} mm (${e.cod})? Vuelve a «Falta por cortar» y libera su hueco.`)) guardarLinea(`auxiliaresPiezas/${e.id}`, null); };
+  const buscarCodigo = (t) => {
+    const c = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, "");
+    setCodigo("");
+    if (!c) return;
+    const e = Object.entries(est || {}).map(([id, x]) => ({ ...x, id })).find((x) => x && String(x.cod).toUpperCase() === c);
+    if (e) { setLectura(e); setMsg(""); pitidoCRM(true); } else { setLectura(null); setMsg(`No conozco el código «${c}». Solo leo las etiquetas de auxiliares (empiezan por AX).`); pitidoCRM(false); }
+  };
+  const guardarCfg = (b) => guardarLinea("auxiliaresConfig", JSON.parse(JSON.stringify({
+    refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
+    carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
+    bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40, editado: true,
+  }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); });
+  // ---- COMPROBAR: revisar por obra que todas las piezas están y ticarlas (a mano o con la pistola) ----
+  const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(Boolean).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
+  const filasComp = obraComp ? [
+    ...piezas.filter((p) => p.ppto === obraComp && !(est[p.id] && est[p.id].cortada)).map((p) => ({ ...p, sinCortar: true })),
+    ...Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && e.ppto === obraComp),
+  ].sort((x, y) => auxCmp(x.ventanaPos || x.unidad, y.ventanaPos || y.unidad) || auxCmp(x.ref, y.ref)) : [];
+  const okComp = filasComp.filter((e) => !e.sinCortar && e.comprobada).length;
+  const faltanComp = filasComp.filter((e) => e.sinCortar || !e.comprobada);
+  const marcarComp = (id, v) => guardarLinea(`auxiliaresPiezas/${id}/comprobada`, v ? { at: Date.now(), por: quien || "" } : null);
+  const leerComp = (t) => {
+    const c = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, "");
+    setCodComp("");
+    if (!c) return;
+    const e = Object.entries(est || {}).map(([id, x]) => ({ ...x, id })).find((x) => x && String(x.cod).toUpperCase() === c);
+    if (!e) { setMsg(`No conozco el código «${c}».`); pitidoCRM(false); return; }
+    if (e.ppto !== obraComp) { setMsg(`⚠ ${e.nombre} ${auxMed(e.lCorte)} mm es de otra obra (Ppto ${pptoBonito(e.ppto)}), no de la que estás comprobando.`); pitidoCRM(false); return; }
+    if (e.comprobada) { setMsg(`${e.nombre} ${auxMed(e.lCorte)} mm ya estaba comprobada.`); pitidoCRM(true); return; }
+    marcarComp(e.id, true); setMsg(`✓ ${e.nombre} ${auxMed(e.lCorte)} mm · ${e.ventanaPos || e.unidad || ""}`); pitidoCRM(true);
+  };
+  const hojasLista = Object.values(hojas || {}).filter(Boolean).sort((a, b) => auxCmp(a.presupuesto, b.presupuesto));
+  const grupos = [];
+  if (orden === "ventana") {
+    pendientes.forEach((p) => {
+      const k = `${p.ppto}|${p.obra}|${p.ventanaPos || p.unidad}`;
+      let g = grupos[grupos.length - 1];
+      if (!g || g.k !== k) { g = { k, p, filas: [] }; grupos.push(g); }
+      g.filas.push(p);
+    });
+  }
+  const planas = orden === "perfil" ? [...pendientes].sort((a, b) => auxCmp(a.ref, b.ref) || (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ventanaPos, b.ventanaPos)) : [];
+  const fila = (p, conVentana) => (
+    <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
+      <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
+      <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[p.ventanaPos || p.unidad, p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
+      <button type="button" onClick={() => cortar(p)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <input ref={archivoRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => subir(e.target.files)} />
+        <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
+          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
+        </button>
+        {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : grupos[0].filas[0])} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
+        {admin && <button type="button" onClick={() => setVerConfig(!verConfig)} className="text-sm font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">{verConfig ? "Cerrar configuración" : "Configuración"}</button>}
+      </div>
+      {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
+      {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
+      {hojasLista.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {hojasLista.map((h) => (
+            <span key={h.presupuesto} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1">
+              Ppto {pptoBonito(h.presupuesto)} v{h.version || "?"} · {h.fecha ? fmtDate(h.fecha) : ""}
+              {admin && <button type="button" onClick={() => quitarHoja(h)} className="text-slate-400 hover:text-rose-600" title="Quitar hoja"><X size={12} /></button>}
+            </span>
+          ))}
+        </div>
+      )}
+      {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
+      <div className="bg-white border border-slate-200 rounded-xl p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
+          <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar ventana, piso, obra, perfil…" className={inputCls + " w-60"} />
+          <select value={orden} onChange={(e) => setOrden(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-2 bg-white">
+            <option value="ventana">Ordenar por ventana</option>
+            <option value="perfil">Ordenar por perfil y medida</option>
+          </select>
+        </div>
+        {lectura && (
+          <div className="mt-3 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm">
+            <div className="font-bold text-emerald-900">{lectura.nombre} · {auxMed(lectura.lCorte)} mm · {lectura.ref}</div>
+            <div className="text-emerald-800">{[lectura.ventanaPos || lectura.unidad, lectura.grupo, lectura.cliente].filter(Boolean).join(" · ")} · Ppto {pptoBonito(lectura.ppto)}</div>
+            <div className="mt-1 text-base font-extrabold text-emerald-900">Está en: {lectura.carroNombre} · hueco {lectura.hueco}</div>
+          </div>
+        )}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar <span className="font-normal text-slate-500">({pendientes.length}{q ? ` de ${todasPend}` : ""})</span></div>
+        {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
+        {orden === "ventana" ? grupos.map((g) => (
+          <div key={g.k} className="mb-3">
+            <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{g.p.ventanaPos || g.p.unidad}{g.p.grupo ? ` · ${g.p.grupo}` : ""}{g.p.cliente ? ` · ${g.p.cliente}` : ""} <span className="font-normal text-xs text-slate-500">· Ppto {pptoBonito(g.p.ppto)} v{g.p.version || "?"}{g.p.obra ? ` · ${g.p.obra}` : ""}</span></div>
+            {g.filas.map((p) => fila(p, false))}
+          </div>
+        )) : planas.map((p) => fila(p, true))}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm font-bold text-slate-800">Comprobar una obra</div>
+          <select value={obraComp} onChange={(e) => { setObraComp(e.target.value); setMsg(""); }} className="text-sm border border-slate-300 rounded-md px-2 py-2 bg-white">
+            <option value="">— elige la obra (presupuesto) —</option>
+            {obrasComp.map((n) => <option key={n} value={n}>Ppto {pptoBonito(n)}{(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) ? " · " + (hojas[n].referencia || hojas[n].cliente) : ""}</option>)}
+          </select>
+          {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") leerComp(codComp); }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
+        </div>
+        {obraComp && (
+          <div className="mt-3">
+            <div className={`px-3 py-2 rounded-md text-sm font-bold border ${faltanComp.length === 0 && filasComp.length > 0 ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "bg-amber-50 border-amber-300 text-amber-900"}`}>
+              {filasComp.length === 0 ? "Esta obra no tiene piezas de auxiliares." : faltanComp.length === 0 ? `✓ Todo comprobado: ${okComp} de ${filasComp.length}. La producción puede salir.` : `Comprobadas ${okComp} de ${filasComp.length} · faltan ${faltanComp.length}`}
+            </div>
+            {faltanComp.length > 0 && filasComp.length > 0 && <div className="mt-1 text-xs text-slate-500">Lo que falta aparece primero. «Sin cortar» significa que ni siquiera se ha cortado todavía.</div>}
+            <div className="mt-2">
+              {[...faltanComp, ...filasComp.filter((e) => !(e.sinCortar || !e.comprobada))].map((e) => (
+                <label key={e.id} className={`flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0 ${e.sinCortar ? "opacity-70" : ""}`}>
+                  <input type="checkbox" disabled={!!e.sinCortar} checked={!!e.comprobada} onChange={(ev) => marcarComp(e.id, ev.target.checked)} className="w-5 h-5" />
+                  <span className="text-sm font-semibold text-slate-800 min-w-[150px]">{e.nombre}{e.n > 1 ? ` ${e.k}/${e.n}` : ""}</span>
+                  <span className="text-sm font-bold w-24">{auxMed(e.lCorte)} mm</span>
+                  <span className="text-xs text-slate-500 flex-1 min-w-[140px]">{[e.ref, e.ventanaPos || e.unidad, e.grupo].filter(Boolean).join(" · ")}</span>
+                  {e.sinCortar ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin cortar</Badge> : <Badge className="bg-violet-50 text-violet-800 ring-violet-200">{e.carroNombre} · hueco {e.hueco}</Badge>}
+                  {e.comprobada && <span className="text-xs text-emerald-700">✓ {e.comprobada.por || ""}</span>}
+                </label>
+              ))}
+            </div>
+            {admin && okComp > 0 && <button type="button" onClick={() => { if (window.confirm("¿Quitar todos los ticks de esta obra para volver a empezar?")) filasComp.filter((e) => !e.sinCortar && e.comprobada).forEach((e) => marcarComp(e.id, false)); }} className="mt-2 text-xs text-rose-600 hover:underline">Empezar la comprobación de nuevo</button>}
+          </div>
+        )}
+        <div className="mt-2 text-xs text-slate-400">Ahora comprueba solo auxiliares. Cuando los demás materiales (cristales, persianas, ventanas) estén en la misma lista, saldrán aquí también.</div>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-bold text-slate-800">En los carros, por terminar <span className="font-normal text-slate-500">({porTerminar.length})</span></div>
+          <label className="text-xs text-slate-600 flex items-center gap-1.5"><input type="checkbox" checked={verListas} onChange={(e) => setVerListas(e.target.checked)} /> Ver también las terminadas ({terminadas.length})</label>
+        </div>
+        {(verListas ? cortadas : porTerminar).length === 0 && <div className="text-sm text-slate-500">Nada pendiente de terminar.</div>}
+        {(verListas ? cortadas : porTerminar).map((e) => {
+          const rc = refDe(e.ref);
+          const pasos = auxPasosDe(rc, e);
+          const lista = auxLista(rc, e);
+          const conBocado = String((rc && rc.pasos) || "").split(",").some((n) => /bocado/i.test(n));
+          const eje = parseFloat(e.eje);
+          return (
+            <div key={e.id} className="py-2 border-b border-slate-100 last:border-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-slate-800">{e.nombre}{e.n > 1 ? ` ${e.k}/${e.n}` : ""}</span>
+                <span className="text-sm font-bold">{auxMed(e.lCorte)} mm</span>
+                <span className="text-xs text-slate-500">{[e.ventanaPos || e.unidad, e.grupo, e.cliente].filter(Boolean).join(" · ")}</span>
+                <span className="ml-auto flex items-center gap-2">
+                  <Badge className="bg-violet-50 text-violet-800 ring-violet-200">{e.carroNombre} · hueco {e.hueco}</Badge>
+                  {lista && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">✓ terminada</Badge>}
+                  <button type="button" onClick={() => reimprimir(e)} className="text-xs text-slate-600 hover:underline">Reimprimir</button>
+                  {admin && <button type="button" onClick={() => deshacer(e)} className="text-xs text-rose-600 hover:underline">Deshacer</button>}
+                </span>
+              </div>
+              {lista && pasos.length > 0 && (() => {
+                const d = persianaDe(e);
+                if (e.dejada) return <div className="mt-1 text-sm text-emerald-700">✓ Dejada junto a su persiana: {e.dejada.donde} {e.dejada.por ? `(${e.dejada.por})` : ""} <button type="button" onClick={() => dejada(e.id, null)} className="text-xs text-slate-500 hover:underline ml-2">deshacer</button></div>;
+                return (
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                    {d.estado === "ok"
+                      ? <><span className="px-2 py-1 rounded-md bg-violet-50 border border-violet-200 text-violet-900 font-bold">LLÉVALA A: {d.donde}</span><button type="button" onClick={() => dejada(e.id, d.donde)} className="text-xs font-semibold px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-800 hover:bg-emerald-50">Ya la he dejado</button></>
+                      : <span className="text-amber-800 text-xs">{d.estado === "sinpersiana" ? "No encuentro la persiana de esta ventana en el almacén de persianas (¿ya está recibida y con sitio? ¿coincide la vivienda?). Déjala en su carro de auxiliares." : "No sé de qué ventana es para buscar su persiana."}</span>}
+                  </div>
+                );
+              })()}
+              {(pasos.length > 0 || conBocado) && (
+                <div className="mt-1 flex flex-wrap items-center gap-4 text-sm text-slate-700">
+                  {pasos.map((n) => (
+                    <label key={n} className="flex items-center gap-1.5"><input type="checkbox" checked={!!(e.pasos && e.pasos[auxSlug(n)])} onChange={(ev) => paso(e.id, n, ev.target.checked)} /> {n}</label>
+                  ))}
+                  {conBocado && <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={!!e.sinBocado} onChange={(ev) => guardarLinea(`auxiliaresPiezas/${e.id}/sinBocado`, ev.target.checked ? true : null)} /> Sin bocado (motor)</label>}
+                  {conBocado && !e.sinBocado && (
+                    <label className="flex items-center gap-1.5 text-xs text-slate-600">Eje (cm)
+                      <input type="number" defaultValue={e.eje ?? ""} onBlur={(ev) => guardarLinea(`auxiliaresPiezas/${e.id}/eje`, ev.target.value === "" ? null : parseFloat(ev.target.value))} className="border border-slate-300 rounded px-1.5 py-0.5 w-20 text-sm" />
+                      {Number.isFinite(eje) && <span className="text-slate-500">bocado de {eje - parseFloat(cfg.bocadoCm)} a {eje + parseFloat(cfg.bocadoCm)} cm</span>}
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div className="mt-3 text-xs text-slate-400">Cuando felpudo y bocado están hechos, el CRM busca la persiana de esa ventana (mismo expediente y vivienda) en el almacén de persianas y te dice dónde dejar la guía.</div>
+      </div>
+    </div>
+  );
+}
+
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -40767,6 +41280,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
+    { id: "auxiliares", t: "Auxiliares", aviso: "" },
     ...(verMas ? [
       { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
       { id: "estanterias", t: "Estanterías e informes", aviso: "" },
@@ -40794,6 +41308,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       )}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
+      {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "almacen" && (
         <AlmacenVentanas simple={soloAlmacen} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
