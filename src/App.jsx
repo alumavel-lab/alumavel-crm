@@ -36120,6 +36120,12 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
   const flagsInc = useObjetoFb("incidenciaVentanaLinea");
   const [msg, setMsg] = useState("");
   const [ocupado, setOcupado] = useState("");
+  const [ver, setVer] = useState(null); // ventana abierta para ver su ficha e historial
+  const escaneos = useEscaneosLinea();
+  const hojasOv = useObjetoFb("hojasLinea");
+  const pilOv = useObjetoFb("pilastraLinea");
+  const solOv = useObjetoFb("solapeLinea");
+  const mosqOv = useObjetoFb("mosquiteraLinea");
   const terminadas = ["persianaA", "persianaB", "puertasTerminadas", "especiales"]; // ventanas hechas que este puesto puede coger
   const yaPasadas = ["solape", "espera"];
   const nom = (id) => (zonas.find((z) => z.id === id) || {}).nombre || id;
@@ -36154,10 +36160,37 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
     } catch (e) { res.push("Error: " + ((e && e.message) || e)); }
     setMsg(res.join(" · ")); setOcupado("");
   };
+  // Envío automático: cuando una vivienda se completa, sus ventanas terminadas pasan solas a la Línea y se avisa a todos los puestos (solo mientras este puesto esté abierto)
+  const [auto, setAuto] = useState(() => { try { return localStorage.getItem("alumavel_control_auto") !== "no"; } catch (e) { return true; } });
+  const enProceso = useRef(new Set());
+  const cambiarAuto = (v) => { setAuto(v); try { localStorage.setItem("alumavel_control_auto", v ? "si" : "no"); } catch (e) { /* nada */ } };
+  useEffect(() => {
+    if (!auto) return;
+    lista.filter((g) => g.completa && g.nCoger > 0 && !enProceso.current.has(g.k)).forEach(async (g) => {
+      enProceso.current.add(g.k);
+      const res = []; let fallo = false;
+      try {
+        for (let i = 0; i < g.ventanas.length; i++) {
+          if (g.st[i] !== "coger") continue;
+          const r = await moverVentanaControl({ h: g.ventanas[i].h, zonaId: "sinPersiana", zonas, ubic, por: "Control (automático)" });
+          res.push(g.ventanas[i].h.ventana.pos);
+          if (!r.ok) { fallo = true; res.pop(); break; }
+        }
+      } catch (e) { fallo = true; }
+      if (res.length) { try { await fbSet(ref(fbDb, `mensajesLinea/${Date.now()}_${Math.random().toString(36).slice(2, 6)}`), { ts: Date.now(), texto: `✅ VIVIENDA COMPLETA ${g.grupo || ""}${g.cliente ? " · " + g.cliente : ""}: ${res.join(", ")} ${fallo ? "movidas a la Línea (alguna no cabía: revisa)" : "enviadas solas a la Línea · listas para acristalar"}` }); } catch (e) { /* nada */ } }
+      setTimeout(() => enProceso.current.delete(g.k), fallo ? 60000 : 5000);
+    });
+  }, [lista, auto]); // eslint-disable-line
+  const mandarUna = async (x) => {
+    setOcupado(baseDe(x.h.ventana));
+    try { const r = await moverVentanaControl({ h: x.h, zonaId: "sinPersiana", zonas, ubic, por: quien || "Control de línea" }); setMsg(r.texto); } catch (e) { setMsg("Error: " + ((e && e.message) || e)); }
+    setOcupado("");
+  };
   const buscar = async (x) => { try { await fbSet(ref(fbDb, `busquedaLinea/${baseDe(x.h.ventana)}`), { pos: x.h.ventana.pos, grupo: x.h.ventana.grupo || "", cliente: x.h.ventana.cliente || "", ts: Date.now(), por: quien || "Control de línea" }); } catch (e) { /* nada */ } };
   const chip = { coger: "bg-emerald-100 border-emerald-400 text-emerald-900", linea: "bg-sky-100 border-sky-300 text-sky-900", hecha: "bg-slate-100 border-slate-300 text-slate-500", falta: "bg-rose-100 border-rose-400 text-rose-900", inc: "bg-rose-200 border-rose-500 text-rose-900" };
   return (
     <div className="mt-4 border border-sky-300 bg-sky-50/60 rounded-lg p-3">
+      <label className="flex items-center gap-2 text-xs font-semibold text-sky-900 mb-1"><input type="checkbox" checked={auto} onChange={(e) => cambiarAuto(e.target.checked)} /> Mandar solas a la Línea las viviendas que se completen (y avisar a todos) · solo funciona con este puesto abierto</label>
       <div className="text-sm font-semibold text-sky-900 mb-1">Viviendas en curso ({lista.length}) · verde = terminada, cógela · rojo = falta, búscala</div>
       {lista.length === 0 ? <p className="text-xs text-slate-500">Ninguna vivienda tiene ventanas terminadas esperando.</p> : lista.map((g) => (
         <div key={g.k} className={`rounded-md border p-2 mb-2 ${g.completa ? "border-emerald-400 bg-emerald-50" : "border-slate-200 bg-white"}`}>
@@ -36168,17 +36201,25 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {g.ventanas.map((x, i) => { const e = g.st[i]; const u = x.u; return (
-              <span key={x.h.ventana.id} className={`inline-flex items-center gap-1 border rounded px-2 py-1 text-xs ${chip[e]}`}>
+              <span key={x.h.ventana.id} onClick={() => setVer(x.h)} title="Pincha para ver dónde está y todos sus pasos" className={`inline-flex items-center gap-1 border rounded px-2 py-1 text-xs cursor-pointer hover:ring-2 hover:ring-sky-400 ${chip[e]}`}>
                 <DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={30} />
                 <b>{x.h.ventana.pos}</b>
                 <span>{e === "coger" ? `COGER: ${nom(u.zonaId)} · est. ${u.hueco}` : e === "linea" ? `en la Línea · est. ${u.hueco}` : e === "hecha" ? "ya acristalada" : e === "inc" ? "⚠ INCIDENCIA" : u ? `falta: ${nom(u.zonaId)} · est. ${u.hueco}` : "falta: sin leer"}</span>
-                {(e === "falta" || e === "inc") && <button type="button" onClick={() => buscar(x)} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">📣</button>}
+                {e === "coger" && <button type="button" disabled={!!ocupado} onClick={(ev) => { ev.stopPropagation(); mandarUna(x); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white disabled:opacity-40">{ocupado === baseDe(x.h.ventana) ? "…" : "➡ Mandar a la Línea"}</button>}
+                {(e === "falta" || e === "inc") && <button type="button" onClick={(ev) => { ev.stopPropagation(); buscar(x); }} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">📣</button>}
               </span>
             ); })}
           </div>
         </div>
       ))}
       {msg && <p className="text-xs font-semibold text-slate-700 mt-1">{msg}</p>}
+      {ver && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={() => setVer(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-4" onClick={(ev) => ev.stopPropagation()}>
+            <FichaVentanaLinea h={ver} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => setVer(null)} control />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -36421,6 +36462,22 @@ function AvisoBusquedaVentana({ indice, ubic }) {
     </div>
   );
 }
+// Mensajes que manda el Control de línea a todos los puestos (viviendas enviadas solas a la Línea)
+function AvisoMensajesLinea() {
+  const msgs = useObjetoFb("mensajesLinea");
+  const lista = Object.entries(msgs || {}).filter(([, m]) => m && m.texto && Date.now() - m.ts < 20 * 60 * 1000).sort((a, b) => b[1].ts - a[1].ts).slice(0, 5);
+  if (lista.length === 0) return null;
+  return (
+    <div className="mb-3 border-2 border-emerald-500 bg-emerald-50 rounded-xl p-3 space-y-1">
+      {lista.map(([k, m]) => (
+        <div key={k} className="flex items-center gap-2 text-sm font-bold text-emerald-900">
+          <span>{m.texto}</span><span className="text-xs font-normal text-emerald-700">{new Date(m.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}</span>
+          <button type="button" onClick={() => fbSet(ref(fbDb, `mensajesLinea/${k}`), null)} className="ml-auto text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-0.5 bg-white">Quitar</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   const puestoId = puestoFijo || puestoSel; // con "puesto fijo" el operario no puede cambiar de puesto
@@ -36429,6 +36486,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   // Matrimonio: varias personas con la misma pistola. Cada una elige su mesa (1-3) y su aviso sale en su propio panel.
   const [mesa, setMesaSel] = useState(() => { try { const m = parseInt(localStorage.getItem("alumavel_mesa_colgado") || "1", 10); return m >= 1 && m <= 3 ? m : 1; } catch (e) { return 1; } });
   const mesaRef = useRef(mesa);
+  const forzar = useRef(""); // Cristales: código de la ventana que se acristala como URGENTE saltándose el bloqueo
+  const [bloqCris, setBloqCris] = useState(null);
   mesaRef.current = mesa;
   const [ultimosMesa, setUltimosMesa] = useState({});
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
@@ -36498,10 +36557,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
     let z = null;
     if (v.modelo) {
-      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, pilHojaOv, solOv, mosqOv, sinPersOv, por: quien, estricto, indice }); }
+      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, pilHojaOv, solOv, mosqOv, sinPersOv, por: quien, estricto: estricto && !(puestoId === "cristales" && forzar.current === cod), indice }); }
       catch (e) { z = { ok: false, texto: `No se pudieron actualizar las estanterías (${(e && e.message) || e}). La lectura NO se ha guardado.` }; }
-      if (z && !z.ok) { avisarM(false, z.texto); return; }
+      if (z && !z.ok) { if (puestoId === "cristales" && /^⛔/.test(z.texto) && !/INCIDENCIA ABIERTA/.test(z.texto)) setBloqCris({ cod, pos: v.pos, texto: z.texto }); avisarM(false, z.texto); return; }
     }
+    const eraUrgente = puestoId === "cristales" && forzar.current === cod;
+    if (puestoId === "cristales") { forzar.current = ""; setBloqCris(null); }
+    if (eraUrgente) fbSet(ref(fbDb, `urgenteLinea/${baseDe(v)}`), { ts: Date.now(), por: quien || "" }).catch(() => {});
     const r = await registrarEscaneoLinea({ puestoId, h, por: quien, porId: quienId, mesa: puestoId === "colgado" ? mesaAhora : 0 });
     if (r !== "nuevo" && r !== "repetida") { avisarM(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`); return; }
     const desc = `${v.pos} · ${v.grupo || h.dueno.nombre}`;
@@ -36520,7 +36582,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
-    setUltimo((u) => (u ? { ...u, h, puedeLinea: (puestoId === "persianaA" || puestoId === "persianaB") && !!cruce && !cruce.ok, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+    setUltimo((u) => (u ? { ...u, h, urgente: eraUrgente, puedeLinea: (puestoId === "persianaA" || puestoId === "persianaB") && !!cruce && !cruce.ok, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
     if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], h, foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
   };
   // Matrimonio: la ventana fue al banco de persiana A/B pero NO lleva persiana (no estaba marcada la casilla en las pegatinas): se marca y pasa a la Línea
@@ -36547,6 +36609,11 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-slate-700 text-white text-sm font-bold">No lleva persiana → pasar a la Línea</button>
           )}{(puestoId === "persianaA" || puestoId === "persianaB") && u.h && u.puedeLinea && (
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">No lleva persiana → quitarla de aquí y pasarla a la Línea</button>
+          )}{puestoId === "cristales" && u.urgente && u.h && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs"><b className="text-slate-700">🚨 URGENTE · ¿dónde la dejas?</b>
+              {[["espera", "Almacén de espera"], ["solape", "Solape / postigo"], ["sinPersiana", "Volver a la Línea"]].map(([zid, nombre]) => <button key={zid} type="button" onClick={async () => { try { const r = await moverVentanaControl({ h: u.h, zonaId: zid, zonas, ubic, por: quien }); avisar(r.ok, r.texto, false, u.mesa); } catch (e) { avisar(false, `No se pudo mover: ${(e && e.message) || e}`, false, u.mesa); } }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">{nombre}</button>)}
+              <button type="button" onClick={async () => { const b = baseDe(u.h.ventana); await liberarCodigoLinea(b); for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(b, k)); avisar(true, `✓ ${u.h.ventana.pos} sale directa a carga (sin estantería)`, false, u.mesa); }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">Directa a carga</button>
+            </div>
           )}{u.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = u.foco; onIrA(u.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
@@ -36555,6 +36622,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     <div className="space-y-6">
       <AvisoSacarLinea quien={quien} />
       <AvisoBusquedaVentana indice={indice} ubic={ubic} />
+      <AvisoMensajesLinea />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
@@ -36597,6 +36665,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             </div>
           </div>
         ) : (ultimo && pintaUltimo(ultimo, "mt-3"))}
+        {puestoId === "cristales" && bloqCris && (
+          <div className="mt-3 border-2 border-rose-500 bg-rose-50 rounded-lg p-3">
+            <div className="text-sm font-bold text-rose-800 mb-2">{bloqCris.pos} está bloqueada. Si es urgente, puedes acristalarla igual.</div>
+            <button type="button" onClick={() => { forzar.current = bloqCris.cod; procesar(bloqCris.cod); }} className="px-4 py-2 rounded-md bg-rose-700 text-white text-sm font-extrabold">🚨 URGENTE: acristalar igual</button>
+            <button type="button" onClick={() => setBloqCris(null)} className="ml-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-600 text-sm font-semibold">Cancelar</button>
+          </div>
+        )}
         {ficha && <FichaVentanaLinea admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
