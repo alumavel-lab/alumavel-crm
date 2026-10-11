@@ -31542,7 +31542,7 @@ function agruparEtiquetasFab(paginas) {
     }
     const id = `${fab}|${r[2]}|${posV}`;
     let v = lote.ventanas.get(id);
-    if (!v) { v = { id, pos: posV, num: r[2], color: col ? `${col[1]} ${col[2]}` : "", grupo, cliente, piezas: [] }; lote.ventanas.set(id, v); }
+    if (!v) { v = { id, orden: lote.ventanas.size, pos: posV, num: r[2], color: col ? `${col[1]} ${col[2]}` : "", grupo, cliente, piezas: [] }; lote.ventanas.set(id, v); }
     v.piezas.push({ c: b[1], t: tipo });
     etiquetas++;
   });
@@ -31625,7 +31625,7 @@ function agruparEtiquetasModelo(paginas) {
       if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
       const a = med ? mm(med[1]) : null, h = med ? mm(med[2]) : null;
       const medidaTxt = a && h ? `${a} x ${h}` : "";
-      lote.ventanas.set(id, { id, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: medidaTxt, modelo: true, hojas: hojasSugeridas({ medida: medidaTxt }), hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
+      lote.ventanas.set(id, { id, orden: lote.ventanas.size, pos: tip, num: exp, color: "", grupo: [exp, planta].filter(Boolean).join(" "), cliente: nombre, medida: medidaTxt, modelo: true, hojas: hojasSugeridas({ medida: medidaTxt }), hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
       etiquetas++;
     });
   });
@@ -31691,7 +31691,7 @@ function agruparCargaMaterial(paginas) {
         const id = posN > 0 ? `${fab}|${exp}|P${posN}` : `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
         let lote = lotes.get(fab);
         if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
-        lote.ventanas.set(id, { id, pos: posN > 0 ? `Pos ${posN}` : uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
+        lote.ventanas.set(id, { id, orden: lote.ventanas.size, pos: posN > 0 ? `Pos ${posN}` : uds > 1 ? `${tip} ${u}/${uds}` : tip, tipo: tip, num: numero, color, grupo: mE ? [exp, planta].filter(Boolean).join(" ") : (ref || exp), cliente, medida: medidaTxt, modelo: true, hojas: hojasCarga, hojasV: 2, piezas: [{ c: code, t: "Ventana" }] });
         etiquetas++;
       }
     });
@@ -35318,8 +35318,11 @@ function anunciarFinImpresion(texto, cuantas) {
     }
   } catch (e) { /* sin aviso */ }
 }
+let _secImpresionActiva = null; // tanda de pegatinas en marcha (si se lanza otra, la anterior se cancela: si no, su pegatina se imprimía junto con la nueva)
 function imprimirSecuencia(htmls, opc = null, finTxt = "") {
   const PAUSA_MS = 4000;
+  try { if (_secImpresionActiva) _secImpresionActiva(); } catch (e) { /* nada */ }
+  try { document.querySelectorAll("#pegatina-print").forEach((e) => e.remove()); } catch (e) { /* nada */ }
   const modoPistola = !!(opc && opc.leidas && Array.isArray(opc.codigos));
   // el botón pulsado conserva el foco: la pistola escribe el código + Enter y ese Enter volvería a pulsarlo (imprimiría otra pegatina)
   try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* nada */ }
@@ -35348,6 +35351,8 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
   // el cursor tiene que estar en el campo de la pistola, si no la lectura se pierde
   const enfocarLector = () => { try { const el = document.querySelector('input[placeholder^="Pasa la pistola por la etiqueta"]'); if (el && document.activeElement !== el) el.focus(); } catch (e) { /* nada */ } };
   const limpiar = () => { try { estilo.remove(); cont.remove(); caja.remove(); } catch (e) { /* nada */ } };
+  const abortar = () => { parar = true; limpiar(); };
+  _secImpresionActiva = abortar;
   (async () => {
     let hechas = 0;
     for (let i = 0; i < htmls.length && !parar; i++) {
@@ -35360,6 +35365,8 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
         estilo.textContent = `${pagina}\n#pegatina-print{display:none}\n@media print{ body > *:not(#pegatina-print){display:none !important} #pegatina-print{display:block !important} ${resto} }`;
         cont.innerHTML = doc.body.innerHTML;
         await espera(400);
+        if (parar) break;
+        document.querySelectorAll("#pegatina-print").forEach((e) => { if (e !== cont) e.remove(); });
         // espera a que el navegador termine el trabajo anterior (si se llama a print() con otro en curso, lo ignora)
         await new Promise((res) => {
           let fin = false;
@@ -35386,6 +35393,7 @@ function imprimirSecuencia(htmls, opc = null, finTxt = "") {
     }
     txt.textContent = parar ? `Parado: ${hechas} de ${htmls.length} enviadas` : `Listo: ${hechas} pegatina${hechas === 1 ? "" : "s"} enviada${hechas === 1 ? "" : "s"}`;
     if (!parar && hechas > 0) anunciarFinImpresion(finTxt || "las pegatinas", hechas);
+    if (_secImpresionActiva === abortar) _secImpresionActiva = null;
     btn.textContent = "Cerrar";
     btn.onclick = limpiar;
     cont.innerHTML = "";
@@ -35477,7 +35485,14 @@ function PegatinasSoldadora({ indice, escaneos }) {
   const totalPiezas = (x) => (x.v.modelo ? 1 + hojasDe(x.v, hojasOv) : 1);
   const completa = (x) => (leidasPor.get(x.v.id) || 0) >= totalPiezas(x);
   const obra = obras.find((o) => o.dueno.key === obraKey) || null;
-  const lista = obra ? [...obra.ventanas.values()].sort((a, b) => String(a.v.pos).localeCompare(String(b.v.pos), "es", { numeric: true })) : [];
+  // Orden del PDF: cada ventana guarda su posición de lectura ("orden"). Los PDF subidos antes de este cambio no la tienen: en ese caso se queda el orden por nombre.
+  const sinOrden = obra ? [...obra.ventanas.values()].some((x) => typeof x.v.orden !== "number") : false;
+  const lista = obra ? (() => {
+    const xs = [...obra.ventanas.values()];
+    if (sinOrden) return xs.sort((a, b) => String(a.v.pos).localeCompare(String(b.v.pos), "es", { numeric: true }));
+    const rl = new Map(); xs.forEach((x) => { if (!rl.has(x.lote)) rl.set(x.lote, rl.size); });
+    return xs.sort((a, b) => (rl.get(a.lote) - rl.get(b.lote)) || (a.v.orden - b.v.orden));
+  })() : [];
   const faltan = lista.filter((x) => !completa(x));
   const medidaOk = mm.a >= 40 && mm.h >= 20;
   return (
@@ -35578,13 +35593,14 @@ function PegatinasSoldadora({ indice, escaneos }) {
       {obras.length === 0 && <p className="text-sm text-slate-400">No hay ninguna obra con PDF de etiquetas subido. Súbelo en el proyecto o en Almacén ventanas.</p>}
       {obra && (
         <>
+          {sinOrden && <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">Esta obra se subió antes de que el CRM guardara el orden del PDF, así que sale ordenada por nombre. Para que salga en el orden del PDF, vuelve a subir el PDF de etiquetas (no se pierde nada de lo ya leído: los códigos son los mismos).</p>}
           <div className="flex flex-wrap gap-2 mb-3">
             <button disabled={!medidaOk || !lista.length} onClick={() => impQue([faltan[0] || lista[0]], false)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Imprimir 1 de prueba</button>
             <button disabled={!medidaOk || !codsQue(lista, true).length} onClick={() => impQue(lista, true)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir lo que falta por leer ({codsQue(lista, true).length})</button>
             <button disabled={!medidaOk || !codsQue(lista, false).length} onClick={() => impQue(lista, false)} className="px-3 py-2 rounded-md text-sm font-semibold border border-slate-300 text-slate-700 disabled:opacity-40">Imprimir todas ({codsQue(lista, false).length})</button>
           </div>
           <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-80 overflow-y-auto">
-            {agruparPorVivienda(lista.map((x) => x.v)).map((g) => {
+            {(sinOrden ? agruparPorVivienda(lista.map((x) => x.v)) : (() => { const m = new Map(); lista.forEach((x) => { const k = x.v.grupo || "Sin vivienda"; if (!m.has(k)) m.set(k, { grupo: k, cliente: x.v.cliente || "", ventanas: [] }); m.get(k).ventanas.push(x.v); }); return [...m.values()]; })()).map((g) => {
               const xs = lista.filter((x) => (x.v.grupo || "Sin vivienda") === g.grupo);
               return (
                 <div key={g.grupo}>
