@@ -6786,6 +6786,52 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
 // PDF de etiquetas de fabricación (una por perfil) de la obra: sirve para que la pistola
 // reconozca a qué ventana pertenece cada etiqueta en el Almacén de ventanas.
 // Vista previa del "Expediente rápido" (avisos, comprobación de almacenes, color por presupuesto y lista de ventanas). La usan el botón de las obras/Uxcar y el Almacén de ventanas (Línea pistola).
+// Cristales que el Expediente rápido no encuentra (p. ej. porque el caballete se metió a mano, solo con texto y sin medidas):
+// se listan con su medida y, cuando los encuentres, eliges en un desplegable a qué caballete asignarlos. Se dan de alta ahí con
+// la medida del listado de vidrios. El programa NO puede verificar que estén físicamente ahí: lo confirmas tú.
+function altaCristalEnCaballete(q, cabId) {
+  const todos = toArray(almacenRapido.cristales);
+  const cab = todos.find((c) => c.id === cabId);
+  if (!cab || !almacenRapido.saveCristales) return false;
+  const ancho = parseFloat(q.ancho) || 0, alto = parseFloat(q.alto) || 0;
+  const pieza = { ref: String(q.modelo || "").trim(), expediente: digitosExp(q.exp)[0] || String(q.exp || "").trim(), ancho, alto, cantidad: parseFloat(q.uds) || 1,
+    m2: Math.round((ancho * alto) / 1000) / 1000, pedido: String(cab.secuencia || "").trim(), origen: "asignado a mano desde Expediente rápido" };
+  const next = todos.map((c) => (c.id === cabId ? { ...c, piezas: [...toArray(c.piezas), pieza] } : c));
+  almacenRapido.saveCristales(next);
+  almacenRapido.cristales = next; // para que la nueva comprobación ya vea la línea (el estado de la app se refresca después)
+  return true;
+}
+function FaltantesAsignar({ faltan, onCambio }) {
+  const cabs = toArray(almacenRapido.cristales).filter((c) => c.lote);
+  const lista = toArray(faltan);
+  if (!lista.length) return null;
+  const asignar = (q, cabId) => {
+    const cab = cabs.find((c) => c.id === cabId);
+    if (!cab) return;
+    if (!window.confirm(`¿Asignar ${q.uds} × ${q.modelo} (${q.ancho} × ${q.alto}) al caballete ${cab.lote}?\n\nTú confirmas que está ahí: el programa no puede comprobarlo.\nSi ese caballete lleva más cristales sin apuntar, el mapa lo dará por VACÍO cuando salgan estos.`)) return;
+    if (altaCristalEnCaballete(q, cabId) && onCambio) onCambio();
+  };
+  return (
+    <div className="mt-1 p-2 rounded-md bg-white border border-amber-200 space-y-1">
+      <div className="text-xs font-semibold text-slate-700">Cristales sin encontrar ({lista.reduce((a, q) => a + (parseFloat(q.uds) || 0), 0)}). Cuando los encuentres, asígnalos a su caballete:</div>
+      {lista.map((q, i) => {
+        const expsQ = digitosExp(q.exp);
+        const ordenadas = [...cabs].sort((a, b) => Number(numsExpediente(b.expediente).some((n) => expsQ.includes(n))) - Number(numsExpediente(a.expediente).some((n) => expsQ.includes(n))));
+        return (
+          <div key={`${q.fab}-${q.ppto}-${q.modelo}-${q.ancho}-${q.alto}-${i}`} className="flex flex-wrap items-center gap-2 text-xs border-t border-slate-100 pt-1">
+            <span className="font-mono-num font-bold text-slate-900">{q.ancho} × {q.alto}</span>
+            <span>× {q.uds}</span>
+            <span className="text-slate-600">{q.modelo} · pres. {pptoBonito(q.ppto)} · exp. {q.exp}</span>
+            <select value="" onChange={(e) => { if (e.target.value) asignar(q, e.target.value); }} className="ml-auto text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-lg px-2 py-1 bg-white max-w-[260px]">
+              <option value="">Asignar al caballete…</option>
+              {ordenadas.map((c) => <option key={c.id} value={c.id}>{c.lote} · {c.expediente || "sin exp."}{c.ubicacion ? ` · ${ubicacionTexto(c.ubicacion)}` : ""}</option>)}
+            </select>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function PanelRapido({ rap, setRap }) {
   return (
     <>
@@ -6809,6 +6855,7 @@ function PanelRapido({ rap, setRap }) {
               {rap.chk.faltan.map((a, i) => <div key={i}>• {a}</div>)}
             </details>
           )}
+          {toArray(rap.chk.restCr).length > 0 && <FaltantesAsignar faltan={rap.chk.restCr} onCambio={() => setRap({ ...rap, chk: comprobarAlmacenRapido(rap.r) })} />}
           {rap.chk.yaSacados.length > 0 && <div className="text-xs text-slate-700">Lote {rap.chk.yaSacados.join(", ")}: ya se sacó del almacén en una subida anterior; no se vuelve a descontar.</div>}
         </div>
       )}
@@ -32355,6 +32402,17 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
   const [verEsp, setVerEsp] = useState(true);
   const nCrist = (c) => toArray((c || {}).cristales).reduce((a, x) => a + (parseFloat(x.n) || 0), 0);
   const nPend = rapidos.filter((x) => x.l.control && x.l.control.pendiente).length;
+  const [, setTickFaltantes] = useState(0);
+  // Cristales que aún no se encuentran de un lote pendiente (solo mira, no saca nada). Se quita un momento el lote de "ya sacados" para que se vuelva a comprobar.
+  const faltantesDeLote = (x) => {
+    const c = x.l.control; if (!c || !c.pendiente) return [];
+    const previo = almacenRapido.controlPrevio;
+    const tenia = previo && previo.has(x.l.fab) ? previo.get(x.l.fab) : null;
+    if (previo) previo.delete(x.l.fab);
+    try {
+      return toArray(comprobarAlmacenRapido({ lotes: [x.l], cristalesReq: toArray(c.req && c.req.cristales), persianasReq: [] }).restCr);
+    } finally { if (previo && tenia) previo.set(x.l.fab, tenia); }
+  };
   const sacarPendiente = (x) => {
     const c = x.l.control; if (!c || !c.pendiente) return;
     if (almacenRapido.controlPrevio) almacenRapido.controlPrevio.delete(x.l.fab); // el lote estaba a medias: se vuelve a mirar solo lo que faltaba
@@ -32409,8 +32467,9 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                 <table className="text-xs w-full">
                   <thead><tr className="text-left text-slate-500"><th className="pr-2">Fecha</th><th className="pr-2">Lote</th><th className="pr-2">Exp.</th><th className="pr-2">Destino</th><th className="pr-2">Ventanas</th><th className="pr-2">Cristales sacados</th><th className="pr-2">Persianas</th><th className="pr-2">Quién</th><th className="pr-2">Archivos</th><th></th></tr></thead>
                   <tbody>
-                    {rapidos.map((x) => { const c = x.l.control; return (
-                      <tr key={x.l.fab} className="border-t border-orange-200 align-top">
+                    {rapidos.map((x) => { const c = x.l.control; const falt = c && c.pendiente ? faltantesDeLote(x) : []; return (
+                      <React.Fragment key={x.l.fab}>
+                      <tr className="border-t border-orange-200 align-top">
                         <td className="pr-2 whitespace-nowrap">{(c && c.fecha) || x.l.fecha}</td>
                         <td className="pr-2 font-semibold">{x.l.fab}{x.l.parte ? ` (${x.l.parte}ª)` : ""}</td>
                         <td className="pr-2">{x.l.expediente}</td>
@@ -32426,7 +32485,11 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                           <button onClick={() => imprimirPegatinasExpediente([x.l])} className="text-sky-700 hover:underline mr-2">Pegatinas</button>
                           <button onClick={() => deshacerRapido(x)} className="text-rose-700 hover:underline">Deshacer</button>
                         </td>
-                      </tr>); })}
+                      </tr>
+                      {falt.length > 0 && (
+                        <tr><td colSpan={10} className="pb-2"><FaltantesAsignar faltan={falt} onCambio={() => setTickFaltantes((n) => n + 1)} /></td></tr>
+                      )}
+                      </React.Fragment>); })}
                   </tbody>
                 </table>
               </div>
