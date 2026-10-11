@@ -14932,9 +14932,12 @@ const TIPOS_CARRO_PERSIANA = {
 const ALMACEN_PRINCIPAL_ID = "principal";
 const ALMACEN_PERSIANAS_PRINCIPAL = { id: ALMACEN_PRINCIPAL_ID, nombre: "Almacén de persianas", ubicacion: "", tipo: "persiana", recepcion: true };
 const almacenDe = (x) => (x && x.almacenId) || ALMACEN_PRINCIPAL_ID;
+// Tipos de almacén: "persiana" (estantes), "mosquitera" y "auxiliar" (carros verticales) y "otro" (lo nombra el usuario, también verticales)
+const esAlmVertical = (a) => !!a && !!a.tipo && a.tipo !== "persiana";
+const tipoAlmEtiqueta = (a) => (!a || !a.tipo || a.tipo === "persiana" ? "Persianas" : a.tipo === "mosquitera" ? "Mosquiteras" : a.tipo === "auxiliar" ? "Auxiliares (guías, solapes…)" : (a.tipoNombre || "Otro"));
 const TIPOS_CARRO_DE_ALMACEN = { persiana: ["gris", "amarillo"], mosquitera: ["vertical"] };
 function almacenRecepcionPersianas(almacenes) {
-  const l = (almacenes || []).filter((a) => a.tipo !== "mosquitera");
+  const l = (almacenes || []).filter((a) => !esAlmVertical(a));
   return (l.find((a) => a.recepcion) || l[0] || ALMACEN_PERSIANAS_PRINCIPAL).id;
 }
 function carrosNuevosAlmacen(almacenId, cuantos) {
@@ -15408,17 +15411,17 @@ function AlmacenPersianas() {
     if (almacenes.some((a) => a.id !== (form.modo === "editar" ? almacen.id : "") && a.nombre.trim().toLowerCase() === nombre.toLowerCase())) { alert("Ya hay un almacén con ese nombre."); return; }
     if (form.modo === "editar") {
       guardarAlmacenes(almacenes.map((a) => {
-        if (a.id === almacen.id) return { ...a, nombre, ubicacion: form.ubicacion, recepcion: a.tipo !== "mosquitera" && !!form.recepcion };
-        return form.recepcion && almacen.tipo !== "mosquitera" ? { ...a, recepcion: false } : a;
+        if (a.id === almacen.id) return { ...a, nombre, ubicacion: form.ubicacion, recepcion: !esAlmVertical(a) && !!form.recepcion };
+        return form.recepcion && !esAlmVertical(almacen) ? { ...a, recepcion: false } : a;
       }));
       setForm(null);
       return;
     }
     const id = uid();
-    const nuevo = { id, nombre, ubicacion: form.ubicacion, tipo: form.tipo, recepcion: false, creado: new Date().toISOString().slice(0, 10) };
+    const nuevo = { id, nombre, ubicacion: form.ubicacion, tipo: form.tipo, ...(form.tipo === "otro" ? { tipoNombre: String(form.tipoNombre || "").trim() || nombre } : {}), recepcion: false, creado: new Date().toISOString().slice(0, 10) };
     const carrosNuevos = form.modo === "duplicar"
       ? carros.map((c) => ({ ...c, id: uid(), almacenId: id, movido: false, notaSitio: "" }))
-      : carrosNuevosAlmacen(id, form.tipo === "mosquitera" ? [["vertical", form.nVertical, form.capacidad]] : [["gris", form.nLargo], ["amarillo", form.nCorto]]);
+      : carrosNuevosAlmacen(id, form.tipo !== "persiana" ? [["vertical", form.nVertical, form.capacidad]] : [["gris", form.nLargo], ["amarillo", form.nCorto]]);
     guardarAlmacenes([...almacenes, nuevo]);
     if (carrosNuevos.length) saveCarros([...todosCarros, ...carrosNuevos]);
     setSelId(id);
@@ -15446,7 +15449,7 @@ function AlmacenPersianas() {
           <button key={a.id} onClick={() => setSelId(a.id)}
             className={`text-left px-3 py-1.5 rounded-lg border-2 text-sm ${a.id === almacen.id ? "border-[#2E8B57] bg-[#EEF7E4]" : "border-slate-200 hover:border-slate-300"}`}>
             <div className="font-semibold text-slate-800">{a.nombre}</div>
-            <div className="text-[11px] text-slate-500">{a.tipo === "mosquitera" ? "Mosquiteras" : "Persianas"}{a.ubicacion ? ` · ${a.ubicacion}` : ""} · {cuenta(a)} dentro{almacenRecepcionPersianas(almacenes) === a.id ? " · recibe pedidos" : ""}</div>
+            <div className="text-[11px] text-slate-500">{tipoAlmEtiqueta(a)}{a.ubicacion ? ` · ${a.ubicacion}` : ""} · {cuenta(a)} dentro{almacenRecepcionPersianas(almacenes) === a.id ? " · recibe pedidos" : ""}</div>
           </button>
         ))}
         <div className="ml-auto flex flex-wrap gap-2">
@@ -15506,12 +15509,15 @@ function AlmacenPersianas() {
                     <Select value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
                       <option value="persiana">Persianas (carros con estantes)</option>
                       <option value="mosquitera">Mosquiteras (carros verticales)</option>
+                      <option value="auxiliar">Auxiliares: guías, solapes, inversores… (carros verticales)</option>
+                      <option value="otro">Otro: lo nombro yo (carros verticales)</option>
                     </Select>
                   </Field>
-                  {form.tipo === "mosquitera" ? (
+                  {form.tipo === "otro" && <Field label="Cómo se llama lo que se guarda"><TextInput value={form.tipoNombre || ""} onChange={(e) => setForm({ ...form, tipoNombre: e.target.value })} placeholder="Ej: Perfiles de mosquitera" /></Field>}
+                  {form.tipo !== "persiana" ? (
                     <div className="grid grid-cols-2 gap-2">
                       <Field label="Carros verticales">{num("nVertical")}</Field>
-                      <Field label="Mosquiteras por lado">{num("capacidad")}</Field>
+                      <Field label="Piezas por lado">{num("capacidad")}</Field>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">
@@ -15522,7 +15528,7 @@ function AlmacenPersianas() {
                   <p className="text-[11px] text-slate-400">Luego puedes añadir o quitar carros y cambiar cada uno desde el mapa.</p>
                 </>
               )}
-              {form.modo === "editar" && almacen.tipo !== "mosquitera" && (
+              {form.modo === "editar" && !esAlmVertical(almacen) && (
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={!!form.recepcion} onChange={(e) => setForm({ ...form, recepcion: e.target.checked })} />
                   Aquí entran las persianas al recibir pedidos
@@ -15559,9 +15565,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setCarroAbierto(null);
     setAviso(colocadas === xs.length ? `EXP ${exp}: ${xs.length} piezas pasadas a ${dest.nombre} y colocadas.` : `EXP ${exp}: pasadas a ${dest.nombre}; ${xs.length - colocadas} no caben y están en "Sin sitio" de ese almacén.`);
   };
-  const esMosq = almacen.tipo === "mosquitera";
-  const cosa = esMosq ? "mosquiteras" : "persianas";
-  const Cosa = esMosq ? "Mosquiteras" : "Persianas";
+  const esMosq = esAlmVertical(almacen);
+  const cosa = !esMosq ? "persianas" : almacen.tipo === "mosquitera" ? "mosquiteras" : almacen.tipo === "auxiliar" ? "auxiliares" : String(almacen.tipoNombre || "piezas").toLowerCase();
+  const Cosa = cosa.charAt(0).toUpperCase() + cosa.slice(1);
   const tiposAqui = TIPOS_CARRO_DE_ALMACEN[esMosq ? "mosquitera" : "persiana"];
   const dondeTxt = (e) => (variosAlmacenes ? `${almacen.nombre} · ` : "") + textoEstante(e);
   const [vista, setVista] = useState("mapa");
@@ -15996,7 +16002,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 </Select>
               </Field>
               {TIPOS_CARRO_PERSIANA[carroSel.tipo]?.porUds ? (
-                <Field label="Mosquiteras por lado">
+                <Field label="Piezas por lado">
                   <TextInput type="number" value={carroSel.capacidad ?? TIPOS_CARRO_PERSIANA[carroSel.tipo].capacidadDefecto} onChange={(e) => actualizarCarro(carroSel.numero, { capacidad: parseInt(e.target.value, 10) || 1 })} />
                 </Field>
               ) : (<>
@@ -37270,7 +37276,7 @@ function PreparacionProximoDia({ config, onSaveConfig, puestos, cristales = [], 
         <select value={esOtro ? "__otro" : val} onChange={(e) => { const v = e.target.value; if (v === "__otro") { setOtro({ ...otro, [mat]: true }); return; } setOtro({ ...otro, [mat]: false }); guardarDestino(mat, v); }}
           className="border border-slate-300 rounded-md px-2 py-1.5 text-sm min-w-[220px]">
           <option value="">— Sin definir —</option>
-          {mat === "persianas" && <optgroup label="Almacenes de persianas">{almacenes.filter((a) => a.tipo !== "mosquitera").map((a) => <option key={a.id} value={`alm:${a.id}`}>{a.nombre}{a.ubicacion ? ` (${a.ubicacion})` : ""}</option>)}</optgroup>}
+          {mat === "persianas" && <optgroup label="Almacenes de persianas">{almacenes.filter((a) => !esAlmVertical(a)).map((a) => <option key={a.id} value={`alm:${a.id}`}>{a.nombre}{a.ubicacion ? ` (${a.ubicacion})` : ""}</option>)}</optgroup>}
           {mat === "ventanas" && <optgroup label="Almacenes de caballetes">{almCab.map((a) => <option key={a.id} value={`cab:${a.id}`}>{a.nombre}{a.ciudad ? ` (${a.ciudad})` : ""}</option>)}</optgroup>}
           {toArray(puestos).length > 0 && <optgroup label="Puestos de trabajo">{toArray(puestos).map((p) => <option key={p.id || p.nombre} value={`txt:${p.nombre}`}>{p.nombre}</option>)}</optgroup>}
           <option value="__otro">Otro sitio (escribirlo)…</option>
@@ -40987,7 +40993,16 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cfgRaw = useObjetoFb("auxiliaresConfig");
   const hojas = useObjetoFb("auxiliaresHojas");
   const est = useObjetoFb("auxiliaresPiezas");
-  const cfg = useMemo(() => auxCfgDe(cfgRaw), [cfgRaw]);
+  const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
+  const almsAux = toArray(ctxAux.almacenesPersianas).filter((a) => a && a.tipo === "auxiliar");
+  const carrosAlm = toArray(ctxAux.carrosPersianas);
+  // Si existe algún almacén de tipo «Auxiliares» (creado en Fábrica → almacén de persianas), sus carros SON los carros de auxiliares
+  const cfg = useMemo(() => {
+    const base = auxCfgDe(cfgRaw);
+    const delAlmacen = [];
+    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20) })));
+    return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
+  }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
   const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas), [hojas, cfg, ventanas]);
   const [orden, setOrden] = useState("ventana");
@@ -41001,6 +41016,19 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [obraComp, setObraComp] = useState(""); // presupuesto que se está comprobando ("" = cerrado)
   const [codComp, setCodComp] = useState("");
   const archivoRef = useRef(null);
+  // Dónde está la persiana de la misma ventana/vivienda en el almacén de persianas (mismo cruce que usa el puesto de persiana)
+  const itemsPers = toArray(ctxAux.persianasAlmacen);
+  const nombreAlmP = (id) => (toArray(ctxAux.almacenesPersianas).find((a) => a.id === id) || {}).nombre || "";
+  const persianaDe = (e) => {
+    const x = ventanas.find((w) => (digitosPresu(w.v.num) === String(e.ppto) || digitosPresu(w.dueno.presupuesto) === String(e.ppto) || (w.v.corte && String(w.v.corte.presupuesto) === String(e.ppto))) && String(w.v.pos || "") === String(e.ventanaPos || "") && String(w.v.grupo || "") === String(e.grupo || ""));
+    if (!x) return { estado: "sinventana" };
+    const d = datosVentanaLinea({ ventana: x.v, lote: x.lote });
+    if (!d.exp) return { estado: "sinventana" };
+    const p = itemsPers.find((y) => !y.entregada && !y.colocadaVentana && y.estante && numsExpediente(y.expediente).includes(d.exp) && d.casa(y.ref));
+    if (!p) return { estado: "sinpersiana" };
+    return { estado: "ok", item: p, donde: `${nombreAlmP(almacenDe(p))} · ${textoEstante(p.estante)}` };
+  };
+  const dejada = (id, donde) => guardarLinea(`auxiliaresPiezas/${id}/dejada`, donde === null ? null : { at: Date.now(), por: quien || "", donde });
   const refDe = (ref) => cfg.refs.find((r) => String(r.ref).trim() === String(ref).trim());
   const q = filtro.trim().toLowerCase();
   const coincide = (p) => !q || [p.ventanaPos, p.grupo, p.cliente, p.obra, p.nombre, p.ref, p.ppto, pptoBonito(p.ppto), p.modelo, p.cod, auxMed(p.lCorte)].join(" ").toLowerCase().includes(q);
@@ -41200,6 +41228,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   {admin && <button type="button" onClick={() => deshacer(e)} className="text-xs text-rose-600 hover:underline">Deshacer</button>}
                 </span>
               </div>
+              {lista && pasos.length > 0 && (() => {
+                const d = persianaDe(e);
+                if (e.dejada) return <div className="mt-1 text-sm text-emerald-700">✓ Dejada junto a su persiana: {e.dejada.donde} {e.dejada.por ? `(${e.dejada.por})` : ""} <button type="button" onClick={() => dejada(e.id, null)} className="text-xs text-slate-500 hover:underline ml-2">deshacer</button></div>;
+                return (
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                    {d.estado === "ok"
+                      ? <><span className="px-2 py-1 rounded-md bg-violet-50 border border-violet-200 text-violet-900 font-bold">LLÉVALA A: {d.donde}</span><button type="button" onClick={() => dejada(e.id, d.donde)} className="text-xs font-semibold px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-800 hover:bg-emerald-50">Ya la he dejado</button></>
+                      : <span className="text-amber-800 text-xs">{d.estado === "sinpersiana" ? "No encuentro la persiana de esta ventana en el almacén de persianas (¿ya está recibida y con sitio? ¿coincide la vivienda?). Déjala en su carro de auxiliares." : "No sé de qué ventana es para buscar su persiana."}</span>}
+                  </div>
+                );
+              })()}
               {(pasos.length > 0 || conBocado) && (
                 <div className="mt-1 flex flex-wrap items-center gap-4 text-sm text-slate-700">
                   {pasos.map((n) => (
@@ -41217,7 +41256,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             </div>
           );
         })}
-        <div className="mt-3 text-xs text-slate-400">Las guías terminadas siguen en su carro de auxiliares. El paso al almacén de persianas (junto a su persiana) aún no está hecho.</div>
+        <div className="mt-3 text-xs text-slate-400">Cuando felpudo y bocado están hechos, el CRM busca la persiana de esa ventana (mismo expediente y vivienda) en el almacén de persianas y te dice dónde dejar la guía.</div>
       </div>
     </div>
   );
