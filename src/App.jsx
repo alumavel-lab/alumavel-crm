@@ -32029,7 +32029,7 @@ function crearExpedienteRapido(listados, cortes) {
             pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
             grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
             modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }], conPersiana: !!(c.persianaTexto && !esEsp),
-            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: false, mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
+            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
             rapido: { pagina: c.pagina, ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
           });
         });
@@ -34919,15 +34919,30 @@ async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = nu
   const ocupados = new Set(Object.values(ubicLocal || {}).filter((u) => u && u.zonaId === zona.id).map((u) => `${u.hueco}_${u.slot || 1}`));
   const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
   const claveprev = prev && prev.zonaId ? `${prev.zonaId}/${prev.hueco}_${prev.slot || 1}` : "";
-  for (let h = desde; h <= max; h++) {
-    for (let sl = 1; sl <= cap; sl++) {
-      const k = `${h}_${sl}`;
-      if (ocupados.has(k) && claveprev !== `${zona.id}/${k}`) continue;
-      const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${k}`), (cur) => (cur ? undefined : cod));
-      if (!r.committed) continue;
-      if (claveprev && claveprev !== `${zona.id}/${k}`) await runTransaction(ref(fbDb, `ocupacionLinea/${claveprev}`), (cur) => (cur === cod ? null : undefined));
-      await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: h, slot: sl, ts: Date.now(), por: por || "" });
-      return { hueco: h, slot: sl, cap };
+  // Huecos con varios sitios (las hojas): las dos hojas de UNA ventana van juntas en el mismo hueco; una ventana de una hoja ocupa su hueco ella sola.
+  // Orden: 1) el hueco donde ya está su otra hoja, 2) un hueco vacío, 3) (último recurso, si no queda ninguno) cualquier sitio libre aunque se mezcle con otra ventana.
+  const ventanaDe = (c) => String(c).slice(1);
+  const mia = ventanaDe(cod);
+  const todos = []; for (let h = desde; h <= max; h++) todos.push(h);
+  let pasadas = [todos];
+  if (cap > 1) {
+    const porHueco = new Map();
+    Object.entries(ubicLocal || {}).forEach(([c, u]) => { if (u && u.zonaId === zona.id && String(c) !== String(cod)) { const set = porHueco.get(u.hueco) || new Set(); set.add(ventanaDe(c)); porHueco.set(u.hueco, set); } });
+    const conHermana = todos.filter((h) => { const o = porHueco.get(h); return o && o.has(mia) && o.size === 1; });
+    const vacios = todos.filter((h) => !porHueco.get(h));
+    pasadas = [conHermana, vacios, todos];
+  }
+  for (const huecos of pasadas) {
+    for (const h of huecos) {
+      for (let sl = 1; sl <= cap; sl++) {
+        const k = `${h}_${sl}`;
+        if (ocupados.has(k) && claveprev !== `${zona.id}/${k}`) continue;
+        const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${k}`), (cur) => (cur ? undefined : cod));
+        if (!r.committed) continue;
+        if (claveprev && claveprev !== `${zona.id}/${k}`) await runTransaction(ref(fbDb, `ocupacionLinea/${claveprev}`), (cur) => (cur === cod ? null : undefined));
+        await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: h, slot: sl, ts: Date.now(), por: por || "" });
+        return { hueco: h, slot: sl, cap };
+      }
     }
   }
   return null;
@@ -36017,7 +36032,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
           <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
-          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{v.corte.persiana === true ? "con persiana" : v.corte.persiana === false ? "SIN persiana" : "persiana sin definir"} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
+          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{(() => { const sp = sinPersianaAuto(v); return sp === false ? "con persiana" : sp === true ? "SIN persiana" : "persiana sin definir"; })()} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
           <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
         </div>
