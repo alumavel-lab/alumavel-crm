@@ -3489,6 +3489,8 @@ export default function App() {
   const borrarLoteSinObra = (fab) => fbSet(ref(fbDb, `etiquetasFabSinObra/f${fab}`), null);
   // Lotes de Expediente rápido que ya sacaron cristales/persianas de los almacenes (para no descontar dos veces al volver a subirlos)
   almacenRapido.controlPrevio = new Map([...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].filter((l) => l && l.control && (!l.control.pendiente || toArray(l.control.cristales).length || toArray(l.control.persianas).length)).map((l) => [l.fab, l.control]));
+  // Lotes de Expediente rápido guardados con cristales pendientes: sirven para ofrecer, dentro de cada caballete, los que aún no se han encontrado
+  almacenRapido.lotesPendientes = [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].filter((l) => l && l.rapido && l.control && l.control.pendiente && toArray(l.control.req && l.control.req.cristales).length);
 
   // Cuando un presupuesto que lleva persianas de la calculadora se firma, el CRM crea
   // solo el proyecto y deja los pedidos de material de las persianas "En espera" (para
@@ -6800,6 +6802,18 @@ function altaCristalEnCaballete(q, cabId) {
   almacenRapido.saveCristales(next);
   almacenRapido.cristales = next; // para que la nueva comprobación ya vea la línea (el estado de la app se refresca después)
   return true;
+}
+// Cristales que aún no se han encontrado de todos los lotes de Expediente rápido guardados como pendientes (solo mira, no saca nada)
+function cristalesPendientesDeLotes() {
+  const previo = almacenRapido.controlPrevio;
+  const out = [];
+  toArray(almacenRapido.lotesPendientes).forEach((l) => {
+    const tenia = previo && previo.has(l.fab) ? previo.get(l.fab) : null;
+    if (previo) previo.delete(l.fab); // se vuelve a comprobar solo lo que faltaba
+    try { out.push(...toArray(comprobarAlmacenRapido({ lotes: [l], cristalesReq: toArray(l.control.req && l.control.req.cristales), persianasReq: [] }).restCr)); }
+    finally { if (previo && tenia) previo.set(l.fab, tenia); }
+  });
+  return out;
 }
 function FaltantesAsignar({ faltan, onCambio }) {
   const cabs = toArray(almacenRapido.cristales).filter((c) => c.lote);
@@ -13832,6 +13846,39 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
     if (!window.confirm(`Se crearán ${nuevas.length} líneas (${nuevas.reduce((a, x) => a + x.cantidad, 0)} cristales) en este caballete. Si el texto repite medidas, revisa y borra las que sobren. ¿Crear?`)) return;
     onUpdate(cristal.id, { piezas: nuevas, cantidad: nuevas.reduce((a, x) => a + x.cantidad, 0) });
   };
+  // Cristales sin encontrar de lotes de Expediente rápido guardados como pendientes, de los expedientes de ESTE caballete:
+  // se pueden añadir aquí con un clic, con la medida del listado de vidrios.
+  const expsCab = numsExpediente(cristal.expediente);
+  const candidatos = cristalesPendientesDeLotes().filter((q) => !expsCab.length || digitosExp(q.exp).some((e) => expsCab.includes(e)));
+  const sinMedidasEnTexto = piezas.length === 0 && desdeTexto.length === 0;
+  const anadirPendiente = (q) => {
+    if (!window.confirm(`¿Añadir ${q.uds} × ${q.modelo} (${q.ancho} × ${q.alto}) al caballete ${cristal.lote || ""}?\n\nTú confirmas que está ahí: el programa no puede comprobarlo.`)) return;
+    altaCristalEnCaballete(q, cristal.id);
+  };
+  const anadirTodosPendientes = () => {
+    const total = candidatos.reduce((a, q) => a + (parseFloat(q.uds) || 0), 0);
+    if (!window.confirm(`¿Añadir los ${total} cristales de la lista a este caballete (${cristal.lote || ""})?\n\nTú confirmas que están ahí: el programa no puede comprobarlo.\nSi el caballete lleva más cristales sin apuntar, el mapa lo dará por VACÍO cuando salgan estos.`)) return;
+    candidatos.forEach((q) => altaCristalEnCaballete(q, cristal.id));
+  };
+  const bloquePendientes = (candidatos.length > 0 || sinMedidasEnTexto) && (
+    <div className="mt-2 p-2.5 rounded-md bg-amber-50 border border-amber-300 text-xs text-amber-900">
+      {candidatos.length > 0 ? (
+        <>
+          <div className="font-semibold">Cristales sin encontrar de un Expediente rápido, de los expedientes de este caballete ({candidatos.reduce((a, q) => a + (parseFloat(q.uds) || 0), 0)}):</div>
+          {candidatos.map((q, i) => (
+            <div key={`${q.fab}-${q.ppto}-${q.modelo}-${q.ancho}-${q.alto}-${i}`} className="flex flex-wrap items-center gap-2 mt-1 border-t border-amber-200 pt-1">
+              <span className="font-mono-num font-bold">{q.ancho} × {q.alto}</span><span>× {q.uds}</span>
+              <span className="text-amber-800">{q.modelo} · pres. {pptoBonito(q.ppto)} · exp. {q.exp}</span>
+              <button type="button" onClick={() => anadirPendiente(q)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-2.5 py-1 rounded-md hover:opacity-90">Añadir a este caballete</button>
+            </div>
+          ))}
+          {candidatos.length > 1 && <button type="button" onClick={anadirTodosPendientes} className="mt-2 text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] bg-white px-2.5 py-1 rounded-md hover:bg-emerald-50">Añadir todos a este caballete</button>}
+        </>
+      ) : (
+        <span>Este caballete tiene el texto de «Medida» sin medidas (solo expedientes y viviendas), así que no se pueden crear líneas solas. Para darlas de alta con su medida: sube el Expediente rápido, pulsa «Guardar» (quedan pendientes) y vuelve aquí, o usa «Asignar al caballete…» en la lista «Cristales sin encontrar». También puedes añadirlas a mano con «Añadir cristal».</span>
+      )}
+    </div>
+  );
   const conIncidencia = piezas.filter((p) => p.incidencia).length;
   return (
     <div className="mt-2">
@@ -13848,6 +13895,7 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
           </button>
         </div>
       </div>
+      {bloquePendientes}
       {verAnadir && (
         <div className="flex flex-wrap gap-1.5 items-center p-2 mb-2 rounded-md bg-slate-50 border border-slate-200">
           <input value={nuevo.ancho} onChange={(e) => setNuevo({ ...nuevo, ancho: e.target.value })} placeholder="Ancho" className="border border-slate-300 rounded px-2 py-1 text-xs w-16" />
@@ -15055,8 +15103,9 @@ async function leerPackingPersianas(file) {
 const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = vivienda o posición (ej. V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
 const BORRADOR_PERSIANAS_FOTOS = "crm_persianasFotos_borrador";
 
-function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
+function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null }) {
   const [filas, setFilas] = useState([]);
+  const [carroDestino, setCarroDestino] = useState(""); // "" = automático
   const [recuperado, setRecuperado] = useState(false);
   const inputCamaraRef = useRef(null);
   const inputGaleriaRef = useRef(null);
@@ -15176,7 +15225,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
       }
     });
     try { localStorage.removeItem(BORRADOR_PERSIANAS_FOTOS); } catch (e) { /* nada */ }
-    onColocar(unidades);
+    onColocar(unidades, parseInt(carroDestino, 10) || "");
     onCerrar();
   };
   const descartar = () => {
@@ -15265,6 +15314,15 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar }) {
 
         <div className="flex flex-wrap justify-between gap-2 mt-4 pt-3 border-t border-slate-200">
           <button onClick={descartar} className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-2 rounded-md hover:bg-rose-50">Descartar</button>
+          {opcionesCarro && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-600">
+              <span className="font-semibold text-slate-700">Carro de destino:</span>
+              <select value={carroDestino} onChange={(e) => setCarroDestino(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+                <option value="">Automático</option>
+                {opcionesCarro}
+              </select>
+            </label>
+          )}
           <button onClick={colocar} disabled={!buenas.length || leyendo > 0} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
             className="text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2 rounded-md">
             Colocar en los carros ({totalUds})
@@ -15683,7 +15741,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         </button>
       </div>
       {verFotosEtiquetas && (
-        <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} onColocar={(unidades) => confirmarEntrada(unidades)} />
+        <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} opcionesCarro={opcionesCarro(null)} onColocar={(unidades, carro) => confirmarEntrada(carro ? unidades.map((u) => ({ ...u, carroDestino: carro })) : unidades)} />
       )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
 
