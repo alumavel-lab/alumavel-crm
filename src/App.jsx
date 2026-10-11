@@ -35959,7 +35959,7 @@ function datosVentanaLinea(h) {
   };
   return { exp, viv, casa };
 }
-function cruzarCristalVentana(cristales, onUpdateCristal, h) {
+function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
   if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
   let variasUnidades = false;
@@ -35967,7 +35967,8 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h) {
     const ps = toArray(c.piezas);
     for (let i = 0; i < ps.length; i++) {
       const p = ps[i];
-      if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) continue;
+      if (sel && sel.cId != null) { if (c.id !== sel.cId || i !== sel.idx || p.puesto) continue; }
+      else if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp) || !d.casa(p.ref)) continue;
       if ((parseFloat(p.cantidad) || 1) > 1) { variasUnidades = true; continue; }
       if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
       onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
@@ -35976,6 +35977,35 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h) {
     }
   }
   return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
+}
+// Cristales, 1ª lectura: dice DÓNDE está el cristal de la ventana (caballete, hueco, medida) SIN marcarlo todavía. La 2ª lectura lo deja puesto.
+// Busca en TODOS los caballetes (con hueco en el mapa y también los «Pendientes de ubicar»). Si varias viviendas comparten el nombre de la ventana
+// (p. ej. COCINA del Bajo A y del Bajo B) elige la que además coincide con la vivienda; si no puede decidir, enseña todas las posibles.
+function previsualizarCristalVentana(cristales, h) {
+  const d = datosVentanaLinea(h);
+  if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
+  const v = h.ventana;
+  const pos = normVivLinea(v.pos);
+  const cand = [];
+  for (const c of toArray(cristales)) {
+    toArray(c.piezas).forEach((p, i) => {
+      if (p.puesto || !numsExpediente(p.expediente || c.expediente).includes(d.exp)) return;
+      const r = normVivLinea(p.ref);
+      const conViv = !!d.viv && !!r && r.includes(d.viv);
+      const conPos = !!pos && !!r && r.includes(pos);
+      const puntos = d.casa(p.ref) ? (conViv && conPos ? 3 : conViv ? 2 : 1) : 0;
+      cand.push({ c, p, i, puntos });
+    });
+  }
+  const txtPieza = (x) => `${x.p.ref || "?"} · ${x.p.ancho || "?"} × ${x.p.alto || "?"} mm · cab. ${x.c.lote || x.c.numero || "—"} · ${x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : "PENDIENTE DE UBICAR (sin hueco: búscalo en el montón de pendientes)"}`;
+  const mejor = Math.max(0, ...cand.map((x) => x.puntos));
+  const buenos = mejor > 0 ? cand.filter((x) => x.puntos === mejor) : [];
+  if (buenos.length === 1) {
+    const x = buenos[0]; const cab = String(x.c.lote || x.c.numero || "");
+    return { ok: true, sel: { cId: x.c.id, idx: x.i }, foco: { tipo: "cristal", exp: d.exp, viv: String(x.p.ref || ""), ubicacion: x.c.ubicacion || null, medida: `${x.p.ancho || "?"} × ${x.p.alto || "?"}`, caballete: cab }, texto: `👉 CRISTAL ${txtPieza(x)}${mejor === 1 && d.viv ? "\n⚠ Su referencia no lleva la vivienda: comprueba que es de " + (v.grupo || "esta vivienda") : ""}` };
+  }
+  if (buenos.length > 1) return { ok: true, sel: null, foco: null, texto: `⚠ HAY ${buenos.length} CRISTALES POSIBLES para ${v.pos} (${v.grupo || ""}${v.medida ? ` · ventana ${v.medida}` : ""}). Mira la medida:\n${buenos.slice(0, 6).map(txtPieza).join("\n")}` };
+  return { ok: false, texto: cand.length ? `no encuentro su cristal exacto. Del expediente ${d.exp} hay sueltos:\n${cand.slice(0, 6).map(txtPieza).join("\n")}${cand.length > 6 ? `\n… (+${cand.length - 6})` : ""}` : `no hay ningún cristal del expediente ${d.exp} en el almacén (¿está subido el packing list?)` };
 }
 function cruzarPersianaVentana(items, guardarItems, h) {
   const d = datosVentanaLinea(h);
@@ -36486,6 +36516,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   // Matrimonio: varias personas con la misma pistola. Cada una elige su mesa (1-3) y su aviso sale en su propio panel.
   const [mesa, setMesaSel] = useState(() => { try { const m = parseInt(localStorage.getItem("alumavel_mesa_colgado") || "1", 10); return m >= 1 && m <= 3 ? m : 1; } catch (e) { return 1; } });
   const mesaRef = useRef(mesa);
+  const buscandoCris = useRef(new Map()); // Cristales: ventanas cuya 1ª lectura (buscar el cristal) ya se hizo; la 2ª las deja puestas
   const forzar = useRef(""); // Cristales: código de la ventana que se acristala como URGENTE saltándose el bloqueo
   const [bloqCris, setBloqCris] = useState(null);
   mesaRef.current = mesa;
@@ -36553,6 +36584,19 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       avisarM(false, `⛔ YA LEÍDA: ${v.pos} ${h.pieza.t || "MARCO"} ya se leyó en ${nombrePuestoLinea(puestoId)}${hora ? ` a las ${hora}` : ""}${previa.por ? ` (${previa.por})` : ""}. No se puede leer otra vez. Si es una unidad más con la misma pegatina, avisa: no es una pieza nueva.`);
       return;
     }
+    let selCris = null;
+    // Cristales en dos tiempos: 1ª lectura = «el cristal está ahí» (no se guarda nada); 2ª lectura = «puesto» (flujo normal)
+    if (puestoId === "cristales" && v.modelo && forzar.current !== cod) {
+      const kb = baseDe(v); const t0 = buscandoCris.current.get(kb);
+      if (!t0 || Date.now() - t0.t > 30 * 60 * 1000) {
+        const pv = previsualizarCristalVentana(cristales, h);
+        buscandoCris.current.set(kb, { t: Date.now(), sel: pv.sel || null });
+        avisarM(pv.ok, `${pv.ok ? pv.texto : `⚠ ${v.pos}: ${pv.texto}`}\n\n${pv.ok ? "Cógelo y vuelve a pasar la pistola por la ventana: queda PUESTO." : "Búscalo y vuelve a pasar la pistola por la ventana para seguir."}`, !pv.ok);
+        setUltimo((u) => (u ? { ...u, h, foco: pv.ok ? pv.foco : null, fase1: true, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+        return;
+      }
+      selCris = t0.sel; buscandoCris.current.delete(kb);
+    }
     const yaVentana = escaneos.some((x) => x.puestoId === puestoId && x.ventanaId === v.id);
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
     let z = null;
@@ -36576,7 +36620,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     if (r === "nuevo" && puestoId === "soldadora") revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por: quien });
     let cruce = null;
     if (r === "nuevo" && !yaVentana) {
-      if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h);
+      if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h, selCris);
       else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
     }
