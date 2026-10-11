@@ -2202,7 +2202,7 @@ export default function App() {
     const nuevasPers = [];
     filas.filter((f) => f.tipo === "persiana").forEach((f) => {
       const bien = bienDe(f);
-      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
+      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", parte: normParte(f.refObra), pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
     });
     let sinSitioPers = 0;
     if (nuevasPers.length) {
@@ -14957,6 +14957,9 @@ function carrosPersianasPorDefecto() {
   });
 }
 const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
+// "Parte" / vivienda de la obra (P1, P2…): sale del "EXP. 737 P1" del albarán o de la etiqueta ("P-8" → P8). Las persianas de una misma parte se colocan y se reparten juntas.
+const normParte = (t) => { const m = String(t || "").match(/(?:^|[^A-Za-z])P\s*-?\s*(\d{1,2})(?!\d)/i); return m ? `P${parseInt(m[1], 10)}` : ""; };
+const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : normParte(x && x.refObra));
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
@@ -14978,6 +14981,17 @@ function estantesAlmacenPersianas(carros) {
 // Coloca un grupo de persianas (del mismo expediente) en los estantes. "estado" lleva lo
 // ya ocupado: { usado: {key: mm}, exps: {key: Set} }. Devuelve { id: estante } o null si no cabe.
 function colocarGrupoPersianas(items, exp, estantes, estado) {
+  // Cada parte (P1, P2…) del expediente se coloca como un grupo propio y pegada a las demás del mismo expediente
+  const partes = {};
+  items.forEach((it) => { const p = partePersiana(it); (partes[p] = partes[p] || []).push(it); });
+  const claves = Object.keys(partes).sort();
+  if (claves.length === 1 && claves[0] === "") return colocarUnGrupoPersianas(items, exp, exp, estantes, estado);
+  const res = {}; let fallo = false;
+  claves.forEach((p) => { const r = colocarUnGrupoPersianas(partes[p], p ? `${exp}|${p}` : exp, exp, estantes, estado); Object.assign(res, r.res); if (r.fallo) fallo = true; });
+  return { res, fallo };
+}
+function colocarUnGrupoPersianas(items, key, exp, estantes, estado) {
+  estado.grp = estado.grp || {};
   const res = {};
   const idx = Object.fromEntries(estantes.map((e, i) => [e.key, i]));
   const cabe = (e, L) => {
@@ -14993,6 +15007,7 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
     estado.uds = estado.uds || {};
     estado.uds[e.key] = (estado.uds[e.key] || 0) + 1;
     (estado.exps[e.key] = estado.exps[e.key] || new Set()).add(exp);
+    (estado.grp[e.key] = estado.grp[e.key] || new Set()).add(key);
     res[id] = { carro: e.carro, lado: e.lado, nivel: e.nivel };
   };
   const ordenados = [...items].sort((a, b) => largoPersiana(b) - largoPersiana(a));
@@ -15001,8 +15016,9 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
     // las de 60 cm o más van preferentemente a carro de soporte largo, para dejar
     // los de soporte corto a las pequeñas
     const preferido = L >= TIPOS_CARRO_PERSIANA.gris.minimoMm ? "gris" : "amarillo";
-    const mios = estantes.filter((e) => (estado.exps[e.key] || new Set()).has(exp));
-    const ultMio = mios.length ? Math.max(...mios.map((e) => idx[e.key])) : -1;
+    const mios = estantes.filter((e) => (estado.grp[e.key] || new Set()).has(key));
+    const delExp = estantes.filter((e) => (estado.exps[e.key] || new Set()).has(exp));
+    const ultMio = mios.length ? Math.max(...mios.map((e) => idx[e.key])) : delExp.length ? Math.max(...delExp.map((e) => idx[e.key])) : -1;
     const vacio = (e) => !(estado.usado[e.key] > 0);
     let ultimoOcupado = -1;
     estantes.forEach((e, i) => { if (!vacio(e) && e.tipo === preferido) ultimoOcupado = i; });
@@ -15026,9 +15042,10 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
 }
 
 function estadoOcupacionPersianas(items) {
-  const estado = { usado: {}, exps: {}, uds: {} };
+  const estado = { usado: {}, exps: {}, uds: {}, grp: {} };
   items.filter((x) => x.estante && !x.entregada).forEach((x) => {
     const k = `${x.estante.carro}|${x.estante.lado}|${x.estante.nivel}`;
+    { const pt = partePersiana(x); const e0 = x.expediente || "—"; (estado.grp[k] = estado.grp[k] || new Set()).add(pt ? `${e0}|${pt}` : e0); }
     estado.usado[k] = (estado.usado[k] || 0) + largoPersiana(x) + (estado.usado[k] ? HOLGURA_PERSIANA_MM : 0);
     estado.uds[k] = (estado.uds[k] || 0) + 1;
     (estado.exps[k] = estado.exps[k] || new Set()).add(x.expediente || "—");
@@ -15089,7 +15106,7 @@ async function leerPackingPersianas(file) {
     const m = String(f.expediente || "").match(/\d{2,}/);
     for (let k = 0; k < n; k++) {
       unidades.push({
-        id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+        id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), parte: normParte(f.expediente), ref: String(f.ref || "").trim(),
         largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
         proveedor: String(f.proveedor || "").trim(), fechaEntrada: new Date().toISOString().slice(0, 10),
         estante: null, entregada: false,
@@ -15100,7 +15117,7 @@ async function leerPackingPersianas(file) {
 }
 
 // ---- Entrada de persianas con fotos de las etiquetas (cuando llegan sin packing list) ----
-const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = vivienda o posición (ej. V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+const PROMPT_ETIQUETA_PERSIANA = 'Esto es una FOTO DE LA ETIQUETA de una persiana (cajón de persiana, compacto, o persiana enrollada y embalada en plástico de burbujas), hecha en el almacén. LA FOTO PUEDE ESTAR GIRADA O BOCA ABAJO: léela igualmente. La etiqueta puede estar impresa o ESCRITA A MANO. Lee SOLO las etiquetas que se vean ENTERAS y legibles; si asoma otra detrás tapada o cortada, IGNÓRALA. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"etiquetas":[{"proveedor":"","cliente":"","pedido":"","expediente":"","obra":"","parte":"","ref":"","medidaTexto":"","ancho":0,"alto":0,"cantidad":1,"pieza":"","color":"","descripcion":""}]}. MEDIDAS (lo más importante): "medidaTexto" = las medidas copiadas TAL CUAL aparecen en la etiqueta, con sus palabras (ej. "Alto 1.325 x Ancho 880", "2,300 x 2,640", "Alto 218,5 Ancho 215", "Alto 238\'5 Ancho 99"). "ancho" = el ANCHO de la persiana (lo largo del cajón/rollo) y "alto" = la ALTURA, AMBOS EN MILÍMETROS. Si la etiqueta dice qué es Alto y qué es Ancho, respétalo aunque el alto vaya primero (Dealux pone Alto antes que Ancho). Si solo pone "A x B" sin decir cuál es cuál (Persax), el primero es el ancho y el segundo el alto. UNIDADES: los proveedores usan mm, cm o metros sin decirlo. Pásalo todo a mm: "1.325" con punto de miles son 1325 mm; "2,300" o "2,640" con coma y 3 decimales son METROS (2300 y 2640 mm); valores como 215, 218,5, 99 o 238\'5 (escritos a mano o sin decimales de metro) son CENTÍMETROS (2150, 2185, 990 y 2385 mm); 700 o 1200 son mm. Una persiana mide entre 300 y 4000 mm de ancho y de alto: si el resultado se sale de eso, revisa la unidad. OTROS CAMPOS: "proveedor" = el fabricante (Persianas Zúñiga, Alugom Lorca Compactos, Persimaster, Persax, Dealux…). "cliente" = a quién va (Alumavel, Construcciones Uxcar…). "pedido" = nº de pedido del proveedor (ej. 26010808, PV26041339; en Persimaster el "Nº"). "expediente" = SOLO el número que va tras EXP o EXPEDIENTE (ej. "EXP. 852 P-8" es 852, "EXP: 1151" es 1151); si no aparece, vacío. "parte" = lo que va detrás del número de expediente, la vivienda o parte de la obra (ej. "EXP. 852 P-8" es "P8", "EXP 737 P1" es "P1"); vacío si no hay. "obra" = nombre de obra o cliente final (ej. VALENCIA, OBRA NOGAL/5818-6, Oscar Castro - Reino Prez, JAVI FREILA). "ref" = vivienda o posición (ej. V04.206, V03, R10 AND 2). "cantidad" = Cantidad o Unidades (normalmente 1). "pieza" = numeración tipo "2/5" o "1/1". "color" = color si aparece (blanco, negro texturado…). "descripcion" = tipo en pocas palabras (ej. "compacto PVC lama aluminio", "Aisla-Block 155", "compacto Blockalum-39"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
 const BORRADOR_PERSIANAS_FOTOS = "crm_persianasFotos_borrador";
 
 function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null }) {
@@ -15145,7 +15162,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
     const m = String(e.expediente || "").match(/\d{2,}/);
     return {
       proveedor: String(e.proveedor || "").trim(), cliente: String(e.cliente || "").trim(), pedido: String(e.pedido || "").trim(),
-      expediente: m ? m[0] : String(e.expediente || "").trim(), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
+      expediente: m ? m[0] : String(e.expediente || "").trim(), parte: normParte(e.parte) || normParte(e.expediente), obra: String(e.obra || "").trim(), ref: String(e.ref || "").trim(),
       largo: aMm(e.ancho ?? e.largo), alto: aMm(e.alto), medidaTexto: String(e.medidaTexto || "").trim(), cantidad: Math.max(1, parseInt(e.cantidad, 10) || 1),
       pieza: String(e.pieza || "").trim(), color: String(e.color || "").trim(), descripcion: String(e.descripcion || "").trim(),
     };
@@ -15216,7 +15233,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
       const n = Math.max(1, parseInt(f.cantidad, 10) || 1);
       for (let k = 0; k < n; k++) {
         unidades.push({
-          id: uid(), expediente: String(f.expediente || "").trim(), ref: String(f.ref || "").trim(),
+          id: uid(), expediente: String(f.expediente || "").trim(), parte: normParte(f.parte), ref: String(f.ref || "").trim(),
           largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
           proveedor: String(f.proveedor || "").trim(), cliente: String(f.cliente || "").trim(), obra: String(f.obra || "").trim(),
           pieza: String(f.pieza || "").trim(), color: String(f.color || "").trim(), descripcion: String(f.descripcion || "").trim(),
@@ -15293,7 +15310,7 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
                     <div className="flex flex-wrap gap-1.5 items-center">
                       <span className="text-[11px] text-slate-500">Largo (ancho)</span>{campo(f, "largo", "mm", "w-16")}
                       <span className="text-[11px] text-slate-500">Alto</span>{campo(f, "alto", "mm", "w-16")}
-                      <span className="text-[11px] text-slate-500">EXP</span>{campo(f, "expediente", "Expediente", "w-20")}
+                      <span className="text-[11px] text-slate-500">EXP</span>{campo(f, "expediente", "Expediente", "w-20")}{campo(f, "parte", "Parte", "w-12")}
                       {campo(f, "ref", "Vivienda / ref.", "w-28")}
                       <span className="text-[11px] text-slate-500">Uds</span>{campo(f, "cantidad", "1", "w-10")}
                       {campo(f, "pedido", "Nº pedido", "w-28")}
@@ -15674,7 +15691,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"}{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
@@ -15705,8 +15722,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const secciones = lista.map((c) => {
       const lados = LADOS_CARRO.map((lado) => {
         const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
-          const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel);
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${x.refObra ? ` (${esc(x.refObra)})` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
           return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
         }).join("");
         return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
@@ -16006,7 +16023,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                             <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
-                              {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}</span><span className="text-[10px]">{x.ref}</span></span> : x.expediente}
+                              {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
                             </div>
                           ))}
                         </div>
@@ -36219,6 +36236,44 @@ function PuertasEnCamino({ indice, ubic }) {
   );
 }
 
+// Puesto Puerta: puertas ya terminadas que esperan en «Puertas terminadas». Para pasar por Cristales tienen que ir a la Línea: botón «Sacar a la Línea».
+// Si ya hay ventanas de su vivienda esperando en la Línea o en Persiana A/B, se avisa de que hay que sacarla ya.
+function PuertasTerminadasLinea({ indice, ubic, quien }) {
+  const zonas = useZonasLinea();
+  const [aviso, setAviso] = useState("");
+  const lista = useMemo(() => {
+    const res = [];
+    indice.forEach((h) => {
+      const v = h.ventana; if (!v || !v.modelo || !toArray(v.piezas)[0] || !esPuertaLinea(v) || String(h.pieza.c) !== baseDe(v)) return;
+      const u = ubic[baseDe(v)]; if (!u || u.zonaId !== "puertasTerminadas") return;
+      const aqui = toArray(h.lote.ventanas).filter((w) => w.modelo && toArray(w.piezas)[0] && !esPuertaLinea(w) && (w.grupo || "") === (v.grupo || "") && ubic[baseDe(w)] && ["sinPersiana", "persianaA", "persianaB"].includes(ubic[baseDe(w)].zonaId));
+      res.push({ v, u, aqui });
+    });
+    return res.sort((a, b) => b.aqui.length - a.aqui.length);
+  }, [indice, ubic]);
+  const sacar = async (x) => {
+    try {
+      const z = zonas.find((q) => q.id === "sinPersiana");
+      const r = z ? await ocuparHuecoLinea(z, baseDe(x.v), quien, ubic, 1, null, 1) : null;
+      setAviso(r ? `✓ ${x.v.pos}: sácala de «Puertas terminadas» (estantería ${x.u.hueco}) y llévala a la Línea · estantería ${r.hueco}.` : `⚠ La Línea está LLENA: ${x.v.pos} se queda en «Puertas terminadas». Libera una estantería.`);
+    } catch (e) { setAviso(`No se pudo mover ${x.v.pos}: ${(e && e.message) || e}`); }
+  };
+  if (!lista.length && !aviso) return null;
+  return (
+    <div className="border border-sky-300 bg-sky-50 rounded-xl p-3 space-y-1.5">
+      <div className="text-sm font-semibold text-sky-900">Puertas terminadas: sácalas a la Línea para que pasen por Cristales ({lista.length})</div>
+      {aviso && <div className="text-sm font-semibold text-emerald-800 whitespace-pre-line">{aviso}</div>}
+      {lista.map((x) => (
+        <div key={x.v.id} className="text-xs text-slate-800 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <b className="text-sm">{x.v.pos}</b><span>{x.v.grupo || ""}{x.v.cliente ? ` · ${x.v.cliente}` : ""} · ahora en Puertas terminadas · est. {x.u.hueco}</span>
+          {x.aqui.length > 0 ? <b className="text-rose-700">· ¡SÁCALA YA! ya están en la Línea: {x.aqui.map((w) => w.pos).join(", ")}</b> : <span className="text-slate-500">· aún no ha llegado ninguna ventana de su vivienda</span>}
+          <button type="button" onClick={() => sacar(x)} className="px-3 py-1.5 rounded-md bg-sky-700 text-white text-xs font-bold">Sacar a la Línea</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // La misma lista de puertas a fabricar, pero para el Planning de Fábrica (calcula sus propios datos)
 function PrioridadPuertasHoy({ proyectos, uxExpedientes, sinObra }) {
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
@@ -36360,6 +36415,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       <AvisoSacarLinea quien={quien} />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
+      {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
       <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
