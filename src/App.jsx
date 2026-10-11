@@ -36607,6 +36607,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const [bloqCris, setBloqCris] = useState(null);
   mesaRef.current = mesa;
   const [ultimosMesa, setUltimosMesa] = useState({});
+  const [verAux, setVerAux] = useState(false); // botón «Auxiliares» junto a los puestos
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
   const [camara, setCamara] = useState(false); // lectura con la cámara del móvil
   const [ficha, setFicha] = useState(null);
@@ -36765,7 +36766,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           {PUESTOS_LINEA.filter((p) => p.id !== "carga" && (!puestoFijo || p.id === puestoFijo)).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
+          {(!puestoFijo || admin) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
         </div>
+        {verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button type="button" onClick={() => setCamara(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-2 rounded-md text-sm font-semibold">📷 Leer con la cámara del móvil</button>
           <button type="button" onClick={() => { setConsulta((c) => !c); setFicha(null); setUltimo(null); enfocar(); }} className={`px-3 py-2 rounded-md text-sm font-semibold border ${consulta ? "bg-sky-600 text-white border-sky-600" : "bg-white text-sky-700 border-sky-400"}`}>🔍 Escáner: consultar una ventana</button>
@@ -36824,6 +36827,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             ))}
           </div>
         )}
+        </>)}
       </div>
       {puestoId === "soldadora" && <PegatinasSoldadora indice={indice} escaneos={escaneos} />}
     </div>
