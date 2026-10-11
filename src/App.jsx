@@ -34819,7 +34819,7 @@ const useEscaneosLinea = () => {
   return lista;
 };
 // Guarda la lectura (solo si esa ventana no estaba ya en ese puesto). Devuelve "nuevo" | "repetida" | "error: ..."
-async function registrarEscaneoLinea({ puestoId, h, por, porId = "" }) {
+async function registrarEscaneoLinea({ puestoId, h, por, porId = "", mesa = 0 }) {
   try {
     const v = h.ventana;
     const clave = claveLecturaLinea(puestoId, h);
@@ -34827,6 +34827,7 @@ async function registrarEscaneoLinea({ puestoId, h, por, porId = "" }) {
       id: clave, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), puestoId, puestoNombre: nombrePuestoLinea(puestoId),
       cod: String(h.pieza.c), pieza: h.pieza.t || "", ventanaId: v.id, pos: v.pos, num: v.num, fab: h.lote.fab, obraKey: h.dueno.key, obraNombre: h.dueno.nombre,
       grupo: v.grupo || "", por: por || (fbAuth.currentUser && fbAuth.currentUser.email) || "", porId: porId || "",
+      ...(mesa ? { mesa } : {}),
     };
     const r = await runTransaction(ref(fbDb, `escaneosLinea/${clave}`), (actual) => (actual ? undefined : rec));
     return r && r.committed ? "nuevo" : "repetida";
@@ -34946,8 +34947,67 @@ async function liberarVentanaLinea(h) {
   for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
   await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
 }
+// ---- Cinta "Sin persiana": las ventanas sin persiana van por la cinta a cristales, pero cristales solo acristala una vivienda cuando están TODAS.
+// Si entra una ventana de otra vivienda y la anterior sigue incompleta, la anterior se saca de la cinta y se deja en las estanterías de
+// Persiana A / B (salida) — el mismo almacén de las persianas terminadas, 1-12 y 1-12 —, donde esperan a que llegue la que falta.
+const ZONAS_CINTA_SIN_PERS = ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", "persianaA", "persianaB"];
+const ZONAS_VIVIENDA_PASADAS = ["persianaA", "persianaB", "puertasTerminadas", "solape", "espera"];
+function viviendaCompletaLinea(h, ubicTodas, sinPersOv, flagsInc) {
+  const faltan = toArray(h.lote.ventanas).filter((w) => w.modelo && toArray(w.piezas)[0] && (w.grupo || "") === (h.ventana.grupo || "")).filter((w) => {
+    const b = baseDe(w); const z = ubicTodas[b] && ubicTodas[b].zonaId;
+    if (flagsInc[b]) return true;
+    return !z || !(ZONAS_VIVIENDA_PASADAS.includes(z) || (sinPersOv[b] && ZONAS_CINTA_SIN_PERS.includes(z)));
+  });
+  return { completa: faltan.length === 0, faltan };
+}
+async function ordenarCintaSinPersianaLinea({ h = null, indice, zonas, sinPersOv = {}, por = "", sacarOtras = false }) {
+  try {
+    if (!indice) return "";
+    const zBelt = zonas.find((q) => q.id === "sinPersiana");
+    const zA = zonas.find((q) => q.id === "persianaA"), zB = zonas.find((q) => q.id === "persianaB");
+    if (!zBelt || !zA || !zB) return "";
+    const ubicTodas = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {};
+    const flagsInc = (await fbGet(ref(fbDb, "incidenciaVentanaLinea"))).val() || {};
+    // ventanas sin persiana que están en la cinta, o esperando en Persiana A/B (salida)
+    const grupos = new Map();
+    Object.entries(ubicTodas).forEach(([cod, u]) => {
+      if (!u || !["sinPersiana", "persianaA", "persianaB"].includes(u.zonaId)) return;
+      const hh = indice.get(String(cod));
+      if (!hh || !hh.ventana.modelo || !toArray(hh.ventana.piezas)[0] || baseDe(hh.ventana) !== String(cod)) return;
+      if (u.zonaId !== "sinPersiana" && !sinPersOv[String(cod)]) return; // las de persiana normal en A/B no se tocan
+      const k = `${hh.lote.fab}|${hh.ventana.grupo || ""}`;
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k).push({ cod: String(cod), hh, u });
+    });
+    const miK = h ? `${h.lote.fab}|${h.ventana.grupo || ""}` : null;
+    const nomZ = (id) => (id === "persianaA" ? zA.nombre : id === "persianaB" ? zB.nombre : zBelt.nombre);
+    const mover = async (x) => {
+      for (const z of [zA, zB]) {
+        const r = await ocuparHuecoLinea(z, x.cod, por, ubicTodas, 1, null, 1);
+        if (r) { ubicTodas[x.cod] = { zonaId: z.id, hueco: r.hueco, slot: r.slot }; return { z, hueco: r.hueco }; }
+      }
+      return null;
+    };
+    const lineas = [];
+    for (const [k, xs] of grupos) {
+      const { completa, faltan } = viviendaCompletaLinea(xs[0].hh, ubicTodas, sinPersOv, flagsInc);
+      const nomViv = xs[0].hh.ventana.grupo || "esta vivienda";
+      if (completa) {
+        const esp = xs.filter((x) => x.u.zonaId !== "sinPersiana");
+        if (esp.length && k !== miK) lineas.push(`✓ La vivienda ${nomViv} ya está completa: ya se pueden acristalar las que esperaban en «${nomZ(esp[0].u.zonaId)}» (${esp.map((x) => `${x.hh.ventana.pos} · estantería ${ubicTodas[x.cod].hueco}`).join(", ")}).`);
+        else if (esp.length) lineas.push(`✓ La vivienda ${nomViv} ya está completa: ya se pueden acristalar también las que esperaban en Persiana A/B (${esp.map((x) => `${x.hh.ventana.pos} · estantería ${ubicTodas[x.cod].hueco}`).join(", ")}).`);
+      } else if (sacarOtras && k !== miK) {
+        const cinta = xs.filter((x) => x.u.zonaId === "sinPersiana");
+        const partes = [];
+        for (const x of cinta) { const antes = x.u.hueco; const d = await mover(x); partes.push(d ? `${x.hh.ventana.pos} (cinta ${antes}) → ${d.z.nombre} · ESTANTERÍA ${d.hueco}` : `${x.hh.ventana.pos} (SIN SITIO en Persiana A ni B: libera una estantería)`); }
+        if (partes.length) lineas.push(`⤴ SACA DE LA CINTA las de la vivienda ${nomViv} (aún le faltan: ${faltan.map((w) => w.pos).join(", ")}) y déjalas en el almacén de persianas terminadas: ${partes.join(" · ")}.`);
+      }
+    }
+    return lineas.length ? `\n\n${lineas.join("\n")}` : "";
+  } catch (e) { return `\n\n⚠ No se pudo ordenar la cinta «Sin persiana» (${(e && e.message) || e}).`; }
+}
 // La regla de cada puesto: dónde deja la pieza que lees y de dónde la saca. Devuelve { ok, aviso, texto, zona }.
-async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHojaOv = {}, solOv = {}, mosqOv = {}, sinPersOv = {}, por, estricto = true }) {
+async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHojaOv = {}, solOv = {}, mosqOv = {}, sinPersOv = {}, por, estricto = true, indice = null }) {
   const v = h.ventana;
   const base = baseDe(v);
   const cod = String(h.pieza.c);
@@ -35025,7 +35085,8 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     if (!n) return { ok: false, texto: `⚠ ${puerta ? nom("bancoPuerta") : sinPers ? nom("sinPersiana") : "Los bancos A y B están llenos"}. La ventana ${v.pos} está completa pero NO tiene sitio: libera estanterías o pulsa «+».` };
     for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
     await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
-    return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}${sinPers ? " · NO LLEVA PERSIANA: no pasa por el banco A/B, va directa a cristales" : ""}`, zona: { zonaId: destino, hueco: n } };
+    const cinta = sinPers ? await ordenarCintaSinPersianaLinea({ h, indice, zonas, sinPersOv, por, sacarOtras: true }) : "";
+    return { ok: true, texto: `✓ VENTANA UNIDA ${v.pos} → ${nom(destino)} · ESTANTERÍA ${n}${sitio()}${sinPers ? " · NO LLEVA PERSIANA: no pasa por el banco A/B, va directa a cristales" : ""}${cinta}`, zona: { zonaId: destino, hueco: n } };
   }
   // Las demás ventanas de la misma vivienda (mismo lote y mismo grupo) y si ya están todas en "ventanas terminadas"
   const matesVivienda = () => toArray(h.lote.ventanas).filter((w) => w.modelo && w.id !== v.id && (w.grupo || "") === (v.grupo || "")).map((w) => ({ w, u: ubic[baseDe(w)] }));
@@ -35082,6 +35143,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
       const mates = matesVivienda();
       if (mates.length > 0 && mates.every((m) => m.u && m.u.zonaId === "espera")) extra = ` · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`;
     }
+    if (puestoId === "persianaA" || puestoId === "persianaB" || puestoId === "puerta") extra += await ordenarCintaSinPersianaLinea({ h, indice, zonas, sinPersOv, por, sacarOtras: false });
     const mosq = (puestoId === "persianaA" || puestoId === "persianaB") && mosqOv[base] ? "🦟 LLEVA MOSQUITERA: ponla también. " : "";
     return { ok: true, texto: `${mosq}✓ ${v.pos} → ${nom(rg.deja)} · ESTANTERÍA ${n}${sitio()}${u ? ` (libera ${donde(u)})` : " · aviso: no estaba registrada en el banco anterior"}${extra}`, zona: { zonaId: rg.deja, hueco: n } };
   }
@@ -35958,6 +36020,11 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const puestoId = puestoFijo || puestoSel; // con "puesto fijo" el operario no puede cambiar de puesto
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
+  // Matrimonio: varias personas con la misma pistola. Cada una elige su mesa (1-3) y su aviso sale en su propio panel.
+  const [mesa, setMesaSel] = useState(() => { try { const m = parseInt(localStorage.getItem("alumavel_mesa_colgado") || "1", 10); return m >= 1 && m <= 3 ? m : 1; } catch (e) { return 1; } });
+  const mesaRef = useRef(mesa);
+  mesaRef.current = mesa;
+  const [ultimosMesa, setUltimosMesa] = useState({});
   const [consulta, setConsulta] = useState(false); // Escáner: la próxima lectura solo consulta la ventana, no registra nada
   const [camara, setCamara] = useState(false); // lectura con la cámara del móvil
   const [ficha, setFicha] = useState(null);
@@ -35979,7 +36046,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const hoyAqui = escaneos.filter((x) => x.puestoId === puestoId && x.fecha === hoy).sort((a, b) => b.ts - a.ts);
   const enfocar = () => setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
   const elegir = (id) => { setPuestoId(id); setUltimo(null); setFicha(null); setConsulta(false); try { localStorage.setItem("alumavel_puesto_linea", id); } catch (e) { /* nada */ } enfocar(); };
-  const avisar = (ok, texto, repetida) => { setUltimo({ ok, texto, repetida }); pitidoCRM(ok); enfocar(); };
+  const avisar = (ok, texto, repetida, mesaX) => { const u = { ok, texto, repetida, mesa: mesaX || mesaRef.current, ts: Date.now() }; setUltimo(u); if (puestoId === "colgado") setUltimosMesa((m) => ({ ...m, [u.mesa]: u })); pitidoCRM(ok); enfocar(); };
+  const elegirMesa = (n) => { setMesaSel(n); mesaRef.current = n; try { localStorage.setItem("alumavel_mesa_colgado", String(n)); } catch (e) { /* nada */ } enfocar(); };
   const piezaDeTexto = (txt) => {
     const exacto = codPiezaFab(txt);
     if (exacto) return exacto;
@@ -35989,12 +36057,14 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   };
   const procesar = async (textoCam) => {
     const txt = (typeof textoCam === "string" ? textoCam : codigo).trim();
+    const mesaAhora = mesaRef.current; // la mesa que estaba elegida al leer (por si alguien pulsa otra mientras se procesa)
+    const avisarM = (ok, texto, repetida) => avisar(ok, texto, repetida, mesaAhora);
     setCodigo("");
     if (!txt) return;
     const cod = piezaDeTexto(txt);
-    if (!cod) { avisar(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
+    if (!cod) { avisarM(false, `"${txt}" no es una etiqueta de ventana (tienen 12 cifras).`); return; }
     const h = indice.get(cod);
-    if (!h) { avisar(false, `Etiqueta ${cod}: su lote no está en ningún PDF subido. Sube el PDF en el proyecto o en Almacén ventanas.`); return; }
+    if (!h) { avisarM(false, `Etiqueta ${cod}: su lote no está en ningún PDF subido. Sube el PDF en el proyecto o en Almacén ventanas.`); return; }
     if (consulta) { setConsulta(false); setUltimo(null); setFicha(h); pitidoCRM(true); enfocar(); return; } // Escáner: solo consulta (una lectura) y vuelve al modo normal del puesto
     setFicha(null);
     const v = h.ventana;
@@ -36002,19 +36072,19 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     const previa = escaneos.find((x) => x.id === claveLecturaLinea(puestoId, h));
     if (previa) {
       const hora = previa.ts ? new Date(previa.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "";
-      avisar(false, `⛔ YA LEÍDA: ${v.pos} ${h.pieza.t || "MARCO"} ya se leyó en ${nombrePuestoLinea(puestoId)}${hora ? ` a las ${hora}` : ""}${previa.por ? ` (${previa.por})` : ""}. No se puede leer otra vez. Si es una unidad más con la misma pegatina, avisa: no es una pieza nueva.`);
+      avisarM(false, `⛔ YA LEÍDA: ${v.pos} ${h.pieza.t || "MARCO"} ya se leyó en ${nombrePuestoLinea(puestoId)}${hora ? ` a las ${hora}` : ""}${previa.por ? ` (${previa.por})` : ""}. No se puede leer otra vez. Si es una unidad más con la misma pegatina, avisa: no es una pieza nueva.`);
       return;
     }
     const yaVentana = escaneos.some((x) => x.puestoId === puestoId && x.ventanaId === v.id);
     // Primero se comprueba si la pieza se puede coger en este puesto; solo si se puede, cuenta como leída
     let z = null;
     if (v.modelo) {
-      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, pilHojaOv, solOv, mosqOv, sinPersOv, por: quien, estricto }); }
+      try { z = await moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv, pilHojaOv, solOv, mosqOv, sinPersOv, por: quien, estricto, indice }); }
       catch (e) { z = { ok: false, texto: `No se pudieron actualizar las estanterías (${(e && e.message) || e}). La lectura NO se ha guardado.` }; }
-      if (z && !z.ok) { avisar(false, z.texto); return; }
+      if (z && !z.ok) { avisarM(false, z.texto); return; }
     }
-    const r = await registrarEscaneoLinea({ puestoId, h, por: quien, porId: quienId });
-    if (r !== "nuevo" && r !== "repetida") { avisar(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`); return; }
+    const r = await registrarEscaneoLinea({ puestoId, h, por: quien, porId: quienId, mesa: puestoId === "colgado" ? mesaAhora : 0 });
+    if (r !== "nuevo" && r !== "repetida") { avisarM(false, `No se pudo guardar la lectura (${r}). Si pone "permission denied", hay que abrir la ruta escaneosLinea en las reglas de Firebase.`); return; }
     const desc = `${v.pos} · ${v.grupo || h.dueno.nombre}`;
     let texto = r === "nuevo" ? `✓ ${desc} registrada en ${nombrePuestoLinea(puestoId)}` : `Ya estaba registrada en este puesto: ${desc}`;
     let ok = true;
@@ -36030,9 +36100,20 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
-    avisar(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
+    avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
     setUltimo((u) => (u ? { ...u, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+    if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
   };
+  const pintaUltimo = (u, cls) => (
+          <div className={`${cls} px-4 py-3 rounded-lg text-sm font-semibold whitespace-pre-line ${u.ok ? (u.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{u.texto}{u.zona && u.zona.hueco && (
+            <div className="mt-2 flex items-center gap-3 text-slate-800">
+              <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{u.zona.hueco}</span>
+              <span className="text-base font-bold">ESTANTERÍA{u.zona.slot > 1 ? ` (sitio ${u.zona.slot})` : ""} · {(zonas.find((x) => x.id === u.zona.zonaId) || {}).nombre || ""}</span>
+            </div>
+          )}{u.dib && <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>}{u.foco && onIrA && (
+            <button onClick={() => { focoAlmacen.actual = u.foco; onIrA(u.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
+          )}</div>
+  );
   return (
     <div className="space-y-6">
       <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
@@ -36053,16 +36134,27 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         <input ref={inputRef} autoFocus value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); procesar(); } }}
           placeholder={consulta ? "Pasa la pistola por la etiqueta (CONSULTA: no registra nada)" : `Pasa la pistola por la etiqueta (${nombrePuestoLinea(puestoId)})`} className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
         {camara && <LectorCamara modo="ventana" acepta={(v) => !!piezaDeTexto(v)} onLeido={(v) => { setCamara(false); procesar(v); }} onCerrar={() => { setCamara(false); enfocar(); }} />}
-        {ultimo && (
-          <div className={`mt-3 px-4 py-3 rounded-lg text-sm font-semibold whitespace-pre-line ${ultimo.ok ? (ultimo.repetida ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-emerald-50 text-emerald-800 border border-emerald-200") : "bg-rose-50 text-rose-700 border border-rose-200"}`}>{ultimo.texto}{ultimo.zona && ultimo.zona.hueco && (
-            <div className="mt-2 flex items-center gap-3 text-slate-800">
-              <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{ultimo.zona.hueco}</span>
-              <span className="text-base font-bold">ESTANTERÍA{ultimo.zona.slot > 1 ? ` (sitio ${ultimo.zona.slot})` : ""} · {(zonas.find((x) => x.id === ultimo.zona.zonaId) || {}).nombre || ""}</span>
+        {puestoId === "colgado" ? (
+          <div className="mt-3">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="text-xs font-semibold text-slate-600">Tu mesa (pulsa la tuya antes de leer):</span>
+              {[1, 2, 3].map((n) => (
+                <button key={n} type="button" onClick={() => elegirMesa(n)} className={`px-5 py-3 rounded-lg text-lg font-extrabold border-2 ${mesa === n ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Mesa {n}</button>
+              ))}
             </div>
-          )}{ultimo.dib && <div className="mt-2"><DibujoCargaVentana fab={ultimo.dib.fab} tip={ultimo.dib.tip} alto={110} /></div>}{ultimo.foco && onIrA && (
-            <button onClick={() => { focoAlmacen.actual = ultimo.foco; onIrA(ultimo.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
-          )}</div>
-        )}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              {[1, 2, 3].map((n) => {
+                const u = ultimosMesa[n];
+                return (
+                  <div key={n} className={`rounded-xl border-2 p-2 ${mesa === n ? "border-[#2E8B57] bg-emerald-50/30" : "border-slate-200"}`}>
+                    <div className="text-xs font-bold text-slate-600 mb-1">Mesa {n}{mesa === n ? " · la que estás usando" : ""}{u && u.ts ? ` · ${new Date(u.ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+                    {u ? pintaUltimo(u, "") : <p className="text-xs text-slate-400 px-2 py-3">Sin lecturas todavía.</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (ultimo && pintaUltimo(ultimo, "mt-3"))}
         {ficha && <FichaVentanaLinea admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
