@@ -13408,7 +13408,7 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
 
 // Un caballete está VACÍO cuando tiene cristales y todos están ya puestos (no queda ninguna unidad por usar)
 const caballeteVacio = (c) => { const ps = toArray(c && c.piezas); return ps.length > 0 && ps.every((p) => !!p.puesto); };
-function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false }) {
+function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false, destacar = null }) {
   const hayFiltro = hayFiltroCristales(filtros);
   const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const cambiarZona = (zonaId, campo, delta) => {
@@ -13477,7 +13477,10 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                     const c = cs[0];
                     const coincide = hayFiltro && cs.some((x) => cristalCoincideFiltros(x, filtros));
                     const vacio = cs.length > 0 && cs.every(caballeteVacio);
-                    const clase = coincide
+                    const focoRojo = !!destacar && destacar.zona === zonaId && destacar.fila === fila && destacar.hueco === hueco;
+                    const clase = focoRojo
+                      ? "bg-rose-600 text-white ring-4 ring-rose-300 animate-pulse cursor-pointer"
+                      : coincide
                       ? "bg-amber-500 text-white ring-2 ring-amber-300 cursor-pointer hover:opacity-80"
                       : vacio
                       ? "bg-slate-500 text-white cursor-pointer hover:opacity-80"
@@ -35233,6 +35236,8 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
   }
   const rg = REGLAS_PUESTO_LINEA[puestoId];
   if (rg) {
+    // Persiana A/B: una ventana que NO lleva persiana (lo dice la hoja de corte, o se marcó) no puede pasar por aquí
+    if ((puestoId === "persianaA" || puestoId === "persianaB") && !puerta && sinPersOv[base] === true) return { ok: false, texto: `⛔ ${v.pos} NO LLEVA PERSIANA: no puede pasar por ${nombrePuestoLinea(puestoId)}. Va directa a la Línea (cristales). Déjala en la Línea y NO la leas aquí.` };
     if (puestoId === "pilastra" && esHoja) {
       // Hoja con pilastra / travesaño: espera en su banco y, al leerla aquí, pasa a "Hojas" (de ahí la coge herraje), igual que el marco
       const uh = await ubicDe(cod);
@@ -35959,7 +35964,7 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h) {
       if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
       onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
       const donde = c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto} (sin hueco en el mapa)` : "sin ubicar en el mapa";
-      return { ok: true, foco: { tipo: "cristal", exp: d.exp, viv: String(p.ref || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
+      return { ok: true, foco: { tipo: "cristal", exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
     }
   }
   return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
@@ -36381,7 +36386,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
-    setUltimo((u) => (u ? { ...u, h, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+    setUltimo((u) => (u ? { ...u, h, puedeLinea: (puestoId === "persianaA" || puestoId === "persianaB") && !!cruce && !cruce.ok, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
     if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], h, foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
   };
   // Matrimonio: la ventana fue al banco de persiana A/B pero NO lleva persiana (no estaba marcada la casilla en las pegatinas): se marca y pasa a la Línea
@@ -36406,6 +36411,8 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             </div>
           )}{u.dib && <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>}{puestoId === "colgado" && u.h && u.zona && (u.zona.zonaId === "colgadoA" || u.zona.zonaId === "colgadoB") && u.ok && (
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-slate-700 text-white text-sm font-bold">No lleva persiana → pasar a la Línea</button>
+          )}{(puestoId === "persianaA" || puestoId === "persianaB") && u.h && u.puedeLinea && (
+            <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">No lleva persiana → quitarla de aquí y pasarla a la Línea</button>
           )}{u.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = u.foco; onIrA(u.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
           )}</div>
@@ -36461,7 +36468,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} />
+        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null} />
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -40269,9 +40276,10 @@ function HorasPorObraLinea({ proyectos = [], uxExpedientes = [], usuarios = [], 
 }
 
 // Almacén que le toca al puesto, SOLO PARA MIRAR (sin botones para cambiar nada)
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
+  const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
   const nq = normBusq(q);
   if (puestoId === "cristales") {
     return (
@@ -40280,7 +40288,8 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           <h4 className="font-display font-bold text-slate-800">Almacén de cristales <span className="text-xs font-normal text-slate-400">(solo mirar)</span></h4>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
         </div>
-        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura onVerHueco={() => {}} />
+        {destacarCristal && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
+        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura onVerHueco={() => {}} destacar={destacarCristal && destacarCristal.ubicacion ? destacarCristal.ubicacion : null} />
       </div>
     );
   }
@@ -40309,7 +40318,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                 const rojo = !!destacarPers && String(destacarPers.carro) === String(c.numero) && (destacarPers.almacenId || ALMACEN_PRINCIPAL_ID) === a.id;
                 const resaltado = nq && its.some((x) => normBusq(`${x.expediente} ${x.ref} ${x.ancho || ""}x${x.alto || ""} ${x.medida || ""}`).includes(nq));
                 return (
-                  <div key={c.numero} className={`w-[150px] rounded-lg border-2 p-2 ${vacio ? "bg-slate-200 border-slate-400" : "bg-white"} ${rojo ? "!border-rose-600 !bg-rose-50 ring-4 ring-rose-300 animate-pulse" : resaltado ? "border-amber-500 ring-2 ring-amber-200" : vacio ? "" : "border-slate-200"}`}>
+                  <div key={c.numero} onClick={() => setCarroVer({ almacenId: a.id, numero: c.numero })} title="Pulsa para ver todas las persianas de este carro" className={`cursor-pointer hover:shadow-md w-[150px] rounded-lg border-2 p-2 ${vacio ? "bg-slate-200 border-slate-400" : "bg-white"} ${rojo ? "!border-rose-600 !bg-rose-50 ring-4 ring-rose-300 animate-pulse" : resaltado ? "border-amber-500 ring-2 ring-amber-200" : vacio ? "" : "border-slate-200"}`}>
                     <div className="flex items-center justify-between">
                       <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -40326,6 +40335,41 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           </div>
         );
       })}
+      {carroVer && (() => {
+        const its = items.filter((x) => (almacenDe(x) === carroVer.almacenId) && x.estante && x.estante.carro === carroVer.numero)
+          .sort((x, y) => String(x.estante.lado).localeCompare(String(y.estante.lado)) || (x.estante.nivel - y.estante.nivel) || partePersiana(x).localeCompare(partePersiana(y)) || String(x.ref || "").localeCompare(String(y.ref || "")));
+        const foco = destacarPers && String(destacarPers.carro) === String(carroVer.numero) ? destacarPers : null;
+        return (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={() => setCarroVer(null)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center gap-3 p-4 border-b border-slate-200">
+                <div className="font-bold text-slate-800">Carro {carroVer.numero} · {its.length} persiana{its.length === 1 ? "" : "s"}</div>
+                <button type="button" onClick={() => setCarroVer(null)} className="ml-auto text-sm font-semibold text-slate-500 hover:text-slate-700">Cerrar</button>
+              </div>
+              <div className="overflow-y-auto p-4">
+                {!its.length ? <p className="text-sm text-slate-500">Este carro está vacío.</p> : (
+                  <table className="w-full text-sm">
+                    <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 px-2">Lado</th><th className="px-2">Estante</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Expediente</th><th className="px-2">Medida (mm)</th></tr></thead>
+                    <tbody>
+                      {its.map((x) => {
+                        const esFoco = !!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel;
+                        return (
+                          <tr key={x.id} className={`border-b border-slate-100 ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
+                            <td className="py-1.5 px-2">{x.estante.lado}</td><td className="px-2">{x.estante.nivel}</td>
+                            <td className="px-2 font-semibold">{x.ref || "—"}</td>
+                            <td className="px-2">EXP {x.expediente || "—"}{partePersiana(x) ? ` · ${partePersiana(x)}` : ""}</td>
+                            <td className="px-2">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
