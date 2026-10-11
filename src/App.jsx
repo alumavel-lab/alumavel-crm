@@ -12291,7 +12291,10 @@ function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCe
 // ---- Buscadores del almacén de cristales: caballete / vivienda / expediente (+ "otro") ----
 // Cada caja filtra SOLO su campo y se combinan todas con AND. Así "343" en Caballete no
 // se mezcla con un expediente 343 ni con una medida.
-const normBusq = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
+// Ignora espacios, puntos, guiones y barras: "V03.103", "V03 103" y "v03-103" son lo mismo.
+const normBusq = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x").replace(/[.\-_/]/g, "");
+// Expediente: además ignora el prefijo "EXP" / "Expediente" ("EXP 852" == "852").
+const normExpBusq = (s) => normBusq(s).replace(/^exp(ediente)?:?/, "");
 const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", otro: "" };
 const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.otro));
 function textoFiltrosCristales(f) {
@@ -12299,21 +12302,21 @@ function textoFiltrosCristales(f) {
 }
 // ¿Esta línea de cristal (pieza) cumple los filtros? (la usa la pestaña "Cristales")
 function piezaCoincideFiltros(c, p, f) {
-  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normBusq(f.exp), otro = normBusq(f.otro);
+  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (viv && !normBusq(p.ref).includes(viv)) return false;
-  if (exp && !normBusq(p.expediente || c.expediente).includes(exp)) return false;
+  if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
   if (otro && !normBusq(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
   return true;
 }
 // ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
 function cristalCoincideFiltros(c, f) {
-  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normBusq(f.exp), otro = normBusq(f.otro);
+  const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
-  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normBusq(p.expediente || c.expediente).includes(exp)));
+  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(p.expediente || c.expediente).includes(exp)));
 }
 function BuscadoresCristales({ filtros, setFiltros }) {
   const campo = (k, placeholder, ancho) => (
@@ -12562,7 +12565,8 @@ function TrabajoCristales({ cristales, filtros }) {
 function buscarPegatinaCristal(cristales, d) {
   const num = (x) => parseInt(String(x ?? "").replace(/\D/g, ""), 10) || 0;
   const toks = new Set([...String(d.texto || "").split(/[\s,;|:]+/), d.codigo, d.caballete, d.pedido].map((t) => normBusq(t)).filter((t) => t.length >= 3));
-  const exp = normBusq(d.expediente), viv = normBusq(d.vivienda), caba = normBusq(d.caballete);
+  const exp = normExpBusq(d.expediente), viv = normBusq(d.vivienda), caba = normBusq(d.caballete);
+  const expNums = numsExpediente(d.expediente);
   const an = num(d.ancho), al = num(d.alto);
   const cerca = (a, b) => a && b && Math.abs(a - b) <= 2;
   const res = [];
@@ -12575,8 +12579,9 @@ function buscarPegatinaCristal(cristales, d) {
       let score = 0; const motivos = [];
       const pedido = normBusq(p.pedido);
       if (pedido.length >= 4 && toks.has(pedido)) { score += 40; motivos.push("pedido"); }
-      const ex = normBusq(p.expediente || c.expediente);
-      if (exp && ex && exp === ex) { score += 20; motivos.push("expediente"); } else if (!exp && ex.length >= 3 && toks.has(ex)) { score += 15; motivos.push("expediente"); }
+      const ex = normExpBusq(p.expediente || c.expediente);
+      const mismoExp = exp && ex && (exp === ex || (expNums.length > 0 && numsExpediente(p.expediente || c.expediente).some((n) => expNums.includes(n))));
+      if (mismoExp) { score += 20; motivos.push("expediente"); } else if (!exp && ex.length >= 3 && toks.has(ex)) { score += 15; motivos.push("expediente"); }
       const ref = normBusq(p.ref);
       if (viv && ref && Math.min(ref.length, viv.length) >= 3 && (ref.includes(viv) || viv.includes(ref))) { score += 20; motivos.push("vivienda"); } else if (!viv && ref.length >= 4 && toks.has(ref)) { score += 20; motivos.push("vivienda"); }
       const pa = num(p.ancho), pl = num(p.alto);
@@ -13291,8 +13296,25 @@ function UltimosCaballetesPendientesModal({ cristales, onCerrar, onConfirmar }) 
 }
 
 function NuevoCristalForm({ onCancel, onSave, onFotos }) {
-  const [f, setF] = useState({ lote: "", secuencia: "", cliente: "", proveedor: "", expediente: "", medida: "", cantidad: 1, fechaLlegada: new Date().toISOString().slice(0, 10) });
+  const [f, setF] = useState({ lote: "", secuencia: "", cliente: "", proveedor: "", expediente: "", medida: "", ref: "", cantidad: 1, fechaLlegada: new Date().toISOString().slice(0, 10) });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  // Un caballete hecho a mano también lleva su cristal (pieza) con vivienda, expediente y medida,
+  // igual que los que entran por packing list o por fotos. Sin pieza, los buscadores por vivienda
+  // y medida, la pistola y el cruce con la línea no lo encuentran.
+  const guardar = () => {
+    const { ref, ...resto } = f;
+    const m = String(f.medida || "").match(/(\d+(?:[.,]\d+)?)\s*[x×*]\s*(\d+(?:[.,]\d+)?)/i);
+    const ancho = m ? parseFloat(m[1].replace(",", ".")) : 0;
+    const alto = m ? parseFloat(m[2].replace(",", ".")) : 0;
+    if (!(ancho > 0 && alto > 0)) {
+      if (!window.confirm("La medida no está en formato ancho x alto (ej. 1200x1500). Si sigues, el caballete se guarda sin cristales y NO se podrá encontrar por vivienda ni por medida. ¿Guardar así?")) return;
+      onSave(resto);
+      return;
+    }
+    const uds = Math.max(1, parseInt(f.cantidad, 10) || 1);
+    const pieza = { ref: String(ref || "").trim(), expediente: String(f.expediente || "").trim(), ancho, alto, cantidad: uds, m2: Math.round((ancho * alto) / 1000) / 1000, pedido: String(f.secuencia || "").trim(), origen: "añadido a mano" };
+    onSave(recalcularCaballete({ ...resto, cantidad: uds }, [pieza]));
+  };
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
       <h3 className="font-display font-bold text-slate-800 mb-3">Nuevo caballete</h3>
@@ -13311,11 +13333,13 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
         <Field label="Expediente"><TextInput value={f.expediente} onChange={set("expediente")} /></Field>
         <Field label="Cliente"><TextInput value={f.cliente} onChange={set("cliente")} /></Field>
         <Field label="Proveedor"><TextInput value={f.proveedor} onChange={set("proveedor")} placeholder="Ej: Uxcar" /></Field>
-        <Field label="Medida"><TextInput value={f.medida} onChange={set("medida")} placeholder="Ej: 1200x1500" /></Field>
+        <Field label="Medida (ancho x alto)"><TextInput value={f.medida} onChange={set("medida")} placeholder="Ej: 1200x1500" /></Field>
+        <Field label="Vivienda / ref."><TextInput value={f.ref} onChange={set("ref")} placeholder="Ej: V03.103" /></Field>
+        <Field label="Uds"><TextInput value={f.cantidad} onChange={set("cantidad")} /></Field>
       </div>
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-4 py-2 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
-        <button onClick={() => onSave(f)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2 rounded-md">Guardar</button>
+        <button onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2 rounded-md">Guardar</button>
       </div>
     </div>
   );
@@ -15401,6 +15425,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
   const ocup = useMemo(() => estadoOcupacionPersianas(items), [items]);
   const nq = q.trim().toLowerCase();
+  // Búsqueda tolerante: ignora "EXP", espacios, guiones y puntos ("EXP 852", "exp-852" y "852" son lo mismo)
+  const limpiaExp = (t) => String(t || "").toLowerCase().replace(/exp(ediente)?/g, "").replace(/[^a-z0-9]/g, "");
+  const coincideExp = (exp, qq) => { const b = limpiaExp(qq); return !!b && limpiaExp(exp).includes(b); };
 
   const subir = async (file) => {
     setLeyendo(true); setAviso("");
@@ -15636,6 +15663,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
           </div>
+          {nq && (() => {
+            const coinciden = items.filter((x) => coincideExp(x.expediente, nq));
+            const enCarro = coinciden.filter((x) => x.estante && !x.entregada).length;
+            const sin = coinciden.filter((x) => !x.estante && !x.enPuesto && !x.entregada).length;
+            const puesto = coinciden.filter((x) => x.enPuesto && !x.entregada).length;
+            const fuera = coinciden.filter((x) => x.entregada).length;
+            if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
+            return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">{coinciden.length} encontradas: {enCarro} en carros (resaltados){sin ? ` · ${sin} sin sitio` : ""}{puesto ? ` · ${puesto} en puesto` : ""}{fuera ? ` · ${fuera} ya salieron` : ""}.</div>;
+          })()}
           <div className="space-y-2 overflow-x-auto">
             {filas.map((fila, fi) => (
               <div key={fi} className="flex items-stretch gap-2 w-max">
@@ -15643,7 +15679,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 {fila.map((c) => {
                   const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
                   const r = resumenCarro(c);
-                  const resaltado = nq && r.exps.some((e) => String(e).toLowerCase().includes(nq));
+                  const resaltado = nq && r.exps.some((e) => coincideExp(e, nq));
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
@@ -15675,7 +15711,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           if (soloSinColocar && x.colocada) return false;
           if (soloIncidencia && !x.incidencia) return false;
           if (!nql) return true;
-          return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql);
+          return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql) || coincideExp(x.expediente, qLista);
         }).sort((a, b) => String(a.expediente).localeCompare(String(b.expediente)) || String(a.ref).localeCompare(String(b.ref)));
         const colocadas = items.filter((x) => x.colocada).length;
         const conInc = items.filter((x) => x.incidencia).length;
