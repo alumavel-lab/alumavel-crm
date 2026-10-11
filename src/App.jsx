@@ -13478,14 +13478,16 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                     const coincide = hayFiltro && cs.some((x) => cristalCoincideFiltros(x, filtros));
                     const vacio = cs.length > 0 && cs.every(caballeteVacio);
                     const focoRojo = !!destacar && destacar.zona === zonaId && destacar.fila === fila && destacar.hueco === hueco;
+                    const hoyCris = hoyISO();
+                    const tocadoHoy = cs.some((x) => toArray(x.piezas).some((p) => p.puesto && p.fechaPuesto === hoyCris)); // caballete del que ya se ha puesto algún cristal hoy
                     const clase = focoRojo
-                      ? "bg-rose-600 text-white ring-4 ring-rose-300 animate-pulse cursor-pointer"
+                      ? (destacar.naranja ? "bg-orange-500 text-white ring-4 ring-orange-300 animate-pulse cursor-pointer" : "bg-rose-600 text-white ring-4 ring-rose-300 animate-pulse cursor-pointer")
                       : coincide
                       ? "bg-amber-500 text-white ring-2 ring-amber-300 cursor-pointer hover:opacity-80"
                       : vacio
                       ? "bg-slate-500 text-white cursor-pointer hover:opacity-80"
                       : c
-                      ? "bg-[#2E8B57] text-white cursor-pointer hover:opacity-80"
+                      ? `bg-[#2E8B57] text-white cursor-pointer hover:opacity-80${tocadoHoy ? " ring-4 ring-orange-400" : ""}`
                       : "bg-slate-100 text-slate-300";
                     return (
                       <button
@@ -35975,7 +35977,7 @@ function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
       if (!onUpdateCristal) return { ok: false, texto: "no tengo acceso al almacén de cristales desde aquí" };
       onUpdateCristal(c.id, { piezas: ps.map((q, j) => (j === i ? { ...q, puesto: true, fechaPuesto: hoyISO(), trabajo: "", ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : q)) });
       const donde = c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto} (sin hueco en el mapa)` : "sin ubicar en el mapa";
-      return { ok: true, foco: { tipo: "cristal", exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
+      return { ok: true, foco: { tipo: "cristal", puesto: true, exp: d.exp, viv: String(p.ref || ""), ubicacion: c.ubicacion || null, medida: `${p.ancho || "?"} × ${p.alto || "?"}`, caballete: String(c.lote || c.numero || "") }, texto: `COGE el cristal ${p.ref || ""} del caballete ${c.lote || c.numero || ""} (${donde}) · marcado como puesto` };
     }
   }
   return { ok: false, texto: variasUnidades ? "su cristal viene con varias unidades en una sola fila: márcalo a mano en Cristales" : "no he encontrado su cristal en el almacén (mira que el packing list esté subido y que la vivienda coincida)" };
@@ -40662,8 +40664,9 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           <h4 className="font-display font-bold text-slate-800">Almacén de cristales <span className="text-xs font-normal text-slate-400">(solo mirar)</span></h4>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
         </div>
-        {destacarCristal && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
-        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? destacarCristal.ubicacion : null} />
+        {destacarCristal && destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-orange-500 text-white text-base font-extrabold">✓ CRISTAL {destacarCristal.viv || ""} PUESTO · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}</div>}
+        {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
+        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
         <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} />
         {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} />}
       </div>
