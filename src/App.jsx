@@ -12746,7 +12746,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
 }
 
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
-  const [subTab, setSubTab] = useState("pendientes");
+  const [subTab, setSubTab] = useState(() => (focoAlmacen.actual && focoAlmacen.actual.tipo === "cristal" && focoAlmacen.actual.ubicacion ? "mapa" : "pendientes")); // «Ver en el mapa» desde Cristales abre el mapa (o los pendientes si el caballete no tiene hueco)
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
   const [verUltimos, setVerUltimos] = useState(false);
@@ -13408,7 +13408,7 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
 
 // Un caballete está VACÍO cuando tiene cristales y todos están ya puestos (no queda ninguna unidad por usar)
 const caballeteVacio = (c) => { const ps = toArray(c && c.piezas); return ps.length > 0 && ps.every((p) => !!p.puesto); };
-function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false, destacar = null }) {
+function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false, destacar = null, verDetalleSolo = false }) {
   const hayFiltro = hayFiltroCristales(filtros);
   const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
   const cambiarZona = (zonaId, campo, delta) => {
@@ -13490,7 +13490,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                     return (
                       <button
                         key={hueco}
-                        onClick={() => c && !soloLectura && onVerHueco && onVerHueco({ zona: zonaId, fila, hueco })}
+                        onClick={() => c && (!soloLectura || verDetalleSolo) && onVerHueco && onVerHueco({ zona: zonaId, fila, hueco })}
                         title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
                         className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
@@ -34204,6 +34204,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     return (
       <div className="space-y-4">
         {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
+        <AvisoBusquedaVentana indice={indicePiezas} ubic={ubicAlm} />
+        <PedirVentanaLinea indice={indicePiezas} ubic={ubicAlm} quien="Carga" />
         <div className="bg-white border-2 border-slate-300 rounded-xl p-4">
           <div className="text-base font-bold text-slate-800 mb-2">Pasa la pistola por la etiqueta de la ventana</div>
           <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Etiqueta de la ventana…" className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
@@ -35230,10 +35232,10 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
       await liberarCodigoLinea(base);
       return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · VIVIENDA COMPLETA → CABALLETE PREPARADO. ${textoCaballete(mates)}`, zona: null };
     }
-    // Vivienda (de una o varias ventanas) en la que NINGUNA lleva solape (y no hay ninguna esperando ya en el almacén de espera): van directas por la línea a carga, sin estantería
-    if (!mates.some((m) => solOv[baseDe(m.w)] || (m.u && m.u.zonaId === "espera"))) {
+    // Vivienda de UNA sola ventana: está completa, va directa a carga. Si tiene más ventanas, esta espera en «Ventanas terminadas» (o en Solape si lo elige quien acristala) hasta que estén todas: no pasa a carga antes.
+    if (mates.length === 0) {
       await liberarCodigoLinea(base);
-      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE → VA DIRECTA POR LA LÍNEA a carga (sin estantería). ${mates.length > 0 ? `Son ${mates.length + 1} ventanas de la vivienda: van llegando seguidas.` : "Es la única ventana de su vivienda."}`, zona: null };
+      return { ok: true, texto: `✓ ${v.pos} acristalada · SIN SOLAPE · Es la única ventana de su vivienda → VA DIRECTA POR LA LÍNEA a carga (sin estantería).`, zona: null };
     }
     const n = await poner("espera", base);
     if (!n) return llena("espera", v.pos);
@@ -36471,7 +36473,63 @@ function PrioridadPuertasHoy({ proyectos, uxExpedientes, sinObra }) {
 }
 
 // Aviso a TODOS los puestos: Cristales (o Control) está buscando una ventana para completar una vivienda
-function AvisoBusquedaVentana({ indice, ubic }) {
+// Cualquier puesto (y Carga) puede PEDIR una ventana que le falta: sale el cartel «se busca» en todos los puestos.
+// Muestra dónde está ahora cada ventana; si ya está en una salida/espera, se puede coger directamente.
+function PedirVentanaLinea({ indice, ubic, quien }) {
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(false);
+  const [msg, setMsg] = useState("");
+  const nz = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
+  const listas = ["persianaA", "persianaB", "puertasTerminadas", "especiales", "sinPersiana", "solape", "espera"];
+  const nq = normBusq(q);
+  const res = [];
+  if (abierto && nq.length >= 2) {
+    for (const hh of indice.values()) {
+      if (!hh.ventana.modelo || String(hh.pieza.c) !== baseDe(hh.ventana)) continue;
+      const v = hh.ventana;
+      if (normBusq(`${v.pos} ${v.grupo || ""} ${v.cliente || ""} ${hh.dueno.nombre || ""} ${hh.lote.expediente || ""} ${v.num || ""}`).includes(nq)) { res.push(hh); if (res.length >= 10) break; }
+    }
+  }
+  const pedir = async (hh) => {
+    const v = hh.ventana;
+    try { await fbSet(ref(fbDb, `busquedaLinea/${baseDe(v)}`), { pos: v.pos, grupo: v.grupo || "", cliente: v.cliente || "", ts: Date.now(), por: quien || (fbAuth.currentUser && fbAuth.currentUser.email) || "" }); setMsg(`📣 Pedida ${v.pos}: sale el aviso en todos los puestos.`); } catch (e) { setMsg("No se pudo pedir: " + ((e && e.message) || e)); }
+  };
+  return (
+    <div className="border border-rose-300 bg-rose-50/50 rounded-lg p-3">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="text-sm font-bold text-rose-800">{abierto ? "▼" : "▶"} 📣 Pedir una ventana que me falta</button>
+      {abierto && (
+        <div className="mt-2">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Escribe la ventana, vivienda, cliente u obra (ej. COCINA, 1035, Bajo A)…" className="w-full text-sm border border-slate-300 rounded-md px-3 py-2 bg-white" />
+          {res.map((hh) => { const u = ubic[baseDe(hh.ventana)]; const lista = u && listas.includes(u.zonaId); return (
+            <div key={hh.ventana.id} className="flex flex-wrap items-center gap-2 text-xs text-slate-700 mt-1.5">
+              <b>{hh.ventana.pos}</b><span>{hh.ventana.grupo || ""}{hh.ventana.cliente ? ` · ${hh.ventana.cliente}` : ""} · {hh.dueno.nombre}</span>
+              <span className={`font-semibold ${lista ? "text-emerald-700" : "text-rose-700"}`}>{u ? `${lista ? "COGER en " : "aún en "}${nz(u.zonaId)} · est. ${u.hueco}` : "sin leer en ningún puesto"}</span>
+              {!lista && <button type="button" onClick={() => pedir(hh)} className="ml-auto px-2.5 py-1 rounded bg-rose-600 text-white font-bold">📣 Pedir</button>}
+            </div>
+          ); })}
+          {nq.length >= 2 && res.length === 0 && <p className="text-xs text-slate-500 mt-1">Ninguna ventana coincide.</p>}
+          {msg && <p className="text-xs font-semibold text-slate-700 mt-1">{msg}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+// Qué puesto tiene que hacer AHORA la siguiente tarea de una ventana, según dónde están sus piezas (null = ya está lista para coger)
+function puestoResponsableVentana(base, ubic) {
+  const z = (c) => (ubic[c] && ubic[c].zonaId) || "";
+  const hz = [1, 2, 3].map((k) => z(codHoja(base, k))).filter(Boolean);
+  if (hz.includes("hojasPilastra")) return "pilastra";
+  if (hz.includes("hojas")) return "herraje";
+  const zb = z(base);
+  if (!zb) return "soldadora";
+  if (zb === "marcosPilastra") return "pilastra";
+  if (zb === "marcos" || zb === "hojasHerraje") return "colgado";
+  if (zb === "puertas") return "puerta";
+  if (zb === "colgadoA") return "persianaA";
+  if (zb === "colgadoB") return "persianaB";
+  return null;
+}
+function AvisoBusquedaVentana({ indice, ubic, puestoId = "" }) {
   const busq = useObjetoFb("busquedaLinea");
   const zonas = useZonasLinea();
   const hechas = ["persianaA", "persianaB", "puertasTerminadas", "solape", "espera"];
@@ -36479,17 +36537,37 @@ function AvisoBusquedaVentana({ indice, ubic }) {
   const lista = Object.entries(busq || {}).filter(([, b]) => b && b.pos).filter(([base]) => { const u = ubic[base]; return !(u && (hechas.includes(u.zonaId) || (u.zonaId === "sinPersiana" && sinPersOv[base]))); }).sort((a, b) => b[1].ts - a[1].ts);
   if (lista.length === 0) return null;
   const nom = (id) => (zonas.find((z) => z.id === id) || {}).nombre || id;
+  const conResp = lista.map(([base, b]) => ({ base, b, resp: puestoResponsableVentana(base, ubic) }));
+  const mias = conResp.filter((x) => puestoId && x.resp === puestoId);
+  const otras = conResp.filter((x) => !(puestoId && x.resp === puestoId));
   return (
-    <div className="mb-3 border-2 border-rose-500 bg-rose-50 rounded-xl p-3">
-      <div className="text-sm font-extrabold text-rose-700 mb-1 animate-pulse">📣 SE BUSCA UNA VENTANA ({lista.length}) · Cristales la necesita para completar la vivienda</div>
-      {lista.map(([base, b]) => { const u = ubic[base]; return (
-        <div key={base} className="flex flex-wrap items-center gap-2 text-sm text-rose-900 mb-1">
-          <b>{b.pos}</b><span>{b.grupo}{b.cliente ? ` · ${b.cliente}` : ""}</span>
-          <span className="text-xs">{u ? `ahora en ${nom(u.zonaId)} · est. ${u.hueco}` : "sin leer en ningún puesto: ¿dónde está?"}</span>
-          <button type="button" onClick={() => fbSet(ref(fbDb, `busquedaLinea/${base}`), null)} className="ml-auto text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-0.5 bg-white">Quitar aviso</button>
+    <>
+      {mias.length > 0 && (
+        <div className="mb-3 border-4 border-rose-600 bg-rose-100 rounded-xl p-4">
+          <div className="text-xl font-extrabold text-rose-700 mb-2 animate-pulse">🚨 TE PIDEN {mias.length === 1 ? "ESTA VENTANA" : "ESTAS VENTANAS"}: hazla{mias.length === 1 ? "" : "s"} YA</div>
+          {mias.map(({ base, b }) => { const u = ubic[base]; return (
+            <div key={base} className="flex flex-wrap items-center gap-3 text-base text-rose-900 mb-1">
+              <b className="text-2xl">{b.pos}</b><span>{b.grupo}{b.cliente ? ` · ${b.cliente}` : ""}</span>
+              <span className="text-sm">{u ? `está en ${nom(u.zonaId)} · est. ${u.hueco}` : "aún no se ha leído en la soldadora"}</span>
+              {b.por ? <span className="text-xs italic">la pide: {b.por}</span> : null}
+              <button type="button" onClick={() => fbSet(ref(fbDb, `busquedaLinea/${base}`), null)} className="ml-auto text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-0.5 bg-white">Quitar aviso</button>
+            </div>
+          ); })}
         </div>
-      ); })}
-    </div>
+      )}
+      {otras.length > 0 && (
+        <div className="mb-3 border-2 border-rose-500 bg-rose-50 rounded-xl p-3">
+          <div className="text-sm font-extrabold text-rose-700 mb-1">📣 SE BUSCA UNA VENTANA ({otras.length}) · se necesita para completar una vivienda</div>
+          {otras.map(({ base, b, resp }) => { const u = ubic[base]; return (
+            <div key={base} className="flex flex-wrap items-center gap-2 text-sm text-rose-900 mb-1">
+              <b>{b.pos}</b><span>{b.grupo}{b.cliente ? ` · ${b.cliente}` : ""}</span>{b.por ? <span className="text-xs italic">pedida por {b.por}</span> : null}
+              <span className="text-xs">{u ? `ahora en ${nom(u.zonaId)} · est. ${u.hueco}` : "sin leer en ningún puesto: ¿dónde está?"}{resp ? ` · le toca a ${nombrePuestoLinea(resp)}` : ""}</span>
+              <button type="button" onClick={() => fbSet(ref(fbDb, `busquedaLinea/${base}`), null)} className="ml-auto text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-0.5 bg-white">Quitar aviso</button>
+            </div>
+          ); })}
+        </div>
+      )}
+    </>
   );
 }
 // Mensajes que manda el Control de línea a todos los puestos (viviendas enviadas solas a la Línea)
@@ -36653,10 +36731,10 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-slate-700 text-white text-sm font-bold">No lleva persiana → pasar a la Línea</button>
           )}{(puestoId === "persianaA" || puestoId === "persianaB") && u.h && u.puedeLinea && (
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">No lleva persiana → quitarla de aquí y pasarla a la Línea</button>
-          )}{puestoId === "cristales" && u.urgente && u.h && (
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs"><b className="text-slate-700">🚨 URGENTE · ¿dónde la dejas?</b>
-              {[["espera", "Almacén de espera"], ["solape", "Solape / postigo"], ["sinPersiana", "Volver a la Línea"]].map(([zid, nombre]) => <button key={zid} type="button" onClick={async () => { try { const r = await moverVentanaControl({ h: u.h, zonaId: zid, zonas, ubic, por: quien }); avisar(r.ok, r.texto, false, u.mesa); } catch (e) { avisar(false, `No se pudo mover: ${(e && e.message) || e}`, false, u.mesa); } }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">{nombre}</button>)}
-              <button type="button" onClick={async () => { const b = baseDe(u.h.ventana); await liberarCodigoLinea(b); for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(b, k)); avisar(true, `✓ ${u.h.ventana.pos} sale directa a carga (sin estantería)`, false, u.mesa); }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">Directa a carga</button>
+          )}{puestoId === "cristales" && u.h && (u.urgente || (u.zona && ["espera", "solape"].includes(u.zona.zonaId))) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs"><b className="text-slate-700">{u.urgente ? "🚨 URGENTE · " : ""}¿Dónde la dejas hasta que la vivienda esté completa?</b>
+              {[["espera", "Ventanas terminadas (espera)"], ["solape", "Solape / postigo"], ...(u.urgente ? [["sinPersiana", "Volver a la Línea"]] : [])].filter(([zid]) => !(u.zona && u.zona.zonaId === zid)).map(([zid, nombre]) => <button key={zid} type="button" onClick={async () => { try { const r = await moverVentanaControl({ h: u.h, zonaId: zid, zonas, ubic, por: quien }); avisar(r.ok, r.texto, false, u.mesa); } catch (e) { avisar(false, `No se pudo mover: ${(e && e.message) || e}`, false, u.mesa); } }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">{nombre}</button>)}
+              {u.urgente && <button type="button" onClick={async () => { const b = baseDe(u.h.ventana); await liberarCodigoLinea(b); for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(b, k)); avisar(true, `✓ ${u.h.ventana.pos} sale directa a carga (sin estantería)`, false, u.mesa); }} className="px-2.5 py-1.5 rounded-md bg-slate-700 text-white font-bold">Directa a carga</button>}
             </div>
           )}{u.foco && onIrA && (
             <button onClick={() => { focoAlmacen.actual = u.foco; onIrA(u.foco.tipo === "cristal" ? "cristales" : "persianasAlmacen"); }} className="mt-2 block px-3 py-1.5 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Ver en el mapa</button>
@@ -36665,8 +36743,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   return (
     <div className="space-y-6">
       <AvisoSacarLinea quien={quien} />
-      <AvisoBusquedaVentana indice={indice} ubic={ubic} />
+      <AvisoBusquedaVentana indice={indice} ubic={ubic} puestoId={puestoId} />
       <AvisoMensajesLinea />
+      <PedirVentanaLinea indice={indice} ubic={ubic} quien={quien} />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       {puestoId === "puerta" && <PuertasTerminadasLinea indice={indice} ubic={ubic} quien={quien} />}
@@ -40531,10 +40610,50 @@ function HorasPorObraLinea({ proyectos = [], uxExpedientes = [], usuarios = [], 
 }
 
 // Almacén que le toca al puesto, SOLO PARA MIRAR (sin botones para cambiar nada)
+// Puesto Cristales: mirar (sin tocar nada) qué lleva el caballete de un hueco del mapa
+function CaballeteSoloLectura({ cristales, ubic, onCerrar }) {
+  const lista = cristales.filter((c) => c.ubicacion && c.ubicacion.zona === ubic.zona && c.ubicacion.fila === ubic.fila && c.ubicacion.hueco === ubic.hueco);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onCerrar}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-3"><div className="font-bold text-slate-800">{ubicacionTexto(ubic)}</div><button type="button" onClick={onCerrar} className="ml-auto text-sm font-semibold text-slate-500 border border-slate-300 rounded px-3 py-1">Cerrar</button></div>
+        {lista.length === 0 && <p className="text-sm text-slate-500">Hueco vacío.</p>}
+        {lista.map((c) => <CaballeteFilas key={c.id} c={c} />)}
+      </div>
+    </div>
+  );
+}
+function CaballeteFilas({ c, marcar = "" }) {
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 mb-3">
+      <div className="text-sm font-bold text-slate-800">Caballete {c.lote || c.numero || "—"} <span className="font-normal text-slate-500">· {c.cliente || ""}{c.proveedor ? ` · ${c.proveedor}` : ""} · exp. {textoExpedientes(c, 10)}</span></div>
+      <table className="w-full text-xs mt-1"><thead><tr className="text-left text-slate-500"><th className="py-0.5">Vivienda / ref</th><th>Expediente</th><th>Medida (mm)</th><th>Uds</th><th>Estado</th></tr></thead>
+        <tbody>{toArray(c.piezas).map((p, i) => (
+          <tr key={i} className={`border-t border-slate-100 ${marcar && normBusq(`${p.ref} ${p.expediente || c.expediente}`).includes(normBusq(marcar)) ? "bg-rose-100 font-bold" : ""}`}><td className="py-0.5">{p.ref || "—"}</td><td>{p.expediente || c.expediente || ""}</td><td>{p.ancho || "?"} × {p.alto || "?"}</td><td>{p.cantidad || 1}</td><td>{p.puesto ? "✓ puesto" : "por poner"}</td></tr>
+        ))}</tbody></table>
+    </div>
+  );
+}
+// Puesto Cristales: caballetes «Pendientes de ubicar» (sin hueco en el mapa) para poder buscar ahí el cristal
+function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
+  const [abierto, setAbierto] = useState(false);
+  const nq = normBusq(q);
+  const pend = cristales.filter((c) => !c.ubicacion && !c.enPuesto && toArray(c.piezas).some((p) => !p.puesto));
+  const filtrados = nq ? pend.filter((c) => normBusq(`${c.lote} ${c.cliente} ${textoExpedientes(c, 20)} ${toArray(c.piezas).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(nq)) : pend;
+  const foco = destacarCristal && !destacarCristal.ubicacion;
+  const abre = abierto || foco;
+  return (
+    <div className={`mt-4 rounded-lg p-3 border ${foco ? "border-rose-500 bg-rose-50" : "border-amber-300 bg-amber-50/60"}`}>
+      <button type="button" onClick={() => setAbierto(!abre)} className="text-sm font-bold text-amber-900">{abre ? "▼" : "▶"} Pendientes de ubicar ({filtrados.length}){foco ? " · el cristal que buscas está aquí" : ""}</button>
+      {abre && (filtrados.length === 0 ? <p className="text-xs text-slate-500 mt-1">Ninguno{nq ? " con esa búsqueda" : ""}.</p> : <div className="mt-2">{filtrados.map((c) => <CaballeteFilas key={c.id} c={c} marcar={foco && String(c.lote || c.numero || "") === destacarCristal.caballete ? destacarCristal.viv : ""} />)}</div>)}
+    </div>
+  );
+}
 function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
+  const [huecoVer, setHuecoVer] = useState(null); // hueco del mapa de cristales abierto para mirar su caballete
   const nq = normBusq(q);
   if (puestoId === "cristales") {
     return (
@@ -40544,7 +40663,9 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
         </div>
         {destacarCristal && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
-        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura onVerHueco={() => {}} destacar={destacarCristal && destacarCristal.ubicacion ? destacarCristal.ubicacion : null} />
+        <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? destacarCristal.ubicacion : null} />
+        <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} />
+        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} />}
       </div>
     );
   }
