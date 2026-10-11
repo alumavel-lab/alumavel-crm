@@ -13766,6 +13766,25 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
     setNuevo({ ref: "", expediente: "", ancho: "", alto: "", cantidad: 1, pedido: "" });
     setVerAnadir(false);
   };
+  // Caballetes metidos a mano con las medidas escritas en texto libre, p. ej. "bajoA=2(331×742)2(656×742)1(732×742)":
+  // se leen como N(ancho×alto) y se pueden convertir en cristales de verdad.
+  const desdeTexto = [];
+  if (piezas.length === 0) {
+    const re = /(\d+)\s*\(\s*(\d+(?:[.,]\d+)?)\s*[x×*]\s*(\d+(?:[.,]\d+)?)\s*\)/gi;
+    let m;
+    while ((m = re.exec(String(cristal.medida || ""))) !== null) {
+      const cantidad = parseInt(m[1], 10), ancho = parseFloat(m[2].replace(",", ".")), alto = parseFloat(m[3].replace(",", "."));
+      if (cantidad > 0 && cantidad <= 200 && ancho > 0 && alto > 0) desdeTexto.push({ cantidad, ancho, alto });
+    }
+  }
+  const crearDesdeTexto = () => {
+    const nuevas = desdeTexto.map((x) => ({
+      ref: "", expediente: String(cristal.expediente || "").trim(), ancho: x.ancho, alto: x.alto, cantidad: x.cantidad,
+      m2: Math.round((x.ancho * x.alto) / 1000) / 1000, pedido: String(cristal.secuencia || "").trim(), origen: "desde la medida escrita a mano",
+    }));
+    if (!window.confirm(`Se crearán ${nuevas.length} líneas (${nuevas.reduce((a, x) => a + x.cantidad, 0)} cristales) en este caballete. Si el texto repite medidas, revisa y borra las que sobren. ¿Crear?`)) return;
+    onUpdate(cristal.id, { piezas: nuevas, cantidad: nuevas.reduce((a, x) => a + x.cantidad, 0) });
+  };
   const conIncidencia = piezas.filter((p) => p.incidencia).length;
   return (
     <div className="mt-2">
@@ -13796,7 +13815,17 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
         </div>
       )}
       {piezas.length === 0 ? (
-        <p className="text-xs text-slate-400">Este caballete no tiene ningún cristal suelto apuntado.</p>
+        <div>
+          <p className="text-xs text-slate-400">Este caballete no tiene ningún cristal suelto apuntado.</p>
+          {desdeTexto.length > 0 && (
+            <div className="mt-2 p-2.5 rounded-md bg-amber-50 border border-amber-300 text-xs text-amber-900">
+              <b>Hay medidas escritas a mano en el texto de «Medida»</b> ({desdeTexto.reduce((a, x) => a + x.cantidad, 0)} cristales en {desdeTexto.length} medidas), pero no están dados de alta como cristales, y por eso el Expediente rápido, los buscadores y la pistola no los encuentran.
+              <div className="mt-1 text-amber-800">{desdeTexto.map((x) => `${x.cantidad} × ${x.ancho}×${x.alto}`).join(" · ")}</div>
+              <button type="button" onClick={crearDesdeTexto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90">Crear estos cristales en el caballete</button>
+              <span className="ml-2 text-amber-800">El texto original se queda como está. Después puedes ponerles vivienda a cada uno.</span>
+            </div>
+          )}
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
