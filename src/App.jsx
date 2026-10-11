@@ -15699,6 +15699,35 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       {mostrarSitio && <th className="px-2">Dónde está</th>}<th className="px-2">Incidencia / comentario</th>
     </tr></thead>
   );
+  // Imprime uno o varios carros: por lado y estante, con la vivienda, el expediente y la medida de cada persiana (para dárselo al operario)
+  const imprimirCarros = (lista) => {
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const secciones = lista.map((c) => {
+      const lados = LADOS_CARRO.map((lado) => {
+        const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
+          const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel);
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${x.refObra ? ` (${esc(x.refObra)})` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
+        }).join("");
+        return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
+      }).join("");
+      return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""}</h2><div class="lados">${lados}</div></section>`;
+    }).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Carros de ${cosa}</title><style>
+      body{font-family:Arial,sans-serif;margin:14mm;color:#111} h2{font-size:22px;margin:0 0 8px} h3{font-size:16px;margin:8px 0 4px}
+      section{page-break-after:always} section:last-child{page-break-after:auto}
+      .lados{display:flex;gap:16px}.lado{flex:1} table{width:100%;border-collapse:collapse} td{border:1px solid #888;padding:5px 6px;vertical-align:top;font-size:13px}
+      td.n{width:70px;font-weight:bold;background:#eee}.p{margin:1px 0}.v{color:#999}
+      @media print{@page{size:A4 landscape;margin:10mm}}
+    </style></head><body>${secciones}<p style="font-size:10px;color:#666">Impreso ${new Date().toLocaleString("es-ES")}</p></body></html>`;
+    try {
+      const fr = document.createElement("iframe");
+      fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+      document.body.appendChild(fr);
+      const d = fr.contentWindow.document; d.open(); d.write(html); d.close();
+      setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300);
+    } catch (e) { alert("No se pudo preparar la impresión: " + ((e && e.message) || e)); }
+  };
   const aplicarPlan = () => {
     const destino = {};
     plan.movimientos.forEach((m, i) => { if (hechos[i]) m.items.forEach((x) => { destino[x.id] = m.hasta; }); });
@@ -15795,6 +15824,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border-2 border-dashed border-rose-400" /> Movido de su sitio</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> VACÍO (sin persianas)</span>
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
+            <button onClick={() => { const ll = ordenados.filter((c) => activos.some((x) => x.estante && x.estante.carro === c.numero)); if (!ll.length) { alert("No hay carros con " + cosa + " dentro."); return; } imprimirCarros(ll); }} className="flex items-center gap-1 font-semibold text-slate-700 border border-slate-400 px-2.5 py-1 rounded-lg hover:bg-slate-50">🖨 Imprimir todos los carros</button>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
           </div>
           {nq && (() => {
@@ -15932,7 +15962,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <div className="bg-white rounded-xl p-5 max-w-2xl w-full max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display font-bold text-slate-900 text-lg">Carro {carroSel.numero}{variosAlmacenes ? <span className="text-sm font-normal text-slate-500"> · {almacen.nombre}</span> : null}</h3>
-              <button onClick={() => setCarroAbierto(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+              <div className="flex items-center gap-3">
+                <button onClick={() => imprimirCarros([carroSel])} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg">🖨 Imprimir este carro</button>
+                <button onClick={() => setCarroAbierto(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               <Field label="Tipo de carro">
@@ -34863,10 +34896,10 @@ const ZONAS_POR_PUESTO = {
   soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas"],
   pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas"],
   herraje: ["hojas", "hojasHerraje"],
-  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "puertas", "colgadoA", "colgadoB", "bancoPuerta", "sinPersiana"],
+  colgado: ["marcosPilastra", "marcos", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana"],
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
-  puerta: ["bancoPuerta", "puertasTerminadas", "sinPersiana"],
+  puerta: ["puertas", "puertasTerminadas", "sinPersiana"],
   cristales: ["persianaA", "persianaB", "sinPersiana", "solape", "espera"],
   solape: ["solape", "espera"],
   especiales: ["especiales"],
@@ -34876,7 +34909,7 @@ const REGLAS_PUESTO_LINEA = {
   pilastra: { desde: ["marcosPilastra"], deja: "marcos" },
   persianaA: { desde: ["colgadoA"], deja: "persianaA" },
   persianaB: { desde: ["colgadoB"], deja: "persianaB" },
-  puerta: { desde: ["bancoPuerta"], deja: "puertasTerminadas" },
+  puerta: { desde: ["puertas", "bancoPuerta"], deja: "puertasTerminadas" },
   solape: { desde: ["solape"], deja: "espera" },
   especiales: { desde: null, deja: "especiales" },
 };
@@ -34969,10 +35002,18 @@ async function liberarVentanaLinea(h) {
 }
 // ¿Lleva persiana? Lo sabe el CRM por la hoja de corte (nadie lo marca a mano): true = SIN persiana, false = CON persiana, null = no se sabe (se trata como con persiana).
 // Expediente rápido: la hoja de corte trae la sección "Persiana:" (vacía = no lleva). Hoja de corte normal: señal de cajón / compacto / lamas.
-function sinPersianaAuto(v) {
+// Lotes del Expediente rápido subidos antes de guardar "conPersiana": el control del lote sí guardó qué posiciones llevan persiana (sección "Persiana:" de la hoja de corte).
+// Solo vale si esa lista trae alguna: si viene vacía no se sabe (los lotes viejos tampoco la tienen) y se trata como "no se sabe".
+function persianaPorControl(v, lote) {
+  const lista = toArray(lote && lote.control && lote.control.req && lote.control.req.persianas);
+  if (!lista.length) return null;
+  return lista.some((q) => String(q.pos) === String(v.tipo) && pptoBonito(q.ppto) === String(v.num));
+}
+function sinPersianaAuto(v, lote = null) {
   if (!v || !v.modelo || !toArray(v.piezas)[0] || esPuertaLinea(v)) return null;
   if (v.conPersiana === true) return false;
   if (v.conPersiana === false) return true;
+  if (v.rapido && lote) { const r = persianaPorControl(v, lote); if (r === true) return false; if (r === false) return true; }
   const c = v.corte;
   if (c && !v.rapido && c.persiana === false) return true;
   if (c && !v.rapido && c.persiana === true) return false;
@@ -34986,7 +35027,7 @@ function useSinPersianaEfectivo(indice) {
     if (indice) indice.forEach((h) => {
       const v = h.ventana; if (!v || !v.modelo || !toArray(v.piezas)[0]) return;
       const b = baseDe(v); if (String(h.pieza.c) !== b || m[b] !== undefined) return;
-      if (sinPersianaAuto(v) === true) m[b] = true;
+      if (sinPersianaAuto(v, h.lote) === true) m[b] = true;
     });
     return { ...m, ...manual };
   }, [indice, manual]);
@@ -35093,6 +35134,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     return { ok: true, texto: `✓ ${etq} ${v.pos} → ${nom(zonaId)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId, hueco: n } };
   }
   if (puestoId === "herraje") {
+    if (puerta) return { ok: false, texto: `🚪 ${v.pos} es una PUERTA: no pasa por Herraje. Se queda en «Puertas» y la coge directamente el puesto Puerta.` };
     if (!esHoja) return { ok: false, texto: `En herraje solo se leen HOJAS. Esto es el MARCO ${v.pos}.` };
     const u0 = await ubicDe(cod);
     if (u0 && u0.zonaId === "hojasHerraje") return { ok: true, aviso: true, texto: `Ya estaba: ${nombreHoja(nHoja, nHojas)} ${v.pos} → ${donde(u0)}`, zona: u0 };
@@ -35103,6 +35145,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     return { ok: true, texto: `✓ ${nombreHoja(nHoja, nHojas)} ${v.pos} con herraje → ${nom("hojasHerraje")} · ESTANTERÍA ${n}${sitio()}${u0 ? ` (libera ${donde(u0)})` : " · aviso: no estaba en la estantería de hojas"}`, zona: { zonaId: "hojasHerraje", hueco: n } };
   }
   if (puestoId === "colgado") {
+    if (puerta) return { ok: false, texto: `🚪 ${v.pos} es una PUERTA: no pasa por Matrimonio. Su marco y sus hojas se quedan en «Puertas» y las coge directamente el puesto Puerta.` };
     const ubMarco = await ubicDe(base);
     if (ubMarco && ubMarco.zonaId === "marcosPilastra") return { ok: false, texto: `⚠ ${v.pos} lleva pilastra / travesaño y su marco sigue en el banco de pilastra: pásalo primero por el puesto Pilastra.` };
     if (ubMarco && ["colgadoA", "colgadoB", "bancoPuerta", "sinPersiana", "persianaA", "persianaB", "puertasTerminadas", "solape", "espera", "especiales"].includes(ubMarco.zonaId)) return { ok: true, aviso: true, texto: `Ya estaba unida: ${v.pos} → ${donde(ubMarco)}`, zona: ubMarco };
@@ -35197,6 +35240,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     if (!n && destinoRg === "sinPersiana") { avisoPuerta = " · ⚠ La Línea está llena: déjala en su almacén"; destinoRg = rg.deja; n = await poner(destinoRg, base); }
     if (!n) return llena(destinoRg, v.pos);
     if (puestoId === "puerta") avisoPuerta = destinoRg === "sinPersiana" ? " · 👉 DÉJALA EN LA LÍNEA: las ventanas de su vivienda ya están esperando allí" : `${avisoPuerta || ""} · 👉 DÉJALA EN SU ALMACÉN (${nom("puertasTerminadas")}): de su vivienda aún no ha llegado ninguna ventana a la Línea`;
+    if (puestoId === "puerta") for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k)); // las hojas de la puerta salen de «Puertas» junto con el marco
     let extra = avisoPuerta;
     if (puestoId === "solape") {
       const mates = matesVivienda();
@@ -35235,13 +35279,13 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
 }
 
 // Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
-const PREPARADAS_POR_PUESTO = { herraje: ["hojas", "puertas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana"], solape: ["solape"] };
+const PREPARADAS_POR_PUESTO = { herraje: ["hojas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], puerta: ["puertas", "bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana"], solape: ["solape"] };
 function ListaPreparadas({ puestoId, ubic, indice }) {
   const hojasOv = useObjetoFb("hojasLinea");
   const flagsInc = useObjetoFb("incidenciaVentanaLinea");
   const zs = PREPARADAS_POR_PUESTO[puestoId];
   if (!zs) return null;
-  const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || ""))) && !(puestoId === "cristales" && flagsInc[x.cod])).sort((a, b) => a.u.ts - b.u.ts);
+  const lista = Object.entries(ubic).filter(([, u]) => u && zs.includes(u.zonaId)).map(([cod, u]) => ({ cod, u, h: indice.get(cod) })).filter((x) => x.h && (puestoId !== "herraje" || /^Hoja/.test(String(x.h.pieza.t || ""))) && (puestoId !== "puerta" || !/^Hoja/.test(String(x.h.pieza.t || ""))) && !(puestoId === "cristales" && flagsInc[x.cod])).sort((a, b) => a.u.ts - b.u.ts);
   return (
     <div className="mt-4 border border-emerald-300 bg-emerald-50/60 rounded-lg p-3">
       <div className="text-sm font-semibold text-emerald-900 mb-1">Listas para coger ({lista.length})</div>
@@ -35743,7 +35787,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
                 )}
                 {x.v.modelo && <span className="text-[11px] text-slate-500 whitespace-nowrap">1 marco + {hojasDe(x.v, hojasOv)} hoja{hojasDe(x.v, hojasOv) === 1 ? "" : "s"}</span>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Las hojas llevan pilastra o travesaño: esperan en su banco y pasan por el puesto Pilastra antes de herraje (igual que el marco)"><input type="checkbox" checked={!!pilHojaOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraHojaLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />Pilastra en hoja</label>}
-                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="No lleva persiana: al unirla en Matrimonio no pasa por el banco A/B y va directa a cristales"><input type="checkbox" checked={!!sinPersOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`sinPersianaLinea/${baseDe(x.v)}`, e.target.checked ? true : (sinPersianaAuto(x.v) === true ? false : null))} />Sin persiana{sinPersianaAuto(x.v) === true ? " (auto)" : ""}</label>}
+                {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="No lleva persiana: al unirla en Matrimonio no pasa por el banco A/B y va directa a cristales"><input type="checkbox" checked={!!sinPersOvP[baseDe(x.v)]} onChange={(e) => guardarLinea(`sinPersianaLinea/${baseDe(x.v)}`, e.target.checked ? true : (sinPersianaAuto(x.v, x.lote) === true ? false : null))} />Sin persiana{sinPersianaAuto(x.v, x.lote) === true ? " (auto)" : ""}</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva mosquitera: el puesto de persiana avisa de que hay que ponérsela"><input type="checkbox" checked={!!mosqOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`mosquiteraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />mosquitera</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Lleva solape o postigo: tras acristalar, el CRM la manda al puesto de solape / postigo"><input type="checkbox" checked={!!solOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`solapeLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />solape / postigo</label>}
                 {x.v.modelo && <label className="flex items-center gap-1 text-xs text-slate-600" title="Marco con pilastra o travesaño: va primero al banco de pilastra"><input type="checkbox" checked={!!pilOv[baseDe(x.v)]} onChange={(e) => guardarLinea(`pilastraLinea/${baseDe(x.v)}`, e.target.checked ? true : null)} />pilastra / trav.</label>}
@@ -35912,7 +35956,7 @@ function cruzarPersianaVentana(items, guardarItems, h) {
   if (!guardarItems) return { ok: false, texto: "no tengo acceso al almacén de persianas desde aquí" };
   const donde = x.estante ? `carro ${x.estante.carro} · lado ${x.estante.lado} · nivel ${x.estante.nivel}` : x.enPuesto ? "ya estaba en el puesto" : "sin sitio asignado";
   guardarItems(lista.map((y) => (y.id === x.id ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoyISO(), colocadaVentana: true, ventanaId: h.ventana.id, ventanaPos: h.ventana.pos } : y)));
-  return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
+  return { ok: true, foco: x.estante ? { tipo: "persiana", almacenId: x.almacenId || ALMACEN_PRINCIPAL_ID, carro: x.estante.carro, lado: x.estante.lado, nivel: x.estante.nivel, ref: x.ref || "" } : null, texto: `COGE la persiana ${x.ref || ""} (${x.largo || "?"}x${x.alto || "?"}) del ${donde} · marcada como puesta y fuera del carro` };
 }
 
 // Ventanas que llevan más de "horas" paradas en la línea (sin que ninguna de sus piezas se mueva) y por qué
@@ -36047,7 +36091,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
           <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
-          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{(() => { const sp = sinPersianaAuto(v); return sp === false ? "con persiana" : sp === true ? "SIN persiana" : "persiana sin definir"; })()} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
+          {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{(() => { const sp = sinPersianaAuto(v, h.lote); return sp === false ? "con persiana" : sp === true ? "SIN persiana" : "persiana sin definir"; })()} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
           <span className={`px-2 py-1 rounded border ${pilOv[c0] ? "bg-amber-100 border-amber-300 text-amber-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{pilOv[c0] ? "Con pilastra / travesaño" : "Sin pilastra"}</span>
         </div>
@@ -36131,12 +36175,45 @@ function AvisoPuertasUrgentes({ indice, ubic, escaneos, mostrarVacio = false }) 
     return res.sort((a, b) => b.n - a.n);
   }, [indice, ubic, escaneos]);
   if (!lista.length) return mostrarVacio ? <div className="border border-slate-200 bg-white rounded-xl p-3 text-sm text-slate-500">📋 Prioridad de hoy: no hay puertas pendientes de fabricar (ninguna vivienda ha empezado sin su puerta).</div> : null;
-  const estado = (u) => (!u ? "su marco aún no ha salido de la soldadora" : u.zonaId === "bancoPuerta" ? `ya está en ${"Banco de puerta"} (estantería ${u.hueco}): ¡hazla ya!` : u.zonaId === "puertas" ? `marco/hoja en Puertas (estantería ${u.hueco}): falta unirla en Matrimonio` : `está en ${u.zonaId}`);
+  const estado = (u) => (!u ? "su marco aún no ha salido de la soldadora" : u.zonaId === "bancoPuerta" || u.zonaId === "puertas" ? `marco en Puertas (estantería ${u.hueco}): ya puedes hacerla` : `está en ${u.zonaId}`);
   return (
     <div className="border-2 border-amber-400 bg-amber-50 rounded-xl p-3 space-y-2">
       <div className="text-lg font-extrabold text-amber-800">📋 Prioridad de hoy: puertas a fabricar ({lista.length})</div>
       {lista.map((x) => (
         <div key={x.d.v.id} className="text-sm text-slate-800"><b>Fabricar puerta {x.d.v.pos}</b> · {x.d.v.grupo || ""}{x.d.v.cliente ? ` · ${x.d.v.cliente}` : ""} — ya han salido de soldadura {x.n} ventana{x.n === 1 ? "" : "s"} de su vivienda ({x.pos.join(", ")}). Estado: {estado(x.u)}.</div>
+      ))}
+    </div>
+  );
+}
+
+// Puesto Puerta: todas las puertas que ya han salido de la soldadora (marco u hojas en alguna estantería) y aún no están terminadas, con dónde está cada pieza.
+function PuertasEnCamino({ indice, ubic }) {
+  const nomZ = (id) => (ZONAS_LINEA_DEFECTO.find((z) => z.id === id) || {}).nombre || id;
+  const lista = useMemo(() => {
+    const fin = ["puertasTerminadas", "sinPersiana", "persianaA", "persianaB", "solape", "espera"];
+    const res = [];
+    indice.forEach((h) => {
+      const v = h.ventana; if (!v || !v.modelo || !toArray(v.piezas)[0] || !esPuertaLinea(v) || String(h.pieza.c) !== baseDe(v)) return;
+      const b = baseDe(v); const um = ubic[b];
+      if (um && fin.includes(um.zonaId)) return;
+      const hojas = [1, 2, 3].map((k) => ({ k, u: ubic[codHoja(b, k)] })).filter((x) => x.u);
+      const enCamino = (um && (um.zonaId === "puertas" || um.zonaId === "bancoPuerta" || um.zonaId === "marcos")) || hojas.length > 0;
+      if (!enCamino) return;
+      res.push({ v, h, um, hojas, lista: !!(um && (um.zonaId === "bancoPuerta" || um.zonaId === "puertas")) });
+    });
+    return res.sort((a, b) => (b.lista ? 1 : 0) - (a.lista ? 1 : 0));
+  }, [indice, ubic]);
+  if (!lista.length) return null;
+  return (
+    <div className="border border-emerald-300 bg-emerald-50/60 rounded-xl p-3 space-y-1.5">
+      <div className="text-sm font-semibold text-emerald-900">Puertas que ya han salido de la soldadura ({lista.length})</div>
+      {lista.map((x) => (
+        <div key={x.v.id} className="text-xs text-slate-800 flex flex-wrap items-center gap-x-2">
+          <b className="text-sm">{x.v.pos}</b><span>{x.v.grupo || ""}{x.v.cliente ? ` · ${x.v.cliente}` : ""}</span>
+          <span>· marco: {x.um ? `${nomZ(x.um.zonaId)} · est. ${x.um.hueco}` : "sin leer"}</span>
+          <span>· hoja{x.hojas.length === 1 ? "" : "s"}: {x.hojas.length ? x.hojas.map((y) => `${nomZ(y.u.zonaId)} · est. ${y.u.hueco}`).join(", ") : "sin leer"}</span>
+          {x.lista ? <b className="text-emerald-700">· LISTA PARA HACER</b> : <span className="text-amber-700">· aún falta su marco (soldadora)</span>}
+        </div>
       ))}
     </div>
   );
@@ -36183,7 +36260,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     indice.forEach((h) => {
       const v = h.ventana; if (!v || !v.modelo || !toArray(v.piezas)[0]) return;
       const b = baseDe(v); if (String(h.pieza.c) !== b) return;
-      const um = ubic[b]; if (!um || (um.zonaId !== "marcos" && um.zonaId !== "puertas")) return;
+      const um = ubic[b]; if (!um || um.zonaId !== "marcos") return;
       const n = hojasDe(v, hojasOv); const cods = [b];
       for (let k = 1; k <= n; k++) { const uh = ubic[codHoja(b, k)]; if (!uh || uh.zonaId !== "hojasHerraje") return; cods.push(codHoja(b, k)); }
       cods.forEach((c) => set.add(c));
@@ -36282,6 +36359,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     <div className="space-y-6">
       <AvisoSacarLinea quien={quien} />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
+      {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
       <UnidadesHoyLinea escaneos={escaneos} quien={quien} quienId={quienId} />
       <div className="bg-white border border-slate-200 rounded-xl p-5">
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
@@ -36327,7 +36405,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} />
+        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} />
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -40135,7 +40213,7 @@ function HorasPorObraLinea({ proyectos = [], uxExpedientes = [], usuarios = [], 
 }
 
 // Almacén que le toca al puesto, SOLO PARA MIRAR (sin botones para cambiar nada)
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [] }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const nq = normBusq(q);
@@ -40172,13 +40250,15 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [] }) {
                 const its = items.filter((x) => almacenDe(x) === a.id && x.estante && x.estante.carro === c.numero);
                 const exps = [...new Set(its.map((x) => String(x.expediente || "").trim()).filter(Boolean))];
                 const vacio = its.length === 0;
+                const rojo = !!destacarPers && String(destacarPers.carro) === String(c.numero) && (destacarPers.almacenId || ALMACEN_PRINCIPAL_ID) === a.id;
                 const resaltado = nq && its.some((x) => normBusq(`${x.expediente} ${x.ref} ${x.ancho || ""}x${x.alto || ""} ${x.medida || ""}`).includes(nq));
                 return (
-                  <div key={c.numero} className={`w-[150px] rounded-lg border-2 p-2 ${vacio ? "bg-slate-200 border-slate-400" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : vacio ? "" : "border-slate-200"}`}>
+                  <div key={c.numero} className={`w-[150px] rounded-lg border-2 p-2 ${vacio ? "bg-slate-200 border-slate-400" : "bg-white"} ${rojo ? "!border-rose-600 !bg-rose-50 ring-4 ring-rose-300 animate-pulse" : resaltado ? "border-amber-500 ring-2 ring-amber-200" : vacio ? "" : "border-slate-200"}`}>
                     <div className="flex items-center justify-between">
                       <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
                     </div>
+                    {rojo && <div className="text-[12px] font-extrabold text-rose-700 leading-tight mt-1">👉 COGE AQUÍ: lado {destacarPers.lado} · estante {destacarPers.nivel}{destacarPers.ref ? ` · ${destacarPers.ref}` : ""}</div>}
                     <div className="text-[11px] text-slate-500 mt-0.5">{its.length} {its.length === 1 ? "persiana" : "persianas"}</div>
                     <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
                       {exps.length ? exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (exps.length > 3 ? ` +${exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
