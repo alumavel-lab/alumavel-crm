@@ -15412,29 +15412,67 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     finally { setLeyendo(false); }
   };
 
+  // Si una pieza lleva carroDestino (número de carro elegido a mano), se intenta primero en ese carro;
+  // lo que no quepa ahí se coloca solo en otro sitio (cuenta en "desbordan").
   const colocar = (lista) => {
     const estado = estadoOcupacionPersianas(items);
     const porExp = {};
-    lista.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+    lista.forEach((x) => { const k = `${x.carroDestino || ""}§${x.expediente || "—"}`; (porExp[k] = porExp[k] || []).push(x); });
     const sitio = {};
     let fallan = 0;
-    Object.entries(porExp).forEach(([exp, xs]) => {
-      const r = colocarGrupoPersianas(xs, exp, estantes, estado);
-      Object.assign(sitio, r.res);
-      fallan += xs.length - Object.keys(r.res).length;
+    let desbordan = 0;
+    Object.entries(porExp).forEach(([k, xs]) => {
+      const exp = k.slice(k.indexOf("§") + 1);
+      const dest = parseInt(k.slice(0, k.indexOf("§")), 10);
+      let restantes = xs;
+      if (dest) {
+        const r0 = colocarGrupoPersianas(xs, exp, estantes.filter((e) => e.carro === dest), estado);
+        Object.assign(sitio, r0.res);
+        restantes = xs.filter((x) => !r0.res[x.id]);
+        desbordan += restantes.length;
+      }
+      if (restantes.length) {
+        const r = colocarGrupoPersianas(restantes, exp, estantes, estado);
+        Object.assign(sitio, r.res);
+      }
+      fallan += xs.filter((x) => !sitio[x.id]).length;
     });
-    return { sitio, fallan };
+    return { sitio, fallan, desbordan };
   };
 
+  const [carroDestinoGlobal, setCarroDestinoGlobal] = useState("");
+
   const confirmarEntrada = (lista) => {
-    const entrada = Array.isArray(lista) ? lista : borrador;
-    const { sitio, fallan } = colocar(entrada);
-    const nuevas = entrada.map((x) => ({ ...x, almacenId: almacen.id, estante: sitio[x.id] || null }));
+    const entrada = Array.isArray(lista) ? lista : borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || "" }));
+    const { sitio, fallan, desbordan } = colocar(entrada);
+    const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null }; });
     guardarItems([...items, ...nuevas]);
-    if (!Array.isArray(lista)) setBorrador(null);
+    if (!Array.isArray(lista)) { setBorrador(null); setCarroDestinoGlobal(""); }
     const cortas = esMosq ? 0 : nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
-    setAviso(fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas.`);
+    const extra = desbordan ? ` ${desbordan} no cabían en el carro elegido y se han colocado en otro sitio.` : "";
+    setAviso((fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas.`) + extra);
     setVista(fallan ? "sinsitio" : "mapa");
+  };
+
+  // Mueve piezas ya colocadas a otro carro. Todo o nada: si no caben todas, no se mueve ninguna.
+  const moverACarro = (xs, numero) => {
+    const n = parseInt(numero, 10);
+    if (!n || !xs.length) return;
+    const ids = new Set(xs.map((x) => x.id));
+    const estado = estadoOcupacionPersianas(items.filter((y) => !ids.has(y.id)));
+    const destino = estantes.filter((e) => e.carro === n);
+    const porExp = {};
+    xs.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+    const sitio = {};
+    let fallan = 0;
+    Object.entries(porExp).forEach(([exp, g]) => {
+      const r = colocarGrupoPersianas(g, exp, destino, estado);
+      Object.assign(sitio, r.res);
+      fallan += g.length - Object.keys(r.res).length;
+    });
+    if (fallan) { setAviso(`No caben ${fallan} de ${xs.length} ${cosa} en el carro ${n} (poco sitio, o miden menos que el mínimo de ese tipo de carro). No se ha movido nada.`); return; }
+    guardarItems(items.map((y) => (sitio[y.id] ? { ...y, estante: sitio[y.id], enPuesto: "" } : y)));
+    setAviso(`${xs.length} ${cosa} movidas al carro ${n}.`);
   };
 
   const devolverDePuesto = (x) => {
@@ -15478,7 +15516,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       <td className="px-2 font-semibold">EXP {x.expediente || "—"}</td>
       <td className="px-2">{x.ref || "—"}</td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
-      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? dondeTxt(x.estante) : <span className="text-amber-700">Sin sitio</span>}</td>}
+      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
+        <select value="" onChange={(e) => { if (e.target.value) moverACarro([x], e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-violet-700 border border-violet-300 rounded px-1 py-0.5 bg-white">
+          <option value="">Mover a…</option>
+          {opcionesCarro(x.estante.carro)}
+        </select>)}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
@@ -15517,6 +15559,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
     return { pct: total ? usado / total : 0, exps: [...exps], n };
   };
+  const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${(TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || ""} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
+  const opcionesCarro = (excluir) => ordenados.filter((c) => c.numero !== excluir).map((c) => <option key={c.numero} value={c.numero}>{etiquetaCarro(c)}</option>);
 
   return (
     <div className="space-y-4">
@@ -15544,9 +15588,17 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
           <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
+          <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
+            <label className="font-semibold text-slate-700">Carro de destino:</label>
+            <select value={carroDestinoGlobal} onChange={(e) => setCarroDestinoGlobal(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 bg-white">
+              <option value="">Automático</option>
+              {opcionesCarro(null)}
+            </select>
+            <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se coloca solo en otro y te lo aviso.</span>
+          </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th></th></tr></thead>
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Carro</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
@@ -15554,6 +15606,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <td className="pr-2">{x.ref || "—"}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
+                    <td className="pr-2">
+                      <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
+                        <option value="">{carroDestinoGlobal ? `Como el general (${carroDestinoGlobal})` : "Automático"}</option>
+                        {opcionesCarro(null)}
+                      </select>
+                    </td>
                     <td><button onClick={() => setBorrador(borrador.filter((_, j) => j !== i))} className="text-rose-500"><Trash2 size={12} /></button></td>
                   </tr>
                 ))}
@@ -15561,7 +15619,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </table>
           </div>
           <div className="flex gap-2 mt-3">
-            <button onClick={() => setBorrador(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
+            <button onClick={() => { setBorrador(null); setCarroDestinoGlobal(""); }} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
             <button onClick={() => confirmarEntrada()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Colocar en los carros</button>
           </div>
         </div>
@@ -15765,6 +15823,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    <select value="" onChange={(e) => { if (e.target.value) { moverACarro(xs, e.target.value); setCarroAbierto(null); } }} className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-lg px-2 py-1 bg-white">
+                      <option value="">Mover todo el EXP a carro…</option>
+                      {opcionesCarro(carroSel.numero)}
+                    </select>
                     {otrosAlmacenes.length > 0 && (
                       <select value="" onChange={(e) => { if (e.target.value) pasarGrupoAOtroAlmacen(exp, xs, e.target.value); }} className="text-xs font-semibold text-violet-700 border border-violet-300 rounded-lg px-2 py-1 bg-white">
                         <option value="">Pasar a otro almacén…</option>
