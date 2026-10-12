@@ -32044,6 +32044,26 @@ function agruparVidriosRapido(paginas) {
   }
   return { fab, descripcion, expediente: expD, parte, presupuestos };
 }
+// «LISTADO DIBUJOS»: trae el número de fabricación (lote) y, por modelo, el número del recuadro de cada dibujo (la posición de la ventana en el lote)
+function esListadoDibujosRapido(paginas) { return /LISTADO\s*DIBUJOS/i.test(textoCabeceraRapido(paginas)); }
+function agruparDibujosRapido(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  const fab = ((todo.match(/Fabricaci[oó]n\s*:\s*([\d.]+)/i) || [])[1] || "").replace(/\D/g, "");
+  const descripcion = ((todo.match(/Descripci[oó]n\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const referencia = ((todo.match(/Referenc[ií]a\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const modelos = [];
+  todo.split(/(?=Modelo\s*:\s*[A-Za-z]{1,4}\d)/i).forEach((b) => {
+    const mm = b.match(/^Modelo\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)/i);
+    if (!mm) return;
+    const cabeza = b.split(/\n(?=\d+[,.]?\d*\s*\/|\d[\d.]*\s*mm)/)[0];
+    const caja = (cabeza.match(/\nPos\s*:\s*(\d+)\s*(?:\n|$)/i) || [])[1];
+    const posic = (cabeza.match(/Posici[oó]n\s*:\s*(\d+)/i) || [])[1];
+    const med = cabeza.match(/Medidas\s*:\s*([\d.]+)\s*mm\s*,\s*([\d.]+)\s*mm/i);
+    const taps = [...b.matchAll(/([\d.]+)\s*mm\s*Tap\s*:\s*(\d+)/gi)].map((t) => ({ ref: t[2], lCorte: parseInt(t[1].replace(/\./g, ""), 10) }));
+    modelos.push({ modelo: mm[1].toUpperCase(), numero: parseInt(caja || posic, 10) || null, posicion: parseInt(posic, 10) || null, ancho: med ? parseInt(med[1].replace(/\./g, ""), 10) : null, alto: med ? parseInt(med[2].replace(/\./g, ""), 10) : null, taps });
+  });
+  return { fab, descripcion, referencia, modelos };
+}
 function agruparCorteRapido(paginas) {
   const out = [];
   paginas.forEach((it, idx) => {
@@ -32088,7 +32108,7 @@ function crearExpedienteRapido(listados, cortes) {
   const ordV = new Map(); // orden en que aparecen en la hoja de corte (el mismo que en los papeles); los códigos no cambian
   const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
   listados.forEach((L) => {
-    if (L.sinFab) avisos.push(`Listado de vidrios sin número de fabricación (formato «opción con persiana»): he usado el presupuesto ${pptoBonito(L.fab)} como lote y expediente.${L.avisoTotal ? " " + L.avisoTotal : ""}`);
+    if (L.sinFab && !L.fabDeDibujos) avisos.push(`Listado de vidrios sin número de fabricación (formato «opción con persiana»): he usado el presupuesto ${pptoBonito(L.fab)} como lote y expediente.${L.avisoTotal ? " " + L.avisoTotal : ""}`);
     if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
     const exp = L.expediente || ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || L.fab;
     const ventanas = [];
@@ -32135,6 +32155,7 @@ function crearExpedienteRapido(listados, cortes) {
           ventanas.push({
             id: `${L.fab}|${exp}|${ppto}|${n.p}${n.de > 1 ? `#${n.u}` : ""}`,
             pos: n.de > 1 ? `${n.p} ${n.u}/${n.de}` : n.p, tipo: n.p, num: pptoBonito(ppto), color: c.color,
+            ...(L.posDib && L.posDib.get(clavePos) ? { posicionLote: L.posDib.get(clavePos) } : {}),
             grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
             modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }], conPersiana: !!(c.persianaTexto && !esEsp),
             corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
@@ -32304,7 +32325,7 @@ function devolverAlmacenRapido(control) {
 }
 async function leerExpedienteRapidoPdfs(files, onProgreso) {
   const lib = await cargarPdfJs();
-  const listados = [], cortes = [], avisos = [], leidos = [];
+  const listados = [], cortes = [], dibujos = [], avisos = [], leidos = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (onProgreso) onProgreso(`Leyendo ${file.name} (${i + 1} de ${files.length})…`);
@@ -32313,11 +32334,24 @@ async function leerExpedienteRapidoPdfs(files, onProgreso) {
     for (let n = 1; n <= doc.numPages; n++) { const tc = await (await doc.getPage(n)).getTextContent(); paginas.push(tc.items.map((it) => it.str + (it.hasEOL ? "\n" : ""))); }
     const cab = textoCabeceraRapido(paginas);
     if (/HOJA\s*DE\s*CORTE/i.test(cab)) { cortes.push(...agruparCorteRapido(paginas)); leidos.push(`${file.name}: hoja de corte`); }
+    else if (esListadoDibujosRapido(paginas)) { dibujos.push(agruparDibujosRapido(paginas)); leidos.push(`${file.name}: listado de dibujos`); }
     else if (esListadoVidriosRapido(paginas)) { listados.push(agruparVidriosRapido(paginas)); leidos.push(`${file.name}: listado de vidrios`); }
     else { avisos.push(`${file.name}: no es un listado de vidrios ni una hoja de corte. No lo he usado.`); leidos.push(`${file.name}: NO RECONOCIDO${cab.trim() ? ` (empieza por «${cab.trim().slice(0, 70)}»)` : " (no tiene texto: ¿es un escaneo o una foto?)"}`); }
   }
   if (!listados.length) throw new Error(`Falta el LISTADO DE VIDRIOS: de él sale el número de fabricación (lote) y el expediente. Selecciona a la vez el listado de vidrios y la hoja de corte. He leído: ${leidos.join(" · ")}.`);
   if (!cortes.length) throw new Error(`Falta la HOJA DE CORTE: de ella salen las ventanas una a una. Selecciona a la vez el listado de vidrios y la hoja de corte. He leído: ${leidos.join(" · ")}.`);
+  // Listado de dibujos: pone el número de fabricación (si el listado de vidrios no lo trae) y el número de recuadro de cada modelo
+  listados.forEach((L, i) => {
+    const d = dibujos.length === 1 ? dibujos[0] : dibujos.length === listados.length ? dibujos[i] : null;
+    if (!d) return;
+    L.posDib = new Map(d.modelos.filter((m) => m.numero).map((m) => [normPosRapido(m.modelo), m.numero]));
+    if (!L.fab && d.fab) { L.fab = d.fab; L.fabDeDibujos = true; }
+    else if (L.fab && d.fab && L.fab !== d.fab) avisos.push(`El listado de vidrios es de la fabricación ${L.fab} y el de dibujos de la ${d.fab}. Revisa que sean de la misma obra.`);
+    const ppto = [...L.presupuestos.values()][0];
+    const sinModelo = d.modelos.filter((m) => ppto && !ppto.filas.some((f) => normPosRapido(f.modelo) === normPosRapido(m.modelo)));
+    if (sinModelo.length) avisos.push(`El listado de dibujos trae modelos que no están en el listado de vidrios: ${sinModelo.map((m) => m.modelo).join(", ")}.`);
+  });
+  if (!dibujos.length && listados.some((L) => L.sinFab)) avisos.push("Falta el LISTADO DE DIBUJOS: de él salen el número de fabricación y el número de recuadro de cada ventana. Mientras tanto he usado el número de presupuesto como lote.");
   const r = crearExpedienteRapido(listados, cortes);
   r.avisos = [...avisos, ...r.avisos];
   return r;
@@ -32332,7 +32366,7 @@ function imprimirPegatinasExpediente(lotes) {
     const r = v.rapido || {};
     const extras = [r.mosquitera ? "MOSQUITERA" : "", r.cerradura ? "CERRADURA" : "", r.aperturaExterior ? "AP. EXTERIOR" : "", r.especial ? "ESPECIAL" : ""].filter(Boolean).join(" · ");
     return `<div class="et"><div class="marco">
-      <div class="r1"><span>${esc(v.pos)}</span><span class="tp">Ppto ${esc(v.num)}${r.version ? ` v${esc(r.version)}` : ""} · FAB ${esc(l.fab)} · ${esc(orden)}</span></div>
+      <div class="r1"><span>${esc(v.pos)}${v.posicionLote ? ` · Nº ${esc(v.posicionLote)}` : ""}</span><span class="tp">Ppto ${esc(v.num)}${r.version ? ` v${esc(r.version)}` : ""} · FAB ${esc(l.fab)} · ${esc(orden)}</span></div>
       <div class="r2">${esc([r.referencia, v.cliente].filter(Boolean).join(" · "))}</div>
       <div class="r2">${esc([v.color, r.ancho && r.alto ? `${r.ancho} x ${r.alto}` : v.medida, r.sistema].filter(Boolean).join(" · "))}</div>
       <div class="r2">${esc(r.vidrio || "")}</div>
