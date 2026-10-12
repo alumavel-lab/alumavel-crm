@@ -32019,8 +32019,29 @@ function agruparVidriosRapido(paginas) {
       const mc = l.match(/^\s*\d\.\d{3}\s+\S+\s+\S+\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})(\d{1,2})\s/); // cristal: ancho, alto y nº de cristales (vienen pegados al siguiente número)
       filas.push({ modelo: m[2], codigo: m[3], texto: (lineas[i + 1] || "").trim(), ancho: mc ? mmRapido(mc[1]) : null, alto: mc ? mmRapido(mc[2]) : null, uds: mc ? parseInt(mc[3], 10) : null });
     });
+    // Otro formato del mismo programa: «LISTADO VIDRIOS GRAFICO» (opción con persiana), sin número de fabricación ni expediente.
+    // pdf.js lo saca al revés y pegado: "marcoAlto marcoAncho m2 alto ancho Uds descripción", y el modelo en la 3.ª línea.
+    if (!filas.length && /Marco\s*Ancho/i.test(b)) {
+      lineas.forEach((l, i) => {
+        const m = l.trim().match(/^([\d.]+,\d{2})mm([\d.]+,\d{2})mm(\d{1,3},\d{2})([\d.]+,\d{2})mm([\d.]+,\d{2})mm(\d{1,2})(\d+\/\d+(?:\/\d+)?)/);
+        if (!m) return;
+        const mod = ((lineas[i + 2] || "").trim().match(/^(v\d+\S*)$/i) || [])[1];
+        if (!mod) return;
+        filas.push({ modelo: mod, codigo: m[7], texto: (lineas[i + 1] || "").trim(), ancho: mmRapido(m[5]), alto: mmRapido(m[4]), uds: parseInt(m[6], 10), sinFab: true });
+      });
+    }
+    const previo = presupuestos.get(ppto);
+    if (previo) { previo.filas.push(...filas); return; } // el mismo presupuesto repite su cabecera en cada página
     presupuestos.set(ppto, { ppto, version: mh[2], cliente, referencia, filas });
   });
+  const sinFab = !fab && [...presupuestos.values()].some((P) => P.filas.some((f) => f.sinFab));
+  const total = parseInt((todo.match(/Total\s*Unidades\s*:\s*(\d+)/i) || [])[1], 10) || null;
+  if (sinFab) {
+    const primero = [...presupuestos.keys()][0] || "";
+    const suma = [...presupuestos.values()].reduce((a, P) => a + P.filas.reduce((b2, f) => b2 + (f.uds || 0), 0), 0);
+    // Sin número de fabricación: el lote y el expediente llevan el número de presupuesto
+    return { fab: primero, descripcion: "", expediente: primero, parte, presupuestos, sinFab: true, avisoTotal: total && total !== suma ? `El listado dice ${total} cristales y he leído ${suma}. Revísalo.` : "" };
+  }
   return { fab, descripcion, expediente: expD, parte, presupuestos };
 }
 function agruparCorteRapido(paginas) {
@@ -32067,6 +32088,7 @@ function crearExpedienteRapido(listados, cortes) {
   const ordV = new Map(); // orden en que aparecen en la hoja de corte (el mismo que en los papeles); los códigos no cambian
   const nat = (a, b) => String(a).localeCompare(String(b), "es", { numeric: true });
   listados.forEach((L) => {
+    if (L.sinFab) avisos.push(`Listado de vidrios sin número de fabricación (formato «opción con persiana»): he usado el presupuesto ${pptoBonito(L.fab)} como lote y expediente.${L.avisoTotal ? " " + L.avisoTotal : ""}`);
     if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
     const exp = L.expediente || ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || L.fab;
     const ventanas = [];
@@ -32087,7 +32109,7 @@ function crearExpedienteRapido(listados, cortes) {
         if (!filas.length) avisos.push(`Presupuesto ${pptoBonito(ppto)}, ${c.pos}: la hoja de corte la tiene pero el listado de vidrios no. Revisa que sean de la misma versión.`);
         if (P.version && c.version && P.version !== c.version) avisos.push(`Presupuesto ${pptoBonito(ppto)}: el listado de vidrios es versión ${P.version} y la hoja de corte versión ${c.version}.`);
         const codigos = [...new Set(filas.map((f) => f.codigo))];
-        const vidrioAv = filas.filter((f) => esVidrioSospechoso(f.codigo));
+        const vidrioAv = L.sinFab ? [] : filas.filter((f) => esVidrioSospechoso(f.codigo)); // el 4/16/4 liso del listado sin fabricación no lleva argón a propósito
         if (vidrioAv.length) avisos.push(`ERROR PROBABLE en ${pptoBonito(ppto)} ${c.pos}: el vidrio "${vidrioAv[0].codigo}" no lleva argón ni bajo emisivo (las demás sí). Confírmalo con Uxcar antes de fabricar.`);
         const esEsp = false; // las especiales pasan por los almacenes de cristales y persianas igual que el resto
         filas.forEach((f) => { if (!esEsp && f.ancho && f.alto && f.uds) cristalesReq.push({ fab: L.fab, exp, ppto, modelo: f.modelo, ancho: f.ancho, alto: f.alto, uds: f.uds }); });
