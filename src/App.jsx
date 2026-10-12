@@ -32082,6 +32082,20 @@ function DibujoHojaVentana({ fab, tip, n, de, alto = 190 }) {
 // ("OB 2H" = 2 hojas), si lleva persiana y, a veces, una nota de mosquiteras ("SOLO 4 LLEVAN MOSQUITERA"). No trae nº de fabricación.
 const NUM_PALABRAS = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
 const digitosPresu = (t) => String(t || "").split("-")[0].replace(/\D/g, "");
+// Qué es de verdad cada posición lo dice el PERFIL de la hoja en la hoja de corte: «Hoja de ventana», «Hoja de puerta» o «Hoja de balconera» (con su código).
+// El nombre de la posición (P01…) no vale: una P puede ser una ventana. Devuelve { tipo: "puerta" | "ventana" | "balconera" | null, codigo, varios }.
+function tipoHojaDePerfil(texto) {
+  const hallados = new Map();
+  String(texto || "").split("\n").forEach((l) => {
+    const m = l.match(/HOJA\s+(?:DE\s+)?(PUERTA|BALCONERA|VENTANA)\b/i);
+    if (!m) return;
+    const k = m[1].toLowerCase();
+    if (!hallados.has(k)) hallados.set(k, (l.match(/\b[A-Z]{0,3}\d{4,8}\b/i) || [""])[0]);
+  });
+  if (hallados.size !== 1) return { tipo: null, codigo: "", varios: hallados.size > 1 ? [...hallados.keys()] : [] };
+  const [[tipo, codigo]] = [...hallados];
+  return { tipo, codigo, varios: [] };
+}
 function agruparHojaCorte(paginas) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   if (!/HOJA DE CORTE/i.test(todo)) return { modelos: [], presupuesto: "", version: "" };
@@ -32111,7 +32125,8 @@ function agruparHojaCorte(paginas) {
     const juntas = manillas > 1 ? manillas : null;
     // Fijos y puertas: la puerta trae "PUERTA 1 HOJA", umbral (KOMBISCHWELLE) o bombillo; un fijo no lleva ningún perfil de HOJA
     const mp = b.match(/PUERTA\s*(\d)\s*HOJAS?/i);
-    const esPuerta = !!mp || /KOMBISCHWELLE|UMBRAL/i.test(b);
+    const th = tipoHojaDePerfil(b); // si la hoja de corte dice qué hoja lleva, manda eso; si no, las señales de antes
+    const esPuerta = th.tipo ? th.tipo === "puerta" : (!!mp || /KOMBISCHWELLE|UMBRAL/i.test(b));
     const esCorredera = /CORREDER/i.test(b);
     const perfilHoja = /HOJA\s+\d{2,3}\s*MM/i.test(b);
     const hojas = mh ? parseInt(mh[1], 10) : mp ? parseInt(mp[1], 10) : (!perfilHoja && !esPuerta && !esCorredera ? 0 : null);
@@ -32131,7 +32146,7 @@ function agruparHojaCorte(paginas) {
     else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
     const huecos = tipo === "fijo" && vidrios ? vidrios : null;
     const fijosUnidos = (tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null;
-    modelos.push({ modelo, uds, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos });
+    modelos.push({ modelo, uds, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo });
   });
   return { modelos, presupuesto, version, referencia: ref, cliente };
 }
@@ -32147,7 +32162,7 @@ function aplicarCorteALotes(lotes, corte) {
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
-      const w = { ...v, cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
+      const w = { ...v, ...(m.tipoHoja ? { esPuerta: m.tipoHoja === "puerta", perfilHoja: m.tipoHoja, perfilCodigo: m.perfilCodigo || "" } : {}), cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
       if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
       if (m.tipo === "fijo") { w.hojas = 0; w.hojasV = 2; } // un fijo no lleva hojas: sin pegatinas de hoja y no espera hojas en el colgado
       // Ventanas unidas (2 ventanas en un mismo modelo, unidas con tapajuntas): cada una es un marco que se
@@ -32305,7 +32320,9 @@ function agruparCorteRapido(paginas) {
     let sistema = (t.match(/^\s*([A-Z]\d{2,3}\s+[A-Z]+)\s*$/m) || [])[1] || "";
     if (!sistema && corredera) { const mc = t.match(/(\d{2,3})\s*mm\s*\n\s*Pos\s*:/i); sistema = mc ? `${mc[1]}mm corredera` : "Corredera"; }
     const barrasHoja = t.split("\n").reduce((a, l) => { const mb = l.match(/HOJA\s+\d{2,3}\s*MM.*?\d{4,5}\s+(\d+)\s*$/i); return a + (mb ? parseInt(mb[1], 10) : 0); }, 0);
+    const th = tipoHojaDePerfil(t);
     out.push({
+      tipoHoja: th.tipo, perfilCodigo: th.codigo, perfilVarios: th.varios,
       pagina: idx + 1,
       ppto: mp[1].replace(/\D/g, ""),
       version: ((t.match(/Versi[oó]n\s*:\s*(\d+)/i) || [])[1] || ""),
@@ -32330,6 +32347,7 @@ const dibEtq = (v) => { const d = dibDe(v); return d ? ` · dib. ${d}` : ""; };
 // listados: resultados de agruparVidriosRapido · cortes: páginas de agruparCorteRapido · dibujos: resultados de agruparDibujosRapido (todos los archivos)
 function crearExpedienteRapido(listados, cortes) {
   const avisos = [];
+  const sinPerfilPos = []; // posiciones cuya hoja de corte no dice «hoja de ventana / puerta / balconera»
   const lotes = [];
   const cristalesReq = [], persianasReq = [];
   const usadas = new Set();
@@ -32381,6 +32399,10 @@ function crearExpedienteRapido(listados, cortes) {
         const hojasPdf = c.barrasHoja >= 4 ? Math.round(c.barrasHoja / 4) : 0;
         const medida = c.ancho && c.alto ? `${c.ancho} x ${c.alto}` : "";
         const hojas = hojasPdf >= 1 && hojasPdf <= 3 ? hojasPdf : hojasSugeridas({ medida });
+        // Puerta o ventana: manda el perfil de la hoja de corte; el nombre (P01…) solo se usa si la hoja de corte no lo dice
+        const pareceP = /^P(?!os\b)/i.test(String(c.pos || "").trim());
+        if (!c.tipoHoja) sinPerfilPos.push(`${pptoBonito(ppto)} ${c.pos}${c.perfilVarios && c.perfilVarios.length ? ` (trae ${c.perfilVarios.join(" y ")})` : ""}`);
+        else if ((c.tipoHoja === "puerta") !== pareceP) avisos.push(`${pptoBonito(ppto)} ${c.pos}: el nombre ${pareceP ? "empieza por P (parece una puerta)" : "no empieza por P"} pero la hoja de corte dice «hoja de ${c.tipoHoja}${c.perfilCodigo ? ` ${c.perfilCodigo}` : ""}». Mando la hoja de corte: la trato como ${c.tipoHoja === "puerta" ? "PUERTA" : "VENTANA"}.`);
         const especial = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL);
         if (c.persianaTexto && !esEsp) nombres.forEach((n) => persianasReq.push({ fab: L.fab, exp, ppto, pos: n.p, texto: c.persianaTexto }));
         nombres.forEach((n, kk) => {
@@ -32394,7 +32416,8 @@ function crearExpedienteRapido(listados, cortes) {
             ...(nDib ? { posicionLote: nDib } : {}),
             grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
             modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }], conPersiana: !!(c.persianaTexto && !esEsp),
-            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
+            ...(c.tipoHoja ? { esPuerta: c.tipoHoja === "puerta", perfilHoja: c.tipoHoja, perfilCodigo: c.perfilCodigo || "" } : {}),
+            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : c.tipoHoja === "puerta" ? "puerta" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
             rapido: { pagina: c.pagina, ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
           });
         });
@@ -32410,6 +32433,7 @@ function crearExpedienteRapido(listados, cortes) {
     }
     if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => (ordV.get(a.piezas[0].c) - ordV.get(b.piezas[0].c)) || nat(a.piezas[0].c, b.piezas[0].c)) });
   });
+  if (sinPerfilPos.length) avisos.push(`No he encontrado «hoja de ventana / puerta / balconera» en la hoja de corte de ${sinPerfilPos.length} posición(es): ${sinPerfilPos.slice(0, 12).join(", ")}${sinPerfilPos.length > 12 ? "…" : ""}. Las clasifico por el nombre (las que empiezan por P, como puerta): revísalas.`);
   cortes.filter((c) => !usadas.has(c)).forEach((c) => avisos.push(`Hoja de corte del presupuesto ${pptoBonito(c.ppto)} (${c.pos}): no está en ningún listado de vidrios subido. No se ha creado.`));
   // Color distinto al del resto del lote (p. ej. un presupuesto que sale BLANCO en un expediente EMBERO)
   lotes.forEach((l) => {
@@ -35313,7 +35337,9 @@ const hojasDe = (v, ov) => {
 // Nombre de cada hoja: con 1 hoja es la activa; con 2, activa y pasiva (con 3, la tercera se llama "HOJA 3")
 const nombreHoja = (k, n) => (k === 1 ? "HOJA ACTIVA" : k === 2 ? "HOJA PASIVA" : `HOJA ${k}`);
 const cortoHoja = (k) => (k === 1 ? "act." : k === 2 ? "pas." : `H${k}`);
-const esPuertaLinea = (v) => /^P(?!os\b)/i.test(String((v && v.pos) || "")); // las puertas empiezan por P (P01…); "Pos 2" (posición de un listado de dibujos) es una ventana normal
+// ¿Puerta o ventana? Manda lo que dice la hoja de corte (perfil «hoja de puerta» / «hoja de ventana» / «hoja de balconera», guardado en v.esPuerta).
+// Solo si la hoja de corte no lo decía (obras subidas antes, o sin esa línea) se adivina por el nombre: empieza por P ("Pos 2" no cuenta).
+const esPuertaLinea = (v) => (v && typeof v.esPuerta === "boolean" ? v.esPuerta : /^P(?!os\b)/i.test(String((v && v.pos) || "")));
 const baseDe = (v) => String(v.piezas[0].c);
 const codHoja = (base, k) => ({ 1: "8", 2: "7", 3: "6" })[k] + String(base).slice(1);
 const nombrePiezaClave = (k) => (k === "m" ? "MARCO" : `HOJA ${k.slice(1)}`);
@@ -36783,6 +36809,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
         const sinP = sinPersOv[c0] === true;
         const conP = !sinP && (sinPersOv[c0] === false || spAuto === false);
         const filas = [
+          ["Tipo", v.perfilHoja ? `${v.perfilHoja === "puerta" ? "PUERTA" : v.perfilHoja === "balconera" ? "BALCONERA (va como ventana)" : "VENTANA"} · según la hoja de corte${v.perfilCodigo ? ` (perfil ${v.perfilCodigo})` : ""}` : esPuertaLinea(v) ? "PUERTA solo por el nombre (empieza por P): la hoja de corte no lo confirma" : "ventana (por el nombre): la hoja de corte no lo confirma"],
           ["Piezas", `${piezas.map((p) => p.nombre).join(" + ")} (${piezas.length} pegatina${piezas.length === 1 ? "" : "s"})`],
           ["Persiana", sinP ? "SIN persiana → va directa a la Línea (no pasa por el banco A/B)" : conP ? "CON persiana → pasa por el banco A/B" : "SIN DEFINIR: el CRM no lo sabe y la trata como con persiana. Míralo en la hoja de corte"],
           ["Mosquitera", mosqOv[c0] || r.mosquitera ? "CON mosquitera" : "sin mosquitera"],
