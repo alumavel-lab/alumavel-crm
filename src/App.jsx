@@ -35327,6 +35327,21 @@ async function liberarCodigoLinea(cod) {
   await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), null);
   return u || null;
 }
+// Libera de una zona las piezas que ya no existen en ningún expediente (p. ej. se borró el expediente y sus piezas siguieron reservando estantería).
+// Si el índice de piezas está vacío (aún no ha cargado) no toca nada. Devuelve cuántas ha liberado.
+async function liberarHuerfanasLinea(zonaId, indice) {
+  try {
+    if (!indice || !indice.size) return 0;
+    const ub = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {};
+    const oc = (await fbGet(ref(fbDb, `ocupacionLinea/${zonaId}`))).val() || {};
+    const huerfanas = new Set();
+    Object.entries(ub).forEach(([cod, u]) => { if (u && u.zonaId === zonaId && !indice.has(String(cod))) huerfanas.add(String(cod)); });
+    for (const cod of huerfanas) await liberarCodigoLinea(cod);
+    let n = huerfanas.size;
+    for (const [k, cod] of Object.entries(oc)) if (cod && typeof cod === "string" && !huerfanas.has(cod) && !indice.has(cod)) { await fbSet(ref(fbDb, `ocupacionLinea/${zonaId}/${k}`), null); n++; }
+    return n;
+  } catch (e) { return 0; }
+}
 // Coloca (o mueve) una pieza en el primer sitio libre de una zona; cada hueco admite "cap" piezas (marco 1, hojas 2).
 // El sitio se reserva con una transacción: dos ordenadores no pueden asignar el mismo. Si no hay sitio, no cambia nada.
 async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = null, cap = 1) {
@@ -35496,7 +35511,15 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
   let ult = { slot: 1, cap: 1 };
   const poner = async (zonaId, codigo, desde, hasta) => {
     const z = zona(zonaId);
-    const r = await ocuparHuecoLinea(z, codigo, por, ubic, desde, hasta, capPieza(z, codigo !== base && esHoja));
+    let r = await ocuparHuecoLinea(z, codigo, por, ubic, desde, hasta, capPieza(z, codigo !== base && esHoja));
+    if (!r) {
+      // «Llena» puede ser mentira: si se borró un expediente, sus piezas se quedan reservando estantería. Se liberan las que ya no existen y se reintenta una vez.
+      const libres = await liberarHuerfanasLinea(zonaId, indice);
+      if (libres > 0) {
+        const frescas = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {};
+        r = await ocuparHuecoLinea(z, codigo, por, frescas, desde, hasta, capPieza(z, codigo !== base && esHoja));
+      }
+    }
     if (!r) return null;
     ult = { slot: r.slot, cap: r.cap };
     return r.hueco;
