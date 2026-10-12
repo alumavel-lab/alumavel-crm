@@ -7715,6 +7715,18 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
         ancho: it.ancho || "", alto: it.alto || "", cantidad: it.cantidad || "", precio: "", estado: "Solicitado",
       })).filter((l) => l.referencia);
 
+      // Pedido compra de persianas (PDF con texto): se recuentan las medidas del propio PDF y se añade lo que la IA se haya saltado
+      try {
+        const filasTxt = await leerFilasPedidoCompraPdf(file);
+        if (filasTxt.length) {
+          const faltan = lineasQueFaltanPedidoCompra(filasTxt, nuevas);
+          if (faltan.length) {
+            faltan.forEach((f) => nuevas.push({ id: uid(), modo: "libre", materialId: "", referencia: f.referencia, ancho: f.ancho, alto: f.alto, cantidad: f.cantidad, precio: "", estado: "Solicitado" }));
+            setErrorPdfMedidas(`⚠ La lectura se había saltado ${faltan.length} línea${faltan.length > 1 ? "s" : ""} y la he añadido leyendo el texto del PDF: ${faltan.map((f) => `${f.referencia} ${f.ancho}x${f.alto}`).join("; ")}. Compruébalo con el papel.`);
+          }
+        }
+      } catch (eTxt) { /* si el PDF no tiene texto, se queda con lo que leyó la IA */ }
+
       // Qué es (cristales o persianas) por lo que trae dentro, para el aviso de documentos que faltan
       const tipoLeido = tipoListadoPorLineas(nuevas.map((l) => l.referencia));
       if (docMedidasId && tipoLeido && !tipoSabido) {
@@ -14150,6 +14162,69 @@ async function bloqueDeArchivoParaIA(file) {
 }
 const ACEPTA_DOCUMENTOS = "application/pdf,image/*,.xlsx,.xls,.csv,.ods,.docx";
 
+// ---- "PEDIDO COMPRA" de persianas: cada línea lleva "cantidad  ancho x alto" ----
+// La IA a veces se salta una de las dos persianas de la misma ventana (p. ej. V04.011 con un
+// compacto de 660x980 y otro de 1.320x980). Se vuelven a contar las medidas leyendo el texto del
+// PDF y se añade lo que la IA no haya traído. paginas = [[{s,x,y}]] (y hacia arriba, como pdf.js)
+function filasDePedidoCompra(paginas) {
+  const medida = /^\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*[xX×]\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*$/;
+  const aMm = (t) => parseInt(String(t).replace(/\./g, ""), 10) || 0;
+  const filas = [];
+  let cabecera = "";
+  paginas.forEach((items, pg) => {
+    const its = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
+    its.forEach((it) => {
+      const s = String(it.s).trim();
+      const mh = s.match(/^(V\d{2}\.\d+)\s*:?$/i);
+      if (mh) { cabecera = mh[1].toUpperCase(); return; }
+      const m = s.match(medida);
+      if (!m) return;
+      const ancho = aMm(m[1]), alto = aMm(m[2]);
+      if (ancho < 100 || alto < 100) return;
+      // cantidad: número entero pequeño a la izquierda, casi a la misma altura
+      const cerca = its.filter((o) => o !== it && Math.abs(o.y - it.y) <= 14 && o.x < it.x);
+      const q = cerca.filter((o) => /^\d{1,3}$/.test(String(o.s).trim())).sort((a, b) => b.x - a.x)[0];
+      // descripción: el texto "Persiana…/Compacto…" más cercano por encima o a la misma altura, a la izquierda
+      const d = its.filter((o) => o !== it && o.x < it.x && o.y >= it.y - 14 && o.y <= it.y + 40 && /persiana|compacto|caj[oó]n|gu[ií]a/i.test(String(o.s))).sort((a, b) => Math.abs(a.y - it.y) - Math.abs(b.y - it.y))[0];
+      filas.push({ pagina: pg + 1, cab: cabecera, ancho, alto, cantidad: q ? parseInt(String(q.s).trim(), 10) : 1, desc: d ? String(d.s).trim() : "Persiana" });
+    });
+  });
+  return filas;
+}
+async function leerFilasPedidoCompraPdf(file) {
+  const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
+  if (!esPdf) return [];
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      paginas.push(tc.items.map((i) => ({ s: i.str, x: i.transform[4], y: i.transform[5] })));
+    }
+    const T = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+    if (!/PEDIDO COMPRA/.test(T)) return [];
+    return filasDePedidoCompra(paginas);
+  } catch (e) { return []; }
+}
+// Devuelve las líneas que faltan en `nuevas` (las de la IA) según el texto del PDF
+function lineasQueFaltanPedidoCompra(filas, nuevas) {
+  const clave = (a, h) => `${parseInt(String(a).replace(/\./g, ""), 10) || 0}x${parseInt(String(h).replace(/\./g, ""), 10) || 0}`;
+  const tiene = new Map();
+  nuevas.forEach((l) => tiene.set(clave(l.ancho, l.alto), (tiene.get(clave(l.ancho, l.alto)) || 0) + (parseFloat(l.cantidad) || 1)));
+  const vistas = new Map();
+  const faltan = [];
+  filas.forEach((f) => {
+    const k = clave(f.ancho, f.alto);
+    vistas.set(k, (vistas.get(k) || 0) + f.cantidad);
+    if (vistas.get(k) > (tiene.get(k) || 0)) {
+      const falta = Math.min(f.cantidad, vistas.get(k) - (tiene.get(k) || 0));
+      if (falta > 0) faltan.push({ referencia: `${f.cab ? f.cab + " · " : ""}${f.desc}`, ancho: String(f.ancho), alto: String(f.alto), cantidad: falta });
+    }
+  });
+  return faltan;
+}
+
 async function leerDocumentoCristalConIA(file, prompt) {
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 8000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
@@ -15005,6 +15080,15 @@ function colocarGrupoPersianas(items, exp, estantes, estado) {
   claves.forEach((p) => { const r = colocarUnGrupoPersianas(partes[p], p ? `${exp}|${p}` : exp, exp, estantes, estado); Object.assign(res, r.res); if (r.fallo) fallo = true; });
   return { res, fallo };
 }
+// Fila del estante (0 interior, 1 exterior) donde cabe una persiana de L mm: la vacía primero; si no, la menos llena donde sume ≤ largo. -1 si no cabe.
+function filaLibreEstante(estado, e, L) {
+  const lanes = (estado.lanes && estado.lanes[e.key]) || [0, 0];
+  if (lanes[0] === 0) return 0;
+  if (lanes[1] === 0) return 1;
+  const largo = e.largo || LARGO_ESTANTE_MM;
+  const cand = [0, 1].filter((i) => lanes[i] + L <= largo).sort((a, b) => lanes[a] - lanes[b] || a - b);
+  return cand.length ? cand[0] : -1;
+}
 function colocarUnGrupoPersianas(items, key, exp, estantes, estado) {
   estado.grp = estado.grp || {};
   const res = {};
@@ -15014,15 +15098,15 @@ function colocarUnGrupoPersianas(items, key, exp, estantes, estado) {
     if (e.porUds) return (estado.uds?.[e.key] || 0) < e.capacidad;
     const min = TIPOS_CARRO_PERSIANA[e.tipo]?.minimoMm || 0;
     if (L < min) return false;
-    // Cada estante lleva SIEMPRE dos persianas: una en la fila interior y otra en la exterior, mida lo que mida (una de 3 m también entra: sobresale del carro)
-    const lanes = (estado.lanes && estado.lanes[e.key]) || [0, 0];
-    return lanes[0] === 0 || lanes[1] === 0;
+    // Cada estante tiene DOS filas (interior y exterior) y en cada fila van las persianas una detrás de otra mientras sumen
+    // lo que mide el estante. Una fila vacía admite cualquiera, mida lo que mida (una de 3 m también entra: sobresale del carro)
+    return filaLibreEstante(estado, e, L) >= 0;
   };
   const poner = (e, L, id) => {
     estado.lanes = estado.lanes || {};
     const lanes = estado.lanes[e.key] || (estado.lanes[e.key] = [0, 0]);
-    const fila = lanes[0] === 0 ? 0 : 1; // primero la interior, luego la exterior
-    lanes[fila] = 1;
+    const fila = Math.max(0, filaLibreEstante(estado, e, L)); // primero las filas vacías (interior, exterior) y luego la que más sitio deja
+    lanes[fila] += L || 1;
     estado.usado[e.key] = (estado.usado[e.key] || 0) + L;
     estado.uds = estado.uds || {};
     estado.uds[e.key] = (estado.uds[e.key] || 0) + 1;
@@ -15069,8 +15153,8 @@ function estadoOcupacionPersianas(items) {
     { // filas del estante: la que guardó la persiana (interior / exterior) o, en las antiguas sin dato, la primera donde quepa
       estado.lanes = estado.lanes || {};
       const lanes = estado.lanes[k] || (estado.lanes[k] = [0, 0]);
-      const f = x.estante && x.estante.fila === "exterior" ? 1 : x.estante && x.estante.fila === "interior" ? 0 : (lanes[0] === 0 ? 0 : 1); // las antiguas sin fila: la primera libre
-      lanes[f] = 1;
+      const f = x.estante && x.estante.fila === "exterior" ? 1 : x.estante && x.estante.fila === "interior" ? 0 : (lanes[0] <= lanes[1] ? 0 : 1); // las antiguas sin fila: la menos llena
+      lanes[f] += largoPersiana(x) || 1;
     }
     estado.usado[k] = (estado.usado[k] || 0) + largoPersiana(x);
     estado.uds[k] = (estado.uds[k] || 0) + 1;
