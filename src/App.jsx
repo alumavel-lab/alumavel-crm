@@ -32084,6 +32084,8 @@ const NUM_PALABRAS = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco:
 const digitosPresu = (t) => String(t || "").split("-")[0].replace(/\D/g, "");
 // Qué es de verdad cada posición lo dice el PERFIL de la hoja en la hoja de corte: «Hoja de ventana», «Hoja de puerta» o «Hoja de balconera» (con su código).
 // El nombre de la posición (P01…) no vale: una P puede ser una ventana. Devuelve { tipo: "puerta" | "ventana" | "balconera" | null, codigo, varios }.
+// La balconera se trata como puerta (misma ruta por la fábrica).
+function hojaEsPuerta(t) { return t === "puerta" || t === "balconera"; }
 function tipoHojaDePerfil(texto) {
   const hallados = new Map();
   String(texto || "").split("\n").forEach((l) => {
@@ -32126,7 +32128,7 @@ function agruparHojaCorte(paginas) {
     // Fijos y puertas: la puerta trae "PUERTA 1 HOJA", umbral (KOMBISCHWELLE) o bombillo; un fijo no lleva ningún perfil de HOJA
     const mp = b.match(/PUERTA\s*(\d)\s*HOJAS?/i);
     const th = tipoHojaDePerfil(b); // si la hoja de corte dice qué hoja lleva, manda eso; si no, las señales de antes
-    const esPuerta = th.tipo ? th.tipo === "puerta" : (!!mp || /KOMBISCHWELLE|UMBRAL/i.test(b));
+    const esPuerta = th.tipo ? hojaEsPuerta(th.tipo) : (!!mp || /KOMBISCHWELLE|UMBRAL/i.test(b));
     const esCorredera = /CORREDER/i.test(b);
     const perfilHoja = /HOJA\s+\d{2,3}\s*MM/i.test(b);
     const hojas = mh ? parseInt(mh[1], 10) : mp ? parseInt(mp[1], 10) : (!perfilHoja && !esPuerta && !esCorredera ? 0 : null);
@@ -32162,7 +32164,7 @@ function aplicarCorteALotes(lotes, corte) {
       const m = porModelo.get(String(v.tipo || v.pos || "").trim().toUpperCase());
       if (!m) return v;
       usados.add(m.modelo.toUpperCase()); aplicadas++;
-      const w = { ...v, ...(m.tipoHoja ? { esPuerta: m.tipoHoja === "puerta", perfilHoja: m.tipoHoja, perfilCodigo: m.perfilCodigo || "" } : {}), cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
+      const w = { ...v, ...(m.tipoHoja ? { esPuerta: hojaEsPuerta(m.tipoHoja), perfilHoja: m.tipoHoja, perfilCodigo: m.perfilCodigo || "" } : {}), cliente: v.cliente || corte.cliente || "", corte: { presupuesto: corte.presupuesto, version: corte.version || "", referencia: corte.referencia || "", cliente: corte.cliente || "", persiana: m.persiana, mosquiteras: m.mosq ? (m.mosq.n === null ? "todas" : m.mosq.n) : 0, mosqTexto: m.mosq ? m.mosq.texto : "", uds: m.uds || 0, tipo: m.tipo || null, hojas: m.hojas, cerradura: !!m.cerradura, huecos: m.huecos || null, fijosUnidos: m.fijosUnidos || 0, juntas: m.juntas || null } };
       if (m.hojas >= 1 && m.hojas <= 3) { w.hojas = m.hojas; w.hojasV = 2; }
       if (m.tipo === "fijo") { w.hojas = 0; w.hojasV = 2; } // un fijo no lleva hojas: sin pegatinas de hoja y no espera hojas en el colgado
       // Ventanas unidas (2 ventanas en un mismo modelo, unidas con tapajuntas): cada una es un marco que se
@@ -32402,7 +32404,7 @@ function crearExpedienteRapido(listados, cortes) {
         // Puerta o ventana: manda el perfil de la hoja de corte; el nombre (P01…) solo se usa si la hoja de corte no lo dice
         const pareceP = /^P(?!os\b)/i.test(String(c.pos || "").trim());
         if (!c.tipoHoja) sinPerfilPos.push(`${pptoBonito(ppto)} ${c.pos}${c.perfilVarios && c.perfilVarios.length ? ` (trae ${c.perfilVarios.join(" y ")})` : ""}`);
-        else if ((c.tipoHoja === "puerta") !== pareceP) avisos.push(`${pptoBonito(ppto)} ${c.pos}: el nombre ${pareceP ? "empieza por P (parece una puerta)" : "no empieza por P"} pero la hoja de corte dice «hoja de ${c.tipoHoja}${c.perfilCodigo ? ` ${c.perfilCodigo}` : ""}». Mando la hoja de corte: la trato como ${c.tipoHoja === "puerta" ? "PUERTA" : "VENTANA"}.`);
+        else if (hojaEsPuerta(c.tipoHoja) !== pareceP) avisos.push(`${pptoBonito(ppto)} ${c.pos}: el nombre ${pareceP ? "empieza por P (parece una puerta)" : "no empieza por P"} pero la hoja de corte dice «hoja de ${c.tipoHoja}${c.perfilCodigo ? ` ${c.perfilCodigo}` : ""}». Mando la hoja de corte: la trato como ${hojaEsPuerta(c.tipoHoja) ? "PUERTA" : "VENTANA"}.`);
         const especial = !!(c.ancho && c.alto && Math.min(c.ancho, c.alto) < RAPIDO_MIN_ESPECIAL);
         if (c.persianaTexto && !esEsp) nombres.forEach((n) => persianasReq.push({ fab: L.fab, exp, ppto, pos: n.p, texto: c.persianaTexto }));
         nombres.forEach((n, kk) => {
@@ -32416,8 +32418,8 @@ function crearExpedienteRapido(listados, cortes) {
             ...(nDib ? { posicionLote: nDib } : {}),
             grupo: [exp, planta].filter(Boolean).join(" "), cliente: c.cliente || P.cliente, medida,
             modelo: true, hojas, hojasV: 2, piezas: [{ c: code, t: "Ventana" }], conPersiana: !!(c.persianaTexto && !esEsp),
-            ...(c.tipoHoja ? { esPuerta: c.tipoHoja === "puerta", perfilHoja: c.tipoHoja, perfilCodigo: c.perfilCodigo || "" } : {}),
-            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : c.tipoHoja === "puerta" ? "puerta" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
+            ...(c.tipoHoja ? { esPuerta: hojaEsPuerta(c.tipoHoja), perfilHoja: c.tipoHoja, perfilCodigo: c.perfilCodigo || "" } : {}),
+            corte: { presupuesto: ppto, version: c.version || P.version, referencia: c.referencia || P.referencia, cliente: c.cliente || P.cliente, persiana: !!(c.persianaTexto && !esEsp), mosquiteras: c.mosquitera ? "todas" : 0, mosqTexto: c.mosquitera, uds: c.uds, tipo: c.corredera ? "corredera" : hojaEsPuerta(c.tipoHoja) ? "puerta" : null, hojas, cerradura: c.cerradura, huecos: null, fijosUnidos: null, juntas: null },
             rapido: { pagina: c.pagina, ancho: c.ancho, alto: c.alto, sistema: c.sistema, vidrio, mosquitera: c.mosquitera, cerradura: c.cerradura, aperturaExterior: c.aperturaExterior, unidad: `${n.u}/${n.de}`, especial, version: c.version || P.version, referencia: c.referencia || P.referencia, aviso: vidrioAv.length ? `Vidrio sin argón/bajo emisivo (${vidrioAv[0].codigo})` : "" },
           });
         });
@@ -35279,6 +35281,7 @@ const ZONAS_LINEA_DEFECTO = [
   { id: "hojas", nombre: "Hojas (soldadora)", huecos: 24, cap: 2 },
   { id: "hojasPilastra", nombre: "Hojas con pilastra / travesaño (esperan)", huecos: 12, cap: 2 },
   { id: "puertas", nombre: "Puertas (marco 1-6 · hoja 7-12)", huecos: 12 },
+  { id: "puertas2", nombre: "Puertas 2 (marco 1-6 · hoja 7-12)", huecos: 12 }, // segundo almacén de puertas: se usa cuando el primero está lleno
   { id: "hojasHerraje", nombre: "Hojas con herraje", huecos: 24, cap: 2 },
   { id: "colgadoA", nombre: "Banco persiana A (sale de Matrimonio)", huecos: 12 },
   { id: "colgadoB", nombre: "Banco persiana B (sale de Matrimonio)", huecos: 12 },
@@ -35292,14 +35295,14 @@ const ZONAS_LINEA_DEFECTO = [
   { id: "especiales", nombre: "Especiales", huecos: 12 },
 ];
 const ZONAS_POR_PUESTO = {
-  soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas"],
+  soldadora: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2"],
   pilastra: ["marcosPilastra", "marcos", "hojasPilastra", "hojas"],
   herraje: ["hojas", "hojasHerraje"],
   colgado: ["marcosPilastra", "marcos", "hojasHerraje", "colgadoA", "colgadoB", "sinPersiana"],
   persianaA: ["colgadoA", "persianaA"],
   persianaB: ["colgadoB", "persianaB"],
-  lineaPers: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "hojasHerraje", "colgadoA", "colgadoB", "persianaA", "persianaB", "bancoPuerta", "sinPersiana", "puertasTerminadas", "solape", "espera", "especiales"],
-  puerta: ["puertas", "puertasTerminadas", "sinPersiana"],
+  lineaPers: ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2", "hojasHerraje", "colgadoA", "colgadoB", "persianaA", "persianaB", "bancoPuerta", "sinPersiana", "puertasTerminadas", "solape", "espera", "especiales"],
+  puerta: ["puertas", "puertas2", "puertasTerminadas", "sinPersiana"],
   cristales: ["persianaA", "persianaB", "sinPersiana", "puertasTerminadas", "solape", "espera"],
   solape: ["solape", "espera"],
   especiales: ["especiales"],
@@ -35310,12 +35313,13 @@ const REGLAS_PUESTO_LINEA = {
   persianaA: { desde: ["colgadoA"], deja: "persianaA" },
   persianaB: { desde: ["colgadoB"], deja: "persianaB" },
   lineaPers: { desde: ["persianaA", "persianaB", "puertasTerminadas", "especiales"], deja: "sinPersiana" },
-  puerta: { desde: ["puertas", "bancoPuerta"], deja: "puertasTerminadas" },
+  puerta: { desde: ["puertas", "puertas2", "bancoPuerta"], deja: "puertasTerminadas" },
   solape: { desde: ["solape"], deja: "espera" },
   especiales: { desde: null, deja: "especiales" },
 };
 // Piezas que caben en cada hueco: 1 marco por estantería, 2 hojas por estantería (en puertas: 1 pieza por estantería, marco o hoja)
-const capPieza = (z, esHoja) => (z.id === "puertas" ? 1 : z.cap || 1);
+const esZonaPuertas = (id) => id === "puertas" || id === "puertas2"; // los dos almacenes de puertas funcionan igual
+const capPieza = (z, esHoja) => (esZonaPuertas(z.id) ? 1 : z.cap || 1);
 const useObjetoFb = (ruta) => {
   const [o, setO] = useState({});
   useEffect(() => onValue(ref(fbDb, ruta), (s) => setO(s.val() || {}), () => setO({})), [ruta]);
@@ -35555,13 +35559,14 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
   const ubicDe = async (c) => (await fbGet(ref(fbDb, `ubicacionesLinea/${c}`))).val();
 
   if (puestoId === "soldadora") {
-    const zonaId = puerta ? "puertas" : esHoja ? (pilHojaOv[base] ? "hojasPilastra" : "hojas") : pilOv[base] ? "marcosPilastra" : "marcos";
+    let zonaId = puerta ? "puertas" : esHoja ? (pilHojaOv[base] ? "hojasPilastra" : "hojas") : pilOv[base] ? "marcosPilastra" : "marcos";
     const desde = puerta && esHoja ? 7 : 1;
     const hasta = puerta && !esHoja ? 6 : null;
     const u0 = await ubicDe(cod);
-    if (u0 && u0.zonaId === zonaId) return { ok: true, aviso: true, texto: `Ya estaba: ${etq} ${posDib(v)} → ${donde(u0)}`, zona: u0 };
-    const n = await poner(zonaId, cod, desde, hasta);
-    if (!n) return llena(zonaId, `${etq} ${posDib(v)}`);
+    if (u0 && (u0.zonaId === zonaId || (puerta && esZonaPuertas(u0.zonaId)))) return { ok: true, aviso: true, texto: `Ya estaba: ${etq} ${posDib(v)} → ${donde(u0)}`, zona: u0 };
+    let n = await poner(zonaId, cod, desde, hasta);
+    if (!n && puerta) { n = await poner("puertas2", cod, desde, hasta); if (n) zonaId = "puertas2"; } // el primer almacén de puertas está lleno: se usa el segundo, con las mismas reglas (marcos 1-6, hojas 7-12)
+    if (!n) return llena(puerta ? "puertas2" : zonaId, `${etq} ${posDib(v)}`);
     return { ok: true, texto: `✓ ${etq} ${posDib(v)} → ${nom(zonaId)} · ESTANTERÍA ${n}${sitio()}`, zona: { zonaId, hueco: n } };
   }
   if (puestoId === "herraje") {
@@ -35570,7 +35575,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     const u0 = await ubicDe(cod);
     if (u0 && u0.zonaId === "hojasHerraje") return { ok: true, aviso: true, texto: `Ya estaba: ${nombreHoja(nHoja, nHojas)} ${posDib(v)} → ${donde(u0)}`, zona: u0 };
     if (estricto && u0 && u0.zonaId === "hojasPilastra") return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${posDib(v)} lleva pilastra / travesaño: tiene que pasar primero por el puesto Pilastra.` };
-    if (estricto && !(u0 && (u0.zonaId === "hojas" || u0.zonaId === "puertas"))) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${posDib(v)}: la soldadora aún no la ha leído. No se puede coger.` };
+    if (estricto && !(u0 && (u0.zonaId === "hojas" || esZonaPuertas(u0.zonaId)))) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${posDib(v)}: la soldadora aún no la ha leído. No se puede coger.` };
     const n = await poner("hojasHerraje", cod);
     if (!n) return llena("hojasHerraje", `${nombreHoja(nHoja, nHojas)} ${posDib(v)}`);
     return { ok: true, texto: `✓ ${nombreHoja(nHoja, nHojas)} ${posDib(v)} con herraje → ${nom("hojasHerraje")} · ESTANTERÍA ${n}${sitio()}${u0 ? ` (libera ${donde(u0)})` : " · aviso: no estaba en la estantería de hojas"}`, zona: { zonaId: "hojasHerraje", hueco: n } };
@@ -35583,7 +35588,7 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     if (estricto) {
       const ubPieza = esHoja ? await ubicDe(cod) : ubMarco;
       if (esHoja && !(ubPieza && ubPieza.zonaId === "hojasHerraje")) return { ok: false, texto: `⛔ ${nombreHoja(nHoja, nHojas)} ${posDib(v)}: aún no ha pasado por herraje. No se puede juntar en Matrimonio.` };
-      if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || ubPieza.zonaId === "puertas"))) return { ok: false, texto: `⛔ MARCO ${posDib(v)}: la soldadora aún no lo ha leído. No se puede juntar en Matrimonio.` };
+      if (!esHoja && !(ubPieza && (ubPieza.zonaId === "marcos" || esZonaPuertas(ubPieza.zonaId)))) return { ok: false, texto: `⛔ MARCO ${posDib(v)}: la soldadora aún no lo ha leído. No se puede juntar en Matrimonio.` };
     }
     const clave = esHoja ? `h${nHoja}` : "m";
     await fbSet(ref(fbDb, `colgadoLinea/${base}/${clave}`), Date.now());
@@ -35768,7 +35773,7 @@ function PendientesMatrimonio({ indice, ubic, hojasOv }) {
 }
 
 // Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
-const PREPARADAS_POR_PUESTO = { herraje: ["hojas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], lineaPers: ["persianaA", "persianaB", "puertasTerminadas", "especiales"], puerta: ["puertas", "bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana", "puertasTerminadas"], solape: ["solape"] };
+const PREPARADAS_POR_PUESTO = { herraje: ["hojas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], lineaPers: ["persianaA", "persianaB", "puertasTerminadas", "especiales"], puerta: ["puertas", "puertas2", "bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana", "puertasTerminadas"], solape: ["solape"] };
 function ListaPreparadas({ puestoId, ubic, indice }) {
   const hojasOv = useObjetoFb("hojasLinea");
   const flagsInc = useObjetoFb("incidenciaVentanaLinea");
@@ -36632,13 +36637,13 @@ function PanelEstanteriasLinea({ proyectos, uxExpedientes, sinObra, admin }) {
 
 // Ficha de consulta de una ventana (Escáner): qué es, qué lleva, dónde está cada pieza y por qué puestos ha pasado. Solo lee, no registra nada.
 // ---- CONTROL DE LÍNEA: el puesto que manda sobre todas las ventanas (moverlas de un sitio a otro y mandar viviendas completas a acristalar)
-const ZONAS_ATRAS_LINEA = ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "hojasHerraje"]; // zonas donde las hojas siguen siendo piezas sueltas
+const ZONAS_ATRAS_LINEA = ["marcos", "marcosPilastra", "hojas", "hojasPilastra", "puertas", "puertas2", "hojasHerraje"]; // zonas donde las hojas siguen siendo piezas sueltas
 async function moverVentanaControl({ h, zonaId, zonas, ubic, por }) {
   const v = h.ventana; const base = baseDe(v);
   const z = zonas.find((q) => q.id === zonaId);
   if (!z) return { ok: false, texto: "Zona desconocida." };
   const antes = ubic[base];
-  const r = await ocuparHuecoLinea(z, base, por, ubic, zonaId === "puertas" ? 1 : 1, zonaId === "puertas" ? 6 : null, capPieza(z, false));
+  const r = await ocuparHuecoLinea(z, base, por, ubic, 1, esZonaPuertas(zonaId) ? 6 : null, capPieza(z, false));
   if (!r) return { ok: false, texto: `⚠ ${z.nombre} está LLENA: no se ha movido.` };
   if (!ZONAS_ATRAS_LINEA.includes(zonaId)) for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k)); // la ventana ya está unida: sus hojas dejan de ocupar hueco
   if (zonaId === "sinPersiana" && antes && ["persianaA", "persianaB", "puertasTerminadas", "especiales"].includes(antes.zonaId)) await fbSet(ref(fbDb, `salidaALineaLinea/${base}`), true);
@@ -36809,7 +36814,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
         const sinP = sinPersOv[c0] === true;
         const conP = !sinP && (sinPersOv[c0] === false || spAuto === false);
         const filas = [
-          ["Tipo", v.perfilHoja ? `${v.perfilHoja === "puerta" ? "PUERTA" : v.perfilHoja === "balconera" ? "BALCONERA (va como ventana)" : "VENTANA"} · según la hoja de corte${v.perfilCodigo ? ` (perfil ${v.perfilCodigo})` : ""}` : esPuertaLinea(v) ? "PUERTA solo por el nombre (empieza por P): la hoja de corte no lo confirma" : "ventana (por el nombre): la hoja de corte no lo confirma"],
+          ["Tipo", v.perfilHoja ? `${v.perfilHoja === "puerta" ? "PUERTA" : v.perfilHoja === "balconera" ? "BALCONERA (va como puerta)" : "VENTANA"} · según la hoja de corte${v.perfilCodigo ? ` (perfil ${v.perfilCodigo})` : ""}` : esPuertaLinea(v) ? "PUERTA solo por el nombre (empieza por P): la hoja de corte no lo confirma" : "ventana (por el nombre): la hoja de corte no lo confirma"],
           ["Piezas", `${piezas.map((p) => p.nombre).join(" + ")} (${piezas.length} pegatina${piezas.length === 1 ? "" : "s"})`],
           ["Persiana", sinP ? "SIN persiana → va directa a la Línea (no pasa por el banco A/B)" : conP ? "CON persiana → pasa por el banco A/B" : "SIN DEFINIR: el CRM no lo sabe y la trata como con persiana. Míralo en la hoja de corte"],
           ["Mosquitera", mosqOv[c0] || r.mosquitera ? "CON mosquitera" : "sin mosquitera"],
@@ -36930,7 +36935,7 @@ function AvisoPuertasUrgentes({ indice, ubic, escaneos, mostrarVacio = false }) 
     return res.sort((a, b) => b.n - a.n);
   }, [indice, ubic, escaneos]);
   if (!lista.length) return mostrarVacio ? <div className="border border-slate-200 bg-white rounded-xl p-3 text-sm text-slate-500">📋 Prioridad de hoy: no hay puertas pendientes de fabricar (ninguna vivienda ha empezado sin su puerta).</div> : null;
-  const estado = (u) => (!u ? "su marco aún no ha salido de la soldadora" : u.zonaId === "bancoPuerta" || u.zonaId === "puertas" ? `marco en Puertas (estantería ${u.hueco}): ya puedes hacerla` : `está en ${u.zonaId}`);
+  const estado = (u) => (!u ? "su marco aún no ha salido de la soldadora" : u.zonaId === "bancoPuerta" || esZonaPuertas(u.zonaId) ? `marco en Puertas (estantería ${u.hueco}): ya puedes hacerla` : `está en ${u.zonaId}`);
   return (
     <div className="border-2 border-amber-400 bg-amber-50 rounded-xl p-3 space-y-2">
       <div className="text-lg font-extrabold text-amber-800">📋 Prioridad de hoy: puertas a fabricar ({lista.length})</div>
@@ -36952,9 +36957,9 @@ function PuertasEnCamino({ indice, ubic }) {
       const b = baseDe(v); const um = ubic[b];
       if (um && fin.includes(um.zonaId)) return;
       const hojas = [1, 2, 3].map((k) => ({ k, u: ubic[codHoja(b, k)] })).filter((x) => x.u);
-      const enCamino = (um && (um.zonaId === "puertas" || um.zonaId === "bancoPuerta" || um.zonaId === "marcos")) || hojas.length > 0;
+      const enCamino = (um && (esZonaPuertas(um.zonaId) || um.zonaId === "bancoPuerta" || um.zonaId === "marcos")) || hojas.length > 0;
       if (!enCamino) return;
-      res.push({ v, h, um, hojas, lista: !!(um && (um.zonaId === "bancoPuerta" || um.zonaId === "puertas")) });
+      res.push({ v, h, um, hojas, lista: !!(um && (um.zonaId === "bancoPuerta" || esZonaPuertas(um.zonaId))) });
     });
     return res.sort((a, b) => (b.lista ? 1 : 0) - (a.lista ? 1 : 0));
   }, [indice, ubic]);
@@ -37072,7 +37077,7 @@ function puestoResponsableVentana(base, ubic) {
   if (!zb) return "soldadora";
   if (zb === "marcosPilastra") return "pilastra";
   if (zb === "marcos" || zb === "hojasHerraje") return "colgado";
-  if (zb === "puertas") return "puerta";
+  if (esZonaPuertas(zb)) return "puerta";
   if (zb === "colgadoA") return "persianaA";
   if (zb === "colgadoB") return "persianaB";
   return null;
@@ -40884,13 +40889,13 @@ function pendientesObraPuesto({ puestoId, obraKey, indice, ubic, escaneos, hojas
     if (puestoId === "soldadora") {
       piezas.filter((pz) => !leidasSold.has(String(pz.cod))).forEach((pz) => out.push(`${etiqueta}${pz.tipo ? " " + pz.tipo : ""}`));
     } else if (puestoId === "herraje") {
-      hojas.filter((pz) => ["hojas", "puertas"].includes(zonaDe(pz.cod))).forEach((pz) => out.push(`${etiqueta} ${pz.tipo}`));
+      hojas.filter((pz) => ["hojas", "puertas", "puertas2"].includes(zonaDe(pz.cod))).forEach((pz) => out.push(`${etiqueta} ${pz.tipo}`));
     } else if (puestoId === "pilastra") {
       if (zonaDe(c0) === "marcosPilastra") out.push(etiqueta);
       hojas.filter((pz) => zonaDe(pz.cod) === "hojasPilastra").forEach((pz) => out.push(`${etiqueta} ${pz.tipo}`));
     } else if (puestoId === "colgado") {
-      const marcoListo = ["marcos", "puertas"].includes(zonaDe(c0));
-      const hojasListas = hojas.every((pz) => ["hojasHerraje", "puertas"].includes(zonaDe(pz.cod)));
+      const marcoListo = ["marcos", "puertas", "puertas2"].includes(zonaDe(c0));
+      const hojasListas = hojas.every((pz) => ["hojasHerraje", "puertas", "puertas2"].includes(zonaDe(pz.cod)));
       if (marcoListo && hojasListas) out.push(etiqueta);
     } else if (puestoId === "persianaA") {
       if (zonaDe(c0) === "colgadoA") out.push(etiqueta);
