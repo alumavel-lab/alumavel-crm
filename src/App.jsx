@@ -31901,15 +31901,19 @@ function agruparCargaMaterial(paginas) {
 }
 // ---- Dibujos de las ventanas (se recortan del PDF de carga de material y se guardan aparte, por lote) ----
 const guardarLinea = (ruta, valor) => fbSet(ref(fbDb, ruta), valor).catch((e) => alert(`No se pudo guardar (${ruta.split("/")[0]}): ${(e && e.message) || e}. Si pone "permission denied", hay que abrir esa ruta en las reglas de Firebase.`));
-const claveDibujo = (tip) => String(tip || "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+const claveDibujo = (tip) => String(tip || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); // sin tildes: "GALERÍA" y "GALERIA" son el mismo dibujo
 // Calcula el recuadro de cada dibujo: desde debajo de "Medidas" hasta la primera línea "Vid"/"Tap" de su columna.
 // items: [{ s, x, y, h }] en puntos PDF (y hacia arriba). Devuelve rectángulos con el origen arriba a la izquierda.
 function rectDibujosCarga(items, tips, alturaPagina, x0Pagina = 0) {
   const modelos = items.filter((i) => /^Modelo\s*:?/i.test(i.s));
-  if (!modelos.length || modelos.length !== tips.length) return [];
+  if (!modelos.length) return [];
+  // Normal: el nombre de cada bloque viene del lector del PDF (tips). Si no coinciden en número, se lee el nombre del propio recuadro ("Modelo: COCINA"),
+  // en vez de saltarse la página entera (antes las ventanas con nombre, tipo COCINA o GALERIA, se quedaban sin dibujo).
+  const delRecuadro = (m) => { const t = m.s.replace(/^Modelo\s*:?\s*/i, "").trim(); if (t) return t; const d = items.filter((o) => o !== m && Math.abs(o.y - m.y) <= 2 && o.x > m.x).sort((a, b) => a.x - b.x)[0]; return d ? d.s : ""; };
+  const usarTips = modelos.length === tips.length;
   const out = [];
   modelos.forEach((m, k) => {
-    const clave = claveDibujo(tips[k]);
+    const clave = claveDibujo(usarTips ? tips[k] : delRecuadro(m));
     if (!clave) return;
     const col = items.filter((i) => Math.abs(i.x - m.x) <= 4 && i.y < m.y);
     const med = col.filter((i) => /^Medidas/i.test(i.s)).sort((a, b) => b.y - a.y)[0];
@@ -31979,6 +31983,8 @@ const buscarDibujoLote = (lote, clave) => {
   if (!lote || !clave) return "";
   if (lote[clave]) return lote[clave];
   for (const k of Object.keys(lote)) if (expandirClavesDibujo(k).includes(clave)) return lote[k];
+  const up = clave.toUpperCase(); // mayúsculas/minúsculas ("Cocina" = "COCINA")
+  for (const k of Object.keys(lote)) if (k.toUpperCase() === up || expandirClavesDibujo(k).some((x) => x.toUpperCase() === up)) return lote[k];
   return "";
 };
 // Un solo listener por lote de fabricación (se queda abierto toda la sesión: los dibujos pesan poco y así cada lectura de pistola no los vuelve a bajar)
@@ -32016,6 +32022,13 @@ function DibujoCargaVentana({ fab, tip, alto = 56 }) {
       {grande && <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => setGrande(false)}><img src={src} alt={tip} className="max-h-[85vh] max-w-full bg-white rounded-lg" /></div>}
     </>
   );
+}
+// Dibujo grande para la ficha de la ventana; si no hay dibujo, lo dice (antes la ficha se quedaba sin nada y no se sabía por qué)
+function DibujoFichaVentana({ fab, tip }) {
+  const { src, cargado } = useDibujoVentana(fab, tip);
+  if (!cargado) return null;
+  if (!src) return <div className="w-32 shrink-0 px-2 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-[11px] font-semibold">Sin dibujo en el CRM ({tip || "?"}). Mira el listado de dibujos.</div>;
+  return <DibujoCargaVentana fab={fab} tip={tip} alto={120} />;
 }
 // Lado del dibujo en el que está la HOJA ACTIVA (el CRM no lo sabe: se fija una vez y vale para todas las ventanas de 2 hojas). "D" = derecha, "I" = izquierda.
 const useLadoHojaActiva = () => {
@@ -36729,7 +36742,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
   return (
     <div className="mt-3 border-2 border-sky-300 bg-sky-50/60 rounded-lg p-4">
       <div className="flex items-start gap-3">
-        <DibujoCargaVentana fab={h.lote.fab} tip={v.tipo || v.pos} alto={64} />
+        <DibujoFichaVentana fab={h.lote.fab} tip={v.tipo || v.pos} />
         <div className="flex-1 min-w-0">
           <div className="text-lg font-bold text-slate-800">{posDib(v)}{v.num ? ` · ${v.num}` : ""}</div>
           <div className="text-sm text-slate-600">{v.grupo || h.dueno.nombre}{v.cliente ? ` · ${v.cliente}` : ""}</div>
@@ -36741,6 +36754,33 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
           <button type="button" onClick={onCerrar} className="text-xs font-semibold text-slate-500 border border-slate-300 rounded px-2 py-1 bg-white">Cerrar</button>
         </div>
       </div>
+      {v.modelo && (() => {
+        const r = v.rapido || {};
+        const spAuto = sinPersianaAuto(v, h.lote);
+        const sinP = sinPersOv[c0] === true;
+        const conP = !sinP && (sinPersOv[c0] === false || spAuto === false);
+        const filas = [
+          ["Piezas", `${piezas.map((p) => p.nombre).join(" + ")} (${piezas.length} pegatina${piezas.length === 1 ? "" : "s"})`],
+          ["Persiana", sinP ? "SIN persiana → va directa a la Línea (no pasa por el banco A/B)" : conP ? "CON persiana → pasa por el banco A/B" : "SIN DEFINIR: el CRM no lo sabe y la trata como con persiana. Míralo en la hoja de corte"],
+          ["Mosquitera", mosqOv[c0] || r.mosquitera ? "CON mosquitera" : "sin mosquitera"],
+          ["Pilastra / travesaño", pilOv[c0] ? "CON pilastra: pasa por el puesto Pilastra" : "sin pilastra"],
+          ["Solape / postigo", solOv[c0] ? "CON solape / postigo" : "sin solape / postigo"],
+          ...(r.cerradura || r.aperturaExterior || r.especial ? [["Extras", [r.cerradura ? "CERRADURA" : "", r.aperturaExterior ? "APERTURA EXTERIOR" : "", r.especial ? "ESPECIAL (medida pequeña)" : ""].filter(Boolean).join(" · ")]] : []),
+          ["Medidas", (r.ancho && r.alto ? `${r.ancho} x ${r.alto}` : v.medida) || "—"],
+          ...(v.color ? [["Color", v.color]] : []),
+          ...(r.sistema ? [["Sistema", r.sistema]] : []),
+          ...(r.vidrio ? [["Vidrio", r.vidrio]] : []),
+          ...(r.referencia ? [["Referencia", r.referencia]] : []),
+        ];
+        return (
+          <div className="mt-3 rounded-lg border-2 border-slate-300 bg-white px-3 py-2">
+            <div className="text-xs font-extrabold text-slate-800 mb-1">RESUMEN · qué lleva esta ventana</div>
+            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+              {filas.map(([k, val]) => <React.Fragment key={k}><span className="font-semibold text-slate-500">{k}</span><span className={`font-bold ${k === "Persiana" && !sinP && !conP ? "text-rose-700" : "text-slate-800"}`}>{val}</span></React.Fragment>)}
+            </div>
+          </div>
+        );
+      })()}
       {control && v.modelo && <MoverVentanaControl h={h} ubic={ubic} />}
       {v.modelo && flagsInc[c0] && (
         <div className="mt-3 px-3 py-2 rounded-md bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold">
@@ -36754,7 +36794,7 @@ function FichaVentanaLinea({ h, ubic, escaneos, hojasOv, pilOv, solOv, mosqOv, s
       {v.modelo && (
         <div className="flex flex-wrap gap-2 mt-3 text-xs font-semibold">
           <span className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700">{n} hoja{n === 1 ? "" : "s"}</span>
-          <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-emerald-100 border-emerald-300 text-emerald-800"}`}>{sinPersOv[c0] ? "Sin persiana" : "Con persiana"}</span>
+          <span className={`px-2 py-1 rounded border ${sinPersOv[c0] ? "bg-slate-100 border-slate-200 text-slate-500" : sinPersOv[c0] === false || sinPersianaAuto(v, h.lote) === false ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-rose-100 border-rose-300 text-rose-800"}`}>{sinPersOv[c0] ? "Sin persiana" : sinPersOv[c0] === false || sinPersianaAuto(v, h.lote) === false ? "Con persiana" : "Persiana sin definir"}</span>
           <span className={`px-2 py-1 rounded border ${mosqOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{mosqOv[c0] ? "Con mosquitera" : "Sin mosquitera"}</span>
           {v.corte && <span className="px-2 py-1 rounded border bg-sky-50 border-sky-200 text-sky-800" title={`Hoja de corte del presupuesto ${v.corte.presupuesto}${v.corte.version ? ` v${v.corte.version}` : ""}`}>Hoja de corte: {v.parte ? `VENTANA ${v.parte} del modelo ${v.pos} · ` : ""}{v.corte.tipo === "fijo" ? `FIJO${v.corte.huecos > 1 ? ` ${v.corte.huecos} huecos` : ""} · ` : v.corte.tipo === "puerta" ? `PUERTA${v.corte.cerradura ? " con cerradura" : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : v.corte.tipo === "corredera" ? "CORREDERA · " : v.corte.juntas > 1 || v.corte.fijosUnidos ? `${v.corte.juntas > 1 ? `${v.corte.juntas} VENTANAS UNIDAS` : "VENTANA"}${v.corte.hojas ? ` (${v.corte.hojas} hojas)` : ""}${v.corte.fijosUnidos ? ` + ${v.corte.fijosUnidos} fijo${v.corte.fijosUnidos > 1 ? "s" : ""}` : ""} · ` : ""}{(() => { const sp = sinPersianaAuto(v, h.lote); return sp === false ? "con persiana" : sp === true ? "SIN persiana" : "persiana sin definir"; })()} · {v.corte.mosquiteras === "todas" ? "mosquitera en todas" : v.corte.mosquiteras > 0 ? `${v.corte.mosquiteras} mosquiteras${v.corte.uds ? ` de ${v.corte.uds}` : ""}` : "sin mosquitera"}</span>}
           <span className={`px-2 py-1 rounded border ${solOv[c0] ? "bg-emerald-100 border-emerald-300 text-emerald-800" : "bg-slate-100 border-slate-200 text-slate-500"}`}>{solOv[c0] ? "Con solape / postigo" : "Sin solape / postigo"}</span>
