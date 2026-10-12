@@ -41398,9 +41398,16 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
   const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean);
   const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
   const modelos = [];
+  const desconocidasPor = new Map(); // por presupuesto: referencias que parecen auxiliares y no están en la lista
   partes.forEach((b) => {
-    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
+    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/) || b.match(/Pos\s*:\s*([A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+)/);
     if (!mm) return;
+    // Una hoja «por grupos» trae varios presupuestos juntos: cada bloque lleva el suyo
+    const cabB = b.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
+    const pptoB = cabB ? cabB[1].replace(/\D/g, "") : presupuesto;
+    const versionB = cabB && cabB[2] ? cabB[2] : version;
+    const referenciaB = ((b.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || referencia).trim();
+    const clienteB = ((b.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || cliente).trim();
     const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1;
     const med = b.match(/Medidas\s*:\s*([\d.]+)\s*x\s*([\d.]+)/i);
     const ancho = med ? parseInt(med[1].replace(/\./g, ""), 10) : null;
@@ -41434,9 +41441,29 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
     filas.forEach((f) => { if (f.lCorte != null && f.lCorte < 10) { f.lCorte = Math.round(f.lCorte * 1000); f.lFinal = f.lFinal != null ? Math.round(f.lFinal * 1000) : null; f.enMetros = true; } });
     // La caja "Compacto decorativo - guía aparte" (CJ_DECOR_S/G) viene sin guía: se anota para avisar si falta la guía en la hoja
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(b) || /gu[ií]a aparte/i.test(b);
-    modelos.push({ modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas });
+    // Líneas que parecen auxiliares (solape, inversor, postigo, guía de persiana/mosquitera) con una referencia que no está en la lista
+    b.split("\n").forEach((linea) => {
+      if (!/SOLAPE|INVERSOR|POSTIGO|GU[IÍ]A\s+(DE\s+)?(PERSIANA|MOSQ)|PERSIANA\b/i.test(linea) || /COMPAS|Persiana\s*:/i.test(linea)) return;
+      if (lista.some((ref) => new RegExp(`(^|[^A-Za-z0-9.])${auxEsc(ref)}(?![A-Za-z0-9])`).test(linea))) return;
+      const mr = linea.match(/([A-Za-z0-9][A-Za-z0-9.\-_]{2,})\s+\d+\s*$/) || linea.match(/^([A-Za-z0-9][A-Za-z0-9.\-_]{2,})\s/);
+      if (!mr) return;
+      const refD = mr[1].replace(/^mm(?=\d)/i, ""); // la descripción acaba en «mm» y se pega a la referencia
+      if (!/\d/.test(refD)) return; // «Guia mosquitera…» del bloque de Persiana no es una referencia
+      const mapa = desconocidasPor.get(pptoB) || new Map();
+      const x = mapa.get(refD) || { ref: refD, desc: linea.replace(/[\d.,]+\s*(?:mm)?|º|-/g, " ").replace(/\s+/g, " ").trim().slice(0, 50), n: 0 };
+      x.n += 1; mapa.set(refD, x); desconocidasPor.set(pptoB, mapa);
+    });
+    modelos.push({ modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas, ppto: pptoB, version: versionB, referencia: referenciaB, cliente: clienteB });
   });
-  return { presupuesto, version, referencia, cliente, modelos };
+  const hojas = [];
+  modelos.forEach((m) => {
+    let h = hojas.find((x) => x.presupuesto === m.ppto);
+    if (!h) { h = { presupuesto: m.ppto, version: m.version, referencia: m.referencia, cliente: m.cliente, modelos: [], desconocidas: [...(desconocidasPor.get(m.ppto) || new Map()).values()] }; hojas.push(h); }
+    const { ppto, version: v2, referencia: r2, cliente: c2, ...resto } = m;
+    h.modelos.push(resto);
+  });
+  const primera = hojas[0] || { presupuesto, version, referencia, cliente, modelos: [], desconocidas: [] };
+  return { ...primera, hojas: hojas.length ? hojas : [primera] };
 }
 
 /* ---------- AUXILIARES: perfiles que se cortan aparte en la doble cabeza (guías, inversor, solape, mosquitera…) ---------- */
@@ -41477,10 +41504,13 @@ async function guardarHojasCorteAux(ficheros) {
   const hechas = [];
   for (const f of toArray(ficheros)) {
     try {
-      const { sinTexto, r: h } = await leerHojaAuxPdf(f, refs);
-      if (sinTexto || !h || !h.presupuesto || !h.modelos.length) continue;
-      await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), JSON.parse(JSON.stringify({ ...h, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
-      hechas.push(pptoBonito(h.presupuesto));
+      const { sinTexto, r: rr } = await leerHojaAuxPdf(f, refs);
+      if (sinTexto || !rr) continue;
+      for (const h of (rr.hojas || [rr])) {
+        if (!h.presupuesto || !h.modelos.length) continue;
+        await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), JSON.parse(JSON.stringify({ ...h, hojas: undefined, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+        hechas.push(pptoBonito(h.presupuesto));
+      }
     } catch (e) { /* un PDF que no es hoja de corte (el listado de vidrios o el de dibujos) se salta */ }
   }
   return hechas;
@@ -41683,14 +41713,19 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const refs = cfg.refs.map((r) => String(r.ref || "").trim()).filter(Boolean);
       for (const f of Array.from(files || [])) {
-        const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
+        const { sinTexto, r: rr } = await leerHojaAuxPdf(f, refs);
         if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
-        if (!r || !r.modelos.length || !r.presupuesto) { setMsg(`«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones).`); continue; }
-        const previa = hojas && hojas[r.presupuesto];
-        if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
-        const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
-        await fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
-        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no hay ninguna de las referencias de la lista.`);
+        const lista = ((rr && rr.hojas) || []).filter((h) => h.presupuesto && h.modelos.length);
+        if (!rr || !lista.length) { setMsg(`«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones).`); continue; }
+        const textos = [];
+        for (const r of lista) {
+          const previa = hojas && hojas[r.presupuesto];
+          if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
+          const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
+          await fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, hojas: undefined, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+          textos.push(nFilas ? `✓ Ppto ${pptoBonito(r.presupuesto)} v${r.version || "?"}: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Ppto ${pptoBonito(r.presupuesto)} leído, pero no hay ninguna de las referencias de la lista.`);
+        }
+        setMsg(textos.join(" "));
       }
     } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
     finally { setLeyendo(false); if (archivoRef.current) archivoRef.current.value = ""; }
@@ -41785,6 +41820,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         </div>
       )}
       {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
+      {hojasLista.some((h) => toArray(h.desconocidas).length > 0) && (
+        <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">
+          <div className="font-bold">En la hoja hay perfiles que parecen auxiliares y NO están en tu lista (por eso no salen en «Falta por cortar»):</div>
+          {Array.from(new Map(hojasLista.flatMap((h) => toArray(h.desconocidas).map((d) => [d.ref, { ...d, ppto: h.presupuesto }]))).values()).map((d) => (
+            <div key={d.ref} className="flex flex-wrap items-center gap-2">
+              <span><b>{d.ref}</b> · {d.desc || "sin descripción"} · {d.n} línea{d.n === 1 ? "" : "s"} (Ppto {pptoBonito(d.ppto)})</span>
+              {admin && !cfg.refs.some((r) => String(r.ref).trim() === String(d.ref)) && <button type="button" onClick={() => guardarCfg({ ...cfg, refs: [...cfg.refs, { id: uid(), ref: d.ref, nombre: d.desc || d.ref, pasos: "", activo: true }] })} className="px-2 py-0.5 rounded border border-amber-500 text-amber-900 font-semibold hover:bg-amber-100">Añadir a mi lista</button>}
+            </div>
+          ))}
+          <div>Después de añadirlos, vuelve a subir la hoja de corte de esa obra para que los lea.</div>
+        </div>
+      )}
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex flex-wrap items-center gap-2">
           <input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
