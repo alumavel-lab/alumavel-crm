@@ -35720,9 +35720,38 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
 }
 
 // Matrimonio: ventanas a medio unir (ya se leyó alguna pieza y faltan otras). El aviso se queda fijo en rojo y pita cada 30 s hasta que se lea lo que falta.
-function PendientesMatrimonio({ indice, ubic, hojasOv }) {
+// Une la ventana en Matrimonio sin leer ninguna pieza más (cuando al corregir el nº de hojas ya estaban todas leídas): misma salida que al leer la última.
+async function unirMatrimonioLinea({ h, zonas, sinPersOv, indice, por }) {
+  const v = h.ventana; const base = baseDe(v);
+  const puerta = esPuertaLinea(v);
+  const sinP = !puerta && !!sinPersOv[base];
+  const destinos = puerta ? ["bancoPuerta"] : sinP ? ["sinPersiana"] : ["colgadoA", "colgadoB"];
+  const ubicFresca = (await fbGet(ref(fbDb, "ubicacionesLinea"))).val() || {};
+  let r = null, destino = "";
+  for (const d of destinos) { const z = zonas.find((q) => q.id === d); if (!z) continue; r = await ocuparHuecoLinea(z, base, por, ubicFresca, 1, null, 1); if (r) { destino = d; break; } }
+  if (!r) return { ok: false, texto: `⚠ ${posDib(v)}: no hay sitio en ${destinos.map((d) => (zonas.find((q) => q.id === d) || {}).nombre || d).join(" ni en ")}. Libera estanterías o pulsa «+».` };
+  for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k));
+  await fbSet(ref(fbDb, `colgadoLinea/${base}`), null);
+  const cinta = sinP ? await ordenarCintaSinPersianaLinea({ h, indice, zonas, sinPersOv, por, sacarOtras: true }) : "";
+  return { ok: true, texto: `✓ VENTANA UNIDA ${posDib(v)} → ${(zonas.find((q) => q.id === destino) || {}).nombre || destino} · ESTANTERÍA ${r.hueco}${cinta}` };
+}
+function PendientesMatrimonio({ indice, ubic, hojasOv, quien = "" }) {
   const parciales = useObjetoFb("colgadoLinea");
+  const zonasM = useZonasLinea();
+  const sinPersM = useSinPersianaEfectivo(indice);
+  const [msgM, setMsgM] = useState("");
   const [, setTic] = useState(0);
+  // El CRM cree que la ventana lleva N hojas; si no es así se corrige aquí (1, 2 o 3). Si con el nuevo número ya están todas leídas, se une en ese momento.
+  const cambiarHojas = async (x, k) => {
+    try {
+      await fbSet(ref(fbDb, `hojasLinea/${x.base}`), k);
+      for (let j = k + 1; j <= 3; j++) await liberarCodigoLinea(codHoja(x.base, j)); // hojas que sobran: dejan de ocupar estantería
+      const marcas = (parciales && parciales[x.base]) || {};
+      const req = ["m", ...Array.from({ length: k }, (_, i) => `h${i + 1}`)];
+      if (req.every((q) => marcas[q])) { const r = await unirMatrimonioLinea({ h: x.h, zonas: zonasM, sinPersOv: sinPersM, indice, por: quien }); setMsgM(r.texto); pitidoCRM(r.ok); }
+      else setMsgM(`${x.pos}: ahora lleva ${k} hoja${k === 1 ? "" : "s"}.`);
+    } catch (e) { setMsgM(`No se pudo cambiar: ${(e && e.message) || e}`); }
+  };
   const lista = useMemo(() => {
     const res = [];
     Object.entries(parciales || {}).forEach(([base, marcas]) => {
@@ -35741,7 +35770,7 @@ function PendientesMatrimonio({ indice, ubic, hojasOv }) {
         return `${nomP} → ${u ? `${zn} · estantería ${u.hueco}${u.slot > 1 ? ` (sitio ${u.slot})` : ""}` : "aún no está en ninguna estantería (no ha pasado por su puesto anterior)"}`;
       });
       const desde = Math.min(...Object.values(marcas).map((t) => Number(t) || Date.now()));
-      res.push({ base, pos: posDib(v), grupo: v.grupo || "", cliente: v.cliente || "", detalle, desde });
+      res.push({ base, h, n, pos: posDib(v), grupo: v.grupo || "", cliente: v.cliente || "", detalle, desde });
     });
     return res.sort((a, b) => a.desde - b.desde);
   }, [parciales, indice, ubic, hojasOv]);
@@ -35754,6 +35783,7 @@ function PendientesMatrimonio({ indice, ubic, hojasOv }) {
   if (!hay) return null;
   return (
     <div className="space-y-2">
+      {msgM && <div className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 whitespace-pre-line">{msgM}</div>}
       {lista.map((x) => {
         const min = Math.max(0, Math.round((Date.now() - x.desde) / 60000));
         return (
@@ -35765,6 +35795,10 @@ function PendientesMatrimonio({ indice, ubic, hojasOv }) {
             </div>
             <ul className="mt-1 text-sm font-semibold text-slate-800 list-disc pl-5">{x.detalle.map((t, i) => <li key={i}>{t}</li>)}</ul>
             <p className="text-[11px] text-slate-600 mt-1">El aviso no se quita hasta que leas con la pistola lo que falta.</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
+              <span>El CRM cree que esta ventana lleva <b>{x.n} hoja{x.n === 1 ? "" : "s"}</b>. Si en las pegatinas no es así:</span>
+              {[1, 2, 3].filter((k) => k !== x.n).map((k) => <button key={k} type="button" onClick={() => cambiarHojas(x, k)} className="px-2 py-0.5 rounded border border-slate-400 bg-white font-semibold">Lleva {k} hoja{k === 1 ? "" : "s"}</button>)}
+            </div>
           </div>
         );
       })}
@@ -37331,7 +37365,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       <AvisoSacarLinea quien={quien} />
       <AvisoBusquedaVentana indice={indice} ubic={ubic} puestoId={puestoId} />
       <AvisoMensajesLinea />
-      {puestoId === "colgado" && <PendientesMatrimonio indice={indice} ubic={ubic} hojasOv={hojasOv} />}
+      {puestoId === "colgado" && <PendientesMatrimonio indice={indice} ubic={ubic} hojasOv={hojasOv} quien={quien} />}
       <PedirVentanaLinea indice={indice} ubic={ubic} quien={quien} />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
