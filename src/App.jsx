@@ -35671,15 +35671,19 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     if (u && rg.desde && !rg.desde.includes(u.zonaId)) return { ok: false, texto: `⚠ ${posDib(v)} está en ${donde(u)}, no en ${rg.desde.map(nom).join(" / ")}. Revisa el puesto.` };
     let destinoRg = rg.deja;
     let avisoPuerta = "";
+    let todasPorLinea = false;
     if (puestoId === "puerta") {
       // Puerta terminada: si alguna ventana de su vivienda ya espera en la Línea o en Persiana A/B, la puerta va a la Línea con ellas; si no, a su almacén (Puertas terminadas)
-      const hayAlli = matesVivienda().some((m) => m.u && ["sinPersiana", "persianaA", "persianaB"].includes(m.u.zonaId));
-      if (hayAlli) destinoRg = "sinPersiana";
+      const matesP = matesVivienda();
+      const hayAlli = matesP.some((m) => m.u && ["sinPersiana", "persianaA", "persianaB"].includes(m.u.zonaId));
+      // Si TODAS las demás ventanas de su vivienda vienen por la Línea (sin persiana), o no tiene otras, la puerta va ya a la Línea aunque aún no hayan llegado
+      todasPorLinea = !hayAlli && matesP.every((m) => !!sinPersOv[baseDe(m.w)]);
+      if (hayAlli || todasPorLinea) destinoRg = "sinPersiana";
     }
     let n = await poner(destinoRg, base);
     if (!n && destinoRg === "sinPersiana") { avisoPuerta = " · ⚠ La Línea está llena: déjala en su almacén"; destinoRg = rg.deja; n = await poner(destinoRg, base); }
     if (!n) return llena(destinoRg, v.pos);
-    if (puestoId === "puerta") avisoPuerta = destinoRg === "sinPersiana" ? " · 👉 DÉJALA EN LA LÍNEA: las ventanas de su vivienda ya están esperando allí" : `${avisoPuerta || ""} · 👉 DÉJALA EN SU ALMACÉN (${nom("puertasTerminadas")}): de su vivienda aún no ha llegado ninguna ventana a la Línea`;
+    if (puestoId === "puerta") avisoPuerta = destinoRg === "sinPersiana" ? (todasPorLinea ? " · 👉 DÉJALA EN LA LÍNEA: el resto de su vivienda viene por la Línea (sin persiana)" : " · 👉 DÉJALA EN LA LÍNEA: las ventanas de su vivienda ya están esperando allí") : `${avisoPuerta || ""} · 👉 DÉJALA EN SU ALMACÉN (${nom("puertasTerminadas")}): de su vivienda aún no ha llegado ninguna ventana a la Línea`;
     if (puestoId === "lineaPers") await fbSet(ref(fbDb, `salidaALineaLinea/${base}`), true);
     if (puestoId === "puerta") for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k)); // las hojas de la puerta salen de «Puertas» junto con el marco
     let extra = avisoPuerta;
