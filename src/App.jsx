@@ -35631,6 +35631,59 @@ function ListasColgado({ ubic, indice, hojasOv, puestoId }) {
   );
 }
 
+// Matrimonio: ventanas a medio unir (ya se leyó alguna pieza y faltan otras). El aviso se queda fijo en rojo y pita cada 30 s hasta que se lea lo que falta.
+function PendientesMatrimonio({ indice, ubic, hojasOv }) {
+  const parciales = useObjetoFb("colgadoLinea");
+  const [, setTic] = useState(0);
+  const lista = useMemo(() => {
+    const res = [];
+    Object.entries(parciales || {}).forEach(([base, marcas]) => {
+      if (!marcas || typeof marcas !== "object") return;
+      const h = indice.get(String(base));
+      if (!h || !h.ventana || !h.ventana.modelo || !toArray(h.ventana.piezas)[0]) return;
+      const v = h.ventana; const n = hojasDe(v, hojasOv);
+      const req = ["m", ...Array.from({ length: n }, (_, i) => `h${i + 1}`)];
+      const faltan = req.filter((k) => !marcas[k]);
+      if (!faltan.length) return;
+      const detalle = faltan.map((k) => {
+        const cp = k === "m" ? String(base) : codHoja(base, parseInt(k.slice(1), 10));
+        const u = ubic[cp];
+        const nomP = k === "m" ? "MARCO" : nombreHoja(parseInt(k.slice(1), 10), n);
+        const zn = u ? ((ZONAS_LINEA_DEFECTO.find((z) => z.id === u.zonaId) || {}).nombre || u.zonaId) : "";
+        return `${nomP} → ${u ? `${zn} · estantería ${u.hueco}${u.slot > 1 ? ` (sitio ${u.slot})` : ""}` : "aún no está en ninguna estantería (no ha pasado por su puesto anterior)"}`;
+      });
+      const desde = Math.min(...Object.values(marcas).map((t) => Number(t) || Date.now()));
+      res.push({ base, pos: posDib(v), grupo: v.grupo || "", cliente: v.cliente || "", detalle, desde });
+    });
+    return res.sort((a, b) => a.desde - b.desde);
+  }, [parciales, indice, ubic, hojasOv]);
+  const hay = lista.length > 0;
+  useEffect(() => {
+    if (!hay) return undefined;
+    const id = setInterval(() => { setTic((x) => x + 1); pitidoCRM(false); }, 30000);
+    return () => clearInterval(id);
+  }, [hay]);
+  if (!hay) return null;
+  return (
+    <div className="space-y-2">
+      {lista.map((x) => {
+        const min = Math.max(0, Math.round((Date.now() - x.desde) / 60000));
+        return (
+          <div key={x.base} className="rounded-xl border-4 border-rose-500 bg-rose-50 px-4 py-3 animate-pulse">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-lg font-extrabold text-rose-700">⚠ FALTAN PIEZAS · {x.pos}{x.grupo ? ` · ${x.grupo}` : ""}{x.cliente ? ` · ${x.cliente}` : ""}</span>
+              <span className="text-xs text-rose-700">a medio unir desde hace {min} min</span>
+              <button type="button" title="Solo si la ventana se ha dejado: borra lo ya leído y quita el aviso" onClick={() => { if (window.confirm(`¿Quitar el aviso de ${x.pos}? Se borra lo que ya se había leído de esta ventana en Matrimonio.`)) fbSet(ref(fbDb, `colgadoLinea/${x.base}`), null).catch(() => {}); }} className="ml-auto text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-1 bg-white">Quitar aviso</button>
+            </div>
+            <ul className="mt-1 text-sm font-semibold text-slate-800 list-disc pl-5">{x.detalle.map((t, i) => <li key={i}>{t}</li>)}</ul>
+            <p className="text-[11px] text-slate-600 mt-1">El aviso no se quita hasta que leas con la pistola lo que falta.</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Lo que el puesto anterior ya ha dejado listo para este puesto (por orden de llegada)
 const PREPARADAS_POR_PUESTO = { herraje: ["hojas"], persianaA: ["colgadoA"], persianaB: ["colgadoB"], lineaPers: ["persianaA", "persianaB", "puertasTerminadas", "especiales"], puerta: ["puertas", "bancoPuerta"], cristales: ["persianaA", "persianaB", "sinPersiana", "puertasTerminadas"], solape: ["solape"] };
 function ListaPreparadas({ puestoId, ubic, indice }) {
@@ -37154,6 +37207,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       <AvisoSacarLinea quien={quien} />
       <AvisoBusquedaVentana indice={indice} ubic={ubic} puestoId={puestoId} />
       <AvisoMensajesLinea />
+      {puestoId === "colgado" && <PendientesMatrimonio indice={indice} ubic={ubic} hojasOv={hojasOv} />}
       <PedirVentanaLinea indice={indice} ubic={ubic} quien={quien} />
       {puestoId === "puerta" && <AvisoPuertasUrgentes indice={indice} ubic={ubic} escaneos={escaneos} />}
       {puestoId === "puerta" && <PuertasEnCamino indice={indice} ubic={ubic} />}
