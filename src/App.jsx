@@ -36647,6 +36647,8 @@ async function moverVentanaControl({ h, zonaId, zonas, ubic, por }) {
   if (!r) return { ok: false, texto: `⚠ ${z.nombre} está LLENA: no se ha movido.` };
   if (!ZONAS_ATRAS_LINEA.includes(zonaId)) for (let k = 1; k <= 3; k++) await liberarCodigoLinea(codHoja(base, k)); // la ventana ya está unida: sus hojas dejan de ocupar hueco
   if (zonaId === "sinPersiana" && antes && ["persianaA", "persianaB", "puertasTerminadas", "especiales"].includes(antes.zonaId)) await fbSet(ref(fbDb, `salidaALineaLinea/${base}`), true);
+  // Una ventana que se manda a la Línea sin haber pasado por persiana es una ventana SIN persiana: se marca, si no cristales la rechaza («aún no ha pasado por persiana»)
+  else if (zonaId === "sinPersiana" && !esPuertaLinea(v)) await fbSet(ref(fbDb, `sinPersianaLinea/${base}`), true);
   return { ok: true, texto: `✓ ${v.pos} → ${z.nombre} · estantería ${r.hueco}` };
 }
 function MoverVentanaControl({ h, ubic }) {
@@ -37377,7 +37379,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             <button type="button" onClick={() => setBloqCris(null)} className="ml-2 px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-600 text-sm font-semibold">Cancelar</button>
           </div>
         )}
-        {ficha && <FichaVentanaLinea admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
+        {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
