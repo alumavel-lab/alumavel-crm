@@ -31958,21 +31958,101 @@ async function guardarDibujosCarga(doc, r) {
     await Promise.all(Object.entries(hechos).map(([c, d]) => fbSet(ref(fbDb, `dibujosVentana/${fab}/${c}`), d)));
   } catch (e) { /* los dibujos son un extra: si algo falla, la subida del PDF sigue igual */ }
 }
+// El «Listado dibujos» agrupa los modelos iguales en un solo bloque ("V02.104.103", "V07.012,013"): el recorte se guarda bajo la clave del
+// GRUPO ("V02_104_103"), pero la ventana del CRM se llama "V02.104" o "V02.103". Esto reparte el grupo en sus modelos sueltos.
+const expandirClavesDibujo = (clave) => {
+  const p = String(clave || "").split("_");
+  if (p.length > 2 && /^[A-Za-z]{1,4}\d+$/.test(p[0]) && p.slice(1).every((x) => /^\d+$/.test(x))) return p.slice(1).map((x) => `${p[0]}_${x}`);
+  return [];
+};
+const buscarDibujoLote = (lote, clave) => {
+  if (!lote || !clave) return "";
+  if (lote[clave]) return lote[clave];
+  for (const k of Object.keys(lote)) if (expandirClavesDibujo(k).includes(clave)) return lote[k];
+  return "";
+};
+// Un solo listener por lote de fabricación (se queda abierto toda la sesión: los dibujos pesan poco y así cada lectura de pistola no los vuelve a bajar)
+const _dibujosLotes = new Map();
+function suscribirDibujosLote(fab, cb) {
+  let e = _dibujosLotes.get(fab);
+  if (!e) {
+    e = { val: undefined, subs: new Set() };
+    const avisarTodos = (v) => { e.val = v; e.subs.forEach((f) => f(v)); };
+    onValue(ref(fbDb, `dibujosVentana/${fab}`), (sn) => avisarTodos(sn.val() || {}), () => avisarTodos({}));
+    _dibujosLotes.set(fab, e);
+  }
+  e.subs.add(cb);
+  if (e.val !== undefined) cb(e.val);
+  return () => { e.subs.delete(cb); };
+}
+function useDibujoVentana(fab, tip) {
+  const clave = claveDibujo(tip);
+  const [est, setEst] = useState({ src: "", cargado: false });
+  useEffect(() => {
+    if (!fab || !clave) { setEst({ src: "", cargado: true }); return undefined; }
+    setEst((x) => (x.cargado || x.src ? { src: "", cargado: false } : x));
+    return suscribirDibujosLote(String(fab), (lote) => setEst({ src: buscarDibujoLote(lote, clave), cargado: true }));
+  }, [fab, clave]);
+  return est;
+}
 // Dibujo pequeño de la ventana (se amplía al tocarlo)
 function DibujoCargaVentana({ fab, tip, alto = 56 }) {
-  const [src, setSrc] = useState("");
+  const { src } = useDibujoVentana(fab, tip);
   const [grande, setGrande] = useState(false);
-  const clave = claveDibujo(tip);
-  useEffect(() => {
-    if (!fab || !clave) return undefined;
-    return onValue(ref(fbDb, `dibujosVentana/${fab}/${clave}`), (sn) => setSrc(sn.val() || ""), () => setSrc(""));
-  }, [fab, clave]);
   if (!src) return null;
   return (
     <>
       <img src={src} alt={tip} onClick={() => setGrande(true)} style={{ height: alto }} className="rounded border border-slate-200 bg-white cursor-zoom-in" />
       {grande && <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => setGrande(false)}><img src={src} alt={tip} className="max-h-[85vh] max-w-full bg-white rounded-lg" /></div>}
     </>
+  );
+}
+// Lado del dibujo en el que está la HOJA ACTIVA (el CRM no lo sabe: se fija una vez y vale para todas las ventanas de 2 hojas). "D" = derecha, "I" = izquierda.
+const useLadoHojaActiva = () => {
+  const cfg = useObjetoFb("configZonasLinea");
+  return cfg.ladoHojaActiva === "I" ? "I" : "D";
+};
+// Puesto Herraje: el dibujo de la ventana con SUS DOS HOJAS y la que se acaba de leer resaltada en verde (la otra, atenuada).
+// n = nº de hoja leída (1 activa, 2 pasiva), de = nº de hojas de la ventana.
+function DibujoHojaVentana({ fab, tip, n, de, alto = 190 }) {
+  const { src, cargado } = useDibujoVentana(fab, tip);
+  const lado = useLadoHojaActiva();
+  const [grande, setGrande] = useState(false);
+  if (!cargado) return null;
+  if (!src) return <div className="mt-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm font-semibold">⚠ El CRM no tiene el dibujo de {tip} (lote {fab || "?"}). Mira el «Listado dibujos» en papel antes de montar el herraje.</div>;
+  const nombre = nombreHoja(n, de);
+  const dos = de === 2 && (n === 1 || n === 2);
+  const ladoLeida = n === 1 ? lado : lado === "D" ? "I" : "D"; // la activa va en el lado fijado; la pasiva, en el contrario
+  const txtLado = (s) => (s === "D" ? "DERECHA" : "IZQUIERDA");
+  const imagen = (estilo, clase) => (
+    <div className="relative inline-block align-top">
+      <img src={src} alt={tip} style={estilo} className={clase} />
+      {dos && ["I", "D"].map((s) => {
+        const es = s === ladoLeida;
+        return (
+          <div key={s} className="absolute top-0 bottom-0 w-1/2 pointer-events-none flex items-end justify-center"
+            style={{ [s === "I" ? "left" : "right"]: 0, boxSizing: "border-box", ...(es ? { background: "rgba(16,185,129,0.32)", border: "4px solid #047857" } : { background: "rgba(255,255,255,0.5)" }) }}>
+            {es && <span className="mb-1 px-2 py-0.5 rounded bg-emerald-700 text-white text-xs font-extrabold">{nombre}</span>}
+          </div>
+        );
+      })}
+      {de === 1 && <div className="absolute inset-0 pointer-events-none" style={{ border: "4px solid #047857", background: "rgba(16,185,129,0.18)", boxSizing: "border-box" }} />}
+    </div>
+  );
+  return (
+    <div className="mt-2">
+      <div onClick={() => setGrande(true)} className="cursor-zoom-in">{imagen({ height: alto }, "rounded border border-slate-300 bg-white")}</div>
+      <div className="mt-1 text-sm font-extrabold text-slate-800">
+        {nombre}{dos ? ` → a la ${txtLado(ladoLeida)} del dibujo` : de === 1 ? " (ventana de 1 hoja)" : ` de ${de} hojas: el dibujo no distingue el lado, comprueba cuál es`}
+      </div>
+      {dos && (
+        <div className="text-xs text-slate-500">
+          La hoja ACTIVA está a la {txtLado(lado)} del dibujo.{" "}
+          <button type="button" className="underline font-semibold text-slate-700" onClick={() => { if (window.confirm(`¿Cambiar el lado de la hoja ACTIVA a la ${txtLado(lado === "D" ? "I" : "D")}? Vale para TODAS las ventanas.`)) fbUpdate(ref(fbDb, "configZonasLinea"), { ladoHojaActiva: lado === "D" ? "I" : "D" }).catch((e) => alert("No se pudo guardar: " + ((e && e.message) || e))); }}>Está al revés: cambiar</button>
+        </div>
+      )}
+      {grande && <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => setGrande(false)}>{imagen({ maxHeight: "85vh", maxWidth: "100%" }, "bg-white rounded-lg")}</div>}
+    </div>
   );
 }
 // ---- "Hoja de corte" del programa de fabricación: una por modelo (CS1, CS2…). Trae el nº de PRESUPUESTO (con él se localiza la obra), las hojas
@@ -37029,7 +37109,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
-    setUltimo((u) => (u ? { ...u, h, urgente: eraUrgente, puedeLinea: (puestoId === "persianaA" || puestoId === "persianaB") && !!cruce && !cruce.ok, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } : u));
+    setUltimo((u) => (u ? { ...u, h, urgente: eraUrgente, puedeLinea: (puestoId === "persianaA" || puestoId === "persianaB") && !!cruce && !cruce.ok, foco: cruce && cruce.ok ? cruce.foco : null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null, hoja: (() => { const mh = /^Hoja (\d)/.exec(String(h.pieza.t || "")); return mh ? { n: parseInt(mh[1], 10), de: hojasDe(v, hojasOv) } : null; })() } : u));
     if (puestoId === "colgado") setUltimosMesa((m) => (m[mesaAhora] ? { ...m, [mesaAhora]: { ...m[mesaAhora], h, foco: null, zona: zonaFoco, dib: v.modelo ? { fab: h.lote.fab, tip: v.tipo || v.pos } : null } } : m));
   };
   // Matrimonio: la ventana fue al banco de persiana A/B pero NO lleva persiana (no estaba marcada la casilla en las pegatinas): se marca y pasa a la Línea
@@ -37052,7 +37132,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
               <span className="text-4xl font-extrabold leading-none px-4 py-2 rounded-lg bg-emerald-600 text-white">{u.zona.hueco}</span>
               <span className="text-base font-bold">ESTANTERÍA{u.zona.slot > 1 ? ` (sitio ${u.zona.slot})` : ""} · {(zonas.find((x) => x.id === u.zona.zonaId) || {}).nombre || ""}</span>
             </div>
-          )}{u.dib && <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>}{puestoId === "colgado" && u.h && u.zona && (u.zona.zonaId === "colgadoA" || u.zona.zonaId === "colgadoB") && u.ok && (
+          )}{u.dib && (puestoId === "herraje" && u.ok && u.hoja
+            ? <DibujoHojaVentana fab={u.dib.fab} tip={u.dib.tip} n={u.hoja.n} de={u.hoja.de} alto={200} />
+            : <div className="mt-2"><DibujoCargaVentana fab={u.dib.fab} tip={u.dib.tip} alto={110} /></div>)}{puestoId === "colgado" && u.h && u.zona && (u.zona.zonaId === "colgadoA" || u.zona.zonaId === "colgadoB") && u.ok && (
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-slate-700 text-white text-sm font-bold">No lleva persiana → pasar a la Línea</button>
           )}{(puestoId === "persianaA" || puestoId === "persianaB") && u.h && u.puedeLinea && (
             <button type="button" onClick={() => pasarALinea(u)} className="mt-2 block px-3 py-2 rounded-md bg-rose-700 text-white text-sm font-bold">No lleva persiana → quitarla de aquí y pasarla a la Línea</button>
