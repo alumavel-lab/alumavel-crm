@@ -31956,7 +31956,17 @@ async function guardarDibujosCarga(doc, r) {
       canvas.width = 0;
     }
     await Promise.all(Object.entries(hechos).map(([c, d]) => fbSet(ref(fbDb, `dibujosVentana/${fab}/${c}`), d)));
+    return Object.keys(hechos).length;
   } catch (e) { /* los dibujos son un extra: si algo falla, la subida del PDF sigue igual */ }
+  return 0;
+}
+// Expediente rápido: el «Listado dibujos» se recorta igual que la carga de material (mismo formato: "Modelo", "Medidas", "Vid"), bajo el lote de las ventanas.
+// Devuelve cuántos dibujos se han guardado, para avisar si salen menos que los modelos del listado.
+async function guardarDibujosRapido(doc, fab, modelos) {
+  if (!doc || !fab) return 0;
+  const bloques = [];
+  toArray(modelos).forEach((m) => { while (bloques.length < m.pagina) bloques.push([]); bloques[m.pagina - 1].push(m.modelo); });
+  return guardarDibujosCarga(doc, { lotes: [{ fab }], bloques });
 }
 // El «Listado dibujos» agrupa los modelos iguales en un solo bloque ("V02.104.103", "V07.012,013"): el recorte se guarda bajo la clave del
 // GRUPO ("V02_104_103"), pero la ventana del CRM se llama "V02.104" o "V02.103". Esto reparte el grupo en sus modelos sueltos.
@@ -32558,7 +32568,7 @@ async function leerExpedienteRapidoPdfs(files, onProgreso) {
     }
     const cab = textoCabeceraRapido(paginas);
     if (/HOJA\s*DE\s*CORTE/i.test(cab)) { cortes.push(...agruparCorteRapido(paginas)); leidos.push(`${file.name}: hoja de corte`); }
-    else if (esListadoDibujosRapido(paginas)) { dibujos.push(agruparDibujosRapido(paginasPos)); leidos.push(`${file.name}: listado de dibujos`); }
+    else if (esListadoDibujosRapido(paginas)) { const dd = agruparDibujosRapido(paginasPos); Object.defineProperty(dd, "_doc", { value: doc, enumerable: false }); dibujos.push(dd); leidos.push(`${file.name}: listado de dibujos`); }
     else if (esListadoVidriosRapido(paginas)) { listados.push(agruparVidriosRapido(paginas)); leidos.push(`${file.name}: listado de vidrios`); }
     else { avisos.push(`${file.name}: no es un listado de vidrios, una hoja de corte ni un listado de dibujos. No lo he usado.`); leidos.push(`${file.name}: NO RECONOCIDO${cab.trim() ? ` (empieza por «${cab.trim().slice(0, 70)}»)` : " (no tiene texto: ¿es un escaneo o una foto?)"}`); }
   }
@@ -32577,6 +32587,17 @@ async function leerExpedienteRapidoPdfs(files, onProgreso) {
     const sinModelo = d.modelos.filter((m) => ![...L.presupuestos.values()].some((P) => P.filas.some((f) => normPosRapido(f.modelo) === normPosRapido(m.modelo))));
     if (sinModelo.length) avisos.push(`El listado de dibujos trae modelos que no están en el listado de vidrios: ${sinModelo.map((m) => m.modelo).join(", ")}.`);
   });
+  // Dibujos de las ventanas (se ven en los puestos de Herraje, Matrimonio…): se recortan del listado de dibujos y se guardan por lote
+  for (let i = 0; i < listados.length; i++) {
+    const L = listados[i];
+    const d = dibujos.find((x) => x.fab && L.fab && x.fab === L.fab) || (dibujos.length === 1 ? dibujos[0] : dibujos.length === listados.length ? dibujos[i] : null);
+    if (!d || !d._doc || !L.fab) continue;
+    if (onProgreso) onProgreso("Recortando los dibujos de las ventanas…");
+    const n = await guardarDibujosRapido(d._doc, L.fab, d.modelos);
+    const esperados = new Set(d.modelos.map((m) => m.modelo)).size;
+    if (!n) avisos.push(`Dibujos: no he podido recortar ningún dibujo del listado de dibujos (lote ${L.fab}). En los puestos saldrá «El CRM no tiene el dibujo».`);
+    else if (n < esperados) avisos.push(`Dibujos: he recortado ${n} de ${esperados} modelos del listado de dibujos (lote ${L.fab}). Los que faltan saldrán sin dibujo en los puestos.`);
+  }
   if (!dibujos.length && !listados.some((L) => L.sinFab)) avisos.push("No has subido el listado de dibujos: las ventanas salen SIN número de recuadro. Selecciónalo a la vez que los otros dos PDF.");
   if (!dibujos.length && listados.some((L) => L.sinFab)) avisos.push("Falta el LISTADO DE DIBUJOS: de él salen el número de fabricación y el número de recuadro de cada ventana. Mientras tanto he usado el número de presupuesto como lote.");
   const r = crearExpedienteRapido(listados, cortes);
