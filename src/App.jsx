@@ -35847,7 +35847,9 @@ function ListaAcristalar({ ubic, indice, sinPersOv }) {
 // Mapa de estanterías: cada hueco con su pieza. Los administradores pueden añadir huecos con «+».
 // Misma vivienda (mismo cliente y grupo de la misma obra): al leer una ventana se marcan en el mapa todas las de su vivienda
 const claveVivLinea = (h) => (h && h.ventana ? `${h.dueno ? h.dueno.key : ""}|${h.ventana.grupo || ""}|${h.ventana.cliente || ""}` : "");
-function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control = false, resaltarViv = "" }) {
+// Qué se marca al leer una ventana: su vivienda (verde fuerte) y, además, el resto de la misma obra o del mismo cliente (verde claro)
+const resaltarDe = (h) => (h && h.ventana ? { viv: claveVivLinea(h), obra: h.dueno ? h.dueno.key : "", cli: String(h.ventana.cliente || "").trim().toLowerCase() } : null);
+function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control = false, resaltar = null }) {
   const [abierto, setAbierto] = useState(null); // { z, hu, piezas }
   const zonas = useZonasLinea();
   const ubic = useObjetoFb("ubicacionesLinea");
@@ -35880,9 +35882,10 @@ function MapaZonasLinea({ ids, indice, admin, destacar, verdes = null, control =
                 const piezas = oc[hu] || [];
                 const foco = destacar && destacar.zonaId === z.id && destacar.hueco === hu;
                 const listo = !!verdes && piezas.some((x) => verdes.has(String(x.cod)));
-                const mismaViv = !!resaltarViv && piezas.some((x) => claveVivLinea(indice && indice.get(String(x.cod))) === resaltarViv);
+                let nivelViv = 0; // 2 = misma vivienda, 1 = misma obra o mismo cliente
+                if (resaltar) piezas.forEach((x) => { const hh = indice && indice.get(String(x.cod)); if (!hh) return; if (claveVivLinea(hh) === resaltar.viv) nivelViv = 2; else if (nivelViv < 1 && ((resaltar.obra && hh.dueno && hh.dueno.key === resaltar.obra) || (resaltar.cli && String(hh.ventana.cliente || "").trim().toLowerCase() === resaltar.cli))) nivelViv = 1; });
                 return (
-                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : mismaViv ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
+                  <div key={hu} onClick={() => { if (piezas.length) setAbierto({ z, hu, piezas }); }} title={piezas.length ? piezas.map((x) => `${etiquetaDe(x.cod)} · ${x.cod}`).join("\n") : "libre"} className={`${piezas.length ? "cursor-pointer hover:shadow-md " : ""}rounded border text-[10px] leading-tight p-1 min-h-[34px] ${piezas.length ? (listo ? "bg-emerald-500 border-emerald-700 text-white font-bold" : nivelViv === 2 ? "bg-green-300 border-green-600 border-2 text-green-950 font-bold" : nivelViv === 1 ? "bg-green-100 border-green-500 text-green-900 font-semibold" : "bg-amber-50 border-amber-300 text-slate-700") : "bg-white border-slate-200 text-slate-300"} ${foco ? "ring-2 ring-emerald-500" : ""} ${admin && piezas.length ? "cursor-pointer" : ""}`}>
                     <b>{hu}</b>{piezas.map((x) => <div key={x.cod} className="truncate">{etiquetaDe(x.cod)}</div>)}
                   </div>
                 );
@@ -37388,7 +37391,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
-        <MapaZonasLinea resaltarViv={claveVivLinea((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
+        <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
         <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null} />
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
