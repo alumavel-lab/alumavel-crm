@@ -6906,7 +6906,7 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
       const r = await leerExpedienteRapidoPdfs(files, setAviso);
       if (!r.lotes.length) { setAviso(`No he podido crear ninguna ventana. ${r.avisos.join(" ")}`); return; }
       const chk = almacenRapido.saveCristales && !sinAlmacen ? comprobarAlmacenRapido(r) : null; // en el portal de Uxcar no hay almacén que comprobar
-      setRap({ r, archivos: files.map((f) => f.name).join(" + "), colores: {}, chk, saltar: false });
+      setRap({ r, archivos: files.map((f) => f.name).join(" + "), files, colores: {}, chk, saltar: false });
       setAviso("");
     } catch (e) { setAviso(e.message || "No se pudieron leer los PDF."); }
     finally { setLeyendo(false); }
@@ -6920,6 +6920,26 @@ function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, avi
     const prep = prepararSalidaAlmacenRapido(r, rap.chk, rap.archivos);
     guardarRef.current(mezclarLotesFab(lotesRef.current, r, rap.archivos));
     confirmarSalidaAlmacenRapido(prep);
+    // Auxiliares: la hoja de corte que acabas de subir también se guarda para la pestaña/botón Auxiliares (así no hay que subirla otra vez)
+    if (!sinAlmacen && rap.files && rap.files.length) {
+      const ficheros = rap.files;
+      (async () => {
+        try {
+          const cfgSnap = await fbGet(ref(fbDb, "auxiliaresConfig")).catch(() => null);
+          const refs = auxCfgDe(cfgSnap && cfgSnap.val ? cfgSnap.val() : null).refs.map((x) => String(x.ref || "").trim()).filter(Boolean);
+          const hechas = [];
+          for (const f of ficheros) {
+            try {
+              const { sinTexto, r: h } = await leerHojaAuxPdf(f, refs);
+              if (sinTexto || !h || !h.presupuesto || !h.modelos.length) continue;
+              await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), JSON.parse(JSON.stringify({ ...h, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+              hechas.push(pptoBonito(h.presupuesto));
+            } catch (e) { /* un PDF que no es hoja de corte (el listado de vidrios) se salta */ }
+          }
+          if (hechas.length) setAviso((a) => `${a} Auxiliares: hoja de corte del presupuesto ${hechas.join(", ")} guardada; ya sale en Auxiliares.`);
+        } catch (e) { /* si falla, se puede subir a mano en Auxiliares */ }
+      })();
+    }
     setAviso(`Expediente rápido guardado: ${r.etiquetas} ventanas (${r.lotes.map((l) => `lote ${l.fab}: ${l.ventanas.length}`).join(" · ")}).${rap.chk ? ` Sacados del almacén de cristales: ${rap.chk.encontrados} de ${rap.chk.pedidos}.${rap.chk.pers.pedidas ? ` Persianas sacadas: ${rap.chk.pers.encontradas} de ${rap.chk.pers.pedidas}.` : ""}${rap.chk.yaSacados.length ? ` Lote ${rap.chk.yaSacados.join(", ")}: ya se había sacado antes, no se ha vuelto a descontar.` : ""}` : ""} No se ha tocado el stock de perfiles ni de herraje ni se ha creado ningún pedido.`);
     setRap(null);
     if (imprimir) imprimirPegatinasExpediente(r.lotes);
