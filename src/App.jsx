@@ -32395,10 +32395,13 @@ function imprimirPegatinasExpediente(lotes) {
 }
 // código de barras de pieza → { dueno, lote, ventana, pieza }, con todos los PDF subidos
 // (en proyectos y en expedientes de Uxcar). "dueno" es la obra a la que pertenece la ventana.
+// Nº del recuadro de cada ventana (listado de dibujos), por la cola de su código: las zonas de la Línea lo usan como hueco preferido (1 con 1, 2 con 2…)
+const POS_LOTE_POR_VENTANA = new Map();
 function indicePiezasFab(proyectos, uxExpedientes, sinObra) {
   const m = new Map();
   const meter = (dueno, lotes) => toArray(lotes).forEach((lote) => toArray(lote.ventanas).forEach((v) => toArray(v.piezas).forEach((pz) => {
     m.set(String(pz.c), { dueno, lote, ventana: v, pieza: pz });
+    if (v.posicionLote) POS_LOTE_POR_VENTANA.set(String(pz.c).slice(1), parseInt(v.posicionLote, 10));
     if (v.modelo && String(pz.c)[0] === "9") [1, 2, 3].forEach((k) => { const c = codHoja(String(pz.c), k); m.set(c, { dueno, lote, ventana: v, pieza: { c, t: `Hoja ${k}` } }); });
   })));
   toArray(proyectos).forEach((pr) => meter({ key: `p-${pr.id}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre}`, clienteId: pr.clienteId || "", direccion: pr.ubicacion || "", presupuesto: pr.presupuestoNumero || "" }, pr.etiquetasFab));
@@ -35079,6 +35082,9 @@ async function ocuparHuecoLinea(zona, cod, por, ubicLocal, desde = 1, hasta = nu
     const vacios = todos.filter((h) => !porHueco.get(h));
     pasadas = [conHermana, vacios, todos];
   }
+  // Si la ventana tiene número de recuadro (listado de dibujos), su hueco preferido es ese número: 1 con 1, 2 con 2… Si está ocupado o no existe, el primero libre de siempre.
+  const pref = POS_LOTE_POR_VENTANA.get(mia);
+  if (pref) pasadas = pasadas.map((arr) => (arr.includes(pref) ? [pref, ...arr.filter((x) => x !== pref)] : arr));
   for (const huecos of pasadas) {
     for (const h of huecos) {
       for (let sl = 1; sl <= cap; sl++) {
@@ -35984,6 +35990,67 @@ function LecturasLineaAdmin() {
               <span className="flex-1 text-slate-600 truncate">{g.obra}</span>
               <span className="text-xs text-slate-500">{g.n} lecturas · {fecha(g.desde)} – {fecha(g.hasta)}</span>
               <button disabled={borrando === g.fab} onClick={() => borrar(g)} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50 disabled:opacity-40">{borrando === g.fab ? "Borrando…" : "Borrar"}</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Borra de la Línea (pistola) TODO lo de un lote: lecturas, sitio en las zonas (marcos, hojas, puertas…) y las marcas de pilastra, solape, mosquitera, etc.
+// No toca los almacenes de cristales, persianas ni caballetes, ni el lote en sí (el expediente rápido lo sustituye al volver a subirlo).
+function BorrarLineaLote({ proyectos, uxExpedientes, sinObra }) {
+  const [msg, setMsg] = useState("");
+  const [trabajando, setTrabajando] = useState("");
+  const lotes = useMemo(() => {
+    const out = [];
+    const meter = (dueno, ls) => toArray(ls).forEach((l) => { const vs = toArray(l.ventanas); if (vs.length) out.push({ clave: `${dueno}|${l.fab}|${l.expediente || ""}`, dueno, fab: String(l.fab || ""), expediente: String(l.expediente || ""), ventanas: vs }); });
+    toArray(proyectos).forEach((pr) => meter(`#${pr.numero} ${pr.nombre}`, pr.etiquetasFab));
+    toArray(uxExpedientes).forEach((e) => meter(`Uxcar exp. ${e.numero}`, e.etiquetasFab));
+    toArray(sinObra).forEach((l) => meter("Sin asignar", [l]));
+    return out.sort((a, b) => a.fab.localeCompare(b.fab, "es", { numeric: true }));
+  }, [proyectos, uxExpedientes, sinObra]);
+  const borrar = async (L) => {
+    if (!window.confirm(`¿Borrar de la Línea todo lo del lote ${L.fab}${L.expediente ? ` (exp. ${L.expediente})` : ""}: lecturas de la pistola, sitio en las zonas y marcas? Antes se descarga una copia. No se toca nada de cristales, persianas ni caballetes.`)) return;
+    setTrabajando(L.clave); setMsg("");
+    try {
+      const codigos = new Set();
+      L.ventanas.forEach((v) => { const base = baseDe(v); codigos.add(base); [1, 2, 3].forEach((k) => codigos.add(codHoja(base, k))); toArray(v.piezas).forEach((pz) => pz && pz.c && codigos.add(String(pz.c))); });
+      const colas = new Set([...codigos].map((c) => c.slice(1)).filter((c) => c.length >= 6));
+      const es = (txt) => { const t = String(txt); return codigos.has(t) || [...colas].some((c) => t.includes(c)); };
+      const leer = async (n) => ((await fbGet(ref(fbDb, n))).val()) || {};
+      const patch = {}, copia = { lote: L.fab, fecha: new Date().toISOString(), borrado: {} };
+      let n = 0;
+      for (const nodo of ["ubicacionesLinea", "colgadoLinea", "sinPersianaLinea", "incidenciaVentanaLinea", "hojasLinea", "pilastraLinea", "pilastraHojaLinea", "solapeLinea", "mosquiteraLinea", "salidaALineaLinea"]) {
+        const v = await leer(nodo);
+        Object.keys(v).forEach((k) => { if (es(k)) { patch[`${nodo}/${k}`] = null; (copia.borrado[nodo] = copia.borrado[nodo] || {})[k] = v[k]; n++; } });
+      }
+      const oc = await leer("ocupacionLinea");
+      Object.entries(oc).forEach(([zona, huecos]) => Object.entries(huecos || {}).forEach(([k, cod]) => { if (es(cod)) { patch[`ocupacionLinea/${zona}/${k}`] = null; (copia.borrado.ocupacionLinea = copia.borrado.ocupacionLinea || {})[`${zona}/${k}`] = cod; n++; } }));
+      const esc = await leer("escaneosLinea");
+      Object.entries(esc).forEach(([k, x]) => { if (x && (String(x.fab || "") === L.fab || es(k))) { patch[`escaneosLinea/${k}`] = null; (copia.borrado.escaneosLinea = copia.borrado.escaneosLinea || {})[k] = x; n++; } });
+      if (!n) { setMsg(`Del lote ${L.fab} no hay nada que borrar en la Línea.`); return; }
+      const blob = new Blob([JSON.stringify(copia)], { type: "application/json" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `copia-linea-lote-${L.fab}.json`; document.body.appendChild(a); a.click(); a.remove();
+      await fbUpdate(ref(fbDb), patch);
+      setMsg(`✓ Borrado de la Línea el lote ${L.fab}: ${n} registros (lecturas, sitios en zonas y marcas). Se ha descargado una copia.`);
+    } catch (e) { setMsg("No se pudo borrar: " + ((e && e.message) || e)); }
+    finally { setTrabajando(""); }
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <h3 className="font-display font-bold text-slate-800 mb-1">Vaciar un lote de la Línea (para volver a empezar)</h3>
+      <p className="text-xs text-slate-500 mb-3">Quita de la pistola todo lo de ese lote: lecturas, el sitio que ocupa en marcos, hojas, pilastras, puertas… y las marcas de solape, mosquitera, etc. No toca los almacenes de cristales, persianas ni caballetes. Después se puede volver a subir el expediente.</p>
+      {msg && <div className="mb-2 px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
+      {lotes.length === 0 ? <p className="text-sm text-slate-400">No hay lotes cargados.</p> : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-md max-h-72 overflow-y-auto">
+          {lotes.map((L) => (
+            <div key={L.clave} className="flex items-center gap-3 px-3 py-2 text-sm">
+              <span className="font-semibold text-slate-800 w-24">Lote {L.fab || "?"}</span>
+              <span className="flex-1 text-slate-600 truncate">{L.dueno}{L.expediente ? ` · exp. ${L.expediente}` : ""}</span>
+              <span className="text-xs text-slate-500">{L.ventanas.length} ventanas</span>
+              <button disabled={trabajando === L.clave} onClick={() => borrar(L)} className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-md hover:bg-rose-50 disabled:opacity-40">{trabajando === L.clave ? "Borrando…" : "Vaciar de la Línea"}</button>
             </div>
           ))}
         </div>
@@ -41401,6 +41468,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
           <div className="bg-white border border-slate-200 rounded-xl p-5"><InformeLineaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} /></div>
           {admin && <HorasPorObraLinea proyectos={proyectos} uxExpedientes={uxExpedientes} usuarios={usuarios} onAsignar={onAsignarHoras} />}
           {admin && <MovimientosCaballetes />}
+          {admin && <BorrarLineaLote proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
           {admin && <LecturasLineaAdmin />}
         </div>
       )}
