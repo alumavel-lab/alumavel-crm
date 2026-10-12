@@ -35508,6 +35508,8 @@ async function moverLinea({ puestoId, h, zonas, ubic, hojasOv, pilOv = {}, pilHo
     const req = ["m", ...Array.from({ length: nHojas }, (_, i) => `h${i + 1}`)];
     const faltan = req.filter((k) => !vistos.includes(k));
     if (faltan.length) {
+      // La pieza que se acaba de leer ya está en la mesa: se da de baja de su estantería (marcos / hojas con herraje) para que no siga apareciendo allí ni en «Listas para el Matrimonio»
+      await liberarCodigoLinea(cod);
       // dónde está cada pieza que falta (estantería de marcos / de hojas con herraje), para ir a cogerla
       const detalle = []; let primera = null;
       for (const k of faltan) {
