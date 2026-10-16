@@ -12922,6 +12922,67 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     }
   };
 
+  // Lee la respuesta JSON de la IA del packing list aunque venga con texto alrededor,
+  // con comas sobrantes o cortada por el límite de tokens.
+  // Devuelve { cabecera, filas, truncada } o null si no hay nada aprovechable.
+  const parsearRespuestaPacking = (texto) => {
+    const limpio = String(texto || "").replace(/```json|```/gi, "").trim();
+    const oi = limpio.indexOf("{");
+    const of = limpio.lastIndexOf("}");
+    const ai = limpio.indexOf("[");
+    const af = limpio.lastIndexOf("]");
+    // 1) objeto completo { ..., filas: [...] }
+    if (oi !== -1 && of > oi && (ai === -1 || oi < ai)) {
+      try {
+        const o = JSON.parse(limpio.slice(oi, of + 1));
+        if (o && Array.isArray(o.filas)) return { cabecera: o, filas: o.filas, truncada: false };
+      } catch (e) { /* se prueba el rescate */ }
+    }
+    // 2) array suelto de filas
+    if (ai !== -1 && af > ai && (oi === -1 || ai < oi)) {
+      try {
+        const a = JSON.parse(limpio.slice(ai, af + 1));
+        if (Array.isArray(a)) return { cabecera: null, filas: a, truncada: false };
+      } catch (e) { /* se prueba el rescate */ }
+    }
+    // 3) rescate: saca los objetos de fila completos {...} de la lista
+    const posFilas = limpio.search(/"filas"\s*:\s*\[/);
+    const desde = posFilas !== -1 ? limpio.indexOf("[", posFilas) + 1 : (ai !== -1 ? ai + 1 : -1);
+    if (desde <= 0) return null;
+    const filas = [];
+    let prof = 0, ini = -1, enCadena = false, escape = false, ultimoFin = -1;
+    for (let i = desde; i < limpio.length; i++) {
+      const ch = limpio[i];
+      if (enCadena) {
+        if (escape) escape = false;
+        else if (ch === "\\") escape = true;
+        else if (ch === '"') enCadena = false;
+        continue;
+      }
+      if (ch === '"') { enCadena = true; continue; }
+      if (ch === "{") { if (prof === 0) ini = i; prof++; }
+      else if (ch === "}") {
+        prof--;
+        if (prof < 0) { prof = 0; continue; }
+        if (prof === 0 && ini !== -1) {
+          try { filas.push(JSON.parse(limpio.slice(ini, i + 1))); ultimoFin = i; } catch (e) { /* fila rota: se salta */ }
+          ini = -1;
+        }
+      }
+    }
+    if (!filas.length) return null;
+    const cabecera = {};
+    const antes = posFilas !== -1 ? limpio.slice(0, posFilas) : "";
+    ["caballete", "cliente", "proveedor", "presupuesto"].forEach((k) => {
+      const m = antes.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*)"'));
+      if (m) cabecera[k] = m[1];
+    });
+    // Si tras la última fila solo queda el cierre de la lista (con coma sobrante),
+    // la respuesta estaba completa aunque el JSON tuviera algún defecto.
+    const completa = /^\s*,?\s*\]\s*\}?\s*$/.test(limpio.slice(ultimoFin + 1));
+    return { cabecera: posFilas !== -1 ? cabecera : null, filas, truncada: !completa };
+  };
+
   const leerPackingList = async (file) => {
     setLeyendoPacking(true);
     setErrorPacking("");
@@ -12944,7 +13005,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const contentBlock = esPdf
         ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
         : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","presupuesto":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, ej. 6413; suele ir en la referencia del cliente o del pedido), solo los dígitos. En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres.';
+      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","presupuesto":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, ej. 6413; suele ir en la referencia del cliente o del pedido), solo los dígitos. En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
       // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
       // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
       // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
@@ -12953,7 +13014,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       const jobId = uid();
       await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), {
         model: "claude-sonnet-5",
-        max_tokens: 8000,
+        max_tokens: 24000,
         contentBlock,
         prompt,
       });
@@ -12964,7 +13025,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       });
 
       let resultado = null;
-      for (let intento = 0; intento < 60; intento++) {
+      for (let intento = 0; intento < 100; intento++) {
         await new Promise((r) => setTimeout(r, 3000));
         const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
         const val = snap && snap.exists ? (snap.exists() ? snap.val() : null) : null;
@@ -12977,42 +13038,37 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
 
       if (!resultado) {
-        throw new Error("La lectura está tardando demasiado (más de 3 minutos). Prueba de nuevo o con un documento más corto.");
+        throw new Error("La lectura está tardando demasiado (más de 5 minutos). Prueba de nuevo o con un documento más corto.");
       }
       if (resultado.status === "error") {
         console.error("Error devuelto por la función en segundo plano:", resultado.error);
         throw new Error(resultado.error || "Error de la API");
       }
       const texto = resultado.texto || "";
-      const limpio = texto.replace(/```json|```/g, "").trim();
-      const inicio = limpio.indexOf("[");
-      const fin = limpio.lastIndexOf("]");
-      const jsonCandidato = inicio !== -1 && fin !== -1 ? limpio.slice(inicio, fin + 1) : limpio;
-      // Formato nuevo: { caballete, cliente, proveedor, filas: [...] }. El nº de caballete
-      // de la cabecera se aplica a todas las filas que no traigan otro.
-      let objetoCabecera = null;
-      try {
-        const oi = limpio.indexOf("{");
-        const of = limpio.lastIndexOf("}");
-        if (oi !== -1 && of !== -1 && (inicio === -1 || oi < inicio)) {
-          const o = JSON.parse(limpio.slice(oi, of + 1));
-          if (o && Array.isArray(o.filas)) objetoCabecera = o;
-        }
-      } catch (e) { objetoCabecera = null; }
+      // Formato: { caballete, cliente, proveedor, filas: [...] } (o un array suelto).
+      // El parser tolera texto alrededor y respuestas cortadas por el límite de tokens.
+      const parsed = parsearRespuestaPacking(texto);
+      if (!parsed) {
+        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
+        throw new Error("La respuesta de la IA no tenía formato válido");
+      }
+      if (parsed.truncada) {
+        console.error("Respuesta de la IA incompleta. Filas rescatadas:", parsed.filas.length, "Texto recibido:", texto);
+        throw new Error(`La IA dejó la respuesta a medias (solo se pudieron rescatar ${parsed.filas.length} filas; el documento es muy largo). No se ha importado nada para no dejar caballetes incompletos. Divide el PDF en dos partes e impórtalas por separado.`);
+      }
+      // El nº de caballete de la cabecera se aplica a todas las filas que no traigan otro.
+      const objetoCabecera = parsed.cabecera;
       if (objetoCabecera) {
         const cab = String(objetoCabecera.caballete || "").replace(/\s/g, "");
-        items = objetoCabecera.filas.map((f) => ({
+        items = parsed.filas.map((f) => ({
           ...f,
           caballete: String(f.caballete || "").replace(/\s/g, "") || cab,
           cliente: f.cliente || objetoCabecera.cliente || "",
           proveedor: f.proveedor || objetoCabecera.proveedor || "",
           presupuesto: f.presupuesto || objetoCabecera.presupuesto || "",
         }));
-      } else try {
-        items = JSON.parse(jsonCandidato);
-      } catch (parseErr) {
-        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
-        throw new Error("La respuesta de la IA no tenía formato válido");
+      } else {
+        items = parsed.filas;
       }
       if (Array.isArray(items) && items.length && items.some((it) => it && ("caballete" in it || "pedido" in it))) {
         items = agruparFilasPorCaballete(items);
