@@ -291,6 +291,8 @@ function agruparFilasPorCaballete(filas) {
       ancho: parseFloat(f.ancho) || "", alto: parseFloat(f.alto) || "",
       m2: parseFloat(f.m2) || 0,
       ref: limpio(f.ref), expediente: limpio(f.expediente),
+      ...(limpio(f.planta) ? { planta: limpio(f.planta) } : {}),
+      ...(limpio(f.material) ? { material: limpio(f.material) } : {}),
       presupuesto: limpio(f.presupuesto).replace(/[^\d,\s]/g, "").replace(/\s+/g, " ").trim(),
     }));
     const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
@@ -303,6 +305,7 @@ function agruparFilasPorCaballete(filas) {
       secuencia: pedidos.join(", "),
       cliente: limpio(fs.find((f) => limpio(f.cliente))?.cliente),
       proveedor: limpio(fs.find((f) => limpio(f.proveedor))?.proveedor),
+      documento: limpio(fs.find((f) => limpio(f.documento))?.documento),
       expediente: exps.join(", "),
       presupuesto: presus.join(", "),
       medida: `${cantidad} cristales${m2 ? ` · ${Math.round(m2 * 100) / 100} m²` : ""}`,
@@ -12889,6 +12892,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         ...(presus.length ? { presupuesto: presus.join(", ") } : {}),
         ...(obraCrm ? { obra: `#${obraCrm.numero} ${obraCrm.nombre || ""}`.trim() } : {}),
         ...(it.piezas ? { piezas: it.piezas } : {}),
+        ...(it.documento ? { documento: it.documento } : {}),
         entradaId,
       };
       if (sinUbicarAuto) { aGuardar.push(datosBase); return; }
@@ -12973,7 +12977,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     if (!filas.length) return null;
     const cabecera = {};
     const antes = posFilas !== -1 ? limpio.slice(0, posFilas) : "";
-    ["caballete", "cliente", "proveedor", "presupuesto"].forEach((k) => {
+    ["tipo", "caballete", "cliente", "proveedor", "presupuesto"].forEach((k) => {
       const m = antes.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*)"'));
       if (m) cabecera[k] = m[1];
     });
@@ -12995,66 +12999,50 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         // (más abajo), no se crea otro caballete
         if (!items.length) { setLeyendoPacking(false); setErrorPacking("No he encontrado caballetes en el Excel (busco la columna \"Rack\")."); return; }
       } else {
-      const base64Data = await new Promise((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(r.result.split(",")[1]);
-        r.onerror = reject;
-        r.readAsDataURL(file);
-      });
       const esPdf = file.type === "application/pdf";
-      const contentBlock = esPdf
-        ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } }
-        : { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64Data } };
-      const prompt = 'Esto es la etiqueta / packing list de uno o varios caballetes de cristal (por ejemplo de Cricursa). EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte, normalmente arriba a la derecha, con el título "CABALLETE:" (o Rack / Bastidor) encima, y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, el número que aparece a la izquierda de la cabecera, la fecha de carga ni las columnas POS o CANT de las filas. Luego lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","presupuesto":"","ref":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. En "proveedor" pon el fabricante del cristal (ej. Cricursa) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, ej. 6413; suele ir en la referencia del cliente o del pedido), solo los dígitos. En cada fila: "caballete" solo si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba); "expediente" con el formato EXP 1234 si aparece "EXPEDIENTE 1234"; "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
-      // Usamos la función en segundo plano (sin límite de 26s) para evitar el 504.
-      // La foto/PDF en base64 puede pesar varios MB, y Netlify rechaza con un
-      // error 413 las peticiones grandes a sus funciones. Por eso guardamos el
-      // archivo directamente en Firebase (sin ese límite) y a la función solo
-      // le mandamos el jobId; ella misma va a buscar el archivo a Firebase.
-      const jobId = uid();
-      await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), {
-        model: "claude-sonnet-5",
-        max_tokens: 24000,
-        contentBlock,
-        prompt,
-      });
-      await fetch("/.netlify/functions/anthropic-proxy-background", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId }),
-      });
-
-      let resultado = null;
-      for (let intento = 0; intento < 100; intento++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
-        const val = snap && snap.exists ? (snap.exists() ? snap.val() : null) : null;
-        if (val && (val.status === "done" || val.status === "error")) {
-          resultado = val;
-          break;
+      // Un PDF largo se lee por trozos de 3 páginas (varios a la vez): leerlo de golpe se queda
+      // a medias o no devuelve nada. El nº de caballete de las primeras filas de cada trozo
+      // se completa con el último caballete visto antes (el documento va en orden).
+      const trozos = esPdf ? await dividirPdfEnTrozos(file, 3) : null;
+      let parsed;
+      if (trozos) {
+        const promptTrozo = promptPackingList(true);
+        const lecturas = await Promise.all(trozos.map(async (tr) => {
+          const textoTr = await pedirTextoIAEnSegundoPlano(tr.archivo, promptTrozo, 16000, 100);
+          const pTr = parsearRespuestaPacking(textoTr);
+          if (!pTr) throw new Error(`No pude leer las páginas ${tr.desde}-${tr.hasta} del PDF (recibido ${textoTr.length} caracteres).`);
+          if (pTr.truncada) throw new Error(`La IA dejó a medias las páginas ${tr.desde}-${tr.hasta}. No se ha importado nada.`);
+          return pTr;
+        }));
+        let ultimoCab = "";
+        const filasTodas = [];
+        let cabDoc = null;
+        lecturas.forEach((pTr) => {
+          if (!cabDoc && pTr.cabecera) cabDoc = pTr.cabecera;
+          pTr.filas.forEach((f) => {
+            const cabF = String(f.caballete || "").replace(/\s/g, "");
+            if (cabF) ultimoCab = cabF;
+            filasTodas.push({ ...f, caballete: cabF || ultimoCab });
+          });
+        });
+        parsed = { cabecera: cabDoc ? { tipo: cabDoc.tipo, cliente: cabDoc.cliente, proveedor: cabDoc.proveedor, presupuesto: cabDoc.presupuesto } : null, filas: filasTodas, truncada: false };
+      } else {
+        const texto = await pedirTextoIAEnSegundoPlano(file, promptPackingList(false), 24000, 100);
+        // Formato: { tipo, caballete, cliente, proveedor, filas: [...] } (o un array suelto).
+        // El parser tolera texto alrededor y respuestas cortadas por el límite de tokens.
+        parsed = parsearRespuestaPacking(texto);
+        if (!parsed) {
+          console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
+          throw new Error(`La respuesta de la IA no tenía formato válido [lectura v3] — recibido ${texto.length} caracteres: "${texto.slice(0, 200).replace(/\s+/g, " ")}"`);
+        }
+        if (parsed.truncada) {
+          console.error("Respuesta de la IA incompleta. Filas rescatadas:", parsed.filas.length, "Texto recibido:", texto);
+          throw new Error(`La IA dejó la respuesta a medias (solo se pudieron rescatar ${parsed.filas.length} filas; el documento es muy largo). No se ha importado nada para no dejar caballetes incompletos. Divide el PDF en dos partes e impórtalas por separado.`);
         }
       }
-      fbSet(ref(fbDb, `packingListJobs/${jobId}`), null).catch(() => {});
-      fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), null).catch(() => {});
-
-      if (!resultado) {
-        throw new Error("La lectura está tardando demasiado (más de 5 minutos). Prueba de nuevo o con un documento más corto.");
-      }
-      if (resultado.status === "error") {
-        console.error("Error devuelto por la función en segundo plano:", resultado.error);
-        throw new Error(resultado.error || "Error de la API");
-      }
-      const texto = resultado.texto || "";
-      // Formato: { caballete, cliente, proveedor, filas: [...] } (o un array suelto).
-      // El parser tolera texto alrededor y respuestas cortadas por el límite de tokens.
-      const parsed = parsearRespuestaPacking(texto);
-      if (!parsed) {
-        console.error("No se pudo parsear el JSON de la IA. Texto recibido:", texto);
-        throw new Error(`La respuesta de la IA no tenía formato válido [lectura v2] — recibido ${texto.length} caracteres: "${texto.slice(0, 200).replace(/\s+/g, " ")}"`);
-      }
-      if (parsed.truncada) {
-        console.error("Respuesta de la IA incompleta. Filas rescatadas:", parsed.filas.length, "Texto recibido:", texto);
-        throw new Error(`La IA dejó la respuesta a medias (solo se pudieron rescatar ${parsed.filas.length} filas; el documento es muy largo). No se ha importado nada para no dejar caballetes incompletos. Divide el PDF en dos partes e impórtalas por separado.`);
+      // Si el documento es un ALBARÁN (no un packing list), se marca para poder distinguirlo y borrarlo luego.
+      if (/^alb/i.test(String((parsed.cabecera && parsed.cabecera.tipo) || ""))) {
+        parsed.filas = parsed.filas.map((f) => ({ ...f, documento: "Albarán" }));
       }
       // El nº de caballete de la cabecera se aplica a todas las filas que no traigan otro.
       const objetoCabecera = parsed.cabecera;
@@ -13212,16 +13200,17 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
+                const plantasC = [...new Set(piezasC.map((p) => String(p.planta || "").trim()).filter(Boolean))];
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
                 <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"}{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}</td>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"}{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
                     {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
                     {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
                   </td>
-                  <td className="px-4 py-2.5 text-slate-600">{textoExpedientes(c, 10) || c.expediente || "—"}<div className="text-[11px] text-slate-400">{c.cliente || ""}</div></td>
+                  <td className="px-4 py-2.5 text-slate-600">{textoExpedientes(c, 10) || c.expediente || "—"}{plantasC.length > 0 ? <div className="text-[11px] font-semibold text-sky-700">{plantasC.slice(0, 3).join(" · ")}{plantasC.length > 3 ? ` +${plantasC.length - 3}` : ""}</div> : null}<div className="text-[11px] text-slate-400">{c.cliente || ""}</div></td>
                   <td className="px-4 py-2.5 text-slate-600 font-mono-num">{c.medida || "—"}{viviendas.length > 0 ? <div className="text-[11px] text-slate-400">{viviendas.slice(0, 4).join(", ")}{viviendas.length > 4 ? ` +${viviendas.length - 4}` : ""}</div> : null}</td>
                   <td className="px-4 py-2.5 text-slate-600">{c.proveedor || "—"}</td>
                   <td className="px-4 py-2.5 text-slate-500">{fmtDate(c.fechaLlegada)}</td>
@@ -14281,6 +14270,42 @@ function lineasQueFaltanPedidoCompra(filas, nuevas) {
   return faltan;
 }
 
+// Texto que se le manda a la IA para leer un packing list de cristal o un albarán de proveedor.
+// esTrozo = true cuando es solo una parte (unas páginas) de un PDF más largo.
+function promptPackingList(esTrozo) {
+  return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
+    'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
+    'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
+    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece; no pongas aquí ciudades como VALENCIA ni VLC. ' +
+    'En "proveedor" pon el fabricante o quien entrega (ej. Cricursa, Dealux) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, solo los dígitos). "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. ' +
+    (esTrozo
+      ? 'IMPORTANTE: esto es solo un TROZO de un documento más largo. Pon el número de caballete en CADA fila (aunque solo haya uno). Si las primeras filas no tienen encima la cabecera de su caballete porque pertenecen a un caballete de la página anterior, deja "caballete" vacío en esas filas. '
+      : 'En "caballete" de cada fila solo pon el número si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba). ') +
+    'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
+}
+// Divide un PDF en trozos de pocas páginas para que la IA los lea por partes.
+// Devuelve null si el PDF es corto o no se puede abrir: en ese caso se lee entero, como siempre.
+async function dividirPdfEnTrozos(file, paginasPorTrozo) {
+  try {
+    const origen = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+    const total = origen.getPageCount();
+    if (total <= paginasPorTrozo) return null;
+    const trozos = [];
+    for (let i = 0; i < total; i += paginasPorTrozo) {
+      const idx = [];
+      for (let k = i; k < Math.min(i + paginasPorTrozo, total); k++) idx.push(k);
+      const nuevo = await PDFDocument.create();
+      const paginas = await nuevo.copyPages(origen, idx);
+      paginas.forEach((pg) => nuevo.addPage(pg));
+      const bytes = await nuevo.save();
+      trozos.push({ desde: idx[0] + 1, hasta: idx[idx.length - 1] + 1, archivo: new File([bytes], `parte-${idx[0] + 1}.pdf`, { type: "application/pdf" }) });
+    }
+    return trozos;
+  } catch (e) {
+    console.error("No se pudo dividir el PDF (se leerá entero):", e);
+    return null;
+  }
+}
 async function leerDocumentoCristalConIA(file, prompt) {
   const limpio = String(await pedirTextoIAEnSegundoPlano(file, prompt, 8000)).replace(/```json|```/g, "").trim();
   const oi = limpio.indexOf("{"), of = limpio.lastIndexOf("}");
@@ -14293,7 +14318,7 @@ async function leerDocumentoCristalConIA(file, prompt) {
   }
 }
 // Manda el documento a la IA en segundo plano (sin límite de tiempo) y devuelve el texto tal cual.
-async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens) {
+async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60) {
   const contentBlock = await bloqueDeArchivoParaIA(file);
   const jobId = uid();
   await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: maxTokens || 8000, contentBlock, prompt });
@@ -14301,7 +14326,7 @@ async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens) {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),
   });
   let resultado = null;
-  for (let intento = 0; intento < 60; intento++) {
+  for (let intento = 0; intento < maxIntentos; intento++) {
     await new Promise((r) => setTimeout(r, 3000));
     const snap = await fbGet(ref(fbDb, `packingListJobs/${jobId}`)).catch(() => null);
     const val = snap && snap.exists && snap.exists() ? snap.val() : null;
