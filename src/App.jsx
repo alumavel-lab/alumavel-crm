@@ -2205,7 +2205,7 @@ export default function App() {
     const nuevasPers = [];
     filas.filter((f) => f.tipo === "persiana").forEach((f) => {
       const bien = bienDe(f);
-      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", parte: normParte(f.refObra), pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
+      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", vivienda: viviendaDeRefObra(f.refObra), parte: normParte(f.refObra), pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
     });
     let sinSitioPers = 0;
     if (nuevasPers.length) {
@@ -14275,7 +14275,7 @@ function lineasQueFaltanPedidoCompra(filas, nuevas) {
 function promptPackingList(esTrozo) {
   return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
     'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
-    'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
+    'SI ES UN ALBARÁN: las líneas de artículo van agrupadas en BLOQUES. Cada bloque empieza con una línea suelta del tipo "Pedido Nº 26011549 Fecha ... Ref/Obra: EXP. 823 PORTAL 33C ESC 04 2B" (a veces rodeada o subrayada a mano: ignora esas marcas, lee el texto). Todas las líneas de artículo que van DEBAJO de esa línea pertenecen a ese bloque, hasta que aparezca otra línea igual de "Pedido Nº ... Ref/Obra" que empieza un bloque nuevo. A cada línea de artículo ponle el "pedido", el "expediente" y la "planta" de SU bloque (el último de esos encabezados que tenga por encima), y cambia cuando empiece el bloque siguiente. Si el albarán trae "Obra:" en la cabecera de arriba, úsalo solo para una línea que no tenga ningún bloque encima. Deja "caballete" vacío; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
     'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece; no pongas aquí ciudades como VALENCIA ni VLC. ' +
     'En "proveedor" pon el fabricante o quien entrega (ej. Cricursa, Dealux) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, solo los dígitos). "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. ' +
     (esTrozo
@@ -15131,6 +15131,20 @@ const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
 // "Parte" / vivienda de la obra (P1, P2…): sale del "EXP. 737 P1" del albarán o de la etiqueta ("P-8" → P8). Las persianas de una misma parte se colocan y se reparten juntas.
 const normParte = (t) => { const m = String(t || "").match(/(?:^|[^A-Za-z])P\s*-?\s*(\d{1,2})(?!\d)/i); return m ? `P${parseInt(m[1], 10)}` : ""; };
 const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : normParte(x && x.refObra));
+// Vivienda completa tal como viene en el "Ref/Obra" del albarán: lo que va detrás del expediente, sin la parte (P1, P2…).
+// "EXP. 823 PORTAL 33C ESC 04 2B" -> "PORTAL 33C ESC 04 2B"; "AENA - EXP. 737 P1" -> "" (no hay más dato: no se pone nada).
+const viviendaDeRefObra = (refObra) => {
+  const txt = String(refObra || "");
+  const m = txt.match(/EXP(?:EDIENTE)?\.?\s*\d+[A-Za-z]?/i);
+  if (!m) return "";
+  return txt.slice(m.index + m[0].length)
+    .replace(/(^|[^A-Za-z0-9])P\s*-?\s*\d{1,2}(?!\d)/gi, "$1")
+    .replace(/[()]/g, " ")
+    .replace(/^[\s\-–_,:;·.]+|[\s\-–_,:;·.]+$/g, "")
+    .replace(/\s{2,}/g, " ");
+};
+// La guardada en la persiana (campo "vivienda"); en las ya importadas, la sacada de su Ref/Obra.
+const viviendaPersiana = (x) => (x ? String(x.vivienda || "").trim() || viviendaDeRefObra(x.refObra) : "");
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${e.fila ? ` · fila ${e.fila}` : ""}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
@@ -15886,7 +15900,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{viviendaPersiana(x) ? <span className="ml-1 text-[11px] font-semibold text-sky-700" title="Vivienda tal como viene en el albarán">{viviendaPersiana(x)}</span> : null}{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
@@ -15918,7 +15932,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const lados = LADOS_CARRO.map((lado) => {
         const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
           const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""}${viviendaPersiana(x) ? ` · ${esc(viviendaPersiana(x))}` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
           return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
         }).join("");
         return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
@@ -16243,7 +16257,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                            <div key={x.id} title={`EXP ${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}${viviendaPersiana(x) ? ` · ${viviendaPersiana(x)}` : ""}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
@@ -41444,7 +41458,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                           <tr key={x.id} className={`border-b border-slate-100 ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
                             <td className="py-1.5 px-2">{x.estante.lado}</td><td className="px-2">{x.estante.nivel}</td>
                             <td className="px-2 font-semibold">{x.ref || "—"}</td>
-                            <td className="px-2">EXP {x.expediente || "—"}{partePersiana(x) ? ` · ${partePersiana(x)}` : ""}</td>
+                            <td className="px-2">EXP {x.expediente || "—"}{partePersiana(x) ? ` · ${partePersiana(x)}` : ""}{viviendaPersiana(x) ? ` · ${viviendaPersiana(x)}` : ""}</td>
                             <td className="px-2">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
                           </tr>
                         );
