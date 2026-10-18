@@ -100,7 +100,17 @@ export const handler = async (event) => {
       return { statusCode: 200, body: "ok" };
     }
 
-    const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    const bloques = Array.isArray(data.content) ? data.content : [];
+    const tipos = bloques.map((c) => c.type).join(",") || "ninguno";
+    console.log("Respuesta de la IA -> stop_reason:", data.stop_reason, "| bloques:", tipos,
+      "| tokens entrada:", data.usage && data.usage.input_tokens, "| tokens salida:", data.usage && data.usage.output_tokens);
+    const texto = bloques.filter((c) => c.type === "text").map((c) => c.text).join("");
+    if (!texto.trim()) {
+      // Antes esto se guardaba como "hecho" con texto vacío y el CRM solo decía "0 caracteres".
+      // Ahora se guarda como error con el motivo real, para poder saber qué pasa.
+      await guardarResultado(jobId, { status: "error", error: `La IA devolvió una respuesta vacía (motivo: ${data.stop_reason || "desconocido"}; bloques: ${tipos}; tokens de salida: ${(data.usage && data.usage.output_tokens) || "?"}).` });
+      return { statusCode: 200, body: "ok" };
+    }
     await guardarResultado(jobId, { status: "done", texto });
     return { statusCode: 200, body: "ok" };
   } catch (err) {
