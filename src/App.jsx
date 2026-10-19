@@ -211,6 +211,23 @@ function presupuestoDeTexto(txt, conocidos = []) {
   }
   return out;
 }
+// Portal / escalera / piso de un texto: "SN-EXP 823_PORTAL 33E ESC 06 2B_6.415" -> "PORTAL 33E ESC 06 2B".
+function ubicacionDeTexto(t) {
+  const m = String(t || "").match(/PORTAL\s*([A-Z0-9]+)(?:[\s_,-]*ESC(?:ALERA)?\.?\s*([A-Z0-9]+))?(?:[\s_,-]+(\d{1,2}\s?[A-Z]|BJ|PB|BAJO)(?![A-Z0-9]))?/i);
+  if (!m) return "";
+  return ["PORTAL " + m[1].toUpperCase(), m[2] ? "ESC " + m[2].toUpperCase() : "", m[3] ? m[3].replace(/\s/g, "").toUpperCase() : ""].filter(Boolean).join(" ");
+}
+// Ubicación de un cristal: la que trae guardada (planta) o la que se saca de cualquier texto suyo (referencia del pedido, etc.).
+function ubicacionPieza(p) {
+  if (!p) return "";
+  const guardada = String(p.planta || "").trim();
+  const sacada = ubicacionDeTexto(Object.values(p).filter((v) => typeof v === "string").join(" | "));
+  return sacada && (!guardada || sacada.length >= guardada.length) ? sacada : guardada;
+}
+function ubicacionesCab(c) {
+  return [...new Set(toArray(c && c.piezas).map(ubicacionPieza).filter(Boolean))];
+}
+
 // Nº de presupuesto de un caballete: el suyo y el de sus cristales (sin repetir).
 function presupuestoCab(c) {
   const set = [];
@@ -253,6 +270,7 @@ async function packingDesdeExcel(file, presupuestosConocidos = []) {
         ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""),
         expediente: expDe(refOrden),
         presupuesto: pres.join(", "),
+        ...(ubicacionDeTexto(Object.values(f).join(" | ")) ? { planta: ubicacionDeTexto(Object.values(f).join(" | ")) } : {}),
       };
     });
     const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
@@ -291,7 +309,8 @@ function agruparFilasPorCaballete(filas) {
       ancho: parseFloat(f.ancho) || "", alto: parseFloat(f.alto) || "",
       m2: parseFloat(f.m2) || 0,
       ref: limpio(f.ref), expediente: limpio(f.expediente),
-      ...(limpio(f.planta) ? { planta: limpio(f.planta) } : {}),
+      ...(ubicacionPieza(f) ? { planta: ubicacionPieza(f) } : {}),
+      ...(limpio(f.refPedido) ? { refPedido: limpio(f.refPedido) } : {}),
       ...(limpio(f.material) ? { material: limpio(f.material) } : {}),
       presupuesto: limpio(f.presupuesto).replace(/[^\d,\s]/g, "").replace(/\s+/g, " ").trim(),
     }));
@@ -12389,14 +12408,14 @@ function piezaCoincideFiltros(c, p, f) {
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (viv && !normBusq(p.ref).includes(viv)) return false;
   if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
-  if (otro && !normBusq(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
+  if (otro && !normBusq(`${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
   return true;
 }
 // ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
 function cristalCoincideFiltros(c, f) {
   const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
-  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
+  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
   return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(p.expediente || c.expediente).includes(exp)));
@@ -12574,7 +12593,7 @@ function TrabajoCristales({ cristales, filtros }) {
                   {its.length === 0 && <div className="text-xs text-slate-400 px-1 py-2">Vacío</div>}
                   {its.map((x) => (
                     <div key={claveFila(x)} className="text-xs border border-slate-100 rounded px-2 py-1">
-                      <div className="font-semibold">{x.p.ref || "—"} <span className="font-normal text-slate-500">{x.p.expediente || x.c.expediente || ""}</span></div>
+                      <div className="font-semibold">{x.p.ref || "—"}{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null} <span className="font-normal text-slate-500">{x.p.expediente || x.c.expediente || ""}</span></div>
                       <div className="font-mono-num text-slate-600">{x.p.ancho} × {x.p.alto} · cab. {x.c.lote || "—"}</div>
                       {(x.p.trabajo.fecha || "") < hoy && <div className="text-amber-700">dentro desde {fechaCortaTrabajo(x.p.trabajo.fecha)}</div>}
                       <div className="flex gap-3 mt-0.5">
@@ -12620,7 +12639,7 @@ function TrabajoCristales({ cristales, filtros }) {
               <tbody>
                 {fuera.slice(0, 100).map((x) => (
                   <tr key={claveFila(x)} className="border-b border-slate-100">
-                    <td className="px-3 py-1.5 font-semibold">{x.p.ref || "—"}</td>
+                    <td className="px-3 py-1.5 font-semibold">{x.p.ref || "—"}{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null}</td>
                     <td className="px-3 py-1.5">{x.p.expediente || x.c.expediente || "—"}</td>
                     <td className="px-3 py-1.5 font-mono-num">{x.p.ancho} × {x.p.alto}</td>
                     <td className="px-3 py-1.5 font-mono-num">{x.c.lote || "—"}</td>
@@ -12755,7 +12774,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
               </div>
               {r.piezas.slice(0, 5).map((x) => (
                 <div key={x.i} className="mt-0.5 text-slate-600">
-                  <b>{x.p.ref || "—"}</b> · exp. {x.p.expediente || r.c.expediente || "—"} · {x.p.ancho} × {x.p.alto}{enTrabajoPieza(x.p) ? ` · en el almacén de trabajo (hueco ${x.p.trabajo.hueco})` : ""}
+                  <b>{x.p.ref || "—"}</b>{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null} · exp. {x.p.expediente || r.c.expediente || "—"} · {x.p.ancho} × {x.p.alto}{enTrabajoPieza(x.p) ? ` · en el almacén de trabajo (hueco ${x.p.trabajo.hueco})` : ""}
                   {x.motivos.length > 0 && <span className="text-emerald-700"> ✓ {x.motivos.join(", ")}</span>}
                 </div>
               ))}
@@ -13206,7 +13225,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
-                const plantasC = [...new Set(piezasC.map((p) => String(p.planta || "").trim()).filter(Boolean))];
+                const plantasC = ubicacionesCab(c);
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
@@ -13257,7 +13276,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                         <tbody>
                           {piezasC.map((p, i) => (
                             <tr key={i} className="border-t border-slate-200 text-slate-600">
-                              <td className="py-1 pr-3">{p.ref || "—"}</td>
+                              <td className="py-1 pr-3">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
                               <td className="py-1 pr-3 font-mono-num">{p.ancho && p.alto ? `${p.ancho} x ${p.alto}` : "—"}</td>
                               <td className="py-1 pr-3">{p.cantidad || 1}</td>
                               <td className="py-1 pr-3">{p.expediente || "—"}</td>
@@ -13504,7 +13523,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
   const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   // texto de búsqueda de un caballete: sus datos + los de cada cristal (vivienda, expediente, medida)
-  const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`);
+  const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`);
   const coincidentes = hayFiltro ? cristales.filter((x) => cristalCoincideFiltros(x, filtros)) : [];
   const ubicados = coincidentes.filter((x) => x.ubicacion);
   const sinUbicar = coincidentes.filter((x) => !x.ubicacion);
@@ -13563,7 +13582,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                       <button
                         key={hueco}
                         onClick={() => c && (!soloLectura || verDetalleSolo) && onVerHueco && onVerHueco({ zona: zonaId, fila, hueco })}
-                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
+                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${ubicacionesCab(x).length ? ` · ${ubicacionesCab(x).slice(0, 3).join(" / ")}` : ""}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
                         className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
                         <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
@@ -14004,7 +14023,7 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
               {piezas.map((p, i) => (
                 <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                   <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
-                  <td className="pr-2 font-semibold">{p.ref || "—"}</td>
+                  <td className="pr-2 font-semibold">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
                   <td className="pr-2">{p.expediente || "—"}</td>
                   <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
                   <td className="pr-2">{p.cantidad}</td>
@@ -14057,7 +14076,7 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
             {filas.slice(0, 400).map(({ c, p, i }) => (
               <tr key={`${c.id}-${i}`} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                 <td className="px-3 py-1.5"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(c, i, e.target.checked)} /></td>
-                <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}{enTrabajoPieza(p) && !p.puesto && <span className="ml-1 text-[10px] font-semibold text-sky-700">· en trabajo (hueco {p.trabajo.hueco})</span>}</td>
+                <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}{enTrabajoPieza(p) && !p.puesto && <span className="ml-1 text-[10px] font-semibold text-sky-700">· en trabajo (hueco {p.trabajo.hueco})</span>}</td>
                 <td className="px-3 py-1.5">{p.expediente || "—"}</td>
                 <td className="px-3 py-1.5 font-mono-num">{p.ancho} × {p.alto}</td>
                 <td className="px-3 py-1.5">{p.cantidad}</td>
@@ -14282,12 +14301,12 @@ function promptPackingList(esTrozo) {
   return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
     'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
     'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
-    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece; no pongas aquí ciudades como VALENCIA ni VLC. ' +
+    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece. MUY IMPORTANTE: en muchas filas aparece debajo "Ref. Cte. Ped.: SN-EXP 823_PORTAL 33E ESC 06 2B_6.415": ahí el expediente es EXP 823, la planta es "PORTAL 33E ESC 06 2B" (portal, escalera y piso COMPLETOS, sin recortar) y 6.415 es el presupuesto (6415); copia además ese texto entero en "refPedido". No pongas aquí ciudades como VALENCIA ni VLC. ' +
     'En "proveedor" pon el fabricante o quien entrega (ej. Cricursa, Dealux) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, solo los dígitos). "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. ' +
     (esTrozo
       ? 'IMPORTANTE: esto es solo un TROZO de un documento más largo. Pon el número de caballete en CADA fila (aunque solo haya uno). Si las primeras filas no tienen encima la cabecera de su caballete porque pertenecen a un caballete de la página anterior, deja "caballete" vacío en esas filas. '
       : 'En "caballete" de cada fila solo pon el número si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba). ') +
-    'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
+    'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","refPedido":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
 }
 // Divide un PDF en trozos de pocas páginas para que la IA los lea por partes.
 // Devuelve null si el PDF es corto o no se puede abrir: en ese caso se lee entero, como siempre.
