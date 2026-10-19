@@ -12772,6 +12772,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
 
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState(() => (focoAlmacen.actual && focoAlmacen.actual.tipo === "cristal" && focoAlmacen.actual.ubicacion ? "mapa" : "pendientes")); // «Ver en el mapa» desde Cristales abre el mapa (o los pendientes si el caballete no tiene hueco)
+  const [abrirPedidoCristal, setAbrirPedidoCristal] = useState(0); // al pulsar «Subir pedido de cristales» se salta a «Control de pedidos» y se abre el selector de archivo
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
   const [verUltimos, setVerUltimos] = useState(false);
@@ -13093,6 +13094,11 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-3.5 py-2 rounded-md">
           <ImageIcon size={14} /> {leyendoPacking ? "Leyendo..." : "Importar packing list (Excel, foto o PDF)"}
         </button>
+        <button type="button" onClick={() => { setSubTab("control"); setAbrirPedidoCristal((n) => n + 1); }}
+          title="Sube la confirmación del pedido al proveedor y el CRM comprueba si todos los cristales han llegado"
+          className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 border border-slate-400 bg-white hover:bg-slate-50 px-3.5 py-2 rounded-md">
+          <ClipboardList size={14} /> Subir pedido de cristales
+        </button>
         <input ref={inputPackingRef} type="file" accept=".xlsx,.xls,.csv,.ods,image/*,application/pdf" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
         <button type="button" onClick={() => setMostrarNuevo(true)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
@@ -13322,7 +13328,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       )}
 
       {subTab === "control" && (
-        <ControlPedidosCristal cristales={cristales} proveedores={proveedores} />
+        <ControlPedidosCristal cristales={cristales} proveedores={proveedores} abrirSelector={abrirPedidoCristal} />
       )}
 
       {asignando && (
@@ -14651,7 +14657,7 @@ function calcularControlCristal(conf, cristales) {
   return { lineas, pedidas: tot("pedidas"), bien: tot("bien"), conProblema: tot("conProblema"), noLlegadas: tot("noLlegadas"), repuestas: tot("repuestas"), pendientes: tot("pendientes") };
 }
 
-function ControlPedidosCristal({ cristales, proveedores }) {
+function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const confirmaciones = ctx.confirmaciones || [];
   const guardar = ctx.saveConfirmaciones || (() => {});
@@ -14661,6 +14667,8 @@ function ControlPedidosCristal({ cristales, proveedores }) {
   const [abierta, setAbierta] = useState(null);
   const [soloProblemas, setSoloProblemas] = useState(false);
   const inputRef = useRef(null);
+  // Viene del botón «Subir pedido de cristales» de la pantalla de Cristales: abre directamente el selector de archivo
+  useEffect(() => { if (abrirSelector > 0) inputRef.current?.click(); }, [abrirSelector]);
 
   const subir = async (file) => {
     setLeyendo(true); setError("");
@@ -15331,7 +15339,85 @@ const fechaIsoPedido = (t) => {
   const m = s.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);
   return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : "";
 };
+// Lectura LOCAL (sin IA) del "PEDIDO COMPRA" en PDF: cada línea trae "cantidad  ancho x alto" y la vivienda va en una
+// cabecera tipo "V01.217:" o "P03.216:" (vale cualquier letra; una cabecera con varias persianas debajo se repite en cada una).
+// paginas = [[{s,x,y}]] de pdf.js (y hacia arriba).
+// <<pedidoLocal
+function pedidoPersianasDePaginas(paginas) {
+  const medida = /^\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*[xX×]\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*$/;
+  const aMm = (t) => parseInt(String(t).replace(/\./g, ""), 10) || 0;
+  const todos = paginas.flat().filter((i) => String(i.s).trim());
+  const texto = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").replace(/\s+/g, " ");
+  const cortaEtiqueta = (t) => String(t).split(/\s(?:Referencia|Cliente|Proveedor|Presupuesto|Empresa|FECHA|N[úu]mero|Descripci[oó]n)\b/i)[0].trim();
+  const valorDe = (re) => {
+    const it = todos.find((i) => re.test(String(i.s)));
+    if (!it) return "";
+    const resto = cortaEtiqueta(String(it.s).replace(re, ""));
+    if (resto) return resto;
+    const sig = todos.filter((o) => o !== it && Math.abs(o.y - it.y) <= 3 && o.x > it.x).sort((a, b) => a.x - b.x)[0];
+    return sig ? cortaEtiqueta(sig.s) : "";
+  };
+  // El PDF parte "6.412-1" en dos trozos de texto ("6.412" y "-1"): se lee del texto seguido
+  const pm = texto.match(/Presupuesto:\s*([\d.]+(?:\s*-\s*\d+)?)/i);
+  const presupuesto = pm ? pm[1].replace(/\s+/g, "") : valorDe(/^\s*Presupuesto:\s*/i);
+  const refObra = valorDe(/^\s*Referencia:\s*/i);
+  const cliente = valorDe(/^\s*Cliente:\s*/i);
+  const m = refObra.match(/EXP\.?\s*(\d{2,})/i) || texto.match(/EXP\.?\s*(\d{2,})/i);
+  const maxY = todos.reduce((a, i) => Math.max(a, i.y), 0);
+  let pedido = valorDe(/^\s*N[úu]mero\s+Pedido:\s*/i);
+  if (!/^\d/.test(pedido)) {
+    const c = todos.filter((i) => /^\d{1,3}\.\d{3}$/.test(String(i.s).trim()) && i.y >= maxY - 110).sort((a, b) => b.y - a.y || b.x - a.x)[0];
+    pedido = c ? String(c.s).trim() : "";
+  }
+  const fecha = (texto.match(/(\d{2}\/\d{2}\/\d{4})/) || [])[1] || "";
+  const filas = [];
+  let cab = "";
+  paginas.forEach((items) => {
+    const its = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
+    its.forEach((it) => {
+      const s = String(it.s).trim();
+      const mh = s.match(/^([A-Z]{1,2}\d{2}\.\d+)\s*:?$/i);
+      if (mh) { cab = mh[1].toUpperCase(); return; }
+      const mm = s.match(medida);
+      if (!mm) return;
+      const ancho = aMm(mm[1]), alto = aMm(mm[2]);
+      if (ancho < 100 || alto < 100) return;
+      const cerca = its.filter((o) => o !== it && Math.abs(o.y - it.y) <= 14);
+      const q = cerca.filter((o) => o.x < it.x && /^\d{1,3}$/.test(String(o.s).trim())).sort((a, b) => b.x - a.x)[0];
+      const rec = cerca.filter((o) => o.x > it.x && /^(derecha|izquierda)$/i.test(String(o.s).trim())).sort((a, b) => Math.abs(a.y - it.y) - Math.abs(b.y - it.y) || a.x - b.x)[0];
+      const d = its.filter((o) => o !== it && o.x < it.x && o.y >= it.y - 14 && o.y <= it.y + 40 && /persiana|compacto/i.test(String(o.s))).sort((a, b) => Math.abs(a.y - it.y) - Math.abs(b.y - it.y))[0];
+      const n = Math.max(1, Math.min(60, q ? parseInt(String(q.s).trim(), 10) || 1 : 1));
+      for (let k = 0; k < n; k++) filas.push({ ref: cab, largo: ancho, alto, recogedor: rec ? (/izq/i.test(rec.s) ? "Izquierda" : "Derecha") : "", descripcion: d ? String(d.s).trim() : "" });
+    });
+  });
+  return { cabecera: { pedido, presupuesto, expediente: m ? m[1] : "", refObra, cliente, fecha }, filas };
+}
+// pedidoLocal>>
+async function leerPedidoPersianasLocal(file) {
+  const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
+  if (!esPdf) return null;
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      paginas.push(tc.items.map((i) => ({ s: i.str, x: i.transform[4], y: i.transform[5] })));
+    }
+    const T = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+    if (!/PEDIDO COMPRA/.test(T)) return null;
+    const r = pedidoPersianasDePaginas(paginas);
+    if (!r.filas.length) return null;
+    const c = r.cabecera;
+    return {
+      cab: { pedido: c.pedido, presupuesto: c.presupuesto, expediente: c.expediente, refObra: c.refObra, cliente: c.cliente, proveedor: "", fechaPedido: fechaIsoPedido(c.fecha), fechaEntrega: "" },
+      filas: r.filas.map((f) => ({ id: uid(), ref: f.ref, largo: f.largo, alto: f.alto, recogedor: f.recogedor, descripcion: f.descripcion })),
+    };
+  } catch (e) { console.error("Pedido de persianas: no se pudo leer el PDF en local, se usa la IA", e); return null; }
+}
 async function leerPedidoPersianas(file) {
+  const local = await leerPedidoPersianasLocal(file); // primero sin IA: es instantáneo y no depende de Netlify ni de Firebase
+  if (local) return local;
   const o = await leerDocumentoCristalConIA(file, PROMPT_PEDIDO_PERSIANAS);
   const refObra = String(o.referencia || "").trim();
   const cab = {
@@ -15825,7 +15911,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const b = await leerPedidoPersianas(file);
       if (!b.filas.length) throw new Error("No he encontrado persianas con medidas en el pedido.");
       setBorradorPedido(b);
-    } catch (e) { setAviso(e.message || "No he podido leer el pedido."); }
+    } catch (e) { console.error("Subir pedido de persianas:", e); setAviso("Pedido de persianas: " + (e.message || "no he podido leerlo.")); }
     finally { setLeyendoPedido(false); }
   };
   const guardarPedido = () => {
