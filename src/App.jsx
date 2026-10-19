@@ -1644,6 +1644,13 @@ export default function App() {
         data = { ...data, fechaFabricacion: fecha.toISOString().slice(0, 10) };
       }
 
+      // Fechas que se quedan apuntadas solas en la obra: cuándo se aceptó el presupuesto y cuándo se entregó
+      {
+        const hoyISO = new Date().toISOString().slice(0, 10);
+        if (data.estadoPresupuesto === "Presupuesto aceptado" && anterior?.estadoPresupuesto !== "Presupuesto aceptado" && !data.fechaAceptado && !anterior?.fechaAceptado) data = { ...data, fechaAceptado: hoyISO };
+        if (data.estadoTrabajo === "Entregado" && anterior?.estadoTrabajo !== "Entregado" && !data.fechaEntregado && !anterior?.fechaEntregado) data = { ...data, fechaEntregado: hoyISO };
+      }
+
       next = proyectos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
       showToast("Proyecto actualizado");
 
@@ -1678,7 +1685,13 @@ export default function App() {
   };
 
   const updateProyectoInline = (id, patch) => {
-    const next = proyectosRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    const hoyISO = new Date().toISOString().slice(0, 10);
+    const next = proyectosRef.current.map((p) => {
+      if (p.id !== id) return p;
+      const extra = {};
+      if (patch.estadoPresupuesto === "Presupuesto aceptado" && p.estadoPresupuesto !== "Presupuesto aceptado" && !p.fechaAceptado && !patch.fechaAceptado) extra.fechaAceptado = hoyISO;
+      return { ...p, ...patch, ...extra };
+    });
     saveProyectos(next);
   };
 
@@ -3100,6 +3113,7 @@ export default function App() {
       nombre: presupuesto.descripcion || presupuesto.numero,
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
+      fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
       estadoPresupuesto: "Presupuesto aceptado",
       estadoTrabajo: "Pendiente de aceptación",
       gastos: [],
@@ -3618,7 +3632,7 @@ export default function App() {
             }));
           } else listaProyectos = [{
             id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
-            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
+            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación", fechaAceptado: hoy,
             presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
             techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
             persianasControl: (pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre)),
@@ -4835,6 +4849,8 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
+            currentUser={currentUser}
+            onRecibirPedido={recibirPedido}
             proyectos={proyectos}
             clientes={clientes}
             facturas={facturas}
@@ -6218,7 +6234,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -6236,6 +6252,8 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
 
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
+      // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
+      if (!estadoTrabajo && !q && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
@@ -6264,6 +6282,8 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
     if (!proyecto) { setView("list"); return null; }
     return (
       <ProyectoDetail
+        currentUser={currentUser}
+        onRecibirPedido={onRecibirPedido}
         proyecto={proyecto}
         cliente={clientes.find((c) => c.id === proyecto.clienteId)}
         facturas={facturas.filter((f) => (f.proyectosIds || []).includes(proyecto.id))}
@@ -6365,6 +6385,9 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
         </button>
       </div>
 
+      {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
+        <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
+      )}
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -7250,7 +7273,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales) => {
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
 // PEDIRLOS desde aquí mismo: elegir proveedor, mandarlo por WhatsApp o email, o marcar que
 // ya se ha pedido de otra forma — pidiendo siempre la fecha aproximada de llegada.
-function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion }) {
+function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onRecibirPedido }) {
   const [confirmando, setConfirmando] = useState(null); // { id, metodo, fecha }
   const hoy = new Date().toISOString().slice(0, 10);
   if (pedidos.length === 0) return <p className="px-4 py-8 text-center text-sm text-slate-400">Sin pedidos de materiales vinculados a este proyecto todavía.</p>;
@@ -7277,7 +7300,14 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
               <span className="text-slate-500">{toArray(p.lineas).length} línea{toArray(p.lineas).length === 1 ? "" : "s"}{String(p.comentarios || "").includes(":") && /^[^:]{3,40}: Material que falta/.test(p.comentarios || "") ? ` · ${p.comentarios.split(":")[0]}` : ""}</span>
               <span className="text-slate-500">{p.fechaEntregaPrevista ? `Llega ${fmtDate(p.fechaEntregaPrevista)}` : ""}</span>
               <Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge>
-              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className="ml-auto flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md"><FileText size={12} /> PDF</button>
+              {onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" && (
+                <>
+                  <button onClick={() => { if (window.confirm(`¿Marcar el pedido #${p.numero} como recibido completo?\n\nSe suma al stock lo que lleve de catálogo. Si solo ha llegado una parte, usa "Recibir una parte" (se abre el pedido).`)) onRecibirPedido(p.id); }}
+                    className="ml-auto flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 rounded-md"><CheckCircle2 size={12} /> Marcar recibido</button>
+                  <button onClick={() => openPedido(p.id)} title="Abre el pedido para marcar línea a línea lo que ha llegado" className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md">Recibir una parte</button>
+                </>
+              )}
+              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className={`${onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" ? "" : "ml-auto "}flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md`}><FileText size={12} /> PDF</button>
               <button onClick={() => openPedido(p.id)} className="text-xs font-semibold text-slate-500 hover:underline">Ver pedido →</button>
             </div>
             {sinPedir && (
@@ -7613,7 +7643,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7624,6 +7654,36 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
   const ciudadReparto = proyecto.estadoLogistica === "Reparto (camión)"
     ? (proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto)
     : null;
+  const nombreUsuarioActual = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "";
+
+  // Anular una obra (repetida, caída…) sin borrarla: pasa a "Cancelado" guardando quién, cuándo y por qué,
+  // y se puede reactivar. Sus pedidos no se tocan: se avisa si tiene alguno sin recibir.
+  const anularProyecto = () => {
+    const sinRecibir = toArray(pedidos).filter((p) => p.estado !== "Recibido" && p.estado !== "Cancelado").length;
+    const aviso = sinRecibir ? `\n\nOjo: tiene ${sinRecibir} pedido${sinRecibir === 1 ? "" : "s"} sin recibir que NO se anulan solos (revísalos en la pestaña Pedidos).` : "";
+    const motivo = window.prompt(`¿Anular el proyecto #${proyecto.numero} — ${proyecto.nombre}?\n\nEscribe el motivo (p. ej. "repetido", "cliente cancela") y acepta. No se borra: queda como Cancelado y se puede reactivar.${aviso}`, "");
+    if (motivo === null) return;
+    onInlineUpdate(proyecto.id, { estadoTrabajo: "Cancelado", anulado: { fecha: new Date().toISOString().slice(0, 10), por: nombreUsuarioActual, motivo: String(motivo).trim(), estadoAnterior: proyecto.estadoTrabajo || "" } });
+  };
+  const reactivarProyecto = () => {
+    if (!window.confirm(`¿Reactivar el proyecto #${proyecto.numero}?`)) return;
+    const previo = proyecto.anulado && proyecto.anulado.estadoAnterior && proyecto.anulado.estadoAnterior !== "Cancelado" ? proyecto.anulado.estadoAnterior : "Pendiente de aceptación";
+    onInlineUpdate(proyecto.id, { estadoTrabajo: previo, anulado: null });
+  };
+
+  // Comentarios internos de la obra (notas del equipo con fecha y autor)
+  const [textoComentario, setTextoComentario] = useState("");
+  const comentariosObra = [...toArray(proyecto.comentariosObra)].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const anadirComentario = () => {
+    const texto = textoComentario.trim();
+    if (!texto) return;
+    onInlineUpdate(proyecto.id, { comentariosObra: [...toArray(proyecto.comentariosObra), { id: uid(), fecha: new Date().toISOString(), por: nombreUsuarioActual || "—", texto }] });
+    setTextoComentario("");
+  };
+  const quitarComentario = (c) => {
+    if (!window.confirm("¿Borrar este comentario?")) return;
+    onInlineUpdate(proyecto.id, { comentariosObra: toArray(proyecto.comentariosObra).filter((x) => x.id !== c.id) });
+  };
   const checklist = normalizarChecklist(proyecto.checklistMateriales);
   const despieceAgrupado = calcularDespieceConjuntoProyecto(proyecto.techos);
   const despieceConStock = compararDespieceConStock(despieceAgrupado, materiales);
@@ -7873,6 +7933,15 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
               <Pencil size={14} /> Editar
             </button>
+            {proyecto.estadoTrabajo !== "Cancelado" ? (
+              <button onClick={anularProyecto} title="Anular la obra sin borrarla (queda guardada como Cancelado)" className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-3.5 py-2 rounded-lg hover:bg-amber-50">
+                <X size={14} /> Anular proyecto
+              </button>
+            ) : (
+              <button onClick={reactivarProyecto} className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 border border-emerald-300 px-3.5 py-2 rounded-lg hover:bg-emerald-50">
+                <CheckCircle2 size={14} /> Reactivar proyecto
+              </button>
+            )}
             {isAdmin && (
               <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
                 <Trash2 size={14} /> Eliminar
@@ -7889,7 +7958,14 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
           {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
+          {proyecto.fechaAceptado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge>}
+          {proyecto.fechaEntregado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Entregado el {fmtDate(proyecto.fechaEntregado)}</Badge>}
         </div>
+        {proyecto.estadoTrabajo === "Cancelado" && proyecto.anulado && (
+          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
+            Proyecto anulado el {fmtDate(proyecto.anulado.fecha)}{proyecto.anulado.por ? ` por ${proyecto.anulado.por}` : ""}{proyecto.anulado.motivo ? ` — ${proyecto.anulado.motivo}` : ""}.
+          </p>
+        )}
 
         {proyecto.origen !== "portalUxcar" && (
           <div className="flex flex-wrap items-start gap-2 mt-3">
@@ -7967,9 +8043,14 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {proyecto.documentos.map((d) => (
-                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100">
-                  <FileText size={14} className="text-slate-400" /> {d.nombre}
-                </a>
+                <span key={d.id} className="flex items-center gap-1 bg-slate-50 border border-slate-200 pl-3 pr-1.5 py-1.5 rounded-lg hover:bg-slate-100">
+                  <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
+                    <FileText size={14} className="text-slate-400" /> {d.nombre}
+                  </a>
+                  <button type="button" title="Quitar este documento de la obra (por si se subió por error)"
+                    onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
+                    className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
+                </span>
               ))}
             </div>
           </div>
@@ -8028,6 +8109,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             items: [
               { id: "datos", label: "Datos de la obra", icon: FileText, sub: "Fechas y especificaciones" },
               { id: "llamadas", label: "Llamadas", count: toArray(proyecto.llamadas).length, icon: Phone, sub: toArray(proyecto.llamadas).length ? `Última: ${fmtDate(String([...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))[0].fecha).slice(0, 10))}` : "Sin llamadas" },
+              { id: "comentarios", label: "Comentarios", count: comentariosObra.length, icon: MessageCircle, sub: comentariosObra.length ? `Último: ${comentariosObra[0].por || "—"}` : "Notas del equipo" },
               { id: "horas", label: "Registro horario", count: horas.length, icon: Timer, sub: `${totalHoras.toFixed(1)} h registradas` },
               { id: "historial", label: "Historial", count: totalHistorial, icon: Clock, sub: "Todo lo que ha pasado" },
             ],
@@ -8157,12 +8239,37 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
       {tab === "llamadas" && (
         <RegistroLlamadasObra proyecto={proyecto} cliente={cliente} usuarios={usuarios} onInlineUpdate={onInlineUpdate} onGuardarLlamada={onGuardarLlamada} />
       )}
+      {tab === "comentarios" && (
+        <div className="space-y-3">
+          <div className="bg-white border border-slate-200 rounded-lg p-4">
+            <textarea value={textoComentario} onChange={(e) => setTextoComentario(e.target.value)} rows={3} placeholder="Escribe una nota sobre esta obra (queda con tu nombre y la fecha)…"
+              className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
+            <div className="flex justify-end mt-2">
+              <button type="button" onClick={anadirComentario} disabled={!textoComentario.trim()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-40">
+                <Plus size={14} /> Añadir comentario
+              </button>
+            </div>
+          </div>
+          {comentariosObra.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-slate-400 bg-white border border-slate-200 rounded-lg">Todavía no hay comentarios en esta obra.</p>
+          ) : comentariosObra.map((c) => (
+            <div key={c.id} className="bg-white border border-slate-200 rounded-lg px-4 py-3">
+              <div className="flex items-center justify-between gap-2 text-xs text-slate-400 mb-1">
+                <span><b className="text-slate-600">{c.por || "—"}</b> · {c.fecha ? new Date(c.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                {(isAdmin || (c.por && c.por === nombreUsuarioActual)) && <button type="button" onClick={() => quitarComentario(c)} className="text-slate-300 hover:text-rose-500" title="Borrar comentario"><Trash2 size={13} /></button>}
+              </div>
+              <p className="text-sm text-slate-700 whitespace-pre-wrap">{c.texto}</p>
+            </div>
+          ))}
+        </div>
+      )}
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Hash size={14} />} label="Tipo" value={proyecto.tipoVenta} />
             <InfoRow icon={<MapPin size={14} />} label="Ubicación" value={proyecto.ubicacion || "—"} />
             <InfoRow icon={<FileText size={14} />} label="Fecha solicitud" value={fmtDate(proyecto.fechaSolicitud)} />
+            <InfoRow icon={<CheckCircle2 size={14} />} label="Presupuesto aceptado el" value={proyecto.fechaAceptado ? fmtDate(proyecto.fechaAceptado) : "—"} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista" value={fmtDate(proyecto.fechaEntregaPrevista)} />
             <InfoRow icon={<CheckCircle2 size={14} />} label="Fecha entregado" value={fmtDate(proyecto.fechaEntregado)} />
             <InfoRow icon={<MapPin size={14} />} label="Ciudad de reparto" value={ciudadReparto || "—"} />
@@ -8525,7 +8632,7 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
           </div>
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <PedidosObraAcciones proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} materiales={materiales} openPedido={openPedido}
-              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} />
+              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} onRecibirPedido={onRecibirPedido} />
           </div>
           {/* Documentación de la obra, todo junto: listado de materiales (a la izquierda) y
               tipo plano (a la derecha), cada uno con su botón. */}
@@ -10247,10 +10354,17 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
       if (estado && p.estado !== estado) return false;
       if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
-      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
+      // También se busca por el proyecto del pedido (nº, nombre, cliente) y por su descripción/comentarios.
+      const proy = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null;
+      const textoProyecto = proy ? `${proy.numero || ""} ${proy.nombre || ""} ${proy.cliente || ""} ${proy.clienteNombre || ""} ${proy.ubicacion || ""}` : "";
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${textoProyecto} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales]);
+  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales, proyectos]);
+
+  // Borrar pedidos: los administradores cualquiera; los responsables de pedidos solo los
+  // que aún no se han recibido (los recibidos ya han movido el stock).
+  const puedeBorrarPedido = (p) => isAdmin || (!!(currentUser && currentUser.responsablePedidos) && p.estado !== "Recibido");
 
   // Solo los administradores y los usuarios marcados como "responsable de pedidos" hacen
   // pedidos. El resto solo puede solicitarlos (pestaña de solicitudes).
@@ -10301,7 +10415,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         onBack={() => setView("list")}
         onEdit={() => { setEditId(pedido.id); setView("form"); }}
         onDelete={() => onDelete(pedido.id)}
-        isAdmin={isAdmin}
+        isAdmin={puedeBorrarPedido(pedido)}
         onRecibir={() => onRecibir(pedido.id)}
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
         onMarcarEnviado={(metodo, fecha) => onMarcarEnviado(pedido.id, metodo, fecha)}
@@ -10566,7 +10680,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
                     </select>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
+                    {puedeBorrarPedido(p) && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
                     </button>)}
                   </td>
@@ -10932,7 +11046,10 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
     const lineas = f.lineas
       .filter((l) => (l.modo === "catalogo" ? l.materialId : l.referencia.trim()) && parseFloat(l.cantidad) > 0)
       .map((l) => ({ ...l, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ancho: l.ancho ? parseFloat(l.ancho) || l.ancho : "", alto: l.alto ? parseFloat(l.alto) || l.alto : "" }));
-    if (lineas.length === 0) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0)."); return; }
+    // Un pedido puede guardarse solo con documento adjunto (p. ej. pedidos de TM o de
+    // cristales ya hechos en PDF): la línea solo es obligatoria si no hay ningún documento.
+    const tieneDocumento = toArray(f.documentos).length > 0 || toArray(f.adjuntosPdf).length > 0;
+    if (lineas.length === 0 && !tieneDocumento) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0) o adjunta el documento del pedido."); return; }
     setErrorMsg("");
     onSave({ ...f, lineas });
   };
@@ -11225,6 +11342,20 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   useEffect(() => { if (archivoInicial) { leer(archivoInicial); onArchivoUsado && onArchivoUsado(); } }, [archivoInicial]); // eslint-disable-line react-hooks/exhaustive-deps
   const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
   const num = (v) => Math.max(0, parseFloat(v) || 0);
+  // Recepción a mano, sin foto de albarán: se enseñan las líneas pendientes con lo que
+  // falta por llegar puesto por defecto, y se corrige solo lo que no ha llegado (p. ej. 0 en el
+  // compacto que faltaba). Después va por el mismo camino que la recepción con albarán.
+  const recibirAMano = () => {
+    setError("");
+    const filas = toArray(pedido.lineas).map((l) => {
+      const pedida = parseFloat(l.cantidad) || 0;
+      const ya = parseFloat(l.recibidoBien) || 0;
+      const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
+      return { lineaId: l.id, nombre: nombreLinea(l), tipo: tipoLineaRecepcion(l, pedido), ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega: pend, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb: 0, caballete: "", ref: "", refObra: "", pedidoProv: "" };
+    });
+    if (!filas.some((f) => f.pend > 0)) { setError("Este pedido no tiene nada pendiente de recibir."); return; }
+    setLectura({ filas, sobrantes: [], archivo: "", info: { lineas: [], numeroAlbaran: "", numeroPedido: "", proveedor: "" }, manual: true });
+  };
   const pendientes = toArray(pedido.lineas).map((l) => ({ l, falta: Math.max(0, Math.round(((parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)) * 100) / 100) })).filter((x) => x.falta > 0);
   const hayRecepciones = toArray(pedido.recepciones).length > 0;
   const reponer = () => onCrearPedidoFaltante(pedido, pendientes.map(({ l, falta }) => ({ ...l, id: uid(), cantidad: falta, estado: "Solicitado", recibidoBien: 0, rotos: 0, cantidadRecibida: 0 })));
@@ -11245,6 +11376,11 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
             style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
             {leyendo ? <><Loader2 size={15} className="animate-spin" /> Leyendo el albarán (puede tardar un minuto)…</> : <><ImageIcon size={15} /> {hayRecepciones ? "Recibir otro albarán" : "Subir foto o PDF del albarán"}</>}
           </button>
+          <button type="button" onClick={recibirAMano} disabled={leyendo || !pedido.envioConfirmado || !!lectura}
+            title={!pedido.envioConfirmado ? "Confirma primero que el pedido se ha enviado al proveedor" : "Marcar línea a línea lo que ha llegado, sin foto de albarán"}
+            className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
+            <CheckCircle2 size={15} /> Marcar lo que ha llegado (a mano, sin albarán)
+          </button>
           {!pedido.envioConfirmado && <p className="text-xs text-amber-700 font-semibold mt-2">⚠ Confirma arriba que el pedido se ha enviado al proveedor antes de poder recibirlo.</p>}
           <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         </>
@@ -11252,7 +11388,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
       {error && <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {error}</div>}
       {lectura && (
         <div className="mt-4 space-y-3">
-          <div className="text-xs text-slate-500">Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</div>
+          <div className="text-xs text-slate-500">{lectura.manual ? "Recepción a mano: pon en «Llegan» lo que ha llegado de cada línea (0 en lo que falta)." : <>Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</>}</div>
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase text-slate-500"><tr>
@@ -11534,7 +11670,10 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
+    // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
+    const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -11634,7 +11773,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           )}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
-            <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
+            <button onClick={() => { if (window.confirm(`¿Eliminar el pedido #${pedido.numero}? No se puede deshacer.`)) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
           )}
         </div>
       </div>
