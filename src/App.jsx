@@ -13023,9 +13023,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       // Un PDF largo se lee por trozos de 3 páginas (varios a la vez): leerlo de golpe se queda
       // a medias o no devuelve nada. El nº de caballete de las primeras filas de cada trozo
       // se completa con el último caballete visto antes (el documento va en orden).
-      const trozos = esPdf ? await dividirPdfEnTrozos(file, 3) : null;
+      const local = esPdf ? await leerPackingCristalLocal(file) : null; // PDF con texto: se lee sin IA
+      const trozos = esPdf && !local ? await dividirPdfEnTrozos(file, 3) : null;
       let parsed;
-      if (trozos) {
+      if (local) {
+        parsed = { cabecera: { tipo: "packing", cliente: local.cliente, proveedor: "", presupuesto: "" }, filas: local.filas, truncada: false };
+      } else if (trozos) {
         const promptTrozo = promptPackingList(true);
         const lecturas = await Promise.all(trozos.map(async (tr) => {
           const leerUno = async (archivo, d, h) => {
@@ -14323,6 +14326,81 @@ function promptPackingList(esTrozo) {
       : 'En "caballete" de cada fila solo pon el número si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba). ') +
     'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
 }
+// <<packingCristalLocal
+// Packing list de cristal (PDF con texto, p. ej. Cricursa) leído EN LOCAL, sin IA: exacto y al momento.
+// Devuelve null si no encaja (entonces se usa la IA) o si el total de cada caballete no cuadra.
+function packingCristalDePaginas(paginas) {
+  const lineasDe = (items) => {
+    const orden = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
+    const ls = [];
+    orden.forEach((i) => {
+      const l = ls.find((q) => Math.abs(q.y - i.y) <= 3);
+      if (l) l.it.push(i); else ls.push({ y: i.y, it: [i] });
+    });
+    return ls.sort((a, b) => b.y - a.y).map((l) => l.it.sort((a, b) => a.x - b.x).map((i) => i.s.trim()).join(" ").replace(/\s+/g, " ").trim());
+  };
+  const reFila = /^(?:(\d{6,9})\s+)?(\d{1,3})\s+(\d{1,3})\s+(\d{2,4})\s*[xX×]\s*(\d{2,4})\s+([^,]{2,40}?)\s*,\s*(.*)$/;
+  const filas = [];
+  const totales = {};
+  let cab = "", pedido = "", cliente = "", actual = null;
+  const cerrar = () => {
+    if (!actual) return;
+    const t = actual.texto;
+    const mp = t.match(/Ref\.?\s*Cte\.?\s*Ped\.?\s*:\s*(.*?)\s*,?\s*Ref\.?\s*Cte\.?\s*Pos/i) || t.match(/Ref\.?\s*Cte\.?\s*Ped\.?\s*:\s*(.*?)\s*(?:,\s*Compra|$)/i);
+    const rp = mp ? mp[1].trim() : "";
+    const me = rp.match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*[_\s]*(.*)$/i);
+    let resto = me ? me[2] : "";
+    const mpr = resto.match(/_?\s*(\d\.\d{3})(?:-\d+)?\s*$/);
+    const presupuesto = mpr ? mpr[1].replace(".", "") : "";
+    if (mpr) resto = resto.slice(0, mpr.index);
+    resto = resto.replace(/^[_\s]+|[_\s]+$/g, "");
+    const planta = ubicacionDeTexto(rp) || resto.replace(/[()]/g, "").trim();
+    const f = actual;
+    filas.push({
+      caballete: cab, pedido: f.pedido, pos: f.pos, cantidad: f.cant, ancho: f.ancho, alto: f.alto,
+      m2: Math.round(f.cant * f.ancho * f.alto) / 1e6, ref: f.ref, expediente: me ? `EXP ${me[1]}` : "", planta, presupuesto, cliente,
+    });
+    actual = null;
+  };
+  paginas.forEach((items) => {
+    lineasDe(items).forEach((l) => {
+      let m;
+      if ((m = l.match(/^Cliente\s*:\s*(.*?)(?:\s+Parada\s*:.*)?$/i))) { cliente = m[1].trim(); return; }
+      if ((m = l.match(/^Caballete\s+(\d{6,})/i))) { cerrar(); cab = m[1]; return; }
+      if ((m = l.match(/^Total\s+Caballete\s*:?\s*(\d+)/i))) { cerrar(); totales[cab] = parseInt(m[1], 10); return; }
+      if (/^(Packing List|Ruta\s*:|Muelle\s*:|Pedido\s+Pos|Cant\.|\d+\s*Kg)/i.test(l) || /^Packing\b/i.test(l)) return;
+      if ((m = l.match(reFila))) {
+        cerrar();
+        if (m[1]) pedido = m[1];
+        actual = { pedido, pos: m[2], cant: parseInt(m[3], 10), ancho: parseInt(m[4], 10), alto: parseInt(m[5], 10), ref: m[6], texto: m[7] || "" };
+        return;
+      }
+      if (actual) actual.texto += " " + l;
+    });
+  });
+  cerrar();
+  if (!filas.length || !cab) return null;
+  // control: lo leído de cada caballete debe sumar el total que indica el propio documento
+  const suma = {};
+  filas.forEach((f) => { suma[f.caballete] = (suma[f.caballete] || 0) + f.cantidad; });
+  const claves = Object.keys(suma);
+  if (!claves.length || claves.some((k) => totales[k] !== suma[k])) return null;
+  return { cliente, filas };
+}
+// packingCristalLocal>>
+async function leerPackingCristalLocal(file) {
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      paginas.push(tc.items.map((i) => ({ s: i.str, x: i.transform[4], y: i.transform[5] })));
+    }
+    return packingCristalDePaginas(paginas);
+  } catch (e) { console.error("Packing list de cristal: no se pudo leer en local, se usa la IA", e); return null; }
+}
+
 // Divide un PDF en trozos de pocas páginas para que la IA los lea por partes.
 // Devuelve null si el PDF es corto o no se puede abrir: en ese caso se lee entero, como siempre.
 async function dividirPdfEnTrozos(file, paginasPorTrozo) {
