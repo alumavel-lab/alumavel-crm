@@ -672,7 +672,6 @@ export default function App() {
   const [carrosPersianas, setCarrosPersianas] = useState([]);
   const [persianasAlmacen, setPersianasAlmacen] = useState([]);
   const [almacenesPersianas, setAlmacenesPersianas] = useState([]);
-  const [pedidosPersianas, setPedidosPersianas] = useState([]); // persianas PEDIDAS al proveedor y aún no llegadas (no cuentan como "dentro" del almacén)
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionesUsuario, setSesionesUsuario] = useState({});
@@ -817,7 +816,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas"];
         const resultados = {};
         const fallos = [];
         await Promise.all(claves.map(async (k) => {
@@ -858,7 +857,6 @@ export default function App() {
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
         if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
-        if (resultados.pedidosPersianas) setPedidosPersianas(toArray(resultados.pedidosPersianas));
         setAlmacenesPersianas(resultados.almacenesPersianas ? toArray(resultados.almacenesPersianas) : [ALMACEN_PERSIANAS_PRINCIPAL]);
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
@@ -2332,7 +2330,6 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
-  const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
   almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
@@ -5192,7 +5189,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas,
             guardarPackingCaballetes: (nuevos, fusiones) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -15287,6 +15284,7 @@ function planReorganizarPersianas(items, carros) {
 
 async function leerPackingPersianas(file) {
   const esExcel = /\.(xlsx|xls|csv|ods)$/i.test(file.name || "");
+  if (!esExcel) { const pedido = await leerPedidoPersianasLocal(file); if (pedido) return unidadesDePedidoPersianas(pedido); } // PDF de "PEDIDO COMPRA": se lee en local, sin IA
   let filas = [];
   if (esExcel) {
     filas = leerFilasExcel(await file.arrayBuffer()).map((f) => ({
@@ -15318,21 +15316,13 @@ async function leerPackingPersianas(file) {
   return unidades;
 }
 
-// ---- Pedidos de compra de persianas (lo que se ha pedido al proveedor y todavía no ha llegado) ----
-// Se guardan APARTE (pedidosPersianas), no en persianasAlmacen: así no cuentan como "dentro", no salen en "Sin sitio"
-// y no entran en los cruces con ventanas ni en los puestos. Al llegar (packing list, fotos o a mano) se marcan solas como recibidas.
-const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"recogedor":"","descripcion":""}]}. "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = tipo en pocas palabras (p. ej. "decorativa 185 mm blanco, sin guías"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+// ---- "PEDIDO COMPRA" de persianas como entrada al almacén ----
+// "Subir packing list de persianas" también lee el PDF del pedido de compra (se lee en el navegador, sin IA) y las persianas
+// entran en los carros igual que con un packing list, con su ubicación (portal, escalera, piso) y el cliente. No se relaciona con nada más.
 const normRefPers = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// "EXP 823 PORTAL 33E ESC 06 1A" → "PORTAL 33E ESC 06 1A" (lo que va detrás del número de expediente: portal, escalera, piso…)
+const ubicacionObra = (t) => String(t || "").replace(/^\s*EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "").trim();
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
-const TOL_PEDIDO_MM = 30; // diferencia de largo que se admite entre lo pedido y lo que llega (sin verificar con packing lists reales)
-// ¿Esta persiana que ha llegado es la que se pidió? Mismo expediente + misma vivienda/ref. (si ambas la traen) + largo parecido.
-const casaPedidaConPersiana = (p, x) => {
-  if (!expDigitosPers(p.expediente) || expDigitosPers(p.expediente) !== expDigitosPers(x.expediente)) return false;
-  const rp = normRefPers(p.ref), rx = normRefPers(x.ref);
-  if (rp && rx && rp !== rx) return false;
-  const lp = parseFloat(p.largo) || 0, lx = largoPersiana(x);
-  return lp > 0 && lx > 0 && Math.abs(lp - lx) <= TOL_PEDIDO_MM;
-};
 const fechaIsoPedido = (t) => {
   const s = String(t || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
@@ -15393,6 +15383,16 @@ function pedidoPersianasDePaginas(paginas) {
   return { cabecera: { pedido, presupuesto, expediente: m ? m[1] : "", refObra, cliente, fecha }, filas };
 }
 // pedidoLocal>>
+// Del pedido leído ({ cab, filas }) a persianas listas para colocar en los carros (misma forma que las del packing list)
+function unidadesDePedidoPersianas(r) {
+  const { cab, filas } = r;
+  const hoy = new Date().toISOString().slice(0, 10);
+  return filas.map((f) => ({
+    id: uid(), expediente: cab.expediente, parte: normParte(cab.refObra), ref: f.ref, largo: f.largo, alto: f.alto,
+    pedido: cab.pedido, pedidoProv: cab.pedido, refObra: ubicacionObra(cab.refObra), cliente: cab.cliente, proveedor: cab.proveedor || "",
+    recogedor: f.recogedor, fechaEntrada: hoy, estante: null, entregada: false,
+  }));
+}
 async function leerPedidoPersianasLocal(file) {
   const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
   if (!esPdf) return null;
@@ -15414,26 +15414,6 @@ async function leerPedidoPersianasLocal(file) {
       filas: r.filas.map((f) => ({ id: uid(), ref: f.ref, largo: f.largo, alto: f.alto, recogedor: f.recogedor, descripcion: f.descripcion })),
     };
   } catch (e) { console.error("Pedido de persianas: no se pudo leer el PDF en local, se usa la IA", e); return null; }
-}
-async function leerPedidoPersianas(file) {
-  const local = await leerPedidoPersianasLocal(file); // primero sin IA: es instantáneo y no depende de Netlify ni de Firebase
-  if (local) return local;
-  const o = await leerDocumentoCristalConIA(file, PROMPT_PEDIDO_PERSIANAS);
-  const refObra = String(o.referencia || "").trim();
-  const cab = {
-    pedido: String(o.pedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
-    expediente: expDigitosPers(o.expediente || refObra), refObra, cliente: String(o.cliente || "").trim(),
-    proveedor: String(o.proveedor || "").trim(), fechaPedido: fechaIsoPedido(o.fechaPedido), fechaEntrega: fechaIsoPedido(o.fechaEntrega),
-  };
-  const filas = [];
-  (o.filas || []).filter((f) => parseFloat(f.ancho) > 0).forEach((f) => {
-    const n = Math.max(1, Math.min(60, parseInt(f.cantidad, 10) || 1));
-    for (let k = 0; k < n; k++) {
-      filas.push({ id: uid(), ref: String(f.ref || "").trim(), largo: parseFloat(f.ancho) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
-    }
-  });
-  return { cab, filas };
 }
 
 // ---- Entrada de persianas con fotos de las etiquetas (cuando llegan sin packing list) ----
@@ -15788,6 +15768,7 @@ function AlmacenPersianas() {
                 <b>EXP {x.expediente || "—"}</b>
                 <span>{x.ref || ""}</span>
                 <span className="font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</span>
+                {(x.refObra || x.cliente) && <span className="text-xs text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ")}</span>}
                 <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
                   {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
                 </span>
@@ -15895,64 +15876,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const inputRef = useRef(null);
   useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } }, [irA && irA.t]);
 
-  // Pedidos de compra: lo pedido al proveedor y aún no llegado. Va aparte del almacén (no cuenta como "dentro").
-  const pedidosTodos = toArray(ctxM.pedidosPersianas);
-  const guardarPedidos = ctxM.savePedidosPersianas || (() => {});
-  const esRecepcion = !esMosq && almacenRecepcionPersianas(toArray(ctxM.almacenesPersianas)) === almacen.id;
-  const pendientesPedido = pedidosTodos.filter((p) => p.estado !== "recibida");
-  const [borradorPedido, setBorradorPedido] = useState(null); // { cab, filas } leído del PDF, para revisar antes de guardar
-  const [leyendoPedido, setLeyendoPedido] = useState(false);
-  const [verPedidas, setVerPedidas] = useState(false);
-  const inputPedidoRef = useRef(null);
-
-  const subirPedido = async (file) => {
-    setLeyendoPedido(true); setAviso("");
-    try {
-      const b = await leerPedidoPersianas(file);
-      if (!b.filas.length) throw new Error("No he encontrado persianas con medidas en el pedido.");
-      setBorradorPedido(b);
-    } catch (e) { console.error("Subir pedido de persianas:", e); setAviso("Pedido de persianas: " + (e.message || "no he podido leerlo.")); }
-    finally { setLeyendoPedido(false); }
-  };
-  const guardarPedido = () => {
-    const { cab, filas } = borradorPedido;
-    const lista = filas.filter((f) => (parseFloat(f.largo) || 0) >= 100);
-    if (!String(cab.expediente).trim()) { setAviso("Pon el expediente del pedido."); return; }
-    if (!lista.length) { setAviso("No queda ninguna persiana con medida en el pedido."); return; }
-    const yaEsta = cab.pedido && pedidosTodos.some((p) => p.pedido === cab.pedido && expDigitosPers(p.expediente) === expDigitosPers(cab.expediente));
-    if (yaEsta && !window.confirm(`El pedido ${cab.pedido} del EXP ${cab.expediente} YA está guardado. Si lo guardas otra vez saldrá duplicado.\n\nAceptar = guardarlo igualmente.\nCancelar = no guardar nada.`)) return;
-    const hoy = new Date().toISOString().slice(0, 10);
-    const enAlmacen = toArray(ctxM.persianasAlmacen);
-    const usadas = new Set();
-    let yaLlegadas = 0;
-    const nuevas = lista.map((f) => {
-      const p = { id: uid(), expediente: expDigitosPers(cab.expediente), parte: normParte(cab.refObra), ref: String(f.ref || "").trim(), largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: f.recogedor || "", descripcion: f.descripcion || "", pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
-        proveedor: cab.proveedor, fechaPedido: cab.fechaPedido, fechaEntrega: cab.fechaEntrega, fechaAlta: hoy, estado: "pedida" };
-      // Si esa persiana ya está en algún almacén (llegó antes de subir el pedido), no se queda "pendiente" para siempre
-      const x = enAlmacen.find((y) => !usadas.has(y.id) && casaPedidaConPersiana(p, y));
-      if (x) { usadas.add(x.id); yaLlegadas++; return { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: x.id, notaRecibida: "Ya estaba en el almacén al subir el pedido" }; }
-      return p;
-    });
-    guardarPedidos([...pedidosTodos, ...nuevas]);
-    setBorradorPedido(null);
-    setVerPedidas(true);
-    setAviso(`Pedido ${cab.pedido || ""} (EXP ${cab.expediente}): ${nuevas.length} persianas guardadas${yaLlegadas ? `, ${yaLlegadas} ya estaban en el almacén (marcadas como recibidas)` : ""}. Las pendientes NO cuentan como "dentro" hasta que lleguen.`.replace("  ", " "));
-  };
-  // Al dar entrada a persianas (packing list, fotos o a mano) las que estaban pedidas pasan solas a "recibidas".
-  const conciliarPedidas = (nuevas) => {
-    if (esMosq || !pendientesPedido.length) return 0;
-    const usadas = new Set();
-    const marcadas = {};
-    nuevas.forEach((x) => {
-      const p = pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
-      if (p) { usadas.add(p.id); marcadas[p.id] = x.id; }
-    });
-    const n = Object.keys(marcadas).length;
-    if (n) { const hoy = new Date().toISOString().slice(0, 10); guardarPedidos(pedidosTodos.map((p) => (marcadas[p.id] ? { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: marcadas[p.id] } : p))); }
-    return n;
-  };
-
   const activos = items.filter((x) => !x.entregada);
   const sinSitio = activos.filter((x) => !x.estante && !x.enPuesto);
   const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
@@ -16007,10 +15930,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const { sitio, fallan, desbordan } = colocar(entrada);
     const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null }; });
     guardarItems([...items, ...nuevas]);
-    const recibidasPedido = conciliarPedidas(nuevas);
     if (!Array.isArray(lista)) { setBorrador(null); setCarroDestinoGlobal(""); }
     const cortas = esMosq ? 0 : nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
-    const extra = (desbordan ? ` ${desbordan} no cabían en el carro elegido y se han colocado en otro sitio.` : "") + (recibidasPedido ? ` ${recibidasPedido} estaban en pedidos y pasan a "recibidas".` : "");
+    const extra = desbordan ? ` ${desbordan} no cabían en el carro elegido y se han colocado en otro sitio.` : "";
     setAviso((fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas${nuevas.length <= 6 ? ": " + [...new Set(nuevas.map((x) => textoEstante(x.estante)))].join(" | ") : ""}.`) + extra);
     setVista(fallan ? "sinsitio" : "mapa");
   };
@@ -16074,7 +15996,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
@@ -16106,7 +16028,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const lados = LADOS_CARRO.map((lado) => {
         const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
           const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}${x.refObra ? ` · ${esc(x.refObra)}` : ""}${x.cliente ? ` · ${esc(x.cliente)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
           return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
         }).join("");
         return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
@@ -16164,16 +16086,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
-        {esRecepcion && (
-          <>
-            <input ref={inputPedidoRef} type="file" accept="application/pdf,image/*" className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) subirPedido(e.target.files[0]); e.target.value = ""; }} />
-            <button onClick={() => inputPedidoRef.current?.click()} disabled={leyendoPedido}
-              className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 border border-slate-400 bg-white px-3.5 py-2 rounded-lg hover:bg-slate-50 disabled:opacity-50">
-              <Plus size={14} /> {leyendoPedido ? "Leyendo pedido…" : "Subir pedido de persianas"}
-            </button>
-          </>
-        )}
         <button onClick={() => setManual(manual ? null : { expediente: "", parte: "", ref: "", largo: "", alto: "", cantidad: 1, carro: "" })}
           className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] border border-[#2E8B57] bg-white px-3.5 py-2 rounded-lg">
           <Plus size={14} /> Añadir {cosa} a mano
@@ -16187,99 +16099,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} opcionesCarro={opcionesCarro(null)} onColocar={(unidades, carro) => confirmarEntrada(carro ? unidades.map((u) => ({ ...u, carroDestino: carro })) : unidades)} />
       )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
-      {esRecepcion && borradorPedido && (() => {
-        const { cab, filas } = borradorPedido;
-        const cambiaCab = (k, v) => setBorradorPedido({ ...borradorPedido, cab: { ...cab, [k]: v } });
-        const cambiaFila = (i, patch) => setBorradorPedido({ ...borradorPedido, filas: filas.map((y, j) => (j === i ? { ...y, ...patch } : y)) });
-        const cuentaRef = {};
-        filas.forEach((f) => { const k = normRefPers(f.ref); if (k) cuentaRef[k] = (cuentaRef[k] || 0) + 1; });
-        const repetidas = Object.entries(cuentaRef).filter(([, n]) => n > 1).map(([k]) => (filas.find((f) => normRefPers(f.ref) === k) || {}).ref);
-        return (
-          <div className="bg-slate-50 border-2 border-slate-400 rounded-xl p-4">
-            <h3 className="font-display font-bold text-slate-900 mb-1">Revisa el pedido antes de guardarlo</h3>
-            <p className="text-xs text-slate-600 mb-3">Esto NO mete las persianas en los carros: se guardan como <b>pedidas, pendientes de llegar</b> y no cuentan como «dentro». Cuando lleguen y des entrada (packing list, fotos o a mano) pasan solas a «recibidas».</p>
-            <div className="flex flex-wrap items-end gap-2 text-xs mb-3">
-              {[["pedido", "Nº pedido", "w-20"], ["presupuesto", "Presupuesto", "w-24"], ["expediente", "Expediente", "w-20"], ["cliente", "Cliente", "w-44"], ["proveedor", "Proveedor", "w-36"]].map(([k, lab, w]) => (
-                <label key={k} className="flex flex-col font-semibold text-slate-600">{lab}
-                  <input value={cab[k]} onChange={(e) => cambiaCab(k, e.target.value)} className={`${w} border border-slate-300 rounded px-2 py-1.5 font-normal bg-white`} />
-                </label>
-              ))}
-              <label className="flex flex-col font-semibold text-slate-600">Fecha pedido
-                <input type="date" value={cab.fechaPedido} onChange={(e) => cambiaCab("fechaPedido", e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 font-normal bg-white" />
-              </label>
-            </div>
-            {cab.refObra && <div className="text-[11px] text-slate-500 mb-2">Referencia del pedido: {cab.refObra}</div>}
-            {repetidas.length > 0 && <div className="text-xs px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 mb-2">Referencia repetida en el pedido: {repetidas.join(", ")}. Comprueba que son dos persianas distintas (aquí se distinguen por la medida) y no una línea duplicada.</div>}
-            <div className="overflow-x-auto max-h-72 overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Vivienda / ref.</th><th className="pr-2">Ancho (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Recogedor</th><th></th></tr></thead>
-                <tbody>
-                  {filas.map((f, i) => (
-                    <tr key={f.id} className={`border-b border-white ${normRefPers(f.ref) && cuentaRef[normRefPers(f.ref)] > 1 ? "bg-amber-50" : ""}`}>
-                      <td className="py-1 pr-2"><input value={f.ref} onChange={(e) => cambiaFila(i, { ref: e.target.value })} className="w-24 border border-slate-200 rounded px-1 bg-white" /></td>
-                      <td className="pr-2"><input type="number" value={f.largo} onChange={(e) => cambiaFila(i, { largo: parseFloat(e.target.value) || 0 })} className="w-20 border border-slate-200 rounded px-1 bg-white" /></td>
-                      <td className="pr-2"><input type="number" value={f.alto} onChange={(e) => cambiaFila(i, { alto: parseFloat(e.target.value) || 0 })} className="w-20 border border-slate-200 rounded px-1 bg-white" /></td>
-                      <td className="pr-2">
-                        <select value={f.recogedor} onChange={(e) => cambiaFila(i, { recogedor: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 bg-white">
-                          <option value="">—</option><option value="Derecha">Derecha</option><option value="Izquierda">Izquierda</option>
-                        </select>
-                      </td>
-                      <td><button onClick={() => setBorradorPedido({ ...borradorPedido, filas: filas.filter((_, j) => j !== i) })} className="text-rose-500"><Trash2 size={12} /></button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex items-center gap-2 mt-3">
-              <button onClick={() => setBorradorPedido(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
-              <button onClick={guardarPedido} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Guardar como pedidas ({filas.length})</button>
-            </div>
-          </div>
-        );
-      })()}
-      {esRecepcion && pedidosTodos.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl p-3">
-          <button onClick={() => setVerPedidas(!verPedidas)} className="w-full flex items-center justify-between text-left">
-            <span className="text-sm font-semibold text-slate-800">Pedidas, pendientes de llegar ({pendientesPedido.length}){pedidosTodos.length - pendientesPedido.length > 0 ? <span className="font-normal text-slate-500"> · {pedidosTodos.length - pendientesPedido.length} ya recibidas</span> : null}</span>
-            <span className="text-xs text-slate-500">{verPedidas ? "Ocultar" : "Ver"}</span>
-          </button>
-          {verPedidas && (() => {
-            const grupos = {};
-            pendientesPedido.forEach((p) => { const k = `${p.expediente || "—"}§${p.pedido || ""}`; (grupos[k] = grupos[k] || []).push(p); });
-            const quitar = (ids) => guardarPedidos(pedidosTodos.filter((p) => !ids.includes(p.id)));
-            const llegada = (id) => guardarPedidos(pedidosTodos.map((p) => (p.id === id ? { ...p, estado: "recibida", fechaRecibida: new Date().toISOString().slice(0, 10), notaRecibida: "Marcada a mano" } : p)));
-            if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
-            return (
-              <div className="mt-2 space-y-3 max-h-80 overflow-y-auto">
-                {Object.entries(grupos).map(([k, ps]) => (
-                  <div key={k}>
-                    <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
-                      <span>EXP {ps[0].expediente || "—"}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
-                      {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
-                      <button onClick={() => { if (window.confirm(`¿Quitar las ${ps.length} persianas pendientes de este pedido? (No se borra nada del almacén)`)) quitar(ps.map((p) => p.id)); }} className="ml-auto text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded hover:bg-rose-50">Quitar pedido</button>
-                    </div>
-                    <table className="w-full text-xs">
-                      <tbody>
-                        {ps.map((p) => (
-                          <tr key={p.id} className="border-b border-slate-100">
-                            <td className="py-1 pr-2 font-semibold w-24">{p.ref || "—"}</td>
-                            <td className="pr-2 font-mono-num">{p.largo}{p.alto ? ` × ${p.alto}` : ""}</td>
-                            <td className="pr-2 text-slate-500">{p.recogedor ? `Recogedor ${p.recogedor.toLowerCase()}` : ""}</td>
-                            <td className="text-right whitespace-nowrap">
-                              <button onClick={() => llegada(p.id)} className="text-[11px] font-semibold text-[#2E8B57] underline mr-2" title="Ya está en el almacén (si no se emparejó sola)">Ya llegó</button>
-                              <button onClick={() => quitar([p.id])} className="text-rose-500" title="Quitar de pedidas"><Trash2 size={12} /></button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-        </div>
-      )}
       {manual && (
         <div className="bg-white border-2 border-[#2E8B57] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Añadir {cosa} a mano</h3>
@@ -16319,7 +16138,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Carro</th><th></th></tr></thead>
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Ubicación / cliente</th><th className="pr-2">Carro</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
@@ -16327,6 +16146,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <td className="pr-2">{x.ref || "—"}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
+                    <td className="pr-2 text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ") || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
                         <option value="">{carroDestinoGlobal ? `Como el general (${carroDestinoGlobal})` : "Automático"}</option>
@@ -16534,7 +16354,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
