@@ -13028,10 +13028,25 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       if (trozos) {
         const promptTrozo = promptPackingList(true);
         const lecturas = await Promise.all(trozos.map(async (tr) => {
-          const textoTr = await pedirTextoIAEnSegundoPlano(tr.archivo, promptTrozo, 16000, 100);
-          const pTr = parsearRespuestaPacking(textoTr);
-          if (!pTr) throw new Error(`No pude leer las páginas ${tr.desde}-${tr.hasta} del PDF (recibido ${textoTr.length} caracteres).`);
-          if (pTr.truncada) throw new Error(`La IA dejó a medias las páginas ${tr.desde}-${tr.hasta}. No se ha importado nada.`);
+          const leerUno = async (archivo, d, h) => {
+            const textoTr = await pedirTextoIAEnSegundoPlano(archivo, promptTrozo, 16000, 100);
+            const pTr = parsearRespuestaPacking(textoTr);
+            if (!pTr) throw new Error(`No pude leer las páginas ${d}-${h} del PDF (recibido ${textoTr.length} caracteres).`);
+            return pTr;
+          };
+          let pTr = await leerUno(tr.archivo, tr.desde, tr.hasta);
+          if (pTr.truncada) {
+            // la IA se quedó a medias: se vuelve a leer ese trozo página a página
+            const sueltas = await dividirPdfEnTrozos(tr.archivo, 1);
+            if (!sueltas || sueltas.length < 2) throw new Error(`La IA dejó a medias las páginas ${tr.desde}-${tr.hasta}. No se ha importado nada.`);
+            const partes = [];
+            for (const sp of sueltas) {
+              const r = await leerUno(sp.archivo, tr.desde + sp.desde - 1, tr.desde + sp.hasta - 1);
+              if (r.truncada) throw new Error(`La IA dejó a medias la página ${tr.desde + sp.desde - 1}. No se ha importado nada.`);
+              partes.push(r);
+            }
+            pTr = { cabecera: (partes.find((r) => r.cabecera) || {}).cabecera || null, filas: partes.flatMap((r) => r.filas), truncada: false };
+          }
           return pTr;
         }));
         let ultimoCab = "";
@@ -14301,12 +14316,12 @@ function promptPackingList(esTrozo) {
   return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
     'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
     'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
-    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece. MUY IMPORTANTE: en muchas filas aparece debajo "Ref. Cte. Ped.: SN-EXP 823_PORTAL 33E ESC 06 2B_6.415": ahí el expediente es EXP 823, la planta es "PORTAL 33E ESC 06 2B" (portal, escalera y piso COMPLETOS, sin recortar) y 6.415 es el presupuesto (6415); copia además ese texto entero en "refPedido". No pongas aquí ciudades como VALENCIA ni VLC. ' +
+    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece. MUY IMPORTANTE: en muchas filas aparece debajo "Ref. Cte. Ped.: SN-EXP 823_PORTAL 33E ESC 06 2B_6.415": ahí el expediente es EXP 823, la planta es "PORTAL 33E ESC 06 2B" (portal, escalera y piso COMPLETOS, sin recortar) y 6.415 es el presupuesto (6415); No pongas aquí ciudades como VALENCIA ni VLC. ' +
     'En "proveedor" pon el fabricante o quien entrega (ej. Cricursa, Dealux) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, solo los dígitos). "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. ' +
     (esTrozo
       ? 'IMPORTANTE: esto es solo un TROZO de un documento más largo. Pon el número de caballete en CADA fila (aunque solo haya uno). Si las primeras filas no tienen encima la cabecera de su caballete porque pertenecen a un caballete de la página anterior, deja "caballete" vacío en esas filas. '
       : 'En "caballete" de cada fila solo pon el número si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba). ') +
-    'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","refPedido":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
+    'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
 }
 // Divide un PDF en trozos de pocas páginas para que la IA los lea por partes.
 // Devuelve null si el PDF es corto o no se puede abrir: en ese caso se lee entero, como siempre.
