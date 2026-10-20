@@ -358,6 +358,8 @@ const fmtDate = (d) => {
   if (isNaN(dt)) return "—";
   return dt.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
 };
+// Fecha en la que se subió un documento (se graba en d.subidoEn al subirlo); vacío si es un documento antiguo sin fecha
+const fechaDoc = (d) => { const t = d && d.subidoEn; if (!t) return ""; const x = new Date(t); return isNaN(x) ? "" : x.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }); };
 const daysDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
 // Descarga cualquier listado como un documento Word (en realidad HTML con extensión
@@ -8083,6 +8085,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
                   <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
                     <FileText size={14} className="text-slate-400" /> {d.nombre}
                   </a>
+                  {fechaDoc(d) && <span className="text-[11px] text-slate-400 whitespace-nowrap" title="Fecha en que se subió">{fechaDoc(d)}</span>}
                   <button type="button" title="Quitar este documento de la obra (por si se subió por error)"
                     onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
                     className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
@@ -10861,6 +10864,7 @@ function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo =
         <div key={d.id} className="flex items-center gap-2 text-sm py-0.5">
           <FileText size={14} className="text-slate-400 shrink-0" />
           <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{d.nombre}</a>
+          {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
           <label className="flex items-center gap-1 text-[11px] text-slate-500 shrink-0 cursor-pointer">
             <input type="checkbox" checked={d.enviar !== false} onChange={(e) => onChange(docs.map((x) => (x.id === d.id ? { ...x, enviar: e.target.checked } : x)))} />
             enviar al proveedor
@@ -19700,7 +19704,10 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                       <div key={cat} className="mb-2">
                         <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 ml-2">{cat}</div>
                         {docs.map((d) => (
-                          <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
+                          <div key={d.id} className="ml-2 flex items-baseline gap-2">
+                            <a href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline">{d.nombre}</a>
+                            {fechaDoc(d) && <span className="text-[11px] text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
+                          </div>
                         ))}
                       </div>
                     ))}
@@ -28148,6 +28155,7 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
     <div key={d.id} className="flex items-center gap-1.5 text-xs py-0.5 min-w-0">
       <FileText size={13} className="text-slate-400 shrink-0" />
       <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate" title={d.nombre}>{d.nombre}</a>
+      {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
       {onChange && (
         <button type="button" onClick={() => { if (window.confirm(`¿Quitar el justificante "${d.nombre}"?`)) onChange(docs.filter((x) => x.id !== d.id)); }}
           className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={13} /></button>
@@ -30339,6 +30347,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               {presupuesto.documentos.map((d) => (
                 <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
                   <FileText size={14} className="text-slate-400" /> {d.nombre}
+                  {fechaDoc(d) && <span className="text-[11px] font-normal text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
                 </a>
               ))}
             </div>
