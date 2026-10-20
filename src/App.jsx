@@ -15556,7 +15556,15 @@ function carrosPersianasPorDefecto() {
 const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
 // "Parte" / vivienda de la obra (P1, P2…): sale del "EXP. 737 P1" del albarán o de la etiqueta ("P-8" → P8). Las persianas de una misma parte se colocan y se reparten juntas.
 const normParte = (t) => { const m = String(t || "").match(/(?:^|[^A-Za-z])P\s*-?\s*(\d{1,2})(?!\d)/i); return m ? `P${parseInt(m[1], 10)}` : ""; };
-const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : normParte(x && x.refObra));
+// Si el pedido no trae "P1, P2…", la vivienda sale de la ubicación del pedido ("EXP 823 PORTAL 33E ESC 06 1A" → "1A"):
+// dos pedidos de la misma obra (1A y 1B) son grupos distintos → no se mezclan en los estantes, pero se colocan pegados en el mismo carro.
+const parteDeUbicacion = (t) => {
+  const u = String(t || "").replace(/^\s*EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (!u) return "";
+  const ult = u.split(" ").pop();
+  return /^\d{1,2}[A-Z]{1,2}$/.test(ult) ? ult : u;
+};
+const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : (normParte(x && x.refObra) || parteDeUbicacion(x && x.refObra)));
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${e.fila ? ` · fila ${e.fila}` : ""}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
