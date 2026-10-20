@@ -1306,13 +1306,13 @@ export default function App() {
 
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
-  const crearClienteRapido = (nombre, limiteCredito) => {
+  const crearClienteRapido = (nombre, limiteCredito, movil = "", email = "") => {
     const nombreNormalizado = (nombre || "").trim().toLowerCase();
     if (clientes.some((c) => (c.nombre || "").trim().toLowerCase() === nombreNormalizado)) {
       showToast(`Ya existe un cliente llamado "${nombre}" — elígelo del listado en vez de crearlo otra vez.`, "error");
       return null;
     }
-    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado" };
+    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado", movil: String(movil || "").trim(), email: String(email || "").trim() };
     saveClientes([nc, ...clientes]);
     showToast(`Cliente "${nombre}" dado de alta`);
     return nc.id;
@@ -5975,6 +5975,11 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
       setErrorMsg(`Ya existe un cliente llamado "${f.nombre.trim()}". Si es la misma persona o empresa, edítalo desde el listado en vez de darlo de alta otra vez.`);
       return;
     }
+    if (!String(f.movil || "").trim() && !String(f.email || "").trim()) {
+      setErrorMsg("Falta un medio de contacto: pon al menos el Móvil o el Email del cliente (uno de los dos es obligatorio).");
+      alert("Pon al menos el Móvil o el Email del cliente. Uno de los dos es obligatorio para guardarlo.");
+      return;
+    }
     if (!f.limiteCredito || parseFloat(f.limiteCredito) <= 0) {
       setErrorMsg("Falta el Límite de crédito asegurado (es obligatorio y tiene que ser mayor que 0).");
       return;
@@ -6022,7 +6027,7 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
           <Field label="DNI / CIF">
             <TextInput value={f.cif} onChange={set("cif")} />
           </Field>
-          <Field label="Móvil">
+          <Field label="Móvil (o email: uno de los dos es obligatorio)">
             <TextInput value={f.movil} onChange={set("movil")} />
           </Field>
         </div>
@@ -29446,13 +29451,33 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const clienteExiste = (nombre) => clientes.some((c) => c.nombre.trim().toLowerCase() === (nombre || "").trim().toLowerCase());
   const clienteFaltante = f.clienteNombre.trim() && !clienteExiste(f.clienteNombre);
 
+  // Al elegir un cliente que ya existe (o al llegar el presupuesto desde una medición, la calculadora…),
+  // su teléfono y email pasan solos al presupuesto. Solo rellena lo que esté vacío: no pisa lo ya escrito.
+  useEffect(() => {
+    const nombre = String(f.clienteNombre || "").trim().toLowerCase();
+    if (!nombre) return;
+    const c = (clientes || []).find((x) => String(x.nombre || "").trim().toLowerCase() === nombre);
+    if (!c) return;
+    const tel = c.movil || c.telefono || "";
+    setF((prev) => {
+      const nuevoTel = String(prev.telefono || "").trim() ? prev.telefono : tel;
+      const nuevoEmail = String(prev.email || "").trim() ? prev.email : (c.email || "");
+      return nuevoTel === prev.telefono && nuevoEmail === (prev.email || "") ? prev : { ...prev, telefono: nuevoTel, email: nuevoEmail };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.clienteNombre, clientes]);
+
   const crearClienteAhora = () => {
     if (!limiteCreditoRapido || parseFloat(limiteCreditoRapido) <= 0) {
       setErrorClienteRapido("Pon un límite de crédito mayor que 0 para poder darlo de alta.");
       return;
     }
+    if (!String(f.telefono || "").trim() && !String(f.email || "").trim()) {
+      setErrorClienteRapido("Pon el teléfono o el email del cliente (arriba) para poder darlo de alta: uno de los dos es obligatorio.");
+      return;
+    }
     setErrorClienteRapido("");
-    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido);
+    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido, f.telefono, f.email);
     setLimiteCreditoRapido("");
   };
 
@@ -29598,7 +29623,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             <p className="text-sm font-semibold text-amber-800">⚠ "{f.clienteNombre}" no existe todavía en el CRM.</p>
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[180px]">
-                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€)</label>
+                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€) · se guardan también el teléfono y el email de arriba</label>
                 <TextInput type="number" step="0.01" value={limiteCreditoRapido} onChange={(e) => setLimiteCreditoRapido(e.target.value)} placeholder="Ej: 40000" />
               </div>
               <button type="button" onClick={crearClienteAhora} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
