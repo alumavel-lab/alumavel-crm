@@ -29575,6 +29575,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       setErrorMsg(`El cliente "${f.clienteNombre}" no existe todavía en el CRM. Ve a Clientes y date de alta primero, y luego vuelve aquí a elegirlo de la lista.`);
       return;
     }
+    if (!String(f.descripcion || "").trim()) { setErrorMsg("Falta la referencia del presupuesto (campo «Referencia / Descripción de la obra»): es obligatoria."); return; }
     if (!f.fechaEnvio) { setErrorMsg("Falta la fecha de envío (es obligatoria)."); return; }
     if (!f.envio && !f.montaje && !f.recoge) {
       setErrorMsg("Marca al menos una opción de ¿Envío?, ¿Montaje? o ¿Recoge el cliente? antes de guardar.");
@@ -29751,8 +29752,8 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           </Field>
         </div>
 
-        <Field label="Descripción / Obra">
-          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Solicitud de 4 ventanas de PVC" />
+        <Field label="Referencia / Descripción de la obra" required>
+          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Reforma vivienda C/ Mayor 4 — 4 ventanas de PVC" />
         </Field>
 
         <div className="grid grid-cols-2 gap-4">
