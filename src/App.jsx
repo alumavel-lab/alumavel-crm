@@ -1891,8 +1891,9 @@ export default function App() {
     let num = parseInt(nextNumeroPedido(), 10);
     const nuevos = Object.entries(grupos).map(([clave, lineas]) => {
       // clave "sin:<seccion>" = sin proveedor todavía, agrupado por sección
-      const proveedorId = clave.startsWith("sin:") ? "" : clave;
-      const seccionSinProv = clave.startsWith("sin:") ? (LISTADO_SECCIONES[clave.slice(4)] || clave.slice(4)) : "";
+      const proveedorId = clave.startsWith("sin:") ? "" : clave.split("#")[0];
+      const seccionClave = clave.startsWith("sin:") ? clave.slice(4) : (clave.includes("#") ? clave.split("#")[1] : "");
+      const seccionSinProv = seccionClave ? (LISTADO_SECCIONES[seccionClave] || seccionClave) : "";
       return {
       id: uid(), numero: String(num++), proveedorId, proyectoId: proyecto.id, estado: "En espera",
       fechaCompra: hoy, fechaEntregaPrevista: "", lineas, adjuntosPdf: [], origenListado: origen,
@@ -2877,6 +2878,21 @@ export default function App() {
 
   const savePresupuestos = (next) => { setPresupuestos(next); persist("presupuestos", next); };
 
+  // Los documentos que se añaden al presupuesto DESPUÉS de crear su proyecto también pasan al proyecto
+  // (al crearlo solo se copiaban los que había en ese momento). No duplica: compara por dirección del archivo.
+  const copiarDocumentosPresupuestoAProyecto = (presupuesto) => {
+    const proyId = presupuesto && presupuesto.proyectoCreadoId;
+    if (!proyId) return;
+    const lista = toArray(proyectosRef.current);
+    const proy = lista.find((p) => p && p.id === proyId);
+    if (!proy) return;
+    const yaUrls = new Set(toArray(proy.documentos).map((d) => d && d.url).filter(Boolean));
+    const nuevos = toArray(presupuesto.documentos).filter((d) => d && d.url && !yaUrls.has(d.url));
+    if (!nuevos.length) return;
+    saveProyectos(lista.map((p) => (p.id === proyId ? { ...p, documentos: [...toArray(p.documentos), ...nuevos.map((d) => ({ ...d, id: d.id || uid() }))] } : p)));
+    showToast(`${nuevos.length === 1 ? "Documento añadido" : nuevos.length + " documentos añadidos"} también al proyecto #${proy.numero}`);
+  };
+
   const upsertPresupuesto = (data) => {
     let next;
     let idParaAbrir = null;
@@ -2885,6 +2901,7 @@ export default function App() {
       const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
+      copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === data.id));
 
       // Si el presupuesto está vinculado a una obra ya existente (no una que se
       // vaya a crear a partir de él) y se acaba de aceptar, sus persianas se
@@ -2917,6 +2934,7 @@ export default function App() {
       p.id === presupuestoId ? { ...p, documentos: [...(p.documentos || []), documento] } : p
     );
     savePresupuestos(next);
+    copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === presupuestoId));
   };
 
   // Cancela un envío a firmar pendiente (para poder reenviarlo, p.ej. si se subió
@@ -7501,7 +7519,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
           // separa por sección (perfiles, herrajes, persianas…) para que cada pedido
           // vaya luego a su proveedor, en vez de un único pedido con todo mezclado.
           const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
-          const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
+          const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`, f.seccion);
           (gruposAuto[prov] = gruposAuto[prov] || []).push(f.mat
             ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
             : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
@@ -7526,7 +7544,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     if (yaCreados.length > 0 && !confirm(`Ya se crearon ${yaCreados.length} pedido(s) con este listado. ¿Crear otros igualmente?`)) return;
     const grupos = {};
     faltan.forEach((f) => {
-      const prov = (f.mat && f.mat.proveedorId) || provSinStock;
+      const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || provSinStock, f.seccion);
       if (!grupos[prov]) grupos[prov] = [];
       grupos[prov].push(f.mat
         ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
@@ -10932,7 +10950,12 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
     const lineas = f.lineas
       .filter((l) => (l.modo === "catalogo" ? l.materialId : l.referencia.trim()) && parseFloat(l.cantidad) > 0)
       .map((l) => ({ ...l, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ancho: l.ancho ? parseFloat(l.ancho) || l.ancho : "", alto: l.alto ? parseFloat(l.alto) || l.alto : "" }));
-    if (lineas.length === 0) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0)."); return; }
+    const tieneDocumento = toArray(f.adjuntosPdf).length > 0 || toArray(f.documentos).some((d) => d && d.url);
+    if (lineas.length === 0 && !tieneDocumento) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0) o adjunta el documento del pedido."); return; }
+    if (lineas.length === 0) {
+      // Pedido que va solo con el fichero (p. ej. cristales o TM ya detallados en el PDF): se guarda una línea que remite al documento.
+      lineas.push({ id: uid(), modo: "libre", materialId: "", referencia: "Según documento adjunto", ancho: "", alto: "", cantidad: 1, precio: 0, estado: "Solicitado" });
+    }
     setErrorMsg("");
     onSave({ ...f, lineas });
   };
@@ -14484,6 +14507,8 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// Clave del grupo de pedido: cristales y persianas/compactos son pedidos distintos aunque vayan al mismo proveedor.
+const claveGrupoPedido = (prov, seccion) => (SECCIONES_A_MEDIDA.includes(seccion) && prov && !String(prov).startsWith("sin:") ? `${prov}#${seccion}` : prov);
 // Proveedor al que se le pide normalmente cada sección (marcado en la ficha del proveedor,
 // "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
 const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
@@ -14496,7 +14521,7 @@ const gruposPedidoDesdeListado = (listado, materiales, proveedores, excluir = []
   const grupos = {};
   compararListadoConStock(listado, materiales).filter((f) => f.falta > 0 && !excluir.includes(f.seccion)).forEach((f) => {
     const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
-    const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
+    const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`, f.seccion);
     (grupos[prov] = grupos[prov] || []).push(f.mat
       ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
       : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
