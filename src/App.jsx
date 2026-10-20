@@ -358,43 +358,6 @@ const fmtDate = (d) => {
   if (isNaN(dt)) return "—";
   return dt.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
 };
-// Fecha en la que se subió un documento (se graba en d.subidoEn al subirlo); vacío si es un documento antiguo sin fecha
-const fechaDoc = (d) => { const t = d && d.subidoEn; if (!t) return ""; const x = new Date(t); return isNaN(x) ? "" : x.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }); };
-// Las fotos hechas con la cámara llegan con nombres tipo "image.jpg": se les pone fecha y hora para distinguirlas
-const renombrarFotoCamara = (file) => {
-  const d = new Date(), p = (n) => String(n).padStart(2, "0");
-  const tipo = file.type || "image/jpeg";
-  const ext = (tipo.split("/")[1] || "jpg").replace("jpeg", "jpg");
-  return new File([file], `Foto ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}h${p(d.getMinutes())}m${p(d.getSeconds())}.${ext}`, { type: tipo });
-};
-// Desplegable "Asignar el trabajo a (oficina)" para las llamadas. Solo salen los usuarios marcados como
-// "Oficina" en Usuarios; mientras no haya nadie marcado, salen todos (con un aviso).
-function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
-  const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {}));
-  const hayOficinaMarcada = todos.some((u) => u.areas && u.areas.oficina);
-  const lista = hayOficinaMarcada ? todos.filter((u) => u.areas && u.areas.oficina) : todos;
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
-      <div className="sm:col-span-2">
-        <Field label="Asignar el trabajo a (oficina)">
-          <Select value={valor || ""} onChange={(e) => onValor(e.target.value)}>
-            <option value="">Sin asignar</option>
-            {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
-          </Select>
-        </Field>
-        {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos.</p>}
-      </div>
-      <Field label="Para el día (opcional)"><TextInput type="date" value={fecha || ""} onChange={(e) => onFecha(e.target.value)} /></Field>
-      {valor && <p className="sm:col-span-3 text-[11px] text-slate-500">Al registrar la llamada se le crea una tarea con las notas, que verá en Tareas.</p>}
-    </div>
-  );
-}
-// Datos de la asignación que se guardan dentro de la llamada
-const asignacionLlamada = (usuarios, userId, fecha) => {
-  if (!userId) return {};
-  const u = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {})).find((x) => x.id === userId);
-  return { asignadoA: userId, asignadoANombre: u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "", asignadoAFecha: fecha || "" };
-};
 const daysDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
 // Descarga cualquier listado como un documento Word (en realidad HTML con extensión
@@ -1341,13 +1304,13 @@ export default function App() {
 
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
-  const crearClienteRapido = (nombre, limiteCredito, movil = "", email = "") => {
+  const crearClienteRapido = (nombre, limiteCredito) => {
     const nombreNormalizado = (nombre || "").trim().toLowerCase();
     if (clientes.some((c) => (c.nombre || "").trim().toLowerCase() === nombreNormalizado)) {
       showToast(`Ya existe un cliente llamado "${nombre}" — elígelo del listado en vez de crearlo otra vez.`, "error");
       return null;
     }
-    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado", movil: String(movil || "").trim(), email: String(email || "").trim() };
+    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado" };
     saveClientes([nc, ...clientes]);
     showToast(`Cliente "${nombre}" dado de alta`);
     return nc.id;
@@ -1681,13 +1644,6 @@ export default function App() {
         data = { ...data, fechaFabricacion: fecha.toISOString().slice(0, 10) };
       }
 
-      // Fechas que se quedan apuntadas solas en la obra: cuándo se aceptó el presupuesto y cuándo se entregó
-      {
-        const hoyISO = new Date().toISOString().slice(0, 10);
-        if (data.estadoPresupuesto === "Presupuesto aceptado" && anterior?.estadoPresupuesto !== "Presupuesto aceptado" && !data.fechaAceptado && !anterior?.fechaAceptado) data = { ...data, fechaAceptado: hoyISO };
-        if (data.estadoTrabajo === "Entregado" && anterior?.estadoTrabajo !== "Entregado" && !data.fechaEntregado && !anterior?.fechaEntregado) data = { ...data, fechaEntregado: hoyISO };
-      }
-
       next = proyectos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
       showToast("Proyecto actualizado");
 
@@ -1722,13 +1678,7 @@ export default function App() {
   };
 
   const updateProyectoInline = (id, patch) => {
-    const hoyISO = new Date().toISOString().slice(0, 10);
-    const next = proyectosRef.current.map((p) => {
-      if (p.id !== id) return p;
-      const extra = {};
-      if (patch.estadoPresupuesto === "Presupuesto aceptado" && p.estadoPresupuesto !== "Presupuesto aceptado" && !p.fechaAceptado && !patch.fechaAceptado) extra.fechaAceptado = hoyISO;
-      return { ...p, ...patch, ...extra };
-    });
+    const next = proyectosRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p));
     saveProyectos(next);
   };
 
@@ -2611,10 +2561,6 @@ export default function App() {
   // en el formulario) para que ningún lead se quede sin seguimiento previsto;
   // si es rechazo, el lead pasa a Descartado y se libera esa fecha.
   const addLlamadaLead = (leadId, llamada, nuevoEstado, proximaAccionFecha) => {
-    if (llamada.asignadoA) {
-      const ld = leads.find((l) => l.id === leadId);
-      crearTarea({ titulo: `Lead ${ld ? ld.nombre : ""}: ${llamada.resultadoLabel || "llamada"}`, descripcion: `${ld && ld.telefono ? `${ld.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
-    }
     const next = leads.map((l) => (l.id === leadId ? {
       ...l,
       llamadas: [llamada, ...(l.llamadas || [])],
@@ -3154,7 +3100,6 @@ export default function App() {
       nombre: presupuesto.descripcion || presupuesto.numero,
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
-      fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
       estadoPresupuesto: "Presupuesto aceptado",
       estadoTrabajo: "Pendiente de aceptación",
       gastos: [],
@@ -3215,10 +3160,6 @@ export default function App() {
   };
 
   const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
-    if (llamada.asignadoA) {
-      const pr = presupuestos.find((p) => p.id === presupuestoId);
-      crearTarea({ titulo: `Presupuesto ${pr ? pr.numero : ""}${pr && pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""}: llamada`, descripcion: `${pr && pr.telefono ? `${pr.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
-    }
     const hoy = new Date().toISOString().slice(0, 10);
     const enSieteDias = new Date();
     enSieteDias.setDate(enSieteDias.getDate() + 7);
@@ -3677,7 +3618,7 @@ export default function App() {
             }));
           } else listaProyectos = [{
             id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
-            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación", fechaAceptado: hoy,
+            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
             presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
             techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
             persianasControl: (pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre)),
@@ -4894,8 +4835,6 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
-            currentUser={currentUser}
-            onRecibirPedido={recibirPedido}
             proyectos={proyectos}
             clientes={clientes}
             facturas={facturas}
@@ -6018,11 +5957,6 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
       setErrorMsg(`Ya existe un cliente llamado "${f.nombre.trim()}". Si es la misma persona o empresa, edítalo desde el listado en vez de darlo de alta otra vez.`);
       return;
     }
-    if (!String(f.movil || "").trim() && !String(f.email || "").trim()) {
-      setErrorMsg("Falta un medio de contacto: pon al menos el Móvil o el Email del cliente (uno de los dos es obligatorio).");
-      alert("Pon al menos el Móvil o el Email del cliente. Uno de los dos es obligatorio para guardarlo.");
-      return;
-    }
     if (!f.limiteCredito || parseFloat(f.limiteCredito) <= 0) {
       setErrorMsg("Falta el Límite de crédito asegurado (es obligatorio y tiene que ser mayor que 0).");
       return;
@@ -6070,7 +6004,7 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
           <Field label="DNI / CIF">
             <TextInput value={f.cif} onChange={set("cif")} />
           </Field>
-          <Field label="Móvil (o email: uno de los dos es obligatorio)">
+          <Field label="Móvil">
             <TextInput value={f.movil} onChange={set("movil")} />
           </Field>
         </div>
@@ -6284,7 +6218,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -6302,8 +6236,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
 
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
-      // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
-      if (!estadoTrabajo && !q && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
@@ -6332,8 +6264,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     if (!proyecto) { setView("list"); return null; }
     return (
       <ProyectoDetail
-        currentUser={currentUser}
-        onRecibirPedido={onRecibirPedido}
         proyecto={proyecto}
         cliente={clientes.find((c) => c.id === proyecto.clienteId)}
         facturas={facturas.filter((f) => (f.proyectosIds || []).includes(proyecto.id))}
@@ -6426,8 +6356,8 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         <button
           onClick={() => descargarListaComoWord(
             "Proyectos",
-            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Aceptado el", "Estado trabajo", "Importe"],
-            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.fechaAceptado ? fmtDate(p.fechaAceptado) : "", p.estadoTrabajo, money(p.importePresupuesto)])
+            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Estado trabajo", "Importe"],
+            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.estadoTrabajo, money(p.importePresupuesto)])
           )}
           className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"
         >
@@ -6435,9 +6365,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         </button>
       </div>
 
-      {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
-        <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
-      )}
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -6446,7 +6373,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Cliente</th>
               <th className="px-4 py-3 font-semibold">Presupuesto</th>
-              <th className="px-4 py-3 font-semibold">Aceptado el</th>
               <th className="px-4 py-3 font-semibold">Estado trabajo</th>
               <th className="px-4 py-3 font-semibold">Ciudad reparto</th>
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
@@ -6457,7 +6383,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
@@ -6479,11 +6405,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     >
                       {Object.keys(ESTADO_PRESUPUESTO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
                     </select>
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    {p.fechaAceptado ? <span className="font-mono-num text-slate-700">{fmtDate(p.fechaAceptado)}</span>
-                      : p.estadoPresupuesto === "Presupuesto aceptado" ? <span className="text-[11px] font-semibold text-rose-600" title="Falta la fecha de aceptación: ábrelo y pulsa Editar">⚠ Sin fecha</span>
-                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -6546,11 +6467,6 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
     if (!f.nombre.trim() || !f.clienteId) {
       setErrorMsg("Faltan campos obligatorios: Cliente y Nombre / descripción.");
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
-      return;
-    }
-    if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
-      setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
-      alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
       return;
     }
     setErrorMsg("");
@@ -6617,11 +6533,7 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="Estado del presupuesto">
-            <Select value={f.estadoPresupuesto} onChange={(e) => {
-              const v = e.target.value;
-              // Al marcarlo aceptado se propone la fecha de hoy (se puede cambiar si se aceptó otro día)
-              setF({ ...f, estadoPresupuesto: v, ...(v === "Presupuesto aceptado" && !f.fechaAceptado ? { fechaAceptado: new Date().toISOString().slice(0, 10) } : {}) });
-            }}>
+            <Select value={f.estadoPresupuesto} onChange={set("estadoPresupuesto")}>
               {ESTADO_PRESUPUESTO.map((t) => <option key={t}>{t}</option>)}
             </Select>
           </Field>
@@ -6636,14 +6548,6 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
             </Select>
           </Field>
         </div>
-
-        {f.estadoPresupuesto === "Presupuesto aceptado" && (
-          <div className="grid grid-cols-3 gap-4">
-            <Field label="Fecha de aceptación del presupuesto" required>
-              <TextInput type="date" value={f.fechaAceptado || ""} onChange={set("fechaAceptado")} />
-            </Field>
-          </div>
-        )}
 
         {f.estadoLogistica === "Reparto (camión)" && (
           <div className="grid grid-cols-2 gap-4">
@@ -6775,9 +6679,6 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
   const [editandoId, setEditandoId] = useState(null);
   const [abiertaId, setAbiertaId] = useState(null);
   const [guardando, setGuardando] = useState(false);
-  // Trabajadores de oficina (marcados "Oficina" en su usuario); si todavía no hay nadie marcado, salen todos
-  const hayOficinaMarcada = toArray(usuarios).some((u) => u.areas && u.areas.oficina);
-  const personalOficina = hayOficinaMarcada ? toArray(usuarios).filter((u) => u.areas && u.areas.oficina) : toArray(usuarios);
   const llamadas = [...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const textoDocumento = (l) => [
@@ -6793,16 +6694,11 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
     try {
       const id = editandoId || uid();
       const llamada = { ...f, id, motivo: f.motivo.trim(), notas: f.notas, actualizadaEn: Date.now() };
-      // Si se ha elegido a alguien en "Asignar el trabajo a", se crea la tarea para esa persona
-      const accFinal = { ...acc, tarea: !!acc.tareaPara };
-      const asignado = toArray(usuarios).find((u) => u.id === acc.tareaPara);
       // Lo que se ha decidido en la llamada queda anotado en ella
       const hechas = [];
       if (acc.estado && acc.estado !== proyecto.estadoTrabajo) hechas.push(`Estado: ${proyecto.estadoTrabajo || "—"} → ${acc.estado}`);
       if (acc.nuevo) hechas.push(`Pide algo nuevo: ${acc.nuevoTexto || llamada.motivo}`);
-      if (asignado) hechas.push(`Trabajo asignado a ${`${asignado.nombre} ${asignado.apellidos || ""}`.trim()}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
-      llamada.asignadoA = asignado ? asignado.id : "";
-      llamada.asignadoANombre = asignado ? `${asignado.nombre} ${asignado.apellidos || ""}`.trim() : "";
+      if (acc.tarea && acc.tareaPara) hechas.push(`Tarea para ${(toArray(usuarios).find((u) => u.id === acc.tareaPara) || {}).nombre || ""}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
       if (hechas.length) llamada.acciones = [...toArray(llamada.acciones), ...hechas];
       const nombreDoc = `Llamada ${String(llamada.fecha).slice(0, 10)} ${String(llamada.fecha).slice(11, 16).replace(":", "h")} — ${(llamada.contacto || "sin nombre").slice(0, 40)}.txt`;
       const archivo = new File([`\ufeff${textoDocumento(llamada)}`], nombreDoc, { type: "text/plain" });
@@ -6812,7 +6708,7 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
       if (url) docs.push({ id: uid(), nombre: nombreDoc, url, subidoEn: Date.now(), llamadaId: id });
       const lista = editandoId ? toArray(proyecto.llamadas).map((x) => (x.id === id ? llamada : x)) : [llamada, ...toArray(proyecto.llamadas)];
       const patch = JSON.parse(JSON.stringify({ llamadas: lista, documentos: docs }));
-      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, accFinal);
+      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, acc);
       else onInlineUpdate(proyecto.id, patch);
       setF(vacia()); setAcc(accVacias()); setEditandoId(null); setAbiertaId(id);
       if (!url) alert("Llamada guardada, pero no se pudo crear el documento en Documentos. Vuelve a guardarla más tarde.");
@@ -6842,21 +6738,6 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
             </Select>
           </Field>
         </div>
-        {onGuardarLlamada && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
-            <div className="sm:col-span-2">
-              <Field label="Asignar el trabajo a (oficina)">
-                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })}>
-                  <option value="">Sin asignar</option>
-                  {personalOficina.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
-                </Select>
-              </Field>
-              {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos. Márcalos en cada usuario para que aquí solo salga la oficina.</p>}
-            </div>
-            <Field label="Para el día (opcional)"><TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} /></Field>
-            {acc.tareaPara && <p className="sm:col-span-3 text-[11px] text-slate-500">Al guardar la llamada se le crea una tarea con el motivo y las notas, que verá en Tareas.</p>}
-          </div>
-        )}
         <Field label="Notas de la llamada (se guardan también como documento en el proyecto)">
           <TextArea rows={8} value={f.notas} onChange={set("notas")} placeholder="Escribe aquí todo lo hablado: acuerdos, cambios, lo que hay que hacer…" />
         </Field>
@@ -6876,6 +6757,16 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
                 <div className="sm:col-span-2"><TextInput value={acc.nuevoTexto} onChange={(e) => setAcc({ ...acc, nuevoTexto: e.target.value })} placeholder="Qué pide (ej. 2 mosquiteras más en el salón)" /></div>
                 <TextInput type="number" value={acc.nuevoImporte} onChange={(e) => setAcc({ ...acc, nuevoImporte: e.target.value })} placeholder="Importe aprox. (opcional)" />
                 <p className="sm:col-span-3 text-[11px] text-slate-500">Se crea un presupuesto unido a esta obra. Cuando el cliente lo firme, lo nuevo se suma a esta misma obra (con sus pedidos en espera) en vez de abrir una obra nueva.</p>
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer"><input type="checkbox" checked={acc.tarea} onChange={(e) => setAcc({ ...acc, tarea: e.target.checked })} /> Crear una tarea para alguien</label>
+            {acc.tarea && (
+              <div className="flex flex-wrap gap-2 pl-6">
+                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })} className="!w-auto text-sm">
+                  <option value="">¿Para quién?</option>
+                  {toArray(usuarios).map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+                </Select>
+                <TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} className="!w-40" />
               </div>
             )}
           </div>
@@ -7359,7 +7250,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales) => {
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
 // PEDIRLOS desde aquí mismo: elegir proveedor, mandarlo por WhatsApp o email, o marcar que
 // ya se ha pedido de otra forma — pidiendo siempre la fecha aproximada de llegada.
-function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onRecibirPedido }) {
+function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion }) {
   const [confirmando, setConfirmando] = useState(null); // { id, metodo, fecha }
   const hoy = new Date().toISOString().slice(0, 10);
   if (pedidos.length === 0) return <p className="px-4 py-8 text-center text-sm text-slate-400">Sin pedidos de materiales vinculados a este proyecto todavía.</p>;
@@ -7386,14 +7277,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
               <span className="text-slate-500">{toArray(p.lineas).length} línea{toArray(p.lineas).length === 1 ? "" : "s"}{String(p.comentarios || "").includes(":") && /^[^:]{3,40}: Material que falta/.test(p.comentarios || "") ? ` · ${p.comentarios.split(":")[0]}` : ""}</span>
               <span className="text-slate-500">{p.fechaEntregaPrevista ? `Llega ${fmtDate(p.fechaEntregaPrevista)}` : ""}</span>
               <Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge>
-              {onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" && (
-                <>
-                  <button onClick={() => { if (window.confirm(`¿Marcar el pedido #${p.numero} como recibido completo?\n\nSe suma al stock lo que lleve de catálogo. Si solo ha llegado una parte, usa "Recibir una parte" (se abre el pedido).`)) onRecibirPedido(p.id); }}
-                    className="ml-auto flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 rounded-md"><CheckCircle2 size={12} /> Marcar recibido</button>
-                  <button onClick={() => openPedido(p.id)} title="Abre el pedido para marcar línea a línea lo que ha llegado" className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md">Recibir una parte</button>
-                </>
-              )}
-              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className={`${onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" ? "" : "ml-auto "}flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md`}><FileText size={12} /> PDF</button>
+              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className="ml-auto flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md"><FileText size={12} /> PDF</button>
               <button onClick={() => openPedido(p.id)} className="text-xs font-semibold text-slate-500 hover:underline">Ver pedido →</button>
             </div>
             {sinPedir && (
@@ -7729,7 +7613,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7740,36 +7624,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
   const ciudadReparto = proyecto.estadoLogistica === "Reparto (camión)"
     ? (proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto)
     : null;
-  const nombreUsuarioActual = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "";
-
-  // Anular una obra (repetida, caída…) sin borrarla: pasa a "Cancelado" guardando quién, cuándo y por qué,
-  // y se puede reactivar. Sus pedidos no se tocan: se avisa si tiene alguno sin recibir.
-  const anularProyecto = () => {
-    const sinRecibir = toArray(pedidos).filter((p) => p.estado !== "Recibido" && p.estado !== "Cancelado").length;
-    const aviso = sinRecibir ? `\n\nOjo: tiene ${sinRecibir} pedido${sinRecibir === 1 ? "" : "s"} sin recibir que NO se anulan solos (revísalos en la pestaña Pedidos).` : "";
-    const motivo = window.prompt(`¿Anular el proyecto #${proyecto.numero} — ${proyecto.nombre}?\n\nEscribe el motivo (p. ej. "repetido", "cliente cancela") y acepta. No se borra: queda como Cancelado y se puede reactivar.${aviso}`, "");
-    if (motivo === null) return;
-    onInlineUpdate(proyecto.id, { estadoTrabajo: "Cancelado", anulado: { fecha: new Date().toISOString().slice(0, 10), por: nombreUsuarioActual, motivo: String(motivo).trim(), estadoAnterior: proyecto.estadoTrabajo || "" } });
-  };
-  const reactivarProyecto = () => {
-    if (!window.confirm(`¿Reactivar el proyecto #${proyecto.numero}?`)) return;
-    const previo = proyecto.anulado && proyecto.anulado.estadoAnterior && proyecto.anulado.estadoAnterior !== "Cancelado" ? proyecto.anulado.estadoAnterior : "Pendiente de aceptación";
-    onInlineUpdate(proyecto.id, { estadoTrabajo: previo, anulado: null });
-  };
-
-  // Comentarios internos de la obra (notas del equipo con fecha y autor)
-  const [textoComentario, setTextoComentario] = useState("");
-  const comentariosObra = [...toArray(proyecto.comentariosObra)].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
-  const anadirComentario = () => {
-    const texto = textoComentario.trim();
-    if (!texto) return;
-    onInlineUpdate(proyecto.id, { comentariosObra: [...toArray(proyecto.comentariosObra), { id: uid(), fecha: new Date().toISOString(), por: nombreUsuarioActual || "—", texto }] });
-    setTextoComentario("");
-  };
-  const quitarComentario = (c) => {
-    if (!window.confirm("¿Borrar este comentario?")) return;
-    onInlineUpdate(proyecto.id, { comentariosObra: toArray(proyecto.comentariosObra).filter((x) => x.id !== c.id) });
-  };
   const checklist = normalizarChecklist(proyecto.checklistMateriales);
   const despieceAgrupado = calcularDespieceConjuntoProyecto(proyecto.techos);
   const despieceConStock = compararDespieceConStock(despieceAgrupado, materiales);
@@ -7832,26 +7686,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     documentosObraRef.current = marca;
     onInlineUpdate(proyecto.id, { documentos: lista });
     setTimeout(() => { marca.pendiente = false; }, 4000);
-  };
-  // Subir documentos o hacer fotos directamente a la obra (se guardan tal cual, sin leerlos ni crear pedidos)
-  const [subiendoDocObra, setSubiendoDocObra] = useState(false);
-  const [errorDocObra, setErrorDocObra] = useState("");
-  const inputDocObraRef = useRef(null);
-  const inputFotoObraRef = useRef(null);
-  const subirDocumentosObra = async (lista, esFoto = false) => {
-    const files = [...(lista || [])].map((f) => (esFoto ? renombrarFotoCamara(f) : f));
-    if (!files.length) return;
-    setSubiendoDocObra(true); setErrorDocObra("");
-    try {
-      const nuevos = [];
-      for (const file of files) {
-        if (file.size > 20 * 1024 * 1024) { setErrorDocObra(`"${file.name}" pesa más de 20 MB.`); continue; }
-        const url = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
-        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now(), subidoPor: nombreUsuarioActual || "" });
-      }
-      if (nuevos.length) guardarDocumentosObra([...documentosObraRef.current.lista, ...nuevos]);
-    } catch (e) { setErrorDocObra("No se pudo subir: " + (e.message || "error")); }
-    finally { setSubiendoDocObra(false); }
   };
   const manejarSubidaPdfMedidas = async (file, tipoSabido = "") => {
     if (!file) return;
@@ -8039,15 +7873,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
               <Pencil size={14} /> Editar
             </button>
-            {proyecto.estadoTrabajo !== "Cancelado" ? (
-              <button onClick={anularProyecto} title="Anular la obra sin borrarla (queda guardada como Cancelado)" className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-3.5 py-2 rounded-lg hover:bg-amber-50">
-                <X size={14} /> Anular proyecto
-              </button>
-            ) : (
-              <button onClick={reactivarProyecto} className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 border border-emerald-300 px-3.5 py-2 rounded-lg hover:bg-emerald-50">
-                <CheckCircle2 size={14} /> Reactivar proyecto
-              </button>
-            )}
             {isAdmin && (
               <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
                 <Trash2 size={14} /> Eliminar
@@ -8064,14 +7889,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
-          {proyecto.fechaAceptado ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge> : proyecto.estadoPresupuesto === "Presupuesto aceptado" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">⚠ Sin fecha de aceptación (pulsa Editar)</Badge> : null}
-          {proyecto.fechaEntregado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Entregado el {fmtDate(proyecto.fechaEntregado)}</Badge>}
         </div>
-        {proyecto.estadoTrabajo === "Cancelado" && proyecto.anulado && (
-          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
-            Proyecto anulado el {fmtDate(proyecto.anulado.fecha)}{proyecto.anulado.por ? ` por ${proyecto.anulado.por}` : ""}{proyecto.anulado.motivo ? ` — ${proyecto.anulado.motivo}` : ""}.
-          </p>
-        )}
 
         {proyecto.origen !== "portalUxcar" && (
           <div className="flex flex-wrap items-start gap-2 mt-3">
@@ -8144,37 +7962,14 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           </div>
         )}
 
-        <div className="mt-4 pt-4 border-t border-slate-100">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 mr-1">Documentos de la obra</span>
-            <input ref={inputDocObraRef} type="file" multiple className="hidden" accept={ACEPTA_DOCUMENTOS} onChange={(e) => { subirDocumentosObra(e.target.files); e.target.value = ""; }} />
-            <button type="button" onClick={() => inputDocObraRef.current?.click()} disabled={subiendoDocObra}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg">
-              {subiendoDocObra ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {subiendoDocObra ? "Subiendo…" : "Subir documento"}
-            </button>
-            <input ref={inputFotoObraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { subirDocumentosObra(e.target.files, true); e.target.value = ""; }} />
-            <button type="button" onClick={() => inputFotoObraRef.current?.click()} disabled={subiendoDocObra}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento de la obra">
-              📷 Hacer foto
-            </button>
-          </div>
-          {errorDocObra && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorDocObra}</p>}
-        </div>
         {(proyecto.documentos || []).length > 0 && (
-          <div className="mt-3">
+          <div className="mt-4 pt-4 border-t border-slate-100">
             <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {proyecto.documentos.map((d) => (
-                <span key={d.id} className="flex items-center gap-1 bg-slate-50 border border-slate-200 pl-3 pr-1.5 py-1.5 rounded-lg hover:bg-slate-100">
-                  <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
-                    <FileText size={14} className="text-slate-400" /> {d.nombre}
-                  </a>
-                  {fechaDoc(d) && <span className="text-[11px] text-slate-400 whitespace-nowrap" title="Fecha en que se subió">{fechaDoc(d)}</span>}
-                  <button type="button" title="Quitar este documento de la obra (por si se subió por error)"
-                    onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
-                    className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
-                </span>
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100">
+                  <FileText size={14} className="text-slate-400" /> {d.nombre}
+                </a>
               ))}
             </div>
           </div>
@@ -8233,7 +8028,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             items: [
               { id: "datos", label: "Datos de la obra", icon: FileText, sub: "Fechas y especificaciones" },
               { id: "llamadas", label: "Llamadas", count: toArray(proyecto.llamadas).length, icon: Phone, sub: toArray(proyecto.llamadas).length ? `Última: ${fmtDate(String([...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))[0].fecha).slice(0, 10))}` : "Sin llamadas" },
-              { id: "comentarios", label: "Comentarios", count: comentariosObra.length, icon: MessageCircle, sub: comentariosObra.length ? `Último: ${comentariosObra[0].por || "—"}` : "Notas del equipo" },
               { id: "horas", label: "Registro horario", count: horas.length, icon: Timer, sub: `${totalHoras.toFixed(1)} h registradas` },
               { id: "historial", label: "Historial", count: totalHistorial, icon: Clock, sub: "Todo lo que ha pasado" },
             ],
@@ -8363,37 +8157,12 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       {tab === "llamadas" && (
         <RegistroLlamadasObra proyecto={proyecto} cliente={cliente} usuarios={usuarios} onInlineUpdate={onInlineUpdate} onGuardarLlamada={onGuardarLlamada} />
       )}
-      {tab === "comentarios" && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <textarea value={textoComentario} onChange={(e) => setTextoComentario(e.target.value)} rows={3} placeholder="Escribe una nota sobre esta obra (queda con tu nombre y la fecha)…"
-              className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
-            <div className="flex justify-end mt-2">
-              <button type="button" onClick={anadirComentario} disabled={!textoComentario.trim()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-40">
-                <Plus size={14} /> Añadir comentario
-              </button>
-            </div>
-          </div>
-          {comentariosObra.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-slate-400 bg-white border border-slate-200 rounded-lg">Todavía no hay comentarios en esta obra.</p>
-          ) : comentariosObra.map((c) => (
-            <div key={c.id} className="bg-white border border-slate-200 rounded-lg px-4 py-3">
-              <div className="flex items-center justify-between gap-2 text-xs text-slate-400 mb-1">
-                <span><b className="text-slate-600">{c.por || "—"}</b> · {c.fecha ? new Date(c.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
-                {(isAdmin || (c.por && c.por === nombreUsuarioActual)) && <button type="button" onClick={() => quitarComentario(c)} className="text-slate-300 hover:text-rose-500" title="Borrar comentario"><Trash2 size={13} /></button>}
-              </div>
-              <p className="text-sm text-slate-700 whitespace-pre-wrap">{c.texto}</p>
-            </div>
-          ))}
-        </div>
-      )}
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Hash size={14} />} label="Tipo" value={proyecto.tipoVenta} />
             <InfoRow icon={<MapPin size={14} />} label="Ubicación" value={proyecto.ubicacion || "—"} />
             <InfoRow icon={<FileText size={14} />} label="Fecha solicitud" value={fmtDate(proyecto.fechaSolicitud)} />
-            <InfoRow icon={<CheckCircle2 size={14} />} label="Presupuesto aceptado el" value={proyecto.fechaAceptado ? fmtDate(proyecto.fechaAceptado) : "—"} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista" value={fmtDate(proyecto.fechaEntregaPrevista)} />
             <InfoRow icon={<CheckCircle2 size={14} />} label="Fecha entregado" value={fmtDate(proyecto.fechaEntregado)} />
             <InfoRow icon={<MapPin size={14} />} label="Ciudad de reparto" value={ciudadReparto || "—"} />
@@ -8756,7 +8525,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           </div>
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <PedidosObraAcciones proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} materiales={materiales} openPedido={openPedido}
-              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} onRecibirPedido={onRecibirPedido} />
+              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} />
           </div>
           {/* Documentación de la obra, todo junto: listado de materiales (a la izquierda) y
               tipo plano (a la derecha), cada uno con su botón. */}
@@ -10478,17 +10247,10 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
       if (estado && p.estado !== estado) return false;
       if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
-      // También se busca por el proyecto del pedido (nº, nombre, cliente) y por su descripción/comentarios.
-      const proy = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null;
-      const textoProyecto = proy ? `${proy.numero || ""} ${proy.nombre || ""} ${proy.cliente || ""} ${proy.clienteNombre || ""} ${proy.ubicacion || ""}` : "";
-      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${textoProyecto} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales, proyectos]);
-
-  // Borrar pedidos: los administradores cualquiera; los responsables de pedidos solo los
-  // que aún no se han recibido (los recibidos ya han movido el stock).
-  const puedeBorrarPedido = (p) => isAdmin || (!!(currentUser && currentUser.responsablePedidos) && p.estado !== "Recibido");
+  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales]);
 
   // Solo los administradores y los usuarios marcados como "responsable de pedidos" hacen
   // pedidos. El resto solo puede solicitarlos (pestaña de solicitudes).
@@ -10539,7 +10301,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         onBack={() => setView("list")}
         onEdit={() => { setEditId(pedido.id); setView("form"); }}
         onDelete={() => onDelete(pedido.id)}
-        isAdmin={puedeBorrarPedido(pedido)}
+        isAdmin={isAdmin}
         onRecibir={() => onRecibir(pedido.id)}
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
         onMarcarEnviado={(metodo, fecha) => onMarcarEnviado(pedido.id, metodo, fecha)}
@@ -10804,7 +10566,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
                     </select>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {puedeBorrarPedido(p) && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
+                    {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
                     </button>)}
                   </td>
@@ -10949,7 +10711,6 @@ function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo =
         <div key={d.id} className="flex items-center gap-2 text-sm py-0.5">
           <FileText size={14} className="text-slate-400 shrink-0" />
           <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{d.nombre}</a>
-          {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
           <label className="flex items-center gap-1 text-[11px] text-slate-500 shrink-0 cursor-pointer">
             <input type="checkbox" checked={d.enviar !== false} onChange={(e) => onChange(docs.map((x) => (x.id === d.id ? { ...x, enviar: e.target.checked } : x)))} />
             enviar al proveedor
@@ -11171,10 +10932,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
     const lineas = f.lineas
       .filter((l) => (l.modo === "catalogo" ? l.materialId : l.referencia.trim()) && parseFloat(l.cantidad) > 0)
       .map((l) => ({ ...l, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ancho: l.ancho ? parseFloat(l.ancho) || l.ancho : "", alto: l.alto ? parseFloat(l.alto) || l.alto : "" }));
-    // Un pedido puede guardarse solo con documento adjunto (p. ej. pedidos de TM o de
-    // cristales ya hechos en PDF): la línea solo es obligatoria si no hay ningún documento.
-    const tieneDocumento = toArray(f.documentos).length > 0 || toArray(f.adjuntosPdf).length > 0;
-    if (lineas.length === 0 && !tieneDocumento) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0) o adjunta el documento del pedido."); return; }
+    if (lineas.length === 0) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0)."); return; }
     setErrorMsg("");
     onSave({ ...f, lineas });
   };
@@ -11467,20 +11225,6 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   useEffect(() => { if (archivoInicial) { leer(archivoInicial); onArchivoUsado && onArchivoUsado(); } }, [archivoInicial]); // eslint-disable-line react-hooks/exhaustive-deps
   const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
   const num = (v) => Math.max(0, parseFloat(v) || 0);
-  // Recepción a mano, sin foto de albarán: se enseñan las líneas pendientes con lo que
-  // falta por llegar puesto por defecto, y se corrige solo lo que no ha llegado (p. ej. 0 en el
-  // compacto que faltaba). Después va por el mismo camino que la recepción con albarán.
-  const recibirAMano = () => {
-    setError("");
-    const filas = toArray(pedido.lineas).map((l) => {
-      const pedida = parseFloat(l.cantidad) || 0;
-      const ya = parseFloat(l.recibidoBien) || 0;
-      const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
-      return { lineaId: l.id, nombre: nombreLinea(l), tipo: tipoLineaRecepcion(l, pedido), ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega: pend, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb: 0, caballete: "", ref: "", refObra: "", pedidoProv: "" };
-    });
-    if (!filas.some((f) => f.pend > 0)) { setError("Este pedido no tiene nada pendiente de recibir."); return; }
-    setLectura({ filas, sobrantes: [], archivo: "", info: { lineas: [], numeroAlbaran: "", numeroPedido: "", proveedor: "" }, manual: true });
-  };
   const pendientes = toArray(pedido.lineas).map((l) => ({ l, falta: Math.max(0, Math.round(((parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)) * 100) / 100) })).filter((x) => x.falta > 0);
   const hayRecepciones = toArray(pedido.recepciones).length > 0;
   const reponer = () => onCrearPedidoFaltante(pedido, pendientes.map(({ l, falta }) => ({ ...l, id: uid(), cantidad: falta, estado: "Solicitado", recibidoBien: 0, rotos: 0, cantidadRecibida: 0 })));
@@ -11501,11 +11245,6 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
             style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
             {leyendo ? <><Loader2 size={15} className="animate-spin" /> Leyendo el albarán (puede tardar un minuto)…</> : <><ImageIcon size={15} /> {hayRecepciones ? "Recibir otro albarán" : "Subir foto o PDF del albarán"}</>}
           </button>
-          <button type="button" onClick={recibirAMano} disabled={leyendo || !pedido.envioConfirmado || !!lectura}
-            title={!pedido.envioConfirmado ? "Confirma primero que el pedido se ha enviado al proveedor" : "Marcar línea a línea lo que ha llegado, sin foto de albarán"}
-            className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
-            <CheckCircle2 size={15} /> Marcar lo que ha llegado (a mano, sin albarán)
-          </button>
           {!pedido.envioConfirmado && <p className="text-xs text-amber-700 font-semibold mt-2">⚠ Confirma arriba que el pedido se ha enviado al proveedor antes de poder recibirlo.</p>}
           <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         </>
@@ -11513,7 +11252,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
       {error && <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {error}</div>}
       {lectura && (
         <div className="mt-4 space-y-3">
-          <div className="text-xs text-slate-500">{lectura.manual ? "Recepción a mano: pon en «Llegan» lo que ha llegado de cada línea (0 en lo que falta)." : <>Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</>}</div>
+          <div className="text-xs text-slate-500">Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</div>
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase text-slate-500"><tr>
@@ -11795,10 +11534,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
-    // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
-    const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -11898,7 +11634,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           )}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
-            <button onClick={() => { if (window.confirm(`¿Eliminar el pedido #${pedido.numero}? No se puede deshacer.`)) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
+            <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
           )}
         </div>
       </div>
@@ -15742,8 +15478,9 @@ function pedidoPersianasDePaginas(paginas) {
     const its = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
     its.forEach((it) => {
       const s = String(it.s).trim();
-      const mh = s.match(/^([A-Z]{1,2}\d{2}\.\d+)\s*:?$/i);
-      if (mh) { cab = mh[1].toUpperCase(); return; }
+      // Referencia de la ventana ("V01.375:"). A veces la teclean con la letra O en vez del cero ("VO4.377"): se admite y se corrige.
+      const mh = s.match(/^([A-Z]{1,2})([0-9OIL]{2})\.(\d+)\s*:?$/i);
+      if (mh) { cab = (mh[1] + mh[2].toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1") + "." + mh[3]); return; }
       const mm = s.match(medida);
       if (!mm) return;
       const ancho = aMm(mm[1]), alto = aMm(mm[2]);
@@ -19789,10 +19526,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                       <div key={cat} className="mb-2">
                         <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 ml-2">{cat}</div>
                         {docs.map((d) => (
-                          <div key={d.id} className="ml-2 flex items-baseline gap-2">
-                            <a href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline">{d.nombre}</a>
-                            {fechaDoc(d) && <span className="text-[11px] text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
-                          </div>
+                          <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
                         ))}
                       </div>
                     ))}
@@ -23868,8 +23602,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     proximaAccionFecha: fechaMasSiete(),
   });
   const [errorLlamada, setErrorLlamada] = useState("");
-  const [asigUser, setAsigUser] = useState("");
-  const [asigFecha, setAsigFecha] = useState("");
 
   // Al elegir "Rechazado" se libera la fecha (no hace falta recontactar); al
   // elegir cualquier otro resultado, si no había fecha puesta, se rellena
@@ -23897,12 +23629,11 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     const rechazo = esResultadoRechazo(lForm.resultado);
     onAddLlamada(
       lead.id,
-      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion, ...asignacionLlamada(usuarios, asigUser, asigFecha) },
+      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion },
       opcion?.estado || null,
       rechazo ? "" : lForm.proximaAccionFecha
     );
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "", notas: "", enlaceGrabacion: "", proximaAccionFecha: fechaMasSiete() });
-    setAsigUser(""); setAsigFecha("");
   };
 
   const manejarSubirPresupuesto = async (file) => {
@@ -24021,7 +23752,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
               <div className="text-sm">
                 <div className="font-semibold text-slate-700">{fmtDate(l.fecha)} — {l.resultadoLabel || "—"}</div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
-                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.enlaceGrabacion && (
                   <a href={l.enlaceGrabacion} target="_blank" rel="noopener noreferrer" className="text-sky-600 hover:underline text-xs">🎧 Escuchar grabación</a>
                 )}
@@ -24063,7 +23793,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
         <Field label="Notas de la llamada">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
-        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
@@ -28245,7 +27974,6 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
     <div key={d.id} className="flex items-center gap-1.5 text-xs py-0.5 min-w-0">
       <FileText size={13} className="text-slate-400 shrink-0" />
       <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate" title={d.nombre}>{d.nombre}</a>
-      {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
       {onChange && (
         <button type="button" onClick={() => { if (window.confirm(`¿Quitar el justificante "${d.nombre}"?`)) onChange(docs.filter((x) => x.id !== d.id)); }}
           className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={13} /></button>
@@ -29371,7 +29099,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const timerPedidoAutoFormRef = useRef(null);
   const intervaloCuentaFormRef = useRef(null);
   const inputPdfMedidasFormRef = useRef(null);
-  const inputFotoMedidasFormRef = useRef(null);
 
   const dispararPedidoAutoForm = (lineasFinales, adjuntosFinales) => {
     clearTimeout(timerPedidoAutoFormRef.current);
@@ -29537,33 +29264,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const clienteExiste = (nombre) => clientes.some((c) => c.nombre.trim().toLowerCase() === (nombre || "").trim().toLowerCase());
   const clienteFaltante = f.clienteNombre.trim() && !clienteExiste(f.clienteNombre);
 
-  // Al elegir un cliente que ya existe (o al llegar el presupuesto desde una medición, la calculadora…),
-  // su teléfono y email pasan solos al presupuesto. Solo rellena lo que esté vacío: no pisa lo ya escrito.
-  useEffect(() => {
-    const nombre = String(f.clienteNombre || "").trim().toLowerCase();
-    if (!nombre) return;
-    const c = (clientes || []).find((x) => String(x.nombre || "").trim().toLowerCase() === nombre);
-    if (!c) return;
-    const tel = c.movil || c.telefono || "";
-    setF((prev) => {
-      const nuevoTel = String(prev.telefono || "").trim() ? prev.telefono : tel;
-      const nuevoEmail = String(prev.email || "").trim() ? prev.email : (c.email || "");
-      return nuevoTel === prev.telefono && nuevoEmail === (prev.email || "") ? prev : { ...prev, telefono: nuevoTel, email: nuevoEmail };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f.clienteNombre, clientes]);
-
   const crearClienteAhora = () => {
     if (!limiteCreditoRapido || parseFloat(limiteCreditoRapido) <= 0) {
       setErrorClienteRapido("Pon un límite de crédito mayor que 0 para poder darlo de alta.");
       return;
     }
-    if (!String(f.telefono || "").trim() && !String(f.email || "").trim()) {
-      setErrorClienteRapido("Pon el teléfono o el email del cliente (arriba) para poder darlo de alta: uno de los dos es obligatorio.");
-      return;
-    }
     setErrorClienteRapido("");
-    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido, f.telefono, f.email);
+    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido);
     setLimiteCreditoRapido("");
   };
 
@@ -29575,7 +29282,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       setErrorMsg(`El cliente "${f.clienteNombre}" no existe todavía en el CRM. Ve a Clientes y date de alta primero, y luego vuelve aquí a elegirlo de la lista.`);
       return;
     }
-    if (!String(f.descripcion || "").trim()) { setErrorMsg("Falta la referencia del presupuesto (campo «Referencia / Descripción de la obra»): es obligatoria."); return; }
     if (!f.fechaEnvio) { setErrorMsg("Falta la fecha de envío (es obligatoria)."); return; }
     if (!f.envio && !f.montaje && !f.recoge) {
       setErrorMsg("Marca al menos una opción de ¿Envío?, ¿Montaje? o ¿Recoge el cliente? antes de guardar.");
@@ -29653,24 +29359,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             >
               <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Subiendo..." : "Subir documento"}
             </button>
-            <input
-              ref={inputFotoMedidasFormRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasForm(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
-            />
-            <button
-              type="button"
-              onClick={() => inputFotoMedidasFormRef.current?.click()}
-              disabled={leyendoPdfMedidasForm}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
-            >
-              📷 Hacer foto
-            </button>
             {f.documentos && f.documentos.length > 0 && (
               <span className="text-sm text-emerald-700 font-semibold">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</span>
             )}
@@ -29728,7 +29416,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             <p className="text-sm font-semibold text-amber-800">⚠ "{f.clienteNombre}" no existe todavía en el CRM.</p>
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[180px]">
-                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€) · se guardan también el teléfono y el email de arriba</label>
+                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€)</label>
                 <TextInput type="number" step="0.01" value={limiteCreditoRapido} onChange={(e) => setLimiteCreditoRapido(e.target.value)} placeholder="Ej: 40000" />
               </div>
               <button type="button" onClick={crearClienteAhora} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
@@ -29752,8 +29440,8 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           </Field>
         </div>
 
-        <Field label="Referencia / Descripción de la obra" required>
-          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Reforma vivienda C/ Mayor 4 — 4 ventanas de PVC" />
+        <Field label="Descripción / Obra">
+          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Solicitud de 4 ventanas de PVC" />
         </Field>
 
         <div className="grid grid-cols-2 gap-4">
@@ -30096,8 +29784,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     return { importe: versiones[index - 1].importe, descripcion: versiones[index - 1].descripcion };
   };
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
-  const [asigUser, setAsigUser] = useState("");
-  const [asigFecha, setAsigFecha] = useState("");
   const [errorLlamada, setErrorLlamada] = useState("");
   const [generandoPdf, setGenerandoPdf] = useState(false);
   const [pdfGuardadoUrl, setPdfGuardadoUrl] = useState("");
@@ -30194,7 +29880,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
   const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
   const [avisoDocumentoPre, setAvisoDocumentoPre] = useState("");
   const inputPdfMedidasPreRef = useRef(null);
-  const inputFotoPreRef = useRef(null);
   // Siempre la versión más reciente (tras subir el documento el presupuesto ya ha cambiado)
   const rellenarRef = useRef(null);
   rellenarRef.current = onRellenarDesdeDocumento;
@@ -30251,9 +29936,8 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     setErrorLlamada("");
     const opcion = PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === lForm.resultado);
     const { resultado, ...llamadaSinResultado } = lForm;
-    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "", ...asignacionLlamada(usuarios, asigUser, asigFecha) }, opcion?.estado || null);
+    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "" }, opcion?.estado || null);
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
-    setAsigUser(""); setAsigFecha("");
   };
   return (
     <div className="p-8 max-w-3xl">
@@ -30356,24 +30040,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
               <ImageIcon size={15} /> {subiendoDocumentoPre ? "Subiendo..." : "Subir documento"}
-            </button>
-            <input
-              ref={inputFotoPreRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasPre(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
-            />
-            <button
-              type="button"
-              onClick={() => inputFotoPreRef.current?.click()}
-              disabled={subiendoDocumentoPre}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
-            >
-              📷 Hacer foto
             </button>
           </div>
           {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
@@ -30499,7 +30165,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               {presupuesto.documentos.map((d) => (
                 <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
                   <FileText size={14} className="text-slate-400" /> {d.nombre}
-                  {fechaDoc(d) && <span className="text-[11px] font-normal text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
                 </a>
               ))}
             </div>
@@ -30588,7 +30253,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
                   {l.resultadoLabel && l.resultado !== "sin_cambios" && <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === l.resultado)?.estado] || "bg-slate-100 text-slate-600 ring-slate-200"}>{l.resultadoLabel}</Badge>}
                 </div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
-                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.proximaLlamadaFecha && (
                   <div className="text-amber-700 font-semibold text-xs mt-0.5">📅 Próxima llamada: {fmtDate(l.proximaLlamadaFecha)}</div>
                 )}
@@ -30625,7 +30289,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         <Field label="Notas de la llamada (obligatorio — qué se ha hablado con el cliente)">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
-        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" onClick={registrarLlamada} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
@@ -42679,12 +42342,7 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
                 <input type="checkbox" checked={!!(f.areas && f.areas.fabrica)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), fabrica: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                 Fábrica
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={!!(f.areas && f.areas.oficina)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), oficina: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
-                Oficina
-              </label>
             </div>
-            <p className="text-xs text-slate-500 mt-1">«Oficina» aparece en el desplegable «Asignar el trabajo a» al registrar una llamada en una obra. No cambia lo que ve el usuario.</p>
             <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
           </Field>
         )}
