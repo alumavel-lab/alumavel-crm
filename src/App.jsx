@@ -367,6 +367,34 @@ const renombrarFotoCamara = (file) => {
   const ext = (tipo.split("/")[1] || "jpg").replace("jpeg", "jpg");
   return new File([file], `Foto ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}h${p(d.getMinutes())}m${p(d.getSeconds())}.${ext}`, { type: tipo });
 };
+// Desplegable "Asignar el trabajo a (oficina)" para las llamadas. Solo salen los usuarios marcados como
+// "Oficina" en Usuarios; mientras no haya nadie marcado, salen todos (con un aviso).
+function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
+  const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {}));
+  const hayOficinaMarcada = todos.some((u) => u.areas && u.areas.oficina);
+  const lista = hayOficinaMarcada ? todos.filter((u) => u.areas && u.areas.oficina) : todos;
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
+      <div className="sm:col-span-2">
+        <Field label="Asignar el trabajo a (oficina)">
+          <Select value={valor || ""} onChange={(e) => onValor(e.target.value)}>
+            <option value="">Sin asignar</option>
+            {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+          </Select>
+        </Field>
+        {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos.</p>}
+      </div>
+      <Field label="Para el día (opcional)"><TextInput type="date" value={fecha || ""} onChange={(e) => onFecha(e.target.value)} /></Field>
+      {valor && <p className="sm:col-span-3 text-[11px] text-slate-500">Al registrar la llamada se le crea una tarea con las notas, que verá en Tareas.</p>}
+    </div>
+  );
+}
+// Datos de la asignación que se guardan dentro de la llamada
+const asignacionLlamada = (usuarios, userId, fecha) => {
+  if (!userId) return {};
+  const u = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {})).find((x) => x.id === userId);
+  return { asignadoA: userId, asignadoANombre: u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "", asignadoAFecha: fecha || "" };
+};
 const daysDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
 // Descarga cualquier listado como un documento Word (en realidad HTML con extensión
@@ -2583,6 +2611,10 @@ export default function App() {
   // en el formulario) para que ningún lead se quede sin seguimiento previsto;
   // si es rechazo, el lead pasa a Descartado y se libera esa fecha.
   const addLlamadaLead = (leadId, llamada, nuevoEstado, proximaAccionFecha) => {
+    if (llamada.asignadoA) {
+      const ld = leads.find((l) => l.id === leadId);
+      crearTarea({ titulo: `Lead ${ld ? ld.nombre : ""}: ${llamada.resultadoLabel || "llamada"}`, descripcion: `${ld && ld.telefono ? `${ld.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
+    }
     const next = leads.map((l) => (l.id === leadId ? {
       ...l,
       llamadas: [llamada, ...(l.llamadas || [])],
@@ -3183,6 +3215,10 @@ export default function App() {
   };
 
   const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
+    if (llamada.asignadoA) {
+      const pr = presupuestos.find((p) => p.id === presupuestoId);
+      crearTarea({ titulo: `Presupuesto ${pr ? pr.numero : ""}${pr && pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""}: llamada`, descripcion: `${pr && pr.telefono ? `${pr.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
+    }
     const hoy = new Date().toISOString().slice(0, 10);
     const enSieteDias = new Date();
     enSieteDias.setDate(enSieteDias.getDate() + 7);
@@ -23832,6 +23868,8 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     proximaAccionFecha: fechaMasSiete(),
   });
   const [errorLlamada, setErrorLlamada] = useState("");
+  const [asigUser, setAsigUser] = useState("");
+  const [asigFecha, setAsigFecha] = useState("");
 
   // Al elegir "Rechazado" se libera la fecha (no hace falta recontactar); al
   // elegir cualquier otro resultado, si no había fecha puesta, se rellena
@@ -23859,11 +23897,12 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     const rechazo = esResultadoRechazo(lForm.resultado);
     onAddLlamada(
       lead.id,
-      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion },
+      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion, ...asignacionLlamada(usuarios, asigUser, asigFecha) },
       opcion?.estado || null,
       rechazo ? "" : lForm.proximaAccionFecha
     );
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "", notas: "", enlaceGrabacion: "", proximaAccionFecha: fechaMasSiete() });
+    setAsigUser(""); setAsigFecha("");
   };
 
   const manejarSubirPresupuesto = async (file) => {
@@ -23982,6 +24021,7 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
               <div className="text-sm">
                 <div className="font-semibold text-slate-700">{fmtDate(l.fecha)} — {l.resultadoLabel || "—"}</div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
+                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.enlaceGrabacion && (
                   <a href={l.enlaceGrabacion} target="_blank" rel="noopener noreferrer" className="text-sky-600 hover:underline text-xs">🎧 Escuchar grabación</a>
                 )}
@@ -24023,6 +24063,7 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
         <Field label="Notas de la llamada">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
+        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
@@ -30054,6 +30095,8 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     return { importe: versiones[index - 1].importe, descripcion: versiones[index - 1].descripcion };
   };
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
+  const [asigUser, setAsigUser] = useState("");
+  const [asigFecha, setAsigFecha] = useState("");
   const [errorLlamada, setErrorLlamada] = useState("");
   const [generandoPdf, setGenerandoPdf] = useState(false);
   const [pdfGuardadoUrl, setPdfGuardadoUrl] = useState("");
@@ -30207,8 +30250,9 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     setErrorLlamada("");
     const opcion = PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === lForm.resultado);
     const { resultado, ...llamadaSinResultado } = lForm;
-    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "" }, opcion?.estado || null);
+    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "", ...asignacionLlamada(usuarios, asigUser, asigFecha) }, opcion?.estado || null);
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
+    setAsigUser(""); setAsigFecha("");
   };
   return (
     <div className="p-8 max-w-3xl">
@@ -30543,6 +30587,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
                   {l.resultadoLabel && l.resultado !== "sin_cambios" && <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === l.resultado)?.estado] || "bg-slate-100 text-slate-600 ring-slate-200"}>{l.resultadoLabel}</Badge>}
                 </div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
+                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.proximaLlamadaFecha && (
                   <div className="text-amber-700 font-semibold text-xs mt-0.5">📅 Próxima llamada: {fmtDate(l.proximaLlamadaFecha)}</div>
                 )}
@@ -30579,6 +30624,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         <Field label="Notas de la llamada (obligatorio — qué se ha hablado con el cliente)">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
+        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" onClick={registrarLlamada} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
