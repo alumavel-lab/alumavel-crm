@@ -6376,8 +6376,8 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         <button
           onClick={() => descargarListaComoWord(
             "Proyectos",
-            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Estado trabajo", "Importe"],
-            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.estadoTrabajo, money(p.importePresupuesto)])
+            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Aceptado el", "Estado trabajo", "Importe"],
+            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.fechaAceptado ? fmtDate(p.fechaAceptado) : "", p.estadoTrabajo, money(p.importePresupuesto)])
           )}
           className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"
         >
@@ -6396,6 +6396,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Cliente</th>
               <th className="px-4 py-3 font-semibold">Presupuesto</th>
+              <th className="px-4 py-3 font-semibold">Aceptado el</th>
               <th className="px-4 py-3 font-semibold">Estado trabajo</th>
               <th className="px-4 py-3 font-semibold">Ciudad reparto</th>
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
@@ -6406,7 +6407,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
@@ -6428,6 +6429,11 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     >
                       {Object.keys(ESTADO_PRESUPUESTO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
                     </select>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {p.fechaAceptado ? <span className="font-mono-num text-slate-700">{fmtDate(p.fechaAceptado)}</span>
+                      : p.estadoPresupuesto === "Presupuesto aceptado" ? <span className="text-[11px] font-semibold text-rose-600" title="Falta la fecha de aceptación: ábrelo y pulsa Editar">⚠ Sin fecha</span>
+                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -6490,6 +6496,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
     if (!f.nombre.trim() || !f.clienteId) {
       setErrorMsg("Faltan campos obligatorios: Cliente y Nombre / descripción.");
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
+      return;
+    }
+    if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
+      setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
+      alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
       return;
     }
     setErrorMsg("");
@@ -6556,7 +6567,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="Estado del presupuesto">
-            <Select value={f.estadoPresupuesto} onChange={set("estadoPresupuesto")}>
+            <Select value={f.estadoPresupuesto} onChange={(e) => {
+              const v = e.target.value;
+              // Al marcarlo aceptado se propone la fecha de hoy (se puede cambiar si se aceptó otro día)
+              setF({ ...f, estadoPresupuesto: v, ...(v === "Presupuesto aceptado" && !f.fechaAceptado ? { fechaAceptado: new Date().toISOString().slice(0, 10) } : {}) });
+            }}>
               {ESTADO_PRESUPUESTO.map((t) => <option key={t}>{t}</option>)}
             </Select>
           </Field>
@@ -6571,6 +6586,14 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
             </Select>
           </Field>
         </div>
+
+        {f.estadoPresupuesto === "Presupuesto aceptado" && (
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="Fecha de aceptación del presupuesto" required>
+              <TextInput type="date" value={f.fechaAceptado || ""} onChange={set("fechaAceptado")} />
+            </Field>
+          </div>
+        )}
 
         {f.estadoLogistica === "Reparto (camión)" && (
           <div className="grid grid-cols-2 gap-4">
@@ -6702,6 +6725,9 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
   const [editandoId, setEditandoId] = useState(null);
   const [abiertaId, setAbiertaId] = useState(null);
   const [guardando, setGuardando] = useState(false);
+  // Trabajadores de oficina (marcados "Oficina" en su usuario); si todavía no hay nadie marcado, salen todos
+  const hayOficinaMarcada = toArray(usuarios).some((u) => u.areas && u.areas.oficina);
+  const personalOficina = hayOficinaMarcada ? toArray(usuarios).filter((u) => u.areas && u.areas.oficina) : toArray(usuarios);
   const llamadas = [...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const textoDocumento = (l) => [
@@ -6717,11 +6743,16 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
     try {
       const id = editandoId || uid();
       const llamada = { ...f, id, motivo: f.motivo.trim(), notas: f.notas, actualizadaEn: Date.now() };
+      // Si se ha elegido a alguien en "Asignar el trabajo a", se crea la tarea para esa persona
+      const accFinal = { ...acc, tarea: !!acc.tareaPara };
+      const asignado = toArray(usuarios).find((u) => u.id === acc.tareaPara);
       // Lo que se ha decidido en la llamada queda anotado en ella
       const hechas = [];
       if (acc.estado && acc.estado !== proyecto.estadoTrabajo) hechas.push(`Estado: ${proyecto.estadoTrabajo || "—"} → ${acc.estado}`);
       if (acc.nuevo) hechas.push(`Pide algo nuevo: ${acc.nuevoTexto || llamada.motivo}`);
-      if (acc.tarea && acc.tareaPara) hechas.push(`Tarea para ${(toArray(usuarios).find((u) => u.id === acc.tareaPara) || {}).nombre || ""}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
+      if (asignado) hechas.push(`Trabajo asignado a ${`${asignado.nombre} ${asignado.apellidos || ""}`.trim()}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
+      llamada.asignadoA = asignado ? asignado.id : "";
+      llamada.asignadoANombre = asignado ? `${asignado.nombre} ${asignado.apellidos || ""}`.trim() : "";
       if (hechas.length) llamada.acciones = [...toArray(llamada.acciones), ...hechas];
       const nombreDoc = `Llamada ${String(llamada.fecha).slice(0, 10)} ${String(llamada.fecha).slice(11, 16).replace(":", "h")} — ${(llamada.contacto || "sin nombre").slice(0, 40)}.txt`;
       const archivo = new File([`\ufeff${textoDocumento(llamada)}`], nombreDoc, { type: "text/plain" });
@@ -6731,7 +6762,7 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
       if (url) docs.push({ id: uid(), nombre: nombreDoc, url, subidoEn: Date.now(), llamadaId: id });
       const lista = editandoId ? toArray(proyecto.llamadas).map((x) => (x.id === id ? llamada : x)) : [llamada, ...toArray(proyecto.llamadas)];
       const patch = JSON.parse(JSON.stringify({ llamadas: lista, documentos: docs }));
-      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, acc);
+      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, accFinal);
       else onInlineUpdate(proyecto.id, patch);
       setF(vacia()); setAcc(accVacias()); setEditandoId(null); setAbiertaId(id);
       if (!url) alert("Llamada guardada, pero no se pudo crear el documento en Documentos. Vuelve a guardarla más tarde.");
@@ -6761,6 +6792,21 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
             </Select>
           </Field>
         </div>
+        {onGuardarLlamada && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
+            <div className="sm:col-span-2">
+              <Field label="Asignar el trabajo a (oficina)">
+                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })}>
+                  <option value="">Sin asignar</option>
+                  {personalOficina.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+                </Select>
+              </Field>
+              {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos. Márcalos en cada usuario para que aquí solo salga la oficina.</p>}
+            </div>
+            <Field label="Para el día (opcional)"><TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} /></Field>
+            {acc.tareaPara && <p className="sm:col-span-3 text-[11px] text-slate-500">Al guardar la llamada se le crea una tarea con el motivo y las notas, que verá en Tareas.</p>}
+          </div>
+        )}
         <Field label="Notas de la llamada (se guardan también como documento en el proyecto)">
           <TextArea rows={8} value={f.notas} onChange={set("notas")} placeholder="Escribe aquí todo lo hablado: acuerdos, cambios, lo que hay que hacer…" />
         </Field>
@@ -6780,16 +6826,6 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
                 <div className="sm:col-span-2"><TextInput value={acc.nuevoTexto} onChange={(e) => setAcc({ ...acc, nuevoTexto: e.target.value })} placeholder="Qué pide (ej. 2 mosquiteras más en el salón)" /></div>
                 <TextInput type="number" value={acc.nuevoImporte} onChange={(e) => setAcc({ ...acc, nuevoImporte: e.target.value })} placeholder="Importe aprox. (opcional)" />
                 <p className="sm:col-span-3 text-[11px] text-slate-500">Se crea un presupuesto unido a esta obra. Cuando el cliente lo firme, lo nuevo se suma a esta misma obra (con sus pedidos en espera) en vez de abrir una obra nueva.</p>
-              </div>
-            )}
-            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer"><input type="checkbox" checked={acc.tarea} onChange={(e) => setAcc({ ...acc, tarea: e.target.checked })} /> Crear una tarea para alguien</label>
-            {acc.tarea && (
-              <div className="flex flex-wrap gap-2 pl-6">
-                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })} className="!w-auto text-sm">
-                  <option value="">¿Para quién?</option>
-                  {toArray(usuarios).map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
-                </Select>
-                <TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} className="!w-40" />
               </div>
             )}
           </div>
@@ -7958,7 +7994,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
-          {proyecto.fechaAceptado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge>}
+          {proyecto.fechaAceptado ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge> : proyecto.estadoPresupuesto === "Presupuesto aceptado" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">⚠ Sin fecha de aceptación (pulsa Editar)</Badge> : null}
           {proyecto.fechaEntregado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Entregado el {fmtDate(proyecto.fechaEntregado)}</Badge>}
         </div>
         {proyecto.estadoTrabajo === "Cancelado" && proyecto.anulado && (
@@ -42480,7 +42516,12 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
                 <input type="checkbox" checked={!!(f.areas && f.areas.fabrica)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), fabrica: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                 Fábrica
               </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={!!(f.areas && f.areas.oficina)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), oficina: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                Oficina
+              </label>
             </div>
+            <p className="text-xs text-slate-500 mt-1">«Oficina» aparece en el desplegable «Asignar el trabajo a» al registrar una llamada en una obra. No cambia lo que ve el usuario.</p>
             <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
           </Field>
         )}
