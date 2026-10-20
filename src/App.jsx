@@ -360,6 +360,13 @@ const fmtDate = (d) => {
 };
 // Fecha en la que se subió un documento (se graba en d.subidoEn al subirlo); vacío si es un documento antiguo sin fecha
 const fechaDoc = (d) => { const t = d && d.subidoEn; if (!t) return ""; const x = new Date(t); return isNaN(x) ? "" : x.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }); };
+// Las fotos hechas con la cámara llegan con nombres tipo "image.jpg": se les pone fecha y hora para distinguirlas
+const renombrarFotoCamara = (file) => {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  const tipo = file.type || "image/jpeg";
+  const ext = (tipo.split("/")[1] || "jpg").replace("jpeg", "jpg");
+  return new File([file], `Foto ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}h${p(d.getMinutes())}m${p(d.getSeconds())}.${ext}`, { type: tipo });
+};
 const daysDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
 // Descarga cualquier listado como un documento Word (en realidad HTML con extensión
@@ -7790,6 +7797,26 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     onInlineUpdate(proyecto.id, { documentos: lista });
     setTimeout(() => { marca.pendiente = false; }, 4000);
   };
+  // Subir documentos o hacer fotos directamente a la obra (se guardan tal cual, sin leerlos ni crear pedidos)
+  const [subiendoDocObra, setSubiendoDocObra] = useState(false);
+  const [errorDocObra, setErrorDocObra] = useState("");
+  const inputDocObraRef = useRef(null);
+  const inputFotoObraRef = useRef(null);
+  const subirDocumentosObra = async (lista, esFoto = false) => {
+    const files = [...(lista || [])].map((f) => (esFoto ? renombrarFotoCamara(f) : f));
+    if (!files.length) return;
+    setSubiendoDocObra(true); setErrorDocObra("");
+    try {
+      const nuevos = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) { setErrorDocObra(`"${file.name}" pesa más de 20 MB.`); continue; }
+        const url = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
+        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now(), subidoPor: nombreUsuarioActual || "" });
+      }
+      if (nuevos.length) guardarDocumentosObra([...documentosObraRef.current.lista, ...nuevos]);
+    } catch (e) { setErrorDocObra("No se pudo subir: " + (e.message || "error")); }
+    finally { setSubiendoDocObra(false); }
+  };
   const manejarSubidaPdfMedidas = async (file, tipoSabido = "") => {
     if (!file) return;
     let docMedidasId = null;
@@ -8081,8 +8108,25 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           </div>
         )}
 
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 mr-1">Documentos de la obra</span>
+            <input ref={inputDocObraRef} type="file" multiple className="hidden" accept={ACEPTA_DOCUMENTOS} onChange={(e) => { subirDocumentosObra(e.target.files); e.target.value = ""; }} />
+            <button type="button" onClick={() => inputDocObraRef.current?.click()} disabled={subiendoDocObra}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg">
+              {subiendoDocObra ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {subiendoDocObra ? "Subiendo…" : "Subir documento"}
+            </button>
+            <input ref={inputFotoObraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { subirDocumentosObra(e.target.files, true); e.target.value = ""; }} />
+            <button type="button" onClick={() => inputFotoObraRef.current?.click()} disabled={subiendoDocObra}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg"
+              title="Abre la cámara del móvil/tablet y guarda la foto como documento de la obra">
+              📷 Hacer foto
+            </button>
+          </div>
+          {errorDocObra && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorDocObra}</p>}
+        </div>
         {(proyecto.documentos || []).length > 0 && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
+          <div className="mt-3">
             <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {proyecto.documentos.map((d) => (
@@ -29286,6 +29330,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const timerPedidoAutoFormRef = useRef(null);
   const intervaloCuentaFormRef = useRef(null);
   const inputPdfMedidasFormRef = useRef(null);
+  const inputFotoMedidasFormRef = useRef(null);
 
   const dispararPedidoAutoForm = (lineasFinales, adjuntosFinales) => {
     clearTimeout(timerPedidoAutoFormRef.current);
@@ -29565,6 +29610,24 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
               <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Subiendo..." : "Subir documento"}
+            </button>
+            <input
+              ref={inputFotoMedidasFormRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasForm(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => inputFotoMedidasFormRef.current?.click()}
+              disabled={leyendoPdfMedidasForm}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
+              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
+            >
+              📷 Hacer foto
             </button>
             {f.documentos && f.documentos.length > 0 && (
               <span className="text-sm text-emerald-700 font-semibold">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</span>
@@ -30087,6 +30150,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
   const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
   const [avisoDocumentoPre, setAvisoDocumentoPre] = useState("");
   const inputPdfMedidasPreRef = useRef(null);
+  const inputFotoPreRef = useRef(null);
   // Siempre la versión más reciente (tras subir el documento el presupuesto ya ha cambiado)
   const rellenarRef = useRef(null);
   rellenarRef.current = onRellenarDesdeDocumento;
@@ -30247,6 +30311,24 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
               <ImageIcon size={15} /> {subiendoDocumentoPre ? "Subiendo..." : "Subir documento"}
+            </button>
+            <input
+              ref={inputFotoPreRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasPre(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
+            />
+            <button
+              type="button"
+              onClick={() => inputFotoPreRef.current?.click()}
+              disabled={subiendoDocumentoPre}
+              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
+              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
+              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
+            >
+              📷 Hacer foto
             </button>
           </div>
           {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
