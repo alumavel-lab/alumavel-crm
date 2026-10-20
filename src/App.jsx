@@ -1682,6 +1682,26 @@ export default function App() {
     saveProyectos(next);
   };
 
+  // Anular un proyecto (repetido, cancelado por el cliente…): pasa a "Cancelado" con motivo, quién y cuándo,
+  // desaparece del listado normal y se puede reactivar. No borra nada (pedidos, documentos, etc. se conservan).
+  const anularProyecto = (id, motivo) => {
+    const p = toArray(proyectosRef.current).find((x) => x && x.id === id);
+    if (!p) return;
+    const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
+    updateProyectoInline(id, {
+      estadoTrabajoAntesAnular: p.estadoTrabajo && p.estadoTrabajo !== "Cancelado" ? p.estadoTrabajo : (p.estadoTrabajoAntesAnular || "Pendiente de aceptación"),
+      estadoTrabajo: "Cancelado",
+      anulado: { motivo: motivo || "", por: quien, fecha: new Date().toISOString() },
+    });
+    showToast(`Proyecto #${p.numero} anulado`);
+  };
+  const reactivarProyecto = (id) => {
+    const p = toArray(proyectosRef.current).find((x) => x && x.id === id);
+    if (!p) return;
+    updateProyectoInline(id, { estadoTrabajo: p.estadoTrabajoAntesAnular || "Pendiente de aceptación", anulado: null });
+    showToast(`Proyecto #${p.numero} reactivado`);
+  };
+
   // Usa un artículo (de la lista de Artículos) en un proyecto: descuenta automáticamente
   // del stock cada material que compone ese artículo, multiplicado por la cantidad usada.
   const usarArticuloEnProyecto = (proyectoId, articuloId, cantidadUsada) => {
@@ -4853,6 +4873,8 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
+            onAnular={anularProyecto}
+            onReactivar={reactivarProyecto}
             proyectos={proyectos}
             clientes={clientes}
             facturas={facturas}
@@ -6236,7 +6258,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ onAnular, onReactivar, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -6255,6 +6277,7 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
+      if (!estadoTrabajo && p.estadoTrabajo === "Cancelado") return false; // los anulados solo salen al filtrar por "Cancelado"
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
       if (!q) return true;
@@ -6296,6 +6319,8 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
         onBack={() => setView("list")}
         onEdit={() => { setEditId(proyecto.id); setView("form"); }}
         onDelete={() => onDelete(proyecto.id)}
+        onAnular={(motivo) => onAnular && onAnular(proyecto.id, motivo)}
+        onReactivar={() => onReactivar && onReactivar(proyecto.id)}
         isAdmin={isAdmin}
         onInlineUpdate={onInlineUpdate}
         onRegistrarPago={(data) => onRegistrarPago(proyecto.id, data)}
@@ -6362,8 +6387,8 @@ function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActu
           {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
         </Select>
         <Select value={estadoTrabajo} onChange={(e) => setEstadoTrabajo(e.target.value)} className="max-w-[200px]">
-          <option value="">Todos los estados</option>
-          {ESTADO_TRABAJO.map((t) => <option key={t}>{t}</option>)}
+          <option value="">Todos (sin anulados)</option>
+          {ESTADO_TRABAJO.map((t) => <option key={t} value={t}>{t === "Cancelado" ? "Cancelado (anulados)" : t}</option>)}
         </Select>
         {ciudadesDisponibles.length > 0 && (
           <Select value={ciudadFiltro} onChange={(e) => setCiudadFiltro(e.target.value)} className="max-w-[200px]">
@@ -7631,7 +7656,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ onAnular, onReactivar, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7891,6 +7916,15 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
             <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
               <Pencil size={14} /> Editar
             </button>
+            {proyecto.estadoTrabajo === "Cancelado" ? (
+              <button onClick={() => { if (window.confirm("¿Reactivar este proyecto? Vuelve al estado en que estaba antes de anularlo.")) onReactivar && onReactivar(); }} className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 border border-emerald-300 px-3.5 py-2 rounded-lg hover:bg-emerald-50">
+                Reactivar
+              </button>
+            ) : (
+              <button onClick={() => { const motivo = window.prompt("Anular este proyecto (no se borra nada, se puede reactivar).\n¿Por qué se anula? (ej. repetido, cancelado por el cliente)"); if (motivo === null) return; if (!motivo.trim()) { alert("Escribe el motivo para poder anularlo."); return; } onAnular && onAnular(motivo.trim()); }} className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-3.5 py-2 rounded-lg hover:bg-amber-50">
+                Anular proyecto
+              </button>
+            )}
             {isAdmin && (
               <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
                 <Trash2 size={14} /> Eliminar
@@ -7899,6 +7933,12 @@ function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, i
           </div>
         </div>
 
+        {proyecto.estadoTrabajo === "Cancelado" && (
+          <div className="mt-3 px-4 py-3 rounded-md bg-slate-100 border border-slate-300 text-sm text-slate-700">
+            <b>Proyecto anulado</b>{proyecto.anulado && proyecto.anulado.fecha ? ` el ${fmtDate(String(proyecto.anulado.fecha).slice(0, 10))}` : ""}{proyecto.anulado && proyecto.anulado.por ? ` por ${proyecto.anulado.por}` : ""}.
+            {proyecto.anulado && proyecto.anulado.motivo ? <> Motivo: {proyecto.anulado.motivo}</> : null}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 mt-3">
           <Badge className={ESTADO_PRESUPUESTO_STYLE[proyecto.estadoPresupuesto]}>{proyecto.estadoPresupuesto}</Badge>
           <Badge className={ESTADO_TRABAJO_STYLE[proyecto.estadoTrabajo]}>{proyecto.estadoTrabajo}</Badge>
@@ -10108,6 +10148,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
+  const [nuevoDesdePdf, setNuevoDesdePdf] = useState(false);
   const [mostrarAgrupador, setMostrarAgrupador] = useState(false);
   const inputFotoRef = useRef(null);
 
@@ -10300,6 +10341,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         onSave={onUpsert}
         prefill={editing ? null : prefill}
         onClearPrefill={onClearPrefill}
+        desdePdf={!editing && nuevoDesdePdf}
       />
     );
   }
@@ -10384,12 +10426,19 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         </div>
       )}
       <button
-        onClick={() => { setEditId(null); setView("form"); }}
+        onClick={() => { setEditId(null); setNuevoDesdePdf(false); setView("form"); }}
         disabled={proveedores.length === 0}
         title={proveedores.length === 0 ? "Necesitas dar de alta un proveedor primero" : ""}
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-lg font-bold py-5 rounded-lg mb-3 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVO PEDIDO
+      </button>
+      <button
+        onClick={() => { setEditId(null); setNuevoDesdePdf(true); setView("form"); }}
+        disabled={proveedores.length === 0}
+        className="w-full flex items-center justify-center gap-2 bg-[#2E8B57] hover:bg-[#256E46] disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-base font-bold py-4 rounded-lg mb-3 shadow-md cursor-pointer select-none"
+      >
+        <FileText size={20} /> PEDIDO DESDE UN PDF (cristales, persianas, lo que sea)
       </button>
       {(() => {
         const hoyStr = new Date().toISOString().slice(0, 10);
@@ -10742,7 +10791,9 @@ function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo =
   );
 }
 
-function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
+function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill, desdePdf }) {
+  // Modo "solo PDF": el pedido va con el documento del proveedor (cristales, persianas, lo que sea), sin líneas ni stock.
+  const [soloDoc, setSoloDoc] = useState(() => !!desdePdf || (!!initial && toArray(initial.lineas).length === 1 && initial.lineas[0].referencia === "Según documento adjunto"));
   const blankLinea = () => ({ id: uid(), modo: "catalogo", materialId: materiales[0]?.id || "", referencia: "", ancho: "", alto: "", cantidad: "", precio: "", estado: "Solicitado" });
   const avisosPorDefecto = () => ({
     llegada: true, retraso: true,
@@ -10947,10 +10998,11 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       if (!f.fechaEntregaPrevista) { setErrorMsg("Falta la fecha aproximada de llegada (es obligatoria): con ella se avisa si se retrasa y se hace el planning."); return; }
       if (f.fechaEntregaPrevista < f.fechaCompra) { setErrorMsg("La fecha de llegada no puede ser anterior a la fecha del pedido."); return; }
     }
-    const lineas = f.lineas
+    const lineas = (soloDoc ? [] : f.lineas)
       .filter((l) => (l.modo === "catalogo" ? l.materialId : l.referencia.trim()) && parseFloat(l.cantidad) > 0)
       .map((l) => ({ ...l, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ancho: l.ancho ? parseFloat(l.ancho) || l.ancho : "", alto: l.alto ? parseFloat(l.alto) || l.alto : "" }));
     const tieneDocumento = toArray(f.adjuntosPdf).length > 0 || toArray(f.documentos).some((d) => d && d.url);
+    if (soloDoc && !tieneDocumento) { setErrorMsg("Sube el PDF del pedido (botón \"Añadir documento\") para poder guardarlo."); return; }
     if (lineas.length === 0 && !tieneDocumento) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0) o adjunta el documento del pedido."); return; }
     if (lineas.length === 0) {
       // Pedido que va solo con el fichero (p. ej. cristales o TM ya detallados en el PDF): se guarda una línea que remite al documento.
@@ -11027,6 +11079,12 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           </div>
         )}
 
+        <label className="flex items-start gap-2 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-sm text-emerald-900 cursor-pointer">
+          <input type="checkbox" className="mt-1" checked={soloDoc} onChange={(e) => setSoloDoc(e.target.checked)} />
+          <span><b>Este pedido va solo con el PDF del proveedor</b> (cristales, persianas, TM, lo que sea): no hace falta poner líneas ni que el material esté en stock. Sube el PDF aquí abajo, guarda y desde el pedido lo envías al proveedor por correo o WhatsApp.</span>
+        </label>
+
+        {!soloDoc && (<>
         <div>
           <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Líneas del pedido</span>
           <div className="space-y-2">
@@ -11135,6 +11193,8 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             </div>
           </div>
         )}
+
+        </>)}
 
         <DocumentosPedido documentos={f.documentos} adjuntosPdf={f.adjuntosPdf}
           carpeta={`documentos-proyectos/pedido-${f.id || "nuevo"}`}
