@@ -21925,6 +21925,8 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   const [legado, setLegado] = useState(false); // el nodo antiguo era una sola foto (texto)
   const [pl, setPl] = useState("");
   const [colocar, setColocar] = useState("");
+  const avisoColocar = useRef(null);
+  useEffect(() => { if (colocar && avisoColocar.current) avisoColocar.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [colocar]);
   const [zoom, setZoom] = useState(100);
   const [subiendo, setSubiendo] = useState(false);
   const fileRef = useRef(null);
@@ -21984,7 +21986,7 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
       </div>
       {!fijos.length && dbPl === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
       {!fijos.length && dbPl && dbPl.length === 0 && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto de cada plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja. (Si subes el PDF del expediente con «Crear desde fotos», los planos se sacan solos.)</div>}
-      {colocar && <div className="mb-2 px-3 py-2 rounded bg-sky-50 border border-sky-300 text-sky-900 text-sm font-semibold">Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
+      {colocar && <div ref={avisoColocar} style={{ position: "sticky", top: 0, zIndex: 30 }} className="mb-2 px-3 py-2 rounded bg-sky-100 border-2 border-sky-500 text-sky-900 text-sm font-semibold shadow">👆 Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
       {src && (
         <div className="border border-slate-300 rounded-lg overflow-auto bg-white mb-4" style={{ maxHeight: "75vh" }}>
           <div style={{ width: zoom + "%", position: "relative", cursor: colocar ? "crosshair" : "default" }} onClick={tocarPlano}>
