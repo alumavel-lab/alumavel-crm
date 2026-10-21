@@ -1309,6 +1309,43 @@ export default function App() {
     showToast("Cliente eliminado");
   };
 
+  // Vivienda medida de Uxcar (Aena) enviada a oficina → se crea su Proyecto normal (cliente Uxcar) y sigue el proceso de siempre
+  const crearProyectoDesdeMedicionUxcar = async (exp) => {
+    const nuevoId = uid();
+    const res = await runTransaction(ref(fbDb, `${UXC_NODO}/${exp.id}/envio/proyectoId`), (actual) => (actual ? undefined : nuevoId)).catch(() => null);
+    if (!res || !res.committed) return null; // ya tenía proyecto (o no se pudo reservar)
+    let cliente = clientes.find((c) => /uxcar/i.test(c.nombre || ""));
+    if (!cliente) {
+      cliente = { id: uid(), nombre: "Uxcar", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición de Aena" };
+      saveClientes([cliente, ...clientes]);
+    }
+    const cab = exp.cab || {};
+    const vs = uxcLista(exp.ventanas).filter((v) => v.activa !== false && !v.rechazada);
+    const piezas = [`${vs.filter((v) => !uxcEsPuerta(v)).length} ventanas`, vs.some(uxcEsPuerta) ? `${vs.filter(uxcEsPuerta).length} puertas` : ""].filter(Boolean).join(", ");
+    const numero = nextNumeroProyecto();
+    const lleva = (f) => vs.some((v) => uxcObs(v)[f]);
+    const checklist = checklistMaterialesPorDefecto().map((c) => {
+      if (c.nombre === "Cristal" || c.nombre === "Perfil") return { ...c, estado: "si" };
+      if (c.nombre === "Persiana" || c.nombre === "Guía de persiana") return { ...c, estado: lleva("persiana") ? "si" : "no" };
+      if (c.nombre === "Mosquitera") return { ...c, estado: lleva("mosquitera") ? "si" : "no" };
+      return c; // Postigo, panel de puerta y tirador: se contestan en la ficha
+    });
+    const nuevo = {
+      id: nuevoId, numero, nombre: `Uxcar · ${cab.expediente || "Aena"} · ${cab.municipio || cab.direccion || ""} · ${piezas}`.replace(/ · +$/, ""),
+      clienteId: cliente.id, tipoVenta: "Venta",
+      especificaciones: `Vivienda medida de Aena (Plan de Aislamiento Acústico). Expediente ${cab.expediente || ""} · concurso ${cab.concurso || ""} · ${cab.pedido || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir (hoja de oficina).`,
+      estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
+      estadoTrabajo: "Pendiente de aceptación", ubicacion: cab.direccion || "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
+      provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
+      gastos: [], registroHorario: [], checklistMateriales: checklist,
+      origen: "medicionUxcar", medicionUxcarId: exp.id,
+    };
+    saveProyectos([nuevo, ...toArray(proyectosRef.current)]);
+    showToast(`Creada la obra #${numero} en Proyectos`);
+    return { id: nuevoId, numero };
+  };
+  uxcPuente.crearProyecto = crearProyectoDesdeMedicionUxcar;
+
   const nextNumeroProyecto = () => {
     const nums = proyectos.map((p) => parseInt(String(p.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
     const max = nums.length ? Math.max(...nums) : 4189;
@@ -3508,6 +3545,11 @@ export default function App() {
   const autoPresRef = useRef(false);
   const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
   const [avisoDocsAbierto, setAvisoDocsAbierto] = useState(false);
+  const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, UXC_NODO), (snap) => setUxcEnviados(toArray(snap.val()).filter((x) => x && x.id && x.envio).map((x) => ({ id: x.id, exp: (x.cab || {}).expediente || "", dir: (x.cab || {}).direccion || "", primera: x.envio.primera || 0, pedido: x.envio.pedido || null, proyectoId: x.envio.proyectoId || null }))), () => setUxcEnviados([]));
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser || loading || autoPresRef.current) return;
@@ -4650,7 +4692,7 @@ export default function App() {
         })()}
         {(() => {
           // Presupuestos creados hace más de 2 días que todavía no se han enviado al cliente.
-          if (!currentUser || !isAdmin) return null;
+          if (!currentUser || !(isAdmin || tieneAcceso("presupuestos"))) return null;
           const limite = Date.now() - 2 * 24 * 3600 * 1000;
           const sinEnviar = presupuestos.filter((p) => presupuestoSinEnviar(p) && !(p.firma && p.firma.estado) && (p.creadoEn || (p.fechaEnvio ? new Date(p.fechaEnvio + "T12:00:00").getTime() : Date.now())) < limite);
           if (sinEnviar.length === 0) return null;
@@ -4661,6 +4703,33 @@ export default function App() {
             >
               <Send size={15} />
               {sinEnviar.length} presupuesto{sinEnviar.length === 1 ? "" : "s"} sin enviar al cliente desde hace más de 2 días ({sinEnviar.slice(0, 4).map((p) => p.numero).join(", ")}{sinEnviar.length > 4 ? "…" : ""}). Toca para {sinEnviar.length === 1 ? "abrirlo" : "verlos"} →
+            </button>
+          );
+        })()}
+        {(() => {
+          // Viviendas de medición Uxcar (Aena) enviadas a oficina hace más de un día sin marcar «materiales pedidos»
+          // Lo ve todo el equipo (también la oficina, que es quien tiene que pedir); solo abre el módulo quien tiene acceso a Mediciones
+          if (!currentUser) return null;
+          const limite = Date.now() - 24 * 3600 * 1000;
+          // Con obra creada, «pedidos» = que en la obra ya no falte nada por pedir (lo mira el CRM solo); sin obra, el botón manual
+          const tarde = uxcEnviados.filter((x) => {
+            if (x.pedido || !x.primera || x.primera >= limite) return false;
+            if (!x.proyectoId) return true;
+            const ob = proyectos.find((p) => p.id === x.proyectoId);
+            return !!ob && materialSinPedirObra(ob, pedidos).length > 0;
+          });
+          if (!tarde.length) return null;
+          return (
+            <button
+              onClick={() => {
+                if (tarde.length === 1 && tarde[0].proyectoId && (isAdmin || tieneAcceso("proyectos"))) { setModulo("proyectos"); setProyectoDetailId(tarde[0].proyectoId); setProyectoView("detail"); return; }
+                if (!(isAdmin || tieneAcceso("mediciones"))) return;
+                uxcNav.id = tarde.length === 1 ? tarde[0].id : null; setModulo("mediciones");
+              }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-50 text-rose-800 hover:bg-rose-100"
+            >
+              <AlertCircle size={15} />
+              🔥 {tarde.length} vivienda{tarde.length === 1 ? "" : "s"} medida{tarde.length === 1 ? "" : "s"} (Uxcar) sin materiales pedidos desde hace más de un día ({tarde.slice(0, 4).map((x) => x.exp || "s/n").join(", ")}{tarde.length > 4 ? "…" : ""}). Toca para verlas →
             </button>
           );
         })()}
@@ -4705,8 +4774,8 @@ export default function App() {
         })()}
         {(() => {
           // Presupuestos firmados que todavía no han terminado su camino: sin pasar a
-          // proyecto, o ya en proyecto pero con material sin pedir.
-          if (!currentUser || !isAdmin) return null;
+          // proyecto, o ya en proyecto pero con material sin pedir. Lo ve también la oficina.
+          if (!currentUser || !(isAdmin || tieneAcceso("presupuestos") || tieneAcceso("proyectos"))) return null;
           const firmados = presupuestos.filter((p) => p.firma?.estado === "firmado" && p.estado !== "Rechazado");
           const sinProyecto = firmados.filter((p) => !p.proyectoCreadoId);
           const obrasSinPedir = [];
@@ -20777,7 +20846,7 @@ function TechosMedicion({ medicionId }) {
 
 function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
   const [q, setQ] = useState("");
-  const [zonaMed, setZonaMed] = useState("normal"); // "normal" | "uxcar" (Aena)
+  const [zonaMed, setZonaMed] = useState(uxcNav.id ? "uxcar" : "normal"); // "normal" | "uxcar" (Aena)
 
   const filtered = mediciones.filter((m) => {
     if (!q) return true;
@@ -20887,6 +20956,8 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
    partidas y extras son mapas por id, y cada edición escribe solo su trozo, para que dos
    personas puedan medir ventanas distintas a la vez sin pisarse. */
 const UXC_NODO = "medicionesUxcar";
+const uxcPuente = { crearProyecto: null }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
+const uxcNav = { id: null }; // el aviso de arriba deja aquí el expediente que hay que abrir
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
 
 const UXC_LEYENDA = {
@@ -21418,7 +21489,7 @@ function UxcGuiaProximo() {
 
 function MedicionesUxcarZona() {
   const [lista, setLista] = useState(null);
-  const [abiertoId, setAbiertoId] = useState(null);
+  const [abiertoId, setAbiertoId] = useState(() => { const x = uxcNav.id; uxcNav.id = null; return x; });
   const [q, setQ] = useState("");
   const [leyendo, setLeyendo] = useState(false);
   const [progreso, setProgreso] = useState("");
@@ -21483,7 +21554,7 @@ function MedicionesUxcarZona() {
                   <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || "(sin número)"}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
                   <td className="px-4 py-3 text-slate-600">{c.direccion || "—"}<div className="text-[11px] text-slate-400">{c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
                 </tr>
               );
             })}
@@ -21704,6 +21775,67 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   );
 }
 
+/* ---------- Enviar a oficina / meter prisa ---------- */
+function UxcEnvio({ exp, guardar }) {
+  const r = uxcResumenOficina(exp);
+  const cab = exp.cab || {};
+  const env = exp.envio || null;
+  const pendientes = r.activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0));
+  const quien = () => { try { const u = fbAuth.currentUser; return (u && (u.displayName || u.email)) || ""; } catch (e) { return ""; } };
+  const cuando = (ms) => new Date(ms).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const dias = env ? Math.floor((Date.now() - (env.primera || Date.now())) / 86400000) : 0;
+  const base = `${cab.expediente || "Expediente"} · ${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}`;
+  const abrirWA = (texto) => { try { window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); } catch (e) {} };
+  const enlace = (() => { try { return window.location.origin; } catch (e) { return ""; } })();
+  const enviar = async () => {
+    let aviso = "";
+    if (pendientes.length) aviso += `Faltan por medir ${pendientes.length} de ${r.activas.length} carpinterías (${pendientes.map((v) => v.ref).join(", ")}).\n\n`;
+    if (exp.revisado === false) aviso += "Los datos del expediente están sin revisar (leídos por IA).\n\n";
+    if (aviso && !window.confirm(aviso + "¿Enviar a oficina igualmente?")) return;
+    if (!aviso && !window.confirm("Se enviará a oficina y se creará la obra en Proyectos (cliente Uxcar). ¿Continuar?")) return;
+    const ahora = Date.now();
+    // WhatsApp se abre ya (antes de esperar nada) para que el móvil no lo bloquee
+    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: se ha creado la obra en Proyectos. Pedid ya los materiales. Hoja de oficina: CRM → Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
+    try {
+      await guardar("envio", { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por: quien(), pendientes: pendientes.length });
+      if (uxcPuente.crearProyecto) {
+        const pr = await uxcPuente.crearProyecto(exp);
+        if (pr) await guardar("envio/proyectoNumero", pr.numero);
+      }
+    } catch (e) { alert("Se envió, pero no se pudo crear la obra en Proyectos: " + e.message); }
+  };
+  const prisa = () => {
+    const ahora = Date.now();
+    guardar("envio", { ...env, ultima: ahora, prisa: (env.prisa || 0) + 1 });
+    abrirWA(`🔥 URGENTE · ${base}\nLlevo ${dias === 0 ? "desde hoy" : dias + " día" + (dias === 1 ? "" : "s")} esperando que pidáis los materiales de esta vivienda (enviada el ${cuando(env.primera)}). Por favor, confirmadme cuándo se piden.\n${enlace}`);
+  };
+  if (!env) {
+    return (
+      <div className="mb-4 p-3 rounded-lg border-2 border-emerald-500 bg-emerald-50 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[220px] text-sm text-emerald-900"><b>¿Vivienda medida?</b> Envíala a oficina para que pidan los materiales.{pendientes.length > 0 && <span className="block text-amber-800 font-semibold">Faltan por medir: {pendientes.map((v) => v.ref).join(", ")}</span>}</div>
+        <button onClick={enviar} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">📤 ENVIAR A OFICINA</button>
+      </div>
+    );
+  }
+  return (
+    <div className={`mb-4 p-3 rounded-lg border-2 flex flex-wrap items-center gap-3 ${env.pedido ? "border-emerald-500 bg-emerald-50" : env.prisa ? "border-rose-500 bg-rose-50" : "border-sky-400 bg-sky-50"}`}>
+      <div className="flex-1 min-w-[220px] text-sm text-slate-800">
+        <b>Enviada a oficina</b> el {cuando(env.primera)}{env.por ? ` (${env.por})` : ""} · {dias === 0 ? "hoy" : `hace ${dias} día${dias === 1 ? "" : "s"}`}
+        {env.prisa > 0 && <span className="block text-rose-700 font-semibold">Prisa metida {env.prisa} vez{env.prisa === 1 ? "" : "es"} · última {cuando(env.ultima)}</span>}
+        {pendientes.length > 0 && <span className="block text-amber-800">Ojo: ahora aún faltan por medir {pendientes.map((v) => v.ref).join(", ")}</span>}
+      </div>
+      {env.proyectoNumero && <div className="text-sm font-bold text-slate-700">Obra #{env.proyectoNumero} creada en Proyectos</div>}
+      {env.pedido
+        ? <div className="text-sm font-bold text-emerald-700">✔ Materiales pedidos el {cuando(env.pedido.fecha)}{env.pedido.por ? ` (${env.pedido.por})` : ""} <button onClick={() => guardar("envio/pedido", null)} className="ml-1 text-xs font-normal text-slate-500 underline">deshacer</button></div>
+        : <>
+            {!env.proyectoId && <button onClick={() => guardar("envio/pedido", { fecha: Date.now(), por: quien() })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">✔ MATERIALES PEDIDOS</button>}
+            <button onClick={prisa} style={{ backgroundColor: "#dc2626", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">🔥 METER PRISA</button>
+          </>}
+      <button onClick={() => { if (window.confirm("¿Quitar el envío? Volverá a salir como no enviada.")) guardar("envio", null); }} className="text-xs text-slate-500 underline">Quitar envío</button>
+    </div>
+  );
+}
+
 function UxcExpediente({ exp, onBack }) {
   const [tab, setTab] = useState("plano");
   const [hojaId, setHojaId] = useState(null);
@@ -21732,6 +21864,7 @@ function UxcExpediente({ exp, onBack }) {
         <span className="text-sm text-slate-500">{cab.direccion}</span>
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
       </div>
+      <UxcEnvio exp={exp} guardar={guardar} />
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
         <T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T>
       </div>
