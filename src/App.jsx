@@ -21570,12 +21570,28 @@ function uxcComprobaciones(exp) {
 const uxcInp = "w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40";
 
 // Casilla de texto que guarda al salir (así se escribe sin que cada letra viaje a Firebase).
-function UxcCel({ valor, onGuardar, tipo = "text", placeholder, className = "" }) {
+function UxcCel({ valor, onGuardar, tipo = "text", placeholder, className = "", validar }) {
   const [v, setV] = useState(valor == null ? "" : valor);
   useEffect(() => { setV(valor == null ? "" : valor); }, [valor]);
   return <input type={tipo} value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)}
-    onBlur={() => { if (String(v) !== String(valor == null ? "" : valor)) onGuardar(v); }} className={uxcInp + " " + className} />;
+    onBlur={() => {
+      if (String(v) === String(valor == null ? "" : valor)) return;
+      const err = validar ? validar(v) : null;
+      if (err) { alert("⛔ " + err); setV(valor == null ? "" : valor); return; } // no se guarda
+      onGuardar(v);
+    }} className={uxcInp + " " + className} />;
 }
+// Cajón de persiana: se escribe en cm (15.5) o en mm (155); aquí siempre en mm
+const uxcCajonMm = (x) => { const n = uxcNum(x); return n > 0 && n < 50 ? Math.round(n * 10) : n; };
+// El cajón no cabe si es mayor que el fondo de la persiana
+function uxcCheckFondoCajon(fondo, cajon) {
+  const f = uxcNum(fondo), c = uxcCajonMm(cajon);
+  if (f > 0 && c > 0 && c > f) return `El cajón de ${c} mm no cabe en un fondo de persiana de ${f} mm. Revisa las dos medidas: no se guarda.`;
+  return null;
+}
+const UXC_GUIAS = ["30", "50", "78"];
+// Con guía de 30 o 50 la mosquitera va por fuera y hay que medirla; en guía de 78 va dentro y no hace falta
+const uxcMosqFueraSinMedir = (v, o) => !!o.mosquitera && (String(v.guia) === "30" || String(v.guia) === "50") && !String(v.mosqMedida || "").trim();
 
 function UxcGuiaProximo() {
   const [abierto, setAbierto] = useState(false);
@@ -21816,8 +21832,8 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
               <div key={k} className="flex items-center gap-3">
                 <span className="flex-1 text-sm font-semibold text-slate-700">{et}</span>
                 <UxcSiNo efectivo={ef} marcado={v["o_" + k]} onChange={(x) => g("o_" + k, x)} />
-                {k === "mosquitera" && <div className="w-28"><UxcCel valor={v.mosqMedida} onGuardar={(x) => g("mosqMedida", x)} placeholder="medida" /></div>}
-                {k === "persiana" && <div className="w-28"><UxcCel valor={v.cajon} onGuardar={(x) => g("cajon", x)} placeholder="cajón de" /></div>}
+                {k === "mosquitera" && (String(v.guia) === "78" ? <div className="w-40 text-[11px] font-semibold text-emerald-700">Va dentro de la guía 78: no hace falta medirla</div> : <div className="w-32"><UxcCel valor={v.mosqMedida} onGuardar={(x) => g("mosqMedida", x)} placeholder={uxcMosqFueraSinMedir(v, o) ? "MEDIDA OBLIGATORIA" : "medida"} className={uxcMosqFueraSinMedir(v, o) ? "!border-rose-500" : ""} /></div>)}
+                {k === "persiana" && <div className="w-28"><UxcCel valor={v.cajon} onGuardar={(x) => g("cajon", x)} validar={(x) => uxcCheckFondoCajon(v.fondoPersiana, x)} placeholder="cajón de" /></div>}
               </div>
             ))}
           </div>
@@ -21875,7 +21891,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
         <div className={caja}>
           <div className={tit}>Guía persiana</div>
           <div className="flex items-center justify-center" style={{ minHeight: 120 }} dangerouslySetInnerHTML={{ __html: UXC_GUIA_SVG }} />
-          <div className="grid grid-cols-2 gap-3"><Field label="Fondo de la persiana"><UxcCel valor={v.fondoPersiana} onGuardar={(x) => g("fondoPersiana", x)} placeholder="mm" /></Field><Field label="Guía (medida / tipo)"><UxcCel valor={v.guia} onGuardar={(x) => g("guia", x)} /></Field></div>
+          <div className="grid grid-cols-2 gap-3"><Field label="Fondo de la persiana"><UxcCel valor={v.fondoPersiana} onGuardar={(x) => g("fondoPersiana", x)} validar={(x) => uxcCheckFondoCajon(x, v.cajon)} placeholder="mm" /></Field><Field label="Guía"><UxcChips opciones={UXC_GUIAS} valor={v.guia} onChange={(x) => g("guia", x)} />{v.guia && !UXC_GUIAS.includes(String(v.guia)) ? <div className="text-[11px] text-amber-700 mt-1">Valor antiguo: «{v.guia}». Elige 30, 50 o 78.</div> : null}</Field></div>
         </div>
         <div className={caja}>
           <div className={tit}>Solape + ancho solape</div>
@@ -21902,7 +21918,14 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-8">
-        <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={!!v.medida} onChange={(e) => g("medida", e.target.checked ? true : null)} /> Carpintería medida y terminada</label>
+        <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={!!v.medida} onChange={(e) => {
+          if (e.target.checked) {
+            if (uxcMosqFueraSinMedir(v, o)) { alert(`⛔ No se puede cerrar ${v.ref || "la ventana"}: lleva mosquitera con guía de ${v.guia} (va por fuera) y falta medir la mosquitera. Apunta su medida en Observaciones → Mosquitera.`); return; }
+            const err = uxcCheckFondoCajon(v.fondoPersiana, v.cajon);
+            if (err) { alert("⛔ " + err); return; }
+          }
+          g("medida", e.target.checked ? true : null);
+        }} /> Carpintería medida y terminada</label>
         <Field label="Medido por"><UxcCel valor={v.medidoPor} onGuardar={(x) => g("medidoPor", x)} /></Field>
         <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="ml-auto flex items-center gap-1.5 text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 hover:bg-slate-50"><Printer size={14} /> Imprimir esta hoja</button>
         {idx < vs.length - 1 && <button onClick={() => onIr(vs[idx + 1].id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold rounded-md px-4 py-2">Siguiente carpintería →</button>}
