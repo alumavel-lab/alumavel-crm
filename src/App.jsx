@@ -21483,7 +21483,7 @@ function MedicionesUxcarZona() {
                   <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || "(sin número)"}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
                   <td className="px-4 py-3 text-slate-600">{c.direccion || "—"}<div className="text-[11px] text-slate-400">{c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
                 </tr>
               );
             })}
@@ -21704,6 +21704,53 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   );
 }
 
+/* ---------- Enviar a oficina / meter prisa ---------- */
+function UxcEnvio({ exp, guardar }) {
+  const r = uxcResumenOficina(exp);
+  const cab = exp.cab || {};
+  const env = exp.envio || null;
+  const pendientes = r.activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0));
+  const quien = () => { try { const u = fbAuth.currentUser; return (u && (u.displayName || u.email)) || ""; } catch (e) { return ""; } };
+  const cuando = (ms) => new Date(ms).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const dias = env ? Math.floor((Date.now() - (env.primera || Date.now())) / 86400000) : 0;
+  const base = `${cab.expediente || "Expediente"} · ${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}`;
+  const abrirWA = (texto) => { try { window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); } catch (e) {} };
+  const enlace = (() => { try { return window.location.origin; } catch (e) { return ""; } })();
+  const enviar = () => {
+    let aviso = "";
+    if (pendientes.length) aviso += `Faltan por medir ${pendientes.length} de ${r.activas.length} carpinterías (${pendientes.map((v) => v.ref).join(", ")}).\n\n`;
+    if (exp.revisado === false) aviso += "Los datos del expediente están sin revisar (leídos por IA).\n\n";
+    if (aviso && !window.confirm(aviso + "¿Enviar a oficina igualmente?")) return;
+    const ahora = Date.now();
+    guardar("envio", { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por: quien(), pendientes: pendientes.length });
+    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: pedid ya los materiales. Hoja de oficina en el CRM (Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir).\n${enlace}`);
+  };
+  const prisa = () => {
+    const ahora = Date.now();
+    guardar("envio", { ...env, ultima: ahora, prisa: (env.prisa || 0) + 1 });
+    abrirWA(`🔥 URGENTE · ${base}\nLlevo ${dias === 0 ? "desde hoy" : dias + " día" + (dias === 1 ? "" : "s")} esperando que pidáis los materiales de esta vivienda (enviada el ${cuando(env.primera)}). Por favor, confirmadme cuándo se piden.\n${enlace}`);
+  };
+  if (!env) {
+    return (
+      <div className="mb-4 p-3 rounded-lg border-2 border-emerald-500 bg-emerald-50 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[220px] text-sm text-emerald-900"><b>¿Vivienda medida?</b> Envíala a oficina para que pidan los materiales.{pendientes.length > 0 && <span className="block text-amber-800 font-semibold">Faltan por medir: {pendientes.map((v) => v.ref).join(", ")}</span>}</div>
+        <button onClick={enviar} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">📤 ENVIAR A OFICINA</button>
+      </div>
+    );
+  }
+  return (
+    <div className={`mb-4 p-3 rounded-lg border-2 flex flex-wrap items-center gap-3 ${env.prisa ? "border-rose-500 bg-rose-50" : "border-sky-400 bg-sky-50"}`}>
+      <div className="flex-1 min-w-[220px] text-sm text-slate-800">
+        <b>Enviada a oficina</b> el {cuando(env.primera)}{env.por ? ` (${env.por})` : ""} · {dias === 0 ? "hoy" : `hace ${dias} día${dias === 1 ? "" : "s"}`}
+        {env.prisa > 0 && <span className="block text-rose-700 font-semibold">Prisa metida {env.prisa} vez{env.prisa === 1 ? "" : "es"} · última {cuando(env.ultima)}</span>}
+        {pendientes.length > 0 && <span className="block text-amber-800">Ojo: ahora aún faltan por medir {pendientes.map((v) => v.ref).join(", ")}</span>}
+      </div>
+      <button onClick={prisa} style={{ backgroundColor: "#dc2626", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">🔥 METER PRISA</button>
+      <button onClick={() => { if (window.confirm("¿Quitar el envío? Volverá a salir como no enviada.")) guardar("envio", null); }} className="text-xs text-slate-500 underline">Quitar envío</button>
+    </div>
+  );
+}
+
 function UxcExpediente({ exp, onBack }) {
   const [tab, setTab] = useState("plano");
   const [hojaId, setHojaId] = useState(null);
@@ -21732,6 +21779,7 @@ function UxcExpediente({ exp, onBack }) {
         <span className="text-sm text-slate-500">{cab.direccion}</span>
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
       </div>
+      <UxcEnvio exp={exp} guardar={guardar} />
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
         <T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T>
       </div>
