@@ -20958,6 +20958,7 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
 const UXC_NODO = "medicionesUxcar";
 const uxcPuente = { crearProyecto: null }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
 const uxcNav = { id: null }; // el aviso de arriba deja aquí el expediente que hay que abrir
+const UXC_FOTOS = "medicionesUxcarFotos"; // fotos de cada ventana (fallos, estado del hueco…), aparte para no cargar la lista
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
 
 const UXC_LEYENDA = {
@@ -21721,6 +21722,57 @@ function uxcAltoTxt(v) {
   if (v.altoTipo === "mas") return `${v.altoFab} + cajón ${v.altoCajon || "?"}`;
   return String(v.altoFab);
 }
+// Fotos de la ventana: se hacen con la cámara (o se eligen de la galería), se reducen y se guardan al momento
+function UxcFotos({ exp, v }) {
+  const ruta = `${UXC_FOTOS}/${exp.id}/${v.id}`;
+  const [fotos, setFotos] = useState(null);
+  const [subiendo, setSubiendo] = useState(0);
+  const [grande, setGrande] = useState(null);
+  useEffect(() => {
+    setFotos(null);
+    const off = onValue(ref(fbDb, ruta), (sn) => { const val = sn.val() || {}; setFotos(Object.entries(val).filter(([, x]) => x && x.url).map(([id, x]) => ({ id, ...x })).sort((a, b) => String(a.fecha || "").localeCompare(String(b.fecha || "")))); }, () => setFotos([]));
+    return () => off();
+  }, [ruta]);
+  const subir = async (files) => {
+    const lista = Array.from(files || []);
+    setSubiendo((n) => n + lista.length);
+    for (const f of lista) {
+      try {
+        const url = await comprimirFotoMontaje(f, 1100, 0.65);
+        const id = uid();
+        await fbSet(ref(fbDb, `${ruta}/${id}`), { url, nota: "", fecha: new Date().toISOString() });
+      } catch (e) { alert("No se pudo guardar la foto: " + (e.message || e)); }
+      setSubiendo((n) => n - 1);
+    }
+  };
+  const quitar = (f) => { if (window.confirm("¿Borrar esta foto?")) fbSet(ref(fbDb, `${ruta}/${f.id}`), null).catch((e) => alert(e.message)); };
+  return (
+    <div className="bg-white border-2 border-slate-800 rounded p-3 mb-3">
+      <div className="text-xs font-extrabold uppercase underline mb-2">Fotos de esta carpintería <span className="font-normal no-underline normal-case text-slate-500">({fotos ? fotos.length : "…"})</span></div>
+      <div className="flex flex-wrap gap-2 mb-2">
+        <label className="cursor-pointer px-3 py-2 rounded-lg border-2 border-slate-800 bg-slate-50 text-sm font-extrabold">📷 Hacer foto<input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} /></label>
+        <label className="cursor-pointer px-3 py-2 rounded-lg border-2 border-slate-300 text-sm font-semibold">🖼 Elegir de la galería<input type="file" accept="image/*" multiple className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} /></label>
+        {subiendo > 0 && <span className="self-center text-xs text-slate-500">Guardando {subiendo}…</span>}
+      </div>
+      {fotos && !fotos.length && !subiendo && <p className="text-xs text-slate-400">Sin fotos todavía. Haz foto de los fallos, del hueco, de lo que luego haya que reclamar o revisar.</p>}
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+        {(fotos || []).map((f) => (
+          <div key={f.id} className="relative">
+            <img src={f.url} alt="" onClick={() => setGrande(f)} className="w-full h-24 object-cover rounded border border-slate-300 cursor-pointer" />
+            <button type="button" onClick={() => quitar(f)} className="absolute top-1 right-1 w-6 h-6 rounded-full bg-white/90 border border-slate-300 text-xs font-bold text-rose-600">✕</button>
+            <input defaultValue={f.nota || ""} key={f.id + "|" + (f.nota || "")} onBlur={(e) => { if (e.target.value !== (f.nota || "")) fbSet(ref(fbDb, `${ruta}/${f.id}/nota`), e.target.value).catch(() => {}); }} placeholder="qué falla…" className="w-full mt-1 text-[11px] border border-slate-300 rounded px-1 py-0.5" />
+          </div>))}
+      </div>
+      {grande && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-center p-3" onClick={() => setGrande(null)}>
+          <img src={grande.url} alt="" className="max-w-full max-h-[85vh] object-contain" />
+          {grande.nota ? <div className="mt-2 text-white text-sm font-semibold">{grande.nota}</div> : null}
+          <div className="mt-1 text-white/70 text-xs">Toca para cerrar</div>
+        </div>)}
+    </div>
+  );
+}
+
 function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
   const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val);
   const o = uxcObs(v);
@@ -21840,6 +21892,8 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
               <label key={i.cod} className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={!!(imp[uxcKeyImp(i.cod)] || {})[v.id]} onChange={(e) => guardar(`imprevistos/${uxcKeyImp(i.cod)}/${v.id}`, e.target.checked ? true : null)} /><span>{i.cod} · {i.t} ({i.ud})</span></label>))}</div>
           </details>))}
       </div>
+
+      <UxcFotos exp={exp} v={v} />
 
       <div className="bg-amber-50 border-2 border-amber-500 rounded p-3 mb-3">
         <div className={tit}>Observaciones de esta carpintería</div>
@@ -22026,7 +22080,7 @@ function UxcExpediente({ exp, onBack }) {
   const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
   const comp = uxcComprobaciones(exp);
   const T = ({ k, children }) => <button onClick={() => setTab(k)} className={`crm-tab px-3 py-2 text-sm font-semibold ${tab === k ? "border-[#2E8B57]" : ""}`}>{children}</button>;
-  const borrar = () => { if (window.confirm(`¿Borrar el expediente ${cab.expediente || ""} de la zona Uxcar? No se puede deshacer.`)) fbSet(ref(fbDb, `${UXC_NODO}/${id}`), null).then(() => fbSet(ref(fbDb, `${UXC_PLANO}/${id}`), null).catch(() => {})).then(onBack).catch((e) => alert(e.message)); };
+  const borrar = () => { if (window.confirm(`¿Borrar el expediente ${cab.expediente || ""} de la zona Uxcar? No se puede deshacer.`)) fbSet(ref(fbDb, `${UXC_NODO}/${id}`), null).then(() => fbSet(ref(fbDb, `${UXC_PLANO}/${id}`), null).catch(() => {})).then(() => fbSet(ref(fbDb, `${UXC_FOTOS}/${id}`), null).catch(() => {})).then(onBack).catch((e) => alert(e.message)); };
   const nuevaVentana = () => { const vid = uid(); guardar(`ventanas/${vid}`, { id: vid, orden: vs.length, ref: "", estancia: "", tipo: "V. Abatible 2H", material: cab.color || "PVC BLANCO", codigos: "", extra: "", hojas: 2, activa: "derecha", rechazada: false, cant: 1 }); };
   const nuevaPartida = (bloque) => { const pid = uid(); guardar(`partidas/${pid}`, { id: pid, orden: ps.length, bloque, cod: "", ud: "ud", concepto: "", refs: "", marcada: true }); };
   const nuevoExtra = () => { const eid = uid(); guardar(`extras/${eid}`, { id: eid, orden: ex.length, concepto: "", cant: "1", precio: "", proformaNum: "", fecha: new Date().toISOString().slice(0, 10), plazoDias: "5", pagada: false }); };
