@@ -21188,7 +21188,7 @@ function uxcHojaVentanaHTML(exp, v) {
       <b class="mal">NO paga:</b><ul class="aena" style="margin:2px 0 0 14px;padding:0">${noPagadas.length ? noPagadas.map((p) => `<li class="mal">${escapeHtml(p.cod)} ${escapeHtml(uxcSinMedidas(p.concepto))}</li>`).join("") : "<li>—</li>"}</ul></div>
     </div>
     <div class="caja"><h3>MEDIDA FABRICACIÓN</h3>
-      <div style="margin:6px 0">ANCHO: ${v.anchoFab ? `<b>${escapeHtml(v.anchoFab)}</b>` : "________________"} &nbsp; ALTO: ${v.altoFab ? `<b>${escapeHtml(v.altoFab)}</b>` : "________________"}</div>
+      <div style="margin:6px 0">ANCHO: ${v.anchoFab ? `<b>${escapeHtml(v.anchoFab)}</b>` : "________________"} &nbsp; ALTO: ${v.altoFab ? `<b>${escapeHtml(uxcAltoTxt(v))}</b>` : "________________"}</div>
       <div style="font-size:10px;margin-top:4px">Mano comprobada: ${uxcSq("SI", !!v.manoOk)}${uxcSq("NO", false)} &nbsp; Apertura: <b>${escapeHtml(uxcManoTexto(v))}</b></div>
     </div>
   </div>
@@ -21254,7 +21254,7 @@ function uxcHojaOficinaHTML(exp) {
   const cab = exp.cab || {};
   const filas = r.vs.map((v) => {
     const o = uxcObs(v);
-    const medida = v.anchoFab && v.altoFab ? `<b>${escapeHtml(v.anchoFab)} × ${escapeHtml(v.altoFab)}</b>` : `<span class="mal">pendiente</span>`;
+    const medida = v.anchoFab && v.altoFab ? `<b>${escapeHtml(v.anchoFab)} × ${escapeHtml(uxcAltoTxt(v))}</b>` : `<span class="mal">pendiente</span>`;
     const vi = uxcVid(exp, v);
     const vid = uxcEsPuerta(v) ? "—" : [vi.ext && `ext ${vi.ext}`, vi.camara && `cám ${vi.camara}${vi.gas ? " " + vi.gas : ""}`, vi.int && `int ${vi.int}`, vi.be && "BE", vi.cs && vi.cs].filter(Boolean).join(" · ") || "—";
     return `<tr${v.rechazada ? ' style="text-decoration:line-through;color:#888"' : ""}><td><b>${escapeHtml(v.ref)}</b><br>${escapeHtml(v.estancia || "")}</td><td>${escapeHtml(v.tipo || "")}<br>${escapeHtml(v.material || "")}${v.rechazada ? "<br><b class='mal'>RECHAZA</b>" : ""}</td><td class="c">${medida}</td><td>${escapeHtml(vid)}</td><td>${o.persiana ? escapeHtml("Sí " + o.cajonTipo + (v.cajon ? " · cajón " + v.cajon : "") + (v.guia ? " · guía " + v.guia : "")) : "No"}</td><td class="c">${o.mosquitera ? "Sí" + (v.mosqMedida ? "<br>" + escapeHtml(v.mosqMedida) : "") : "No"}</td><td class="c">${o.oscilo ? "Sí (extra)" : "No"}</td><td class="c">${o.cerradura ? "Sí" : "No"}</td><td>${escapeHtml([v.solape && "solape " + v.solape + (v.anchoSolape ? "/" + v.anchoSolape : ""), v.obs].filter(Boolean).join(" · "))}</td></tr>`;
@@ -21714,6 +21714,13 @@ function UxcChips({ opciones, valor, onChange, sufijo = "" }) {
   );
 }
 
+// El alto se puede apuntar de dos formas: "total" (la medida ya incluye el cajón) o "mas" (alto de ventana + cajón aparte)
+function uxcAltoTxt(v) {
+  if (!v.altoFab) return "";
+  if (v.altoTipo === "total") return `${v.altoFab} (TOTAL, incluye cajón)`;
+  if (v.altoTipo === "mas") return `${v.altoFab} + cajón ${v.altoCajon || "?"}`;
+  return String(v.altoFab);
+}
 function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
   const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val);
   const o = uxcObs(v);
@@ -21784,6 +21791,17 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
           <div className="grid grid-cols-2 gap-3">
             <Field label="Ancho"><UxcCel valor={v.anchoFab} onGuardar={(x) => g("anchoFab", x)} placeholder="mm" className="text-lg font-bold" /></Field>
             <Field label="Alto"><UxcCel valor={v.altoFab} onGuardar={(x) => g("altoFab", x)} placeholder="mm" className="text-lg font-bold" /></Field>
+          </div>
+          <div className="mt-3">
+            <div className="text-[11px] font-bold text-slate-500 mb-1">EL ALTO ES…</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[["total", "MEDIDA TOTAL", "ya incluye el cajón"], ["mas", "VENTANA + CAJÓN", "el cajón va aparte"]].map(([k, t, sub]) => (
+                <button key={k} type="button" onClick={() => g("altoTipo", v.altoTipo === k ? null : k)} className={"py-2 px-2 rounded-lg border-2 text-center " + (v.altoTipo === k ? "border-[#2E8B57] bg-emerald-50" : "border-slate-300 bg-white")}>
+                  <div className="text-sm font-extrabold">{t}</div><div className="text-[10px] text-slate-500">{sub}</div>
+                </button>))}
+            </div>
+            {v.altoTipo === "mas" && <div className="mt-2"><Field label="Alto del cajón (mm)"><UxcCel valor={v.altoCajon} onGuardar={(x) => g("altoCajon", x)} placeholder="mm" className="text-lg font-bold" /></Field></div>}
+            {!v.altoTipo && v.altoFab && <div className="text-[11px] font-bold text-rose-600 mt-1">⚠ Marca si el alto es medida total o ventana + cajón.</div>}
           </div>
           <p className="text-[11px] text-slate-400 mt-2">Solo vale tu medida: el CRM no guarda ni enseña las del proyecto.</p>
         </div>
@@ -22101,7 +22119,7 @@ function UxcExpediente({ exp, onBack }) {
                 <div className="bg-rose-50 border border-rose-200 rounded p-2"><b className="text-rose-800">Aena NO paga ({noPagadas.length})</b><ul className="mt-1 space-y-0.5">{noPagadas.map((p) => <li key={p.id}>{p.cod} · {uxcSinMedidas(p.concepto).slice(0, 70)}</li>)}{!noPagadas.length && <li className="text-slate-400">—</li>}</ul></div>
               </div>
               <div className="border-t border-slate-100 pt-3 text-sm text-slate-600">
-                {v.anchoFab && v.altoFab ? <>Medida en obra: <b>{v.anchoFab} × {v.altoFab}</b></> : <span className="text-slate-400">Sin medir todavía</span>} · pulsa «Rellenar hoja» para apuntar las observaciones, vidrios, persiana y solape.
+                {v.anchoFab && v.altoFab ? <>Medida en obra: <b>{v.anchoFab} × {uxcAltoTxt(v)}</b></> : <span className="text-slate-400">Sin medir todavía</span>} · pulsa «Rellenar hoja» para apuntar las observaciones, vidrios, persiana y solape.
                 {v.obs && <div className="mt-1 px-2 py-1 bg-amber-50 border border-amber-200 rounded text-amber-900 text-xs"><b>Observaciones:</b> {v.obs}</div>}
               </div>
             </div>); })}
