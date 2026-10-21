@@ -3508,6 +3508,11 @@ export default function App() {
   const autoPresRef = useRef(false);
   const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
   const [avisoDocsAbierto, setAvisoDocsAbierto] = useState(false);
+  const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    return onValue(ref(fbDb, UXC_NODO), (snap) => setUxcEnviados(toArray(snap.val()).filter((x) => x && x.id && x.envio).map((x) => ({ id: x.id, exp: (x.cab || {}).expediente || "", dir: (x.cab || {}).direccion || "", primera: x.envio.primera || 0, pedido: x.envio.pedido || null }))), () => setUxcEnviados([]));
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser || loading || autoPresRef.current) return;
@@ -4661,6 +4666,22 @@ export default function App() {
             >
               <Send size={15} />
               {sinEnviar.length} presupuesto{sinEnviar.length === 1 ? "" : "s"} sin enviar al cliente desde hace más de 2 días ({sinEnviar.slice(0, 4).map((p) => p.numero).join(", ")}{sinEnviar.length > 4 ? "…" : ""}). Toca para {sinEnviar.length === 1 ? "abrirlo" : "verlos"} →
+            </button>
+          );
+        })()}
+        {(() => {
+          // Viviendas de medición Uxcar (Aena) enviadas a oficina hace más de un día sin marcar «materiales pedidos»
+          if (!currentUser || !(isAdmin || tieneAcceso("mediciones"))) return null;
+          const limite = Date.now() - 24 * 3600 * 1000;
+          const tarde = uxcEnviados.filter((x) => !x.pedido && x.primera && x.primera < limite);
+          if (!tarde.length) return null;
+          return (
+            <button
+              onClick={() => { uxcNav.id = tarde.length === 1 ? tarde[0].id : null; if (tarde.length > 1) uxcNav.id = null; setModulo("mediciones"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-50 text-rose-800 hover:bg-rose-100"
+            >
+              <AlertCircle size={15} />
+              🔥 {tarde.length} vivienda{tarde.length === 1 ? "" : "s"} medida{tarde.length === 1 ? "" : "s"} (Uxcar) sin materiales pedidos desde hace más de un día ({tarde.slice(0, 4).map((x) => x.exp || "s/n").join(", ")}{tarde.length > 4 ? "…" : ""}). Toca para verlas →
             </button>
           );
         })()}
@@ -20777,7 +20798,7 @@ function TechosMedicion({ medicionId }) {
 
 function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
   const [q, setQ] = useState("");
-  const [zonaMed, setZonaMed] = useState("normal"); // "normal" | "uxcar" (Aena)
+  const [zonaMed, setZonaMed] = useState(uxcNav.id ? "uxcar" : "normal"); // "normal" | "uxcar" (Aena)
 
   const filtered = mediciones.filter((m) => {
     if (!q) return true;
@@ -20887,6 +20908,7 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
    partidas y extras son mapas por id, y cada edición escribe solo su trozo, para que dos
    personas puedan medir ventanas distintas a la vez sin pisarse. */
 const UXC_NODO = "medicionesUxcar";
+const uxcNav = { id: null }; // el aviso de arriba deja aquí el expediente que hay que abrir
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
 
 const UXC_LEYENDA = {
@@ -21418,7 +21440,7 @@ function UxcGuiaProximo() {
 
 function MedicionesUxcarZona() {
   const [lista, setLista] = useState(null);
-  const [abiertoId, setAbiertoId] = useState(null);
+  const [abiertoId, setAbiertoId] = useState(() => { const x = uxcNav.id; uxcNav.id = null; return x; });
   const [q, setQ] = useState("");
   const [leyendo, setLeyendo] = useState(false);
   const [progreso, setProgreso] = useState("");
@@ -21483,7 +21505,7 @@ function MedicionesUxcarZona() {
                   <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || "(sin número)"}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
                   <td className="px-4 py-3 text-slate-600">{c.direccion || "—"}<div className="text-[11px] text-slate-400">{c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
                 </tr>
               );
             })}
@@ -21739,13 +21761,18 @@ function UxcEnvio({ exp, guardar }) {
     );
   }
   return (
-    <div className={`mb-4 p-3 rounded-lg border-2 flex flex-wrap items-center gap-3 ${env.prisa ? "border-rose-500 bg-rose-50" : "border-sky-400 bg-sky-50"}`}>
+    <div className={`mb-4 p-3 rounded-lg border-2 flex flex-wrap items-center gap-3 ${env.pedido ? "border-emerald-500 bg-emerald-50" : env.prisa ? "border-rose-500 bg-rose-50" : "border-sky-400 bg-sky-50"}`}>
       <div className="flex-1 min-w-[220px] text-sm text-slate-800">
         <b>Enviada a oficina</b> el {cuando(env.primera)}{env.por ? ` (${env.por})` : ""} · {dias === 0 ? "hoy" : `hace ${dias} día${dias === 1 ? "" : "s"}`}
         {env.prisa > 0 && <span className="block text-rose-700 font-semibold">Prisa metida {env.prisa} vez{env.prisa === 1 ? "" : "es"} · última {cuando(env.ultima)}</span>}
         {pendientes.length > 0 && <span className="block text-amber-800">Ojo: ahora aún faltan por medir {pendientes.map((v) => v.ref).join(", ")}</span>}
       </div>
-      <button onClick={prisa} style={{ backgroundColor: "#dc2626", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">🔥 METER PRISA</button>
+      {env.pedido
+        ? <div className="text-sm font-bold text-emerald-700">✔ Materiales pedidos el {cuando(env.pedido.fecha)}{env.pedido.por ? ` (${env.pedido.por})` : ""} <button onClick={() => guardar("envio/pedido", null)} className="ml-1 text-xs font-normal text-slate-500 underline">deshacer</button></div>
+        : <>
+            <button onClick={() => guardar("envio/pedido", { fecha: Date.now(), por: quien() })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">✔ MATERIALES PEDIDOS</button>
+            <button onClick={prisa} style={{ backgroundColor: "#dc2626", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">🔥 METER PRISA</button>
+          </>}
       <button onClick={() => { if (window.confirm("¿Quitar el envío? Volverá a salir como no enviada.")) guardar("envio", null); }} className="text-xs text-slate-500 underline">Quitar envío</button>
     </div>
   );
