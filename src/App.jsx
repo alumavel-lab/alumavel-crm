@@ -4655,7 +4655,7 @@ export default function App() {
         })()}
         {(() => {
           // Presupuestos creados hace más de 2 días que todavía no se han enviado al cliente.
-          if (!currentUser || !isAdmin) return null;
+          if (!currentUser || !(isAdmin || tieneAcceso("presupuestos"))) return null;
           const limite = Date.now() - 2 * 24 * 3600 * 1000;
           const sinEnviar = presupuestos.filter((p) => presupuestoSinEnviar(p) && !(p.firma && p.firma.estado) && (p.creadoEn || (p.fechaEnvio ? new Date(p.fechaEnvio + "T12:00:00").getTime() : Date.now())) < limite);
           if (sinEnviar.length === 0) return null;
@@ -4671,13 +4671,14 @@ export default function App() {
         })()}
         {(() => {
           // Viviendas de medición Uxcar (Aena) enviadas a oficina hace más de un día sin marcar «materiales pedidos»
-          if (!currentUser || !(isAdmin || tieneAcceso("mediciones"))) return null;
+          // Lo ve todo el equipo (también la oficina, que es quien tiene que pedir); solo abre el módulo quien tiene acceso a Mediciones
+          if (!currentUser) return null;
           const limite = Date.now() - 24 * 3600 * 1000;
           const tarde = uxcEnviados.filter((x) => !x.pedido && x.primera && x.primera < limite);
           if (!tarde.length) return null;
           return (
             <button
-              onClick={() => { uxcNav.id = tarde.length === 1 ? tarde[0].id : null; if (tarde.length > 1) uxcNav.id = null; setModulo("mediciones"); }}
+              onClick={() => { if (!(isAdmin || tieneAcceso("mediciones"))) return; uxcNav.id = tarde.length === 1 ? tarde[0].id : null; setModulo("mediciones"); }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-50 text-rose-800 hover:bg-rose-100"
             >
               <AlertCircle size={15} />
@@ -4726,8 +4727,8 @@ export default function App() {
         })()}
         {(() => {
           // Presupuestos firmados que todavía no han terminado su camino: sin pasar a
-          // proyecto, o ya en proyecto pero con material sin pedir.
-          if (!currentUser || !isAdmin) return null;
+          // proyecto, o ya en proyecto pero con material sin pedir. Lo ve también la oficina.
+          if (!currentUser || !(isAdmin || tieneAcceso("presupuestos") || tieneAcceso("proyectos"))) return null;
           const firmados = presupuestos.filter((p) => p.firma?.estado === "firmado" && p.estado !== "Rechazado");
           const sinProyecto = firmados.filter((p) => !p.proyectoCreadoId);
           const obrasSinPedir = [];
