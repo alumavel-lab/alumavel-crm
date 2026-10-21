@@ -20777,6 +20777,7 @@ function TechosMedicion({ medicionId }) {
 
 function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, incidencias, onUpsertIncidencia, onPasarAPresupuesto }) {
   const [q, setQ] = useState("");
+  const [zonaMed, setZonaMed] = useState("normal"); // "normal" | "uxcar" (Aena)
 
   const filtered = mediciones.filter((m) => {
     if (!q) return true;
@@ -20819,6 +20820,12 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
         subtitle={`${mediciones.length} medición${mediciones.length === 1 ? "" : "es"} registrada${mediciones.length === 1 ? "" : "s"}`}
       />
 
+      <div className="flex gap-2 mb-5 border-b border-slate-200">
+        <button onClick={() => setZonaMed("normal")} className={`crm-tab px-3 py-2 text-sm font-semibold ${zonaMed === "normal" ? "border-[#2E8B57]" : ""}`}>Mediciones</button>
+        <button onClick={() => setZonaMed("uxcar")} className={`crm-tab px-3 py-2 text-sm font-semibold ${zonaMed === "uxcar" ? "border-[#2E8B57]" : ""}`}>Uxcar (Aena)</button>
+      </div>
+
+      {zonaMed === "uxcar" ? <MedicionesUxcarZona /> : (<>
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
@@ -20869,6 +20876,1025 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
           </tbody>
         </table>
       </div>
+      </>)}
+    </div>
+  );
+}
+
+/* ================= MEDICIÓN UXCAR (AENA · PLAN DE AISLAMIENTO ACÚSTICO) =================
+   Zona aparte dentro de Mediciones. Cada expediente (p. ej. VLC 690) se guarda en su propio
+   nodo de Firebase "medicionesUxcar/<id>" (no toca la lista normal de mediciones). Las ventanas,
+   partidas y extras son mapas por id, y cada edición escribe solo su trozo, para que dos
+   personas puedan medir ventanas distintas a la vez sin pisarse. */
+const UXC_NODO = "medicionesUxcar";
+const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
+
+const UXC_LEYENDA = {
+  MB: "Persiana en cajón monoblock", CE: "Persiana en cajón exterior", CP: "Persiana en cajón interior o capialzado",
+  SP: "Carpintería sin persiana", MQ: "Mosquitera", FR: "Frailero interior", ML: "Mallorquina exterior", PL: "Palillería",
+  VT: "Vidrio traslúcido", RJ: "Rejas", SL: "Silenciador", PA: "Puerta acústica", SC: "Scarabeo en lucernario y puerta",
+  PP: "Perfil perimetral de lucernario", RC: "Recercado perimetral", TP: "Tapajuntas de pino", CT: "Cortina", CR: "Cerradura",
+  AL: "Alarma o mecanismo eléctrico", CS: "Control solar", MN: "Manilla", SPL: "Suplemento", TR: "Tirador", AN: "Andamio",
+  CD: "Cardán", TD: "Toldo", MT: "Motorización persiana", RD: "Radiador", CU: "Travesaño o cuarterón", PM: "Pasamanos",
+  VN: "Persiana veneciana", TN: "Tendedero", DJ: "Drenaje", CV: "Contraventana",
+};
+
+// Imprevistos a solicitar (tarifa del concurso, precio unitario sin IVA). Grupos que se marcan por ventana: 01, 02, 05, 06.
+// Grupos generales de la vivienda: 11, 12, 14.
+const UXC_IMPREVISTOS = [
+  { g: "01", cod: "01.02.01", ud: "ml", t: "Levantado de capialzado a mano", p: 9.54 },
+  { g: "01", cod: "01.02.03", ud: "ud", t: "Levantado y sustitución tapa de capialzado", p: 18.27 },
+  { g: "01", cod: "01.02.04", ud: "ud", t: "Levantado y montaje de cortinas sobre huecos de ventana", p: 3.97 },
+  { g: "01", cod: "01.03.09", ud: "ud", t: "Desmontaje y montaje de pérgola con recuperación", p: 86.88 },
+  { g: "01", cod: "01.07.04", ud: "ud", t: "Levantado y colocación de mecanismos eléctricos", p: 24.09 },
+  { g: "01", cod: "01.08.01", ud: "ud", t: "Desplazamiento unidad de aire acondicionado", p: 54.44 },
+  { g: "01", cod: "01.08.03", ud: "ud", t: "Desmontaje y montaje de antena de TV con recuperación", p: 46.52 },
+  { g: "01", cod: "01.08.05", ud: "ud", t: "Levantado de tendedero", p: 18.83 },
+  { g: "01", cod: "01.08.04", ud: "ud", t: "Desmontaje y montaje de tendedero con recuperación", p: 30.33 },
+  { g: "01", cod: "01.08.06", ud: "ud", t: "Desmontaje y montaje de farola", p: 25.8 },
+  { g: "01", cod: "11.01.22", ud: "ud", t: "Colocación de radiador", p: 79.83 },
+  { g: "01", cod: "01.08.02", ud: "ud", t: "Levantado de radiador con recuperación", p: 26.61 },
+  { g: "02", cod: "02.02.14", ud: "ud", t: "Scarabeo (mecanismo manual)", p: 111.74 },
+  { g: "02", cod: "02.02.15", ud: "ud", t: "Scarabeo (mecanismo eléctrico)", p: 434.06 },
+  { g: "02", cod: "02.02.16", ud: "ud", t: "Cerradura de seguridad en carpinterías, con llave y pomo", p: 29.07 },
+  { g: "02", cod: "02.02.17", ud: "m²", t: "Travesaños o cuarterones de perfil de carpintería (no palillería)", p: 45.7 },
+  { g: "02", cod: "02.02.18", ud: "ml", t: "Chapas de aluminio/PVC como remate de jambas, dintel y alféizar", p: 4.17 },
+  { g: "02", cod: "02.02.26", ud: "ml", t: "Recercado de aluminio/madera en jambas, dintel y alféizar", p: 38.61 },
+  { g: "02", cod: "02.02.27", ud: "ml", t: "Tapajuntas de madera", p: 2.3 },
+  { g: "02", cod: "02.02.28", ud: "ml", t: "Moldura exterior decorada acanalada de madera maciza (≥6 cm ancho, ≥2 cm espesor)", p: 56.23 },
+  { g: "05", cod: "05.02.03", ud: "ml", t: "Cierre capialzado. Excedente (para 3 m lineales). Longitud mayor a ancho de ventana", p: 71.81 },
+  { g: "06", cod: "01.03.01", ud: "ud", t: "Levantado de reja o cierre de tijera hasta 1,50 m² sin recuperación", p: 9.1 },
+  { g: "06", cod: "06.01.04", ud: "m²", t: "Anclaje de reja", p: 39.94 },
+  { g: "11", cod: "11.01.17", ud: "ml", t: "Pasamanos tubo acero (diámetro mínimo 40 mm)", p: 22.76 },
+  { g: "11", cod: "11.01.23", ud: "ud", t: "Colocación de tendedero", p: 11.49 },
+  { g: "14", cod: "14.01.02", ud: "h", t: "Camión grúa articulada telescópica 40T", p: 51.67 },
+  { g: "14", cod: "14.01.03", ud: "ud", t: "Salida camión grúa articulada telescópica 40T", p: 77.51 },
+  { g: "12", cod: "14.01.01", ud: "ud", t: "Acceso a trabajos en huecos de fachada (ventanas no ordinarias)", p: 52.45 },
+];
+const UXC_GRUPOS_NOMBRE = { "01": "01 · Levantados", "02": "02 · Carpintería", "05": "05 · Persianas", "06": "06 · Rejas y contraventanas", "11": "11 · Varios", "12": "12 · Ayudas", "14": "14 · Torre móvil" };
+const UXC_GRUPOS_VENTANA = ["01", "02", "05", "06"];
+const UXC_GRUPOS_GENERAL = ["11", "14", "12"];
+
+const uxcNum = (s) => {
+  if (typeof s === "number") return isFinite(s) ? s : 0;
+  let t = String(s == null ? "" : s).replace(/[€\s]/g, "");
+  if (!t) return 0;
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(t);
+  return isFinite(n) ? n : 0;
+};
+const uxcEUR = (n) => (isFinite(n) ? n : 0).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+const uxcNorm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// Las medidas del proyecto no se usan nunca: se quitan de cualquier texto que las lleve.
+const uxcSinMedidas = (t) => String(t || "")
+  .replace(/\.?\s*Pasa a [^.]*?\d+\s*[x×]\s*\d+\s*mm\)?\.?/gi, "")
+  .replace(/\s*(de\s+)?\d{3,4}\s*[x×]\s*\d{3,4}\s*mm/gi, "")
+  .replace(/\s{2,}/g, " ").trim();
+const uxcKeyImp = (cod) => "i_" + String(cod).replace(/\./g, "_");
+const uxcLimpio = (o) => JSON.parse(JSON.stringify(o === undefined ? null : o));
+const uxcMapa = (arr) => { const m = {}; arr.forEach((x, i) => { const id = x.id || uid(); m[id] = { ...x, id, orden: i }; }); return m; };
+const uxcLista = (m) => toArray(m).filter(Boolean).sort((a, b) => (a.orden || 0) - (b.orden || 0));
+const uxcEsPuerta = (v) => /^A\d/i.test(String(v.ref || "")) || /puerta/i.test(String(v.tipo || ""));
+const uxcFechaES = (iso) => { if (!iso) return "—"; const [y, m, d] = String(iso).slice(0, 10).split("-"); return d && m && y ? `${d}/${m}/${y}` : iso; };
+const uxcSumaDias = (iso, dias) => { const d = new Date(String(iso).slice(0, 10) + "T12:00:00"); if (isNaN(d)) return null; d.setDate(d.getDate() + (parseInt(dias, 10) || 0)); return d.toISOString().slice(0, 10); };
+
+function uxcVid(exp, v) {
+  const b = exp.vidrio || {};
+  const pick = (k, kv) => (v[kv] !== undefined && v[kv] !== null && v[kv] !== "" ? v[kv] : b[k]);
+  return { ext: pick("ext", "vExt"), camara: pick("camara", "vCamara"), gas: pick("gas", "vGas"), int: pick("int", "vInt"), be: v.vBE === "si" ? true : v.vBE === "no" ? false : !!b.be, cs: pick("cs", "vCS") };
+}
+
+// Qué lleva cada ventana según la nomenclatura del plano (MB+MQ, CR, SP…) y el texto "extra".
+function uxcObs(v) {
+  const toks = String(v.codigos || "").toUpperCase().split(/[^A-Z]+/).filter(Boolean);
+  const has = (...c) => c.some((x) => toks.includes(x));
+  const txt = (String(v.extra || "") + " " + String(v.tipo || "")).toUpperCase();
+  const ov = (k, def) => (v["o_" + k] === "si" ? true : v["o_" + k] === "no" ? false : def); // lo marcado en la hoja manda
+  const persianaDef = has("MB", "CE", "CP", "VN");
+  const persianaFin = ov("persiana", persianaDef);
+  return {
+    dobleManilla: ov("dobleManilla", null),
+    obra: ov("obra", null),
+    cerradura: ov("cerradura", has("CR")),
+    frailero: ov("frailero", has("FR")),
+    mosquitera: ov("mosquitera", has("MQ")),
+    oscilo: ov("oscilo", /OSCILO/.test(txt)),
+    persiana: persianaFin,
+    cajonTipo: !persianaFin ? "" : has("MB") ? "monoblock" : has("CE") ? "exterior" : has("CP") ? "interior/capialzado" : "cajón",
+    vidrioTraslucido: ov("vidTras", has("VT") ? true : null),
+    controlSolar: ov("cs", has("CS") ? true : null),
+    sinPersiana: persianaFin === false ? true : has("SP"),
+    desconocidos: toks.filter((t) => !UXC_LEYENDA[t]),
+  };
+}
+
+// Partidas del informe que afectan a una ventana (por la referencia V01.002 ↔ V01/002).
+function uxcPartidasDeVentana(exp, v) {
+  const k = uxcNorm(v.ref);
+  const todas = uxcLista(exp.partidas).filter((p) => p.marcada !== false);
+  const aplica = (p) => String(p.refs || "").split(/[,;\s]+/).map(uxcNorm).filter(Boolean).includes(k);
+  return {
+    pagadas: todas.filter((p) => p.bloque !== "noincl" && aplica(p)),
+    noPagadas: todas.filter((p) => p.bloque === "noincl" && aplica(p)),
+  };
+}
+
+// Mano de la ventana: con 2 o más hojas manda la hoja activa (la de la manilla); con una sola, el lado de las bisagras.
+function uxcManoTexto(v) {
+  const n = parseInt(v.hojas, 10) || (uxcEsPuerta(v) ? 1 : 2);
+  return n >= 2 ? `hoja activa (manilla) a la ${v.activa === "izquierda" ? "izquierda" : "derecha"}` : `bisagras a la ${v.bisagra === "derecha" ? "derecha" : "izquierda"}`;
+}
+const uxcCambiarMano = (v) => {
+  const n = parseInt(v.hojas, 10) || (uxcEsPuerta(v) ? 1 : 2);
+  return n >= 2 ? ["activa", v.activa === "izquierda" ? "derecha" : "izquierda"] : ["bisagra", v.bisagra === "derecha" ? "izquierda" : "derecha"];
+};
+// Dibujo "visto desde dentro": marco, hojas, hoja activa con manilla, apertura y oscilo.
+function uxcEsquemaSVG(v) {
+  const o = uxcObs(v);
+  const puerta = uxcEsPuerta(v);
+  const n = Math.max(1, Math.min(4, parseInt(v.hojas, 10) || (puerta ? 1 : 2)));
+  const x0 = 20, w = 140, y0 = puerta ? 10 : (o.persiana ? 30 : 12), h = puerta ? 125 : (o.persiana ? 92 : 110);
+  const lw = w / n;
+  const activaIdx = n === 1 ? 0 : (v.activa === "izquierda" ? 0 : n - 1);
+  let s = `<svg viewBox="0 0 180 150" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;max-height:150px"><g fill="none" stroke="#111" stroke-width="1.4">`;
+  if (!puerta && o.persiana) s += `<rect x="${x0}" y="6" width="${w}" height="20"/><text x="${x0 + w / 2}" y="20" font-size="10" text-anchor="middle" fill="#111" stroke="none">${o.cajonTipo === "monoblock" ? "MB" : o.cajonTipo === "exterior" ? "CE" : "CP"}</text>`;
+  s += `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" stroke-width="2"/>`;
+  for (let i = 0; i < n; i++) {
+    const lx = x0 + i * lw;
+    s += `<rect x="${lx + 3}" y="${y0 + 3}" width="${lw - 6}" height="${h - 6}"/>`;
+    const bisagraIzq = n === 1 ? v.bisagra !== "derecha" : i < n / 2;
+    const ax = bisagraIzq ? lx + 3 : lx + lw - 3, bx = bisagraIzq ? lx + lw - 3 : lx + 3;
+    const ym = y0 + h / 2;
+    s += `<polyline points="${bx},${y0 + 3} ${ax},${ym} ${bx},${y0 + h - 3}" stroke-dasharray="4 3" stroke-width="1"/>`;
+    if (o.oscilo && i === activaIdx) s += `<polyline points="${lx + 3},${y0 + 3} ${lx + lw / 2},${y0 + h - 3} ${lx + lw - 3},${y0 + 3}" stroke-dasharray="2 2" stroke-width="1"/>`;
+    const mx = bisagraIzq ? lx + lw - 6 : lx + 6;
+    if (i === activaIdx) s += `<rect x="${mx - 1.5}" y="${ym - 6}" width="3" height="12" fill="#111"/>`;
+    s += `<text x="${lx + lw / 2}" y="${ym + 4}" font-size="12" text-anchor="middle" fill="#0a7a3d" stroke="none" font-weight="bold">${i === activaIdx ? "1" : "2"}</text>`;
+  }
+  s += `</g></svg>`;
+  return s;
+}
+const UXC_GUIA_SVG = `<svg viewBox="0 0 200 190" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;max-height:200px"><g fill="none" stroke="#111" stroke-width="1.2"><rect x="8" y="6" width="80" height="80"/><circle cx="48" cy="46" r="30"/><circle cx="48" cy="46" r="20"/><circle cx="48" cy="46" r="9"/><circle cx="48" cy="46" r="34" stroke-dasharray="2 2"/><rect x="108" y="10" width="62" height="74"/><rect x="26" y="86" width="9" height="82"/><rect x="35" y="86" width="9" height="82"/><rect x="26" y="130" width="18" height="38"/><line x1="10" y1="168" x2="70" y2="168" stroke-dasharray="3 2"/><line x1="108" y1="96" x2="150" y2="96"/><line x1="100" y1="150" x2="190" y2="150"/><line x1="40" y1="185" x2="90" y2="185"/></g></svg>`;
+
+const UXC_CSS = `
+@page { size: A4 portrait; margin: 8mm; }
+* { box-sizing: border-box; }
+body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 0; font-size: 11px; }
+.hoja { page-break-after: always; padding: 2mm; }
+.hoja:last-child { page-break-after: auto; }
+h1 { text-align: center; font-size: 22px; margin: 0 0 8px; letter-spacing: .5px; }
+.caja { border: 2px solid #111; padding: 4px 7px; }
+.caja h3 { margin: 0 0 4px; font-size: 12px; text-decoration: underline; }
+.fila2 { display: grid; grid-template-columns: 1.15fr 1fr; gap: 8px; margin-bottom: 6px; }
+.obs div { display: flex; align-items: center; gap: 4px; margin: 3px 0; font-size: 10.5px; }
+.obs .l { flex: 1; border-bottom: 1px solid #111; min-height: 11px; padding-left: 2px; font-weight: bold; }
+.sq { display: inline-block; width: 16px; height: 13px; border: 1.5px solid #111; font-size: 8px; text-align: center; line-height: 11px; }
+.sq.on { background: #111; color: #fff; }
+.lineas div { border-bottom: 1px solid #111; height: 17px; margin-top: 4px; }
+.pill { display: inline-block; border: 1px solid #111; padding: 0 5px; margin: 1px 3px 1px 0; font-size: 10px; }
+.pill.on { background: #111; color: #fff; }
+.aena li { margin: 1px 0; }
+.mal { color: #b00020; font-weight: bold; }
+.aviso { border: 2px solid #b00020; color: #b00020; padding: 3px 6px; margin-bottom: 6px; font-weight: bold; font-size: 11px; }
+table.t { border-collapse: collapse; width: 100%; font-size: 10px; }
+table.t th, table.t td { border: 1px solid #111; padding: 2px 4px; text-align: left; vertical-align: top; }
+table.t th { background: #eee; }
+.c { text-align: center !important; }
+.r { text-align: right !important; }
+`;
+
+function uxcAbrirImpresion(titulo, cuerpo) {
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title><style>${UXC_CSS}</style></head><body>${cuerpo}</body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) { alert("El navegador ha bloqueado la ventana emergente. Permítela para poder imprimir."); return; }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 400);
+}
+
+function uxcSq(txt, on) { return `<span class="sq${on ? " on" : ""}">${escapeHtml(txt)}</span>`; }
+
+// Hoja "MEDICIÓN CARPINTERÍAS" de una ventana, ya rellena con lo que se sabe del expediente.
+function uxcHojaVentanaHTML(exp, v) {
+  const cab = exp.cab || {};
+  const o = uxcObs(v);
+  const { pagadas, noPagadas } = uxcPartidasDeVentana(exp, v);
+  const fila = (txt, on, extra) => `<div><span>${txt}</span><span class="l">${extra || ""}</span>${uxcSq("SI", on === true)}${uxcSq("NO", on === false)}</div>`;
+  const pag = (p) => `<li>${escapeHtml(p.cod)} ${escapeHtml(uxcSinMedidas(p.concepto))}</li>`;
+  const vi = uxcVid(exp, v);
+  const opc = (lista, sel) => lista.map((x) => `<span class="pill${String(sel) === String(x) ? " on" : ""}">${x}</span>`).join("");
+  const aviso = [];
+  if (v.rechazada) aviso.push("EL PLANO MARCA ESTA CARPINTERÍA COMO «RECHAZA»: confirmar con oficina antes de medir/fabricar");
+  if (o.oscilo && !(exp.extras && uxcLista(exp.extras).some((e) => e.pagada))) aviso.push("OSCILOBATIENTE = extra de pago aparte (proforma): no fabricar hasta confirmar el ingreso");
+  if (exp.revisado === false) aviso.push("DATOS SIN REVISAR (leídos por IA): comprobar contra el plano antes de medir");
+  if (o.desconocidos.length) aviso.push("Código sin significado en la leyenda: " + o.desconocidos.join(", "));
+  return `<div class="hoja">
+  <h1>MEDICIÓN CARPINTERÍAS</h1>
+  ${aviso.length ? `<div class="aviso">⚠ ${aviso.map(escapeHtml).join("<br>⚠ ")}</div>` : ""}
+  <div class="fila2"><div class="caja"><b>EXPEDIENTE:</b> ${escapeHtml(cab.expediente || "")} <span style="font-size:9px">· ${escapeHtml(cab.pedido || "")}</span></div><div class="caja"><b>COLOR/CÓDIGO:</b> ${escapeHtml(v.material || cab.color || "")}</div></div>
+  <div class="fila2"><div class="caja"><b>NOMENCLATURA:</b> ${escapeHtml([v.ref, v.tipo, v.material, v.codigos, v.extra].filter(Boolean).join(" · "))}</div><div class="caja"><b>VIVIENDA:</b> ${escapeHtml([cab.direccion, v.estancia].filter(Boolean).join(" — "))}</div></div>
+  <div class="fila2" style="align-items:stretch">
+    <div class="caja obs"><h3>OBSERVACIONES</h3>
+      ${fila("CERRADURA:", o.cerradura)}
+      ${fila("DOBLE MANILLA:", o.dobleManilla)}
+      ${fila("FRAILERO:", o.frailero)}
+      ${fila("MOSQUITERA:", o.mosquitera)}
+      <div><span>&nbsp;&nbsp;- MEDIDA:</span><span class="l">${escapeHtml(v.mosqMedida || "")}</span></div>
+      ${fila("OSCILOBATIENTE:", o.oscilo)}
+      ${fila("PERSIANA:", o.persiana ? true : (o.sinPersiana ? false : null), o.cajonTipo)}
+      <div><span>&nbsp;&nbsp;- CAJÓN DE:</span><span class="l">${escapeHtml(v.cajon || "")}</span>${uxcSq("SI", !!o.persiana)}${uxcSq("185", String(v.cajon || "") === "185")}</div>
+      ${fila("VIDRIO TRASLÚCIDO:", o.vidrioTraslucido)}
+      ${fila("CONTROL SOLAR:", o.controlSolar)}
+      ${fila("LLEVA OBRA:", o.obra)}
+      <div><span>FONDO PERSIANA:</span><span class="l">${escapeHtml(v.fondoPersiana || "")}</span></div>
+    </div>
+    <div class="caja" style="display:flex;flex-direction:column"><h3>ESQUEMA VENTANA <small style="font-weight:normal;font-size:8px">VISTO DESDE DENTRO</small></h3><div style="flex:1;display:flex;align-items:center">${uxcEsquemaSVG(v)}</div></div>
+  </div>
+  <div class="fila2">
+    <div class="caja"><h3>LO QUE PAGA / NO PAGA AENA EN ESTA CARPINTERÍA</h3>
+      <div style="font-size:10px"><b>Paga:</b><ul class="aena" style="margin:2px 0 4px 14px;padding:0">${pagadas.length ? pagadas.map(pag).join("") : "<li>(sin partidas cargadas)</li>"}</ul>
+      <b class="mal">NO paga:</b><ul class="aena" style="margin:2px 0 0 14px;padding:0">${noPagadas.length ? noPagadas.map((p) => `<li class="mal">${escapeHtml(p.cod)} ${escapeHtml(uxcSinMedidas(p.concepto))}</li>`).join("") : "<li>—</li>"}</ul></div>
+    </div>
+    <div class="caja"><h3>MEDIDA FABRICACIÓN</h3>
+      <div style="margin:6px 0">ANCHO: ${v.anchoFab ? `<b>${escapeHtml(v.anchoFab)}</b>` : "________________"} &nbsp; ALTO: ${v.altoFab ? `<b>${escapeHtml(v.altoFab)}</b>` : "________________"}</div>
+      <div style="font-size:10px;margin-top:4px">Mano comprobada: ${uxcSq("SI", !!v.manoOk)}${uxcSq("NO", false)} &nbsp; Apertura: <b>${escapeHtml(uxcManoTexto(v))}</b></div>
+    </div>
+  </div>
+  <div class="fila2">
+    <div class="caja"><h3>OTRAS OBSERVACIONES</h3>${v.obs ? `<div style="min-height:34px;font-weight:bold">${escapeHtml(v.obs)}</div>` : ""}<div class="lineas"><div></div><div></div>${v.obs ? "" : "<div></div><div></div>"}</div></div>
+    <div class="caja"><h3>VIDRIOS</h3>
+      <div style="margin:3px 0"><b>EXTERIOR:</b> ${opc(["4", "6", "8", "10", "3+3", "4+4"], vi.ext)}</div>
+      <div style="margin:3px 0"><b>CÁMARA:</b> ${opc(["ARGON", "AIRE"], vi.gas)} ${vi.camara ? `<span class="pill on">${escapeHtml(vi.camara)} mm</span>` : ""}</div>
+      <div style="margin:3px 0"><b>INTERIOR:</b> ${opc(["4", "6", "3+3", "4+4"], vi.int)}</div>
+      <div style="display:flex;justify-content:space-between;margin-top:5px;border-top:1px solid #111;padding-top:3px"><span><b>INTERIOR:</b> ${opc(["BE"], vi.be ? "BE" : "")}</span><span><b>EXTERIOR:</b> ${opc(["CS", "ESPEJO", "MATE"], vi.cs)}</span></div>
+    </div>
+  </div>
+  <div class="fila2" style="height:62mm">
+    <div class="caja" style="display:flex;flex-direction:column"><h3>GUÍA PERSIANA</h3>${v.guia ? `<div style="font-weight:bold">${escapeHtml(v.guia)}</div>` : ""}<div style="flex:1">${UXC_GUIA_SVG}</div></div>
+    <div class="caja"><h3>SOLAPE + ANCHO SOLAPE</h3>${v.solape || v.anchoSolape ? `<div style="font-size:14px;font-weight:bold;margin-top:8px">Solape: ${escapeHtml(v.solape || "—")} &nbsp; Ancho solape: ${escapeHtml(v.anchoSolape || "—")}</div>` : ""}</div>
+  </div>
+  <div style="font-size:10px;margin-top:4px">Medido por: ______________________ &nbsp;&nbsp; Fecha: ____ / ____ / ________ &nbsp;&nbsp; ${escapeHtml(v.ref || "")}</div>
+</div>`;
+}
+
+// Una hoja por vivienda con los imprevistos: filas = partida, columnas = ventanas.
+function uxcHojaImprevistosHTML(exp) {
+  const vs = uxcLista(exp.ventanas).filter((v) => !v.rechazada);
+  const marc = exp.imprevistos || {};
+  const cab = exp.cab || {};
+  const filas = (grupos) => grupos.map((g) => {
+    const items = UXC_IMPREVISTOS.filter((i) => i.g === g);
+    return `<tr><th colspan="${3 + vs.length}">${escapeHtml(UXC_GRUPOS_NOMBRE[g])}</th></tr>` + items.map((i) => `<tr><td>${escapeHtml(i.cod)}</td><td>${escapeHtml(i.t)}</td><td class="c">${escapeHtml(i.ud)}</td>${vs.map((v) => { const m = marc[uxcKeyImp(i.cod)]; const q = m && m[v.id]; return `<td class="c">${q ? "<b>" + escapeHtml(q === true ? "✔" : q) + "</b>" : "☐"}</td>`; }).join("")}</tr>`).join("");
+  }).join("");
+  const gen = UXC_GRUPOS_GENERAL.map((g) => {
+    const items = UXC_IMPREVISTOS.filter((i) => i.g === g);
+    return `<tr><th colspan="4">${escapeHtml(UXC_GRUPOS_NOMBRE[g])} (de toda la vivienda)</th></tr>` + items.map((i) => { const m = marc[uxcKeyImp(i.cod)]; const q = m && m.gen; return `<tr><td>${escapeHtml(i.cod)}</td><td>${escapeHtml(i.t)}</td><td class="c">${escapeHtml(i.ud)}</td><td class="c">${q ? "<b>" + escapeHtml(q === true ? "✔" : q) + "</b>" : "☐ cant.: ____"}</td></tr>`; }).join("");
+  }).join("");
+  return `<div class="hoja"><h1>IMPREVISTOS A SOLICITAR</h1>
+  <div class="caja" style="margin-bottom:6px"><b>${escapeHtml(cab.expediente || "")}</b> · ${escapeHtml(cab.direccion || "")} · marcar con ✔ (o cantidad) lo que se encuentre al medir.</div>
+  <table class="t"><tr><th>Cód.</th><th>Descripción</th><th>Ud</th>${vs.map((v) => `<th class="c">${escapeHtml(v.ref)}</th>`).join("")}</tr>${filas(UXC_GRUPOS_VENTANA)}</table>
+  <table class="t" style="margin-top:8px">${gen}</table></div>`;
+}
+
+// Resumen para que la oficina pida los materiales.
+function uxcResumenOficina(exp) {
+  const vs = uxcLista(exp.ventanas);
+  const activas = vs.filter((v) => !v.rechazada);
+  const m2 = (v) => (uxcNum(v.anchoFab) * uxcNum(v.altoFab)) / 1e6;
+  const medidas = activas.filter((v) => uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0);
+  const ventanasSolo = activas.filter((v) => !uxcEsPuerta(v));
+  const medidasVent = ventanasSolo.filter((v) => uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0);
+  const m2Medido = medidasVent.reduce((a, v) => a + m2(v), 0);
+  const extras = uxcLista(exp.extras);
+  const imp = [];
+  UXC_IMPREVISTOS.forEach((i) => { const m = (exp.imprevistos || {})[uxcKeyImp(i.cod)]; if (!m) return; Object.keys(m).forEach((k) => { if (m[k]) imp.push({ i, donde: k === "gen" ? "Vivienda" : ((vs.find((v) => v.id === k) || {}).ref || k), q: m[k] === true ? "1" : m[k] }); }); });
+  return { vs, activas, medidas, ventanasSolo, medidasVent, m2Medido, extras, imp,
+    cuenta: {
+      persianas: activas.filter((v) => uxcObs(v).persiana).length,
+      mosquiteras: activas.filter((v) => uxcObs(v).mosquitera).length,
+      oscilo: activas.filter((v) => uxcObs(v).oscilo).length,
+      cerraduras: activas.filter((v) => uxcObs(v).cerradura).length,
+    } };
+}
+
+function uxcHojaOficinaHTML(exp) {
+  const r = uxcResumenOficina(exp);
+  const cab = exp.cab || {};
+  const filas = r.vs.map((v) => {
+    const o = uxcObs(v);
+    const medida = v.anchoFab && v.altoFab ? `<b>${escapeHtml(v.anchoFab)} × ${escapeHtml(v.altoFab)}</b>` : `<span class="mal">pendiente</span>`;
+    const vi = uxcVid(exp, v);
+    const vid = uxcEsPuerta(v) ? "—" : [vi.ext && `ext ${vi.ext}`, vi.camara && `cám ${vi.camara}${vi.gas ? " " + vi.gas : ""}`, vi.int && `int ${vi.int}`, vi.be && "BE", vi.cs && vi.cs].filter(Boolean).join(" · ") || "—";
+    return `<tr${v.rechazada ? ' style="text-decoration:line-through;color:#888"' : ""}><td><b>${escapeHtml(v.ref)}</b><br>${escapeHtml(v.estancia || "")}</td><td>${escapeHtml(v.tipo || "")}<br>${escapeHtml(v.material || "")}${v.rechazada ? "<br><b class='mal'>RECHAZA</b>" : ""}</td><td class="c">${medida}</td><td>${escapeHtml(vid)}</td><td>${o.persiana ? escapeHtml("Sí " + o.cajonTipo + (v.cajon ? " · cajón " + v.cajon : "") + (v.guia ? " · guía " + v.guia : "")) : "No"}</td><td class="c">${o.mosquitera ? "Sí" + (v.mosqMedida ? "<br>" + escapeHtml(v.mosqMedida) : "") : "No"}</td><td class="c">${o.oscilo ? "Sí (extra)" : "No"}</td><td class="c">${o.cerradura ? "Sí" : "No"}</td><td>${escapeHtml([v.solape && "solape " + v.solape + (v.anchoSolape ? "/" + v.anchoSolape : ""), v.obs].filter(Boolean).join(" · "))}</td></tr>`;
+  }).join("");
+  const aviso = [];
+  if (exp.revisado === false) aviso.push("Datos sin revisar (leídos por IA).");
+  r.vs.filter((v) => v.rechazada).forEach((v) => aviso.push(`${v.ref}: el plano marca «RECHAZA».`));
+  r.extras.forEach((e) => { if (!e.pagada) aviso.push(`Proforma ${e.proformaNum || ""} (${e.concepto}) sin confirmar el ingreso: no pedir/fabricar ese extra todavía.`); });
+  if (r.medidasVent.length < r.ventanasSolo.length) aviso.push(`Faltan medidas de fabricación en ${r.ventanasSolo.length - r.medidasVent.length} ventana(s).`);
+  return `<div class="hoja"><h1>HOJA PARA OFICINA — PEDIDO DE MATERIALES</h1>
+  <div class="caja" style="margin-bottom:6px"><b>${escapeHtml(cab.expediente || "")}</b> · ${escapeHtml(cab.pedido || "")} · ${escapeHtml(cab.aeropuerto || "")}<br>${escapeHtml(cab.direccion || "")} (${escapeHtml(cab.municipio || "")}) · Cliente: ${escapeHtml(cab.cliente || "")}<br>Medido por: ${escapeHtml(cab.medidoPor || "________")} · Fecha: ${escapeHtml(uxcFechaES(cab.fechaMedicion))}</div>
+  ${aviso.length ? `<div class="aviso">⚠ ${aviso.map(escapeHtml).join("<br>⚠ ")}</div>` : ""}
+  <table class="t"><tr><th>Ref.</th><th>Tipo / color</th><th>Medida fabricación (mm)</th><th>Vidrio</th><th>Persiana</th><th>Mosq.</th><th>Oscilo</th><th>Cerr.</th><th>Solape / obs.</th></tr>${filas}</table>
+  <div class="fila2" style="margin-top:8px">
+    <div class="caja"><h3>A PEDIR (sin contar rechazadas)</h3>
+      Ventanas/puertas: <b>${r.activas.length}</b> · Persianas con cajón: <b>${r.cuenta.persianas}</b> · Mosquiteras: <b>${r.cuenta.mosquiteras}</b> · Oscilobatientes (extra): <b>${r.cuenta.oscilo}</b> · Cerraduras: <b>${r.cuenta.cerraduras}</b><br>
+      m² de ventana medidos: <b>${r.m2Medido.toFixed(2)}</b>
+    </div>
+    <div class="caja"><h3>EXTRAS / PROFORMAS</h3>${r.extras.length ? r.extras.map((e) => `${escapeHtml(e.concepto)}: <b>${escapeHtml(e.cant)} ud</b> · ${e.pagada ? "INGRESADO" : "<span class='mal'>PENDIENTE DE INGRESO</span>"}`).join("<br>") : "—"}</div>
+  </div>
+  <div class="caja" style="margin-top:6px"><h3>IMPREVISTOS A SOLICITAR (encontrados al medir)</h3>${r.imp.length ? "<table class='t'>" + r.imp.map((x) => `<tr><td>${escapeHtml(x.i.cod)}</td><td>${escapeHtml(x.i.t)}</td><td>${escapeHtml(x.donde)}</td><td class="c">${escapeHtml(x.q)} ${escapeHtml(x.i.ud)}</td></tr>`).join("") + "</table>" : "Ninguno marcado."}</div>
+</div>`;
+}
+
+/* ---------- Ejemplo real: expediente VLC 690 (Milotxa, Ribarroja del Turia) ---------- */
+function uxcEjemploVLC690() {
+  const V = (ref, estancia, extra = {}) => ({
+    id: uid(), ref, estancia, tipo: "V. Abatible 2H", material: "PVC BLANCO", codigos: "MB+MQ", extra: "EXTRA PAGA OSCILOBATIENTE", hojas: 2, activa: "derecha", rechazada: false, cant: 1, ...extra,
+  });
+  const ventanas = [
+    V("V01/002", "Dormitorio 1", {}),
+    V("V01/003", "Dormitorio 1", {}),
+    V("V02/004", "Salón 1", {}),
+    V("V03/005", "Dormitorio 3 (patio trasero)", {}),
+    V("V04/006", "Dormitorio 2", {}),
+    { id: uid(), ref: "A01/001", estancia: "Puerta de entrada", tipo: "Puerta acústica opaca 1H", material: "PVC BLANCO", codigos: "CR", extra: "", hojas: 1, activa: "derecha", rechazada: true, cant: 1, obs: "El plano pone RECHAZA; el informe la paga. Confirmar con oficina." },
+  ];
+  const P = (bloque, cod, ud, concepto, refs, medProy, medNueva, preUnit, impProy, impNuevo) => ({ id: uid(), bloque, cod, ud, concepto, refs, medProy, medNueva, preUnit, impProy, impNuevo, marcada: true });
+  const partidas = [
+    P("incl", "01.01.01", "ud", "Levantado de carpintería hasta 1,50 m²", "V03.005", "1,00", "1,00", "24,24", "24,24", "24,24"),
+    P("incl", "01.01.02", "ud", "Levantado de carpintería hasta 3,00 m²", "A01.001, V01.002, V01.003, V02.004, V04.006", "4,00", "5,00", "29,09", "116,35", "145,44"),
+    P("incl", "01.02.02", "ud", "Levantado de persiana y caja sin recuperación", "V01.002, V01.003, V02.004, V03.005, V04.006", "5,00", "5,00", "8,53", "42,65", "42,65"),
+    P("incl", "01.02.04", "ud", "Levantado y montaje de cortinas sobre huecos de ventana", "V01.002, V01.003", "2,00", "2,00", "3,55", "7,11", "7,11"),
+    P("incl", "01.05.01", "ud", "Desmontaje de mosquitera", "V01.002, V01.003, V02.004, V03.005, V04.006", "0,00", "5,00", "4,18", "0,00", "20,88"),
+    P("incl", "A01", "ud", "Puerta acústica opaca con burlete inferior de acción mecánica 1h de PVC blanco (sustitución)", "A01.001", "1,00", "1,00", "835,31", "835,31", "835,31"),
+    P("incl", "V01", "ud", "Ventana abatible de PVC blanco 2h (sustitución)", "V01.002, V01.003", "2,00", "2,00", "348,91", "730,85", "697,83"),
+    P("incl", "V02", "ud", "Ventana abatible de PVC 2h (sustitución). Pasa de color aluminio a PVC blanco", "V02.004", "1,00", "1,00", "417,85", "428,58", "417,85"),
+    P("incl", "V03", "ud", "Ventana abatible de PVC 2h (sustitución). Pasa de color aluminio a PVC blanco", "V03.005", "1,00", "1,00", "310,54", "327,20", "310,54"),
+    P("incl", "V04", "ud", "Ventana abatible de PVC 2h (sustitución). Pasa de color aluminio a PVC blanco", "V04.006", "1,00", "1,00", "335,53", "362,72", "335,53"),
+    P("incl", "04.02.02", "m²", "Climalit 8/12-16/4", "V01.002, V01.003, V02.004, V03.005, V04.006", "10,59", "9,15", "39,47", "418,10", "361,06"),
+    P("incl", "05.02.02", "m²", "Persiana y cajón monoblock (con aislamiento acústico). Aluminio/PVC en cualquier color y acabado (equipada con todos sus accesorios)", "V01.002, V01.003, V02.004, V03.005, V04.006", "10,59", "9,15", "67,60", "716,03", "618,35"),
+    P("incl", "08.01.01", "m²", "Mosquitera enrollable en tambor", "V01.002, V01.003, V02.004, V03.005, V04.006", "0,00", "9,15", "31,88", "0,00", "291,59"),
+    P("incl", "12.01.01", "ud", "Ayudas a albañilería, remates y pintura en huecos. Incluso sellado de las carpinterías en las que no se actúa", "A01.001, V01.002, V01.003, V02.004, V03.005, V04.006", "6,00", "6,00", "51,95", "311,69", "311,69"),
+    P("incl", "12.01.02", "ud", "Alquiler contenedores y canon de vertido RCD (6 huecos)", "", "1,00", "1,00", "130,12", "130,12", "130,12"),
+    P("incl", "14.01.01", "ud", "Acceso a trabajos en huecos de fachada", "A01.001, V01.002, V01.003, V02.004, V03.005, V04.006", "6,00", "6,00", "46,92", "281,50", "281,50"),
+    P("noincl", "01.01.03", "ud", "Levantado de carpintería hasta 6,00 m²", "V02.004", "", "", "", "34,89", "34,89"),
+    P("noincl", "01.03.01", "ud", "Levantado de reja o cierre de tijera hasta 1,50 m² sin recuperación", "V03.005", "", "", "", "8,14", "8,14"),
+    P("noincl", "01.03.02", "ud", "Levantado de reja o cierre de tijera ≥ 1,50 m² sin recuperación", "V01.002, V01.003, V02.004, V04.006", "", "", "", "40,46", "40,46"),
+    P("noincl", "01.05.02", "ud", "Desmontaje y montaje de mosquitera con recuperación", "V01.002, V01.003, V02.004, V03.005, V04.006", "", "", "", "84,35", "84,35"),
+    P("noincl", "02.02.16", "ud", "Cerradura de seguridad en carpinterías, con llave y pomo", "A01.001", "", "", "", "26,00", "26,00"),
+    P("noincl", "06.01.04", "m²", "Anclaje de reja", "V01.002, V01.003, V02.004, V03.005, V04.006", "", "", "", "378,38", "378,38"),
+    P("noincl", "08.01.03", "m²", "Mosquitera fija", "V01.002, V01.003, V02.004, V03.005, V04.006", "", "", "", "327,59", "327,59"),
+  ];
+  return {
+    id: uid(), creadoEn: Date.now(), origen: "ejemplo", revisado: true,
+    cab: { expediente: "VLC 690", concurso: "DPM 511-23", pedido: "LOTE 1_08 MEDITERRANEO_5", aeropuerto: "Valencia", municipio: "Ribarroja del Turia", direccion: "Milotxa (Urb. La Llobatera), 83", cliente: "Marc Taroncher Tarazona", color: "PVC BLANCO", fechaMedicion: "", medidoPor: "" },
+    vidrio: { ext: "8", camara: "16", gas: "", int: "4", be: true, cs: "" },
+    ventanas: uxcMapa(ventanas),
+    partidas: uxcMapa(partidas),
+    totales: { inclProy: "4732,45", incl: "4831,69", iva: "1014,65", total: "5846,34", noincl: "899,81", noinclIva: "188,96", noinclTotal: "1088,77" },
+    extras: uxcMapa([{ id: uid(), concepto: "Extra paga oscilobatiente", cant: "5", precio: "50", proformaNum: "1", fecha: "2026-10-19", plazoDias: "5", pagada: false }]),
+    imprevistos: {},
+  };
+}
+
+/* ---------- Lectura con IA de las fotos del expediente ---------- */
+const UXC_PROMPT_IA = [
+  "Esto es UNA página (foto o PDF) de la documentación de un expediente del Plan de Aislamiento Acústico de Aena (sustitución de carpinterías). Puede estar girada 90 grados: gírala mentalmente antes de leer.",
+  "Clasifícala y devuelve SOLO un JSON válido (sin texto ni ```), con una de estas formas. Copia SOLO lo que se lee; si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes datos.",
+  "",
+  "1) PLANO de carpinterías (planta con cuadritos de nomenclatura y alzados):",
+  '{"tipo":"plano","expediente":"","direccion":"","ventanas":[{"ref":"V02/004","tipo":"V. Abatible 2H","material":"PVC BLANCO","codigos":"MB+MQ","extra":"EXTRA PAGA OSCILOBATIENTE","estancia":"Salón 1","rechaza":false}]}',
+  '- ref es el código del cuadro (V01/003, A01/001…). codigos son las abreviaturas con "+" (MB+MQ, CR…). extra es la línea en rojo (p. ej. EXTRA PAGA OSCILOBATIENTE) o "". estancia es la habitación donde está dibujada. rechaza=true solo si encima del cuadro pone RECHAZA.',
+  "",
+  "2) INFORME de adecuación del proyecto, tabla de partidas (incluidas por necesidades técnicas, o partidas NO incluidas):",
+  '{"tipo":"informe","bloque":"incluidas","cabecera":{"expediente":"VLC 690","municipio":"","lugar":"","concurso":"","pedido":"","aeropuerto":""},"partidas":[{"cod":"01.01.02","ud":"ud","concepto":"","refs":"A01.001, V01.002","medProy":"4,00","medNueva":"5,00","preUnit":"29,09","impProy":"116,35","impNuevo":"145,44","marcada":true}],"totales":{"proyecto":"","nuevo":"","iva":"","total":""}}',
+  '- bloque es "incluidas" (cabecera "Partidas incluidas por necesidades técnicas…") o "no_incluidas" (cabecera "Partidas no incluidas"; ahí solo hay Importe proyecto: ponlo en impProy e impNuevo, y deja medProy/medNueva/preUnit en "").',
+  "- refs son las referencias en negrita bajo el concepto (V01.002, V01.003…), separadas por comas. Una fila por partida, TODAS, sin saltarte ninguna.",
+  "- Copia los números como salen (con coma decimal). marcada=true si la fila está resaltada con rotulador rojo/naranja, false si no.",
+  "- totales: los de pie de tabla (total presupuesto de ejecución por contrata, IVA 21 %, total). En no_incluidas: total partidas no incluidas, IVA y total propuesta.",
+  "",
+  "3) PROFORMA (factura proforma de Construcciones Uxcar 97):",
+  '{"tipo":"proforma","numero":"1","fecha":"2026-10-19","expediente":"690","cliente":"","lineas":[{"concepto":"","cantidad":"5","precio":"50","importe":"250"}],"total":"302,50","plazoDias":"5"}',
+  "- fecha en formato AAAA-MM-DD. No copies DNI ni números de cuenta.",
+  "",
+  '4) Cualquier otra cosa (leyenda, hoja de imprevistos, plantilla en blanco…): {"tipo":"otro"}',
+].join("\n");
+
+async function uxcLeerPaginaIA(file) {
+  let bloque;
+  if (file.type === "application/pdf") {
+    const b64 = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => ko(new Error("No se pudo leer el PDF")); r.readAsDataURL(file); });
+    bloque = { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
+  } else {
+    const dataUrl = await reducirImagenParaIA(file, 2000);
+    bloque = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: dataUrl.split(",")[1] } };
+  }
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: [bloque, { type: "text", text: UXC_PROMPT_IA }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{"), fin = limpio.lastIndexOf("}");
+  return JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+}
+
+// Junta lo leído de varias páginas en un expediente nuevo (siempre "sin revisar").
+function uxcExpedienteDesdeIA(paginas) {
+  const cab = { expediente: "", concurso: "", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: "", medidoPor: "" };
+  let ventanas = [], partidas = [], extras = [];
+  const totales = {};
+  paginas.forEach((p) => {
+    if (!p) return;
+    if (p.tipo === "plano") {
+      if (p.expediente && !cab.expediente) cab.expediente = String(p.expediente);
+      if (p.direccion && !cab.direccion) cab.direccion = String(p.direccion);
+      toArray(p.ventanas).forEach((v) => { if (v && v.ref && !ventanas.some((x) => uxcNorm(x.ref) === uxcNorm(v.ref))) ventanas.push({ id: uid(), ref: String(v.ref), estancia: v.estancia || "", tipo: v.tipo || "", material: v.material || "PVC BLANCO", codigos: v.codigos || "", extra: v.extra || "", hojas: /1\s*H/i.test(v.tipo || "") ? 1 : 2, activa: "derecha", rechazada: !!v.rechaza, cant: 1 }); });
+    } else if (p.tipo === "informe") {
+      const c = p.cabecera || {};
+      if (c.expediente && !cab.expediente) cab.expediente = String(c.expediente);
+      ["concurso", "pedido", "aeropuerto", "municipio"].forEach((k) => { if (c[k] && !cab[k]) cab[k] = String(c[k]); });
+      if (c.lugar && !cab.direccion) cab.direccion = String(c.lugar);
+      const bloque = p.bloque === "no_incluidas" ? "noincl" : "incl";
+      toArray(p.partidas).forEach((x) => { if (x && x.cod) partidas.push({ id: uid(), bloque, cod: String(x.cod), ud: x.ud || "", concepto: x.concepto || "", refs: x.refs || "", medProy: x.medProy || "", medNueva: x.medNueva || "", preUnit: x.preUnit || "", impProy: x.impProy || "", impNuevo: x.impNuevo || "", marcada: x.marcada !== false }); });
+      const t = p.totales || {};
+      if (bloque === "incl") { if (t.proyecto) totales.inclProy = t.proyecto; if (t.nuevo) totales.incl = t.nuevo; if (t.iva) totales.iva = t.iva; if (t.total) totales.total = t.total; }
+      else { if (t.nuevo || t.proyecto) totales.noincl = t.nuevo || t.proyecto; if (t.iva) totales.noinclIva = t.iva; if (t.total) totales.noinclTotal = t.total; }
+    } else if (p.tipo === "proforma") {
+      if (p.cliente && !cab.cliente) cab.cliente = String(p.cliente);
+      toArray(p.lineas).forEach((l) => { if (l && l.concepto) extras.push({ id: uid(), concepto: l.concepto, cant: l.cantidad || "1", precio: l.precio || "", proformaNum: p.numero || "", fecha: p.fecha || "", plazoDias: p.plazoDias || "5", pagada: false }); });
+    }
+  });
+  // Quita partidas repetidas (misma foto subida dos veces)
+  const vistas = new Set();
+  partidas = partidas.filter((x) => { const k = x.bloque + "|" + x.cod + "|" + uxcNorm(x.refs); if (vistas.has(k)) return false; vistas.add(k); return true; });
+  return { id: uid(), creadoEn: Date.now(), origen: "ia", revisado: false, cab, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: uxcMapa(ventanas), partidas: uxcMapa(partidas), totales, extras: uxcMapa(extras), imprevistos: {}, _paginas: paginas.filter(Boolean).map((p) => p.tipo) };
+}
+
+/* ---------- Comprobaciones cruzadas ---------- */
+function uxcComprobaciones(exp) {
+  const out = [];
+  const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
+  const incl = ps.filter((p) => p.bloque !== "noincl"), noincl = ps.filter((p) => p.bloque === "noincl");
+  const t = exp.totales || {};
+  const cerca = (a, b) => Math.abs(a - b) < 0.06;
+  if (!vs.length) out.push({ n: "error", t: "No hay ventanas cargadas (plano de referencias)." });
+  if (!ps.length) out.push({ n: "error", t: "No hay partidas del informe cargadas." });
+  if (incl.length && uxcNum(t.incl)) { const s = incl.reduce((a, p) => a + uxcNum(p.impNuevo), 0); out.push(cerca(s, uxcNum(t.incl)) ? { n: "ok", t: `Partidas incluidas: suman ${uxcEUR(s)}, igual que el total del informe.` } : { n: "error", t: `Partidas incluidas: suman ${uxcEUR(s)} pero el total del informe es ${uxcEUR(uxcNum(t.incl))}. Falta o sobra alguna fila, o hay un número mal leído.` }); }
+  if (noincl.length && uxcNum(t.noincl)) { const s = noincl.reduce((a, p) => a + uxcNum(p.impNuevo || p.impProy), 0); out.push(cerca(s, uxcNum(t.noincl)) ? { n: "ok", t: `Partidas NO incluidas: suman ${uxcEUR(s)}, igual que el total.` } : { n: "error", t: `Partidas NO incluidas: suman ${uxcEUR(s)} pero el total es ${uxcEUR(uxcNum(t.noincl))}.` }); }
+  if (uxcNum(t.incl) && uxcNum(t.iva)) out.push(cerca(uxcNum(t.incl) * 0.21, uxcNum(t.iva)) ? { n: "ok", t: "IVA del informe = 21 % del total." } : { n: "aviso", t: "El IVA del informe no es el 21 % del total: revisar los números." });
+  // Referencias plano ↔ informe
+  const refsPlano = new Set(vs.map((v) => uxcNorm(v.ref)));
+  const refsInforme = new Set();
+  ps.forEach((p) => String(p.refs || "").split(/[,;\s]+/).map(uxcNorm).filter(Boolean).forEach((r) => refsInforme.add(r)));
+  const soloPlano = vs.filter((v) => !refsInforme.has(uxcNorm(v.ref)));
+  const soloInforme = [...refsInforme].filter((r) => !refsPlano.has(r));
+  if (vs.length && ps.length) {
+    if (soloPlano.length) out.push({ n: "aviso", t: `En el plano pero sin ninguna partida en el informe: ${soloPlano.map((v) => v.ref).join(", ")}.` });
+    if (soloInforme.length) out.push({ n: "aviso", t: `En el informe pero sin ventana en el plano: ${soloInforme.join(", ")}.` });
+    if (!soloPlano.length && !soloInforme.length) out.push({ n: "ok", t: "Las referencias del plano y las del informe coinciden." });
+  }
+  vs.filter((v) => v.rechazada).forEach((v) => {
+    const pag = uxcPartidasDeVentana(exp, v).pagadas.filter((p) => /^[AV]\d/.test(String(p.cod)));
+    out.push({ n: "aviso", t: `${v.ref}: el plano pone «RECHAZA»${pag.length ? `, pero el informe sí paga ${pag.map((p) => p.cod + " " + uxcEUR(uxcNum(p.impNuevo))).join(", ")}` : ""}. Confirmar con oficina si se fabrica.` });
+  });
+  // Oscilo vs proforma
+  const nOsc = vs.filter((v) => !v.rechazada && uxcObs(v).oscilo).length;
+  const eOsc = ex.find((e) => /oscil/i.test(e.concepto));
+  if (nOsc && !eOsc) out.push({ n: "aviso", t: `${nOsc} ventana(s) llevan oscilobatiente (extra de pago) y no hay proforma cargada.` });
+  if (eOsc && uxcNum(eOsc.cant) !== nOsc) out.push({ n: "aviso", t: `La proforma cobra ${eOsc.cant} oscilobatientes y el plano marca ${nOsc}.` });
+  if (eOsc && uxcNum(eOsc.cant) === nOsc && nOsc) out.push({ n: "ok", t: `Oscilobatientes: ${nOsc} en el plano = ${eOsc.cant} en la proforma.` });
+  ex.forEach((e) => {
+    if (e.pagada) return;
+    const lim = e.fecha ? uxcSumaDias(e.fecha, e.plazoDias || 5) : null;
+    const dias = lim ? Math.ceil((new Date(lim + "T23:59:59") - new Date()) / 86400000) : null;
+    out.push({ n: dias !== null && dias < 0 ? "error" : "aviso", t: `Proforma ${e.proformaNum || ""} (${e.concepto}) sin ingreso confirmado${lim ? `: plazo hasta el ${uxcFechaES(lim)}${dias < 0 ? " (VENCIDO)" : ` (${dias} día${dias === 1 ? "" : "s"})`}` : ""}. Hasta entonces el encargo no es efectivo.` });
+  });
+  vs.forEach((v) => { const o = uxcObs(v); if (o.desconocidos.length) out.push({ n: "aviso", t: `${v.ref}: código(s) ${o.desconocidos.join(", ")} que no están en la leyenda de nomenclatura.` }); });
+  if (exp.revisado === false) out.push({ n: "error", t: "Datos leídos por IA sin revisar. Compara cada pestaña con el papel y pulsa «Marcar como revisado»." });
+  return out;
+}
+
+/* ---------- Pantallas ---------- */
+const uxcInp = "w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40";
+
+// Casilla de texto que guarda al salir (así se escribe sin que cada letra viaje a Firebase).
+function UxcCel({ valor, onGuardar, tipo = "text", placeholder, className = "" }) {
+  const [v, setV] = useState(valor == null ? "" : valor);
+  useEffect(() => { setV(valor == null ? "" : valor); }, [valor]);
+  return <input type={tipo} value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)}
+    onBlur={() => { if (String(v) !== String(valor == null ? "" : valor)) onGuardar(v); }} className={uxcInp + " " + className} />;
+}
+
+function UxcGuiaProximo() {
+  const [abierto, setAbierto] = useState(false);
+  return (
+    <div className="bg-sky-50 border border-sky-200 rounded-lg p-4 mb-5">
+      <button onClick={() => setAbierto(!abierto)} className="text-sm font-bold text-sky-900 flex items-center gap-2 w-full text-left">
+        <FileText size={16} /> Cómo darme el próximo expediente {abierto ? "▲" : "▼"}
+      </button>
+      {abierto && (
+        <div className="text-sm text-sky-900 mt-3 space-y-2">
+          <p><b>Por cada expediente hacen falta 4 cosas</b> (valen fotos o PDF, en cualquier orden, derechas o giradas):</p>
+          <ol className="list-decimal ml-5 space-y-1">
+            <li><b>El plano «Planta baja – referencias de carpinterías»</b>, con los cuadritos de nomenclatura (V01/002, MB+MQ, extra oscilobatiente…) y los alzados.</li>
+            <li><b>El informe, hoja de «Partidas incluidas»</b> (la tabla con lo marcado en rojo) — una foto por hoja si tiene varias.</li>
+            <li><b>El informe, hoja de «Partidas no incluidas» + el resumen de presupuesto</b> (la de las reja, mosquitera fija, cerradura…).</li>
+            <li><b>La proforma</b> de extras, si hay (oscilobatientes u otros). Si no hay extras, no hace falta.</li>
+          </ol>
+          <p>No hace falta repetir la <b>leyenda de nomenclatura</b> ni los <b>imprevistos a solicitar</b>: son de la tarifa del concurso y ya están dentro del CRM <i>(siempre que sean los mismos en todos los expedientes del concurso DPM 511-23; si cambian, avísame)</i>.</p>
+          <p>Con «Crear desde fotos (IA)» subes todas las fotos de golpe y el CRM monta el expediente. <b>Siempre queda «sin revisar»</b>: las hojas salen con un aviso hasta que lo compruebes contra el papel y lo marques como revisado.</p>
+          <p>Consejos para que se lea bien: hoja entera en la foto, sin sombras ni dedos, y cada hoja en una foto aparte.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MedicionesUxcarZona() {
+  const [lista, setLista] = useState(null);
+  const [abiertoId, setAbiertoId] = useState(null);
+  const [q, setQ] = useState("");
+  const [leyendo, setLeyendo] = useState(false);
+  const [progreso, setProgreso] = useState("");
+  const [errorIA, setErrorIA] = useState("");
+  const fotosRef = useRef(null);
+  useEffect(() => onValue(ref(fbDb, UXC_NODO), (snap) => setLista(toArray(snap.val()).filter((x) => x && x.id)), (e) => { console.error(e); setLista([]); }), []);
+
+  const crear = async (exp) => {
+    try { await fbSet(ref(fbDb, `${UXC_NODO}/${exp.id}`), uxcLimpio(exp)); setAbiertoId(exp.id); }
+    catch (e) { alert("No se pudo guardar: " + e.message); }
+  };
+  const vacio = () => ({ id: uid(), creadoEn: Date.now(), origen: "manual", revisado: true, cab: { expediente: "", concurso: "DPM 511-23", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
+
+  const desdeFotos = async (files) => {
+    const fs = Array.from(files || []);
+    if (!fs.length) return;
+    setLeyendo(true); setErrorIA("");
+    const paginas = [], fallos = [];
+    let fotoPlano = null;
+    for (let i = 0; i < fs.length; i++) {
+      setProgreso(`Leyendo foto ${i + 1} de ${fs.length}…`);
+      try { const pg = await uxcLeerPaginaIA(fs[i]); paginas.push(pg); if (pg && pg.tipo === "plano" && !fotoPlano && String(fs[i].type).startsWith("image/")) fotoPlano = fs[i]; }
+      catch (e) { console.error(e); fallos.push(fs[i].name || `foto ${i + 1}`); }
+    }
+    setLeyendo(false); setProgreso("");
+    const exp = uxcExpedienteDesdeIA(paginas);
+    if (!Object.keys(exp.ventanas || {}).length && !Object.keys(exp.partidas || {}).length) { setErrorIA("No he podido sacar ni ventanas ni partidas de esas fotos." + (fallos.length ? " Fallaron: " + fallos.join(", ") + "." : "") + " Prueba con fotos más nítidas o de una en una."); return; }
+    if (fallos.length) alert("Estas fotos no se pudieron leer y hay que meterlas a mano o repetirlas:\n" + fallos.join("\n"));
+    if (fotoPlano) { try { await fbSet(ref(fbDb, `${UXC_PLANO}/${exp.id}`), await reducirImagenParaIA(fotoPlano, 1800)); } catch (e) { console.error("No se guardó la foto del plano", e); } }
+    await crear(exp);
+  };
+
+  const abierto = lista && abiertoId ? lista.find((x) => x.id === abiertoId) : null;
+  if (abierto) return <UxcExpediente exp={abierto} onBack={() => setAbiertoId(null)} />;
+  const filtradas = (lista || []).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+
+  return (
+    <div>
+      <UxcGuiaProximo />
+      <div className="flex flex-wrap gap-3 mb-5">
+        <button onClick={() => crear(vacio())} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-lg shadow-md"><Plus size={20} /> NUEVO EXPEDIENTE UXCAR</button>
+        <button disabled={leyendo} onClick={() => fotosRef.current && fotosRef.current.click()} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-bold py-4 rounded-lg hover:bg-[#2E8B57]/5 disabled:opacity-60">
+          {leyendo ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />} {leyendo ? progreso : "Crear desde fotos (IA)"}
+        </button>
+        <input ref={fotosRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={(e) => { desdeFotos(e.target.files); e.target.value = ""; }} />
+      </div>
+      {errorIA && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorIA}</div>}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <div className="relative max-w-sm flex-1"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, dirección o cliente..." className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm" /></div>
+        {lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 690") && <button onClick={() => crear(uxcEjemploVLC690())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 690 (el de las fotos)</button>}
+      </div>
+      <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-3">Expediente</th><th className="px-4 py-3">Vivienda / cliente</th><th className="px-4 py-3">Ventanas</th><th className="px-4 py-3">Estado</th></tr></thead>
+          <tbody>
+            {lista === null && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Cargando…</td></tr>}
+            {lista && filtradas.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">Todavía no hay expedientes de Uxcar en esta zona.</td></tr>}
+            {filtradas.map((x) => {
+              const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
+              return (
+                <tr key={x.id} onClick={() => setAbiertoId(x.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
+                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || "(sin número)"}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
+                  <td className="px-4 py-3 text-slate-600">{c.direccion || "—"}<div className="text-[11px] text-slate-400">{c.cliente}</div></td>
+                  <td className="px-4 py-3 text-slate-600">{uxcLista(x.ventanas).length}</td>
+                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Hoja de medición rellenable en pantalla (se guarda al momento) ---------- */
+function UxcSiNo({ efectivo, marcado, onChange }) {
+  const b = (txt, activo, nuevo) => (
+    <button type="button" onClick={() => onChange(marcado === nuevo ? null : nuevo)}
+      className={`w-14 py-1.5 rounded text-sm font-bold border-2 ${activo ? (nuevo === "si" ? "bg-[#2E8B57] border-[#2E8B57] text-white" : "bg-slate-700 border-slate-700 text-white") : "bg-white border-slate-300 text-slate-500"} ${activo && !marcado ? "opacity-70" : ""}`}>{txt}</button>
+  );
+  return <div className="flex gap-1.5">{b("SÍ", efectivo === true, "si")}{b("NO", efectivo === false, "no")}</div>;
+}
+function UxcChips({ opciones, valor, onChange, sufijo = "" }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {opciones.map((x) => <button key={x} type="button" onClick={() => onChange(String(valor) === String(x) ? null : x)}
+        className={`px-3 py-1.5 rounded border-2 text-sm font-semibold ${String(valor) === String(x) ? "bg-slate-800 border-slate-800 text-white" : "bg-white border-slate-300 text-slate-600"}`}>{x}{sufijo}</button>)}
+    </div>
+  );
+}
+
+function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
+  const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val);
+  const o = uxcObs(v);
+  const vi = uxcVid(exp, v);
+  const { pagadas, noPagadas } = uxcPartidasDeVentana(exp, v);
+  const cab = exp.cab || {};
+  const idx = vs.findIndex((x) => x.id === v.id);
+  const filas = [["cerradura", "Cerradura", o.cerradura], ["dobleManilla", "Doble manilla", o.dobleManilla], ["frailero", "Frailero", o.frailero], ["mosquitera", "Mosquitera", o.mosquitera], ["oscilo", "Oscilobatiente", o.oscilo], ["persiana", "Persiana", o.persiana], ["vidTras", "Vidrio traslúcido", o.vidrioTraslucido], ["cs", "Control solar", o.controlSolar], ["obra", "Lleva obra (albañilería)", o.obra]];
+  const aviso = [];
+  if (v.rechazada) aviso.push("El plano marca esta carpintería como «RECHAZA»: confirmar con oficina antes de medir.");
+  if (o.oscilo && !uxcLista(exp.extras).some((e) => e.pagada)) aviso.push("Oscilobatiente = extra de pago aparte: no fabricar hasta confirmar el ingreso de la proforma.");
+  if (exp.revisado === false) aviso.push("Datos leídos por IA sin revisar: comprueba el plano antes de medir.");
+  const caja = "bg-white border-2 border-slate-800 rounded p-3";
+  const tit = "text-xs font-extrabold uppercase underline mb-2";
+  const imp = exp.imprevistos || {};
+  return (
+    <div className="max-w-5xl">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <button onClick={onCerrar} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al expediente</button>
+        <div className="ml-auto flex items-center gap-2">
+          <button disabled={idx <= 0} onClick={() => onIr(vs[idx - 1].id)} className="px-3 py-1.5 rounded border border-slate-300 text-sm font-semibold disabled:opacity-30">← Anterior</button>
+          <span className="text-xs text-slate-500">{idx + 1} de {vs.length}</span>
+          <button disabled={idx >= vs.length - 1} onClick={() => onIr(vs[idx + 1].id)} className="px-3 py-1.5 rounded border border-slate-300 text-sm font-semibold disabled:opacity-30">Siguiente →</button>
+        </div>
+      </div>
+      <h2 className="text-center font-display text-2xl font-extrabold tracking-wide mb-2">MEDICIÓN CARPINTERÍAS</h2>
+      <p className="text-center text-xs text-slate-400 mb-3">Todo lo que marques o escribas se guarda al momento.</p>
+      {aviso.map((a, i) => <div key={i} className="mb-2 px-3 py-2 rounded border-2 border-rose-500 text-rose-700 text-sm font-bold">⚠ {a}</div>)}
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className={caja}><b className="text-sm">EXPEDIENTE:</b> {cab.expediente} <span className="text-xs text-slate-400">{cab.pedido}</span></div>
+        <div className={caja}><b className="text-sm">COLOR/CÓDIGO:</b> <UxcCel valor={v.material} onGuardar={(x) => g("material", x)} /></div>
+        <div className={caja}><b className="text-sm">NOMENCLATURA:</b> {[v.ref, v.tipo, v.material, v.codigos, v.extra].filter(Boolean).join(" · ")}</div>
+        <div className={caja}><b className="text-sm">VIVIENDA:</b> {[cab.direccion, v.estancia].filter(Boolean).join(" — ")}</div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className={caja}>
+          <div className={tit}>Observaciones</div>
+          <div className="space-y-2">
+            {filas.map(([k, et, ef]) => (
+              <div key={k} className="flex items-center gap-3">
+                <span className="flex-1 text-sm font-semibold text-slate-700">{et}</span>
+                <UxcSiNo efectivo={ef} marcado={v["o_" + k]} onChange={(x) => g("o_" + k, x)} />
+                {k === "mosquitera" && <div className="w-28"><UxcCel valor={v.mosqMedida} onGuardar={(x) => g("mosqMedida", x)} placeholder="medida" /></div>}
+                {k === "persiana" && <div className="w-28"><UxcCel valor={v.cajon} onGuardar={(x) => g("cajon", x)} placeholder="cajón de" /></div>}
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">Sale marcado lo que dice el plano (tono apagado). Toca SÍ o NO para corregirlo; vuelve a tocar para quitar tu marca.</p>
+        </div>
+        <div className={caja + " flex flex-col"}>
+          <div className={tit}>Esquema ventana <span className="font-normal no-underline text-[10px] normal-case">(visto desde dentro)</span></div>
+          <div className="flex-1 flex items-center justify-center" style={{ minHeight: 150 }} dangerouslySetInnerHTML={{ __html: uxcEsquemaSVG(v) }} />
+          <button type="button" onClick={() => { const [k, val] = uxcCambiarMano(v); g(k, val); g("manoOk", null); }} className="mt-2 w-full py-3 rounded-lg border-2 border-slate-800 bg-slate-50 hover:bg-slate-100 text-base font-extrabold">⇄ CAMBIAR MANO</button>
+          <div className="text-center text-xs text-slate-600 mt-1">Ahora: <b>{uxcManoTexto(v)}</b></div>
+          <label className="flex items-center justify-center gap-2 mt-2 text-sm font-bold"><input type="checkbox" className="w-5 h-5" checked={!!v.manoOk} onChange={(e) => g("manoOk", e.target.checked ? true : null)} /> Mano comprobada en obra</label>
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className={caja}>
+          <div className={tit}>Lo que paga / NO paga Aena en esta carpintería</div>
+          <div className="text-xs"><b className="text-emerald-700">Paga:</b><ul className="ml-4 list-disc">{pagadas.map((p) => <li key={p.id}>{p.cod} {uxcSinMedidas(p.concepto)}</li>)}{!pagadas.length && <li>(sin partidas cargadas)</li>}</ul>
+            <b className="text-rose-700">NO paga:</b><ul className="ml-4 list-disc text-rose-700 font-semibold">{noPagadas.map((p) => <li key={p.id}>{p.cod} {uxcSinMedidas(p.concepto)}</li>)}{!noPagadas.length && <li className="text-slate-400 font-normal">—</li>}</ul></div>
+        </div>
+        <div className={caja}>
+          <div className={tit}>Medida fabricación</div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Ancho"><UxcCel valor={v.anchoFab} onGuardar={(x) => g("anchoFab", x)} placeholder="mm" className="text-lg font-bold" /></Field>
+            <Field label="Alto"><UxcCel valor={v.altoFab} onGuardar={(x) => g("altoFab", x)} placeholder="mm" className="text-lg font-bold" /></Field>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">Solo vale tu medida: el CRM no guarda ni enseña las del proyecto.</p>
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className={caja}>
+          <div className={tit}>Vidrios</div>
+          <div className="space-y-2">
+            <div><div className="text-[11px] font-bold text-slate-500 mb-1">EXTERIOR</div><UxcChips opciones={["4", "6", "8", "10", "3+3", "4+4"]} valor={vi.ext} onChange={(x) => g("vExt", x)} /></div>
+            <div><div className="text-[11px] font-bold text-slate-500 mb-1">CÁMARA</div><div className="flex gap-2 items-center flex-wrap"><UxcChips opciones={["ARGON", "AIRE"]} valor={vi.gas} onChange={(x) => g("vGas", x)} /><div className="w-24"><UxcCel valor={vi.camara} onGuardar={(x) => g("vCamara", x)} placeholder="mm" /></div></div></div>
+            <div><div className="text-[11px] font-bold text-slate-500 mb-1">INTERIOR</div><UxcChips opciones={["4", "6", "3+3", "4+4"]} valor={vi.int} onChange={(x) => g("vInt", x)} /></div>
+            <div className="flex flex-wrap gap-4 items-center border-t border-slate-200 pt-2"><div><span className="text-[11px] font-bold text-slate-500 mr-2">INTERIOR</span><UxcChips opciones={["BE"]} valor={vi.be ? "BE" : ""} onChange={(x) => g("vBE", x ? "si" : "no")} /></div><div><span className="text-[11px] font-bold text-slate-500 mr-2">EXTERIOR</span><UxcChips opciones={["CS", "ESPEJO", "MATE"]} valor={vi.cs} onChange={(x) => g("vCS", x)} /></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className={caja}>
+          <div className={tit}>Guía persiana</div>
+          <div className="flex items-center justify-center" style={{ minHeight: 120 }} dangerouslySetInnerHTML={{ __html: UXC_GUIA_SVG }} />
+          <div className="grid grid-cols-2 gap-3"><Field label="Fondo de la persiana"><UxcCel valor={v.fondoPersiana} onGuardar={(x) => g("fondoPersiana", x)} placeholder="mm" /></Field><Field label="Guía (medida / tipo)"><UxcCel valor={v.guia} onGuardar={(x) => g("guia", x)} /></Field></div>
+        </div>
+        <div className={caja}>
+          <div className={tit}>Solape + ancho solape</div>
+          <div className="grid grid-cols-2 gap-3"><Field label="Solape"><UxcCel valor={v.solape} onGuardar={(x) => g("solape", x)} /></Field><Field label="Ancho solape"><UxcCel valor={v.anchoSolape} onGuardar={(x) => g("anchoSolape", x)} /></Field></div>
+        </div>
+      </div>
+
+      <div className={caja + " mb-3"}>
+        <div className={tit}>Imprevistos encontrados en esta carpintería</div>
+        {UXC_GRUPOS_VENTANA.map((gr) => (
+          <details key={gr} className="mb-1">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">{UXC_GRUPOS_NOMBRE[gr]}{UXC_IMPREVISTOS.filter((i) => i.g === gr && (imp[uxcKeyImp(i.cod)] || {})[v.id]).length ? <span className="ml-2 text-xs text-[#2E8B57]">({UXC_IMPREVISTOS.filter((i) => i.g === gr && (imp[uxcKeyImp(i.cod)] || {})[v.id]).length} marcados)</span> : null}</summary>
+            <div className="mt-1 mb-2 space-y-1">{UXC_IMPREVISTOS.filter((i) => i.g === gr).map((i) => (
+              <label key={i.cod} className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={!!(imp[uxcKeyImp(i.cod)] || {})[v.id]} onChange={(e) => guardar(`imprevistos/${uxcKeyImp(i.cod)}/${v.id}`, e.target.checked ? true : null)} /><span>{i.cod} · {i.t} ({i.ud})</span></label>))}</div>
+          </details>))}
+      </div>
+
+      <div className="bg-amber-50 border-2 border-amber-500 rounded p-3 mb-3">
+        <div className={tit}>Observaciones de esta carpintería</div>
+        <textarea defaultValue={v.obs || ""} key={v.id + "|" + (v.obs || "")} onBlur={(e) => { if (e.target.value !== (v.obs || "")) g("obs", e.target.value); }} rows={5} className={uxcInp + " text-base"} placeholder="Reja, radiador, cortinas, estado del hueco, lo que veas al entrar…" />
+        <p className="text-[11px] text-slate-500 mt-1">Se ve en la ficha de cada ventana, en el plano y sale impreso en la hoja.</p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-8">
+        <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={!!v.medida} onChange={(e) => g("medida", e.target.checked ? true : null)} /> Carpintería medida y terminada</label>
+        <Field label="Medido por"><UxcCel valor={v.medidoPor} onGuardar={(x) => g("medidoPor", x)} /></Field>
+        <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="ml-auto flex items-center gap-1.5 text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 hover:bg-slate-50"><Printer size={14} /> Imprimir esta hoja</button>
+        {idx < vs.length - 1 && <button onClick={() => onIr(vs[idx + 1].id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold rounded-md px-4 py-2">Siguiente carpintería →</button>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Plano en pantalla: se toca una ventana y se abre su hoja ---------- */
+function UxcPlano({ exp, vs, onAbrir, guardar }) {
+  const [img, setImg] = useState(undefined); // undefined = cargando, null = no hay plano
+  const [colocar, setColocar] = useState("");
+  const [zoom, setZoom] = useState(100);
+  const [subiendo, setSubiendo] = useState(false);
+  const fileRef = useRef(null);
+  useEffect(() => {
+    let vivo = true;
+    fbGet(ref(fbDb, `${UXC_PLANO}/${exp.id}`)).then((s) => { if (vivo) setImg(s.val() || null); }).catch(() => { if (vivo) setImg(null); });
+    return () => { vivo = false; };
+  }, [exp.id]);
+  const subir = async (file) => {
+    if (!file) return;
+    setSubiendo(true);
+    try {
+      const d = await reducirImagenParaIA(file, 1800);
+      await fbSet(ref(fbDb, `${UXC_PLANO}/${exp.id}`), d);
+      setImg(d);
+    } catch (e) { alert("No se pudo guardar el plano: " + e.message + "\n(Tiene que ser una foto, no un PDF.)"); }
+    setSubiendo(false);
+  };
+  const tocarPlano = (e) => {
+    if (!colocar) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
+    const y = Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100));
+    guardar(`ventanas/${colocar}/px`, Math.round(x * 100) / 100);
+    guardar(`ventanas/${colocar}/py`, Math.round(y * 100) / 100);
+    setColocar("");
+  };
+  const color = (v) => (v.rechazada ? "#b91c1c" : v.medida ? "#15803d" : "#1d4ed8");
+  const sinColocar = vs.filter((v) => v.px === undefined || v.px === null);
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <button onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo} className="text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-60">{subiendo ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} {img ? "Cambiar foto del plano" : "Subir foto del plano"}</button>
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        {img && <div className="flex items-center gap-1 ml-auto text-sm"><span className="text-slate-500">Zoom</span>{[100, 150, 220].map((z) => <button key={z} onClick={() => setZoom(z)} className={`px-2.5 py-1 rounded border text-xs font-semibold ${zoom === z ? "bg-slate-800 text-white border-slate-800" : "border-slate-300"}`}>{z}%</button>)}</div>}
+      </div>
+      {img === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
+      {img === null && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto del plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja.</div>}
+      {colocar && <div className="mb-2 px-3 py-2 rounded bg-sky-50 border border-sky-300 text-sky-900 text-sm font-semibold">Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
+      {img && (
+        <div className="border border-slate-300 rounded-lg overflow-auto bg-white mb-4" style={{ maxHeight: "75vh" }}>
+          <div style={{ width: zoom + "%", position: "relative", cursor: colocar ? "crosshair" : "default" }} onClick={tocarPlano}>
+            <img src={img} alt="Plano" style={{ width: "100%", display: "block", userSelect: "none" }} draggable={false} />
+            {vs.filter((v) => v.px !== undefined && v.px !== null).map((v) => (
+              <button key={v.id} onClick={(e) => { e.stopPropagation(); if (!colocar) onAbrir(v.id); }} style={{ position: "absolute", left: v.px + "%", top: v.py + "%", transform: "translate(-50%,-50%)", background: color(v), pointerEvents: colocar ? "none" : "auto" }}
+                className="text-white text-[11px] font-extrabold rounded-full px-2.5 py-1.5 shadow-lg border-2 border-white whitespace-nowrap">{v.ref}{v.medida ? " ✓" : ""}{v.obs ? " ✎" : ""}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-slate-500 mb-2">Azul = por medir · Verde = medida ✓ · Rojo = rechazada según plano · ✎ = tiene observaciones</div>
+      <div className="grid sm:grid-cols-2 gap-2">
+        {vs.map((v) => (
+          <div key={v.id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">
+            <button onClick={() => onAbrir(v.id)} className="flex-1 text-left"><span className="font-bold text-sm" style={{ color: color(v) }}>{v.ref || "(sin ref.)"}</span> <span className="text-xs text-slate-500">{v.estancia}</span>{v.obs && <div className="text-[11px] text-amber-800 truncate">✎ {v.obs}</div>}</button>
+            {img && <button onClick={() => setColocar(v.id)} className="text-[11px] font-semibold border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">{v.px !== undefined && v.px !== null ? "Mover chincheta" : "📍 Colocar"}</button>}
+          </div>
+        ))}
+      </div>
+      {img && sinColocar.length > 0 && <p className="text-xs text-slate-400 mt-2">Sin chincheta todavía: {sinColocar.map((v) => v.ref).join(", ")}.</p>}
+    </div>
+  );
+}
+
+function UxcExpediente({ exp, onBack }) {
+  const [tab, setTab] = useState("plano");
+  const [hojaId, setHojaId] = useState(null);
+  const id = exp.id;
+  const cab = exp.cab || {};
+  const guardar = (sub, val) => fbSet(ref(fbDb, `${UXC_NODO}/${id}/${sub}`), val === "" || val === undefined ? null : uxcLimpio(val)).catch((e) => alert("No se pudo guardar: " + e.message));
+  const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
+  const comp = uxcComprobaciones(exp);
+  const T = ({ k, children }) => <button onClick={() => setTab(k)} className={`crm-tab px-3 py-2 text-sm font-semibold ${tab === k ? "border-[#2E8B57]" : ""}`}>{children}</button>;
+  const borrar = () => { if (window.confirm(`¿Borrar el expediente ${cab.expediente || ""} de la zona Uxcar? No se puede deshacer.`)) fbSet(ref(fbDb, `${UXC_NODO}/${id}`), null).then(() => fbSet(ref(fbDb, `${UXC_PLANO}/${id}`), null).catch(() => {})).then(onBack).catch((e) => alert(e.message)); };
+  const nuevaVentana = () => { const vid = uid(); guardar(`ventanas/${vid}`, { id: vid, orden: vs.length, ref: "", estancia: "", tipo: "V. Abatible 2H", material: cab.color || "PVC BLANCO", codigos: "", extra: "", hojas: 2, activa: "derecha", rechazada: false, cant: 1 }); };
+  const nuevaPartida = (bloque) => { const pid = uid(); guardar(`partidas/${pid}`, { id: pid, orden: ps.length, bloque, cod: "", ud: "ud", concepto: "", refs: "", marcada: true }); };
+  const nuevoExtra = () => { const eid = uid(); guardar(`extras/${eid}`, { id: eid, orden: ex.length, concepto: "", cant: "1", precio: "", proformaNum: "", fecha: new Date().toISOString().slice(0, 10), plazoDias: "5", pagada: false }); };
+  const colorN = { ok: "text-emerald-700 bg-emerald-50 border-emerald-200", aviso: "text-amber-800 bg-amber-50 border-amber-200", error: "text-rose-700 bg-rose-50 border-rose-300" };
+  const icoN = { ok: "✓", aviso: "⚠", error: "✕" };
+  const vi = exp.vidrio || {};
+  const vHoja = hojaId ? vs.find((x) => x.id === hojaId) : null;
+  if (vHoja) return <UxcHojaPantalla exp={exp} v={vHoja} vs={vs} guardar={guardar} onCerrar={() => setHojaId(null)} onIr={setHojaId} />;
+
+  return (
+    <div>
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> Volver a Uxcar (Aena)</button>
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <h2 className="font-display text-2xl font-extrabold text-slate-900">{cab.expediente || "Expediente sin número"}</h2>
+        {exp.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar (IA)</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}
+        <span className="text-sm text-slate-500">{cab.direccion}</span>
+        <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
+      </div>
+      <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
+        <T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T>
+      </div>
+
+      {tab === "plano" && <UxcPlano exp={exp} vs={vs} onAbrir={setHojaId} guardar={guardar} />}
+
+      {tab === "resumen" && (
+        <div className="space-y-5">
+          <div className="bg-white border border-slate-200 rounded-lg p-4">
+            <div className="text-sm font-bold text-slate-700 mb-3">Datos del expediente</div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[["expediente", "Expediente"], ["concurso", "Concurso"], ["pedido", "Pedido / lote"], ["aeropuerto", "Aeropuerto"], ["municipio", "Municipio"], ["direccion", "Dirección de la vivienda"], ["cliente", "Cliente (propietario)"], ["color", "Color / material por defecto"], ["fechaMedicion", "Fecha de medición", "date"], ["medidoPor", "Medido por"]].map(([k, l, t]) => (
+                <Field key={k} label={l}><UxcCel tipo={t || "text"} valor={cab[k]} onGuardar={(v) => guardar(`cab/${k}`, v)} /></Field>
+              ))}
+            </div>
+            <div className="text-sm font-bold text-slate-700 mt-5 mb-1">Vidrio por defecto (sale marcado en las hojas)</div>
+            <p className="text-xs text-slate-400 mb-2">El informe de VLC 690 pide Climalit 8/12-16/4 bajo emisivo (cámara preferente 16 mm). El gas (argón/aire) no lo dice: se decide aquí.</p>
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+              <Field label="Exterior"><UxcCel valor={vi.ext} onGuardar={(v) => guardar("vidrio/ext", v)} placeholder="8, 4+4…" /></Field>
+              <Field label="Cámara mm"><UxcCel valor={vi.camara} onGuardar={(v) => guardar("vidrio/camara", v)} /></Field>
+              <Field label="Gas"><select className={uxcInp} value={vi.gas || ""} onChange={(e) => guardar("vidrio/gas", e.target.value)}><option value="">—</option><option>ARGON</option><option>AIRE</option></select></Field>
+              <Field label="Interior"><UxcCel valor={vi.int} onGuardar={(v) => guardar("vidrio/int", v)} /></Field>
+              <Field label="Bajo emisivo"><select className={uxcInp} value={vi.be ? "si" : "no"} onChange={(e) => guardar("vidrio/be", e.target.value === "si")}><option value="no">No</option><option value="si">Sí (BE)</option></select></Field>
+              <Field label="Ext.: CS/espejo/mate"><select className={uxcInp} value={vi.cs || ""} onChange={(e) => guardar("vidrio/cs", e.target.value)}><option value="">—</option><option>CS</option><option>ESPEJO</option><option>MATE</option></select></Field>
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div className="text-sm font-bold text-slate-700">Comprobaciones automáticas</div>
+              {exp.revisado === false && <button onClick={() => guardar("revisado", true)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Marcar como revisado</button>}
+              {exp.revisado !== false && exp.origen === "ia" && <button onClick={() => guardar("revisado", false)} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-1.5 rounded-md">Volver a «sin revisar»</button>}
+            </div>
+            <div className="space-y-1.5">{comp.length === 0 && <p className="text-sm text-slate-400">Nada que comprobar todavía.</p>}{comp.map((c, i) => <div key={i} className={`text-sm border rounded px-3 py-1.5 ${colorN[c.n]}`}>{icoN[c.n]} {c.t}</div>)}</div>
+          </div>
+          {(() => { const r = uxcResumenOficina(exp); return (
+            <div className="bg-white border border-slate-200 rounded-lg p-4 text-sm text-slate-700">
+              <div className="font-bold mb-2">Cuenta rápida (sin contar rechazadas)</div>
+              {r.activas.length} carpinterías · {r.cuenta.persianas} persianas · {r.cuenta.mosquiteras} mosquiteras · {r.cuenta.oscilo} oscilobatientes · {r.cuenta.cerraduras} cerraduras · {r.medidasVent.length}/{r.ventanasSolo.length} ventanas ya medidas.
+            </div>); })()}
+        </div>
+      )}
+
+      {tab === "ventanas" && (
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">Aquí está lo que dice el plano (la nomenclatura manda). Para medir, abre «Rellenar hoja»: es la hoja de medición en pantalla y todo lo que apuntes se guarda y pasa a la hoja de oficina.</p>
+          {vs.map((v) => { const o = uxcObs(v); const { pagadas, noPagadas } = uxcPartidasDeVentana(exp, v); const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val); return (
+            <div key={v.id} className={`bg-white border rounded-lg p-4 ${v.rechazada ? "border-rose-300" : "border-slate-200"}`}>
+              <div className="flex flex-wrap items-center gap-3 mb-3">
+                <div className="w-32"><UxcCel valor={v.ref} onGuardar={(x) => g("ref", x)} placeholder="V01/002" className="font-bold" /></div>
+                <div className="flex-1 min-w-[160px]"><UxcCel valor={v.estancia} onGuardar={(x) => g("estancia", x)} placeholder="Estancia (Salón 1…)" /></div>
+                <label className="text-xs font-semibold text-rose-700 flex items-center gap-1"><input type="checkbox" checked={!!v.rechazada} onChange={(e) => g("rechazada", e.target.checked)} /> RECHAZA (según plano)</label>
+                {v.medida && <span className="text-xs font-bold text-emerald-700">✓ Medida</span>}
+                <button onClick={() => setHojaId(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
+                <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="text-xs font-semibold border border-slate-300 rounded-md px-2.5 py-1.5 flex items-center gap-1 hover:bg-slate-50"><Printer size={13} /> Imprimir</button>
+                <button onClick={() => { if (window.confirm(`¿Quitar ${v.ref || "esta carpintería"}?`)) guardar(`ventanas/${v.id}`, null); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 mb-2">
+                <div className="col-span-2"><Field label="Tipo"><UxcCel valor={v.tipo} onGuardar={(x) => g("tipo", x)} /></Field></div>
+                <Field label="Material / color"><UxcCel valor={v.material} onGuardar={(x) => g("material", x)} /></Field>
+                <Field label="Códigos (MB+MQ)"><UxcCel valor={v.codigos} onGuardar={(x) => g("codigos", x)} /></Field>
+                <div className="col-span-2"><Field label="Extra (línea en rojo)"><UxcCel valor={v.extra} onGuardar={(x) => g("extra", x)} /></Field></div>
+                <Field label="Nº hojas"><UxcCel tipo="number" valor={v.hojas} onGuardar={(x) => g("hojas", parseInt(x, 10) || 1)} /></Field>
+                <Field label="Hoja activa (manilla)"><select className={uxcInp} value={v.activa || "derecha"} onChange={(e) => g("activa", e.target.value)}><option value="derecha">Derecha</option><option value="izquierda">Izquierda</option></select></Field>
+              </div>
+              <div className="text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1 mb-2">
+                <span>Persiana: <b>{o.persiana ? "sí (" + o.cajonTipo + ")" : o.sinPersiana ? "no (SP)" : "no consta"}</b></span><span>Mosquitera: <b>{o.mosquitera ? "sí" : "no"}</b></span><span>Oscilobatiente: <b>{o.oscilo ? "sí (extra)" : "no"}</b></span><span>Cerradura: <b>{o.cerradura ? "sí" : "no"}</b></span>
+                <span className="text-slate-400">{String(v.codigos || "").toUpperCase().split(/[^A-Z]+/).filter(Boolean).map((t) => `${t}=${UXC_LEYENDA[t] || "¿?"}`).join(" · ")}</span>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3 text-xs mb-3">
+                <div className="bg-emerald-50 border border-emerald-200 rounded p-2"><b className="text-emerald-800">Aena paga ({pagadas.length})</b><ul className="mt-1 space-y-0.5">{pagadas.map((p) => <li key={p.id}>{p.cod} · {uxcSinMedidas(p.concepto).slice(0, 70)}</li>)}</ul></div>
+                <div className="bg-rose-50 border border-rose-200 rounded p-2"><b className="text-rose-800">Aena NO paga ({noPagadas.length})</b><ul className="mt-1 space-y-0.5">{noPagadas.map((p) => <li key={p.id}>{p.cod} · {uxcSinMedidas(p.concepto).slice(0, 70)}</li>)}{!noPagadas.length && <li className="text-slate-400">—</li>}</ul></div>
+              </div>
+              <div className="border-t border-slate-100 pt-3 text-sm text-slate-600">
+                {v.anchoFab && v.altoFab ? <>Medida en obra: <b>{v.anchoFab} × {v.altoFab}</b></> : <span className="text-slate-400">Sin medir todavía</span>} · pulsa «Rellenar hoja» para apuntar las observaciones, vidrios, persiana y solape.
+                {v.obs && <div className="mt-1 px-2 py-1 bg-amber-50 border border-amber-200 rounded text-amber-900 text-xs"><b>Observaciones:</b> {v.obs}</div>}
+              </div>
+            </div>); })}
+          <button onClick={nuevaVentana} className="text-sm font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-md px-4 py-2 flex items-center gap-1"><Plus size={14} /> Añadir carpintería</button>
+        </div>
+      )}
+
+      {tab === "partidas" && (
+        <div className="space-y-6">
+          <p className="text-xs text-slate-500">Casilla «Aplica» = fila marcada con el rotulador rojo (las desmarcadas no salen en las hojas). Importes sin IVA.</p>
+          {[["incl", "Partidas incluidas por necesidades técnicas (las que paga Aena)"], ["noincl", "Partidas NO incluidas (no las paga Aena)"]].map(([bl, titulo]) => (
+            <div key={bl}>
+              <div className="flex items-center justify-between mb-2"><h3 className="font-bold text-slate-800 text-sm">{titulo}</h3><button onClick={() => nuevaPartida(bl)} className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] rounded px-2.5 py-1">+ fila</button></div>
+              <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+                <table className="w-full text-xs"><thead className="bg-slate-50 text-slate-500 uppercase"><tr><th className="px-2 py-2">Aplica</th><th className="px-2 py-2 text-left">Cód.</th><th className="px-2 py-2 text-left">Ud</th><th className="px-2 py-2 text-left">Concepto</th><th className="px-2 py-2 text-left">Referencias</th>{bl === "incl" && <th className="px-2 py-2 text-left">Med. nueva</th>}{bl === "incl" && <th className="px-2 py-2 text-left">€ unit.</th>}<th className="px-2 py-2 text-left">Importe nuevo</th><th /></tr></thead>
+                  <tbody>{ps.filter((p) => (p.bloque || "incl") === bl).map((p) => (
+                    <tr key={p.id} className="border-t border-slate-100 align-top">
+                      <td className="px-2 py-1 text-center"><input type="checkbox" checked={p.marcada !== false} onChange={(e) => guardar(`partidas/${p.id}/marcada`, e.target.checked)} /></td>
+                      <td className="px-1 py-1 w-24"><UxcCel valor={p.cod} onGuardar={(x) => guardar(`partidas/${p.id}/cod`, x)} /></td>
+                      <td className="px-1 py-1 w-14"><UxcCel valor={p.ud} onGuardar={(x) => guardar(`partidas/${p.id}/ud`, x)} /></td>
+                      <td className="px-1 py-1 min-w-[260px]"><UxcCel valor={p.concepto} onGuardar={(x) => guardar(`partidas/${p.id}/concepto`, x)} /></td>
+                      <td className="px-1 py-1 min-w-[160px]"><UxcCel valor={p.refs} onGuardar={(x) => guardar(`partidas/${p.id}/refs`, x)} /></td>
+                      {bl === "incl" && <td className="px-1 py-1 w-20"><UxcCel valor={p.medNueva} onGuardar={(x) => guardar(`partidas/${p.id}/medNueva`, x)} /></td>}
+                      {bl === "incl" && <td className="px-1 py-1 w-20"><UxcCel valor={p.preUnit} onGuardar={(x) => guardar(`partidas/${p.id}/preUnit`, x)} /></td>}
+                      <td className="px-1 py-1 w-24"><UxcCel valor={p.impNuevo} onGuardar={(x) => guardar(`partidas/${p.id}/impNuevo`, x)} /></td>
+                      <td className="px-1 py-1"><button onClick={() => guardar(`partidas/${p.id}`, null)} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button></td>
+                    </tr>))}</tbody></table>
+              </div>
+              <div className="mt-2 text-xs text-slate-600 flex flex-wrap gap-3 items-center">
+                Suma: <b>{uxcEUR(ps.filter((p) => (p.bloque || "incl") === bl).reduce((a, p) => a + uxcNum(p.impNuevo), 0))}</b> · Total que pone el informe:
+                <div className="w-28"><UxcCel valor={(exp.totales || {})[bl === "incl" ? "incl" : "noincl"]} onGuardar={(x) => guardar(`totales/${bl === "incl" ? "incl" : "noincl"}`, x)} placeholder="ej. 4831,69" /></div>
+                {bl === "incl" && <>IVA: <div className="w-24"><UxcCel valor={(exp.totales || {}).iva} onGuardar={(x) => guardar("totales/iva", x)} /></div></>}
+              </div>
+            </div>))}
+        </div>
+      )}
+
+      {tab === "extras" && (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">Las proformas (lo que paga el propietario aparte, p. ej. oscilobatientes) van aquí, separadas del informe de Aena. El encargo del extra no es efectivo hasta que se ingresa dentro del plazo.</p>
+          {ex.map((e) => { const base = uxcNum(e.cant) * uxcNum(e.precio); const lim = e.fecha ? uxcSumaDias(e.fecha, e.plazoDias || 5) : null; const g = (k, v) => guardar(`extras/${e.id}/${k}`, v); return (
+            <div key={e.id} className={`bg-white border rounded-lg p-4 ${e.pagada ? "border-emerald-300" : "border-amber-300"}`}>
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+                <div className="col-span-2"><Field label="Concepto"><UxcCel valor={e.concepto} onGuardar={(x) => g("concepto", x)} /></Field></div>
+                <Field label="Cantidad"><UxcCel valor={e.cant} onGuardar={(x) => g("cant", x)} /></Field>
+                <Field label="Precio unit. (sin IVA)"><UxcCel valor={e.precio} onGuardar={(x) => g("precio", x)} /></Field>
+                <Field label="Nº proforma"><UxcCel valor={e.proformaNum} onGuardar={(x) => g("proformaNum", x)} /></Field>
+                <Field label="Fecha proforma"><UxcCel tipo="date" valor={e.fecha} onGuardar={(x) => g("fecha", x)} /></Field>
+                <Field label="Plazo ingreso (días)"><UxcCel valor={e.plazoDias} onGuardar={(x) => g("plazoDias", x)} /></Field>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
+                <span>Base {uxcEUR(base)} · IVA 21 % {uxcEUR(base * 0.21)} · <b>Total {uxcEUR(base * 1.21)}</b></span>
+                {lim && <span className="text-slate-500">Plazo hasta el {uxcFechaES(lim)}</span>}
+                <label className="flex items-center gap-1.5 font-semibold"><input type="checkbox" checked={!!e.pagada} onChange={(ev) => g("pagada", ev.target.checked)} /> Ingreso confirmado</label>
+                <button onClick={() => { if (window.confirm("¿Quitar este extra?")) guardar(`extras/${e.id}`, null); }} className="ml-auto text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
+              </div>
+            </div>); })}
+          <button onClick={nuevoExtra} className="text-sm font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-md px-4 py-2 flex items-center gap-1"><Plus size={14} /> Añadir extra / proforma</button>
+        </div>
+      )}
+
+      {tab === "imprevistos" && (
+        <div className="space-y-5">
+          <p className="text-xs text-slate-500">Marca lo que aparezca al medir (reja, radiador, cortinas, pérgola…). Sale en la hoja de oficina para pedir el imprevisto.</p>
+          {UXC_GRUPOS_VENTANA.map((gr) => (
+            <div key={gr} className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+              <table className="w-full text-xs"><thead className="bg-slate-50 text-slate-500"><tr><th colSpan={3} className="px-3 py-2 text-left uppercase">{UXC_GRUPOS_NOMBRE[gr]}</th>{vs.filter((v) => !v.rechazada).map((v) => <th key={v.id} className="px-2 py-2">{v.ref}</th>)}</tr></thead>
+                <tbody>{UXC_IMPREVISTOS.filter((i) => i.g === gr).map((i) => (
+                  <tr key={i.cod} className="border-t border-slate-100"><td className="px-3 py-1.5 whitespace-nowrap">{i.cod}</td><td className="px-2 py-1.5 min-w-[240px]">{i.t}</td><td className="px-2 py-1.5 text-right whitespace-nowrap">{i.ud}</td>
+                    {vs.filter((v) => !v.rechazada).map((v) => { const m = (exp.imprevistos || {})[uxcKeyImp(i.cod)] || {}; return <td key={v.id} className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!m[v.id]} onChange={(e) => guardar(`imprevistos/${uxcKeyImp(i.cod)}/${v.id}`, e.target.checked ? true : null)} /></td>; })}</tr>))}</tbody></table>
+            </div>))}
+          <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+            <div className="px-3 py-2 bg-slate-50 text-xs font-bold uppercase text-slate-500">De toda la vivienda (varios · torre móvil · ayudas)</div>
+            <table className="w-full text-xs"><tbody>{UXC_GRUPOS_GENERAL.flatMap((gr) => UXC_IMPREVISTOS.filter((i) => i.g === gr)).map((i) => { const m = (exp.imprevistos || {})[uxcKeyImp(i.cod)] || {}; return (
+              <tr key={i.cod} className="border-t border-slate-100"><td className="px-3 py-1.5 whitespace-nowrap">{i.cod}</td><td className="px-2 py-1.5">{i.t}</td><td className="px-2 py-1.5 text-right whitespace-nowrap">{i.ud}</td><td className="px-2 py-1.5 w-24"><UxcCel valor={m.gen === true ? "1" : m.gen} onGuardar={(x) => guardar(`imprevistos/${uxcKeyImp(i.cod)}/gen`, x)} placeholder="cant." /></td></tr>); })}</tbody></table>
+          </div>
+        </div>
+      )}
+
+      {tab === "imprimir" && (
+        <div className="space-y-3 max-w-xl">
+          {exp.revisado === false && <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ Datos sin revisar: las hojas saldrán con un aviso rojo hasta que lo marques como revisado.</div>}
+          <button onClick={() => uxcAbrirImpresion("Hojas de medición " + (cab.expediente || ""), vs.filter((v) => !v.rechazada).map((v) => uxcHojaVentanaHTML(exp, v)).join("") + uxcHojaImprevistosHTML(exp))} className="w-full flex items-center gap-2 bg-[#2E8B57] text-white font-semibold px-4 py-3 rounded-md"><Printer size={16} /> Hojas para medir en obra (una por ventana + imprevistos)</button>
+          <button onClick={() => uxcAbrirImpresion("Hojas de medición (con rechazadas) " + (cab.expediente || ""), vs.map((v) => uxcHojaVentanaHTML(exp, v)).join(""))} className="w-full flex items-center gap-2 border border-slate-300 font-semibold px-4 py-3 rounded-md hover:bg-slate-50"><Printer size={16} /> Hojas de TODAS las carpinterías (incluye las marcadas como rechazadas)</button>
+          <button onClick={() => uxcAbrirImpresion("Imprevistos " + (cab.expediente || ""), uxcHojaImprevistosHTML(exp))} className="w-full flex items-center gap-2 border border-slate-300 font-semibold px-4 py-3 rounded-md hover:bg-slate-50"><Printer size={16} /> Solo la hoja de imprevistos</button>
+          <button onClick={() => uxcAbrirImpresion("Hoja de oficina " + (cab.expediente || ""), uxcHojaOficinaHTML(exp))} className="w-full flex items-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-semibold px-4 py-3 rounded-md hover:bg-[#2E8B57]/5"><Printer size={16} /> Hoja para oficina (pedido de materiales con las medidas)</button>
+          <p className="text-xs text-slate-400">Se abre una ventana de impresión: elige «Guardar como PDF» si quieres mandarla por correo o WhatsApp.</p>
+        </div>
+      )}
     </div>
   );
 }
