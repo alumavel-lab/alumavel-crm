@@ -21330,6 +21330,75 @@ function uxcEjemploVLC690() {
   };
 }
 
+// Expediente VLC 728 (Ribarroja del Turia, c/ Colorins 97): 14 carpinterías en 2 plantas. Datos copiados del PDF del expediente.
+// Los planos van como imagen en /planos/ y las chinchetas ya están colocadas (se pueden mover).
+function uxcEjemploVLC728() {
+  const BL = "CAJÓN Y LAMAS BLANCOS", NO = "CAJÓN BLANCO · LAMAS NOGAL 8007";
+  const V = (ref, estancia, plano, px, py, codigos, extra, more = {}) => ({
+    id: uid(), ref, estancia, tipo: "V. Abatible 2H", material: "PVC BLANCO", codigos, extra, hojas: 2, activa: "derecha", rechazada: false, cant: 1, plano, px, py, ...more,
+  });
+  const STAD = { vExt: "44.1", vCamara: "16", vGas: "", vInt: "33.1", vBE: "no" };
+  const ventanas = [
+    V("A01.001", "Puerta de entrada (salón 1)", "pb", 62.6, 58.3, "CR", "Cerradura · PVC NOGAL según la conformidad", { tipo: "P. Acústica ciega abat 1H", material: "PVC MADERA (nogal)", hojas: 1, vExt: "-", vCamara: "-", vGas: "-", vInt: "-", vBE: "no" }),
+    V("V01.002", "Salón 1", "pb", 54.3, 66.9, "CE+MQ", BL + " · FIJO INF. 400 mm: STADIP SILENCE 33.1/12-16/4", { tipo: "V. Abatible 2H + Fijo inf (400 mm)" }),
+    V("V02.003", "Dormitorio 1", "pb", 18.6, 58.6, "CP+MQ", BL),
+    V("V02.004", "Salón 1", "pb", 18.6, 44.2, "CP+MQ", BL),
+    V("V03.005", "Salón 1", "pb", 64.9, 47.4, "CP+MQ", BL, { tipo: "V. Abatible 2H + Fijo inf (400 mm)", ...STAD }),
+    V("V04.101", "Dormitorio 4", "p1", 21.1, 21.9, "CP+MQ", NO),
+    V("V05.102", "Dormitorio 4", "p1", 45.2, 19.6, "CP+MQ", NO),
+    V("V04.103", "Dormitorio 3", "p1", 64.1, 31.8, "CP+MQ", NO),
+    V("P01.104", "Dormitorio 3 (balcón)", "p1", 78.7, 36.8, "CE+MQ", NO, { tipo: "P. Balconera abat 2H", ...STAD }),
+    V("P01.105", "Dormitorio 2 (balcón)", "p1", 78.7, 52.2, "CE+MQ", NO, { tipo: "P. Balconera abat 2H", ...STAD }),
+    V("V04.106", "Dormitorio 2", "p1", 69.7, 59.7, "CP+MQ", NO),
+    V("V05.107", "Salón 2", "p1", 42.7, 70.9, "CP+MQ", NO),
+    V("V05.108", "Salón 2", "p1", 26.4, 77, "CP+MQ", NO + " · EN EL PLANO PONE «PVC ALUMINIO» (la conformidad dice blanco): confirmar", { material: "PVC ALUMINIO" }),
+    V("V05.109", "Salón 2", "p1", 13.9, 60.2, "CP+MQ", NO),
+  ];
+  const P = (bloque, cod, ud, concepto, refs, medProy, medNueva, preUnit, impProy, impNuevo) => ({ id: uid(), bloque, cod, ud, concepto, refs, medProy, medNueva, preUnit, impProy, impNuevo, marcada: true });
+  const partidas = [
+    P("incl", "01.01.02", "ud", "Levantado de carpintería hasta 3,00 m²", "V02.003, V02.004, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "9,00", "11,00", "29,09", "261,79", "319,97"),
+    P("incl", "01.01.03", "ud", "Levantado de carpintería hasta 6,00 m²", "A01.001, V01.002, V03.005", "5,00", "3,00", "34,89", "174,44", "104,66"),
+    P("incl", "01.02.02", "ud", "Levantado de persiana y caja sin recuperación", "V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "13,00", "13,00", "8,53", "110,90", "110,90"),
+    P("incl", "01.02.04", "ud", "Levantado y montaje de cortinas sobre huecos de ventana", "V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "13,00", "13,00", "3,55", "46,19", "46,19"),
+    P("incl", "01.03.02", "ud", "Levantado de reja o cierre de tijera ≥ 1,50 m² sin recuperación", "V01.002, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "11,00", "11,00", "10,12", "111,27", "111,27"),
+    P("incl", "01.05.01", "ud", "Desmontaje de mosquitera", "V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "13,00", "13,00", "4,18", "54,30", "54,30"),
+    P("incl", "01.07.04", "ud", "Levantado y colocación mecanismos eléctricos", "A01.001", "1,00", "1,00", "21,54", "21,54", "21,54"),
+    P("incl", "A01", "ud", "Puerta acústica con vidrio con burlete inferior de acción mecánica 1h de PVC en color aluminio 1250 x 2450 mm (Sustitución). Pasa a Puerta acústica con vidrio con burlete de acción mecánica 1h de PVC imitación madera 1250 x 2450 mm (Sustitución)", "A01.001", "1,00", "1,00", "835,31", "835,31", "835,31"),
+    P("incl", "V01", "ud", "Ventana abatible + fijo inf. (400 mm) de PVC en color aluminio 2h de 1900 x 1950 mm (Sustitución). Pasa a Ventana abatible + fijo inf. (400 mm) de PVC blanco 2h de 1900 x 1600 mm (Sustitución)", "V01.002", "1,00", "1,00", "507,56", "556,63", "507,56"),
+    P("incl", "V02", "ud", "Ventana abatible de PVC en color aluminio 2h de 1650 x 1100 mm (Sustitución). Pasa a Ventana abatible de PVC blanco 2h de 1650 x 1100 mm (Sustitución)", "V02.003, V02.004", "2,00", "2,00", "351,95", "698,70", "703,91"),
+    P("incl", "V03", "ud", "V. arranque < 90/110 cm abatible de PVC en color aluminio 2h de 1950 x 1600 mm (Sustitución). Pasa a V. arranque < 90/110 cm abatible de PVC blanco 2h de 1800 x 1900 mm (Sustitución)", "V03.005", "1,00", "1,00", "445,56", "423,76", "445,56"),
+    P("incl", "V04", "ud", "V. arranque < 90/110 cm abatible de PVC en color aluminio 2h de 1350 x 1400 mm (Sustitución). Pasa a Ventana abatible de PVC blanco 2h de 1350 x 1400 mm (Sustitución)", "V04.101, V04.103, V04.106", "3,00", "3,00", "361,80", "1.077,40", "1.085,40"),
+    P("incl", "V05", "ud", "V. arranque < 90/110 cm abatible de PVC en color aluminio 2h de 1650 x 1400 mm (Sustitución). Pasa a Ventana abatible de PVC blanco 2h de 1600 x 1300 mm (Sustitución)", "V05.102, V05.107, V05.108, V05.109", "4,00", "4,00", "371,32", "1.521,90", "1.485,27"),
+    P("incl", "P01", "ud", "Puerta balconera abatible de PVC en color aluminio 2h de 1350 x 2250 mm (Sustitución). Pasa a Puerta balconera abatible de PVC blanco 2h de 1300 x 2150 mm (Sustitución)", "P01.104, P01.105", "2,00", "2,00", "454,39", "962,90", "908,78"),
+    P("incl", "04.02.01", "m²", "Climalit 8/12-16/4 (Sin bajo emisivo Doblado)", "V01.002, V02.003, V02.004, V04.101, V05.102, V04.103, V04.106, V05.107, V05.108, V05.109", "0,00", "19,90", "36,19", "0,00", "720,11"),
+    P("incl", "04.02.02", "m²", "Climalit 8/12-16/4", "V01.002, V02.003, V02.004, V04.101, V05.102, V04.103, V04.106, V05.107, V05.108, V05.109", "6,58", "19,90", "39,47", "259,52", "785,47"),
+    P("incl", "04.04.01", "m²", "Stadip Silence 33.1/12-16/4", "V01.002", "0,76", "0,76", "65,78", "49,99", "49,99"),
+    P("incl", "04.06.02", "m²", "Stadip Silence 44.1/12-16/33.1", "V03.005, P01.104, P01.105", "24,11", "9,01", "80,53", "1.941,08", "725,54"),
+    P("incl", "05.01.02", "m²", "Sustitución de persiana y actuación en capialzado de 1,00 a 3,00 m²", "V02.003, V02.004, V04.101, V05.102, V04.103, V04.106, V05.107, V05.108, V05.109", "18,54", "17,62", "113,91", "2.111,80", "2.007,01"),
+    P("incl", "05.01.03", "m²", "Sustitución de persiana y actuación en capialzado de 3,00 a 6,00 m²", "V03.005", "3,12", "3,42", "89,94", "280,60", "307,58"),
+    P("incl", "05.02.03", "m²", "Persiana en Cajón exterior. Aluminio/PVC en cualquier color y acabado (equipada con todos sus accesorios)", "V01.002, P01.104, P01.105", "9,78", "8,63", "70,74", "691,81", "610,46"),
+    P("incl", "06.01.01", "m²", "Reja ventana", "A01.001, V02.004, V03.005, V04.101, V05.102, P01.105, V04.106, V05.107, V05.108", "21,74", "20,45", "60,34", "1.311,46", "1.233,93"),
+    P("incl", "06.01.02", "m²", "Reja abatible con cerradura", "P01.104", "6,08", "5,59", "64,44", "391,49", "360,24"),
+    P("incl", "06.02.06", "m²", "Fraileros, en cualquier material, tratamiento, color, y acabado", "A01.001", "3,06", "1,00", "113,36", "347,16", "113,36"),
+    P("incl", "08.01.01", "m²", "Mosquitera enrollable en tambor", "V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, V04.106, V05.107, V05.108, V05.109", "25,37", "24,08", "31,88", "808,54", "767,58"),
+    P("incl", "08.01.02", "m²", "Mosquitera abatible para balconera, puerta o similar", "P01.104, P01.105", "6,08", "5,59", "61,31", "372,44", "342,71"),
+    P("incl", "12.01.01", "ud", "Ayudas a albañilería, remates y pintura en huecos. Incluso sellado de las carpinterías en las que no se actúa.", "A01.001, V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "14,00", "14,00", "51,95", "727,27", "727,27"),
+    P("incl", "12.01.02", "ud", "Alquiler contenedores y canon de vertido RCD (14 huecos)", "", "2,00", "2,00", "130,12", "260,24", "260,24"),
+    P("incl", "14.01.01", "ud", "Acceso a trabajos en huecos de fachada", "A01.001, V01.002, V02.003, V02.004, V03.005, V04.101, V05.102, V04.103, P01.104, P01.105, V04.106, V05.107, V05.108, V05.109", "14,00", "14,00", "46,92", "656,83", "656,83")
+  ];
+  return {
+    id: uid(), creadoEn: Date.now(), origen: "ejemplo", revisado: true,
+    cab: { expediente: "VLC 728", concurso: "DPM 511-23", pedido: "LOTE 1_08 MEDITERRANEO_5", aeropuerto: "Valencia", municipio: "Ribarroja del Turia", direccion: "C/ Colorins, 97", cliente: "", color: "PVC BLANCO (A01.001 en nogal)", fechaMedicion: "", medidoPor: "" },
+    vidrio: { ext: "8", camara: "16", gas: "", int: "4", be: true, cs: "" },
+    planos: [{ id: "pb", nombre: "Planta baja", url: "/planos/vlc728-planta-baja.jpg" }, { id: "p1", nombre: "Planta primera", url: "/planos/vlc728-planta-primera.jpg" }],
+    ventanas: uxcMapa(ventanas),
+    partidas: uxcMapa(partidas),
+    totales: { inclProy: "17067,28", incl: "16408,94", iva: "3445,88", total: "19854,82", noincl: "0,00", noinclIva: "", noinclTotal: "" },
+    extras: {},
+    imprevistos: {},
+  };
+}
+
 /* ---------- Lectura con IA de las fotos del expediente ---------- */
 const UXC_PROMPT_IA = [
   "Esto es UNA página (foto o PDF) de la documentación de un expediente del Plan de Aislamiento Acústico de Aena (sustitución de carpinterías). Puede estar girada 90 grados: gírala mentalmente antes de leer.",
@@ -21353,15 +21422,7 @@ const UXC_PROMPT_IA = [
   '4) Cualquier otra cosa (leyenda, hoja de imprevistos, plantilla en blanco…): {"tipo":"otro"}',
 ].join("\n");
 
-async function uxcLeerPaginaIA(file) {
-  let bloque;
-  if (file.type === "application/pdf") {
-    const b64 = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => ko(new Error("No se pudo leer el PDF")); r.readAsDataURL(file); });
-    bloque = { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } };
-  } else {
-    const dataUrl = await reducirImagenParaIA(file, 2000);
-    bloque = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: dataUrl.split(",")[1] } };
-  }
+async function uxcLlamarIA(bloque) {
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: [bloque, { type: "text", text: UXC_PROMPT_IA }] }] }),
@@ -21373,6 +21434,35 @@ async function uxcLeerPaginaIA(file) {
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{"), fin = limpio.lastIndexOf("}");
   return JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+}
+// Un PDF de varias páginas se parte en PDFs de una sola página (el prompt está pensado para UNA página por llamada y así no se pasa del tiempo del servidor).
+async function uxcPdfEnPaginas(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const origen = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const n = origen.getPageCount();
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = await PDFDocument.create();
+    const [pg] = await d.copyPages(origen, [i]);
+    d.addPage(pg);
+    out.push(await d.saveAsBase64());
+  }
+  return out;
+}
+// Devuelve una lista con el resultado de cada página (una foto = 1; un PDF = tantas como páginas). Si una página falla, queda {tipo:"otro", _fallo: nº}.
+async function uxcLeerPaginaIA(file, onProgreso) {
+  if (file.type === "application/pdf") {
+    const paginas = await uxcPdfEnPaginas(file);
+    const res = [];
+    for (let i = 0; i < paginas.length; i++) {
+      if (onProgreso) onProgreso(`${file.name || "PDF"}: página ${i + 1} de ${paginas.length}…`);
+      try { res.push(await uxcLlamarIA({ type: "document", source: { type: "base64", media_type: "application/pdf", data: paginas[i] } })); }
+      catch (e) { console.error(e); res.push({ tipo: "otro", _fallo: `${file.name || "PDF"} (página ${i + 1})` }); }
+    }
+    return res;
+  }
+  const dataUrl = await reducirImagenParaIA(file, 2000);
+  return [await uxcLlamarIA({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: dataUrl.split(",")[1] } })];
 }
 
 // Junta lo leído de varias páginas en un expediente nuevo (siempre "sin revisar").
@@ -21511,7 +21601,11 @@ function MedicionesUxcarZona() {
     let fotoPlano = null;
     for (let i = 0; i < fs.length; i++) {
       setProgreso(`Leyendo foto ${i + 1} de ${fs.length}…`);
-      try { const pg = await uxcLeerPaginaIA(fs[i]); paginas.push(pg); if (pg && pg.tipo === "plano" && !fotoPlano && String(fs[i].type).startsWith("image/")) fotoPlano = fs[i]; }
+      try {
+        const pgs = await uxcLeerPaginaIA(fs[i], setProgreso);
+        pgs.forEach((pg) => { if (pg && pg._fallo) fallos.push(pg._fallo); else paginas.push(pg); });
+        if (!fotoPlano && String(fs[i].type).startsWith("image/") && pgs[0] && pgs[0].tipo === "plano") fotoPlano = fs[i];
+      }
       catch (e) { console.error(e); fallos.push(fs[i].name || `foto ${i + 1}`); }
     }
     setLeyendo(false); setProgreso("");
@@ -21539,6 +21633,7 @@ function MedicionesUxcarZona() {
       {errorIA && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorIA}</div>}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="relative max-w-sm flex-1"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, dirección o cliente..." className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm" /></div>
+        {lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 728") && <button onClick={() => crear(uxcEjemploVLC728())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 728 (Colorins 97, con planos)</button>}
         {lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 690") && <button onClick={() => crear(uxcEjemploVLC690())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 690 (el de las fotos)</button>}
       </div>
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
@@ -21708,17 +21803,23 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
 }
 
 /* ---------- Plano en pantalla: se toca una ventana y se abre su hoja ---------- */
+// El expediente puede traer sus planos ya puestos (exp.planos: planta baja, planta primera…) o tener una sola foto subida a mano.
 function UxcPlano({ exp, vs, onAbrir, guardar }) {
-  const [img, setImg] = useState(undefined); // undefined = cargando, null = no hay plano
+  const fijos = toArray(exp.planos).filter((x) => x && x.url);
+  const [img, setImg] = useState(undefined); // foto subida a mano: undefined = cargando, null = no hay
+  const [pl, setPl] = useState(fijos.length ? fijos[0].id : "");
   const [colocar, setColocar] = useState("");
   const [zoom, setZoom] = useState(100);
   const [subiendo, setSubiendo] = useState(false);
   const fileRef = useRef(null);
   useEffect(() => {
+    if (fijos.length) return undefined;
     let vivo = true;
     fbGet(ref(fbDb, `${UXC_PLANO}/${exp.id}`)).then((s) => { if (vivo) setImg(s.val() || null); }).catch(() => { if (vivo) setImg(null); });
     return () => { vivo = false; };
-  }, [exp.id]);
+  }, [exp.id, fijos.length]);
+  const actual = fijos.length ? (fijos.find((x) => x.id === pl) || fijos[0]) : null;
+  const src = actual ? actual.url : img;
   const subir = async (file) => {
     if (!file) return;
     setSubiendo(true);
@@ -21736,25 +21837,29 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
     const y = Math.max(0, Math.min(100, ((e.clientY - r.top) / r.height) * 100));
     guardar(`ventanas/${colocar}/px`, Math.round(x * 100) / 100);
     guardar(`ventanas/${colocar}/py`, Math.round(y * 100) / 100);
+    if (actual) guardar(`ventanas/${colocar}/plano`, actual.id);
     setColocar("");
   };
   const color = (v) => (v.rechazada ? "#b91c1c" : v.medida ? "#15803d" : "#1d4ed8");
-  const sinColocar = vs.filter((v) => v.px === undefined || v.px === null);
+  const colocada = (v) => v.px !== undefined && v.px !== null;
+  const enEste = (v) => colocada(v) && (!actual || v.plano === actual.id);
+  const sinColocar = vs.filter((v) => !colocada(v));
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <button onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo} className="text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-60">{subiendo ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} {img ? "Cambiar foto del plano" : "Subir foto del plano"}</button>
+        {fijos.map((x) => <button key={x.id} onClick={() => { setPl(x.id); setColocar(""); }} className={`px-3 py-2 rounded-md border text-sm font-bold ${actual && actual.id === x.id ? "bg-slate-800 text-white border-slate-800" : "border-slate-300 text-slate-700"}`}>{x.nombre}</button>)}
+        {!fijos.length && <button onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo} className="text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-60">{subiendo ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} {img ? "Cambiar foto del plano" : "Subir foto del plano"}</button>}
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
-        {img && <div className="flex items-center gap-1 ml-auto text-sm"><span className="text-slate-500">Zoom</span>{[100, 150, 220].map((z) => <button key={z} onClick={() => setZoom(z)} className={`px-2.5 py-1 rounded border text-xs font-semibold ${zoom === z ? "bg-slate-800 text-white border-slate-800" : "border-slate-300"}`}>{z}%</button>)}</div>}
+        {src && <div className="flex items-center gap-1 ml-auto text-sm"><span className="text-slate-500">Zoom</span>{[100, 150, 220].map((z) => <button key={z} onClick={() => setZoom(z)} className={`px-2.5 py-1 rounded border text-xs font-semibold ${zoom === z ? "bg-slate-800 text-white border-slate-800" : "border-slate-300"}`}>{z}%</button>)}</div>}
       </div>
-      {img === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
-      {img === null && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto del plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja.</div>}
+      {!fijos.length && img === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
+      {!fijos.length && img === null && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto del plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja.</div>}
       {colocar && <div className="mb-2 px-3 py-2 rounded bg-sky-50 border border-sky-300 text-sky-900 text-sm font-semibold">Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
-      {img && (
+      {src && (
         <div className="border border-slate-300 rounded-lg overflow-auto bg-white mb-4" style={{ maxHeight: "75vh" }}>
           <div style={{ width: zoom + "%", position: "relative", cursor: colocar ? "crosshair" : "default" }} onClick={tocarPlano}>
-            <img src={img} alt="Plano" style={{ width: "100%", display: "block", userSelect: "none" }} draggable={false} />
-            {vs.filter((v) => v.px !== undefined && v.px !== null).map((v) => (
+            <img src={src} alt="Plano" style={{ width: "100%", display: "block", userSelect: "none" }} draggable={false} />
+            {vs.filter(enEste).map((v) => (
               <button key={v.id} onClick={(e) => { e.stopPropagation(); if (!colocar) onAbrir(v.id); }} style={{ position: "absolute", left: v.px + "%", top: v.py + "%", transform: "translate(-50%,-50%)", background: color(v), pointerEvents: colocar ? "none" : "auto" }}
                 className="text-white text-[11px] font-extrabold rounded-full px-2.5 py-1.5 shadow-lg border-2 border-white whitespace-nowrap">{v.ref}{v.medida ? " ✓" : ""}{v.obs ? " ✎" : ""}</button>
             ))}
@@ -21765,12 +21870,12 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
       <div className="grid sm:grid-cols-2 gap-2">
         {vs.map((v) => (
           <div key={v.id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">
-            <button onClick={() => onAbrir(v.id)} className="flex-1 text-left"><span className="font-bold text-sm" style={{ color: color(v) }}>{v.ref || "(sin ref.)"}</span> <span className="text-xs text-slate-500">{v.estancia}</span>{v.obs && <div className="text-[11px] text-amber-800 truncate">✎ {v.obs}</div>}</button>
-            {img && <button onClick={() => setColocar(v.id)} className="text-[11px] font-semibold border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">{v.px !== undefined && v.px !== null ? "Mover chincheta" : "📍 Colocar"}</button>}
+            <button onClick={() => onAbrir(v.id)} className="flex-1 text-left"><span className="font-bold text-sm" style={{ color: color(v) }}>{v.ref || "(sin ref.)"}</span> <span className="text-xs text-slate-500">{v.estancia}{fijos.length && v.plano ? ` · ${(fijos.find((x) => x.id === v.plano) || {}).nombre || ""}` : ""}</span>{v.obs && <div className="text-[11px] text-amber-800 truncate">✎ {v.obs}</div>}</button>
+            {src && <button onClick={() => { if (actual && v.plano && v.plano !== actual.id) setPl(v.plano); setColocar(v.id); }} className="text-[11px] font-semibold border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">{colocada(v) ? "Mover chincheta" : "📍 Colocar"}</button>}
           </div>
         ))}
       </div>
-      {img && sinColocar.length > 0 && <p className="text-xs text-slate-400 mt-2">Sin chincheta todavía: {sinColocar.map((v) => v.ref).join(", ")}.</p>}
+      {src && sinColocar.length > 0 && <p className="text-xs text-slate-400 mt-2">Sin chincheta todavía: {sinColocar.map((v) => v.ref).join(", ")}.</p>}
     </div>
   );
 }
