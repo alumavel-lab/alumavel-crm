@@ -211,23 +211,6 @@ function presupuestoDeTexto(txt, conocidos = []) {
   }
   return out;
 }
-// Portal / escalera / piso de un texto: "SN-EXP 823_PORTAL 33E ESC 06 2B_6.415" -> "PORTAL 33E ESC 06 2B".
-function ubicacionDeTexto(t) {
-  const m = String(t || "").match(/PORTAL\s*([A-Z0-9]+)(?:[\s_,-]*ESC(?:ALERA)?\.?\s*([A-Z0-9]+))?(?:[\s_,-]+(\d{1,2}\s?[A-Z]|BJ|PB|BAJO)(?![A-Z0-9]))?/i);
-  if (!m) return "";
-  return ["PORTAL " + m[1].toUpperCase(), m[2] ? "ESC " + m[2].toUpperCase() : "", m[3] ? m[3].replace(/\s/g, "").toUpperCase() : ""].filter(Boolean).join(" ");
-}
-// Ubicación de un cristal: la que trae guardada (planta) o la que se saca de cualquier texto suyo (referencia del pedido, etc.).
-function ubicacionPieza(p) {
-  if (!p) return "";
-  const guardada = String(p.planta || "").trim();
-  const sacada = ubicacionDeTexto(Object.values(p).filter((v) => typeof v === "string").join(" | "));
-  return sacada && (!guardada || sacada.length >= guardada.length) ? sacada : guardada;
-}
-function ubicacionesCab(c) {
-  return [...new Set(toArray(c && c.piezas).map(ubicacionPieza).filter(Boolean))];
-}
-
 // Nº de presupuesto de un caballete: el suyo y el de sus cristales (sin repetir).
 function presupuestoCab(c) {
   const set = [];
@@ -270,7 +253,6 @@ async function packingDesdeExcel(file, presupuestosConocidos = []) {
         ref: String(valorPorCabeceras(f, ["tagrefclientpos", "tag", "referencia"]) || ""),
         expediente: expDe(refOrden),
         presupuesto: pres.join(", "),
-        ...(ubicacionDeTexto(Object.values(f).join(" | ")) ? { planta: ubicacionDeTexto(Object.values(f).join(" | ")) } : {}),
       };
     });
     const exps = [...new Set(piezas.map((p) => p.expediente).filter(Boolean))];
@@ -309,8 +291,7 @@ function agruparFilasPorCaballete(filas) {
       ancho: parseFloat(f.ancho) || "", alto: parseFloat(f.alto) || "",
       m2: parseFloat(f.m2) || 0,
       ref: limpio(f.ref), expediente: limpio(f.expediente),
-      ...(ubicacionPieza(f) ? { planta: ubicacionPieza(f) } : {}),
-      ...(limpio(f.refPedido) ? { refPedido: limpio(f.refPedido) } : {}),
+      ...(limpio(f.planta) ? { planta: limpio(f.planta) } : {}),
       ...(limpio(f.material) ? { material: limpio(f.material) } : {}),
       presupuesto: limpio(f.presupuesto).replace(/[^\d,\s]/g, "").replace(/\s+/g, " ").trim(),
     }));
@@ -357,43 +338,6 @@ const fmtDate = (d) => {
   const dt = new Date(d + "T00:00:00");
   if (isNaN(dt)) return "—";
   return dt.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
-};
-// Fecha en la que se subió un documento (se graba en d.subidoEn al subirlo); vacío si es un documento antiguo sin fecha
-const fechaDoc = (d) => { const t = d && d.subidoEn; if (!t) return ""; const x = new Date(t); return isNaN(x) ? "" : x.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }); };
-// Las fotos hechas con la cámara llegan con nombres tipo "image.jpg": se les pone fecha y hora para distinguirlas
-const renombrarFotoCamara = (file) => {
-  const d = new Date(), p = (n) => String(n).padStart(2, "0");
-  const tipo = file.type || "image/jpeg";
-  const ext = (tipo.split("/")[1] || "jpg").replace("jpeg", "jpg");
-  return new File([file], `Foto ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}h${p(d.getMinutes())}m${p(d.getSeconds())}.${ext}`, { type: tipo });
-};
-// Desplegable "Asignar el trabajo a (oficina)" para las llamadas. Solo salen los usuarios marcados como
-// "Oficina" en Usuarios; mientras no haya nadie marcado, salen todos (con un aviso).
-function AsignarTrabajoLlamada({ usuarios, valor, fecha, onValor, onFecha }) {
-  const todos = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {}));
-  const hayOficinaMarcada = todos.some((u) => u.areas && u.areas.oficina);
-  const lista = hayOficinaMarcada ? todos.filter((u) => u.areas && u.areas.oficina) : todos;
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
-      <div className="sm:col-span-2">
-        <Field label="Asignar el trabajo a (oficina)">
-          <Select value={valor || ""} onChange={(e) => onValor(e.target.value)}>
-            <option value="">Sin asignar</option>
-            {lista.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
-          </Select>
-        </Field>
-        {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos.</p>}
-      </div>
-      <Field label="Para el día (opcional)"><TextInput type="date" value={fecha || ""} onChange={(e) => onFecha(e.target.value)} /></Field>
-      {valor && <p className="sm:col-span-3 text-[11px] text-slate-500">Al registrar la llamada se le crea una tarea con las notas, que verá en Tareas.</p>}
-    </div>
-  );
-}
-// Datos de la asignación que se guardan dentro de la llamada
-const asignacionLlamada = (usuarios, userId, fecha) => {
-  if (!userId) return {};
-  const u = (Array.isArray(usuarios) ? usuarios : Object.values(usuarios || {})).find((x) => x.id === userId);
-  return { asignadoA: userId, asignadoANombre: u ? `${u.nombre} ${u.apellidos || ""}`.trim() : "", asignadoAFecha: fecha || "" };
 };
 const daysDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
@@ -728,6 +672,7 @@ export default function App() {
   const [carrosPersianas, setCarrosPersianas] = useState([]);
   const [persianasAlmacen, setPersianasAlmacen] = useState([]);
   const [almacenesPersianas, setAlmacenesPersianas] = useState([]);
+  const [pedidosPersianas, setPedidosPersianas] = useState([]); // persianas PEDIDAS al proveedor y aún no llegadas (no cuentan como "dentro" del almacén)
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [sesionesUsuario, setSesionesUsuario] = useState({});
@@ -872,7 +817,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas"];
         const resultados = {};
         const fallos = [];
         await Promise.all(claves.map(async (k) => {
@@ -913,6 +858,7 @@ export default function App() {
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
         if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
+        if (resultados.pedidosPersianas) setPedidosPersianas(toArray(resultados.pedidosPersianas));
         setAlmacenesPersianas(resultados.almacenesPersianas ? toArray(resultados.almacenesPersianas) : [ALMACEN_PERSIANAS_PRINCIPAL]);
         if (resultados.mediciones) setMediciones(toArray(resultados.mediciones));
         if (resultados.sesionesUsuario) setSesionesUsuario(resultados.sesionesUsuario);
@@ -1341,13 +1287,13 @@ export default function App() {
 
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
-  const crearClienteRapido = (nombre, limiteCredito, movil = "", email = "") => {
+  const crearClienteRapido = (nombre, limiteCredito) => {
     const nombreNormalizado = (nombre || "").trim().toLowerCase();
     if (clientes.some((c) => (c.nombre || "").trim().toLowerCase() === nombreNormalizado)) {
       showToast(`Ya existe un cliente llamado "${nombre}" — elígelo del listado en vez de crearlo otra vez.`, "error");
       return null;
     }
-    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado", movil: String(movil || "").trim(), email: String(email || "").trim() };
+    const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado" };
     saveClientes([nc, ...clientes]);
     showToast(`Cliente "${nombre}" dado de alta`);
     return nc.id;
@@ -1681,13 +1627,6 @@ export default function App() {
         data = { ...data, fechaFabricacion: fecha.toISOString().slice(0, 10) };
       }
 
-      // Fechas que se quedan apuntadas solas en la obra: cuándo se aceptó el presupuesto y cuándo se entregó
-      {
-        const hoyISO = new Date().toISOString().slice(0, 10);
-        if (data.estadoPresupuesto === "Presupuesto aceptado" && anterior?.estadoPresupuesto !== "Presupuesto aceptado" && !data.fechaAceptado && !anterior?.fechaAceptado) data = { ...data, fechaAceptado: hoyISO };
-        if (data.estadoTrabajo === "Entregado" && anterior?.estadoTrabajo !== "Entregado" && !data.fechaEntregado && !anterior?.fechaEntregado) data = { ...data, fechaEntregado: hoyISO };
-      }
-
       next = proyectos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
       showToast("Proyecto actualizado");
 
@@ -1722,13 +1661,7 @@ export default function App() {
   };
 
   const updateProyectoInline = (id, patch) => {
-    const hoyISO = new Date().toISOString().slice(0, 10);
-    const next = proyectosRef.current.map((p) => {
-      if (p.id !== id) return p;
-      const extra = {};
-      if (patch.estadoPresupuesto === "Presupuesto aceptado" && p.estadoPresupuesto !== "Presupuesto aceptado" && !p.fechaAceptado && !patch.fechaAceptado) extra.fechaAceptado = hoyISO;
-      return { ...p, ...patch, ...extra };
-    });
+    const next = proyectosRef.current.map((p) => (p.id === id ? { ...p, ...patch } : p));
     saveProyectos(next);
   };
 
@@ -1941,9 +1874,8 @@ export default function App() {
     let num = parseInt(nextNumeroPedido(), 10);
     const nuevos = Object.entries(grupos).map(([clave, lineas]) => {
       // clave "sin:<seccion>" = sin proveedor todavía, agrupado por sección
-      const proveedorId = clave.startsWith("sin:") ? "" : clave.split("#")[0];
-      const seccionClave = clave.startsWith("sin:") ? clave.slice(4) : (clave.includes("#") ? clave.split("#")[1] : "");
-      const seccionSinProv = seccionClave ? (LISTADO_SECCIONES[seccionClave] || seccionClave) : "";
+      const proveedorId = clave.startsWith("sin:") ? "" : clave;
+      const seccionSinProv = clave.startsWith("sin:") ? (LISTADO_SECCIONES[clave.slice(4)] || clave.slice(4)) : "";
       return {
       id: uid(), numero: String(num++), proveedorId, proyectoId: proyecto.id, estado: "En espera",
       fechaCompra: hoy, fechaEntregaPrevista: "", lineas, adjuntosPdf: [], origenListado: origen,
@@ -2400,6 +2332,7 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
+  const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
   almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
@@ -2612,10 +2545,6 @@ export default function App() {
   // en el formulario) para que ningún lead se quede sin seguimiento previsto;
   // si es rechazo, el lead pasa a Descartado y se libera esa fecha.
   const addLlamadaLead = (leadId, llamada, nuevoEstado, proximaAccionFecha) => {
-    if (llamada.asignadoA) {
-      const ld = leads.find((l) => l.id === leadId);
-      crearTarea({ titulo: `Lead ${ld ? ld.nombre : ""}: ${llamada.resultadoLabel || "llamada"}`, descripcion: `${ld && ld.telefono ? `${ld.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
-    }
     const next = leads.map((l) => (l.id === leadId ? {
       ...l,
       llamadas: [llamada, ...(l.llamadas || [])],
@@ -2932,21 +2861,6 @@ export default function App() {
 
   const savePresupuestos = (next) => { setPresupuestos(next); persist("presupuestos", next); };
 
-  // Los documentos que se añaden al presupuesto DESPUÉS de crear su proyecto también pasan al proyecto
-  // (al crearlo solo se copiaban los que había en ese momento). No duplica: compara por dirección del archivo.
-  const copiarDocumentosPresupuestoAProyecto = (presupuesto) => {
-    const proyId = presupuesto && presupuesto.proyectoCreadoId;
-    if (!proyId) return;
-    const lista = toArray(proyectosRef.current);
-    const proy = lista.find((p) => p && p.id === proyId);
-    if (!proy) return;
-    const yaUrls = new Set(toArray(proy.documentos).map((d) => d && d.url).filter(Boolean));
-    const nuevos = toArray(presupuesto.documentos).filter((d) => d && d.url && !yaUrls.has(d.url));
-    if (!nuevos.length) return;
-    saveProyectos(lista.map((p) => (p.id === proyId ? { ...p, documentos: [...toArray(p.documentos), ...nuevos.map((d) => ({ ...d, id: d.id || uid() }))] } : p)));
-    showToast(`${nuevos.length === 1 ? "Documento añadido" : nuevos.length + " documentos añadidos"} también al proyecto #${proy.numero}`);
-  };
-
   const upsertPresupuesto = (data) => {
     let next;
     let idParaAbrir = null;
@@ -2955,7 +2869,6 @@ export default function App() {
       const dataNormalizada = { ...data, estado: data.estado || anterior?.estado || "Pendiente" };
       next = presupuestos.map((p) => (p.id === data.id ? { ...p, ...dataNormalizada } : p));
       showToast("Presupuesto actualizado");
-      copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === data.id));
 
       // Si el presupuesto está vinculado a una obra ya existente (no una que se
       // vaya a crear a partir de él) y se acaba de aceptar, sus persianas se
@@ -2988,7 +2901,6 @@ export default function App() {
       p.id === presupuestoId ? { ...p, documentos: [...(p.documentos || []), documento] } : p
     );
     savePresupuestos(next);
-    copiarDocumentosPresupuestoAProyecto(next.find((p) => p.id === presupuestoId));
   };
 
   // Cancela un envío a firmar pendiente (para poder reenviarlo, p.ej. si se subió
@@ -3172,7 +3084,6 @@ export default function App() {
       nombre: presupuesto.descripcion || presupuesto.numero,
       clienteId,
       importePresupuesto: presupuesto.importe || 0,
-      fechaAceptado: String(presupuesto.fechaRespuesta || (presupuesto.firma && presupuesto.firma.firmadoEn ? fechaLocalISO(presupuesto.firma.firmadoEn) : "") || new Date().toISOString()).slice(0, 10),
       estadoPresupuesto: "Presupuesto aceptado",
       estadoTrabajo: "Pendiente de aceptación",
       gastos: [],
@@ -3233,10 +3144,6 @@ export default function App() {
   };
 
   const addLlamadaPresupuesto = (presupuestoId, llamada, nuevoEstado) => {
-    if (llamada.asignadoA) {
-      const pr = presupuestos.find((p) => p.id === presupuestoId);
-      crearTarea({ titulo: `Presupuesto ${pr ? pr.numero : ""}${pr && pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""}: llamada`, descripcion: `${pr && pr.telefono ? `${pr.telefono}\n` : ""}${llamada.notas || ""}`, asignadoA: llamada.asignadoA, asignadoANombre: llamada.asignadoANombre || "", fechaLimite: llamada.asignadoAFecha || "" });
-    }
     const hoy = new Date().toISOString().slice(0, 10);
     const enSieteDias = new Date();
     enSieteDias.setDate(enSieteDias.getDate() + 7);
@@ -3695,7 +3602,7 @@ export default function App() {
             }));
           } else listaProyectos = [{
             id: proyectoId, numero: String(numProy++), nombre: pre.descripcion || pre.numero, clienteId,
-            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación", fechaAceptado: hoy,
+            importePresupuesto: pre.importe || 0, estadoPresupuesto: "Presupuesto aceptado", estadoTrabajo: "Pendiente de aceptación",
             presupuestoFirmado: true, gastos: [], registroHorario: [], checklistMateriales: checklist,
             techos: pre.techos || [], persianas: pre.persianas || [], ventanas: pre.ventanas || [],
             persianasControl: (pre.persianas || []).flatMap((entry) => expandirUnidadesPersiana(entry, pre)),
@@ -4912,8 +4819,6 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
-            currentUser={currentUser}
-            onRecibirPedido={recibirPedido}
             proyectos={proyectos}
             clientes={clientes}
             facturas={facturas}
@@ -5287,7 +5192,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas,
+            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -6036,11 +5941,6 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
       setErrorMsg(`Ya existe un cliente llamado "${f.nombre.trim()}". Si es la misma persona o empresa, edítalo desde el listado en vez de darlo de alta otra vez.`);
       return;
     }
-    if (!String(f.movil || "").trim() && !String(f.email || "").trim()) {
-      setErrorMsg("Falta un medio de contacto: pon al menos el Móvil o el Email del cliente (uno de los dos es obligatorio).");
-      alert("Pon al menos el Móvil o el Email del cliente. Uno de los dos es obligatorio para guardarlo.");
-      return;
-    }
     if (!f.limiteCredito || parseFloat(f.limiteCredito) <= 0) {
       setErrorMsg("Falta el Límite de crédito asegurado (es obligatorio y tiene que ser mayor que 0).");
       return;
@@ -6088,7 +5988,7 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
           <Field label="DNI / CIF">
             <TextInput value={f.cif} onChange={set("cif")} />
           </Field>
-          <Field label="Móvil (o email: uno de los dos es obligatorio)">
+          <Field label="Móvil">
             <TextInput value={f.movil} onChange={set("movil")} />
           </Field>
         </div>
@@ -6302,7 +6202,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -6320,8 +6220,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
 
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
-      // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
-      if (!estadoTrabajo && !q && p.estadoTrabajo === "Cancelado") return false;
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
@@ -6350,8 +6248,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     if (!proyecto) { setView("list"); return null; }
     return (
       <ProyectoDetail
-        currentUser={currentUser}
-        onRecibirPedido={onRecibirPedido}
         proyecto={proyecto}
         cliente={clientes.find((c) => c.id === proyecto.clienteId)}
         facturas={facturas.filter((f) => (f.proyectosIds || []).includes(proyecto.id))}
@@ -6444,8 +6340,8 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         <button
           onClick={() => descargarListaComoWord(
             "Proyectos",
-            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Aceptado el", "Estado trabajo", "Importe"],
-            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.fechaAceptado ? fmtDate(p.fechaAceptado) : "", p.estadoTrabajo, money(p.importePresupuesto)])
+            ["Nº", "Proyecto", "Cliente", "Estado presupuesto", "Estado trabajo", "Importe"],
+            filtered.map((p) => [String(p.numero), p.nombre, clienteNombre(p.clienteId), p.estadoPresupuesto, p.estadoTrabajo, money(p.importePresupuesto)])
           )}
           className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"
         >
@@ -6453,9 +6349,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         </button>
       </div>
 
-      {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
-        <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
-      )}
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -6464,7 +6357,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               <th className="px-4 py-3 font-semibold">Proyecto</th>
               <th className="px-4 py-3 font-semibold">Cliente</th>
               <th className="px-4 py-3 font-semibold">Presupuesto</th>
-              <th className="px-4 py-3 font-semibold">Aceptado el</th>
               <th className="px-4 py-3 font-semibold">Estado trabajo</th>
               <th className="px-4 py-3 font-semibold">Ciudad reparto</th>
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
@@ -6475,7 +6367,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
@@ -6497,11 +6389,6 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                     >
                       {Object.keys(ESTADO_PRESUPUESTO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
                     </select>
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    {p.fechaAceptado ? <span className="font-mono-num text-slate-700">{fmtDate(p.fechaAceptado)}</span>
-                      : p.estadoPresupuesto === "Presupuesto aceptado" ? <span className="text-[11px] font-semibold text-rose-600" title="Falta la fecha de aceptación: ábrelo y pulsa Editar">⚠ Sin fecha</span>
-                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -6564,11 +6451,6 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
     if (!f.nombre.trim() || !f.clienteId) {
       setErrorMsg("Faltan campos obligatorios: Cliente y Nombre / descripción.");
       alert("Faltan campos obligatorios: Cliente y Nombre / descripción del proyecto.");
-      return;
-    }
-    if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
-      setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
-      alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
       return;
     }
     setErrorMsg("");
@@ -6635,11 +6517,7 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
 
         <div className="grid grid-cols-3 gap-4">
           <Field label="Estado del presupuesto">
-            <Select value={f.estadoPresupuesto} onChange={(e) => {
-              const v = e.target.value;
-              // Al marcarlo aceptado se propone la fecha de hoy (se puede cambiar si se aceptó otro día)
-              setF({ ...f, estadoPresupuesto: v, ...(v === "Presupuesto aceptado" && !f.fechaAceptado ? { fechaAceptado: new Date().toISOString().slice(0, 10) } : {}) });
-            }}>
+            <Select value={f.estadoPresupuesto} onChange={set("estadoPresupuesto")}>
               {ESTADO_PRESUPUESTO.map((t) => <option key={t}>{t}</option>)}
             </Select>
           </Field>
@@ -6654,14 +6532,6 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
             </Select>
           </Field>
         </div>
-
-        {f.estadoPresupuesto === "Presupuesto aceptado" && (
-          <div className="grid grid-cols-3 gap-4">
-            <Field label="Fecha de aceptación del presupuesto" required>
-              <TextInput type="date" value={f.fechaAceptado || ""} onChange={set("fechaAceptado")} />
-            </Field>
-          </div>
-        )}
 
         {f.estadoLogistica === "Reparto (camión)" && (
           <div className="grid grid-cols-2 gap-4">
@@ -6793,9 +6663,6 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
   const [editandoId, setEditandoId] = useState(null);
   const [abiertaId, setAbiertaId] = useState(null);
   const [guardando, setGuardando] = useState(false);
-  // Trabajadores de oficina (marcados "Oficina" en su usuario); si todavía no hay nadie marcado, salen todos
-  const hayOficinaMarcada = toArray(usuarios).some((u) => u.areas && u.areas.oficina);
-  const personalOficina = hayOficinaMarcada ? toArray(usuarios).filter((u) => u.areas && u.areas.oficina) : toArray(usuarios);
   const llamadas = [...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const textoDocumento = (l) => [
@@ -6811,16 +6678,11 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
     try {
       const id = editandoId || uid();
       const llamada = { ...f, id, motivo: f.motivo.trim(), notas: f.notas, actualizadaEn: Date.now() };
-      // Si se ha elegido a alguien en "Asignar el trabajo a", se crea la tarea para esa persona
-      const accFinal = { ...acc, tarea: !!acc.tareaPara };
-      const asignado = toArray(usuarios).find((u) => u.id === acc.tareaPara);
       // Lo que se ha decidido en la llamada queda anotado en ella
       const hechas = [];
       if (acc.estado && acc.estado !== proyecto.estadoTrabajo) hechas.push(`Estado: ${proyecto.estadoTrabajo || "—"} → ${acc.estado}`);
       if (acc.nuevo) hechas.push(`Pide algo nuevo: ${acc.nuevoTexto || llamada.motivo}`);
-      if (asignado) hechas.push(`Trabajo asignado a ${`${asignado.nombre} ${asignado.apellidos || ""}`.trim()}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
-      llamada.asignadoA = asignado ? asignado.id : "";
-      llamada.asignadoANombre = asignado ? `${asignado.nombre} ${asignado.apellidos || ""}`.trim() : "";
+      if (acc.tarea && acc.tareaPara) hechas.push(`Tarea para ${(toArray(usuarios).find((u) => u.id === acc.tareaPara) || {}).nombre || ""}${acc.tareaFecha ? ` (para el ${fmtDate(acc.tareaFecha)})` : ""}`);
       if (hechas.length) llamada.acciones = [...toArray(llamada.acciones), ...hechas];
       const nombreDoc = `Llamada ${String(llamada.fecha).slice(0, 10)} ${String(llamada.fecha).slice(11, 16).replace(":", "h")} — ${(llamada.contacto || "sin nombre").slice(0, 40)}.txt`;
       const archivo = new File([`\ufeff${textoDocumento(llamada)}`], nombreDoc, { type: "text/plain" });
@@ -6830,7 +6692,7 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
       if (url) docs.push({ id: uid(), nombre: nombreDoc, url, subidoEn: Date.now(), llamadaId: id });
       const lista = editandoId ? toArray(proyecto.llamadas).map((x) => (x.id === id ? llamada : x)) : [llamada, ...toArray(proyecto.llamadas)];
       const patch = JSON.parse(JSON.stringify({ llamadas: lista, documentos: docs }));
-      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, accFinal);
+      if (onGuardarLlamada) onGuardarLlamada(proyecto, patch, llamada, acc);
       else onInlineUpdate(proyecto.id, patch);
       setF(vacia()); setAcc(accVacias()); setEditandoId(null); setAbiertaId(id);
       if (!url) alert("Llamada guardada, pero no se pudo crear el documento en Documentos. Vuelve a guardarla más tarde.");
@@ -6860,21 +6722,6 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
             </Select>
           </Field>
         </div>
-        {onGuardarLlamada && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-emerald-200 bg-emerald-50/50 rounded-md p-3">
-            <div className="sm:col-span-2">
-              <Field label="Asignar el trabajo a (oficina)">
-                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })}>
-                  <option value="">Sin asignar</option>
-                  {personalOficina.map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
-                </Select>
-              </Field>
-              {!hayOficinaMarcada && <p className="text-[11px] text-amber-700 mt-1">Nadie está marcado como «Oficina» en Usuarios, así que salen todos. Márcalos en cada usuario para que aquí solo salga la oficina.</p>}
-            </div>
-            <Field label="Para el día (opcional)"><TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} /></Field>
-            {acc.tareaPara && <p className="sm:col-span-3 text-[11px] text-slate-500">Al guardar la llamada se le crea una tarea con el motivo y las notas, que verá en Tareas.</p>}
-          </div>
-        )}
         <Field label="Notas de la llamada (se guardan también como documento en el proyecto)">
           <TextArea rows={8} value={f.notas} onChange={set("notas")} placeholder="Escribe aquí todo lo hablado: acuerdos, cambios, lo que hay que hacer…" />
         </Field>
@@ -6894,6 +6741,16 @@ function RegistroLlamadasObra({ proyecto, cliente, usuarios, onInlineUpdate, onG
                 <div className="sm:col-span-2"><TextInput value={acc.nuevoTexto} onChange={(e) => setAcc({ ...acc, nuevoTexto: e.target.value })} placeholder="Qué pide (ej. 2 mosquiteras más en el salón)" /></div>
                 <TextInput type="number" value={acc.nuevoImporte} onChange={(e) => setAcc({ ...acc, nuevoImporte: e.target.value })} placeholder="Importe aprox. (opcional)" />
                 <p className="sm:col-span-3 text-[11px] text-slate-500">Se crea un presupuesto unido a esta obra. Cuando el cliente lo firme, lo nuevo se suma a esta misma obra (con sus pedidos en espera) en vez de abrir una obra nueva.</p>
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer"><input type="checkbox" checked={acc.tarea} onChange={(e) => setAcc({ ...acc, tarea: e.target.checked })} /> Crear una tarea para alguien</label>
+            {acc.tarea && (
+              <div className="flex flex-wrap gap-2 pl-6">
+                <Select value={acc.tareaPara} onChange={(e) => setAcc({ ...acc, tareaPara: e.target.value })} className="!w-auto text-sm">
+                  <option value="">¿Para quién?</option>
+                  {toArray(usuarios).map((u) => <option key={u.id} value={u.id}>{`${u.nombre} ${u.apellidos || ""}`.trim()}</option>)}
+                </Select>
+                <TextInput type="date" value={acc.tareaFecha} onChange={(e) => setAcc({ ...acc, tareaFecha: e.target.value })} className="!w-40" />
               </div>
             )}
           </div>
@@ -7377,7 +7234,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales) => {
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
 // PEDIRLOS desde aquí mismo: elegir proveedor, mandarlo por WhatsApp o email, o marcar que
 // ya se ha pedido de otra forma — pidiendo siempre la fecha aproximada de llegada.
-function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onRecibirPedido }) {
+function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openPedido, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion }) {
   const [confirmando, setConfirmando] = useState(null); // { id, metodo, fecha }
   const hoy = new Date().toISOString().slice(0, 10);
   if (pedidos.length === 0) return <p className="px-4 py-8 text-center text-sm text-slate-400">Sin pedidos de materiales vinculados a este proyecto todavía.</p>;
@@ -7404,14 +7261,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
               <span className="text-slate-500">{toArray(p.lineas).length} línea{toArray(p.lineas).length === 1 ? "" : "s"}{String(p.comentarios || "").includes(":") && /^[^:]{3,40}: Material que falta/.test(p.comentarios || "") ? ` · ${p.comentarios.split(":")[0]}` : ""}</span>
               <span className="text-slate-500">{p.fechaEntregaPrevista ? `Llega ${fmtDate(p.fechaEntregaPrevista)}` : ""}</span>
               <Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge>
-              {onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" && (
-                <>
-                  <button onClick={() => { if (window.confirm(`¿Marcar el pedido #${p.numero} como recibido completo?\n\nSe suma al stock lo que lleve de catálogo. Si solo ha llegado una parte, usa "Recibir una parte" (se abre el pedido).`)) onRecibirPedido(p.id); }}
-                    className="ml-auto flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 rounded-md"><CheckCircle2 size={12} /> Marcar recibido</button>
-                  <button onClick={() => openPedido(p.id)} title="Abre el pedido para marcar línea a línea lo que ha llegado" className="text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md">Recibir una parte</button>
-                </>
-              )}
-              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className={`${onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" ? "" : "ml-auto "}flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md`}><FileText size={12} /> PDF</button>
+              <button onClick={() => abrirPdfPedido(p, prov, proyecto, materiales)} className="ml-auto flex items-center gap-1 text-xs font-semibold text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md"><FileText size={12} /> PDF</button>
               <button onClick={() => openPedido(p.id)} className="text-xs font-semibold text-slate-500 hover:underline">Ver pedido →</button>
             </div>
             {sinPedir && (
@@ -7635,7 +7485,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
           // separa por sección (perfiles, herrajes, persianas…) para que cada pedido
           // vaya luego a su proveedor, en vez de un único pedido con todo mezclado.
           const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
-          const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`, f.seccion);
+          const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
           (gruposAuto[prov] = gruposAuto[prov] || []).push(f.mat
             ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
             : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
@@ -7660,7 +7510,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     if (yaCreados.length > 0 && !confirm(`Ya se crearon ${yaCreados.length} pedido(s) con este listado. ¿Crear otros igualmente?`)) return;
     const grupos = {};
     faltan.forEach((f) => {
-      const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || provSinStock, f.seccion);
+      const prov = (f.mat && f.mat.proveedorId) || provSinStock;
       if (!grupos[prov]) grupos[prov] = [];
       grupos[prov].push(f.mat
         ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
@@ -7747,7 +7597,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7758,36 +7608,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
   const ciudadReparto = proyecto.estadoLogistica === "Reparto (camión)"
     ? (proyecto.provinciaReparto === "Otra ciudad..." ? proyecto.ciudadRepartoManual : proyecto.provinciaReparto)
     : null;
-  const nombreUsuarioActual = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() : "";
-
-  // Anular una obra (repetida, caída…) sin borrarla: pasa a "Cancelado" guardando quién, cuándo y por qué,
-  // y se puede reactivar. Sus pedidos no se tocan: se avisa si tiene alguno sin recibir.
-  const anularProyecto = () => {
-    const sinRecibir = toArray(pedidos).filter((p) => p.estado !== "Recibido" && p.estado !== "Cancelado").length;
-    const aviso = sinRecibir ? `\n\nOjo: tiene ${sinRecibir} pedido${sinRecibir === 1 ? "" : "s"} sin recibir que NO se anulan solos (revísalos en la pestaña Pedidos).` : "";
-    const motivo = window.prompt(`¿Anular el proyecto #${proyecto.numero} — ${proyecto.nombre}?\n\nEscribe el motivo (p. ej. "repetido", "cliente cancela") y acepta. No se borra: queda como Cancelado y se puede reactivar.${aviso}`, "");
-    if (motivo === null) return;
-    onInlineUpdate(proyecto.id, { estadoTrabajo: "Cancelado", anulado: { fecha: new Date().toISOString().slice(0, 10), por: nombreUsuarioActual, motivo: String(motivo).trim(), estadoAnterior: proyecto.estadoTrabajo || "" } });
-  };
-  const reactivarProyecto = () => {
-    if (!window.confirm(`¿Reactivar el proyecto #${proyecto.numero}?`)) return;
-    const previo = proyecto.anulado && proyecto.anulado.estadoAnterior && proyecto.anulado.estadoAnterior !== "Cancelado" ? proyecto.anulado.estadoAnterior : "Pendiente de aceptación";
-    onInlineUpdate(proyecto.id, { estadoTrabajo: previo, anulado: null });
-  };
-
-  // Comentarios internos de la obra (notas del equipo con fecha y autor)
-  const [textoComentario, setTextoComentario] = useState("");
-  const comentariosObra = [...toArray(proyecto.comentariosObra)].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
-  const anadirComentario = () => {
-    const texto = textoComentario.trim();
-    if (!texto) return;
-    onInlineUpdate(proyecto.id, { comentariosObra: [...toArray(proyecto.comentariosObra), { id: uid(), fecha: new Date().toISOString(), por: nombreUsuarioActual || "—", texto }] });
-    setTextoComentario("");
-  };
-  const quitarComentario = (c) => {
-    if (!window.confirm("¿Borrar este comentario?")) return;
-    onInlineUpdate(proyecto.id, { comentariosObra: toArray(proyecto.comentariosObra).filter((x) => x.id !== c.id) });
-  };
   const checklist = normalizarChecklist(proyecto.checklistMateriales);
   const despieceAgrupado = calcularDespieceConjuntoProyecto(proyecto.techos);
   const despieceConStock = compararDespieceConStock(despieceAgrupado, materiales);
@@ -7850,26 +7670,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     documentosObraRef.current = marca;
     onInlineUpdate(proyecto.id, { documentos: lista });
     setTimeout(() => { marca.pendiente = false; }, 4000);
-  };
-  // Subir documentos o hacer fotos directamente a la obra (se guardan tal cual, sin leerlos ni crear pedidos)
-  const [subiendoDocObra, setSubiendoDocObra] = useState(false);
-  const [errorDocObra, setErrorDocObra] = useState("");
-  const inputDocObraRef = useRef(null);
-  const inputFotoObraRef = useRef(null);
-  const subirDocumentosObra = async (lista, esFoto = false) => {
-    const files = [...(lista || [])].map((f) => (esFoto ? renombrarFotoCamara(f) : f));
-    if (!files.length) return;
-    setSubiendoDocObra(true); setErrorDocObra("");
-    try {
-      const nuevos = [];
-      for (const file of files) {
-        if (file.size > 20 * 1024 * 1024) { setErrorDocObra(`"${file.name}" pesa más de 20 MB.`); continue; }
-        const url = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
-        nuevos.push({ id: uid(), nombre: file.name, url, tipo: file.type || "", subidoEn: Date.now(), subidoPor: nombreUsuarioActual || "" });
-      }
-      if (nuevos.length) guardarDocumentosObra([...documentosObraRef.current.lista, ...nuevos]);
-    } catch (e) { setErrorDocObra("No se pudo subir: " + (e.message || "error")); }
-    finally { setSubiendoDocObra(false); }
   };
   const manejarSubidaPdfMedidas = async (file, tipoSabido = "") => {
     if (!file) return;
@@ -8057,15 +7857,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">
               <Pencil size={14} /> Editar
             </button>
-            {proyecto.estadoTrabajo !== "Cancelado" ? (
-              <button onClick={anularProyecto} title="Anular la obra sin borrarla (queda guardada como Cancelado)" className="flex items-center gap-1.5 text-sm font-semibold text-amber-700 border border-amber-300 px-3.5 py-2 rounded-lg hover:bg-amber-50">
-                <X size={14} /> Anular proyecto
-              </button>
-            ) : (
-              <button onClick={reactivarProyecto} className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 border border-emerald-300 px-3.5 py-2 rounded-lg hover:bg-emerald-50">
-                <CheckCircle2 size={14} /> Reactivar proyecto
-              </button>
-            )}
             {isAdmin && (
               <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
                 <Trash2 size={14} /> Eliminar
@@ -8082,14 +7873,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           {proyecto.condicionesCumplidas && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">Condiciones cumplidas</Badge>}
           {ciudadReparto && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">🚚 Reparto: {ciudadReparto}</Badge>}
           {proyecto.estadoLogistica === "Recogida en fábrica" && <Badge className="bg-slate-50 text-slate-700 ring-slate-200">Recogida en fábrica</Badge>}
-          {proyecto.fechaAceptado ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Aceptado el {fmtDate(proyecto.fechaAceptado)}</Badge> : proyecto.estadoPresupuesto === "Presupuesto aceptado" ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">⚠ Sin fecha de aceptación (pulsa Editar)</Badge> : null}
-          {proyecto.fechaEntregado && <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Entregado el {fmtDate(proyecto.fechaEntregado)}</Badge>}
         </div>
-        {proyecto.estadoTrabajo === "Cancelado" && proyecto.anulado && (
-          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
-            Proyecto anulado el {fmtDate(proyecto.anulado.fecha)}{proyecto.anulado.por ? ` por ${proyecto.anulado.por}` : ""}{proyecto.anulado.motivo ? ` — ${proyecto.anulado.motivo}` : ""}.
-          </p>
-        )}
 
         {proyecto.origen !== "portalUxcar" && (
           <div className="flex flex-wrap items-start gap-2 mt-3">
@@ -8162,37 +7946,14 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           </div>
         )}
 
-        <div className="mt-4 pt-4 border-t border-slate-100">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 mr-1">Documentos de la obra</span>
-            <input ref={inputDocObraRef} type="file" multiple className="hidden" accept={ACEPTA_DOCUMENTOS} onChange={(e) => { subirDocumentosObra(e.target.files); e.target.value = ""; }} />
-            <button type="button" onClick={() => inputDocObraRef.current?.click()} disabled={subiendoDocObra}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg">
-              {subiendoDocObra ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {subiendoDocObra ? "Subiendo…" : "Subir documento"}
-            </button>
-            <input ref={inputFotoObraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { subirDocumentosObra(e.target.files, true); e.target.value = ""; }} />
-            <button type="button" onClick={() => inputFotoObraRef.current?.click()} disabled={subiendoDocObra}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }} className="flex items-center gap-1.5 border-2 hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold px-3 py-1.5 rounded-lg"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento de la obra">
-              📷 Hacer foto
-            </button>
-          </div>
-          {errorDocObra && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorDocObra}</p>}
-        </div>
         {(proyecto.documentos || []).length > 0 && (
-          <div className="mt-3">
+          <div className="mt-4 pt-4 border-t border-slate-100">
             <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
               {proyecto.documentos.map((d) => (
-                <span key={d.id} className="flex items-center gap-1 bg-slate-50 border border-slate-200 pl-3 pr-1.5 py-1.5 rounded-lg hover:bg-slate-100">
-                  <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
-                    <FileText size={14} className="text-slate-400" /> {d.nombre}
-                  </a>
-                  {fechaDoc(d) && <span className="text-[11px] text-slate-400 whitespace-nowrap" title="Fecha en que se subió">{fechaDoc(d)}</span>}
-                  <button type="button" title="Quitar este documento de la obra (por si se subió por error)"
-                    onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
-                    className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
-                </span>
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100">
+                  <FileText size={14} className="text-slate-400" /> {d.nombre}
+                </a>
               ))}
             </div>
           </div>
@@ -8251,7 +8012,6 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             items: [
               { id: "datos", label: "Datos de la obra", icon: FileText, sub: "Fechas y especificaciones" },
               { id: "llamadas", label: "Llamadas", count: toArray(proyecto.llamadas).length, icon: Phone, sub: toArray(proyecto.llamadas).length ? `Última: ${fmtDate(String([...toArray(proyecto.llamadas)].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))[0].fecha).slice(0, 10))}` : "Sin llamadas" },
-              { id: "comentarios", label: "Comentarios", count: comentariosObra.length, icon: MessageCircle, sub: comentariosObra.length ? `Último: ${comentariosObra[0].por || "—"}` : "Notas del equipo" },
               { id: "horas", label: "Registro horario", count: horas.length, icon: Timer, sub: `${totalHoras.toFixed(1)} h registradas` },
               { id: "historial", label: "Historial", count: totalHistorial, icon: Clock, sub: "Todo lo que ha pasado" },
             ],
@@ -8381,37 +8141,12 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       {tab === "llamadas" && (
         <RegistroLlamadasObra proyecto={proyecto} cliente={cliente} usuarios={usuarios} onInlineUpdate={onInlineUpdate} onGuardarLlamada={onGuardarLlamada} />
       )}
-      {tab === "comentarios" && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <textarea value={textoComentario} onChange={(e) => setTextoComentario(e.target.value)} rows={3} placeholder="Escribe una nota sobre esta obra (queda con tu nombre y la fecha)…"
-              className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
-            <div className="flex justify-end mt-2">
-              <button type="button" onClick={anadirComentario} disabled={!textoComentario.trim()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-40">
-                <Plus size={14} /> Añadir comentario
-              </button>
-            </div>
-          </div>
-          {comentariosObra.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-slate-400 bg-white border border-slate-200 rounded-lg">Todavía no hay comentarios en esta obra.</p>
-          ) : comentariosObra.map((c) => (
-            <div key={c.id} className="bg-white border border-slate-200 rounded-lg px-4 py-3">
-              <div className="flex items-center justify-between gap-2 text-xs text-slate-400 mb-1">
-                <span><b className="text-slate-600">{c.por || "—"}</b> · {c.fecha ? new Date(c.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
-                {(isAdmin || (c.por && c.por === nombreUsuarioActual)) && <button type="button" onClick={() => quitarComentario(c)} className="text-slate-300 hover:text-rose-500" title="Borrar comentario"><Trash2 size={13} /></button>}
-              </div>
-              <p className="text-sm text-slate-700 whitespace-pre-wrap">{c.texto}</p>
-            </div>
-          ))}
-        </div>
-      )}
       {tab === "datos" && (
         <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6">
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             <InfoRow icon={<Hash size={14} />} label="Tipo" value={proyecto.tipoVenta} />
             <InfoRow icon={<MapPin size={14} />} label="Ubicación" value={proyecto.ubicacion || "—"} />
             <InfoRow icon={<FileText size={14} />} label="Fecha solicitud" value={fmtDate(proyecto.fechaSolicitud)} />
-            <InfoRow icon={<CheckCircle2 size={14} />} label="Presupuesto aceptado el" value={proyecto.fechaAceptado ? fmtDate(proyecto.fechaAceptado) : "—"} />
             <InfoRow icon={<FileText size={14} />} label="Entrega prevista" value={fmtDate(proyecto.fechaEntregaPrevista)} />
             <InfoRow icon={<CheckCircle2 size={14} />} label="Fecha entregado" value={fmtDate(proyecto.fechaEntregado)} />
             <InfoRow icon={<MapPin size={14} />} label="Ciudad de reparto" value={ciudadReparto || "—"} />
@@ -8774,7 +8509,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
           </div>
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <PedidosObraAcciones proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} materiales={materiales} openPedido={openPedido}
-              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} onRecibirPedido={onRecibirPedido} />
+              onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} />
           </div>
           {/* Documentación de la obra, todo junto: listado de materiales (a la izquierda) y
               tipo plano (a la derecha), cada uno con su botón. */}
@@ -10339,7 +10074,6 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
   const [errorFoto, setErrorFoto] = useState("");
-  const [nuevoDesdePdf, setNuevoDesdePdf] = useState(false);
   const [mostrarAgrupador, setMostrarAgrupador] = useState(false);
   const inputFotoRef = useRef(null);
 
@@ -10497,17 +10231,10 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
       if (estado && p.estado !== estado) return false;
       if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
-      // También se busca por el proyecto del pedido (nº, nombre, cliente) y por su descripción/comentarios.
-      const proy = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null;
-      const textoProyecto = proy ? `${proy.numero || ""} ${proy.nombre || ""} ${proy.cliente || ""} ${proy.clienteNombre || ""} ${proy.ubicacion || ""}` : "";
-      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${textoProyecto} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales, proyectos]);
-
-  // Borrar pedidos: los administradores cualquiera; los responsables de pedidos solo los
-  // que aún no se han recibido (los recibidos ya han movido el stock).
-  const puedeBorrarPedido = (p) => isAdmin || (!!(currentUser && currentUser.responsablePedidos) && p.estado !== "Recibido");
+  }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales]);
 
   // Solo los administradores y los usuarios marcados como "responsable de pedidos" hacen
   // pedidos. El resto solo puede solicitarlos (pestaña de solicitudes).
@@ -10539,7 +10266,6 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         onSave={onUpsert}
         prefill={editing ? null : prefill}
         onClearPrefill={onClearPrefill}
-        desdePdf={!editing && nuevoDesdePdf}
       />
     );
   }
@@ -10559,7 +10285,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         onBack={() => setView("list")}
         onEdit={() => { setEditId(pedido.id); setView("form"); }}
         onDelete={() => onDelete(pedido.id)}
-        isAdmin={puedeBorrarPedido(pedido)}
+        isAdmin={isAdmin}
         onRecibir={() => onRecibir(pedido.id)}
         onConfirmarAlbaran={(resultado) => onConfirmarAlbaran(pedido.id, resultado)}
         onMarcarEnviado={(metodo, fecha) => onMarcarEnviado(pedido.id, metodo, fecha)}
@@ -10624,19 +10350,12 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         </div>
       )}
       <button
-        onClick={() => { setEditId(null); setNuevoDesdePdf(false); setView("form"); }}
+        onClick={() => { setEditId(null); setView("form"); }}
         disabled={proveedores.length === 0}
         title={proveedores.length === 0 ? "Necesitas dar de alta un proveedor primero" : ""}
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-lg font-bold py-5 rounded-lg mb-3 shadow-md cursor-pointer select-none"
       >
         <Plus size={22} /> NUEVO PEDIDO
-      </button>
-      <button
-        onClick={() => { setEditId(null); setNuevoDesdePdf(true); setView("form"); }}
-        disabled={proveedores.length === 0}
-        className="w-full flex items-center justify-center gap-2 bg-[#2E8B57] hover:bg-[#256E46] disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-base font-bold py-4 rounded-lg mb-3 shadow-md cursor-pointer select-none"
-      >
-        <FileText size={20} /> PEDIDO DESDE UN PDF (cristales, persianas, lo que sea)
       </button>
       {(() => {
         const hoyStr = new Date().toISOString().slice(0, 10);
@@ -10831,7 +10550,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
                     </select>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {puedeBorrarPedido(p) && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
+                    {isAdmin && (<button onClick={(e) => { e.stopPropagation(); if (confirm(`¿Eliminar el pedido #${p.numero}?`)) onDelete(p.id); }} className="text-slate-300 hover:text-rose-500 transition">
                       <Trash2 size={15} />
                     </button>)}
                   </td>
@@ -10976,7 +10695,6 @@ function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo =
         <div key={d.id} className="flex items-center gap-2 text-sm py-0.5">
           <FileText size={14} className="text-slate-400 shrink-0" />
           <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate">{d.nombre}</a>
-          {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
           <label className="flex items-center gap-1 text-[11px] text-slate-500 shrink-0 cursor-pointer">
             <input type="checkbox" checked={d.enviar !== false} onChange={(e) => onChange(docs.map((x) => (x.id === d.id ? { ...x, enviar: e.target.checked } : x)))} />
             enviar al proveedor
@@ -10990,9 +10708,7 @@ function DocumentosPedido({ documentos, adjuntosPdf, onChange, carpeta, titulo =
   );
 }
 
-function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill, desdePdf }) {
-  // Modo "solo PDF": el pedido va con el documento del proveedor (cristales, persianas, lo que sea), sin líneas ni stock.
-  const [soloDoc, setSoloDoc] = useState(() => !!desdePdf || (!!initial && toArray(initial.lineas).length === 1 && initial.lineas[0].referencia === "Según documento adjunto"));
+function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, nextNumero, currentUser, onCancel, onSave, prefill, onClearPrefill }) {
   const blankLinea = () => ({ id: uid(), modo: "catalogo", materialId: materiales[0]?.id || "", referencia: "", ancho: "", alto: "", cantidad: "", precio: "", estado: "Solicitado" });
   const avisosPorDefecto = () => ({
     llegada: true, retraso: true,
@@ -11197,16 +10913,10 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       if (!f.fechaEntregaPrevista) { setErrorMsg("Falta la fecha aproximada de llegada (es obligatoria): con ella se avisa si se retrasa y se hace el planning."); return; }
       if (f.fechaEntregaPrevista < f.fechaCompra) { setErrorMsg("La fecha de llegada no puede ser anterior a la fecha del pedido."); return; }
     }
-    const lineas = (soloDoc ? [] : f.lineas)
+    const lineas = f.lineas
       .filter((l) => (l.modo === "catalogo" ? l.materialId : l.referencia.trim()) && parseFloat(l.cantidad) > 0)
       .map((l) => ({ ...l, cantidad: parseFloat(l.cantidad) || 0, precio: parseFloat(l.precio) || 0, ancho: l.ancho ? parseFloat(l.ancho) || l.ancho : "", alto: l.alto ? parseFloat(l.alto) || l.alto : "" }));
-    const tieneDocumento = toArray(f.adjuntosPdf).length > 0 || toArray(f.documentos).some((d) => d && d.url);
-    if (soloDoc && !tieneDocumento) { setErrorMsg("Sube el PDF del pedido (botón \"Añadir documento\") para poder guardarlo."); return; }
-    if (lineas.length === 0 && !tieneDocumento) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0) o adjunta el documento del pedido."); return; }
-    if (lineas.length === 0) {
-      // Pedido que va solo con el fichero (p. ej. cristales o TM ya detallados en el PDF): se guarda una línea que remite al documento.
-      lineas.push({ id: uid(), modo: "libre", materialId: "", referencia: "Según documento adjunto", ancho: "", alto: "", cantidad: 1, precio: 0, estado: "Solicitado" });
-    }
+    if (lineas.length === 0) { setErrorMsg("Añade al menos una línea válida (con cantidad mayor que 0)."); return; }
     setErrorMsg("");
     onSave({ ...f, lineas });
   };
@@ -11278,12 +10988,6 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           </div>
         )}
 
-        <label className="flex items-start gap-2 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-sm text-emerald-900 cursor-pointer">
-          <input type="checkbox" className="mt-1" checked={soloDoc} onChange={(e) => setSoloDoc(e.target.checked)} />
-          <span><b>Este pedido va solo con el PDF del proveedor</b> (cristales, persianas, TM, lo que sea): no hace falta poner líneas ni que el material esté en stock. Sube el PDF aquí abajo, guarda y desde el pedido lo envías al proveedor por correo o WhatsApp.</span>
-        </label>
-
-        {!soloDoc && (<>
         <div>
           <span className="block text-[11px] font-semibold tracking-wide uppercase text-slate-500 mb-2">Líneas del pedido</span>
           <div className="space-y-2">
@@ -11392,8 +11096,6 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
             </div>
           </div>
         )}
-
-        </>)}
 
         <DocumentosPedido documentos={f.documentos} adjuntosPdf={f.adjuntosPdf}
           carpeta={`documentos-proyectos/pedido-${f.id || "nuevo"}`}
@@ -11507,20 +11209,6 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   useEffect(() => { if (archivoInicial) { leer(archivoInicial); onArchivoUsado && onArchivoUsado(); } }, [archivoInicial]); // eslint-disable-line react-hooks/exhaustive-deps
   const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
   const num = (v) => Math.max(0, parseFloat(v) || 0);
-  // Recepción a mano, sin foto de albarán: se enseñan las líneas pendientes con lo que
-  // falta por llegar puesto por defecto, y se corrige solo lo que no ha llegado (p. ej. 0 en el
-  // compacto que faltaba). Después va por el mismo camino que la recepción con albarán.
-  const recibirAMano = () => {
-    setError("");
-    const filas = toArray(pedido.lineas).map((l) => {
-      const pedida = parseFloat(l.cantidad) || 0;
-      const ya = parseFloat(l.recibidoBien) || 0;
-      const pend = Math.max(0, Math.round((pedida - ya) * 100) / 100);
-      return { lineaId: l.id, nombre: nombreLinea(l), tipo: tipoLineaRecepcion(l, pedido), ancho: l.ancho || "", alto: l.alto || "", pedida, ya, pend, llega: pend, rotos: 0, precioRef: parseFloat(l.precioListado || l.precio) || 0, precioAlb: 0, caballete: "", ref: "", refObra: "", pedidoProv: "" };
-    });
-    if (!filas.some((f) => f.pend > 0)) { setError("Este pedido no tiene nada pendiente de recibir."); return; }
-    setLectura({ filas, sobrantes: [], archivo: "", info: { lineas: [], numeroAlbaran: "", numeroPedido: "", proveedor: "" }, manual: true });
-  };
   const pendientes = toArray(pedido.lineas).map((l) => ({ l, falta: Math.max(0, Math.round(((parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)) * 100) / 100) })).filter((x) => x.falta > 0);
   const hayRecepciones = toArray(pedido.recepciones).length > 0;
   const reponer = () => onCrearPedidoFaltante(pedido, pendientes.map(({ l, falta }) => ({ ...l, id: uid(), cantidad: falta, estado: "Solicitado", recibidoBien: 0, rotos: 0, cantidadRecibida: 0 })));
@@ -11541,11 +11229,6 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
             style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
             {leyendo ? <><Loader2 size={15} className="animate-spin" /> Leyendo el albarán (puede tardar un minuto)…</> : <><ImageIcon size={15} /> {hayRecepciones ? "Recibir otro albarán" : "Subir foto o PDF del albarán"}</>}
           </button>
-          <button type="button" onClick={recibirAMano} disabled={leyendo || !pedido.envioConfirmado || !!lectura}
-            title={!pedido.envioConfirmado ? "Confirma primero que el pedido se ha enviado al proveedor" : "Marcar línea a línea lo que ha llegado, sin foto de albarán"}
-            className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-4 py-2.5 rounded-md w-fit">
-            <CheckCircle2 size={15} /> Marcar lo que ha llegado (a mano, sin albarán)
-          </button>
           {!pedido.envioConfirmado && <p className="text-xs text-amber-700 font-semibold mt-2">⚠ Confirma arriba que el pedido se ha enviado al proveedor antes de poder recibirlo.</p>}
           <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         </>
@@ -11553,7 +11236,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
       {error && <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {error}</div>}
       {lectura && (
         <div className="mt-4 space-y-3">
-          <div className="text-xs text-slate-500">{lectura.manual ? "Recepción a mano: pon en «Llegan» lo que ha llegado de cada línea (0 en lo que falta)." : <>Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</>}</div>
+          <div className="text-xs text-slate-500">Albarán {lectura.info.numeroAlbaran || lectura.archivo}{lectura.info.proveedor ? ` · ${lectura.info.proveedor}` : ""} · {lectura.info.lineas.length} líneas leídas</div>
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase text-slate-500"><tr>
@@ -11835,10 +11518,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
-    // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
-    const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -11938,7 +11618,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           )}
           <button onClick={onEdit} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50"><Pencil size={14} /> Editar</button>
           {isAdmin && (
-            <button onClick={() => { if (window.confirm(`¿Eliminar el pedido #${pedido.numero}? No se puede deshacer.`)) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
+            <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-md hover:bg-rose-50"><Trash2 size={14} /> Eliminar</button>
           )}
         </div>
       </div>
@@ -12712,14 +12392,14 @@ function piezaCoincideFiltros(c, p, f) {
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (viv && !normBusq(p.ref).includes(viv)) return false;
   if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
-  if (otro && !normBusq(`${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
+  if (otro && !normBusq(`${p.ref} ${p.expediente} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
   return true;
 }
 // ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
 function cristalCoincideFiltros(c, f) {
   const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
-  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
+  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
   return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(p.expediente || c.expediente).includes(exp)));
@@ -12897,7 +12577,7 @@ function TrabajoCristales({ cristales, filtros }) {
                   {its.length === 0 && <div className="text-xs text-slate-400 px-1 py-2">Vacío</div>}
                   {its.map((x) => (
                     <div key={claveFila(x)} className="text-xs border border-slate-100 rounded px-2 py-1">
-                      <div className="font-semibold">{x.p.ref || "—"}{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null} <span className="font-normal text-slate-500">{x.p.expediente || x.c.expediente || ""}</span></div>
+                      <div className="font-semibold">{x.p.ref || "—"} <span className="font-normal text-slate-500">{x.p.expediente || x.c.expediente || ""}</span></div>
                       <div className="font-mono-num text-slate-600">{x.p.ancho} × {x.p.alto} · cab. {x.c.lote || "—"}</div>
                       {(x.p.trabajo.fecha || "") < hoy && <div className="text-amber-700">dentro desde {fechaCortaTrabajo(x.p.trabajo.fecha)}</div>}
                       <div className="flex gap-3 mt-0.5">
@@ -12943,7 +12623,7 @@ function TrabajoCristales({ cristales, filtros }) {
               <tbody>
                 {fuera.slice(0, 100).map((x) => (
                   <tr key={claveFila(x)} className="border-b border-slate-100">
-                    <td className="px-3 py-1.5 font-semibold">{x.p.ref || "—"}{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null}</td>
+                    <td className="px-3 py-1.5 font-semibold">{x.p.ref || "—"}</td>
                     <td className="px-3 py-1.5">{x.p.expediente || x.c.expediente || "—"}</td>
                     <td className="px-3 py-1.5 font-mono-num">{x.p.ancho} × {x.p.alto}</td>
                     <td className="px-3 py-1.5 font-mono-num">{x.c.lote || "—"}</td>
@@ -13078,7 +12758,7 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
               </div>
               {r.piezas.slice(0, 5).map((x) => (
                 <div key={x.i} className="mt-0.5 text-slate-600">
-                  <b>{x.p.ref || "—"}</b>{ubicacionPieza(x.p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(x.p)}</span> : null} · exp. {x.p.expediente || r.c.expediente || "—"} · {x.p.ancho} × {x.p.alto}{enTrabajoPieza(x.p) ? ` · en el almacén de trabajo (hueco ${x.p.trabajo.hueco})` : ""}
+                  <b>{x.p.ref || "—"}</b> · exp. {x.p.expediente || r.c.expediente || "—"} · {x.p.ancho} × {x.p.alto}{enTrabajoPieza(x.p) ? ` · en el almacén de trabajo (hueco ${x.p.trabajo.hueco})` : ""}
                   {x.motivos.length > 0 && <span className="text-emerald-700"> ✓ {x.motivos.join(", ")}</span>}
                 </div>
               ))}
@@ -13092,7 +12772,6 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
 
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
   const [subTab, setSubTab] = useState(() => (focoAlmacen.actual && focoAlmacen.actual.tipo === "cristal" && focoAlmacen.actual.ubicacion ? "mapa" : "pendientes")); // «Ver en el mapa» desde Cristales abre el mapa (o los pendientes si el caballete no tiene hueco)
-  const [abrirPedidoCristal, setAbrirPedidoCristal] = useState(0); // al pulsar «Subir pedido de cristales» se salta a «Control de pedidos» y se abre el selector de archivo
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
   const [verUltimos, setVerUltimos] = useState(false);
@@ -13327,33 +13006,15 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       // Un PDF largo se lee por trozos de 3 páginas (varios a la vez): leerlo de golpe se queda
       // a medias o no devuelve nada. El nº de caballete de las primeras filas de cada trozo
       // se completa con el último caballete visto antes (el documento va en orden).
-      const local = esPdf ? await leerPackingCristalLocal(file) : null; // PDF con texto: se lee sin IA
-      const trozos = esPdf && !local ? await dividirPdfEnTrozos(file, 3) : null;
+      const trozos = esPdf ? await dividirPdfEnTrozos(file, 3) : null;
       let parsed;
-      if (local) {
-        parsed = { cabecera: { tipo: "packing", cliente: local.cliente, proveedor: "", presupuesto: "" }, filas: local.filas, truncada: false };
-      } else if (trozos) {
+      if (trozos) {
         const promptTrozo = promptPackingList(true);
         const lecturas = await Promise.all(trozos.map(async (tr) => {
-          const leerUno = async (archivo, d, h) => {
-            const textoTr = await pedirTextoIAEnSegundoPlano(archivo, promptTrozo, 16000, 100);
-            const pTr = parsearRespuestaPacking(textoTr);
-            if (!pTr) throw new Error(`No pude leer las páginas ${d}-${h} del PDF (recibido ${textoTr.length} caracteres).`);
-            return pTr;
-          };
-          let pTr = await leerUno(tr.archivo, tr.desde, tr.hasta);
-          if (pTr.truncada) {
-            // la IA se quedó a medias: se vuelve a leer ese trozo página a página
-            const sueltas = await dividirPdfEnTrozos(tr.archivo, 1);
-            if (!sueltas || sueltas.length < 2) throw new Error(`La IA dejó a medias las páginas ${tr.desde}-${tr.hasta}. No se ha importado nada.`);
-            const partes = [];
-            for (const sp of sueltas) {
-              const r = await leerUno(sp.archivo, tr.desde + sp.desde - 1, tr.desde + sp.hasta - 1);
-              if (r.truncada) throw new Error(`La IA dejó a medias la página ${tr.desde + sp.desde - 1}. No se ha importado nada.`);
-              partes.push(r);
-            }
-            pTr = { cabecera: (partes.find((r) => r.cabecera) || {}).cabecera || null, filas: partes.flatMap((r) => r.filas), truncada: false };
-          }
+          const textoTr = await pedirTextoIAEnSegundoPlano(tr.archivo, promptTrozo, 16000, 100);
+          const pTr = parsearRespuestaPacking(textoTr);
+          if (!pTr) throw new Error(`No pude leer las páginas ${tr.desde}-${tr.hasta} del PDF (recibido ${textoTr.length} caracteres).`);
+          if (pTr.truncada) throw new Error(`La IA dejó a medias las páginas ${tr.desde}-${tr.hasta}. No se ha importado nada.`);
           return pTr;
         }));
         let ultimoCab = "";
@@ -13431,11 +13092,6 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-3.5 py-2 rounded-md">
           <ImageIcon size={14} /> {leyendoPacking ? "Leyendo..." : "Importar packing list (Excel, foto o PDF)"}
-        </button>
-        <button type="button" onClick={() => { setSubTab("control"); setAbrirPedidoCristal((n) => n + 1); }}
-          title="Sube la confirmación del pedido al proveedor y el CRM comprueba si todos los cristales han llegado"
-          className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 border border-slate-400 bg-white hover:bg-slate-50 px-3.5 py-2 rounded-md">
-          <ClipboardList size={14} /> Subir pedido de cristales
         </button>
         <input ref={inputPackingRef} type="file" accept=".xlsx,.xls,.csv,.ods,image/*,application/pdf" className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) leerPackingList(e.target.files[0]); e.target.value = ""; }} />
@@ -13547,7 +13203,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
-                const plantasC = ubicacionesCab(c);
+                const plantasC = [...new Set(piezasC.map((p) => String(p.planta || "").trim()).filter(Boolean))];
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
@@ -13598,7 +13254,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                         <tbody>
                           {piezasC.map((p, i) => (
                             <tr key={i} className="border-t border-slate-200 text-slate-600">
-                              <td className="py-1 pr-3">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
+                              <td className="py-1 pr-3">{p.ref || "—"}</td>
                               <td className="py-1 pr-3 font-mono-num">{p.ancho && p.alto ? `${p.ancho} x ${p.alto}` : "—"}</td>
                               <td className="py-1 pr-3">{p.cantidad || 1}</td>
                               <td className="py-1 pr-3">{p.expediente || "—"}</td>
@@ -13666,7 +13322,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       )}
 
       {subTab === "control" && (
-        <ControlPedidosCristal cristales={cristales} proveedores={proveedores} abrirSelector={abrirPedidoCristal} />
+        <ControlPedidosCristal cristales={cristales} proveedores={proveedores} />
       )}
 
       {asignando && (
@@ -13845,7 +13501,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
   const normalizarMapa = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x");
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   // texto de búsqueda de un caballete: sus datos + los de cada cristal (vivienda, expediente, medida)
-  const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`);
+  const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`);
   const coincidentes = hayFiltro ? cristales.filter((x) => cristalCoincideFiltros(x, filtros)) : [];
   const ubicados = coincidentes.filter((x) => x.ubicacion);
   const sinUbicar = coincidentes.filter((x) => !x.ubicacion);
@@ -13904,7 +13560,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                       <button
                         key={hueco}
                         onClick={() => c && (!soloLectura || verDetalleSolo) && onVerHueco && onVerHueco({ zona: zonaId, fila, hueco })}
-                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${ubicacionesCab(x).length ? ` · ${ubicacionesCab(x).slice(0, 3).join(" / ")}` : ""}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
+                        title={c ? `${vacio ? "VACÍO (todo puesto) · " : ""}${cs.map((x) => `${x.lote || ""} · ${textoExpedientes(x, 10)}${presupuestoCab(x) ? ` · Pres. ${presupuestoCab(x)}` : ""} — ${x.cliente || ""}`).join(" | ")}` : "Libre"}
                         className={`relative w-[96px] shrink-0 h-14 rounded-md font-semibold flex flex-col items-center justify-center px-1 ${clase}`}
                       >
                         <span className={`absolute top-0.5 left-1 text-[9px] font-bold ${c ? "text-white/70" : "text-slate-400"}`}>{hueco}</span>
@@ -14345,7 +14001,7 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
               {piezas.map((p, i) => (
                 <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                   <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
-                  <td className="pr-2 font-semibold">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
+                  <td className="pr-2 font-semibold">{p.ref || "—"}</td>
                   <td className="pr-2">{p.expediente || "—"}</td>
                   <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
                   <td className="pr-2">{p.cantidad}</td>
@@ -14398,7 +14054,7 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
             {filas.slice(0, 400).map(({ c, p, i }) => (
               <tr key={`${c.id}-${i}`} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                 <td className="px-3 py-1.5"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(c, i, e.target.checked)} /></td>
-                <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}{enTrabajoPieza(p) && !p.puesto && <span className="ml-1 text-[10px] font-semibold text-sky-700">· en trabajo (hueco {p.trabajo.hueco})</span>}</td>
+                <td className="px-3 py-1.5 font-semibold">{p.ref || "—"}{enTrabajoPieza(p) && !p.puesto && <span className="ml-1 text-[10px] font-semibold text-sky-700">· en trabajo (hueco {p.trabajo.hueco})</span>}</td>
                 <td className="px-3 py-1.5">{p.expediente || "—"}</td>
                 <td className="px-3 py-1.5 font-mono-num">{p.ancho} × {p.alto}</td>
                 <td className="px-3 py-1.5">{p.cantidad}</td>
@@ -14623,88 +14279,13 @@ function promptPackingList(esTrozo) {
   return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
     'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
     'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
-    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece. MUY IMPORTANTE: en muchas filas aparece debajo "Ref. Cte. Ped.: SN-EXP 823_PORTAL 33E ESC 06 2B_6.415": ahí el expediente es EXP 823, la planta es "PORTAL 33E ESC 06 2B" (portal, escalera y piso COMPLETOS, sin recortar) y 6.415 es el presupuesto (6415); No pongas aquí ciudades como VALENCIA ni VLC. ' +
+    'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece; no pongas aquí ciudades como VALENCIA ni VLC. ' +
     'En "proveedor" pon el fabricante o quien entrega (ej. Cricursa, Dealux) y en "cliente" a quién va (ej. Construcciones Uxcar). En "presupuesto" (cabecera o fila) pon el número de presupuesto/oferta de la obra si aparece (normalmente 4 o 5 cifras, solo los dígitos). "ref" con la vivienda o referencia final (ej. V12.114, A01.001); "ancho" y "alto" en mm. ' +
     (esTrozo
       ? 'IMPORTANTE: esto es solo un TROZO de un documento más largo. Pon el número de caballete en CADA fila (aunque solo haya uno). Si las primeras filas no tienen encima la cabecera de su caballete porque pertenecen a un caballete de la página anterior, deja "caballete" vacío en esas filas. '
       : 'En "caballete" de cada fila solo pon el número si el documento tiene varios caballetes distintos (si hay uno solo, déjalo vacío y usa el de arriba). ') +
     'Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"tipo":"","caballete":"","cliente":"","proveedor":"","presupuesto":"","filas":[{"caballete":"","pedido":"","expediente":"","planta":"","presupuesto":"","ref":"","material":"","ancho":numero,"alto":numero,"cantidad":numero,"m2":numero}]}. Deja en blanco (o 0) lo que no encuentres. Escribe el JSON compacto, en una sola línea, sin espacios ni saltos de línea sobrantes, y no omitas ninguna fila aunque el documento sea largo.';
 }
-// <<packingCristalLocal
-// Packing list de cristal (PDF con texto, p. ej. Cricursa) leído EN LOCAL, sin IA: exacto y al momento.
-// Devuelve null si no encaja (entonces se usa la IA) o si el total de cada caballete no cuadra.
-function packingCristalDePaginas(paginas) {
-  const lineasDe = (items) => {
-    const orden = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
-    const ls = [];
-    orden.forEach((i) => {
-      const l = ls.find((q) => Math.abs(q.y - i.y) <= 3);
-      if (l) l.it.push(i); else ls.push({ y: i.y, it: [i] });
-    });
-    return ls.sort((a, b) => b.y - a.y).map((l) => l.it.sort((a, b) => a.x - b.x).map((i) => i.s.trim()).join(" ").replace(/\s+/g, " ").trim());
-  };
-  const reFila = /^(?:(\d{6,9})\s+)?(\d{1,3})\s+(\d{1,3})\s+(\d{2,4})\s*[xX×]\s*(\d{2,4})\s+([^,]{2,40}?)\s*,\s*(.*)$/;
-  const filas = [];
-  const totales = {};
-  let cab = "", pedido = "", cliente = "", actual = null;
-  const cerrar = () => {
-    if (!actual) return;
-    const t = actual.texto;
-    const mp = t.match(/Ref\.?\s*Cte\.?\s*Ped\.?\s*:\s*(.*?)\s*,?\s*Ref\.?\s*Cte\.?\s*Pos/i) || t.match(/Ref\.?\s*Cte\.?\s*Ped\.?\s*:\s*(.*?)\s*(?:,\s*Compra|$)/i);
-    const rp = mp ? mp[1].trim() : "";
-    const me = rp.match(/EXP(?:EDIENTE)?\.?\s*(\d+)\s*[_\s]*(.*)$/i);
-    let resto = me ? me[2] : "";
-    const mpr = resto.match(/_?\s*(\d\.\d{3})(?:-\d+)?\s*$/);
-    const presupuesto = mpr ? mpr[1].replace(".", "") : "";
-    if (mpr) resto = resto.slice(0, mpr.index);
-    resto = resto.replace(/^[_\s]+|[_\s]+$/g, "");
-    const planta = ubicacionDeTexto(rp) || resto.replace(/[()]/g, "").trim();
-    const f = actual;
-    filas.push({
-      caballete: cab, pedido: f.pedido, pos: f.pos, cantidad: f.cant, ancho: f.ancho, alto: f.alto,
-      m2: Math.round(f.cant * f.ancho * f.alto) / 1e6, ref: f.ref, expediente: me ? `EXP ${me[1]}` : "", planta, presupuesto, cliente,
-    });
-    actual = null;
-  };
-  paginas.forEach((items) => {
-    lineasDe(items).forEach((l) => {
-      let m;
-      if ((m = l.match(/^Cliente\s*:\s*(.*?)(?:\s+Parada\s*:.*)?$/i))) { cliente = m[1].trim(); return; }
-      if ((m = l.match(/^Caballete\s+(\d{6,})/i))) { cerrar(); cab = m[1]; return; }
-      if ((m = l.match(/^Total\s+Caballete\s*:?\s*(\d+)/i))) { cerrar(); totales[cab] = parseInt(m[1], 10); return; }
-      if (/^(Packing List|Ruta\s*:|Muelle\s*:|Pedido\s+Pos|Cant\.|\d+\s*Kg)/i.test(l) || /^Packing\b/i.test(l)) return;
-      if ((m = l.match(reFila))) {
-        cerrar();
-        if (m[1]) pedido = m[1];
-        actual = { pedido, pos: m[2], cant: parseInt(m[3], 10), ancho: parseInt(m[4], 10), alto: parseInt(m[5], 10), ref: m[6], texto: m[7] || "" };
-        return;
-      }
-      if (actual) actual.texto += " " + l;
-    });
-  });
-  cerrar();
-  if (!filas.length || !cab) return null;
-  // control: lo leído de cada caballete debe sumar el total que indica el propio documento
-  const suma = {};
-  filas.forEach((f) => { suma[f.caballete] = (suma[f.caballete] || 0) + f.cantidad; });
-  const claves = Object.keys(suma);
-  if (!claves.length || claves.some((k) => totales[k] !== suma[k])) return null;
-  return { cliente, filas };
-}
-// packingCristalLocal>>
-async function leerPackingCristalLocal(file) {
-  try {
-    const lib = await cargarPdfJs();
-    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-    const paginas = [];
-    for (let n = 1; n <= doc.numPages; n++) {
-      const tc = await (await doc.getPage(n)).getTextContent();
-      paginas.push(tc.items.map((i) => ({ s: i.str, x: i.transform[4], y: i.transform[5] })));
-    }
-    return packingCristalDePaginas(paginas);
-  } catch (e) { console.error("Packing list de cristal: no se pudo leer en local, se usa la IA", e); return null; }
-}
-
 // Divide un PDF en trozos de pocas páginas para que la IA los lea por partes.
 // Devuelve null si el PDF es corto o no se puede abrir: en ese caso se lee entero, como siempre.
 async function dividirPdfEnTrozos(file, paginasPorTrozo) {
@@ -14788,8 +14369,6 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
-// Clave del grupo de pedido: cristales y persianas/compactos son pedidos distintos aunque vayan al mismo proveedor.
-const claveGrupoPedido = (prov, seccion) => (SECCIONES_A_MEDIDA.includes(seccion) && prov && !String(prov).startsWith("sin:") ? `${prov}#${seccion}` : prov);
 // Proveedor al que se le pide normalmente cada sección (marcado en la ficha del proveedor,
 // "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
 const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
@@ -14802,7 +14381,7 @@ const gruposPedidoDesdeListado = (listado, materiales, proveedores, excluir = []
   const grupos = {};
   compararListadoConStock(listado, materiales).filter((f) => f.falta > 0 && !excluir.includes(f.seccion)).forEach((f) => {
     const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
-    const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`, f.seccion);
+    const prov = (f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`;
     (grupos[prov] = grupos[prov] || []).push(f.mat
       ? { id: uid(), modo: "catalogo", materialId: f.mat.id, referencia: "", ancho: "", alto: "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" }
       : { id: uid(), modo: "libre", materialId: "", referencia: `${f.codigo} ${f.descripcion}${f.color ? ` · ${f.color}` : ""}`, ancho: f.ancho ? String(f.ancho) : "", alto: f.alto ? String(f.alto) : "", cantidad: String(f.falta), precio: String(f.precioUd || ""), precioListado: f.precioUd || 0, codigoListado: f.codigo, seccionListado: f.seccion, colorListado: f.color || "", estado: "Solicitado" });
@@ -15072,7 +14651,7 @@ function calcularControlCristal(conf, cristales) {
   return { lineas, pedidas: tot("pedidas"), bien: tot("bien"), conProblema: tot("conProblema"), noLlegadas: tot("noLlegadas"), repuestas: tot("repuestas"), pendientes: tot("pendientes") };
 }
 
-function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
+function ControlPedidosCristal({ cristales, proveedores }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const confirmaciones = ctx.confirmaciones || [];
   const guardar = ctx.saveConfirmaciones || (() => {});
@@ -15082,8 +14661,6 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
   const [abierta, setAbierta] = useState(null);
   const [soloProblemas, setSoloProblemas] = useState(false);
   const inputRef = useRef(null);
-  // Viene del botón «Subir pedido de cristales» de la pantalla de Cristales: abre directamente el selector de archivo
-  useEffect(() => { if (abrirSelector > 0) inputRef.current?.click(); }, [abrirSelector]);
 
   const subir = async (file) => {
     setLeyendo(true); setError("");
@@ -15556,15 +15133,7 @@ function carrosPersianasPorDefecto() {
 const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
 // "Parte" / vivienda de la obra (P1, P2…): sale del "EXP. 737 P1" del albarán o de la etiqueta ("P-8" → P8). Las persianas de una misma parte se colocan y se reparten juntas.
 const normParte = (t) => { const m = String(t || "").match(/(?:^|[^A-Za-z])P\s*-?\s*(\d{1,2})(?!\d)/i); return m ? `P${parseInt(m[1], 10)}` : ""; };
-// Si el pedido no trae "P1, P2…", la vivienda sale de la ubicación del pedido ("EXP 823 PORTAL 33E ESC 06 1A" → "1A"):
-// dos pedidos de la misma obra (1A y 1B) son grupos distintos → no se mezclan en los estantes, pero se colocan pegados en el mismo carro.
-const parteDeUbicacion = (t) => {
-  const u = String(t || "").replace(/^\s*EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "").trim().toUpperCase().replace(/\s+/g, " ");
-  if (!u) return "";
-  const ult = u.split(" ").pop();
-  return /^\d{1,2}[A-Z]{1,2}$/.test(ult) ? ult : u;
-};
-const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : (normParte(x && x.refObra) || parteDeUbicacion(x && x.refObra)));
+const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : normParte(x && x.refObra));
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${e.fila ? ` · fila ${e.fila}` : ""}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
@@ -15710,7 +15279,6 @@ function planReorganizarPersianas(items, carros) {
 
 async function leerPackingPersianas(file) {
   const esExcel = /\.(xlsx|xls|csv|ods)$/i.test(file.name || "");
-  if (!esExcel) { const pedido = await leerPedidoPersianasLocal(file); if (pedido) return unidadesDePedidoPersianas(pedido); } // PDF de "PEDIDO COMPRA": se lee en local, sin IA
   let filas = [];
   if (esExcel) {
     filas = leerFilasExcel(await file.arrayBuffer()).map((f) => ({
@@ -15742,105 +15310,44 @@ async function leerPackingPersianas(file) {
   return unidades;
 }
 
-// ---- "PEDIDO COMPRA" de persianas como entrada al almacén ----
-// "Subir packing list de persianas" también lee el PDF del pedido de compra (se lee en el navegador, sin IA) y las persianas
-// entran en los carros igual que con un packing list, con su ubicación (portal, escalera, piso) y el cliente. No se relaciona con nada más.
+// ---- Pedidos de compra de persianas (lo que se ha pedido al proveedor y todavía no ha llegado) ----
+// Se guardan APARTE (pedidosPersianas), no en persianasAlmacen: así no cuentan como "dentro", no salen en "Sin sitio"
+// y no entran en los cruces con ventanas ni en los puestos. Al llegar (packing list, fotos o a mano) se marcan solas como recibidas.
+const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"recogedor":"","descripcion":""}]}. "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = tipo en pocas palabras (p. ej. "decorativa 185 mm blanco, sin guías"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
 const normRefPers = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-// "EXP 823 PORTAL 33E ESC 06 1A" → "PORTAL 33E ESC 06 1A" (lo que va detrás del número de expediente: portal, escalera, piso…)
-const ubicacionObra = (t) => String(t || "").replace(/^\s*EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "").trim();
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
+const TOL_PEDIDO_MM = 30; // diferencia de largo que se admite entre lo pedido y lo que llega (sin verificar con packing lists reales)
+// ¿Esta persiana que ha llegado es la que se pidió? Mismo expediente + misma vivienda/ref. (si ambas la traen) + largo parecido.
+const casaPedidaConPersiana = (p, x) => {
+  if (!expDigitosPers(p.expediente) || expDigitosPers(p.expediente) !== expDigitosPers(x.expediente)) return false;
+  const rp = normRefPers(p.ref), rx = normRefPers(x.ref);
+  if (rp && rx && rp !== rx) return false;
+  const lp = parseFloat(p.largo) || 0, lx = largoPersiana(x);
+  return lp > 0 && lx > 0 && Math.abs(lp - lx) <= TOL_PEDIDO_MM;
+};
 const fechaIsoPedido = (t) => {
   const s = String(t || "").trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const m = s.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);
   return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : "";
 };
-// Lectura LOCAL (sin IA) del "PEDIDO COMPRA" en PDF: cada línea trae "cantidad  ancho x alto" y la vivienda va en una
-// cabecera tipo "V01.217:" o "P03.216:" (vale cualquier letra; una cabecera con varias persianas debajo se repite en cada una).
-// paginas = [[{s,x,y}]] de pdf.js (y hacia arriba).
-// <<pedidoLocal
-function pedidoPersianasDePaginas(paginas) {
-  const medida = /^\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*[xX×]\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*$/;
-  const aMm = (t) => parseInt(String(t).replace(/\./g, ""), 10) || 0;
-  const todos = paginas.flat().filter((i) => String(i.s).trim());
-  const texto = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").replace(/\s+/g, " ");
-  const cortaEtiqueta = (t) => String(t).split(/\s(?:Referencia|Cliente|Proveedor|Presupuesto|Empresa|FECHA|N[úu]mero|Descripci[oó]n)\b/i)[0].trim();
-  const valorDe = (re) => {
-    const it = todos.find((i) => re.test(String(i.s)));
-    if (!it) return "";
-    const resto = cortaEtiqueta(String(it.s).replace(re, ""));
-    if (resto) return resto;
-    const sig = todos.filter((o) => o !== it && Math.abs(o.y - it.y) <= 3 && o.x > it.x).sort((a, b) => a.x - b.x)[0];
-    return sig ? cortaEtiqueta(sig.s) : "";
+async function leerPedidoPersianas(file) {
+  const o = await leerDocumentoCristalConIA(file, PROMPT_PEDIDO_PERSIANAS);
+  const refObra = String(o.referencia || "").trim();
+  const cab = {
+    pedido: String(o.pedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
+    expediente: expDigitosPers(o.expediente || refObra), refObra, cliente: String(o.cliente || "").trim(),
+    proveedor: String(o.proveedor || "").trim(), fechaPedido: fechaIsoPedido(o.fechaPedido), fechaEntrega: fechaIsoPedido(o.fechaEntrega),
   };
-  // El PDF parte "6.412-1" en dos trozos de texto ("6.412" y "-1"): se lee del texto seguido
-  const pm = texto.match(/Presupuesto:\s*([\d.]+(?:\s*-\s*\d+)?)/i);
-  const presupuesto = pm ? pm[1].replace(/\s+/g, "") : valorDe(/^\s*Presupuesto:\s*/i);
-  const refObra = valorDe(/^\s*Referencia:\s*/i);
-  const cliente = valorDe(/^\s*Cliente:\s*/i);
-  const m = refObra.match(/EXP\.?\s*(\d{2,})/i) || texto.match(/EXP\.?\s*(\d{2,})/i);
-  const maxY = todos.reduce((a, i) => Math.max(a, i.y), 0);
-  let pedido = valorDe(/^\s*N[úu]mero\s+Pedido:\s*/i);
-  if (!/^\d/.test(pedido)) {
-    const c = todos.filter((i) => /^\d{1,3}\.\d{3}$/.test(String(i.s).trim()) && i.y >= maxY - 110).sort((a, b) => b.y - a.y || b.x - a.x)[0];
-    pedido = c ? String(c.s).trim() : "";
-  }
-  const fecha = (texto.match(/(\d{2}\/\d{2}\/\d{4})/) || [])[1] || "";
   const filas = [];
-  let cab = "";
-  paginas.forEach((items) => {
-    const its = items.filter((i) => String(i.s).trim()).slice().sort((a, b) => b.y - a.y || a.x - b.x);
-    its.forEach((it) => {
-      const s = String(it.s).trim();
-      // Referencia de la ventana ("V01.375:"). A veces la teclean con la letra O en vez del cero ("VO4.377"): se admite y se corrige.
-      const mh = s.match(/^([A-Z]{1,2})([0-9OIL]{2})\.(\d+)\s*:?$/i);
-      if (mh) { cab = (mh[1] + mh[2].toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1") + "." + mh[3]); return; }
-      const mm = s.match(medida);
-      if (!mm) return;
-      const ancho = aMm(mm[1]), alto = aMm(mm[2]);
-      if (ancho < 100 || alto < 100) return;
-      const cerca = its.filter((o) => o !== it && Math.abs(o.y - it.y) <= 14);
-      const q = cerca.filter((o) => o.x < it.x && /^\d{1,3}$/.test(String(o.s).trim())).sort((a, b) => b.x - a.x)[0];
-      const rec = cerca.filter((o) => o.x > it.x && /^(derecha|izquierda)$/i.test(String(o.s).trim())).sort((a, b) => Math.abs(a.y - it.y) - Math.abs(b.y - it.y) || a.x - b.x)[0];
-      const d = its.filter((o) => o !== it && o.x < it.x && o.y >= it.y - 14 && o.y <= it.y + 40 && /persiana|compacto/i.test(String(o.s))).sort((a, b) => Math.abs(a.y - it.y) - Math.abs(b.y - it.y))[0];
-      const n = Math.max(1, Math.min(60, q ? parseInt(String(q.s).trim(), 10) || 1 : 1));
-      for (let k = 0; k < n; k++) filas.push({ ref: cab, largo: ancho, alto, recogedor: rec ? (/izq/i.test(rec.s) ? "Izquierda" : "Derecha") : "", descripcion: d ? String(d.s).trim() : "" });
-    });
-  });
-  return { cabecera: { pedido, presupuesto, expediente: m ? m[1] : "", refObra, cliente, fecha }, filas };
-}
-// pedidoLocal>>
-// Del pedido leído ({ cab, filas }) a persianas listas para colocar en los carros (misma forma que las del packing list)
-function unidadesDePedidoPersianas(r) {
-  const { cab, filas } = r;
-  const hoy = new Date().toISOString().slice(0, 10);
-  return filas.map((f) => ({
-    id: uid(), expediente: cab.expediente, parte: normParte(cab.refObra), ref: f.ref, largo: f.largo, alto: f.alto,
-    pedido: cab.pedido, pedidoProv: cab.pedido, refObra: ubicacionObra(cab.refObra), cliente: cab.cliente, proveedor: cab.proveedor || "",
-    recogedor: f.recogedor, fechaEntrada: hoy, estante: null, entregada: false,
-  }));
-}
-async function leerPedidoPersianasLocal(file) {
-  const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
-  if (!esPdf) return null;
-  try {
-    const lib = await cargarPdfJs();
-    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-    const paginas = [];
-    for (let n = 1; n <= doc.numPages; n++) {
-      const tc = await (await doc.getPage(n)).getTextContent();
-      paginas.push(tc.items.map((i) => ({ s: i.str, x: i.transform[4], y: i.transform[5] })));
+  (o.filas || []).filter((f) => parseFloat(f.ancho) > 0).forEach((f) => {
+    const n = Math.max(1, Math.min(60, parseInt(f.cantidad, 10) || 1));
+    for (let k = 0; k < n; k++) {
+      filas.push({ id: uid(), ref: String(f.ref || "").trim(), largo: parseFloat(f.ancho) || 0, alto: parseFloat(f.alto) || 0,
+        recogedor: /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
     }
-    const T = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
-    if (!/PEDIDO COMPRA/.test(T)) return null;
-    const r = pedidoPersianasDePaginas(paginas);
-    if (!r.filas.length) return null;
-    const c = r.cabecera;
-    return {
-      cab: { pedido: c.pedido, presupuesto: c.presupuesto, expediente: c.expediente, refObra: c.refObra, cliente: c.cliente, proveedor: "", fechaPedido: fechaIsoPedido(c.fecha), fechaEntrega: "" },
-      filas: r.filas.map((f) => ({ id: uid(), ref: f.ref, largo: f.largo, alto: f.alto, recogedor: f.recogedor, descripcion: f.descripcion })),
-    };
-  } catch (e) { console.error("Pedido de persianas: no se pudo leer el PDF en local, se usa la IA", e); return null; }
+  });
+  return { cab, filas };
 }
 
 // ---- Entrada de persianas con fotos de las etiquetas (cuando llegan sin packing list) ----
@@ -16195,7 +15702,6 @@ function AlmacenPersianas() {
                 <b>EXP {x.expediente || "—"}</b>
                 <span>{x.ref || ""}</span>
                 <span className="font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</span>
-                {(x.refObra || x.cliente) && <span className="text-xs text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ")}</span>}
                 <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
                   {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
                 </span>
@@ -16303,6 +15809,64 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const inputRef = useRef(null);
   useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } }, [irA && irA.t]);
 
+  // Pedidos de compra: lo pedido al proveedor y aún no llegado. Va aparte del almacén (no cuenta como "dentro").
+  const pedidosTodos = toArray(ctxM.pedidosPersianas);
+  const guardarPedidos = ctxM.savePedidosPersianas || (() => {});
+  const esRecepcion = !esMosq && almacenRecepcionPersianas(toArray(ctxM.almacenesPersianas)) === almacen.id;
+  const pendientesPedido = pedidosTodos.filter((p) => p.estado !== "recibida");
+  const [borradorPedido, setBorradorPedido] = useState(null); // { cab, filas } leído del PDF, para revisar antes de guardar
+  const [leyendoPedido, setLeyendoPedido] = useState(false);
+  const [verPedidas, setVerPedidas] = useState(false);
+  const inputPedidoRef = useRef(null);
+
+  const subirPedido = async (file) => {
+    setLeyendoPedido(true); setAviso("");
+    try {
+      const b = await leerPedidoPersianas(file);
+      if (!b.filas.length) throw new Error("No he encontrado persianas con medidas en el pedido.");
+      setBorradorPedido(b);
+    } catch (e) { setAviso(e.message || "No he podido leer el pedido."); }
+    finally { setLeyendoPedido(false); }
+  };
+  const guardarPedido = () => {
+    const { cab, filas } = borradorPedido;
+    const lista = filas.filter((f) => (parseFloat(f.largo) || 0) >= 100);
+    if (!String(cab.expediente).trim()) { setAviso("Pon el expediente del pedido."); return; }
+    if (!lista.length) { setAviso("No queda ninguna persiana con medida en el pedido."); return; }
+    const yaEsta = cab.pedido && pedidosTodos.some((p) => p.pedido === cab.pedido && expDigitosPers(p.expediente) === expDigitosPers(cab.expediente));
+    if (yaEsta && !window.confirm(`El pedido ${cab.pedido} del EXP ${cab.expediente} YA está guardado. Si lo guardas otra vez saldrá duplicado.\n\nAceptar = guardarlo igualmente.\nCancelar = no guardar nada.`)) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const enAlmacen = toArray(ctxM.persianasAlmacen);
+    const usadas = new Set();
+    let yaLlegadas = 0;
+    const nuevas = lista.map((f) => {
+      const p = { id: uid(), expediente: expDigitosPers(cab.expediente), parte: normParte(cab.refObra), ref: String(f.ref || "").trim(), largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0,
+        recogedor: f.recogedor || "", descripcion: f.descripcion || "", pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
+        proveedor: cab.proveedor, fechaPedido: cab.fechaPedido, fechaEntrega: cab.fechaEntrega, fechaAlta: hoy, estado: "pedida" };
+      // Si esa persiana ya está en algún almacén (llegó antes de subir el pedido), no se queda "pendiente" para siempre
+      const x = enAlmacen.find((y) => !usadas.has(y.id) && casaPedidaConPersiana(p, y));
+      if (x) { usadas.add(x.id); yaLlegadas++; return { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: x.id, notaRecibida: "Ya estaba en el almacén al subir el pedido" }; }
+      return p;
+    });
+    guardarPedidos([...pedidosTodos, ...nuevas]);
+    setBorradorPedido(null);
+    setVerPedidas(true);
+    setAviso(`Pedido ${cab.pedido || ""} (EXP ${cab.expediente}): ${nuevas.length} persianas guardadas${yaLlegadas ? `, ${yaLlegadas} ya estaban en el almacén (marcadas como recibidas)` : ""}. Las pendientes NO cuentan como "dentro" hasta que lleguen.`.replace("  ", " "));
+  };
+  // Al dar entrada a persianas (packing list, fotos o a mano) las que estaban pedidas pasan solas a "recibidas".
+  const conciliarPedidas = (nuevas) => {
+    if (esMosq || !pendientesPedido.length) return 0;
+    const usadas = new Set();
+    const marcadas = {};
+    nuevas.forEach((x) => {
+      const p = pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
+      if (p) { usadas.add(p.id); marcadas[p.id] = x.id; }
+    });
+    const n = Object.keys(marcadas).length;
+    if (n) { const hoy = new Date().toISOString().slice(0, 10); guardarPedidos(pedidosTodos.map((p) => (marcadas[p.id] ? { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: marcadas[p.id] } : p))); }
+    return n;
+  };
+
   const activos = items.filter((x) => !x.entregada);
   const sinSitio = activos.filter((x) => !x.estante && !x.enPuesto);
   const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
@@ -16357,9 +15921,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const { sitio, fallan, desbordan } = colocar(entrada);
     const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null }; });
     guardarItems([...items, ...nuevas]);
+    const recibidasPedido = conciliarPedidas(nuevas);
     if (!Array.isArray(lista)) { setBorrador(null); setCarroDestinoGlobal(""); }
     const cortas = esMosq ? 0 : nuevas.filter((x) => largoPersiana(x) < TIPOS_CARRO_PERSIANA.amarillo.minimoMm).length;
-    const extra = desbordan ? ` ${desbordan} no cabían en el carro elegido y se han colocado en otro sitio.` : "";
+    const extra = (desbordan ? ` ${desbordan} no cabían en el carro elegido y se han colocado en otro sitio.` : "") + (recibidasPedido ? ` ${recibidasPedido} estaban en pedidos y pasan a "recibidas".` : "");
     setAviso((fallan ? `${fallan} ${cosa} sin sitio${cortas ? ` (${cortas} miden menos de 40 cm y no caben en ningún carro)` : ""}. Están en "Sin sitio".` : `${nuevas.length} ${cosa} colocadas${nuevas.length <= 6 ? ": " + [...new Set(nuevas.map((x) => textoEstante(x.estante)))].join(" | ") : ""}.`) + extra);
     setVista(fallan ? "sinsitio" : "mapa");
   };
@@ -16423,7 +15988,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{x.refObra || ""}{x.pedidoProv ? `${x.refObra ? " · " : ""}Pedido ${x.pedidoProv}` : ""}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
@@ -16455,7 +16020,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const lados = LADOS_CARRO.map((lado) => {
         const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
           const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}${x.refObra ? ` · ${esc(x.refObra)}` : ""}${x.cliente ? ` · ${esc(x.cliente)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</div>`).join("") : '<i class="v">vacío</i>';
           return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
         }).join("");
         return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
@@ -16513,6 +16078,16 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
+        {esRecepcion && (
+          <>
+            <input ref={inputPedidoRef} type="file" accept="application/pdf,image/*" className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) subirPedido(e.target.files[0]); e.target.value = ""; }} />
+            <button onClick={() => inputPedidoRef.current?.click()} disabled={leyendoPedido}
+              className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 border border-slate-400 bg-white px-3.5 py-2 rounded-lg hover:bg-slate-50 disabled:opacity-50">
+              <Plus size={14} /> {leyendoPedido ? "Leyendo pedido…" : "Subir pedido de persianas"}
+            </button>
+          </>
+        )}
         <button onClick={() => setManual(manual ? null : { expediente: "", parte: "", ref: "", largo: "", alto: "", cantidad: 1, carro: "" })}
           className="flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] border border-[#2E8B57] bg-white px-3.5 py-2 rounded-lg">
           <Plus size={14} /> Añadir {cosa} a mano
@@ -16526,6 +16101,99 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} opcionesCarro={opcionesCarro(null)} onColocar={(unidades, carro) => confirmarEntrada(carro ? unidades.map((u) => ({ ...u, carroDestino: carro })) : unidades)} />
       )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
+      {esRecepcion && borradorPedido && (() => {
+        const { cab, filas } = borradorPedido;
+        const cambiaCab = (k, v) => setBorradorPedido({ ...borradorPedido, cab: { ...cab, [k]: v } });
+        const cambiaFila = (i, patch) => setBorradorPedido({ ...borradorPedido, filas: filas.map((y, j) => (j === i ? { ...y, ...patch } : y)) });
+        const cuentaRef = {};
+        filas.forEach((f) => { const k = normRefPers(f.ref); if (k) cuentaRef[k] = (cuentaRef[k] || 0) + 1; });
+        const repetidas = Object.entries(cuentaRef).filter(([, n]) => n > 1).map(([k]) => (filas.find((f) => normRefPers(f.ref) === k) || {}).ref);
+        return (
+          <div className="bg-slate-50 border-2 border-slate-400 rounded-xl p-4">
+            <h3 className="font-display font-bold text-slate-900 mb-1">Revisa el pedido antes de guardarlo</h3>
+            <p className="text-xs text-slate-600 mb-3">Esto NO mete las persianas en los carros: se guardan como <b>pedidas, pendientes de llegar</b> y no cuentan como «dentro». Cuando lleguen y des entrada (packing list, fotos o a mano) pasan solas a «recibidas».</p>
+            <div className="flex flex-wrap items-end gap-2 text-xs mb-3">
+              {[["pedido", "Nº pedido", "w-20"], ["presupuesto", "Presupuesto", "w-24"], ["expediente", "Expediente", "w-20"], ["cliente", "Cliente", "w-44"], ["proveedor", "Proveedor", "w-36"]].map(([k, lab, w]) => (
+                <label key={k} className="flex flex-col font-semibold text-slate-600">{lab}
+                  <input value={cab[k]} onChange={(e) => cambiaCab(k, e.target.value)} className={`${w} border border-slate-300 rounded px-2 py-1.5 font-normal bg-white`} />
+                </label>
+              ))}
+              <label className="flex flex-col font-semibold text-slate-600">Fecha pedido
+                <input type="date" value={cab.fechaPedido} onChange={(e) => cambiaCab("fechaPedido", e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 font-normal bg-white" />
+              </label>
+            </div>
+            {cab.refObra && <div className="text-[11px] text-slate-500 mb-2">Referencia del pedido: {cab.refObra}</div>}
+            {repetidas.length > 0 && <div className="text-xs px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 mb-2">Referencia repetida en el pedido: {repetidas.join(", ")}. Comprueba que son dos persianas distintas (aquí se distinguen por la medida) y no una línea duplicada.</div>}
+            <div className="overflow-x-auto max-h-72 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Vivienda / ref.</th><th className="pr-2">Ancho (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Recogedor</th><th></th></tr></thead>
+                <tbody>
+                  {filas.map((f, i) => (
+                    <tr key={f.id} className={`border-b border-white ${normRefPers(f.ref) && cuentaRef[normRefPers(f.ref)] > 1 ? "bg-amber-50" : ""}`}>
+                      <td className="py-1 pr-2"><input value={f.ref} onChange={(e) => cambiaFila(i, { ref: e.target.value })} className="w-24 border border-slate-200 rounded px-1 bg-white" /></td>
+                      <td className="pr-2"><input type="number" value={f.largo} onChange={(e) => cambiaFila(i, { largo: parseFloat(e.target.value) || 0 })} className="w-20 border border-slate-200 rounded px-1 bg-white" /></td>
+                      <td className="pr-2"><input type="number" value={f.alto} onChange={(e) => cambiaFila(i, { alto: parseFloat(e.target.value) || 0 })} className="w-20 border border-slate-200 rounded px-1 bg-white" /></td>
+                      <td className="pr-2">
+                        <select value={f.recogedor} onChange={(e) => cambiaFila(i, { recogedor: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 bg-white">
+                          <option value="">—</option><option value="Derecha">Derecha</option><option value="Izquierda">Izquierda</option>
+                        </select>
+                      </td>
+                      <td><button onClick={() => setBorradorPedido({ ...borradorPedido, filas: filas.filter((_, j) => j !== i) })} className="text-rose-500"><Trash2 size={12} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <button onClick={() => setBorradorPedido(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
+              <button onClick={guardarPedido} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Guardar como pedidas ({filas.length})</button>
+            </div>
+          </div>
+        );
+      })()}
+      {esRecepcion && pedidosTodos.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl p-3">
+          <button onClick={() => setVerPedidas(!verPedidas)} className="w-full flex items-center justify-between text-left">
+            <span className="text-sm font-semibold text-slate-800">Pedidas, pendientes de llegar ({pendientesPedido.length}){pedidosTodos.length - pendientesPedido.length > 0 ? <span className="font-normal text-slate-500"> · {pedidosTodos.length - pendientesPedido.length} ya recibidas</span> : null}</span>
+            <span className="text-xs text-slate-500">{verPedidas ? "Ocultar" : "Ver"}</span>
+          </button>
+          {verPedidas && (() => {
+            const grupos = {};
+            pendientesPedido.forEach((p) => { const k = `${p.expediente || "—"}§${p.pedido || ""}`; (grupos[k] = grupos[k] || []).push(p); });
+            const quitar = (ids) => guardarPedidos(pedidosTodos.filter((p) => !ids.includes(p.id)));
+            const llegada = (id) => guardarPedidos(pedidosTodos.map((p) => (p.id === id ? { ...p, estado: "recibida", fechaRecibida: new Date().toISOString().slice(0, 10), notaRecibida: "Marcada a mano" } : p)));
+            if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
+            return (
+              <div className="mt-2 space-y-3 max-h-80 overflow-y-auto">
+                {Object.entries(grupos).map(([k, ps]) => (
+                  <div key={k}>
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
+                      <span>EXP {ps[0].expediente || "—"}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
+                      <button onClick={() => { if (window.confirm(`¿Quitar las ${ps.length} persianas pendientes de este pedido? (No se borra nada del almacén)`)) quitar(ps.map((p) => p.id)); }} className="ml-auto text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded hover:bg-rose-50">Quitar pedido</button>
+                    </div>
+                    <table className="w-full text-xs">
+                      <tbody>
+                        {ps.map((p) => (
+                          <tr key={p.id} className="border-b border-slate-100">
+                            <td className="py-1 pr-2 font-semibold w-24">{p.ref || "—"}</td>
+                            <td className="pr-2 font-mono-num">{p.largo}{p.alto ? ` × ${p.alto}` : ""}</td>
+                            <td className="pr-2 text-slate-500">{p.recogedor ? `Recogedor ${p.recogedor.toLowerCase()}` : ""}</td>
+                            <td className="text-right whitespace-nowrap">
+                              <button onClick={() => llegada(p.id)} className="text-[11px] font-semibold text-[#2E8B57] underline mr-2" title="Ya está en el almacén (si no se emparejó sola)">Ya llegó</button>
+                              <button onClick={() => quitar([p.id])} className="text-rose-500" title="Quitar de pedidas"><Trash2 size={12} /></button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
       {manual && (
         <div className="bg-white border-2 border-[#2E8B57] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Añadir {cosa} a mano</h3>
@@ -16565,7 +16233,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Ubicación / cliente</th><th className="pr-2">Carro</th><th></th></tr></thead>
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Carro</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
@@ -16573,7 +16241,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <td className="pr-2">{x.ref || "—"}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
-                    <td className="pr-2 text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ") || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
                         <option value="">{carroDestinoGlobal ? `Como el general (${carroDestinoGlobal})` : "Automático"}</option>
@@ -16781,7 +16448,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
                           {dentro.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
                               className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
@@ -19840,10 +19507,7 @@ function ControlElementosPorVivienda({ basePath, proyectoId, incidencias, onUpse
                       <div key={cat} className="mb-2">
                         <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-2 ml-2">{cat}</div>
                         {docs.map((d) => (
-                          <div key={d.id} className="ml-2 flex items-baseline gap-2">
-                            <a href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline">{d.nombre}</a>
-                            {fechaDoc(d) && <span className="text-[11px] text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
-                          </div>
+                          <a key={d.id} href={d.url} download={d.nombre} className="block text-sm text-emerald-700 underline ml-2">{d.nombre}</a>
                         ))}
                       </div>
                     ))}
@@ -23919,8 +23583,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     proximaAccionFecha: fechaMasSiete(),
   });
   const [errorLlamada, setErrorLlamada] = useState("");
-  const [asigUser, setAsigUser] = useState("");
-  const [asigFecha, setAsigFecha] = useState("");
 
   // Al elegir "Rechazado" se libera la fecha (no hace falta recontactar); al
   // elegir cualquier otro resultado, si no había fecha puesta, se rellena
@@ -23948,12 +23610,11 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
     const rechazo = esResultadoRechazo(lForm.resultado);
     onAddLlamada(
       lead.id,
-      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion, ...asignacionLlamada(usuarios, asigUser, asigFecha) },
+      { id: uid(), fecha: lForm.fecha, resultado: lForm.resultado, resultadoLabel: opcion?.label || "", notas: lForm.notas, enlaceGrabacion: lForm.enlaceGrabacion },
       opcion?.estado || null,
       rechazo ? "" : lForm.proximaAccionFecha
     );
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "", notas: "", enlaceGrabacion: "", proximaAccionFecha: fechaMasSiete() });
-    setAsigUser(""); setAsigFecha("");
   };
 
   const manejarSubirPresupuesto = async (file) => {
@@ -24072,7 +23733,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
               <div className="text-sm">
                 <div className="font-semibold text-slate-700">{fmtDate(l.fecha)} — {l.resultadoLabel || "—"}</div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
-                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.enlaceGrabacion && (
                   <a href={l.enlaceGrabacion} target="_blank" rel="noopener noreferrer" className="text-sky-600 hover:underline text-xs">🎧 Escuchar grabación</a>
                 )}
@@ -24114,7 +23774,6 @@ function LeadDetail({ lead, usuarios, isAdmin, onBack, onEdit, onDelete, onAddLl
         <Field label="Notas de la llamada">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
-        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
@@ -28296,7 +27955,6 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
     <div key={d.id} className="flex items-center gap-1.5 text-xs py-0.5 min-w-0">
       <FileText size={13} className="text-slate-400 shrink-0" />
       <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] hover:underline truncate" title={d.nombre}>{d.nombre}</a>
-      {fechaDoc(d) && <span className="text-[11px] text-slate-400 shrink-0" title="Fecha en que se subió">{fechaDoc(d)}</span>}
       {onChange && (
         <button type="button" onClick={() => { if (window.confirm(`¿Quitar el justificante "${d.nombre}"?`)) onChange(docs.filter((x) => x.id !== d.id)); }}
           className="text-slate-300 hover:text-rose-500 shrink-0" title="Quitar"><X size={13} /></button>
@@ -29422,7 +29080,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const timerPedidoAutoFormRef = useRef(null);
   const intervaloCuentaFormRef = useRef(null);
   const inputPdfMedidasFormRef = useRef(null);
-  const inputFotoMedidasFormRef = useRef(null);
 
   const dispararPedidoAutoForm = (lineasFinales, adjuntosFinales) => {
     clearTimeout(timerPedidoAutoFormRef.current);
@@ -29588,33 +29245,13 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
   const clienteExiste = (nombre) => clientes.some((c) => c.nombre.trim().toLowerCase() === (nombre || "").trim().toLowerCase());
   const clienteFaltante = f.clienteNombre.trim() && !clienteExiste(f.clienteNombre);
 
-  // Al elegir un cliente que ya existe (o al llegar el presupuesto desde una medición, la calculadora…),
-  // su teléfono y email pasan solos al presupuesto. Solo rellena lo que esté vacío: no pisa lo ya escrito.
-  useEffect(() => {
-    const nombre = String(f.clienteNombre || "").trim().toLowerCase();
-    if (!nombre) return;
-    const c = (clientes || []).find((x) => String(x.nombre || "").trim().toLowerCase() === nombre);
-    if (!c) return;
-    const tel = c.movil || c.telefono || "";
-    setF((prev) => {
-      const nuevoTel = String(prev.telefono || "").trim() ? prev.telefono : tel;
-      const nuevoEmail = String(prev.email || "").trim() ? prev.email : (c.email || "");
-      return nuevoTel === prev.telefono && nuevoEmail === (prev.email || "") ? prev : { ...prev, telefono: nuevoTel, email: nuevoEmail };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f.clienteNombre, clientes]);
-
   const crearClienteAhora = () => {
     if (!limiteCreditoRapido || parseFloat(limiteCreditoRapido) <= 0) {
       setErrorClienteRapido("Pon un límite de crédito mayor que 0 para poder darlo de alta.");
       return;
     }
-    if (!String(f.telefono || "").trim() && !String(f.email || "").trim()) {
-      setErrorClienteRapido("Pon el teléfono o el email del cliente (arriba) para poder darlo de alta: uno de los dos es obligatorio.");
-      return;
-    }
     setErrorClienteRapido("");
-    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido, f.telefono, f.email);
+    onCrearClienteRapido(f.clienteNombre.trim(), limiteCreditoRapido);
     setLimiteCreditoRapido("");
   };
 
@@ -29626,7 +29263,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
       setErrorMsg(`El cliente "${f.clienteNombre}" no existe todavía en el CRM. Ve a Clientes y date de alta primero, y luego vuelve aquí a elegirlo de la lista.`);
       return;
     }
-    if (!String(f.descripcion || "").trim()) { setErrorMsg("Falta la referencia del presupuesto (campo «Referencia / Descripción de la obra»): es obligatoria."); return; }
     if (!f.fechaEnvio) { setErrorMsg("Falta la fecha de envío (es obligatoria)."); return; }
     if (!f.envio && !f.montaje && !f.recoge) {
       setErrorMsg("Marca al menos una opción de ¿Envío?, ¿Montaje? o ¿Recoge el cliente? antes de guardar.");
@@ -29704,24 +29340,6 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             >
               <ImageIcon size={15} /> {leyendoPdfMedidasForm ? "Subiendo..." : "Subir documento"}
             </button>
-            <input
-              ref={inputFotoMedidasFormRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasForm(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
-            />
-            <button
-              type="button"
-              onClick={() => inputFotoMedidasFormRef.current?.click()}
-              disabled={leyendoPdfMedidasForm}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
-            >
-              📷 Hacer foto
-            </button>
             {f.documentos && f.documentos.length > 0 && (
               <span className="text-sm text-emerald-700 font-semibold">✓ {f.documentos.length} documento(s) guardado(s) en este presupuesto</span>
             )}
@@ -29779,7 +29397,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             <p className="text-sm font-semibold text-amber-800">⚠ "{f.clienteNombre}" no existe todavía en el CRM.</p>
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[180px]">
-                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€) · se guardan también el teléfono y el email de arriba</label>
+                <label className="text-xs font-semibold text-amber-800 block mb-1">Límite de crédito asegurado (€)</label>
                 <TextInput type="number" step="0.01" value={limiteCreditoRapido} onChange={(e) => setLimiteCreditoRapido(e.target.value)} placeholder="Ej: 40000" />
               </div>
               <button type="button" onClick={crearClienteAhora} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md">
@@ -29803,8 +29421,8 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           </Field>
         </div>
 
-        <Field label="Referencia / Descripción de la obra" required>
-          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Reforma vivienda C/ Mayor 4 — 4 ventanas de PVC" />
+        <Field label="Descripción / Obra">
+          <TextArea rows={2} value={f.descripcion} onChange={set("descripcion")} placeholder="Ej: Solicitud de 4 ventanas de PVC" />
         </Field>
 
         <div className="grid grid-cols-2 gap-4">
@@ -30147,8 +29765,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     return { importe: versiones[index - 1].importe, descripcion: versiones[index - 1].descripcion };
   };
   const [lForm, setLForm] = useState({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
-  const [asigUser, setAsigUser] = useState("");
-  const [asigFecha, setAsigFecha] = useState("");
   const [errorLlamada, setErrorLlamada] = useState("");
   const [generandoPdf, setGenerandoPdf] = useState(false);
   const [pdfGuardadoUrl, setPdfGuardadoUrl] = useState("");
@@ -30245,7 +29861,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
   const [errorPdfMedidasPre, setErrorPdfMedidasPre] = useState("");
   const [avisoDocumentoPre, setAvisoDocumentoPre] = useState("");
   const inputPdfMedidasPreRef = useRef(null);
-  const inputFotoPreRef = useRef(null);
   // Siempre la versión más reciente (tras subir el documento el presupuesto ya ha cambiado)
   const rellenarRef = useRef(null);
   rellenarRef.current = onRellenarDesdeDocumento;
@@ -30302,9 +29917,8 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     setErrorLlamada("");
     const opcion = PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === lForm.resultado);
     const { resultado, ...llamadaSinResultado } = lForm;
-    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "", ...asignacionLlamada(usuarios, asigUser, asigFecha) }, opcion?.estado || null);
+    onAddLlamada({ id: uid(), ...llamadaSinResultado, resultado, resultadoLabel: opcion?.label || "" }, opcion?.estado || null);
     setLForm({ fecha: new Date().toISOString().slice(0, 10), resultado: "sin_cambios", notas: "", enlaceGrabacion: "", proximaLlamadaFecha: "" });
-    setAsigUser(""); setAsigFecha("");
   };
   return (
     <div className="p-8 max-w-3xl">
@@ -30407,24 +30021,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
             >
               <ImageIcon size={15} /> {subiendoDocumentoPre ? "Subiendo..." : "Subir documento"}
-            </button>
-            <input
-              ref={inputFotoPreRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.[0]) manejarSubidaPdfMedidasPre(renombrarFotoCamara(e.target.files[0])); e.target.value = ""; }}
-            />
-            <button
-              type="button"
-              onClick={() => inputFotoPreRef.current?.click()}
-              disabled={subiendoDocumentoPre}
-              style={{ borderColor: "#2E8B57", color: "#2E8B57" }}
-              className="flex items-center gap-2 border-2 hover:bg-white disabled:opacity-50 text-sm font-semibold px-3.5 py-2 rounded-md cursor-pointer select-none"
-              title="Abre la cámara del móvil/tablet y guarda la foto como documento"
-            >
-              📷 Hacer foto
             </button>
           </div>
           {errorPdfMedidasPre && <p className="text-xs text-rose-600 font-semibold mt-2">⚠ {errorPdfMedidasPre}</p>}
@@ -30550,7 +30146,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               {presupuesto.documentos.map((d) => (
                 <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md hover:bg-slate-100">
                   <FileText size={14} className="text-slate-400" /> {d.nombre}
-                  {fechaDoc(d) && <span className="text-[11px] font-normal text-slate-400" title="Fecha en que se subió">{fechaDoc(d)}</span>}
                 </a>
               ))}
             </div>
@@ -30639,7 +30234,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
                   {l.resultadoLabel && l.resultado !== "sin_cambios" && <Badge className={ESTADO_PRESUPUESTO_TRACKER_STYLE[PRESUPUESTO_RESULTADOS_LLAMADA.find((o) => o.value === l.resultado)?.estado] || "bg-slate-100 text-slate-600 ring-slate-200"}>{l.resultadoLabel}</Badge>}
                 </div>
                 {l.notas && <div className="text-slate-600">{l.notas}</div>}
-                {l.asignadoANombre && <div className="text-emerald-700 text-xs font-semibold mt-0.5">➜ Trabajo asignado a {l.asignadoANombre}{l.asignadoAFecha ? ` (para el ${fmtDate(l.asignadoAFecha)})` : ""}</div>}
                 {l.proximaLlamadaFecha && (
                   <div className="text-amber-700 font-semibold text-xs mt-0.5">📅 Próxima llamada: {fmtDate(l.proximaLlamadaFecha)}</div>
                 )}
@@ -30676,7 +30270,6 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         <Field label="Notas de la llamada (obligatorio — qué se ha hablado con el cliente)">
           <TextArea rows={2} value={lForm.notas} onChange={(e) => setLForm({ ...lForm, notas: e.target.value })} placeholder="Qué se habló, próximos pasos..." />
         </Field>
-        <AsignarTrabajoLlamada usuarios={usuarios} valor={asigUser} fecha={asigFecha} onValor={setAsigUser} onFecha={setAsigFecha} />
         <div className="flex justify-end">
           <button type="submit" onClick={registrarLlamada} style={{ backgroundColor: "#2E8B57", color: "#ffffff", border: "2px solid #256E46" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Plus size={15} /> Registrar llamada</button>
         </div>
@@ -42730,12 +42323,7 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
                 <input type="checkbox" checked={!!(f.areas && f.areas.fabrica)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), fabrica: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                 Fábrica
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input type="checkbox" checked={!!(f.areas && f.areas.oficina)} onChange={(e) => setF({ ...f, areas: { ...(f.areas || {}), oficina: e.target.checked } })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
-                Oficina
-              </label>
             </div>
-            <p className="text-xs text-slate-500 mt-1">«Oficina» aparece en el desplegable «Asignar el trabajo a» al registrar una llamada en una obra. No cambia lo que ve el usuario.</p>
             <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
           </Field>
         )}
