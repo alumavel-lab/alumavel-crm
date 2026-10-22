@@ -1396,7 +1396,7 @@ export default function App() {
       clienteId: cliente.id, tipoVenta: "Venta",
       especificaciones: propia ? `Obra propia medida ventana a ventana en el CRM (sin plano). ${cab.expediente || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Mis obras → ${cab.expediente || "obra"} → Imprimir (hoja de oficina).` : `Vivienda medida de Aena (Plan de Aislamiento Acústico). Expediente ${cab.expediente || ""} · concurso ${cab.concurso || ""} · ${cab.pedido || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir (hoja de oficina).`,
       estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
-      estadoTrabajo: "Pendiente de aceptación", ubicacion: cab.direccion || "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
+      estadoTrabajo: "Pendiente de aceptación", fechaAceptado: new Date().toISOString().slice(0, 10), ubicacion: cab.direccion || "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
       provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
       gastos: [], registroHorario: [], checklistMateriales: checklist,
       origen: propia ? "medicionPropia" : "medicionUxcar", medicionUxcarId: exp.id,
@@ -3852,7 +3852,7 @@ export default function App() {
             id: nuevoId, numero: String(numero++), nombre: `Uxcar · ${exp.numero}${piezas ? " · " + piezas : ""}`,
             clienteId: cliente.id, tipoVenta: "Venta", especificaciones: `Expediente ${exp.numero} (${exp.tipo || "sin tipo"}) metido por Uxcar desde su portal.${exp.observaciones ? "\n" + exp.observaciones : ""}`,
             estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
-            estadoTrabajo: "Pendiente de aceptación", ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: "", fechaEntregado: "",
+            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: "", fechaEntregado: "",
             provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
             gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
             origen: "portalUxcar", uxcarExpedienteId: exp.id,
@@ -6587,7 +6587,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                       onChange={(e) => onUpsert({ ...p, estadoTrabajo: e.target.value })}
                       className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}`}
                     >
-                      {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
+                      {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e}</option>)}
                     </select>
                   </td>
                   <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : "—")}</td>
