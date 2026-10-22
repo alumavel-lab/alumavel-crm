@@ -1314,12 +1314,17 @@ export default function App() {
     const nuevoId = uid();
     const res = await runTransaction(ref(fbDb, `${UXC_NODO}/${exp.id}/envio/proyectoId`), (actual) => (actual ? undefined : nuevoId)).catch(() => null);
     if (!res || !res.committed) return null; // ya tenía proyecto (o no se pudo reservar)
-    let cliente = clientes.find((c) => /uxcar/i.test(c.nombre || ""));
+    const cab = exp.cab || {};
+    const propia = !!exp.propia;
+    let cliente = propia
+      ? clientes.find((c) => String(c.nombre || "").trim().toLowerCase() === String(cab.cliente || "").trim().toLowerCase())
+      : clientes.find((c) => /uxcar/i.test(c.nombre || ""));
     if (!cliente) {
-      cliente = { id: uid(), nombre: "Uxcar", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición de Aena" };
+      cliente = propia
+        ? { id: uid(), nombre: String(cab.cliente || "").trim() || "Cliente sin nombre", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición propia (Mediciones → Mis obras)" }
+        : { id: uid(), nombre: "Uxcar", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición de Aena" };
       saveClientes([cliente, ...clientes]);
     }
-    const cab = exp.cab || {};
     const vs = uxcLista(exp.ventanas).filter((v) => v.activa !== false && !v.rechazada);
     const piezas = [`${vs.filter((v) => !uxcEsPuerta(v)).length} ventanas`, vs.some(uxcEsPuerta) ? `${vs.filter(uxcEsPuerta).length} puertas` : ""].filter(Boolean).join(", ");
     const numero = nextNumeroProyecto();
@@ -1331,20 +1336,21 @@ export default function App() {
       return c; // Postigo, panel de puerta y tirador: se contestan en la ficha
     });
     const nuevo = {
-      id: nuevoId, numero, nombre: `Uxcar · ${cab.expediente || "Aena"} · ${cab.municipio || cab.direccion || ""} · ${piezas}`.replace(/ · +$/, ""),
+      id: nuevoId, numero, nombre: (propia ? `${cab.expediente || "Obra"} · ${cab.direccion || cab.municipio || ""} · ${piezas}` : `Uxcar · ${cab.expediente || "Aena"} · ${cab.municipio || cab.direccion || ""} · ${piezas}`).replace(/ · +$/, ""),
       clienteId: cliente.id, tipoVenta: "Venta",
-      especificaciones: `Vivienda medida de Aena (Plan de Aislamiento Acústico). Expediente ${cab.expediente || ""} · concurso ${cab.concurso || ""} · ${cab.pedido || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir (hoja de oficina).`,
+      especificaciones: propia ? `Obra propia medida ventana a ventana en el CRM (sin plano). ${cab.expediente || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Mis obras → ${cab.expediente || "obra"} → Imprimir (hoja de oficina).` : `Vivienda medida de Aena (Plan de Aislamiento Acústico). Expediente ${cab.expediente || ""} · concurso ${cab.concurso || ""} · ${cab.pedido || ""}.\n${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}. Color: ${cab.color || ""}.\nMedición hecha en obra: está en Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir (hoja de oficina).`,
       estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
       estadoTrabajo: "Pendiente de aceptación", ubicacion: cab.direccion || "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
       provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
       gastos: [], registroHorario: [], checklistMateriales: checklist,
-      origen: "medicionUxcar", medicionUxcarId: exp.id,
+      origen: propia ? "medicionPropia" : "medicionUxcar", medicionUxcarId: exp.id,
     };
     saveProyectos([nuevo, ...toArray(proyectosRef.current)]);
     showToast(`Creada la obra #${numero} en Proyectos`);
     return { id: nuevoId, numero };
   };
   uxcPuente.crearProyecto = crearProyectoDesdeMedicionUxcar;
+  uxcPuente.nombresClientes = () => clientes.map((c) => c.nombre).filter(Boolean);
 
   const nextNumeroProyecto = () => {
     const nums = proyectos.map((p) => parseInt(String(p.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
@@ -4729,7 +4735,7 @@ export default function App() {
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-rose-50 text-rose-800 hover:bg-rose-100"
             >
               <AlertCircle size={15} />
-              🔥 {tarde.length} vivienda{tarde.length === 1 ? "" : "s"} medida{tarde.length === 1 ? "" : "s"} (Uxcar) sin materiales pedidos desde hace más de un día ({tarde.slice(0, 4).map((x) => x.exp || "s/n").join(", ")}{tarde.length > 4 ? "…" : ""}). Toca para verlas →
+              🔥 {tarde.length} obra{tarde.length === 1 ? "" : "s"} medida{tarde.length === 1 ? "" : "s"} en Mediciones (Uxcar o propias) sin materiales pedidos desde hace más de un día ({tarde.slice(0, 4).map((x) => x.exp || "s/n").join(", ")}{tarde.length > 4 ? "…" : ""}). Toca para verlas →
             </button>
           );
         })()}
@@ -20892,9 +20898,10 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
       <div className="flex gap-2 mb-5 border-b border-slate-200">
         <button onClick={() => setZonaMed("normal")} className={`crm-tab px-3 py-2 text-sm font-semibold ${zonaMed === "normal" ? "border-[#2E8B57]" : ""}`}>Mediciones</button>
         <button onClick={() => setZonaMed("uxcar")} className={`crm-tab px-3 py-2 text-sm font-semibold ${zonaMed === "uxcar" ? "border-[#2E8B57]" : ""}`}>Uxcar (Aena)</button>
+        <button onClick={() => setZonaMed("propia")} className={`crm-tab px-3 py-2 text-sm font-semibold ${zonaMed === "propia" ? "border-[#2E8B57]" : ""}`}>Mis obras (ventana a ventana)</button>
       </div>
 
-      {zonaMed === "uxcar" ? <MedicionesUxcarZona /> : (<>
+      {zonaMed === "uxcar" ? <MedicionesUxcarZona key="uxcar" /> : zonaMed === "propia" ? <MedicionesUxcarZona key="propia" propia /> : (<>
       <button
         onClick={() => { setEditId(null); setView("form"); }}
         className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-lg font-bold py-5 rounded-lg mb-6 shadow-md cursor-pointer select-none"
@@ -20956,7 +20963,7 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
    partidas y extras son mapas por id, y cada edición escribe solo su trozo, para que dos
    personas puedan medir ventanas distintas a la vez sin pisarse. */
 const UXC_NODO = "medicionesUxcar";
-const uxcPuente = { crearProyecto: null }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
+const uxcPuente = { crearProyecto: null, nombresClientes: () => [] }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
 const uxcNav = { id: null }; // el aviso de arriba deja aquí el expediente que hay que abrir
 const UXC_FOTOS = "medicionesUxcarFotos"; // fotos de cada ventana (fallos, estado del hueco…), aparte para no cargar la lista
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
@@ -21157,8 +21164,9 @@ function uxcHojaVentanaHTML(exp, v) {
   const vi = uxcVid(exp, v);
   const opc = (lista, sel) => lista.map((x) => `<span class="pill${String(sel) === String(x) ? " on" : ""}">${x}</span>`).join("");
   const aviso = [];
+  const propia = !!exp.propia;
   if (v.rechazada) aviso.push("EL PLANO MARCA ESTA CARPINTERÍA COMO «RECHAZA»: confirmar con oficina antes de medir/fabricar");
-  if (o.oscilo && !(exp.extras && uxcLista(exp.extras).some((e) => e.pagada))) aviso.push("OSCILOBATIENTE = extra de pago aparte (proforma): no fabricar hasta confirmar el ingreso");
+  if (!propia && o.oscilo && !(exp.extras && uxcLista(exp.extras).some((e) => e.pagada))) aviso.push("OSCILOBATIENTE = extra de pago aparte (proforma): no fabricar hasta confirmar el ingreso");
   if (exp.revisado === false) aviso.push("DATOS SIN REVISAR (leídos por IA): comprobar contra el plano antes de medir");
   if (o.desconocidos.length) aviso.push("Código sin significado en la leyenda: " + o.desconocidos.join(", "));
   return `<div class="hoja">
@@ -21183,11 +21191,11 @@ function uxcHojaVentanaHTML(exp, v) {
     </div>
     <div class="caja" style="display:flex;flex-direction:column"><h3>ESQUEMA VENTANA <small style="font-weight:normal;font-size:8px">VISTO DESDE DENTRO</small></h3><div style="flex:1;display:flex;align-items:center">${uxcEsquemaSVG(v)}</div></div>
   </div>
-  <div class="fila2">
-    <div class="caja"><h3>LO QUE PAGA / NO PAGA AENA EN ESTA CARPINTERÍA</h3>
+  <div class="fila2"${propia ? ' style="grid-template-columns:1fr"' : ""}>
+    ${propia ? "" : `<div class="caja"><h3>LO QUE PAGA / NO PAGA AENA EN ESTA CARPINTERÍA</h3>
       <div style="font-size:10px"><b>Paga:</b><ul class="aena" style="margin:2px 0 4px 14px;padding:0">${pagadas.length ? pagadas.map(pag).join("") : "<li>(sin partidas cargadas)</li>"}</ul>
       <b class="mal">NO paga:</b><ul class="aena" style="margin:2px 0 0 14px;padding:0">${noPagadas.length ? noPagadas.map((p) => `<li class="mal">${escapeHtml(p.cod)} ${escapeHtml(uxcSinMedidas(p.concepto))}</li>`).join("") : "<li>—</li>"}</ul></div>
-    </div>
+    </div>`}
     <div class="caja"><h3>MEDIDA FABRICACIÓN</h3>
       <div style="margin:6px 0">ANCHO: ${v.anchoFab ? `<b>${escapeHtml(v.anchoFab)}</b>` : "________________"} &nbsp; ALTO: ${v.altoFab ? `<b>${escapeHtml(uxcAltoTxt(v))}</b>` : "________________"}</div>
       <div style="font-size:10px;margin-top:4px">Mano comprobada: ${uxcSq("SI", !!v.manoOk)}${uxcSq("NO", false)} &nbsp; Apertura: <b>${escapeHtml(uxcManoTexto(v))}</b></div>
@@ -21263,10 +21271,10 @@ function uxcHojaOficinaHTML(exp) {
   const aviso = [];
   if (exp.revisado === false) aviso.push("Datos sin revisar (leídos por IA).");
   r.vs.filter((v) => v.rechazada).forEach((v) => aviso.push(`${v.ref}: el plano marca «RECHAZA».`));
-  r.extras.forEach((e) => { if (!e.pagada) aviso.push(`Proforma ${e.proformaNum || ""} (${e.concepto}) sin confirmar el ingreso: no pedir/fabricar ese extra todavía.`); });
+  if (!exp.propia) r.extras.forEach((e) => { if (!e.pagada) aviso.push(`Proforma ${e.proformaNum || ""} (${e.concepto}) sin confirmar el ingreso: no pedir/fabricar ese extra todavía.`); });
   if (r.medidasVent.length < r.ventanasSolo.length) aviso.push(`Faltan medidas de fabricación en ${r.ventanasSolo.length - r.medidasVent.length} ventana(s).`);
   return `<div class="hoja"><h1>HOJA PARA OFICINA — PEDIDO DE MATERIALES</h1>
-  <div class="caja" style="margin-bottom:6px"><b>${escapeHtml(cab.expediente || "")}</b> · ${escapeHtml(cab.pedido || "")} · ${escapeHtml(cab.aeropuerto || "")}<br>${escapeHtml(cab.direccion || "")} (${escapeHtml(cab.municipio || "")}) · Cliente: ${escapeHtml(cab.cliente || "")}<br>Medido por: ${escapeHtml(cab.medidoPor || "________")} · Fecha: ${escapeHtml(uxcFechaES(cab.fechaMedicion))}</div>
+  <div class="caja" style="margin-bottom:6px"><b>${escapeHtml(cab.expediente || "")}</b>${exp.propia ? "" : ` · ${escapeHtml(cab.pedido || "")} · ${escapeHtml(cab.aeropuerto || "")}`}<br>${escapeHtml(cab.direccion || "")}${cab.municipio ? ` (${escapeHtml(cab.municipio)})` : ""} · Cliente: ${escapeHtml(cab.cliente || "")}<br>Medido por: ${escapeHtml(cab.medidoPor || "________")} · Fecha: ${escapeHtml(uxcFechaES(cab.fechaMedicion))}</div>
   ${aviso.length ? `<div class="aviso">⚠ ${aviso.map(escapeHtml).join("<br>⚠ ")}</div>` : ""}
   <table class="t"><tr><th>Ref.</th><th>Tipo / color</th><th>Medida fabricación (mm)</th><th>Vidrio</th><th>Persiana</th><th>Mosq.</th><th>Oscilo</th><th>Cerr.</th><th>Solape / obs.</th></tr>${filas}</table>
   <div class="fila2" style="margin-top:8px">
@@ -21274,9 +21282,9 @@ function uxcHojaOficinaHTML(exp) {
       Ventanas/puertas: <b>${r.activas.length}</b> · Persianas con cajón: <b>${r.cuenta.persianas}</b> · Mosquiteras: <b>${r.cuenta.mosquiteras}</b> · Oscilobatientes (extra): <b>${r.cuenta.oscilo}</b> · Cerraduras: <b>${r.cuenta.cerraduras}</b><br>
       m² de ventana medidos: <b>${r.m2Medido.toFixed(2)}</b>
     </div>
-    <div class="caja"><h3>EXTRAS / PROFORMAS</h3>${r.extras.length ? r.extras.map((e) => `${escapeHtml(e.concepto)}: <b>${escapeHtml(e.cant)} ud</b> · ${e.pagada ? "INGRESADO" : "<span class='mal'>PENDIENTE DE INGRESO</span>"}`).join("<br>") : "—"}</div>
+    ${exp.propia ? "" : `<div class="caja"><h3>EXTRAS / PROFORMAS</h3>${r.extras.length ? r.extras.map((e) => `${escapeHtml(e.concepto)}: <b>${escapeHtml(e.cant)} ud</b> · ${e.pagada ? "INGRESADO" : "<span class='mal'>PENDIENTE DE INGRESO</span>"}`).join("<br>") : "—"}</div>`}
   </div>
-  <div class="caja" style="margin-top:6px"><h3>IMPREVISTOS A SOLICITAR (encontrados al medir)</h3>${r.imp.length ? "<table class='t'>" + r.imp.map((x) => `<tr><td>${escapeHtml(x.i.cod)}</td><td>${escapeHtml(x.i.t)}</td><td>${escapeHtml(x.donde)}</td><td class="c">${escapeHtml(x.q)} ${escapeHtml(x.i.ud)}</td></tr>`).join("") + "</table>" : "Ninguno marcado."}</div>
+  ${exp.propia ? "" : `<div class="caja" style="margin-top:6px"><h3>IMPREVISTOS A SOLICITAR (encontrados al medir)</h3>${r.imp.length ? "<table class='t'>" + r.imp.map((x) => `<tr><td>${escapeHtml(x.i.cod)}</td><td>${escapeHtml(x.i.t)}</td><td>${escapeHtml(x.donde)}</td><td class="c">${escapeHtml(x.q)} ${escapeHtml(x.i.ud)}</td></tr>`).join("") + "</table>" : "Ninguno marcado."}</div>`}
 </div>`;
 }
 
@@ -21522,6 +21530,7 @@ function uxcExpedienteDesdeIA(paginas) {
 
 /* ---------- Comprobaciones cruzadas ---------- */
 function uxcComprobaciones(exp) {
+  if (exp.propia) return uxcLista(exp.ventanas).length ? [] : [{ n: "aviso", t: "Todavía no has añadido ninguna ventana." }];
   const out = [];
   const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
   const incl = ps.filter((p) => p.bloque !== "noincl"), noincl = ps.filter((p) => p.bloque === "noincl");
@@ -21570,10 +21579,10 @@ function uxcComprobaciones(exp) {
 const uxcInp = "w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40";
 
 // Casilla de texto que guarda al salir (así se escribe sin que cada letra viaje a Firebase).
-function UxcCel({ valor, onGuardar, tipo = "text", placeholder, className = "", validar }) {
+function UxcCel({ valor, onGuardar, tipo = "text", placeholder, className = "", validar, lista }) {
   const [v, setV] = useState(valor == null ? "" : valor);
   useEffect(() => { setV(valor == null ? "" : valor); }, [valor]);
-  return <input type={tipo} value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)}
+  return <input type={tipo} value={v} placeholder={placeholder} list={lista} onChange={(e) => setV(e.target.value)}
     onBlur={() => {
       if (String(v) === String(valor == null ? "" : valor)) return;
       const err = validar ? validar(v) : null;
@@ -21618,7 +21627,7 @@ function UxcGuiaProximo() {
   );
 }
 
-function MedicionesUxcarZona() {
+function MedicionesUxcarZona({ propia = false }) {
   const [lista, setLista] = useState(null);
   const [abiertoId, setAbiertoId] = useState(() => { const x = uxcNav.id; uxcNav.id = null; return x; });
   const [q, setQ] = useState("");
@@ -21632,6 +21641,7 @@ function MedicionesUxcarZona() {
     try { await fbSet(ref(fbDb, `${UXC_NODO}/${exp.id}`), uxcLimpio(exp)); setAbiertoId(exp.id); }
     catch (e) { alert("No se pudo guardar: " + e.message); }
   };
+  const vacioPropia = () => ({ id: uid(), creadoEn: Date.now(), origen: "propia", propia: true, revisado: true, cab: { expediente: "", concurso: "", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
   const vacio = () => ({ id: uid(), creadoEn: Date.now(), origen: "manual", revisado: true, cab: { expediente: "", concurso: "DPM 511-23", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
 
   const desdeFotos = async (files) => {
@@ -21672,38 +21682,39 @@ function MedicionesUxcarZona() {
 
   const abierto = lista && abiertoId ? lista.find((x) => x.id === abiertoId) : null;
   if (abierto) return <UxcExpediente exp={abierto} onBack={() => setAbiertoId(null)} />;
-  const filtradas = (lista || []).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+  const filtradas = (lista || []).filter((x) => (propia ? !!x.propia : !x.propia)).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
 
   return (
     <div>
-      <UxcGuiaProximo />
+      {propia ? <p className="text-sm text-slate-500 mb-4">Aquí mides tus propias obras: creas la obra, vas añadiendo las ventanas una a una (sin plano ni partidas de Aena) y, al terminar, la envías a oficina: se crea sola en Proyectos y empieza el proceso de siempre.</p> : <UxcGuiaProximo />}
       <div className="flex flex-wrap gap-3 mb-5">
-        <button onClick={() => crear(vacio())} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-lg shadow-md"><Plus size={20} /> NUEVO EXPEDIENTE UXCAR</button>
-        <button disabled={leyendo} onClick={() => fotosRef.current && fotosRef.current.click()} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-bold py-4 rounded-lg hover:bg-[#2E8B57]/5 disabled:opacity-60">
+        {propia && <button onClick={() => crear(vacioPropia())} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-lg shadow-md"><Plus size={20} /> NUEVA OBRA (MEDIR VENTANA A VENTANA)</button>}
+        {!propia && <button onClick={() => crear(vacio())} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-lg shadow-md"><Plus size={20} /> NUEVO EXPEDIENTE UXCAR</button>}
+        {!propia && <button disabled={leyendo} onClick={() => fotosRef.current && fotosRef.current.click()} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-bold py-4 rounded-lg hover:bg-[#2E8B57]/5 disabled:opacity-60">
           {leyendo ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />} {leyendo ? progreso : "Crear desde fotos (IA)"}
-        </button>
+        </button>}
         <input ref={fotosRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={(e) => { desdeFotos(e.target.files); e.target.value = ""; }} />
       </div>
       {errorIA && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorIA}</div>}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="relative max-w-sm flex-1"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, dirección o cliente..." className="w-full pl-9 pr-3 py-2 rounded-md border border-slate-300 bg-white text-sm" /></div>
-        {lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 728") && <button onClick={() => crear(uxcEjemploVLC728())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 728 (Colorins 97, con planos)</button>}
-        {lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 690") && <button onClick={() => crear(uxcEjemploVLC690())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 690 (el de las fotos)</button>}
+        {!propia && lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 728") && <button onClick={() => crear(uxcEjemploVLC728())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 728 (Colorins 97, con planos)</button>}
+        {!propia && lista && !lista.some((x) => (x.cab || {}).expediente === "VLC 690") && <button onClick={() => crear(uxcEjemploVLC690())} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50">Cargar expediente VLC 690 (el de las fotos)</button>}
       </div>
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
-          <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-3">Expediente</th><th className="px-4 py-3">Vivienda / cliente</th><th className="px-4 py-3">Ventanas</th><th className="px-4 py-3">Estado</th></tr></thead>
+          <thead><tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-3">{propia ? "Obra" : "Expediente"}</th><th className="px-4 py-3">{propia ? "Cliente / dirección" : "Vivienda / cliente"}</th><th className="px-4 py-3">{propia ? "Medidas" : "Ventanas"}</th><th className="px-4 py-3">Estado</th></tr></thead>
           <tbody>
             {lista === null && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Cargando…</td></tr>}
-            {lista && filtradas.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">Todavía no hay expedientes de Uxcar en esta zona.</td></tr>}
+            {lista && filtradas.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">{propia ? "Todavía no hay obras propias. Pulsa «Nueva obra»." : "Todavía no hay expedientes de Uxcar en esta zona."}</td></tr>}
             {filtradas.map((x) => {
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
               return (
                 <tr key={x.id} onClick={() => setAbiertoId(x.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
-                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || "(sin número)"}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
-                  <td className="px-4 py-3 text-slate-600">{c.direccion || "—"}<div className="text-[11px] text-slate-400">{c.cliente}</div></td>
-                  <td className="px-4 py-3 text-slate-600">{uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
+                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
+                  <td className="px-4 py-3 text-slate-600">{propia ? (c.cliente || "—") : (c.direccion || "—")}<div className="text-[11px] text-slate-400">{propia ? c.direccion : c.cliente}</div></td>
+                  <td className="px-4 py-3 text-slate-600">{propia ? (() => { const rr = uxcResumenOficina(x); return `${rr.medidas.length} de ${rr.activas.length}`; })() : uxcLista(x.ventanas).length}</td>
+                  <td className="px-4 py-3 space-x-1">{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
                 </tr>
               );
             })}
@@ -21789,7 +21800,9 @@ function UxcFotos({ exp, v }) {
   );
 }
 
-function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
+const UXC_TIPOS_PROPIA = [["V. Abatible 1H", 1], ["V. Abatible 2H", 2], ["V. Corredera", 2], ["Fijo", 1], ["Puerta 1H", 1], ["Balconera 2H", 2]];
+function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr, onNueva }) {
+  const propia = !!exp.propia;
   const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val);
   const o = uxcObs(v);
   const vi = uxcVid(exp, v);
@@ -21799,7 +21812,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
   const filas = [["cerradura", "Cerradura", o.cerradura], ["dobleManilla", "Doble manilla", o.dobleManilla], ["frailero", "Frailero", o.frailero], ["mosquitera", "Mosquitera", o.mosquitera], ["oscilo", "Oscilobatiente", o.oscilo], ["persiana", "Persiana", o.persiana], ["vidTras", "Vidrio traslúcido", o.vidrioTraslucido], ["cs", "Control solar", o.controlSolar], ["obra", "Lleva obra (albañilería)", o.obra]];
   const aviso = [];
   if (v.rechazada) aviso.push("El plano marca esta carpintería como «RECHAZA»: confirmar con oficina antes de medir.");
-  if (o.oscilo && !uxcLista(exp.extras).some((e) => e.pagada)) aviso.push("Oscilobatiente = extra de pago aparte: no fabricar hasta confirmar el ingreso de la proforma.");
+  if (!propia && o.oscilo && !uxcLista(exp.extras).some((e) => e.pagada)) aviso.push("Oscilobatiente = extra de pago aparte: no fabricar hasta confirmar el ingreso de la proforma.");
   if (exp.revisado === false) aviso.push("Datos leídos por IA sin revisar: comprueba el plano antes de medir.");
   const caja = "bg-white border-2 border-slate-800 rounded p-3";
   const tit = "text-xs font-extrabold uppercase underline mb-2";
@@ -21818,10 +21831,24 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
       <p className="text-center text-xs text-slate-400 mb-3">Todo lo que marques o escribas se guarda al momento.</p>
       {aviso.map((a, i) => <div key={i} className="mb-2 px-3 py-2 rounded border-2 border-rose-500 text-rose-700 text-sm font-bold">⚠ {a}</div>)}
       <div className="grid sm:grid-cols-2 gap-3 mb-3">
-        <div className={caja}><b className="text-sm">EXPEDIENTE:</b> {cab.expediente} <span className="text-xs text-slate-400">{cab.pedido}</span></div>
+        <div className={caja}><b className="text-sm">{propia ? "OBRA:" : "EXPEDIENTE:"}</b> {cab.expediente} <span className="text-xs text-slate-400">{propia ? cab.cliente : cab.pedido}</span></div>
         <div className={caja}><b className="text-sm">COLOR/CÓDIGO:</b> <UxcCel valor={v.material} onGuardar={(x) => g("material", x)} /></div>
-        <div className={caja}><b className="text-sm">NOMENCLATURA:</b> {[v.ref, v.tipo, v.material, v.codigos, v.extra].filter(Boolean).join(" · ")}</div>
-        <div className={caja}><b className="text-sm">VIVIENDA:</b> {[cab.direccion, v.estancia].filter(Boolean).join(" — ")}</div>
+        {propia ? (<>
+          <div className={caja}>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Referencia"><UxcCel valor={v.ref} onGuardar={(x) => g("ref", x)} placeholder="V01" className="font-bold" /></Field>
+              <Field label="Dónde está (estancia)"><UxcCel valor={v.estancia} onGuardar={(x) => g("estancia", x)} placeholder="Salón, dormitorio 1…" /></Field>
+            </div>
+          </div>
+          <div className={caja}>
+            <div className="text-[11px] font-bold text-slate-500 mb-1">TIPO DE VENTANA</div>
+            <div className="flex flex-wrap gap-1.5">{UXC_TIPOS_PROPIA.map(([t, h]) => <button key={t} type="button" onClick={() => { g("tipo", t); g("hojas", h); }} className={`px-3 py-1.5 rounded border-2 text-sm font-semibold ${v.tipo === t ? "bg-slate-800 border-slate-800 text-white" : "bg-white border-slate-300 text-slate-600"}`}>{t}</button>)}</div>
+            <div className="mt-2 w-24"><Field label="Nº hojas"><UxcCel tipo="number" valor={v.hojas} onGuardar={(x) => g("hojas", parseInt(x, 10) || 1)} /></Field></div>
+          </div>
+        </>) : (<>
+          <div className={caja}><b className="text-sm">NOMENCLATURA:</b> {[v.ref, v.tipo, v.material, v.codigos, v.extra].filter(Boolean).join(" · ")}</div>
+          <div className={caja}><b className="text-sm">VIVIENDA:</b> {[cab.direccion, v.estancia].filter(Boolean).join(" — ")}</div>
+        </>)}
       </div>
 
       <div className="grid sm:grid-cols-2 gap-3 mb-3">
@@ -21849,11 +21876,11 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
       </div>
 
       <div className="grid sm:grid-cols-2 gap-3 mb-3">
-        <div className={caja}>
+        {!propia && <div className={caja}>
           <div className={tit}>Lo que paga / NO paga Aena en esta carpintería</div>
           <div className="text-xs"><b className="text-emerald-700">Paga:</b><ul className="ml-4 list-disc">{pagadas.map((p) => <li key={p.id}>{p.cod} {uxcSinMedidas(p.concepto)}</li>)}{!pagadas.length && <li>(sin partidas cargadas)</li>}</ul>
             <b className="text-rose-700">NO paga:</b><ul className="ml-4 list-disc text-rose-700 font-semibold">{noPagadas.map((p) => <li key={p.id}>{p.cod} {uxcSinMedidas(p.concepto)}</li>)}{!noPagadas.length && <li className="text-slate-400 font-normal">—</li>}</ul></div>
-        </div>
+        </div>}
         <div className={caja}>
           <div className={tit}>Medida fabricación</div>
           <div className="grid grid-cols-2 gap-3">
@@ -21871,7 +21898,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
             {v.altoTipo === "mas" && <div className="mt-2"><Field label="Alto del cajón (mm)"><UxcCel valor={v.altoCajon} onGuardar={(x) => g("altoCajon", x)} placeholder="mm" className="text-lg font-bold" /></Field></div>}
             {!v.altoTipo && v.altoFab && <div className="text-[11px] font-bold text-rose-600 mt-1">⚠ Marca si el alto es medida total o ventana + cajón.</div>}
           </div>
-          <p className="text-[11px] text-slate-400 mt-2">Solo vale tu medida: el CRM no guarda ni enseña las del proyecto.</p>
+          {!propia && <p className="text-[11px] text-slate-400 mt-2">Solo vale tu medida: el CRM no guarda ni enseña las del proyecto.</p>}
         </div>
       </div>
 
@@ -21899,7 +21926,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
         </div>
       </div>
 
-      <div className={caja + " mb-3"}>
+      {!propia && <div className={caja + " mb-3"}>
         <div className={tit}>Imprevistos encontrados en esta carpintería</div>
         {UXC_GRUPOS_VENTANA.map((gr) => (
           <details key={gr} className="mb-1">
@@ -21907,7 +21934,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
             <div className="mt-1 mb-2 space-y-1">{UXC_IMPREVISTOS.filter((i) => i.g === gr).map((i) => (
               <label key={i.cod} className="flex items-start gap-2 text-xs"><input type="checkbox" className="mt-0.5" checked={!!(imp[uxcKeyImp(i.cod)] || {})[v.id]} onChange={(e) => guardar(`imprevistos/${uxcKeyImp(i.cod)}/${v.id}`, e.target.checked ? true : null)} /><span>{i.cod} · {i.t} ({i.ud})</span></label>))}</div>
           </details>))}
-      </div>
+      </div>}
 
       <UxcFotos exp={exp} v={v} />
 
@@ -21929,6 +21956,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr }) {
         <Field label="Medido por"><UxcCel valor={v.medidoPor} onGuardar={(x) => g("medidoPor", x)} /></Field>
         <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="ml-auto flex items-center gap-1.5 text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 hover:bg-slate-50"><Printer size={14} /> Imprimir esta hoja</button>
         {idx < vs.length - 1 && <button onClick={() => onIr(vs[idx + 1].id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-semibold rounded-md px-4 py-2">Siguiente carpintería →</button>}
+        {onNueva && <button onClick={onNueva} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-extrabold rounded-md px-4 py-2 flex items-center gap-1"><Plus size={14} /> Añadir otra ventana</button>}
       </div>
     </div>
   );
@@ -22047,15 +22075,18 @@ function UxcEnvio({ exp, guardar }) {
   const base = `${cab.expediente || "Expediente"} · ${cab.direccion || ""}${cab.municipio ? " (" + cab.municipio + ")" : ""}`;
   const abrirWA = (texto) => { try { window.open("https://wa.me/?text=" + encodeURIComponent(texto), "_blank"); } catch (e) {} };
   const enlace = (() => { try { return window.location.origin; } catch (e) { return ""; } })();
+  const propia = !!exp.propia;
   const enviar = async () => {
+    if (propia && !String(cab.cliente || "").trim()) { alert("Antes de enviar, pon el cliente en la pestaña «Datos de la obra» (el nombre como está en Clientes, o uno nuevo: se creará solo)."); return; }
+    if (propia && !r.activas.length) { alert("Todavía no has añadido ninguna ventana."); return; }
     let aviso = "";
     if (pendientes.length) aviso += `Faltan por medir ${pendientes.length} de ${r.activas.length} carpinterías (${pendientes.map((v) => v.ref).join(", ")}).\n\n`;
     if (exp.revisado === false) aviso += "Los datos del expediente están sin revisar (leídos por IA).\n\n";
     if (aviso && !window.confirm(aviso + "¿Enviar a oficina igualmente?")) return;
-    if (!aviso && !window.confirm("Se enviará a oficina y se creará la obra en Proyectos (cliente Uxcar). ¿Continuar?")) return;
+    if (!aviso && !window.confirm(`Se enviará a oficina y se creará la obra en Proyectos (cliente ${propia ? cab.cliente : "Uxcar"}). ¿Continuar?`)) return;
     const ahora = Date.now();
     // WhatsApp se abre ya (antes de esperar nada) para que el móvil no lo bloquee
-    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: se ha creado la obra en Proyectos. Pedid ya los materiales. Hoja de oficina: CRM → Mediciones → Uxcar (Aena) → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
+    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: se ha creado la obra en Proyectos. Pedid ya los materiales. Hoja de oficina: CRM → Mediciones → ${propia ? "Mis obras" : "Uxcar (Aena)"} → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
     try {
       await guardar("envio", { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por: quien(), pendientes: pendientes.length });
       if (uxcPuente.crearProyecto) {
@@ -22072,7 +22103,7 @@ function UxcEnvio({ exp, guardar }) {
   if (!env) {
     return (
       <div className="mb-4 p-3 rounded-lg border-2 border-emerald-500 bg-emerald-50 flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[220px] text-sm text-emerald-900"><b>¿Vivienda medida?</b> Envíala a oficina para que pidan los materiales.{pendientes.length > 0 && <span className="block text-amber-800 font-semibold">Faltan por medir: {pendientes.map((v) => v.ref).join(", ")}</span>}</div>
+        <div className="flex-1 min-w-[220px] text-sm text-emerald-900"><b>{propia ? "¿Obra medida?" : "¿Vivienda medida?"}</b> Envíala a oficina para que pidan los materiales.{pendientes.length > 0 && <span className="block text-amber-800 font-semibold">Faltan por medir: {pendientes.map((v) => v.ref).join(", ")}</span>}</div>
         <button onClick={enviar} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="px-4 py-3 rounded-lg font-extrabold text-sm shadow">📤 ENVIAR A OFICINA</button>
       </div>
     );
@@ -22097,7 +22128,8 @@ function UxcEnvio({ exp, guardar }) {
 }
 
 function UxcExpediente({ exp, onBack }) {
-  const [tab, setTab] = useState("plano");
+  const propia = !!exp.propia;
+  const [tab, setTab] = useState(exp.propia ? "ventanas" : "plano");
   const [hojaId, setHojaId] = useState(null);
   const id = exp.id;
   const cab = exp.cab || {};
@@ -22105,43 +22137,49 @@ function UxcExpediente({ exp, onBack }) {
   const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
   const comp = uxcComprobaciones(exp);
   const T = ({ k, children }) => <button onClick={() => setTab(k)} className={`crm-tab px-3 py-2 text-sm font-semibold ${tab === k ? "border-[#2E8B57]" : ""}`}>{children}</button>;
-  const borrar = () => { if (window.confirm(`¿Borrar el expediente ${cab.expediente || ""} de la zona Uxcar? No se puede deshacer.`)) fbSet(ref(fbDb, `${UXC_NODO}/${id}`), null).then(() => fbSet(ref(fbDb, `${UXC_PLANO}/${id}`), null).catch(() => {})).then(() => fbSet(ref(fbDb, `${UXC_FOTOS}/${id}`), null).catch(() => {})).then(onBack).catch((e) => alert(e.message)); };
-  const nuevaVentana = () => { const vid = uid(); guardar(`ventanas/${vid}`, { id: vid, orden: vs.length, ref: "", estancia: "", tipo: "V. Abatible 2H", material: cab.color || "PVC BLANCO", codigos: "", extra: "", hojas: 2, activa: "derecha", rechazada: false, cant: 1 }); };
+  const borrar = () => { if (window.confirm(`¿Borrar ${propia ? "la obra" : "el expediente"} ${cab.expediente || ""}${propia ? "" : " de la zona Uxcar"}? No se puede deshacer.`)) fbSet(ref(fbDb, `${UXC_NODO}/${id}`), null).then(() => fbSet(ref(fbDb, `${UXC_PLANO}/${id}`), null).catch(() => {})).then(() => fbSet(ref(fbDb, `${UXC_FOTOS}/${id}`), null).catch(() => {})).then(onBack).catch((e) => alert(e.message)); };
+  const nuevaVentana = () => { const vid = uid(); guardar(`ventanas/${vid}`, { id: vid, orden: vs.length, ref: propia ? "V" + String(vs.length + 1).padStart(2, "0") : "", estancia: "", tipo: "V. Abatible 2H", material: cab.color || "PVC BLANCO", codigos: "", extra: "", hojas: 2, activa: "derecha", rechazada: false, cant: 1 }); if (propia) setHojaId(vid); };
   const nuevaPartida = (bloque) => { const pid = uid(); guardar(`partidas/${pid}`, { id: pid, orden: ps.length, bloque, cod: "", ud: "ud", concepto: "", refs: "", marcada: true }); };
   const nuevoExtra = () => { const eid = uid(); guardar(`extras/${eid}`, { id: eid, orden: ex.length, concepto: "", cant: "1", precio: "", proformaNum: "", fecha: new Date().toISOString().slice(0, 10), plazoDias: "5", pagada: false }); };
   const colorN = { ok: "text-emerald-700 bg-emerald-50 border-emerald-200", aviso: "text-amber-800 bg-amber-50 border-amber-200", error: "text-rose-700 bg-rose-50 border-rose-300" };
   const icoN = { ok: "✓", aviso: "⚠", error: "✕" };
   const vi = exp.vidrio || {};
   const vHoja = hojaId ? vs.find((x) => x.id === hojaId) : null;
-  if (vHoja) return <UxcHojaPantalla exp={exp} v={vHoja} vs={vs} guardar={guardar} onCerrar={() => setHojaId(null)} onIr={setHojaId} />;
+  if (vHoja) return <UxcHojaPantalla exp={exp} v={vHoja} vs={vs} guardar={guardar} onCerrar={() => setHojaId(null)} onIr={setHojaId} onNueva={propia ? nuevaVentana : null} />;
 
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> Volver a Uxcar (Aena)</button>
+      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> {propia ? "Volver a Mis obras" : "Volver a Uxcar (Aena)"}</button>
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h2 className="font-display text-2xl font-extrabold text-slate-900">{cab.expediente || "Expediente sin número"}</h2>
-        {exp.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar (IA)</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}
+        <h2 className="font-display text-2xl font-extrabold text-slate-900">{cab.expediente || (propia ? "Obra sin nombre" : "Expediente sin número")}</h2>
+        {propia ? null : exp.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar (IA)</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}
         <span className="text-sm text-slate-500">{cab.direccion}</span>
-        <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
+        <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
       </div>
       <UxcEnvio exp={exp} guardar={guardar} />
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
-        <T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T>
+        {propia
+          ? <><T k="ventanas">Ventanas ({vs.length})</T><T k="resumen">Datos de la obra</T><T k="imprimir">Imprimir</T></>
+          : <><T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T></>}
       </div>
 
-      {tab === "plano" && <UxcPlano exp={exp} vs={vs} onAbrir={setHojaId} guardar={guardar} />}
+      {tab === "plano" && !propia && <UxcPlano exp={exp} vs={vs} onAbrir={setHojaId} guardar={guardar} />}
 
       {tab === "resumen" && (
         <div className="space-y-5">
           <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <div className="text-sm font-bold text-slate-700 mb-3">Datos del expediente</div>
+            <div className="text-sm font-bold text-slate-700 mb-3">{propia ? "Datos de la obra" : "Datos del expediente"}</div>
+            {propia && <datalist id="uxc-clientes">{uxcPuente.nombresClientes().map((nm) => <option key={nm} value={nm} />)}</datalist>}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[["expediente", "Expediente"], ["concurso", "Concurso"], ["pedido", "Pedido / lote"], ["aeropuerto", "Aeropuerto"], ["municipio", "Municipio"], ["direccion", "Dirección de la vivienda"], ["cliente", "Cliente (propietario)"], ["color", "Color / material por defecto"], ["fechaMedicion", "Fecha de medición", "date"], ["medidoPor", "Medido por"]].map(([k, l, t]) => (
-                <Field key={k} label={l}><UxcCel tipo={t || "text"} valor={cab[k]} onGuardar={(v) => guardar(`cab/${k}`, v)} /></Field>
+              {(propia
+                ? [["expediente", "Nombre de la obra"], ["cliente", "Cliente (como en Clientes del CRM)"], ["direccion", "Dirección de la obra"], ["municipio", "Municipio"], ["color", "Color / material por defecto"], ["fechaMedicion", "Fecha de medición", "date"], ["medidoPor", "Medido por"]]
+                : [["expediente", "Expediente"], ["concurso", "Concurso"], ["pedido", "Pedido / lote"], ["aeropuerto", "Aeropuerto"], ["municipio", "Municipio"], ["direccion", "Dirección de la vivienda"], ["cliente", "Cliente (propietario)"], ["color", "Color / material por defecto"], ["fechaMedicion", "Fecha de medición", "date"], ["medidoPor", "Medido por"]]
+              ).map(([k, l, t]) => (
+                <Field key={k} label={l}><UxcCel tipo={t || "text"} valor={cab[k]} lista={propia && k === "cliente" ? "uxc-clientes" : undefined} onGuardar={(v) => guardar(`cab/${k}`, v)} /></Field>
               ))}
             </div>
             <div className="text-sm font-bold text-slate-700 mt-5 mb-1">Vidrio por defecto (sale marcado en las hojas)</div>
-            <p className="text-xs text-slate-400 mb-2">El informe de VLC 690 pide Climalit 8/12-16/4 bajo emisivo (cámara preferente 16 mm). El gas (argón/aire) no lo dice: se decide aquí.</p>
+            <p className="text-xs text-slate-400 mb-2">{propia ? "Sale marcado en la hoja de cada ventana; en cada una puedes cambiarlo." : "El informe de VLC 690 pide Climalit 8/12-16/4 bajo emisivo (cámara preferente 16 mm). El gas (argón/aire) no lo dice: se decide aquí."}</p>
             <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
               <Field label="Exterior"><UxcCel valor={vi.ext} onGuardar={(v) => guardar("vidrio/ext", v)} placeholder="8, 4+4…" /></Field>
               <Field label="Cámara mm"><UxcCel valor={vi.camara} onGuardar={(v) => guardar("vidrio/camara", v)} /></Field>
@@ -22151,14 +22189,14 @@ function UxcExpediente({ exp, onBack }) {
               <Field label="Ext.: CS/espejo/mate"><select className={uxcInp} value={vi.cs || ""} onChange={(e) => guardar("vidrio/cs", e.target.value)}><option value="">—</option><option>CS</option><option>ESPEJO</option><option>MATE</option></select></Field>
             </div>
           </div>
-          <div className="bg-white border border-slate-200 rounded-lg p-4">
+          {!propia && <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <div className="text-sm font-bold text-slate-700">Comprobaciones automáticas</div>
               {exp.revisado === false && <button onClick={() => guardar("revisado", true)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Marcar como revisado</button>}
               {exp.revisado !== false && exp.origen === "ia" && <button onClick={() => guardar("revisado", false)} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-1.5 rounded-md">Volver a «sin revisar»</button>}
             </div>
             <div className="space-y-1.5">{comp.length === 0 && <p className="text-sm text-slate-400">Nada que comprobar todavía.</p>}{comp.map((c, i) => <div key={i} className={`text-sm border rounded px-3 py-1.5 ${colorN[c.n]}`}>{icoN[c.n]} {c.t}</div>)}</div>
-          </div>
+          </div>}
           {(() => { const r = uxcResumenOficina(exp); return (
             <div className="bg-white border border-slate-200 rounded-lg p-4 text-sm text-slate-700">
               <div className="font-bold mb-2">Cuenta rápida (sin contar rechazadas)</div>
@@ -22167,7 +22205,25 @@ function UxcExpediente({ exp, onBack }) {
         </div>
       )}
 
-      {tab === "ventanas" && (
+      {tab === "ventanas" && propia && (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">Añade las ventanas una a una: al pulsar «Añadir ventana» se abre su hoja de medición. Todo se guarda al momento.</p>
+          {vs.map((v) => { const o = uxcObs(v); return (
+            <div key={v.id} className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-3">
+              <button onClick={() => setHojaId(v.id)} className="text-left flex-1 min-w-[200px]">
+                <div className="font-bold text-slate-800">{v.ref || "(sin referencia)"} <span className="font-normal text-slate-500">{v.estancia}</span> {v.medida && <span className="text-xs font-bold text-emerald-700">✓ Medida</span>}</div>
+                <div className="text-xs text-slate-500">{v.tipo}{v.anchoFab && v.altoFab ? ` · ${v.anchoFab} × ${uxcAltoTxt(v)}` : " · sin medir todavía"}{o.persiana ? " · persiana" : ""}{o.mosquitera ? " · mosquitera" : ""}</div>
+              </button>
+              <button onClick={() => setHojaId(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
+              <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="text-xs font-semibold border border-slate-300 rounded-md px-2.5 py-1.5 flex items-center gap-1 hover:bg-slate-50"><Printer size={13} /> Imprimir</button>
+              <button onClick={() => { if (window.confirm(`¿Quitar ${v.ref || "esta ventana"}?`)) guardar(`ventanas/${v.id}`, null); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
+            </div>); })}
+          {!vs.length && <p className="text-sm text-slate-400 py-4">Todavía no hay ventanas en esta obra.</p>}
+          <button onClick={nuevaVentana} className="w-full sm:w-auto text-sm font-extrabold text-white rounded-md px-5 py-3 flex items-center justify-center gap-1" style={{ backgroundColor: "#2E8B57" }}><Plus size={16} /> Añadir ventana</button>
+        </div>
+      )}
+
+      {tab === "ventanas" && !propia && (
         <div className="space-y-4">
           <p className="text-xs text-slate-500">Aquí está lo que dice el plano (la nomenclatura manda). Para medir, abre «Rellenar hoja»: es la hoja de medición en pantalla y todo lo que apuntes se guarda y pasa a la hoja de oficina.</p>
           {vs.map((v) => { const o = uxcObs(v); const { pagadas, noPagadas } = uxcPartidasDeVentana(exp, v); const g = (k, val) => guardar(`ventanas/${v.id}/${k}`, val); return (
@@ -22206,7 +22262,7 @@ function UxcExpediente({ exp, onBack }) {
         </div>
       )}
 
-      {tab === "partidas" && (
+      {tab === "partidas" && !propia && (
         <div className="space-y-6">
           <p className="text-xs text-slate-500">Casilla «Aplica» = fila marcada con el rotulador rojo (las desmarcadas no salen en las hojas). Importes sin IVA.</p>
           {[["incl", "Partidas incluidas por necesidades técnicas (las que paga Aena)"], ["noincl", "Partidas NO incluidas (no las paga Aena)"]].map(([bl, titulo]) => (
@@ -22236,7 +22292,7 @@ function UxcExpediente({ exp, onBack }) {
         </div>
       )}
 
-      {tab === "extras" && (
+      {tab === "extras" && !propia && (
         <div className="space-y-3">
           <p className="text-xs text-slate-500">Las proformas (lo que paga el propietario aparte, p. ej. oscilobatientes) van aquí, separadas del informe de Aena. El encargo del extra no es efectivo hasta que se ingresa dentro del plazo.</p>
           {ex.map((e) => { const base = uxcNum(e.cant) * uxcNum(e.precio); const lim = e.fecha ? uxcSumaDias(e.fecha, e.plazoDias || 5) : null; const g = (k, v) => guardar(`extras/${e.id}/${k}`, v); return (
@@ -22260,7 +22316,7 @@ function UxcExpediente({ exp, onBack }) {
         </div>
       )}
 
-      {tab === "imprevistos" && (
+      {tab === "imprevistos" && !propia && (
         <div className="space-y-5">
           <p className="text-xs text-slate-500">Marca lo que aparezca al medir (reja, radiador, cortinas, pérgola…). Sale en la hoja de oficina para pedir el imprevisto.</p>
           {UXC_GRUPOS_VENTANA.map((gr) => (
@@ -22281,9 +22337,12 @@ function UxcExpediente({ exp, onBack }) {
       {tab === "imprimir" && (
         <div className="space-y-3 max-w-xl">
           {exp.revisado === false && <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ Datos sin revisar: las hojas saldrán con un aviso rojo hasta que lo marques como revisado.</div>}
+          {propia
+            ? <button onClick={() => uxcAbrirImpresion("Hojas de medición " + (cab.expediente || ""), vs.map((v) => uxcHojaVentanaHTML(exp, v)).join(""))} className="w-full flex items-center gap-2 bg-[#2E8B57] text-white font-semibold px-4 py-3 rounded-md"><Printer size={16} /> Hojas de medición (una por ventana)</button>
+            : <>
           <button onClick={() => uxcAbrirImpresion("Hojas de medición " + (cab.expediente || ""), vs.filter((v) => !v.rechazada).map((v) => uxcHojaVentanaHTML(exp, v)).join("") + uxcHojaImprevistosHTML(exp))} className="w-full flex items-center gap-2 bg-[#2E8B57] text-white font-semibold px-4 py-3 rounded-md"><Printer size={16} /> Hojas para medir en obra (una por ventana + imprevistos)</button>
           <button onClick={() => uxcAbrirImpresion("Hojas de medición (con rechazadas) " + (cab.expediente || ""), vs.map((v) => uxcHojaVentanaHTML(exp, v)).join(""))} className="w-full flex items-center gap-2 border border-slate-300 font-semibold px-4 py-3 rounded-md hover:bg-slate-50"><Printer size={16} /> Hojas de TODAS las carpinterías (incluye las marcadas como rechazadas)</button>
-          <button onClick={() => uxcAbrirImpresion("Imprevistos " + (cab.expediente || ""), uxcHojaImprevistosHTML(exp))} className="w-full flex items-center gap-2 border border-slate-300 font-semibold px-4 py-3 rounded-md hover:bg-slate-50"><Printer size={16} /> Solo la hoja de imprevistos</button>
+          <button onClick={() => uxcAbrirImpresion("Imprevistos " + (cab.expediente || ""), uxcHojaImprevistosHTML(exp))} className="w-full flex items-center gap-2 border border-slate-300 font-semibold px-4 py-3 rounded-md hover:bg-slate-50"><Printer size={16} /> Solo la hoja de imprevistos</button></>}
           <button onClick={() => uxcAbrirImpresion("Hoja de oficina " + (cab.expediente || ""), uxcHojaOficinaHTML(exp))} className="w-full flex items-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-semibold px-4 py-3 rounded-md hover:bg-[#2E8B57]/5"><Printer size={16} /> Hoja para oficina (pedido de materiales con las medidas)</button>
           <p className="text-xs text-slate-400">Se abre una ventana de impresión: elige «Guardar como PDF» si quieres mandarla por correo o WhatsApp.</p>
         </div>
