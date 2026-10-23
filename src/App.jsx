@@ -6570,6 +6570,22 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
   const [ciudadFiltro, setCiudadFiltro] = useState("");
+  const [presupuestoFiltro, setPresupuestoFiltro] = useState("");
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+
+  // Rango de fechas (YYYY-MM-DD) de cada periodo, sobre la fecha en que se aceptó el presupuesto
+  const rangoPeriodo = (per) => {
+    if (!per) return null;
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const hoy = new Date(); hoy.setHours(12, 0, 0, 0);
+    const lunes = new Date(hoy); lunes.setDate(hoy.getDate() - ((hoy.getDay() + 6) % 7));
+    if (per === "semana") { const f = new Date(lunes); f.setDate(f.getDate() + 6); return [iso(lunes), iso(f)]; }
+    if (per === "semanaPasada") { const i = new Date(lunes); i.setDate(i.getDate() - 7); const f = new Date(lunes); f.setDate(f.getDate() - 1); return [iso(i), iso(f)]; }
+    if (per === "mes") return [iso(new Date(hoy.getFullYear(), hoy.getMonth(), 1)), iso(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0))];
+    if (per === "mesPasado") return [iso(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)), iso(new Date(hoy.getFullYear(), hoy.getMonth(), 0))];
+    if (per === "anio") return [`${hoy.getFullYear()}-01-01`, `${hoy.getFullYear()}-12-31`];
+    return null;
+  };
 
   const clienteNombre = (id) => clientes.find((c) => c.id === id)?.nombre || "—";
   const ciudadRepartoDe = (p) => p.estadoLogistica === "Reparto (camión)"
@@ -6588,11 +6604,17 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       if (estadoTrabajo && p.estadoTrabajo !== estadoTrabajo) return false;
       if (clienteFiltro && p.clienteId !== clienteFiltro) return false;
       if (ciudadFiltro && ciudadRepartoDe(p) !== ciudadFiltro) return false;
+      if (presupuestoFiltro && p.estadoPresupuesto !== presupuestoFiltro) return false;
+      if (periodoFiltro) {
+        const r = rangoPeriodo(periodoFiltro);
+        const f = String(p.fechaAceptado || "").slice(0, 10);
+        if (r && (!f || f < r[0] || f > r[1])) return false;
+      }
       if (!q) return true;
       const hay = `${p.numero} ${p.nombre} ${clienteNombre(p.clienteId)} ${p.ubicacion}`.toLowerCase();
       return hay.includes(q.toLowerCase());
     });
-  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, clientes]);
+  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes]);
 
   if (view === "form") {
     const editing = proyectos.find((p) => p.id === editId) || null;
@@ -6698,6 +6720,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         <Select value={estadoTrabajo} onChange={(e) => setEstadoTrabajo(e.target.value)} className="max-w-[200px]">
           <option value="">Todos los estados</option>
           {ESTADO_TRABAJO.map((t) => <option key={t}>{t}</option>)}
+        </Select>
+        <Select value={presupuestoFiltro} onChange={(e) => setPresupuestoFiltro(e.target.value)} className="max-w-[210px]">
+          <option value="">Todos los presupuestos</option>
+          {ESTADO_PRESUPUESTO.map((t) => <option key={t} value={t}>{t}</option>)}
+        </Select>
+        <Select value={periodoFiltro} onChange={(e) => setPeriodoFiltro(e.target.value)} className="max-w-[230px]" title="Se filtra por la fecha en que se aceptó el presupuesto">
+          <option value="">Aceptado: cualquier fecha</option>
+          <option value="semana">Aceptado esta semana</option>
+          <option value="semanaPasada">Aceptado la semana pasada</option>
+          <option value="mes">Aceptado este mes</option>
+          <option value="mesPasado">Aceptado el mes pasado</option>
+          <option value="anio">Aceptado este año</option>
         </Select>
         {ciudadesDisponibles.length > 0 && (
           <Select value={ciudadFiltro} onChange={(e) => setCiudadFiltro(e.target.value)} className="max-w-[200px]">
