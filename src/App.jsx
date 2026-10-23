@@ -18280,6 +18280,35 @@ const accesoriosDeObra = (p) => {
   });
   return out;
 };
+// ── Cosas «raras» de una obra que hay que tener en cuenta al prepararla: lo escrito en la ficha y las líneas especiales del listado ──
+const ESPECIALES_OBRA_RE = /pletina|chapa|[aá]ngulo|angular|remate|cubrejunta|tapeta|albardilla|vierteaguas|premarco|pilar|tubo|perfil especial|a medida|especial|curv|arco|reja|barrote|lacad|vinilo|panel/i;
+const textoEscritoDeObra = (p) => [["Especificaciones", p && p.especificaciones], ["Observaciones", p && p.observaciones], ["Notas", p && p.notas]]
+  .filter(([, t]) => typeof t === "string" && t.trim() && !/^\(Importado desde Excel sin descripci[oó]n\)$/.test(t.trim()) && !/^Obra propia medida ventana a ventana/.test(t.trim()))
+  .map(([etq, t]) => ({ etq, txt: t.trim() }));
+const lineasEspecialesDeObra = (p) => toArray(p && p.listadoMateriales && p.listadoMateriales.lineas)
+  .filter((l) => !ACCESORIOS_OBRA.some((a) => (a.test ? a.test(l) : a.re.test(txtLinea(l)))) && ESPECIALES_OBRA_RE.test(txtLinea(l)) && !/^cristal$/i.test(l.seccion || ""));
+function NotasDeLaObra({ proyecto }) {
+  const textos = textoEscritoDeObra(proyecto);
+  const lineas = lineasEspecialesDeObra(proyecto);
+  if (!textos.length && !lineas.length) return null;
+  const medida = (l) => [l.longitud ? `${l.longitud} m` : "", l.ancho || l.alto ? `${l.ancho || "—"} x ${l.alto || "—"} mm` : ""].filter(Boolean).join(" · ");
+  return (
+    <div className="mt-1.5 rounded-md border border-orange-200 bg-orange-50 px-2.5 py-1.5 text-xs text-orange-900">
+      <div className="font-bold">⚠ A tener en cuenta{lineas.length ? ` · ${lineas.length} línea${lineas.length === 1 ? "" : "s"} especial${lineas.length === 1 ? "" : "es"}` : ""}{textos.length ? " · hay notas escritas" : ""}</div>
+      {lineas.length > 0 && (
+        <ul className="mt-0.5 list-disc pl-4">
+          {lineas.map((l) => <li key={l.id}>{l.codigo} — {l.descripcion || "sin descripción"} · {l.uds} ud.{medida(l) ? ` · ${medida(l)}` : ""}{l.color ? ` · ${l.color}` : ""}</li>)}
+        </ul>
+      )}
+      {textos.map((t) => (
+        <details key={t.etq} className="mt-0.5">
+          <summary className="cursor-pointer">{t.etq}: {t.txt.length > 90 ? t.txt.slice(0, 90).replace(/\s+/g, " ") + "…" : t.txt.replace(/\s+/g, " ")}</summary>
+          <div className="whitespace-pre-wrap mt-0.5 text-orange-950">{t.txt}</div>
+        </details>
+      ))}
+    </div>
+  );
+}
 function AccesoriosDeLaObra({ proyecto }) {
   const a = accesoriosDeObra(proyecto);
   const algo = a.grupos.some((g) => g.lleva);
@@ -18682,13 +18711,18 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                       <button onClick={() => setSelListo((prev) => (obras.every((o) => prev.includes(o.id)) ? prev.filter((id) => !obras.some((o) => o.id === id)) : [...new Set([...prev, ...obras.map((o) => o.id)])]))} className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">{obras.every((o) => selListo.includes(o.id)) ? "Desmarcar lista" : "Marcar lista"}</button>
                     )}
                     {obras.length > 1 && (
-                      <button
-                        onClick={() => { if (window.confirm(`¿Mandar a fabricar las ${obras.length} obras de la lista «${lc.nombre}»?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) obras.forEach((o) => onIniciarFabricacion(o.id)); }}
-                        style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-                        className="ml-auto flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md"
-                      >
-                        <Factory size={13} /> Mandar toda la lista a fabricar
-                      </button>
+                      <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs text-slate-500 font-normal">Mandar toda la lista a:</span>
+                        {TALLERES_FAB.map((t) => (
+                          <button key={t}
+                            onClick={() => { if (window.confirm(`¿Mandar las ${obras.length} obras de la lista «${lc.nombre}» al taller de ${t}?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) obras.forEach((o) => { if (onActualizarProyecto) onActualizarProyecto(o.id, { taller: t }); onIniciarFabricacion(o.id); }); }}
+                            style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                            className="flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md"
+                          >
+                            <Factory size={13} /> {t}
+                          </button>
+                        ))}
+                      </span>
                     )}
                   </h3>
                   <div className="space-y-3">
@@ -18700,6 +18734,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <div className="text-xs text-slate-500 mt-0.5">Entrega prevista {fmtDate(p.fechaEntregaPrevista)}{p.fechaFabricacion ? ` · Fabricación prevista ${fmtDate(p.fechaFabricacion)}` : ""}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}{(() => { const h = horasDeObraListo(p, uxExpedientes, configPlanning); return h.horas ? <span className="ml-2 font-bold text-slate-700">⏱ {fmtHoras(h.horas)} <span className="font-normal text-slate-400">({h.origen})</span></span> : <span className="ml-2 font-semibold text-amber-700">⏱ sin horas</span>; })()}</div>
                   <AccesoriosDeLaObra proyecto={p} />
+                  <NotasDeLaObra proyecto={p} />
                 </div>
                 <div className="flex items-end gap-2">
                   <label className="text-[11px] text-slate-500 flex flex-col gap-0.5">Taller
