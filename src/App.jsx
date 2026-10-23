@@ -751,6 +751,7 @@ export default function App() {
   const [carrosPersianas, setCarrosPersianas] = useState([]);
   const [persianasAlmacen, setPersianasAlmacen] = useState([]);
   const [almacenesPersianas, setAlmacenesPersianas] = useState([]);
+  const [panelesFabrica, setPanelesFabrica] = useState([]); // paneles (sándwich, acústicos…) pendientes de cortar / cortados
   const [pedidosPersianas, setPedidosPersianas] = useState([]); // persianas PEDIDAS al proveedor y aún no llegadas (no cuentan como "dentro" del almacén)
   const [fichajes, setFichajes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
@@ -896,7 +897,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas", "panelesFabrica"];
         const resultados = {};
         const fallos = [];
         await Promise.all(claves.map(async (k) => {
@@ -935,6 +936,7 @@ export default function App() {
         setUsuariosLeidosOk(!fallos.includes("usuarios"));
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
+        setPanelesFabrica(toArray(resultados.panelesFabrica));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
         if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
         if (resultados.pedidosPersianas) setPedidosPersianas(toArray(resultados.pedidosPersianas));
@@ -2528,6 +2530,7 @@ export default function App() {
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
+  const savePanelesFabrica = (next) => { setPanelesFabrica(next); persist("panelesFabrica", next); };
   const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
   almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
@@ -5547,6 +5550,7 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
+            paneles: panelesFabrica, savePaneles: savePanelesFabrica,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
@@ -15486,16 +15490,24 @@ async function leerConfirmacionCristal(file) {
       alto: parseFloat(valorPorCabeceras(f, ["height", "alto"])) || "",
       cantidad: parseFloat(valorPorCabeceras(f, ["qty", "cantidad", "uds", "unidades"])) || 1,
       descripcion: String(valorPorCabeceras(f, ["description", "descripcion", "composicion", "vidrio"]) || "").trim(),
+      color: String(valorPorCabeceras(f, ["color", "colour", "acabado", "ral"]) || "").trim(),
+      modelo: String(valorPorCabeceras(f, ["modelo", "model", "codigo", "code", "articulo", "producto", "item"]) || "").trim(),
+      presupuesto: String(valorPorCabeceras(f, ["presupuesto", "oferta", "quote", "ppto"]) || "").trim(),
+      espesor: String(valorPorCabeceras(f, ["espesor", "thickness", "grosor"]) || "").trim(),
+      observaciones: String(valorPorCabeceras(f, ["observaciones", "notas", "comentarios", "remarks", "notes"]) || "").trim(),
+      detalle: Object.entries(f).filter(([k, v]) => String(v == null ? "" : v).trim() !== "").map(([k, v]) => `${k}: ${String(v).trim()}`).join(" | "),
     })).filter((l) => l.ancho && l.alto);
     const pedidos = [...new Set(lineas.map((l) => l.pedido).filter(Boolean))];
     return { numeroPedido: pedidos.join(", "), proveedor: "", expediente: [...new Set(lineas.map((l) => l.expediente).filter(Boolean))].join(", "), lineas };
   }
-  const prompt = 'Esto es la CONFIRMACIÓN DE PEDIDO de cristales que manda el proveedor (lo que se ha pedido, no lo que ha llegado). Revisa el documento entero y devuelve TODAS las líneas de cristal, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"numeroPedido":"","proveedor":"","expediente":"","lineas":[{"pedido":"","ref":"","expediente":"","ancho":numero,"alto":numero,"cantidad":numero,"descripcion":""}]}. "numeroPedido" es el número de pedido del proveedor (Order, Pedido, Nº pedido, Confirmación). "ref" es la vivienda o referencia de cada cristal si aparece. "ancho" y "alto" en milímetros. "descripcion" es la composición del vidrio si aparece. Deja en blanco (o 0) lo que no encuentres.';
+  const prompt = 'Esto es la CONFIRMACIÓN DE PEDIDO de cristales que manda el proveedor (lo que se ha pedido, no lo que ha llegado). Revisa el documento entero y devuelve TODAS las líneas de cristal, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"numeroPedido":"","proveedor":"","expediente":"","lineas":[{"pedido":"","ref":"","expediente":"","ancho":numero,"alto":numero,"cantidad":numero,"descripcion":"","color":"","modelo":"","presupuesto":"","espesor":"","observaciones":""}]}. "color", "modelo" (código o modelo del producto), "presupuesto" (nº de presupuesto u oferta), "espesor" y "observaciones" rellénalos con lo que ponga el documento para esa línea (acabado, notas, etc.); si no aparece, vacío. Los PANELES (panel sándwich, panel acústico…) también van como línea, con su descripción completa tal cual está escrita. "numeroPedido" es el número de pedido del proveedor (Order, Pedido, Nº pedido, Confirmación). "ref" es la vivienda o referencia de cada cristal si aparece. "ancho" y "alto" en milímetros. "descripcion" es la composición del vidrio si aparece. Deja en blanco (o 0) lo que no encuentres.';
   const o = await leerDocumentoCristalConIA(file, prompt);
   const lineas = (o.lineas || []).map((l) => ({
     pedido: String(l.pedido || "").trim(), ref: String(l.ref || "").trim(), expediente: String(l.expediente || "").trim(),
     ancho: parseFloat(l.ancho) || "", alto: parseFloat(l.alto) || "", cantidad: parseFloat(l.cantidad) || 1,
     descripcion: String(l.descripcion || "").trim(),
+    color: String(l.color || "").trim(), modelo: String(l.modelo || "").trim(), presupuesto: String(l.presupuesto || "").trim(),
+    espesor: String(l.espesor || "").trim(), observaciones: String(l.observaciones || "").trim(),
   })).filter((l) => l.ancho && l.alto);
   return { numeroPedido: String(o.numeroPedido || "").trim(), proveedor: String(o.proveedor || "").trim(), expediente: String(o.expediente || "").trim(), lineas };
 }
@@ -15543,6 +15555,15 @@ function calcularControlCristal(conf, cristales) {
     const cabs = [...new Set(encontradas.map((x) => x.c.lote).filter(Boolean))];
     return { ...l, idx, pedidas, bien, conProblema, noLlegadas, repuestas, pendientes, caballetes: cabs, sinUbicar: encontradas.some((x) => !x.c.ubicacion) };
   });
+  // Para cada línea que no ha llegado: cristales sueltos del almacén con esa misma medida que no se han asignado a nada
+  // (suele ser la misma pieza con la vivienda escrita distinto), para que no haya que buscarlos a mano.
+  lineas.forEach((l) => {
+    if (!(l.noLlegadas > 0)) return;
+    l.parecidos = piezas
+      .filter((it) => (parseFloat(it.p.cantidad) || 1) - it.usadas > 0 && mismaMedidaCristal(l.ancho, l.alto, it.p.ancho, it.p.alto))
+      .slice(0, 3)
+      .map((it) => `${it.p.ref || "sin vivienda"} · exp. ${it.p.expediente || it.c.expediente || "—"} · cab. ${it.c.lote || "?"}${it.c.ubicacion ? "" : " (pendiente de ubicar)"}`);
+  });
   const tot = (k) => lineas.reduce((a, l) => a + l[k], 0);
   return { lineas, pedidas: tot("pedidas"), bien: tot("bien"), conProblema: tot("conProblema"), noLlegadas: tot("noLlegadas"), repuestas: tot("repuestas"), pendientes: tot("pendientes") };
 }
@@ -15575,7 +15596,12 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
 
   const guardarBorrador = () => {
     if (!borrador.numeroPedido && !borrador.expediente) { setError("Pon al menos el nº de pedido o el expediente para poder cruzarlo con lo que llega."); return; }
-    guardar([{ ...borrador, id: uid(), repuestas: {}, reposiciones: [] }, ...confirmaciones]);
+    // Los paneles no son cristales: se apartan y van a «Paneles pendientes de cortar» (con todo lo que traiga la línea)
+    const idConf = uid();
+    const panelesLinea = ctx.savePaneles ? borrador.lineas.filter(esLineaPanel) : [];
+    const lineasCristal = ctx.savePaneles ? borrador.lineas.filter((l) => !esLineaPanel(l)) : borrador.lineas;
+    guardar([{ ...borrador, lineas: lineasCristal, id: idConf, repuestas: {}, reposiciones: [] }, ...confirmaciones]);
+    if (panelesLinea.length) ctx.savePaneles([...panelesLinea.map((l) => panelDeLinea({ ...borrador, id: idConf }, l)), ...toArray(ctx.paneles)]);
     setBorrador(null); setError("");
   };
 
@@ -15592,6 +15618,15 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
     if (ctx.pedirReposicion) ctx.pedirReposicion(lineas, `Reposición del pedido de cristal ${conf.numeroPedido || ""} ${conf.expediente ? `(${conf.expediente})` : ""}: cristales rotos o que no llegaron.`.trim());
   };
 
+  // Para confirmaciones ya guardadas: manda una línea (p.ej. un panel sándwich) a «Paneles pendientes de cortar» y la quita del control de cristales
+  const mandarAPaneles = (conf, l) => {
+    if (!ctx.savePaneles) return;
+    if (!window.confirm(`¿Mandar esta línea a "Paneles pendientes de cortar"? Deja de contar como cristal que falta.\n${l.ref || ""} ${l.ancho} × ${l.alto} ${l.descripcion || ""}`)) return;
+    const rep = {};
+    Object.keys(conf.repuestas || {}).forEach((k) => { const i = parseInt(k, 10); if (i !== l.idx) rep[i > l.idx ? i - 1 : i] = conf.repuestas[k]; });
+    ctx.savePaneles([panelDeLinea(conf, conf.lineas[l.idx]), ...toArray(ctx.paneles)]);
+    actualizar(conf.id, { lineas: conf.lineas.filter((_, i) => i !== l.idx), repuestas: rep });
+  };
   const marcarRepuesto = (conf, idx, valor) => actualizar(conf.id, { repuestas: { ...(conf.repuestas || {}), [idx]: valor } });
 
   const datos = confirmaciones.map((conf) => ({ conf, ctrl: calcularControlCristal(conf, cristales) }))
@@ -15628,7 +15663,7 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
             <Field label="Expediente / obra"><TextInput value={borrador.expediente} onChange={(e) => setBorrador({ ...borrador, expediente: e.target.value })} /></Field>
           </div>
           <p className="text-sm text-slate-700 mt-2">
-            <b>{borrador.lineas.length}</b> líneas · <b>{borrador.lineas.reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0)}</b> cristales pedidos.
+            <b>{borrador.lineas.length}</b> líneas · <b>{borrador.lineas.filter((l) => !ctx.savePaneles || !esLineaPanel(l)).reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0)}</b> cristales pedidos.{ctx.savePaneles && borrador.lineas.some(esLineaPanel) && <span className="ml-1 font-semibold text-amber-700">+ {borrador.lineas.filter(esLineaPanel).length} línea(s) de panel que irán a «Paneles pendientes de cortar».</span>}
           </p>
           <div className="flex gap-2 mt-3">
             <button onClick={() => setBorrador(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
@@ -15668,6 +15703,21 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
             <div className="h-2 bg-slate-100 rounded-full mt-3 overflow-hidden">
               <div className="h-2 rounded-full bg-[#86D325]" style={{ width: `${Math.min(100, pct)}%` }} />
             </div>
+            {ctrl.lineas.some((l) => l.pendientes > 0) && (
+              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+                <div className="text-xs font-bold text-rose-700 mb-1">Qué falta exactamente</div>
+                <ul className="space-y-1">
+                  {ctrl.lineas.filter((l) => l.pendientes > 0).map((l) => (
+                    <li key={l.idx} className="text-sm text-slate-800">
+                      <b>{l.pendientes} ud{l.pendientes === 1 ? "" : "s"}</b> · {l.ref ? <b>{l.ref}</b> : "sin vivienda"} · <span className="font-mono-num">{l.ancho} × {l.alto} mm</span>{l.descripcion ? ` · ${l.descripcion}` : ""}
+                      <span className="ml-1 text-xs font-semibold text-rose-700">{l.noLlegadas > 0 && l.conProblema > 0 ? "(no ha llegado / roto)" : l.noLlegadas > 0 ? "(no ha llegado)" : "(roto o con defecto)"}</span>
+                      {l.noLlegadas > 0 && ctx.savePaneles && <button onClick={() => mandarAPaneles(conf, l)} className={`ml-2 text-xs font-semibold px-2 py-0.5 rounded border ${esLineaPanel(l) ? "bg-amber-100 border-amber-400 text-amber-900" : "border-slate-300 text-slate-600"}`}>Es un panel → mandar a paneles</button>}
+                      {toArray(l.parecidos).length > 0 && <div className="text-xs text-amber-800">¿Será alguno de estos? Misma medida sin asignar: {l.parecidos.join(" | ")}</div>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {(conf.reposiciones || []).length > 0 && (
               <p className="text-xs text-slate-500 mt-2">Reposición pedida: {conf.reposiciones.map((r) => `${fmtDate(r.fecha)} (${r.uds} uds)`).join(" · ")}</p>
             )}
@@ -16644,6 +16694,123 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
         </div>
       )}
       {sinHoras > 0 && <div className="text-xs text-slate-500">{sinHoras} expediente{sinHoras === 1 ? "" : "s"} sin horas: no se ha encontrado la obra o no tiene ventanas contadas ni horas. Las marcadas «estimadas» son el cálculo del planning (no hay horas puestas ni listado de mano de obra).</div>}
+    </div>
+  );
+}
+// ── Paneles (sándwich, acústicos de las puertas de entrada…): salen del control de cristales y van a «Paneles pendientes de cortar» ──
+const esLineaPanel = (l) => /panel|s[aá]ndwich/i.test(`${(l && l.descripcion) || ""} ${(l && l.ref) || ""} ${(l && l.modelo) || ""}`);
+const tipoPanel = (l) => {
+  const t = `${(l && l.descripcion) || ""} ${(l && l.modelo) || ""}`;
+  return /s[aá]ndwich/i.test(t) ? "Sándwich" : /ac[uú]stic/i.test(t) ? "Acústico" : "Panel";
+};
+// Convierte una línea de la confirmación en un panel pendiente de cortar, guardando TODO lo que trae.
+const panelDeLinea = (conf, l) => ({
+  id: uid(), confId: conf.id || "", numeroPedido: conf.numeroPedido || "", proveedor: conf.proveedor || "", fechaPedido: conf.fecha || "",
+  pedido: l.pedido || "", expediente: String(l.expediente || conf.expediente || "").trim(), ref: l.ref || "",
+  ancho: l.ancho || "", alto: l.alto || "", cantidad: parseFloat(l.cantidad) || 1,
+  descripcion: l.descripcion || "", color: l.color || "", modelo: l.modelo || "", presupuesto: l.presupuesto || "", espesor: l.espesor || "",
+  observaciones: l.observaciones || "", detalle: l.detalle || "",
+  tipo: tipoPanel(l), estado: "pendiente", fecha: new Date().toISOString().slice(0, 10), fechaCortado: "",
+});
+function PanelesPendientes() {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const paneles = toArray(ctx.paneles);
+  const guardar = ctx.savePaneles || (() => {});
+  const [ver, setVer] = useState("pendiente");
+  const [buscar, setBuscar] = useState("");
+  const [form, setForm] = useState(null);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const obraDe = (exp) => {
+    const nums = numsExpediente(exp);
+    const pr = nums.length ? toArray(ctx.proyectos).find((x) => numsExpediente(x.numero).some((n) => nums.includes(n))) : null;
+    if (!pr) return null;
+    const cl = toArray(ctx.clientes).find((c) => c.id === pr.clienteId);
+    return { numero: pr.numero, nombre: pr.nombre || "", cliente: cl ? cl.nombre || "" : "", ubicacion: pr.ubicacion || "", color: coloresPerfilDeObra(pr).join(" / ") };
+  };
+  const q = buscar.trim().toLowerCase();
+  const lista = paneles
+    .filter((x) => (ver === "todos" || (x.estado || "pendiente") === ver))
+    .filter((x) => { if (!q) return true; const o = obraDe(x.expediente) || {}; return JSON.stringify([x, o]).toLowerCase().includes(q); })
+    .sort((a, b) => String(a.expediente).localeCompare(String(b.expediente), "es", { numeric: true }) || String(a.ref).localeCompare(String(b.ref), "es", { numeric: true }));
+  const grupos = [];
+  lista.forEach((x) => { const k = numsExpediente(x.expediente)[0] || x.expediente || "—"; let g = grupos.find((y) => y.k === k); if (!g) { g = { k, items: [] }; grupos.push(g); } g.items.push(x); });
+  const pendientes = paneles.filter((x) => (x.estado || "pendiente") === "pendiente");
+  const actualizar = (id, patch) => guardar(paneles.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const dato = (etq, val) => (val || val === 0) ? <div className="min-w-[110px]"><div className="text-[10px] uppercase tracking-wide text-slate-400">{etq}</div><div className="text-sm text-slate-800 break-words">{val}</div></div> : null;
+  const guardarForm = () => {
+    if (!(parseFloat(form.ancho) > 0) || !(parseFloat(form.alto) > 0)) { alert("Pon el ancho y el alto del panel."); return; }
+    guardar([{ ...panelDeLinea({ numeroPedido: "", proveedor: "", fecha: hoy }, { ...form, cantidad: form.cantidad || 1 }), origen: "a mano" }, ...paneles]);
+    setForm(null);
+  };
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[240px] text-sm text-slate-600">
+          <b>Paneles pendientes de cortar.</b> Aquí caen solos los paneles (sándwich, acústicos de las puertas de entrada…) que vienen en la confirmación del pedido de cristales. Cuando uno está cortado, lo marcas.
+        </div>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, color, medida, cliente…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <button onClick={() => setForm(form ? null : { expediente: "", ref: "", ancho: "", alto: "", cantidad: 1, descripcion: "", color: "", modelo: "", presupuesto: "" })}
+          className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">+ Añadir panel a mano</button>
+      </div>
+      {form && (
+        <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4 grid grid-cols-2 md:grid-cols-4 gap-2">
+          {[["expediente", "Expediente"], ["ref", "Vivienda / ref."], ["ancho", "Ancho (mm)"], ["alto", "Alto (mm)"], ["cantidad", "Unidades"], ["color", "Color"], ["modelo", "Modelo"], ["presupuesto", "Presupuesto"]].map(([k, etq]) => (
+            <Field key={k} label={etq}><TextInput value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} /></Field>
+          ))}
+          <div className="col-span-2 md:col-span-4"><Field label="Descripción"><TextInput value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></Field></div>
+          <div className="col-span-2 md:col-span-4 flex gap-2">
+            <button onClick={guardarForm} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-lg hover:opacity-90">Guardar panel</button>
+            <button onClick={() => setForm(null)} className="text-sm font-semibold px-4 py-2 rounded-lg border border-slate-300">Cancelar</button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {[["pendiente", `Pendientes de cortar (${pendientes.length})`], ["cortado", "Cortados"], ["todos", "Todos"]].map(([id, etq]) => (
+          <button key={id} onClick={() => setVer(id)} className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${ver === id ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}>{etq}</button>
+        ))}
+        <span className="text-xs text-slate-500 ml-2">{lista.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0)} panel{lista.length === 1 ? "" : "es"} en esta vista</span>
+      </div>
+      {grupos.length === 0 && <div className="text-sm text-slate-400 text-center py-8 border border-dashed border-slate-300 rounded-lg">No hay paneles en esta vista.</div>}
+      {grupos.map((g) => {
+        const o = obraDe(g.items[0].expediente);
+        return (
+          <div key={g.k} className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+              <div className="font-display font-bold text-slate-900">EXP {g.k}</div>
+              {o ? <div className="text-sm text-slate-600">Obra #{o.numero}{o.nombre ? ` · ${o.nombre}` : ""}{o.cliente ? ` · ${o.cliente}` : ""}{o.ubicacion ? ` · ${o.ubicacion}` : ""}</div> : <div className="text-xs text-slate-400">no encuentro la obra</div>}
+              {o && o.color && <div className="text-xs font-semibold text-slate-700">PVC: {o.color}</div>}
+            </div>
+            <div className="space-y-2">
+              {g.items.map((x) => (
+                <div key={x.id} className={`rounded-lg border px-3 py-2 ${(x.estado || "pendiente") === "cortado" ? "bg-emerald-50 border-emerald-200" : "bg-slate-50 border-slate-200"}`}>
+                  <div className="flex flex-wrap gap-x-5 gap-y-2">
+                    {dato("Tipo", x.tipo)}
+                    {dato("Vivienda / ref.", x.ref)}
+                    {dato("Medida (mm)", `${x.ancho} × ${x.alto}`)}
+                    {dato("Unidades", x.cantidad)}
+                    {dato("Color", x.color)}
+                    {dato("Modelo", x.modelo)}
+                    {dato("Espesor", x.espesor)}
+                    {dato("Presupuesto", x.presupuesto)}
+                    {dato("Pedido proveedor", x.numeroPedido || x.pedido)}
+                    {dato("Proveedor", x.proveedor)}
+                    {dato("Descripción", x.descripcion)}
+                    {dato("Observaciones", x.observaciones)}
+                  </div>
+                  {x.detalle && <div className="text-[11px] text-slate-400 mt-1 break-words">Todo lo que traía la línea: {x.detalle}</div>}
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    {(x.estado || "pendiente") === "pendiente"
+                      ? <button onClick={() => actualizar(x.id, { estado: "cortado", fechaCortado: hoy })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90">Marcar cortado</button>
+                      : <><span className="text-xs font-semibold text-emerald-700">Cortado el {fmtDate(x.fechaCortado)}</span><button onClick={() => actualizar(x.id, { estado: "pendiente", fechaCortado: "" })} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300">Volver a pendiente</button></>}
+                    <span className="text-[11px] text-slate-400">{x.origen === "a mano" ? "añadido a mano" : `de la confirmación del ${fmtDate(x.fechaPedido || x.fecha)}`}</span>
+                    <button onClick={() => { if (window.confirm("¿Borrar este panel?")) guardar(paneles.filter((y) => y.id !== x.id)); }} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-lg hover:bg-rose-50">Borrar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -17658,6 +17825,8 @@ function EstadisticasCristales({ cristales }) {
 }
 
 function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+  const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
+  const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState(() => { const t = tabInicialFabrica.actual; tabInicialFabrica.actual = null; return t || "listo"; });
@@ -17783,6 +17952,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "cristales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Cristales
           {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
+        </button>
+        <button onClick={() => setTab("paneles")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "paneles" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Paneles pendientes de cortar
+          {nPanelesPend > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{nPanelesPend}</Badge>}
         </button>
         <button onClick={() => setTab("persianasAlmacen")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "persianasAlmacen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -18020,6 +18194,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           </div>
         </>
       )}
+
+      {tab === "paneles" && <PanelesPendientes />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
