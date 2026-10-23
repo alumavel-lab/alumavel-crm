@@ -12,7 +12,7 @@ import {
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, get as fbGet, set as fbSet, update as fbUpdate, onValue, runTransaction } from "firebase/database";
+import { getDatabase, ref, get as fbGet, set as fbSet, update as fbUpdate, onValue, runTransaction, query as fbQuery, limitToLast } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -128,6 +128,20 @@ const FILA_RESERVA = {};
 const ubicacionTexto = (u) => (u ? `${u.zona === "arriba" ? "Arriba" : u.zona === "taller" ? "Taller" : "Abajo"} · Fila ${u.fila} · Hueco ${u.hueco}` : "Sin ubicar");
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+// Registro de actividad ("quién hace qué"). Cada acción se guarda como una entrada suelta en
+// registroActividad/<ts>-<id> (nunca como lista completa), así que dos personas a la vez no se pisan.
+// El usuario lo rellena App cuando sabe quién ha entrado. Si falla, no molesta: el CRM sigue igual.
+const actividadCtx = { usuario: null };
+function logAct(tipo, accion, detalle = "") {
+  try {
+    const u = actividadCtx.usuario;
+    if (!u) return;
+    const ts = Date.now();
+    const id = `${ts}-${uid()}`;
+    fbSet(ref(fbDb, `registroActividad/${id}`), { ts, usuarioId: u.id, usuario: u.nombre, tipo, accion, detalle: String(detalle || "").slice(0, 200) }).catch(() => {});
+  } catch (e) { /* el registro nunca debe romper una acción */ }
+}
 // Firebase Realtime Database a veces devuelve un objeto en vez de un array (por huecos
 // en los índices, o listas vacías) — esto lo normaliza siempre a un array de verdad.
 const toArray = (val) => {
@@ -1348,10 +1362,12 @@ export default function App() {
     if (data.id) {
       next = clientes.map((c) => (c.id === data.id ? data : c));
       showToast("Cliente actualizado");
+      logAct("cliente", "editó", data.nombre);
     } else {
       const nc = { ...data, id: uid() };
       next = [nc, ...clientes];
       showToast("Cliente dado de alta");
+      logAct("cliente", "creó", nc.nombre);
       // Si el alta viene de "Convertir en Cliente" desde un lead, el lead
       // pasa a Aceptado y queda enlazado al cliente recién creado — solo
       // aquí, al guardar de verdad, para que si el usuario cancela el alta
@@ -1374,6 +1390,7 @@ export default function App() {
     }
     const nc = { id: uid(), nombre, limiteCredito: parseFloat(limiteCredito) || 0, tipo: "Cliente", formaPago: "Contado", movil: String(movil || "").trim(), email: String(email || "").trim() };
     saveClientes([nc, ...clientes]);
+    logAct("cliente", "creó", nombre);
     showToast(`Cliente "${nombre}" dado de alta`);
     return nc.id;
   };
@@ -1383,6 +1400,7 @@ export default function App() {
       showToast("No se puede eliminar: tiene proyectos asociados", "error");
       return;
     }
+    logAct("cliente", "eliminó", (clientes.find((c) => c.id === id) || {}).nombre || "");
     saveClientes(clientes.filter((c) => c.id !== id));
     setClienteView("list");
     showToast("Cliente eliminado");
@@ -1425,6 +1443,7 @@ export default function App() {
       origen: propia ? "medicionPropia" : "medicionUxcar", medicionUxcarId: exp.id,
     };
     saveProyectos([nuevo, ...toArray(proyectosRef.current)]);
+    logAct("proyecto", "creó (desde medición)", `#${numero} ${nuevo.nombre || ""}`.trim());
     showToast(`Creada la obra #${numero} en Proyectos`);
     return { id: nuevoId, numero };
   };
@@ -1758,6 +1777,7 @@ export default function App() {
 
       next = proyectos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
       showToast("Proyecto actualizado");
+      logAct("proyecto", "editó", `#${(anterior || data).numero || ""} ${data.nombre || ""}`.trim());
 
       if (data.llevaInstalacion && !anterior?.llevaInstalacion && !instalaciones.some((i) => i.proyectoId === data.id)) {
         crearInstalacionParaProyecto({ ...anterior, ...data });
@@ -1775,6 +1795,7 @@ export default function App() {
       };
       next = [np, ...proyectos];
       showToast("Proyecto dado de alta");
+      logAct("proyecto", "creó", `#${np.numero} ${np.nombre || ""}`.trim());
       if (np.llevaInstalacion) {
         crearInstalacionParaProyecto(np);
       }
@@ -1784,6 +1805,8 @@ export default function App() {
   };
 
   const deleteProyecto = (id) => {
+    const eliminado = proyectos.find((p) => p.id === id);
+    logAct("proyecto", "eliminó", eliminado ? `#${eliminado.numero} ${eliminado.nombre || ""}`.trim() : "");
     saveProyectos(proyectos.filter((p) => p.id !== id));
     setProyectoView("list");
     showToast("Proyecto eliminado");
@@ -3314,6 +3337,7 @@ export default function App() {
       documentos: documentosProyecto,
     };
     saveProyectos([np, ...proyectos]);
+    logAct("proyecto", opciones.recrear ? "recreó (desde presupuesto)" : "creó (desde presupuesto)", `#${np.numero} ${np.nombre || ""} · presupuesto ${presupuesto.numero || ""}`.trim());
     savePresupuestos(presupuestos.map((p) => (p.id === presupuesto.id ? { ...p, proyectoCreadoId: np.id } : p)));
     showToast(`Proyecto #${np.numero} creado desde el presupuesto`);
     return np.id;
@@ -3428,9 +3452,11 @@ export default function App() {
         showToast("Entrada de dinero actualizada");
       }
       next = ingresos.map((i) => (i.id === data.id ? actualizado : i));
+      logAct("transferencia", "editó entrada de dinero", `${actualizado.clienteNombre || ""} · ${money(actualizado.importe)}`);
     } else {
       const nuevo = { proyectoId: null, vinculado: false, ...data, id: uid() };
       if (nuevo.proyectoId) nuevo.vinculado = true;
+      logAct("transferencia", "registró entrada de dinero", `${nuevo.clienteNombre || ""} · ${money(nuevo.importe)}${nuevo.formaPago ? " · " + nuevo.formaPago : ""}`);
       next = [nuevo, ...ingresos];
       showToast(nuevo.proyectoId ? "Entrada registrada en el proyecto (sin factura)" : "Entrada de dinero registrada");
     }
@@ -3440,10 +3466,14 @@ export default function App() {
 
   // Añade/quita justificantes de una entrada ya guardada sin salir de la lista.
   const actualizarJustificantesIngreso = (id, justificantes) => {
+    const ing = ingresos.find((i) => i.id === id);
+    logAct("transferencia", "cambió justificantes de entrada", ing ? `${ing.clienteNombre || ""} · ${money(ing.importe)}` : "");
     saveIngresos(ingresos.map((i) => (i.id === id ? { ...i, justificantes } : i)));
   };
 
   const deleteIngreso = (id) => {
+    const ing = ingresos.find((i) => i.id === id);
+    logAct("transferencia", "eliminó entrada de dinero", ing ? `${ing.clienteNombre || ""} · ${money(ing.importe)}` : "");
     saveIngresos(ingresos.filter((i) => i.id !== id));
     showToast("Entrada de dinero eliminada");
   };
@@ -3454,6 +3484,8 @@ export default function App() {
     const ingreso = ingresos.find((i) => i.id === ingresoId);
     if (!ingreso || !proyectoId) return;
     saveIngresos(ingresos.map((i) => (i.id === ingresoId ? { ...i, proyectoId, vinculado: true } : i)));
+    const proyVinc = toArray(proyectosRef.current).find((p) => p && p.id === proyectoId);
+    logAct("transferencia", "vinculó entrada a proyecto", `${ingreso.clienteNombre || ""} · ${money(ingreso.importe)} → #${proyVinc ? proyVinc.numero : ""}`);
     showToast("Entrada vinculada al proyecto (no se ha generado factura)");
   };
 
@@ -3644,6 +3676,7 @@ export default function App() {
 
   // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
   const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
+  actividadCtx.usuario = currentUser ? { id: currentUser.id, nombre: `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() } : null;
 
   // Caballetes de ventanas terminadas (almacén de fábrica). Se guardan uno a uno en
   // Firebase ("caballetesVentanas/<id>") y se leen en tiempo real.
@@ -19681,6 +19714,7 @@ async function subirArchivoAStorage(file, carpeta) {
     { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: bytes }
   );
   if (!subida.ok) throw new Error("Fallo al subir el archivo a Storage");
+  logAct("documento", "subió", `${file.name} · ${carpeta}`);
   return `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(nombreArchivo)}?alt=media`;
 }
 
@@ -31284,6 +31318,113 @@ function InformesModulo({ proyectos, presupuestos, ingresos, facturas, incidenci
             </tbody>
           </table>
         </div>
+      )}
+
+      {isAdmin && <QuienHaceQueInforme rango={rango} />}
+    </div>
+  );
+}
+
+// Informe "Quién hace qué": cuenta por persona lo que ha creado o tocado (clientes, proyectos, transferencias,
+// documentos) en el periodo elegido arriba, y deja ver el detalle. Solo cuenta desde que existe el registro:
+// lo hecho antes no se puede reconstruir.
+function QuienHaceQueInforme({ rango }) {
+  const [registros, setRegistros] = useState(null);
+  const [filtroUsuario, setFiltroUsuario] = useState("");
+  const [filtroTipo, setFiltroTipo] = useState("");
+  useEffect(() => {
+    const q = fbQuery(ref(fbDb, "registroActividad"), limitToLast(5000));
+    const off = onValue(q, (snap) => setRegistros(toArray(snap.val())), () => setRegistros([]));
+    return () => off();
+  }, []);
+  const lista = useMemo(() => {
+    const d = rango && rango.desde ? rango.desde.getTime() : null;
+    const h = rango && rango.hasta ? rango.hasta.getTime() + 86400000 : null; // incluye todo el último día
+    return toArray(registros).filter((r) => r && r.ts && (d === null || r.ts >= d) && (h === null || r.ts < h)).sort((a, b) => b.ts - a.ts);
+  }, [registros, rango]);
+  const COLS = [
+    { id: "cli", nombre: "Clientes creados", es: (r) => r.tipo === "cliente" && /^cre/.test(r.accion) },
+    { id: "pro", nombre: "Proyectos creados", es: (r) => r.tipo === "proyecto" && /^(cre|recre)/.test(r.accion) },
+    { id: "tra", nombre: "Transferencias registradas", es: (r) => r.tipo === "transferencia" && /^registr/.test(r.accion) },
+    { id: "doc", nombre: "Documentos subidos", es: (r) => r.tipo === "documento" },
+  ];
+  const filas = useMemo(() => {
+    const m = new Map();
+    lista.forEach((r) => {
+      const k = r.usuarioId || r.usuario || "?";
+      const f = m.get(k) || { usuario: r.usuario || "Sin nombre", cols: {}, otras: 0, total: 0, ultima: 0 };
+      const col = COLS.find((c) => c.es(r));
+      if (col) f.cols[col.id] = (f.cols[col.id] || 0) + 1; else f.otras += 1;
+      f.total += 1; f.ultima = Math.max(f.ultima, r.ts);
+      m.set(k, f);
+    });
+    return Array.from(m.values()).sort((a, b) => b.total - a.total);
+  }, [lista]);
+  const usuariosEnLista = Array.from(new Set(lista.map((r) => r.usuario).filter(Boolean))).sort();
+  const detalle = lista.filter((r) => (!filtroUsuario || r.usuario === filtroUsuario) && (!filtroTipo || r.tipo === filtroTipo));
+  const fmtF = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <h2 className="font-display font-bold text-slate-700 text-sm p-4 pb-0">Quién hace qué</h2>
+      <p className="text-xs text-slate-400 px-4 pt-1">Lo que ha creado o cambiado cada persona en el periodo elegido arriba. Solo cuenta desde que se activó este registro; lo anterior no se puede reconstruir, y los expedientes que entran solos desde Uxcar no se atribuyen a nadie.</p>
+      {registros === null ? <p className="p-4 text-sm text-slate-400">Cargando…</p> : (
+        <>
+          <table className="w-full text-sm mt-3">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-2.5 font-semibold">Usuario</th>
+                {COLS.map((c) => <th key={c.id} className="px-4 py-2.5 font-semibold text-right">{c.nombre}</th>)}
+                <th className="px-4 py-2.5 font-semibold text-right">Otros cambios</th>
+                <th className="px-4 py-2.5 font-semibold">Última acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => (
+                <tr key={f.usuario} className="border-b border-slate-100 last:border-0">
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{f.usuario}</td>
+                  {COLS.map((c) => <td key={c.id} className="px-4 py-2.5 text-right font-mono-num text-slate-700">{f.cols[c.id] || 0}</td>)}
+                  <td className="px-4 py-2.5 text-right font-mono-num text-slate-500">{f.otras}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{fmtF(f.ultima)}</td>
+                </tr>
+              ))}
+              {filas.length === 0 && <tr><td colSpan={COLS.length + 3} className="px-4 py-8 text-center text-slate-400 text-sm">No hay acciones registradas en este periodo.</td></tr>}
+            </tbody>
+          </table>
+          {lista.length > 0 && (
+            <div className="border-t border-slate-200">
+              <div className="flex flex-wrap items-center gap-3 p-4">
+                <span className="text-xs font-bold text-slate-700">Detalle</span>
+                <select value={filtroUsuario} onChange={(e) => setFiltroUsuario(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
+                  <option value="">Todos los usuarios</option>
+                  {usuariosEnLista.map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
+                <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
+                  <option value="">Todo</option>
+                  <option value="cliente">Clientes</option>
+                  <option value="proyecto">Proyectos</option>
+                  <option value="transferencia">Transferencias</option>
+                  <option value="documento">Documentos</option>
+                </select>
+                <span className="text-xs text-slate-400">{detalle.length} registro{detalle.length === 1 ? "" : "s"}</span>
+              </div>
+              <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {detalle.slice(0, 300).map((r, k) => (
+                      <tr key={r.ts + "-" + k} className="border-t border-slate-100 align-top">
+                        <td className="px-4 py-1.5 whitespace-nowrap text-slate-500">{fmtF(r.ts)}</td>
+                        <td className="px-2 py-1.5 font-semibold text-slate-700">{r.usuario}</td>
+                        <td className="px-2 py-1.5 text-slate-700">{r.accion}</td>
+                        <td className="px-2 py-1.5 text-slate-500">{r.detalle}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {detalle.length > 300 && <p className="p-3 text-xs text-slate-500">Se muestran las 300 más recientes.</p>}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
