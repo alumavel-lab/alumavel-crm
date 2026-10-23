@@ -16,6 +16,11 @@
 // el resto de funciones del CRM (informe-semanal-instalaciones.js, etc.).
 
 const FIRMA_API = "https://api.firma.dev/functions/v1/signing-request-api";
+// PDF grandes: el navegador no puede mandarlos por aquí (las peticiones a funciones de
+// Netlify tienen un tope de ~6 MB), así que los sube a Firebase Storage y manda solo la
+// dirección (pdfUrl). La función lo descarga desde el servidor y se lo pasa a Firma.dev.
+const STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/crmalumavel.firebasestorage.app/o/";
+const LIMITE_FIRMA_BYTES = 19 * 1024 * 1024; // Firma.dev admite 20 MB por documento
 const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
 // Clave secreta de la base de datos (variable FIREBASE_DB_SECRET en Netlify): hace falta
 // para leer/escribir una vez cerradas las reglas de Firebase. Sin ella funciona igual mientras
@@ -56,10 +61,13 @@ export const handler = async (event) => {
 
   try {
     const body = JSON.parse(event.body || "{}");
-    const { registroTipo, registroId, pdfBase64, nombreDocumento, firmante } = body;
+    const { registroTipo, registroId, pdfBase64, pdfUrl, nombreDocumento, firmante } = body;
 
-    if (!registroTipo || !registroId || !pdfBase64 || !firmante?.email) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Faltan datos: registroTipo, registroId, pdfBase64 o firmante.email." }) };
+    if (!registroTipo || !registroId || (!pdfBase64 && !pdfUrl) || !firmante?.email) {
+      return { statusCode: 400, body: JSON.stringify({ error: "Faltan datos: registroTipo, registroId, pdfBase64 (o pdfUrl) o firmante.email." }) };
+    }
+    if (pdfUrl && !pdfUrl.startsWith(STORAGE_PREFIX)) {
+      return { statusCode: 400, body: JSON.stringify({ error: "pdfUrl no permitida" }) };
     }
     if (registroTipo !== "presupuestos" && registroTipo !== "proyectos") {
       return { statusCode: 400, body: JSON.stringify({ error: "registroTipo debe ser 'presupuestos' o 'proyectos'." }) };
@@ -91,6 +99,22 @@ export const handler = async (event) => {
       return { statusCode: 500, body: JSON.stringify({ error: "La firma electrónica no está configurada todavía (falta FIRMA_API_KEY_TEST en Netlify)." }) };
     }
 
+    // PDF grande: se descarga aquí, desde el servidor (sin el tope de 6 MB del navegador).
+    let documentoBase64 = pdfBase64;
+    if (!documentoBase64 && pdfUrl) {
+      const authStorage = tokenUsuario ? { Authorization: `Firebase ${tokenUsuario}` } : {};
+      const pdfRes = await fetch(pdfUrl, { headers: authStorage });
+      if (!pdfRes.ok) {
+        console.error("No se pudo leer el PDF subido:", pdfRes.status);
+        return { statusCode: 502, body: JSON.stringify({ error: `No se pudo leer el PDF grande de Storage (${pdfRes.status})` }) };
+      }
+      const buf = Buffer.from(await pdfRes.arrayBuffer());
+      if (buf.length > LIMITE_FIRMA_BYTES) {
+        return { statusCode: 413, body: JSON.stringify({ error: `El PDF final pesa ${(buf.length / 1048576).toFixed(1)} MB y Firma.dev admite 20 MB como máximo` }) };
+      }
+      documentoBase64 = buf.toString("base64");
+    }
+
     const partesNombre = (firmante.nombre || "Firmante").trim().split(" ");
     const nombre = partesNombre[0] || "Firmante";
     const apellido = partesNombre.slice(1).join(" ") || "-";
@@ -100,7 +124,7 @@ export const handler = async (event) => {
       headers: { Authorization: apiKey, "Content-Type": "application/json" },
       body: JSON.stringify({
         name: nombreDocumento || `Documento ${registroId}`,
-        document: pdfBase64,
+        document: documentoBase64,
         recipients: [
           {
             first_name: nombre,
@@ -111,6 +135,16 @@ export const handler = async (event) => {
         ],
       }),
     });
+
+    // El PDF grande subido solo para este envío ya no hace falta: se borra (si falla, no pasa nada).
+    if (pdfUrl) {
+      try {
+        const nombreTmp = decodeURIComponent(pdfUrl.slice(STORAGE_PREFIX.length).split("?")[0]);
+        if (nombreTmp.startsWith("firmas-temporales/")) {
+          await fetch(`${STORAGE_PREFIX}${encodeURIComponent(nombreTmp)}`, { method: "DELETE", headers: tokenUsuario ? { Authorization: `Firebase ${tokenUsuario}` } : {} });
+        }
+      } catch (e) { console.warn("No se pudo borrar el PDF temporal:", e.message); }
+    }
 
     const dataFirma = await respuestaFirma.json();
     if (!respuestaFirma.ok) {
