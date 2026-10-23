@@ -41566,6 +41566,8 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   const [modo, setModo] = useState(esJueves ? "semana" : "dia");
   const [base, setBase] = useState(esJueves ? addDiasISO(lunesDe(hoyISO2), 7) : siguiente);
   const [estado, setEstado] = useState({});
+  const [matObra, setMatObra] = useState({}); // mosquiteras / postigos marcados como terminados, por obra (no depende del día)
+  useEffect(() => onValue(ref(fbDb, "materialObra"), (snap) => setMatObra(snap.val() || {}), () => setMatObra({})), []);
   const quien = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
   const clave = modo === "dia" ? base : `semana-${lunesDe(base)}`;
   useEffect(() => onValue(ref(fbDb, `preparacionTodoPuesto/${clave}`), (snap) => setEstado(snap.val() || {}), () => setEstado({})), [clave]);
@@ -41598,8 +41600,19 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
     if (ps.length) return a + ps.reduce((b, p) => b + (parseFloat(p.cantidad) || 1), 0);
     return deObraL(o.expNums, c.expediente) ? a + (parseFloat(c.cantidad) || 0) : a;
   }, 0);
-  const filasObra = obras.map((x) => ({ ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra) }));
-  const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce).length;
+  const accDe = (x) => { const a = accesoriosDeObra({ nombre: x.obra.nombre, listadoMateriales: { lineas: x.obra.lineas } }); const g = (id) => a.grupos.find((y) => y.id === id) || {}; return { mosq: g("mosquitera"), post: g("postigo") }; };
+  const marcaAcc = (x, id) => (matObra[x.id] || {})[id];
+  const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera"), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
+  const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce || x.mosqFalta || x.postFalta).length;
+  const marcarAcc = (x, id) => { const hecho = marcaAcc(x, id); fbSet(ref(fbDb, `materialObra/${x.id}/${id}`), hecho ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message)); };
+  const celdaAcc = (x, id, nombre) => {
+    const g = id === "mosquitera" ? x.ac.mosq : x.ac.post;
+    if (!g.lleva) return <span className="text-slate-400">No lleva</span>;
+    const m = marcaAcc(x, id);
+    const ud = g.lineas && g.lineas.length ? ` · ${g.uds} ud.` : "";
+    if (m) return <span className="text-emerald-700 font-bold">✓ Terminado{ud} <button onClick={() => marcarAcc(x, id)} className="font-normal text-[11px] text-slate-400 underline ml-1">quitar</button></span>;
+    return <span><b>FALTA{ud}</b> <button onClick={() => marcarAcc(x, id)} className="ml-1 px-2 py-0.5 rounded bg-[#2E8B57] text-white text-[11px] font-semibold">Ya está</button></span>;
+  };
   const hora = (ts) => new Date(ts).toLocaleString("es-ES", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   const ruta = (sub) => ref(fbDb, `preparacionTodoPuesto/${clave}/${sub}`);
   const tick = (gk) => fbSet(ruta(`grupos/${claveGrupo(gk)}`), hechosG[claveGrupo(gk)] ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
@@ -41645,7 +41658,7 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
             <p className="text-xs text-slate-600 mb-2"><b className="text-emerald-700">✓ Todo llegado</b> = puedes empezar · <b className="text-amber-700">FALTAN</b> = aún no ha llegado ese material (casilla naranja) · «No lleva» = esa obra no tiene ese material</p>
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Persianas</th><th className={th}>Cristales</th></tr></thead>
+                <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Persianas</th><th className={th}>Cristales</th><th className={th}>Mosquiteras</th><th className={th}>Postigos</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {filasObra.map((x) => (
                     <tr key={x.id}>
@@ -41653,6 +41666,8 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
                       <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
                       <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}</td>
                       <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}</td>
+                      <td className={`px-3 py-2 ${x.mosqFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "mosquitera")}</td>
+                      <td className={`px-3 py-2 ${x.postFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "postigo")}</td>
                     </tr>
                   ))}
                 </tbody>
