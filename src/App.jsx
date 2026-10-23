@@ -451,6 +451,8 @@ const materialSinPedirObra = (proyecto, pedidosTodos) => {
   const sinMandar = (pd) => pd.estado === "En espera" || pd.estado === "Pendiente";
   const vistos = new Set();
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
+    // De momento solo cuentan los cristales y los compactos (persianas): lo demás no sale como pendiente
+    if (!esItemChecklistExigido(c)) return;
     const nombre = c.nombre || "Sin nombre";
     if (!c.estado) { faltan.push(`${nombre}: sin decir si lo lleva`); return; }
     if (c.estado !== "si" || c.enStock) return;
@@ -460,10 +462,30 @@ const materialSinPedirObra = (proyecto, pedidosTodos) => {
     vinculados.filter(sinMandar).forEach((pd) => faltan.push(`${nombre}: pedido #${pd.numero} ${pd.estado === "En espera" ? "en espera" : "sin mandar"}`));
   });
   (pedidosTodos || []).forEach((pd) => {
-    if (pd.proyectoId === proyecto.id && !vistos.has(pd.id) && sinMandar(pd)) faltan.push(`Pedido #${pd.numero} ${pd.estado === "En espera" ? "en espera" : "sin mandar"}`);
+    if (pd.proyectoId === proyecto.id && !vistos.has(pd.id) && esPedidoCristalOCompacto(pd) && sinMandar(pd)) faltan.push(`Pedido #${pd.numero} ${pd.estado === "En espera" ? "en espera" : "sin mandar"}`);
   });
   return faltan;
 };
+
+// --- Solo cristales y compactos (persianas) cuentan, de momento, para pasar a fábrica ---
+// Lo demás (perfiles, herraje, accesorios…) no se exige ni sale como pendiente, y no se
+// mira a qué proveedor se le ha pedido: solo que hayan llegado los cristales y los compactos.
+const esItemChecklistExigido = (c) => /^cristal|^persiana|compacto/i.test(String((c && c.nombre) || "").trim());
+// Qué lleva un pedido: "cristal", "persianas" (compactos) o "" (otra cosa). Los pedidos nuevos
+// llevan el campo tipoPedido; los antiguos se reconocen por la sección de sus líneas o por su texto.
+const tipoPedidoMaterial = (pd) => {
+  if (!pd) return "";
+  if (pd.tipoPedido === "cristal" || pd.tipoPedido === "persianas") return pd.tipoPedido;
+  const lineas = toArray(pd.lineas);
+  const secs = lineas.map((l) => l.seccionListado).filter(Boolean);
+  if (secs.length && secs.every((s) => s === "cristal")) return "cristal";
+  if (secs.length && secs.every((s) => s === "persianas")) return "persianas";
+  if (secs.length) return "";
+  const libres = lineas.filter((l) => l.modo === "libre").map((l) => l.referencia || "");
+  if (libres.length && libres.length === lineas.length) { const t = tipoListadoPorLineas(libres); return t === "cristales" ? "cristal" : t === "persianas" ? "persianas" : ""; }
+  return "";
+};
+const esPedidoCristalOCompacto = (pd) => !!tipoPedidoMaterial(pd);
 
 // Una obra (vuestra) sin informe de materiales tiene que tener "Qué lleva la obra"
 // contestado a mano: si no, no se pueden hacer pedidos ni pasarla a fabricación.
@@ -475,6 +497,7 @@ const AVISO_QUE_LLEVA = 'Esta obra no tiene informe de materiales: súbelo, o co
 const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
   const faltan = [];
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
+    if (!esItemChecklistExigido(c)) return; // de momento solo cristales y compactos
     const nombre = c.nombre || "Sin nombre";
     if (!c.estado) { faltan.push(`${nombre}: falta decir si lo lleva o no`); return; }
     if (c.estado !== "si" || c.enStock) return;
@@ -2010,6 +2033,43 @@ export default function App() {
     const sinProv = nuevos.filter((x) => !x.proveedorId).length;
     showToast(`${nuevos.length} pedido${nuevos.length === 1 ? "" : "s"} en espera creado${nuevos.length === 1 ? "" : "s"} (${nuevos.map((x) => `#${x.numero}`).join(", ")})${sinProv ? ` — ${sinProv} sin proveedor, elígelo en Pedidos` : ""}`, sinProv ? "error" : "ok");
   };
+  // Pedidos de CRISTALES y de COMPACTOS (persianas) hechos con los documentos que saca el programa
+  // de ventanas: el "Listado de vidrios" y el "Pedido compra". Cada tipo es un pedido INDEPENDIENTE
+  // (para poder elegir su proveedor) y lo que se manda al proveedor es ese documento original, no un
+  // PDF generado por el CRM. grupos: [{ tipo: "cristal"|"persianas"|"", proveedorId, lineas, documentos, adjuntosPdf }]
+  const crearPedidosDocProveedor = (proyecto, grupos) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
+    const NOMBRE_TIPO = { cristal: "Cristales", persianas: "Compactos (persianas)", "": "Material a medida" };
+    const yaPedidos = pedidos.filter((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado");
+    const repetido = (g) => toArray(g.documentos).length > 0 && toArray(g.documentos).every((d) => yaPedidos.some((pd) => toArray(pd.documentos).some((x) => x.nombre === d.nombre)));
+    const validos = toArray(grupos).filter((g) => toArray(g.lineas).length > 0);
+    const omitidos = validos.filter(repetido);
+    const aCrear = validos.filter((g) => !repetido(g));
+    if (omitidos.length) showToast(`Ya había un pedido con ${omitidos.map((g) => (toArray(g.documentos)[0] || {}).nombre).join(", ")}: no lo he vuelto a crear.`, "error");
+    if (aCrear.length === 0) return 0;
+    let num = parseInt(nextNumeroPedido(), 10);
+    const nuevos = aCrear.map((g) => {
+      const docs = toArray(g.documentos).map((d) => ({ id: d.id || uid(), nombre: d.nombre, url: d.url, tipo: d.tipo || "application/pdf", subidoEn: Date.now(), enviar: true, origenProveedor: true }));
+      const adj = toArray(g.adjuntosPdf);
+      return {
+        id: uid(), numero: String(num++), proveedorId: g.proveedorId || "", proyectoId: proyecto.id, estado: "Pendiente",
+        fechaCompra: hoy, fechaEntregaPrevista: "", lineas: g.lineas, adjuntosPdf: adj, documentos: docs,
+        tipoPedido: g.tipo || "", soloDocumentoProveedor: docs.length > 0 || adj.length > 0, origenListado: `documento ${g.tipo || "medidas"}`,
+        comentarios: `${NOMBRE_TIPO[g.tipo || ""]} de la obra #${proyecto.numero} — ${proyecto.nombre}. Al proveedor se le manda el documento original del programa de ventanas.${g.proveedorId ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
+        creadoPor: creador, fechaCreado: hoy,
+      };
+    });
+    savePedidos([...nuevos, ...pedidos]);
+    // "Qué lleva la obra": cristales y persianas quedan enlazados a sus pedidos
+    const pr = proyectosRef.current.find((x) => x.id === proyecto.id) || proyecto;
+    let cl = normalizarChecklist(pr.checklistMateriales);
+    nuevos.forEach((n) => { cl = rellenarChecklistDesdePedido(cl, n, materiales); });
+    updateProyectoInline(proyecto.id, { checklistMateriales: JSON.parse(JSON.stringify(cl)) });
+    const sinProv = nuevos.filter((x) => !x.proveedorId).length;
+    showToast(`${nuevos.length} pedido${nuevos.length === 1 ? "" : "s"} independiente${nuevos.length === 1 ? "" : "s"} creado${nuevos.length === 1 ? "" : "s"}: ${nuevos.map((x) => `#${x.numero} (${NOMBRE_TIPO[x.tipoPedido || ""]})`).join(", ")}${sinProv ? ` — elige el proveedor de ${sinProv === 1 ? "uno" : sinProv} en la pestaña Pedidos de la obra` : ""}`, sinProv ? "error" : "ok");
+    return nuevos.length;
+  };
   // Parte de trabajo desde "Mi puesto": se guarda en partesTrabajo; las horas pasan al
   // registro horario del proyecto y, si hay incidencia, se crea una incidencia de la obra.
   // Escribe en el registro horario de cada obra el reparto automático de horas de la línea.
@@ -2298,8 +2358,15 @@ export default function App() {
     if (filasCris.length) {
       const porCab = {};
       filasCris.forEach((f) => { (porCab[f.caballete || ""] = porCab[f.caballete || ""] || []).push(f); });
-      const ocupados = cristales.filter((c) => c.ubicacion).map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) }));
+      // Huecos que otros pedidos pendientes ya tienen reservados (reparto previsto) cuentan como ocupados
+      const reservadosOtros = pedidos.filter((p) => p.id !== pedido.id && p.reparto && p.estado !== "Recibido" && p.estado !== "Cancelado").flatMap((p) => toArray(p.reparto.cristales));
+      const ocupados = [
+        ...cristales.filter((c) => c.ubicacion).map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) })),
+        ...reservadosOtros.map((r) => ({ zona: r.zona, fila: r.fila, hueco: r.hueco, expediente: r.expediente, exps: new Set(numsExpediente(r.expediente)) })),
+      ];
       const estaOcupado = (z, fi, h) => ocupados.some((o) => o.zona === z && o.fila === fi && o.hueco === h);
+      // El hueco que este mismo pedido tenía reservado se usa primero (si sigue libre)
+      const propios = toArray(pedido.reparto && pedido.reparto.cristales).map((r) => ({ zona: r.zona, fila: r.fila, hueco: r.hueco }));
       Object.entries(porCab).forEach(([cab, fs]) => {
         const piezas = [];
         fs.forEach((f) => {
@@ -2310,7 +2377,9 @@ export default function App() {
         });
         const cantidad = piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 0), 0);
         const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id };
-        const ub = huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
+        const reservado = propios.find((h) => !estaOcupado(h.zona, h.fila, h.hueco));
+        if (reservado) propios.splice(propios.indexOf(reservado), 1);
+        const ub = reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
         if (ub) ocupados.push({ ...ub, expediente, exps: expedientesDeCaballete(datos) });
         nuevosCab.push({ id: uid(), estado: ub ? "Colocado" : "Pendiente", ubicacion: ub || null, fechaColocado: ub ? hoy : "", fechaLlegada: hoy, ...datos });
       });
@@ -2326,7 +2395,8 @@ export default function App() {
     if (nuevasPers.length) {
       // Solo en el almacén marcado para recibir pedidos (los números de carro se repiten entre almacenes)
       const almRec = almacenRecepcionPersianas(almacenesPersianas);
-      const estado = estadoOcupacionPersianas(persianasAlmacen.filter((x) => almacenDe(x) === almRec));
+      const reservadasOtros = pedidos.filter((p) => p.id !== pedido.id && p.reparto && p.estado !== "Recibido" && p.estado !== "Cancelado").flatMap((p) => toArray(p.reparto.persianas).filter((u) => u.estante));
+      const estado = estadoOcupacionPersianas([...persianasAlmacen.filter((x) => almacenDe(x) === almRec), ...reservadasOtros]);
       const r = colocarGrupoPersianas(nuevasPers, expediente || "—", estantesAlmacenPersianas(carrosPersianas.filter((c) => almacenDe(c) === almRec)), estado);
       nuevasPers.forEach((x) => { x.almacenId = almRec; x.estante = r.res[x.id] || null; if (!x.estante) sinSitioPers++; });
     }
@@ -4326,6 +4396,80 @@ export default function App() {
     }
   }, [currentUser, modulo]);
 
+  // ---- Reparto previsto de cristales y compactos: el día antes de que llegue el pedido ----
+  // Compactos → cada uno a su carro y estante. Cristales → hueco libre para el caballete.
+  // Se guarda en el pedido (pedido.reparto). Solo pedidos ya pedidos al proveedor ("Realizado") y con fecha de llegada.
+  const expedienteDePedidoReparto = (pedido) => {
+    const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
+    const expUx = pedido.uxcarExpedienteId ? uxExpedientes.find((e) => e.id === pedido.uxcarExpedienteId) : null;
+    const esUxcar = pedido.origen === "portalUxcar" || (proyecto && proyecto.origen === "portalUxcar");
+    const expediente = expUx ? String(expUx.numero || "").replace(/^EXP\.?\s*/i, "") : proyecto ? String(proyecto.numero || "") : "";
+    return { expediente, esUxcar: !!esUxcar };
+  };
+  const generarRepartosPrevistos = () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const toca = (pd) => pd.estado !== "Cancelado" && pd.estado !== "Recibido" && (pd.estado === "Realizado" || pd.estado === "Reclamado")
+      && esPedidoCristalOCompacto(pd) && /^\d{4}-\d{2}-\d{2}$/.test(pd.fechaEntregaPrevista || "")
+      && pd.fechaEntregaPrevista >= hoy && sumarDiasISO(pd.fechaEntregaPrevista, -1) <= hoy
+      && !(pd.reparto && pd.reparto.paraFecha === pd.fechaEntregaPrevista);
+    const aHacer = pedidos.filter(toca);
+    if (!aHacer.length) return;
+    const nuevos = {};
+    const acumPers = [], acumCris = [];
+    aHacer.forEach((pd) => {
+      const reservadas = pedidos.filter((p) => p.reparto && p.id !== pd.id && !aHacer.some((a) => a.id === p.id) && p.estado !== "Recibido" && p.estado !== "Cancelado");
+      const reservasPersianas = [...reservadas.flatMap((p) => toArray(p.reparto.persianas).filter((u) => u.estante)), ...acumPers];
+      const reservasCristales = [...reservadas.flatMap((p) => toArray(p.reparto.cristales)), ...acumCris];
+      const plan = planRepartoPrevisto(pd, { ...expedienteDePedidoReparto(pd), cristales, persianas: persianasAlmacen, carros: carrosPersianas, almacenes: almacenesPersianas, reservasPersianas, reservasCristales });
+      if (!plan) return;
+      nuevos[pd.id] = plan;
+      if (plan.persianas) acumPers.push(...plan.persianas.filter((u) => u.estante));
+      if (plan.cristales) acumCris.push(...plan.cristales);
+    });
+    const ids = Object.keys(nuevos);
+    if (!ids.length) return;
+    savePedidos(pedidos.map((p) => (nuevos[p.id] ? { ...p, reparto: JSON.parse(JSON.stringify(nuevos[p.id])) } : p)));
+    showToast(`Reparto previsto hecho para ${ids.length} pedido${ids.length === 1 ? "" : "s"} de cristales/compactos que llegan mañana o hoy`);
+  };
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    if (!(isAdmin || tieneAcceso("pedidos") || tieneAcceso("fabrica"))) return;
+    const t = setTimeout(() => { try { generarRepartosPrevistos(); } catch (e) { console.error("Reparto previsto:", e); } }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedidos, cristales, persianasAlmacen, currentUser?.id, loading]);
+
+  // ---- Aviso de las 7:00: lo de cristales y compactos que llega mañana (con su reparto previsto) ----
+  // Aparece arriba en el CRM desde las 7:00 y, si el navegador tiene permiso, también como notificación.
+  // OJO: solo salta si alguien tiene el CRM abierto; un aviso automático con el CRM cerrado necesita una función programada del servidor.
+  const [tickMinuto, setTickMinuto] = useState(0);
+  const [avisoMananaAbierto, setAvisoMananaAbierto] = useState(true);
+  useEffect(() => { const i = setInterval(() => setTickMinuto((x) => x + 1), 60000); return () => clearInterval(i); }, []);
+  const pedidosQueLleganManana = () => {
+    const manana = sumarDiasISO(new Date().toISOString().slice(0, 10), 1);
+    return pedidos.filter((pd) => pd.estado !== "Cancelado" && pd.estado !== "Recibido" && (pd.estado === "Realizado" || pd.estado === "Reclamado") && esPedidoCristalOCompacto(pd) && pd.fechaEntregaPrevista === manana);
+  };
+  const textoAvisoPedido = (pd) => {
+    const ob = pd.proyectoId ? proyectos.find((x) => x.id === pd.proyectoId) : null;
+    const prov = proveedores.find((x) => x.id === pd.proveedorId);
+    return `#${pd.numero} · ${tipoPedidoMaterial(pd) === "cristal" ? "Cristales" : "Compactos"}${prov ? ` · ${prov.nombre}` : ""}${ob ? ` · obra #${ob.numero}` : ""}${pd.reparto ? ` · ${textoRepartoPrevisto(pd.reparto)}` : ""}`;
+  };
+  const avisoNavRef = useRef("");
+  useEffect(() => {
+    if (!currentUser || loading || new Date().getHours() < 7) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (avisoNavRef.current === hoy) return;
+    const llegan = pedidosQueLleganManana();
+    if (!llegan.length) return;
+    avisoNavRef.current = hoy;
+    let yaAvisado = false;
+    try { yaAvisado = !!localStorage.getItem(`alumavel_aviso7_${hoy}`); localStorage.setItem(`alumavel_aviso7_${hoy}`, "1"); } catch (e) { /* sin almacenamiento */ }
+    if (!yaAvisado && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try { new Notification(`Mañana llega material (${llegan.length} pedido${llegan.length === 1 ? "" : "s"})`, { body: llegan.map(textoAvisoPedido).join("\n") }); } catch (e) { /* nada */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedidos, currentUser?.id, loading, tickMinuto]);
+
   const iniciarSesionCliente = (id) => {
     setSesionClienteId(id);
     localStorage.setItem("alumavel_sesion_cliente_id", id);
@@ -4836,6 +4980,33 @@ export default function App() {
           );
         })()}
         {(() => {
+          // Desde las 7:00: cristales y compactos que llegan mañana, con el reparto previsto de cada uno
+          if (!currentUser || !(isAdmin || tieneAcceso("pedidos") || tieneAcceso("fabrica")) || new Date().getHours() < 7) return null;
+          const llegan = pedidosQueLleganManana();
+          if (!llegan.length) return null;
+          const permisoNav = typeof Notification !== "undefined" ? Notification.permission : "denied";
+          return (
+            <div className="bg-sky-50 text-sky-900 border-b border-sky-100">
+              <button onClick={() => setAvisoMananaAbierto(!avisoMananaAbierto)} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left hover:bg-sky-100 transition">
+                <Truck size={15} />
+                Mañana llega material: {llegan.length} pedido{llegan.length === 1 ? "" : "s"} de cristales/compactos pendiente{llegan.length === 1 ? "" : "s"} de recibir
+                <span className="ml-auto text-xs font-semibold">{avisoMananaAbierto ? "Ocultar ▲" : "Ver cuáles ▼"}</span>
+              </button>
+              {avisoMananaAbierto && (
+                <div className="px-6 pb-3 space-y-1.5 text-sm">
+                  {llegan.map((pd) => (
+                    <button key={pd.id} onClick={() => openPedidoFromCalendar(pd.id)} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-sky-200 hover:border-sky-400">
+                      {textoAvisoPedido(pd)}
+                      {!pd.reparto && <span className="block text-xs text-sky-700">Reparto previsto: se está preparando…</span>}
+                    </button>
+                  ))}
+                  {permisoNav === "default" && <button onClick={() => { try { Notification.requestPermission().then(() => setTickMinuto((x) => x + 1)); } catch (e) { /* nada */ } }} className="text-xs font-semibold text-sky-800 underline">Activar también el aviso del navegador</button>}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        {(() => {
           // Obras y expedientes de Uxcar a los que les falta algún documento del programa de ventanas
           if (!currentUser || !(isAdmin || tieneAcceso("proyectos"))) return null;
           const activos = ["Pendiente de aceptación", "En proceso"];
@@ -5024,6 +5195,7 @@ export default function App() {
             onVerInstalacion={irAInstalacion}
             onGenerarPedidoFaltante={enviarAPedido}
             onCrearPedidosEspera={crearPedidosEsperaListado}
+            onCrearPedidosDocProveedor={crearPedidosDocProveedor}
             onMarcarPedidoEnviado={marcarPedidoEnviado}
             onActualizarPedido={actualizarPedido}
             onRecordarProveedorSeccion={recordarProveedorSeccion}
@@ -6380,7 +6552,7 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -6456,6 +6628,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         onVerInstalacion={onVerInstalacion}
         onGenerarPedidoFaltante={onGenerarPedidoFaltante}
         onCrearPedidosEspera={onCrearPedidosEspera}
+        onCrearPedidosDocProveedor={onCrearPedidosDocProveedor}
         onMarcarPedidoEnviado={onMarcarPedidoEnviado}
         onActualizarPedido={onActualizarPedido}
         onRecordarProveedorSeccion={onRecordarProveedorSeccion}
@@ -7430,6 +7603,9 @@ async function pdfPedidoBytes(pedido, proveedor, proyecto, materiales, cliente) 
 }
 const bytesADataUrlPdf = (bytes) => { let b = ""; for (let i = 0; i < bytes.length; i++) b += String.fromCharCode(bytes[i]); return `data:application/pdf;base64,${btoa(b)}`; };
 async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) {
+  // Si el pedido lleva el documento original del proveedor (listado de vidrios / pedido compra), es ese el que se abre
+  const original = pedido && pedido.soloDocumentoProveedor ? toArray(pedido.documentos).find((d) => d && d.url) : null;
+  if (original) { window.open(original.url, "_blank", "noopener"); return; }
   const ventana = window.open("", "_blank");
   try {
     const bytes = await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, cliente);
@@ -7443,6 +7619,10 @@ async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) 
 
 // Texto del pedido para mandarlo al proveedor (WhatsApp o email)
 const textoPedidoProveedor = (pedido, proyecto, materiales) => {
+  if (pedido && pedido.soloDocumentoProveedor) {
+    const docs = toArray(pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
+    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}`;
+  }
   const lineas = toArray(pedido.lineas).map((l) => {
     const mat = l.modo === "libre" ? null : toArray(materiales).find((m) => m.id === l.materialId);
     const nombre = l.modo === "libre" ? (l.referencia || "Sin referencia") : (mat ? `${mat.codigo ? mat.codigo + " " : ""}${mat.descripcion || ""}` : "Material");
@@ -7481,6 +7661,8 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
               <span className="font-medium text-slate-800">{prov ? prov.nombre : p.proveedorExterno || <span className="text-amber-700">Sin proveedor</span>}</span>
               <span className="text-slate-500">{toArray(p.lineas).length} línea{toArray(p.lineas).length === 1 ? "" : "s"}{String(p.comentarios || "").includes(":") && /^[^:]{3,40}: Material que falta/.test(p.comentarios || "") ? ` · ${p.comentarios.split(":")[0]}` : ""}</span>
               <span className="text-slate-500">{p.fechaEntregaPrevista ? `Llega ${fmtDate(p.fechaEntregaPrevista)}` : ""}</span>
+              {tipoPedidoMaterial(p) && <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{tipoPedidoMaterial(p) === "cristal" ? "Cristales" : "Compactos"}</span>}
+              {p.reparto && p.estado !== "Recibido" && <span className="text-xs text-violet-700">📍 Reparto previsto: {textoRepartoPrevisto(p.reparto)}</span>}
               <Badge className={ESTADO_PEDIDO_STYLE[p.estado]}>{p.estado}</Badge>
               {onRecibirPedido && !sinPedir && p.estado !== "Recibido" && p.estado !== "Cancelado" && (
                 <>
@@ -7704,7 +7886,9 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // pedidos antes, no se duplican: solo se guarda el listado.
       const origen = l.numero || l.archivo;
       const yaHabia = pedidosObra.some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && pd.origenListado && pd.origenListado === origen);
-      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0 && !(proyecto.origen === "portalUxcar" && UX_SECCIONES_PROPIAS.includes(f.seccion)));
+      // Cristales y compactos NO se piden desde el análisis: se piden con sus documentos del programa de
+      // ventanas (listado de vidrios y pedido compra), cada uno en su pedido, con su proveedor.
+      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
       if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
@@ -7729,7 +7913,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     finally { setLeyendo(false); }
   };
   const filas = listado ? compararListadoConStock(listado, materiales) : [];
-  const faltan = filas.filter((f) => f.falta > 0);
+  const faltan = filas.filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
   const sinAlta = filas.filter((f) => !f.mat && !f.aMedida);
   const yaCreados = pedidosObra.filter((pd) => pd.origenListado && listado && pd.origenListado === (listado.numero || listado.archivo));
   const crear = () => {
@@ -7819,13 +8003,16 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
               {yaCreados.length > 0 && <span className="text-xs text-slate-500">Ya creados con este listado: {yaCreados.map((x) => `#${x.numero}`).join(", ")}</span>}
             </div>
           )}
+          {filas.some((f) => SECCIONES_A_MEDIDA.includes(f.seccion) && f.falta > 0) && (
+            <p className="text-[11px] text-slate-500">Los cristales y los compactos no se piden desde aquí: se piden con sus documentos del programa de ventanas (Listado de vidrios y Pedido compra), cada uno en su pedido aparte y con su proveedor.</p>
+          )}
         </>
       )}
     </div>
   );
 }
 
-function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onCrearPedidosDocProveedor, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -7892,6 +8079,10 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
   // listo para elegir proveedor y revisar antes de guardar.
   const [lineasPedidoAuto, setLineasPedidoAuto] = useState([]);
   const [adjuntosPedidoAuto, setAdjuntosPedidoAuto] = useState([]);
+  // Documentos originales del proveedor (listado de vidrios, pedido compra de compactos), ya
+  // subidos a la obra: son los que se mandan al proveedor. Y proveedor elegido para cada tipo.
+  const [docsPedidoAuto, setDocsPedidoAuto] = useState([]);
+  const [provPedidoAuto, setProvPedidoAuto] = useState({});
   const [leyendoPdfMedidas, setLeyendoPdfMedidas] = useState(false);
   const [erroPdfMedidas, setErrorPdfMedidas] = useState("");
   const [segundosParaPedido, setSegundosParaPedido] = useState(null);
@@ -7910,11 +8101,26 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     onGenerarPedidoFaltante(null, [], proyecto.id, `Pedido para la obra #${proyecto.numero} — ${proyecto.nombre}.`, []);
   };
 
+  // Cada tipo (cristales, compactos) es un pedido independiente, con su proveedor, y lleva su
+  // documento original del programa de ventanas (no un PDF hecho por el CRM).
   const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
     if (lineasFinales.length === 0) return;
-    setLineasPedidoAuto([]);
-    setAdjuntosPedidoAuto([]);
-    onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
+    if (!onCrearPedidosDocProveedor) {
+      // (por si este componente se usa sin la función nueva: como antes)
+      setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]);
+      onGenerarPedidoFaltante(null, lineasFinales, proyecto.id, `Pedido generado a partir de los PDF/fotos de medidas subidos en el proyecto #${proyecto.numero}. Revisa proveedor, precios y líneas antes de enviarlo.`, adjuntosFinales);
+      return;
+    }
+    const grupos = ["cristal", "persianas", ""].map((t) => ({
+      tipo: t,
+      proveedorId: provPedidoAuto[t || "otros"] !== undefined ? provPedidoAuto[t || "otros"] : ((proveedorHabitualDeSeccion(t, proveedores) || {}).id || ""),
+      lineas: lineasFinales.filter((l) => (l.seccionListado || "") === t),
+      documentos: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t).map((d) => ({ id: d.id, nombre: d.nombre, url: d.url })),
+      adjuntosPdf: toArray(adjuntosFinales).filter((a) => (a.tipoPedido || "") === t && !docsPedidoAuto.some((d) => (d.tipoPedido || "") === t && d.nombre === a.nombre)).map(({ nombre, dataUrl }) => ({ nombre, dataUrl })),
+    }));
+    onCrearPedidosDocProveedor(proyecto, grupos);
+    setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({});
+    setTab("pedidos");
   };
 
 
@@ -7952,6 +8158,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
   const manejarSubidaPdfMedidas = async (file, tipoSabido = "") => {
     if (!file) return;
     let docMedidasId = null;
+    let urlDocStorage = ""; // dónde ha quedado el documento original (es el que se manda al proveedor)
     // Los listados del programa de ventanas (análisis de materiales, mano de obra,
     // listado de dibujos) no van aquí: van en "Listado de materiales" (pestaña Pedidos),
     // que crea los pedidos por sección, guarda las horas y cuenta las ventanas.
@@ -7978,6 +8185,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       // en base64 dentro de la base de datos) para que no se quede cortado.
       try {
         const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
+        urlDocStorage = urlStorage;
         docMedidasId = uid();
         guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
       } catch (errSubida) {
@@ -8023,11 +8231,14 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
         setErrorPdfMedidas("Documento guardado, pero no he encontrado líneas de medidas claras en él.");
         return;
       }
-      setLineasPedidoAuto((prev) => {
-        const combinadas = [...prev, ...nuevas];
-        setAdjuntosPedidoAuto((prevAdj) => [...prevAdj, nuevoAdjunto]);
-        return combinadas;
-      });
+      // Qué es (cristales o compactos): por la cabecera del PDF, si no por lo que trae, si no por el nombre.
+      // Cada tipo acaba en su propio pedido, con su documento original.
+      const tipoPedidoDoc = ({ cristales: "cristal", persianas: "persianas" })[tipoSabido || tipoLeido || tipoListadoPorNombre(file.name)] || "";
+      nuevas.forEach((l) => { l.seccionListado = tipoPedidoDoc; });
+      setLineasPedidoAuto((prev) => [...prev, ...nuevas]);
+      setAdjuntosPedidoAuto((prevAdj) => [...prevAdj, { ...nuevoAdjunto, tipoPedido: tipoPedidoDoc }]);
+      if (urlDocStorage) setDocsPedidoAuto((prev) => [...prev, { id: docMedidasId || uid(), nombre: file.name, url: urlDocStorage, tipoPedido: tipoPedidoDoc }]);
+      if (!tipoPedidoDoc) setErrorPdfMedidas("No he podido saber si ese documento es de cristales o de compactos: queda aparte como «material a medida». Si es de otro tipo, súbelo por separado.");
     } catch (err) {
       setErrorPdfMedidas("No se pudo leer el archivo: " + err.message);
     } finally {
@@ -8280,17 +8491,35 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       {/* Aviso de medidas leídas (solo aparece mientras se está preparando un pedido) */}
       {(lineasPedidoAuto.length > 0 || erroPdfMedidas) && (
         <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-3 text-sm">
-          {lineasPedidoAuto.length > 0 && (
-            <>
-              <span className="font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Puedes subir más o crear ya el pedido.</span>
-              <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">
-                Crear pedido
-              </button>
-              <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); }} className="text-sm font-semibold text-rose-600 hover:underline">
-                Cancelar
-              </button>
-            </>
-          )}
+          {lineasPedidoAuto.length > 0 && (() => {
+            // Un pedido INDEPENDIENTE por tipo (cristales / compactos), cada uno con su proveedor
+            const TIPOS = [["cristal", "Cristales"], ["persianas", "Compactos (persianas)"], ["", "Material a medida"]];
+            const bloques = TIPOS.map(([t, nombre]) => ({ t, nombre, clave: t || "otros", n: lineasPedidoAuto.filter((l) => (l.seccionListado || "") === t).length, docs: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t) })).filter((b) => b.n > 0);
+            return (
+              <>
+                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Se crea un pedido aparte por tipo; puedes subir más documentos antes.</div>
+                {bloques.map((b) => {
+                  const habitual = proveedorHabitualDeSeccion(b.t, proveedores);
+                  return (
+                    <div key={b.clave} className="w-full flex flex-wrap items-center gap-2 bg-white/70 border border-[#86D325] rounded-lg px-3 py-2">
+                      <span className="font-semibold text-slate-800">{b.nombre}: {b.n} línea{b.n === 1 ? "" : "s"}</span>
+                      <span className="text-xs text-slate-500">{b.docs.length ? `se manda "${b.docs.map((d) => d.nombre).join('", "')}"` : "sin documento original guardado"}</span>
+                      <Select value={provPedidoAuto[b.clave] !== undefined ? provPedidoAuto[b.clave] : (habitual ? habitual.id : "")} onChange={(e) => setProvPedidoAuto((prev) => ({ ...prev, [b.clave]: e.target.value }))} className="!w-auto text-sm ml-auto">
+                        <option value="">Proveedor (lo eliges luego)…</option>
+                        {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
+                      </Select>
+                    </div>
+                  );
+                })}
+                <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">
+                  {bloques.length > 1 ? `Crear ${bloques.length} pedidos independientes` : "Crear pedido"}
+                </button>
+                <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({}); }} className="text-sm font-semibold text-rose-600 hover:underline">
+                  Cancelar
+                </button>
+              </>
+            );
+          })()}
           {erroPdfMedidas && <p className="w-full text-xs text-rose-600 font-semibold">⚠ {erroPdfMedidas}</p>}
         </div>
       )}
@@ -11887,7 +12116,8 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           cuerpo,
           replyTo: currentUser?.email || "",
           adjuntos: [
-            { nombre: `pedido-${pedido.numero}.pdf`, dataUrl: bytesADataUrlPdf(await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, clienteObra)) },
+            // Cristales y compactos: se manda el documento original del programa de ventanas, no un PDF hecho por el CRM
+            ...(pedido.soloDocumentoProveedor ? [] : [{ nombre: `pedido-${pedido.numero}.pdf`, dataUrl: bytesADataUrlPdf(await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, clienteObra)) }]),
             ...toArray(pedido.adjuntosPdf),
             ...toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => ({ nombre: d.nombre, url: d.url })),
           ],
@@ -11909,7 +12139,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
 
   const enlaceWhatsappProveedor = () => {
     if (!proveedor?.movil) return null;
-    const lineasTexto = pedido.lineas.map((l) => {
+    const lineasTexto = pedido.soloDocumentoProveedor ? "" : pedido.lineas.map((l) => {
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
@@ -11956,6 +12186,10 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           ))}
           <p className="text-sm text-slate-500 mt-1">Compra {fmtDate(pedido.fechaCompra)} · Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}{pedido.creadoPor && ` · Pedido por ${pedido.creadoPor}`}</p>
           <p className="text-sm text-slate-500 mt-0.5">Proyecto: <span className="font-semibold text-slate-700">{proyecto ? `#${proyecto.numero} — ${proyecto.nombre}` : "Stock (sin proyecto asociado)"}</span></p>
+          {tipoPedidoMaterial(pedido) && <p className="text-sm text-slate-500 mt-0.5">Tipo: <span className="font-semibold text-slate-700">{tipoPedidoMaterial(pedido) === "cristal" ? "Cristales" : "Compactos (persianas)"}</span>{pedido.soloDocumentoProveedor ? " · al proveedor se le manda el documento original" : ""}</p>}
+          {pedido.reparto && pedido.estado !== "Recibido" && (
+            <p className="text-sm text-violet-700 mt-0.5">📍 Reparto previsto para su llegada ({fmtDate(pedido.reparto.paraFecha)}): <span className="font-semibold">{textoRepartoPrevisto(pedido.reparto)}</span></p>
+          )}
           <div className="mt-2 max-w-xl">
             <DocumentosPedido documentos={pedido.documentos} adjuntosPdf={pedido.adjuntosPdf}
               carpeta={`documentos-proyectos/pedido-${pedido.id}`}
@@ -14973,7 +15207,7 @@ const rellenarChecklistDesdeListado = (checklist, lineas, pedidosObra) => normal
   const ids = toArray(pedidosObra).filter((pd) => pd.estado !== "Cancelado" && toArray(pd.lineas).some((x) => codigos.has(normCodigo(x.codigoListado)))).map((pd) => pd.id);
   if (c.estado === "no") return c;
   const pedidoIds = [...new Set([...(c.pedidoIds || []), ...ids])];
-  return { ...c, estado: "si", pedidoIds, enStock: pedidoIds.length === 0 };
+  return { ...c, estado: "si", pedidoIds, enStock: pedidoIds.length === 0 && !/^cristal|^persiana/i.test(c.nombre || "") };
 });
 // Rellena "Qué lleva la obra" con lo que se pide en un pedido: lo que lleva el pedido se
 // marca "Sí" y queda enlazado a él. Lo demás no se toca.
@@ -15754,6 +15988,60 @@ function estadoOcupacionPersianas(items) {
     (estado.exps[k] = estado.exps[k] || new Set()).add(x.expediente || "—");
   });
   return estado;
+}
+
+// ---- Reparto previsto: el día antes de que llegue un pedido de cristales o de compactos ----
+// Se decide ya dónde va: cada compacto a su carro y estante, y los caballetes de cristal a un hueco
+// libre del almacén de cristales. Se guarda en el propio pedido (pedido.reparto) y, al recibirlo,
+// se usa ese sitio si sigue libre. Lo reservado por otros pedidos pendientes también cuenta como ocupado.
+// OJO: el número de caballetes que mandará el proveedor no se sabe hasta el albarán; se reserva UN hueco
+// por pedido de cristales (junto a los de la misma obra) y el resto se colocan al recibirlos.
+const sumarDiasISO = (iso, dias) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + dias); return d.toISOString().slice(0, 10); };
+function planRepartoPrevisto(pedido, ctx) {
+  const tipo = tipoPedidoMaterial(pedido);
+  const base = { tipo, fecha: new Date().toISOString().slice(0, 10), paraFecha: pedido.fechaEntregaPrevista || "", expediente: ctx.expediente || "" };
+  if (tipo === "persianas") {
+    const unidades = [];
+    toArray(pedido.lineas).forEach((l) => {
+      const n = Math.max(1, Math.round(parseFloat(l.cantidad) || 1));
+      for (let i = 0; i < n; i++) unidades.push({ id: uid(), lineaId: l.id, ref: l.referencia || "", ancho: l.ancho || "", largo: l.ancho || "", alto: l.alto || "", expediente: ctx.expediente || "—" });
+    });
+    const almacenId = almacenRecepcionPersianas(ctx.almacenes);
+    const carros = toArray(ctx.carros).filter((c) => almacenDe(c) === almacenId);
+    const estado = estadoOcupacionPersianas([...toArray(ctx.persianas).filter((x) => almacenDe(x) === almacenId), ...toArray(ctx.reservasPersianas)]);
+    const r = colocarGrupoPersianas(unidades, ctx.expediente || "—", estantesAlmacenPersianas(carros), estado);
+    const lista = unidades.map((u) => ({ id: u.id, lineaId: u.lineaId, ref: u.ref, ancho: u.ancho, alto: u.alto, expediente: u.expediente, estante: r.res[u.id] || null }));
+    return { ...base, almacenId, persianas: lista, sinSitio: lista.filter((u) => !u.estante).length };
+  }
+  if (tipo === "cristal") {
+    const exps = new Set(numsExpediente(ctx.expediente));
+    const ocupados = [
+      ...toArray(ctx.cristales).filter((c) => c.ubicacion).map((c) => ({ zona: c.ubicacion.zona, fila: c.ubicacion.fila, hueco: c.ubicacion.hueco, expediente: c.expediente, exps: expedientesDeCaballete(c) })),
+      ...toArray(ctx.reservasCristales).map((r) => ({ zona: r.zona, fila: r.fila, hueco: r.hueco, expediente: r.expediente, exps: new Set(numsExpediente(r.expediente)) })),
+    ];
+    const estaOcupado = (z, f, h) => ocupados.some((o) => o.zona === z && o.fila === f && o.hueco === h);
+    const ub = huecoJuntoAExpediente(exps, ocupados) || huecoExpedienteNuevo(ctx.esUxcar ? "arriba" : "abajo", estaOcupado);
+    const piezas = toArray(pedido.lineas).reduce((a, l) => a + (parseFloat(l.cantidad) || 0), 0);
+    return { ...base, cristales: ub ? [{ zona: ub.zona, fila: ub.fila, hueco: ub.hueco, expediente: ctx.expediente || "", piezas }] : [], sinSitio: ub ? 0 : 1 };
+  }
+  return null;
+}
+// Texto corto del reparto previsto de un pedido (para avisos y fichas)
+function textoRepartoPrevisto(rp) {
+  if (!rp) return "";
+  if (rp.tipo === "persianas") {
+    const sitios = toArray(rp.persianas).filter((u) => u.estante);
+    const sin = toArray(rp.persianas).length - sitios.length;
+    const porCarro = {};
+    sitios.forEach((u) => { const k = `carro ${u.estante.carro}`; porCarro[k] = (porCarro[k] || 0) + 1; });
+    const txt = Object.entries(porCarro).map(([k, n]) => `${n} en ${k}`).join(", ");
+    return `${txt || "sin sitio asignado"}${sin ? ` · ${sin} sin sitio (no caben en los carros)` : ""}`;
+  }
+  if (rp.tipo === "cristal") {
+    const c = toArray(rp.cristales)[0];
+    return c ? `caballete en ${ubicacionTexto(c)}` : "sin hueco libre en el almacén de cristales";
+  }
+  return "";
 }
 
 // Reorganizar: se vuelve a colocar todo desde cero, expediente a expediente (en el orden
@@ -17105,7 +17393,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 
   const proyectosEnFabricacion = proyectos.filter((p) => ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
 
-  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && (p.lineas || []).some((l) => !l.confirmadoFabrica));
+  // Pendientes de recibir en fábrica: de momento solo cristales y compactos
+  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
 
   const filtered = useMemo(() => {
     if (!q) return pedidosEnCurso;
@@ -17121,8 +17410,10 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-      const misPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
-      if (misPedidos.length === 0) return false;
+      const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
+      if (todosPedidos.length === 0) return false;
+      // De momento solo se exige que hayan llegado los cristales y los compactos
+      const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
       const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
       const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
@@ -41433,7 +41724,7 @@ async function aplicarPdfEtiquetasObra(file, lotesPrevios, presupuestoNumero) {
 const tipoListadoPorNombre = (nombre) => {
   const n = String(nombre || "");
   if (/presupuesto|etiqueta|hoja\s*de\s*corte|dibujo|an[aá]li(sis|tica)|mano\s*de\s*obra/i.test(n)) return "";
-  return /cristal|vidrio/i.test(n) ? "cristales" : /persiana|caj[oó]n|cajas/i.test(n) ? "persianas" : "";
+  return /cristal|vidrio/i.test(n) ? "cristales" : /persiana|caj[oó]n|cajas|compacto/i.test(n) ? "persianas" : "";
 };
 const tipoListadoPorLineas = (refs) => {
   const t = refs.join(" \n ");
@@ -43434,8 +43725,10 @@ const tabInicialFabrica = { actual: null };
 function calcListoParaFabricar(proyectos, pedidos) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-    const misPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
-    if (misPedidos.length === 0) return false;
+    const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
+    if (todosPedidos.length === 0) return false;
+    // De momento solo se exige que hayan llegado los cristales y los compactos
+    const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
     const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
     const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
     const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
