@@ -19332,7 +19332,7 @@ function FirmaCanvas({ onGuardar, onCancel, titulo = "Firma", pedirNombre = true
   const borrar = () => { const c = canvasRef.current; c.getContext("2d").clearRect(0, 0, c.width, c.height); setHayTrazo(false); };
   const guardar = () => {
     if (!hayTrazo) { alert("Falta la firma."); return; }
-    if (pedirNombre && !nombre.trim()) { alert("Escribe el nombre de quien firma."); return; }
+    if (pedirNombre && dni.replace(/[^0-9a-zA-Z]/g, "").length < 7) { alert("Falta el DNI de quien firma (obligatorio)."); return; }
     onGuardar({ imagen: canvasRef.current.toDataURL("image/png"), nombre: nombre.trim(), dni: dni.trim(), fecha: new Date().toISOString() });
   };
   return (
@@ -19341,8 +19341,8 @@ function FirmaCanvas({ onGuardar, onCancel, titulo = "Firma", pedirNombre = true
         <h3 className="font-display font-bold text-slate-800 mb-2">{titulo}</h3>
         {pedirNombre && (
           <div className="grid grid-cols-2 gap-2 mb-2">
-            <Field label="Nombre de quien firma"><TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} /></Field>
-            <Field label="DNI (opcional)"><TextInput value={dni} onChange={(e) => setDni(e.target.value)} /></Field>
+            <Field label="Nombre de quien firma (opcional)"><TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} /></Field>
+            <Field label="DNI (obligatorio) *"><TextInput value={dni} onChange={(e) => setDni(e.target.value)} /></Field>
           </div>
         )}
         <div className="text-xs text-slate-500 mb-1">Firma dentro del recuadro:</div>
@@ -19920,6 +19920,21 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button onClick={() => setSubiendoDoc(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md">Subirlo</button>
           </div>
         )}
+        {abierto.documentoEntrega && abierto.documentoEntrega.url && (() => {
+          const d = abierto.documentoEntrega;
+          const esImg = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(String(d.nombre || "") + " " + String(d.url || ""));
+          return (
+            <details open className="bg-white border border-slate-200 rounded-lg">
+              <summary className="px-4 py-2.5 cursor-pointer text-sm font-semibold text-slate-700">Dibujos de las ventanas (lo que se firma) <span className="font-normal text-slate-400">· también van en las hojas siguientes del PDF</span></summary>
+              <div className="p-2 border-t border-slate-100">
+                {esImg
+                  ? <img src={d.url} alt="Tipo plano" className="w-full max-h-[70vh] object-contain" />
+                  : <iframe src={d.url} title="Tipo plano" className="w-full h-[70vh] rounded border border-slate-200" />}
+                <a href={d.url} target="_blank" rel="noreferrer" className="inline-block mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">Abrir en pantalla completa</a>
+              </div>
+            </details>
+          );
+        })()}
         {toArray(caballetes).filter((c) => c.obra && c.obra.proyectoId === abierto.id && c.estado !== "libre").length > 0 && (
           <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 text-sm text-amber-900">
             <b>Caballetes de esta obra:</b> {toArray(caballetes).filter((c) => c.obra && c.obra.proyectoId === abierto.id && c.estado !== "libre").map((c) => `${c.numero}${c.ubicacion ? ` (${c.ubicacion})` : ""}${c.estado === "fuera" ? " · ya en obra" : ""}`).join(" · ")}
