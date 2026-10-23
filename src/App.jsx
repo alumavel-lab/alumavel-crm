@@ -5622,6 +5622,7 @@ export default function App() {
             onRecibirConAlbaran={recibirPedidoConAlbaran}
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
+            vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline}
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
@@ -18291,7 +18292,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
@@ -18788,7 +18789,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
 
       {tab === "reparto" && (
         <SalidasFabrica proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} caballetes={caballetesVentanas} config={configVentanasFab} onGuardarCaballete={onGuardarCaballete}
-          onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} onMoverEstado={onMoverEstado} />
+          onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFechaReparto} onMoverEstado={onMoverEstado}
+          usuarios={usuarios} vehiculos={vehiculos} onActualizarProyecto={onActualizarProyecto} />
       )}
     </div>
   );
@@ -18871,11 +18873,129 @@ function RepartoTab({ proyectos, clientes, onVerProyecto, onCambiarFecha, onMove
   );
 }
 
+// ── Reparto por ciudades: eliges la ciudad, metes las obras que van y a cada una le asignas chófer, furgoneta y fecha ──
+const CIUDADES_REPARTO = PROVINCIAS_REPARTO.filter((c) => c !== "Otra ciudad...");
+const ciudadDeReparto = (p) => {
+  if (!p.provinciaReparto) return "Sin ciudad";
+  return p.provinciaReparto === "Otra ciudad..." ? ((p.ciudadRepartoManual || "").trim() || "Sin ciudad") : p.provinciaReparto;
+};
+// Ciudad que «parece» tener una obra por sus datos (ubicación de la obra, dirección o población del cliente)
+const ciudadSugeridaObra = (p, cliente) => {
+  const txt = [p.ubicacion, p.nombre, cliente && cliente.direccion, cliente && cliente.poblacion, cliente && cliente.ciudad, cliente && cliente.provincia, cliente && cliente.localidad].filter(Boolean).join(" ").toLowerCase();
+  const mapa = [["Almería", /almer[ií]a/], ["Granada", /granada/], ["Málaga", /m[aá]laga/], ["Murcia", /murcia/], ["Valencia", /valencia/], ["Alicante", /alicante|alacant/]];
+  const hit = mapa.find(([, re]) => re.test(txt));
+  return hit ? hit[0] : "";
+};
+function RepartoPorCiudades({ proyectos, clientes, usuarios = [], vehiculos = [], onVerProyecto, onActualizar, onMoverEstado, caballetesInfo }) {
+  const [ciudad, setCiudad] = useState("");
+  const [buscar, setBuscar] = useState("");
+  const vivos = toArray(proyectos).filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo));
+  const enReparto = vivos.filter((p) => p.estadoLogistica === "Reparto (camión)");
+  const cli = (p) => toArray(clientes).find((c) => c.id === p.clienteId);
+  const cliNombre = (p) => (cli(p) || {}).nombre || "—";
+  const esListo = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
+  const otras = [...new Set(enReparto.map(ciudadDeReparto).filter((c) => !CIUDADES_REPARTO.includes(c) && c !== "Sin ciudad"))].sort();
+  const columnas = [...CIUDADES_REPARTO, ...otras, "Sin ciudad"];
+  const deCiudad = (c) => enReparto.filter((p) => ciudadDeReparto(p) === c);
+  const nombreUsuario = (u) => `${u.nombre || ""} ${u.apellidos || ""}`.trim() || u.email || u.id;
+  const sel = ciudad && columnas.includes(ciudad) ? ciudad : "";
+  const obras = sel ? deCiudad(sel).sort((a, b) => (a.fechaReparto || "9999").localeCompare(b.fechaReparto || "9999") || (esListo(b) ? 1 : 0) - (esListo(a) ? 1 : 0)) : [];
+  // Obras que se pueden meter en la ciudad: las que aún no son reparto (primero las que parecen de esa ciudad y las ya fabricadas)
+  const q = buscar.trim().toLowerCase();
+  const candidatas = !sel ? [] : vivos.filter((p) => p.estadoLogistica !== "Reparto (camión)" && p.origen !== "portalUxcar")
+    .map((p) => ({ p, sug: ciudadSugeridaObra(p, cli(p)) }))
+    .filter(({ p }) => !q || `${p.numero} ${p.nombre} ${cliNombre(p)} ${p.ubicacion || ""}`.toLowerCase().includes(q))
+    .sort((a, b) => (b.sug === sel ? 1 : 0) - (a.sug === sel ? 1 : 0) || (esListo(b.p) ? 1 : 0) - (esListo(a.p) ? 1 : 0) || String(a.p.numero).localeCompare(String(b.p.numero), "es", { numeric: true }))
+    .slice(0, 40);
+  const meter = (p) => onActualizar(p.id, { estadoLogistica: "Reparto (camión)", provinciaReparto: CIUDADES_REPARTO.includes(sel) ? sel : "Otra ciudad...", ...(CIUDADES_REPARTO.includes(sel) ? {} : { ciudadRepartoManual: sel === "Sin ciudad" ? "" : sel }) });
+  const quitar = (p) => { if (window.confirm(`¿Quitar #${p.numero} del reparto de ${sel}? Queda sin forma de salida.`)) onActualizar(p.id, { estadoLogistica: "Sin definir", provinciaReparto: "", choferRepartoId: "", vehiculoRepartoId: "" }); };
+  const sinChofer = enReparto.filter((p) => !p.choferRepartoId).length;
+  return (
+    <div className="space-y-4">
+      <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">
+        Elige una ciudad, mete las obras que van y asigna a cada una el <b>chófer</b>, la <b>furgoneta</b> y el día. {enReparto.length > 0 && <span>Hay <b>{enReparto.length}</b> obra{enReparto.length === 1 ? "" : "s"} en reparto{sinChofer > 0 ? <>, <b className="text-amber-700">{sinChofer} sin chófer</b></> : ""}.</span>}
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+        {columnas.map((c) => {
+          const lista = deCiudad(c);
+          if (c === "Sin ciudad" && !lista.length) return null;
+          const listas = lista.filter(esListo).length, sinC = lista.filter((p) => !p.choferRepartoId).length;
+          return (
+            <button key={c} onClick={() => { setCiudad(c === sel ? "" : c); setBuscar(""); }} className={`text-left rounded-lg border p-3 transition ${sel === c ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white border-slate-200 hover:border-[#2E8B57]"}`}>
+              <div className="font-display font-bold flex items-center gap-1.5"><Truck size={15} /> {c}</div>
+              <div className={`text-xs mt-1 ${sel === c ? "text-white/90" : "text-slate-500"}`}>{lista.length} obra{lista.length === 1 ? "" : "s"}{lista.length ? ` · ${listas} lista${listas === 1 ? "" : "s"}` : ""}</div>
+              {sinC > 0 && <div className={`text-[11px] font-semibold mt-0.5 ${sel === c ? "text-amber-200" : "text-amber-700"}`}>{sinC} sin chófer</div>}
+            </button>
+          );
+        })}
+      </div>
+      {!sel && <p className="text-sm text-slate-400">Toca una ciudad para ver sus obras y asignarlas.</p>}
+      {sel && (
+        <div className="space-y-3">
+          <h3 className="font-display font-bold text-slate-800">{sel} ({obras.length})</h3>
+          {obras.length === 0 && <p className="text-sm text-slate-400">Todavía no hay ninguna obra en {sel}. Añade una abajo.</p>}
+          {obras.map((p) => (
+            <div key={p.id} className={`border rounded-lg p-3 ${esListo(p) ? "bg-white border-slate-200" : "bg-slate-50 border-slate-200"}`}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <button onClick={() => onVerProyecto(p.id)} className="text-left">
+                  <div className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57] flex items-center gap-2">#{p.numero} — {p.nombre}
+                    {esListo(p) ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Listo</Badge> : <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{p.estadoTrabajo}</Badge>}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">{cliNombre(p)}{p.ubicacion ? ` · ${p.ubicacion}` : ""} · Entrega prevista {fmtDate(p.fechaEntregaPrevista) || "—"}</div>
+                  {caballetesInfo && caballetesInfo(p)}
+                </button>
+                <button onClick={() => quitar(p)} className="text-xs text-red-600 hover:underline">Quitar de {sel}</button>
+              </div>
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <label className="text-xs text-slate-500 flex flex-col gap-0.5">Chófer
+                  <select value={p.choferRepartoId || ""} onChange={(e) => onActualizar(p.id, { choferRepartoId: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm text-slate-800 min-w-[150px]">
+                    <option value="">— sin asignar —</option>
+                    {toArray(usuarios).map((u) => <option key={u.id} value={u.id}>{nombreUsuario(u)}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex flex-col gap-0.5">Furgoneta
+                  <select value={p.vehiculoRepartoId || ""} onChange={(e) => onActualizar(p.id, { vehiculoRepartoId: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm text-slate-800 min-w-[150px]">
+                    <option value="">— sin asignar —</option>
+                    {toArray(vehiculos).map((v) => <option key={v.id} value={v.id}>{v.nombre}{v.tipo && v.tipo !== v.nombre ? ` (${v.tipo})` : ""}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500 flex flex-col gap-0.5">Día de reparto
+                  <input type="date" value={p.fechaReparto || ""} onChange={(e) => onActualizar(p.id, { fechaReparto: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5 text-sm text-slate-800" />
+                </label>
+                {esListo(p) && onMoverEstado && !p.llevaInstalacion && (
+                  <button onClick={() => { if (window.confirm(`¿#${p.numero} entregado?`)) onMoverEstado(p.id, "Entregado"); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-2 rounded-md">Entregado</button>
+                )}
+              </div>
+            </div>
+          ))}
+          <div className="border border-dashed border-slate-300 rounded-lg p-3 bg-white">
+            <div className="text-sm font-semibold text-slate-700 mb-2">Añadir una obra a {sel}</div>
+            <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Busca por número, nombre, cliente o dirección" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm mb-2" />
+            <div className="max-h-72 overflow-auto divide-y divide-slate-100">
+              {candidatas.length === 0 && <p className="text-xs text-slate-400 py-2">No hay obras que mostrar.</p>}
+              {candidatas.map(({ p, sug }) => (
+                <div key={p.id} className="py-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm text-slate-800">#{p.numero} — {p.nombre} <span className="text-xs text-slate-500">· {cliNombre(p)}</span>
+                    {sug === sel && <span className="ml-2 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">parece de {sel}</span>}
+                    {sug && sug !== sel && <span className="ml-2 text-[11px] text-slate-500">parece de {sug}</span>}
+                    {esListo(p) && <span className="ml-2 text-[11px] font-bold text-emerald-700">Listo</span>}
+                  </div>
+                  <button onClick={() => meter(p)} className="text-xs font-semibold px-2.5 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50">Meter en {sel}</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Salidas de fábrica: todo lo terminado sale por una de tres vías y en las tres las ventanas
 // van paletizadas en caballetes. Reparto (camión) es la pestaña de siempre (el albarán lo
 // firma el cliente con el chófer). Recogida en fábrica e Instalación (montadores) se
 // controlan aquí: qué caballetes lleva cada obra y, al salir, quedan pendientes de devolver.
-function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config, onGuardarCaballete, onVerProyecto, onCambiarFecha, onMoverEstado }) {
+function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config, onGuardarCaballete, onVerProyecto, onCambiarFecha, onMoverEstado, usuarios = [], vehiculos = [], onActualizarProyecto }) {
   const [vista, setVista] = useState("reparto");
   const cap = capacidadCaballetes(config);
   const hoy = new Date().toISOString().slice(0, 10);
@@ -18955,7 +19075,9 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
           <b>Sin forma de salida:</b> {sinDefinir.map((p) => <button key={p.id} onClick={() => onVerProyecto(p.id)} className="underline mr-2">#{p.numero} {p.nombre}</button>)} — ponles en la ficha del proyecto si es reparto, recogida o lleva instalación, para que aparezcan aquí.
         </div>
       )}
-      {vista === "reparto" && <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFecha} onMoverEstado={onMoverEstado} caballetesInfo={bloqueCaballetes} />}
+      {vista === "reparto" && (onActualizarProyecto
+        ? <RepartoPorCiudades proyectos={proyectos} clientes={clientes} usuarios={usuarios} vehiculos={vehiculos} onVerProyecto={onVerProyecto} onActualizar={onActualizarProyecto} onMoverEstado={onMoverEstado} caballetesInfo={bloqueCaballetes} />
+        : <RepartoTab proyectos={proyectos} clientes={clientes} onVerProyecto={onVerProyecto} onCambiarFecha={onCambiarFecha} onMoverEstado={onMoverEstado} caballetesInfo={bloqueCaballetes} />)}
       {vista === "recogida" && (
         <div className="space-y-2">
           <div className="px-4 py-3 rounded-md bg-teal-50 border border-teal-200 text-teal-800 text-sm">Obras que recoge el cliente en fábrica. Lo mejor es que firme el albarán en <b>Albaranes → Repartos y recogidas</b>: la obra pasa a Entregado, a "Pendiente de facturar" y sus caballetes quedan pendientes de devolver. Si no se firma albarán, usa los botones de aquí.</div>
