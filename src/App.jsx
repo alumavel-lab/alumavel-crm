@@ -41594,7 +41594,13 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   const hechosG = estado.grupos || {};
   const nHechos = listaGrupos.filter((g) => hechosG[claveGrupo(g.gk)]).length;
   const esperadas = (o, sec) => toArray(o.lineas).filter((l) => l.seccion === sec).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
-  const llegPers = (o) => itemsP.filter((x) => !x.entregada && deObraL(o.expNums, x.expediente)).length;
+  const almsP = toArray(ctx.almacenesPersianas);
+  const tipoAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana";
+  const nomAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || {}).nombre || "";
+  const itemsObra = (o, tipo) => itemsP.filter((x) => !x.entregada && tipoAlm(x) === tipo && deObraL(o.expNums, x.expediente));
+  const llegPers = (o) => itemsObra(o, "persiana").length;
+  const sitiosItems = (xs) => [...new Set(xs.map((x) => (x.estante ? `${almsP.length > 1 ? nomAlm(x) + " · " : ""}${textoEstante(x.estante)}` : "sin colocar")))].slice(0, 3);
+  const sitiosCris = (o) => [...new Set(cristales.filter((c) => deObraL(o.expNums, c.expediente) || toArray(c.piezas).some((q) => deObraL(o.expNums, q.expediente || c.expediente))).map((c) => `Caballete: ${textoSitioCab(c)}`))].slice(0, 3);
   const llegCris = (o) => cristales.reduce((a, c) => {
     const ps = toArray(c.piezas).filter((p) => deObraL(o.expNums, p.expediente || c.expediente));
     if (ps.length) return a + ps.reduce((b, p) => b + (parseFloat(p.cantidad) || 1), 0);
@@ -41602,12 +41608,13 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   }, 0);
   const accDe = (x) => { const a = accesoriosDeObra({ nombre: x.obra.nombre, listadoMateriales: { lineas: x.obra.lineas } }); const g = (id) => a.grupos.find((y) => y.id === id) || {}; return { mosq: g("mosquitera"), post: g("postigo") }; };
   const marcaAcc = (x, id) => (matObra[x.id] || {})[id];
-  const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera"), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
+  const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqLleg: itemsObra(x.obra, "mosquitera").length, sitiosP: sitiosItems(itemsObra(x.obra, "persiana")), sitiosM: sitiosItems(itemsObra(x.obra, "mosquitera")), sitiosC: sitiosCris(x.obra), mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera") && !(itemsObra(x.obra, "mosquitera").length >= Math.max(1, (ac.mosq.uds || 1))), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
   const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce || x.mosqFalta || x.postFalta).length;
   const marcarAcc = (x, id) => { const hecho = marcaAcc(x, id); fbSet(ref(fbDb, `materialObra/${x.id}/${id}`), hecho ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message)); };
   const celdaAcc = (x, id, nombre) => {
     const g = id === "mosquitera" ? x.ac.mosq : x.ac.post;
     if (!g.lleva) return <span className="text-slate-400">No lleva</span>;
+    if (id === "mosquitera" && x.mosqLleg >= Math.max(1, g.uds || 1)) return <span className="text-emerald-700 font-bold">✓ En almacén <span className="font-normal text-[11px] text-slate-600 block">{x.sitiosM.join(" · ")}</span></span>;
     const m = marcaAcc(x, id);
     const ud = g.lineas && g.lineas.length ? ` · ${g.uds} ud.` : "";
     if (m) return <span className="text-emerald-700 font-bold">✓ Terminado{ud} <button onClick={() => marcarAcc(x, id)} className="font-normal text-[11px] text-slate-400 underline ml-1">quitar</button></span>;
@@ -41623,6 +41630,16 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
     fbSet(ruta("todo"), { por: quien, en: Date.now(), sinMarcar, obrasConFaltas: faltan, obras: obras.length }).catch((e) => alert("No se pudo guardar: " + e.message));
   };
   const quitarTodo = () => { if (window.confirm("¿Quitar la confirmación de \"todo puesto\"?")) fbSet(ruta("todo"), null).catch(() => {}); };
+  const imprimirLista = (g) => {
+    const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const periodo = modo === "dia" ? fmtDate(base) : `semana del ${fmtDate(dias[0])} al ${fmtDate(dias[4])}`;
+    const filas = g.lineas.map((l) => `<tr><td style="border:1px solid #333;padding:6px;text-align:center;font-weight:bold;width:60px">${esc(Math.round(l.uds * 100) / 100)}</td><td style="border:1px solid #333;padding:6px">${esc(l.descripcion)}${l.color ? " · " + esc(l.color) : ""} <span style="color:#666">${esc(l.codigo)}</span></td><td style="border:1px solid #333;padding:6px">${esc(ubicDe(l))}</td><td style="border:1px solid #333;padding:6px;width:40px"></td></tr>`).join("");
+    const html = `<html><head><meta charset="utf-8"><title>${esc(g.gk)} · ${esc(periodo)}</title></head><body style="font-family:Arial;font-size:13px;padding:24px">
+      <h2 style="margin:0 0 4px">${esc(g.gk)}</h2><div style="color:#555;margin-bottom:12px">Preparación de material · ${esc(periodo)} · ${g.lineas.length} referencias</div>
+      <table style="width:100%;border-collapse:collapse"><tr style="background:#f1f5f9"><th style="border:1px solid #333;padding:6px">Uds</th><th style="border:1px solid #333;padding:6px;text-align:left">Referencia</th><th style="border:1px solid #333;padding:6px;text-align:left">Dónde está</th><th style="border:1px solid #333;padding:6px">✓</th></tr>${filas}</table></body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
+  };
   const th = "px-3 py-2 text-left text-xs uppercase text-slate-500";
   return (
     <div className="space-y-5">
@@ -41664,8 +41681,8 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
                     <tr key={x.id}>
                       <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
                       <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
-                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}</td>
-                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}</td>
+                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}{x.sitiosP.length > 0 && <div className="text-[11px] text-slate-600 mt-0.5">{x.sitiosP.join(" · ")}</div>}</td>
+                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}{x.sitiosC.length > 0 && <div className="text-[11px] text-slate-600 mt-0.5">{x.sitiosC.join(" · ")}</div>}</td>
                       <td className={`px-3 py-2 ${x.mosqFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "mosquitera")}</td>
                       <td className={`px-3 py-2 ${x.postFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "postigo")}</td>
                     </tr>
@@ -41687,6 +41704,7 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
                       <div className="flex items-center gap-3 px-3 py-2">
                         <span className="font-semibold text-slate-800 mr-auto">{g.gk} <span className="text-slate-400 font-normal text-xs">({g.lineas.length} referencias)</span></span>
                         {h ? <span className="text-xs text-emerald-700 font-semibold">✓ {(h.por || "").split("@")[0]}</span> : null}
+                        <button onClick={() => imprimirLista(g)} className="px-3 py-1.5 rounded-md text-xs font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">🖨 Imprimir</button>
                         <button onClick={() => tick(g.gk)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparado"}</button>
                       </div>
                       <div className="divide-y divide-slate-100 border-t border-slate-100">
