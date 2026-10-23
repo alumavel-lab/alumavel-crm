@@ -15055,7 +15055,7 @@ async function leerDocumentoCristalConIA(file, prompt) {
 async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60) {
   const contentBlock = await bloqueDeArchivoParaIA(file);
   const jobId = uid();
-  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: maxTokens || 8000, contentBlock, prompt });
+  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: maxTokens || 8000, thinking: { type: "disabled" }, contentBlock, prompt });
   await fetch("/.netlify/functions/anthropic-proxy-background", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),
   });
@@ -15256,7 +15256,26 @@ async function leerListadoMateriales(file) {
     "L|perfiles|5806|PERFIL UNION L|BLANCO|1|6|0|0|10.73|10.73",
     "L|cristal|4/20/4 MATE|CAMARA 4/20/4 MATE||1|0|419|1724|30.31|30.31",
   ].join("\n");
-  const texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000);
+  // El análisis puede tener muchas páginas y la IA se quedaba sin espacio (se gastaba "pensando"):
+  // se lee página a página y se juntan los textos. Si una página falla, se reintenta sola.
+  let texto = "";
+  const esPdfAn = /\.pdf$/i.test(file.name || "") || file.type === "application/pdf";
+  const paginas = esPdfAn ? await dividirPdfEnTrozos(file, 1) : null;
+  if (paginas && paginas.length) {
+    const partes = [];
+    for (let i = 0; i < paginas.length; i++) {
+      let t = "", ultimoError = null;
+      for (let k = 0; k < 2 && !t; k++) {
+        try { t = await pedirTextoIAEnSegundoPlano(paginas[i].archivo, prompt, 16000); } catch (e) { ultimoError = e; }
+      }
+      if (!t && i === 0) throw ultimoError || new Error("la IA no ha devuelto nada");
+      // Solo la primera página aporta TIPO y cabecera; en las demás se ignoran para no pisarlas
+      partes.push(i === 0 ? t : String(t).split(/\r?\n/).filter((f) => /^L\|/.test(f.trim())).join("\n"));
+    }
+    texto = partes.join("\n");
+  } else {
+    texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000);
+  }
   const aNum = (x) => { const t = String(x || "").trim().replace(/[€\s]|mm$/gi, ""); return parseFloat(/,\d{1,3}$/.test(t) ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "")) || 0; };
   const o = { tipo: "", numero: "", referencia: "", cliente: "", fecha: "", horas: 0, superficies: { m2: 0, importe: 0 } };
   const crudas = [];
