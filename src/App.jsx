@@ -5547,7 +5547,7 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
-            incidencias, proyectos, clientes, proveedores, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
+            incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
@@ -13895,6 +13895,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "lista" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Cristales (medidas y viviendas)
         </button>
+        <button onClick={() => setSubTab("expedientes")}
+          className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${subTab === "expedientes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Expedientes con material
+        </button>
         <button onClick={() => setSubTab("trabajo")}
           className={`px-4 py-2 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${subTab === "trabajo" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Trabajo {nEnTrabajo > 0 && <Badge className="bg-sky-50 text-sky-700 ring-sky-200">{nEnTrabajo}</Badge>}
@@ -14051,6 +14055,21 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       {subTab === "lista" && (
         <ListaCristalesSueltos cristales={cristales} filtros={filtros} onUpdate={onUpdate} />
       )}
+
+      {subTab === "expedientes" && (() => {
+        const grupos = {};
+        cristales.forEach((c) => (c.piezas || []).forEach((p) => {
+          if (p.puesto) return; // ya colocado en la ventana: no está en el almacén
+          const k = numsExpediente(p.expediente || c.expediente)[0] || String(p.expediente || c.expediente || "").trim() || "—";
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set() };
+          const n = parseFloat(p.cantidad) || 1;
+          g.uds += n;
+          if (!c.ubicacion) g.aparte += n;
+          g.cabs.add(`Cab. ${c.lote || c.numero || "?"}${c.ubicacion ? "" : " (pendiente)"}`);
+        }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs] }));
+        return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" />;
+      })()}
 
       {subTab === "trabajo" && (
         <TrabajoCristales cristales={cristales} filtros={filtros} />
@@ -16490,6 +16509,104 @@ const CLAVE_ALMACEN_PERSIANAS_SEL = "alumavel_almacen_persianas_sel";
 
 // Varios almacenes de persianas y de mosquiteras (en varios sitios). Cada uno con sus carros.
 // "Duplicar" copia solo los carros (vacíos), nunca lo que hay dentro.
+// ── Listado «Expedientes con material»: qué expedientes tienen cosas ahora mismo en el almacén ──
+// Colores de perfil de una obra, del más usado al menos (salen de las líneas de PERFILES del listado de materiales).
+const coloresPerfilDeObra = (p) => {
+  const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
+  const contar = (filtro) => {
+    const m = {};
+    lineas.filter(filtro).forEach((l) => {
+      const c = String(l.color || "").trim().replace(/\s+/g, " ").toUpperCase();
+      if (c) m[c] = (m[c] || 0) + (parseFloat(l.uds) || 1);
+    });
+    return Object.entries(m).sort((x, y) => y[1] - x[1]).map(([k]) => k);
+  };
+  // primero el color de los perfiles (es el del PVC); si el listado no trae perfiles con color, el de cualquier otra línea
+  const dePerfiles = contar((l) => l.seccion === "perfiles");
+  return dePerfiles.length ? dePerfiles : contar(() => true);
+};
+// Datos de la obra de un expediente: horas de fabricación (las puestas a mano o, si no, las del «Listado mano de obra»
+// al dar de alta la obra; si no hay ninguna, null: no se inventa nada) y color de perfil.
+const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning) => {
+  const nums = numsExpediente(exp);
+  if (!nums.length) return null;
+  const p = toArray(proyectos).find((x) => numsExpediente(x.numero).some((n) => nums.includes(n)));
+  if (!p) return null;
+  // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
+  const v = ventanasDeObra(p, uxExpedientes);
+  const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiemposPlanning, p.listadoMateriales && p.listadoMateriales.horas);
+  const cols = coloresPerfilDeObra(p);
+  return { obra: `#${p.numero}${p.nombre ? " " + p.nombre : ""}`, horas: r.horas > 0 ? r.horas : null, origenHoras: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas", color: cols[0] || "", otrosColores: cols.slice(1) };
+};
+// filas: [{ exp, uds, sitios: [texto], aparte: nº de unidades sin ubicar (opcional) }]
+function ExpedientesConMaterial({ filas, proyectos, cosa }) {
+  const ctxH = React.useContext(IncidenciasCristalCtx) || {};
+  const [orden, setOrden] = useState("exp");
+  const [buscar, setBuscar] = useState("");
+  const [colorSel, setColorSel] = useState("");
+  const SIN = "SIN COLOR";
+  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }) }));
+  const colorDe = (f) => (f.h && f.h.color) || SIN;
+  const cuentaColor = {};
+  conHoras.forEach((f) => { cuentaColor[colorDe(f)] = (cuentaColor[colorDe(f)] || 0) + 1; });
+  // el blanco siempre el primero; el resto por orden alfabético y «sin color» al final
+  const listaColores = Object.keys(cuentaColor).sort((x, y) => (/blanc/i.test(y) ? 1 : 0) - (/blanc/i.test(x) ? 1 : 0) || (x === SIN) - (y === SIN) || x.localeCompare(y, "es"));
+  const porExp = (x, y) => String(x.exp).localeCompare(String(y.exp), "es", { numeric: true });
+  const q = buscar.trim().toLowerCase();
+  const lista = conHoras
+    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
+    .sort((x, y) => orden === "horas" ? ((y.h && y.h.horas) || 0) - ((x.h && x.h.horas) || 0) || porExp(x, y)
+      : orden === "color" ? listaColores.indexOf(colorDe(x)) - listaColores.indexOf(colorDe(y)) || porExp(x, y)
+      : porExp(x, y));
+  const totalUds = lista.reduce((t, f) => t + (f.uds || 0), 0);
+  const totalHoras = lista.reduce((t, f) => t + ((f.h && f.h.horas) || 0), 0);
+  const sinHoras = lista.filter((f) => !f.h || !f.h.horas).length;
+  const chip = (valor, texto) => (
+    <button key={valor || "todos"} onClick={() => setColorSel(valor)} className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${colorSel === valor ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}>{texto}</button>
+  );
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm text-slate-600"><b>{lista.length}</b> expediente{lista.length === 1 ? "" : "s"} con {cosa} ahora mismo · {totalUds} en total{totalHoras > 0 ? ` · ${String(Math.round(totalHoras * 10) / 10).replace(".", ",")} h` : ""}</div>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, obra, color o sitio…" className="ml-auto border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <select value={orden} onChange={(e) => setOrden(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
+          <option value="exp">Ordenar por expediente</option>
+          <option value="color">Ordenar por color (blanco primero)</option>
+          <option value="horas">Ordenar por más horas</option>
+        </select>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs text-slate-500 mr-1">Color de hoy:</span>
+        {chip("", `Todos (${conHoras.length})`)}
+        {listaColores.map((c) => chip(c, `${c === SIN ? "Sin color" : c.charAt(0) + c.slice(1).toLowerCase()} (${cuentaColor[c]})`))}
+      </div>
+      {lista.length === 0 ? (
+        <div className="text-sm text-slate-400 text-center py-8 border border-dashed border-slate-300 rounded-lg">No hay {cosa} en el almacén con ese filtro.</div>
+      ) : (
+        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
+              <tr><th className="text-left px-3 py-2">Expediente</th><th className="text-left px-3 py-2">Obra</th><th className="text-left px-3 py-2">Color</th><th className="text-right px-3 py-2">{cosa}</th><th className="text-left px-3 py-2">Dónde está</th><th className="text-right px-3 py-2">Horas fabricación</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((f) => (
+                <tr key={f.exp} className="border-t border-slate-100 align-top">
+                  <td className="px-3 py-2 font-bold">EXP {f.exp}</td>
+                  <td className="px-3 py-2 text-slate-600">{f.h ? f.h.obra : <span className="text-slate-400">no encuentro la obra</span>}</td>
+                  <td className="px-3 py-2 text-xs">{colorDe(f) === SIN ? <span className="text-slate-400">—</span> : <span className="font-semibold">{colorDe(f)}</span>}{f.h && f.h.otrosColores.length > 0 && <div className="text-[11px] text-amber-700">+ {f.h.otrosColores.join(", ")}</div>}</td>
+                  <td className="px-3 py-2 text-right font-mono-num">{f.uds}{f.aparte > 0 && <div className="text-[11px] text-amber-700 font-semibold">{f.aparte} sin ubicar</div>}</td>
+                  <td className="px-3 py-2 text-xs text-slate-600">{toArray(f.sitios).join(" · ") || "—"}</td>
+                  <td className="px-3 py-2 text-right font-mono-num">{f.h && f.h.horas ? <>{`${String(f.h.horas).replace(".", ",")} h`}{f.h.origenHoras === "estimadas" && <div className="text-[11px] text-slate-400">estimadas</div>}</> : <span className="text-slate-400">sin horas</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {sinHoras > 0 && <div className="text-xs text-slate-500">{sinHoras} expediente{sinHoras === 1 ? "" : "s"} sin horas: no se ha encontrado la obra o no tiene ventanas contadas ni horas. Las marcadas «estimadas» son el cálculo del planning (no hay horas puestas ni listado de mano de obra).</div>}
+    </div>
+  );
+}
 function AlmacenPersianas() {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const todosCarros = ctx.carrosPersianas || [];
@@ -16971,7 +17088,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
+        {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["expedientes", "Expedientes con material"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
         ))}
         <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
@@ -17246,6 +17363,18 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </div>
           </div>
         );
+      })()}
+
+      {vista === "expedientes" && (() => {
+        const grupos = {};
+        items.filter((x) => !x.entregada && x.estante).forEach((x) => {
+          const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—";
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set() };
+          g.uds += parseFloat(x.cantidad) || 1;
+          g.carros.add(x.estante.carro);
+        });
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`) }));
+        return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} />;
       })()}
 
       {vista === "sinsitio" && (
