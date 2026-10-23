@@ -5671,7 +5671,7 @@ export default function App() {
           {modulo === "prepmaterial" && (
             <div className="p-4 sm:p-8 max-w-5xl">
               <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Preparación de material" subtitle="El material de las obras del día o de la semana, junto" />
-              <PuestoPreparacionMaterial cristales={cristales} />
+              <PuestoPreparacionMaterial cristales={cristales} onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }} />
             </div>
           )}
           {modulo === "lineapistola" && (
@@ -18627,7 +18627,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         )}
       </div>
 
-      {tab === "prepMaterial" && <PuestoPreparacionMaterial cristales={cristales} />}
+      {tab === "prepMaterial" && <PuestoPreparacionMaterial cristales={cristales} onIrA={(t) => setTab(t)} />}
 
       {tab === "puestos" && (
         <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
@@ -41555,7 +41555,7 @@ const usePlanningPublicado = () => {
 
 /* ---------- PUESTO DE PREPARACIÓN DE MATERIAL: lo de todas las obras del día (o de la semana), junto, y "todo puesto" ---------- */
 const addDiasISO = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
-function PuestoPreparacionMaterial({ cristales = [] }) {
+function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   const plan = usePlanningPublicado();
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const itemsP = toArray(ctx.persianasAlmacen);
@@ -41599,8 +41599,12 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   const nomAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || {}).nombre || "";
   const itemsObra = (o, tipo) => itemsP.filter((x) => !x.entregada && tipoAlm(x) === tipo && deObraL(o.expNums, x.expediente));
   const llegPers = (o) => itemsObra(o, "persiana").length;
-  const sitiosItems = (xs) => [...new Set(xs.map((x) => (x.estante ? `${almsP.length > 1 ? nomAlm(x) + " · " : ""}${textoEstante(x.estante)}` : "sin colocar")))].slice(0, 3);
-  const sitiosCris = (o) => [...new Set(cristales.filter((c) => deObraL(o.expNums, c.expediente) || toArray(c.piezas).some((q) => deObraL(o.expNums, q.expediente || c.expediente))).map((c) => `Caballete: ${textoSitioCab(c)}`))].slice(0, 3);
+  const sitiosItems = (xs) => { const m = new Map(); xs.forEach((x) => { const t = x.estante ? `${almsP.length > 1 ? nomAlm(x) + " · " : ""}${textoEstante(x.estante)}` : "sin colocar"; if (!m.has(t)) m.set(t, { t, foco: x.estante ? { tipo: "persiana", almacenId: almacenDe(x), carro: x.estante.carro } : null, to: "persianasAlmacen" }); }); return [...m.values()].slice(0, 3); };
+  const sitiosCris = (o) => { const m = new Map(); cristales.filter((c) => deObraL(o.expNums, c.expediente) || toArray(c.piezas).some((q) => deObraL(o.expNums, q.expediente || c.expediente))).forEach((c) => { const t = `Caballete: ${textoSitioCab(c)}`; if (!m.has(t)) m.set(t, { t, foco: c.ubicacion ? { tipo: "cristal", exp: String(c.expediente || ""), viv: "", ubicacion: c.ubicacion } : null, to: "cristales" }); }); return [...m.values()].slice(0, 3); };
+  const verSitio = (sv) => { if (!sv.foco || !onIrA) return; focoAlmacen.actual = sv.foco; onIrA(sv.to); };
+  const chipSitio = (sv, k) => (sv.foco && onIrA
+    ? <button key={k} onClick={() => verSitio(sv)} className="block text-left text-[11px] text-[#2E8B57] font-semibold underline hover:text-emerald-800" title="Ir a verlo">{sv.t} →</button>
+    : <span key={k} className="block text-[11px] text-slate-600">{sv.t}</span>);
   const llegCris = (o) => cristales.reduce((a, c) => {
     const ps = toArray(c.piezas).filter((p) => deObraL(o.expNums, p.expediente || c.expediente));
     if (ps.length) return a + ps.reduce((b, p) => b + (parseFloat(p.cantidad) || 1), 0);
@@ -41614,7 +41618,7 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   const celdaAcc = (x, id, nombre) => {
     const g = id === "mosquitera" ? x.ac.mosq : x.ac.post;
     if (!g.lleva) return <span className="text-slate-400">No lleva</span>;
-    if (id === "mosquitera" && x.mosqLleg >= Math.max(1, g.uds || 1)) return <span className="text-emerald-700 font-bold">✓ En almacén <span className="font-normal text-[11px] text-slate-600 block">{x.sitiosM.join(" · ")}</span></span>;
+    if (id === "mosquitera" && x.mosqLleg >= Math.max(1, g.uds || 1)) return <span className="text-emerald-700 font-bold">✓ En almacén <span className="font-normal block">{x.sitiosM.map((sv, k) => chipSitio(sv, k))}</span></span>;
     const m = marcaAcc(x, id);
     const ud = g.lineas && g.lineas.length ? ` · ${g.uds} ud.` : "";
     if (m) return <span className="text-emerald-700 font-bold">✓ Terminado{ud} <button onClick={() => marcarAcc(x, id)} className="font-normal text-[11px] text-slate-400 underline ml-1">quitar</button></span>;
@@ -41681,8 +41685,8 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
                     <tr key={x.id}>
                       <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
                       <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
-                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}{x.sitiosP.length > 0 && <div className="text-[11px] text-slate-600 mt-0.5">{x.sitiosP.join(" · ")}</div>}</td>
-                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}{x.sitiosC.length > 0 && <div className="text-[11px] text-slate-600 mt-0.5">{x.sitiosC.join(" · ")}</div>}</td>
+                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}{x.sitiosP.length > 0 && <div className="mt-0.5">{x.sitiosP.map((sv, k) => chipSitio(sv, k))}</div>}</td>
+                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}{x.sitiosC.length > 0 && <div className="mt-0.5">{x.sitiosC.map((sv, k) => chipSitio(sv, k))}</div>}</td>
                       <td className={`px-3 py-2 ${x.mosqFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "mosquitera")}</td>
                       <td className={`px-3 py-2 ${x.postFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "postigo")}</td>
                     </tr>
