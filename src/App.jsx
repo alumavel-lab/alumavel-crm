@@ -18400,6 +18400,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <h3 className="flex items-center gap-2 font-display font-bold text-slate-800 mb-2">
                     <span className="inline-block w-3 h-3 rounded-full ring-1 ring-slate-300" style={{ backgroundColor: lc.punto }} />
                     {lc.nombre} <span className="text-xs font-semibold text-slate-400">({obras.length})</span>
+                    <span className="text-xs font-mono-num text-slate-500 font-normal">{obras.map((o) => `#${o.numero}`).join(" · ")}</span>
+                    {obras.length > 1 && (
+                      <button
+                        onClick={() => { if (window.confirm(`¿Mandar a fabricar las ${obras.length} obras de la lista «${lc.nombre}»?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) obras.forEach((o) => onIniciarFabricacion(o.id)); }}
+                        style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                        className="ml-auto flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md"
+                      >
+                        <Factory size={13} /> Mandar toda la lista a fabricar
+                      </button>
+                    )}
                   </h3>
                   <div className="space-y-3">
             {obras.map((p) => (
