@@ -2444,6 +2444,13 @@ export default function App() {
     if (nuevasPers.length) partes.push(`${nuevasPers.length} persianas al almacén${sinSitioPers ? ` (${sinSitioPers} sin sitio)` : ""}`);
     if (rotosTotal) partes.push(`${rotosTotal} rotos`);
     showToast(`Pedido #${pedido.numero}: ${todo ? "recibido completo" : "entrada parcial"}${partes.length ? " · " + partes.join(" · ") : ""}`, todo ? "ok" : "error");
+    // Informe de dónde va cada cosa (se enseña en pantalla tras confirmar la entrada)
+    const almRecNombre = (toArray(almacenesPersianas).find((a) => a.id === almacenRecepcionPersianas(almacenesPersianas)) || {}).nombre || "Almacén de persianas";
+    return {
+      pedido: pedido.numero, completo: todo, rotos: rotosTotal, aStock,
+      cristales: nuevosCab.map((c) => ({ caballete: c.lote, cantidad: c.cantidad, expediente: c.expediente || "", donde: c.ubicacion ? ubicacionTexto(c.ubicacion) : "" })),
+      persianas: nuevasPers.map((x) => ({ ref: x.ref || "", medida: `${x.largo || x.ancho || "?"} mm`, expediente: x.expediente || "", donde: x.estante ? `${almRecNombre} · ${textoEstante(x.estante)}` : "" })),
+    };
   };
 
   // Marca que el pedido ya se ha comunicado de verdad al proveedor — por email (al pulsar
@@ -4926,6 +4933,21 @@ export default function App() {
           );
         })()}
         {(() => {
+          if (!currentUser || modulo === "pedidos" || (modulo === "fabrica")) return null;
+          const disc = discrepanciasTodas(pedidos);
+          if (!disc.length) return null;
+          const aPedidos = tieneAcceso("pedidos");
+          if (!aPedidos && !veFabrica) return null;
+          return (
+            <button
+              onClick={() => { if (aPedidos) setModulo("pedidos"); else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
+            >
+              ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →
+            </button>
+          );
+        })()}
+        {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
           const hoy = new Date().toISOString().slice(0, 10);
           const pedidosRetrasados = pedidos.filter((p) =>
@@ -5594,6 +5616,9 @@ export default function App() {
             clientes={clientes}
             onConfirmarLinea={confirmarLineaFabrica}
             onConfirmarPedidoEntero={confirmarPedidoEnteroFabrica}
+            onRecibirConAlbaran={recibirPedidoConAlbaran}
+            onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
+            onActualizarPedido={actualizarPedido}
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
@@ -11023,6 +11048,28 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         <FileText size={20} /> PEDIDO DESDE UN PDF (cristales, persianas, lo que sea)
       </button>
       {(() => {
+        const disc = discrepanciasTodas(pedidos);
+        if (!disc.length) return null;
+        return (
+          <div className="mb-3 px-4 py-3 rounded-lg bg-orange-50 border-2 border-orange-300 text-orange-900 text-sm">
+            <div className="font-bold mb-1">⚠ Discrepancia con fábrica: {disc.reduce((t, x) => t + x.items.length, 0)} línea{disc.reduce((t, x) => t + x.items.length, 0) === 1 ? "" : "s"} en {disc.length} pedido{disc.length === 1 ? "" : "s"}</div>
+            <div className="flex flex-col gap-1 text-xs">
+              {disc.map(({ p: pd, items }) => {
+                const nF = items.filter((x) => x.tipo === "fabrica").length, nO = items.length - nF;
+                return (
+                  <div key={pd.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <button onClick={() => { setDetailId(pd.id); setView("detail"); }} className="font-semibold underline">#{pd.numero} · {(proveedores.find((x) => x.id === pd.proveedorId) || {}).nombre || pd.proveedorExterno || "—"}</button>
+                    {nF > 0 && <span>Fábrica dice que han llegado {nF} línea{nF === 1 ? "" : "s"} y aquí no están recibidas.</span>}
+                    {nO > 0 && <span>Aquí hay {nO} línea{nO === 1 ? "" : "s"} recibida{nO === 1 ? "" : "s"} que fábrica no ha confirmado.</span>}
+                    <button onClick={() => { if (window.confirm(`¿Ya está hablado lo del pedido #${pd.numero}? Dejará de avisar de este pedido.`)) onActualizarPedido(pd.id, { discrepanciaIgnorada: true }); }} className="text-[11px] font-semibold px-2 py-0.5 rounded border border-orange-300 hover:bg-white">Ya está hablado</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+      {(() => {
         const hoyStr = new Date().toISOString().slice(0, 10);
         const retrasados = pedidos.filter((pd) => ["Pendiente", "Realizado", "Reclamado"].includes(pd.estado) && pd.fechaEntregaPrevista && pd.fechaEntregaPrevista < hoyStr);
         const sinFecha = pedidos.filter((pd) => ["Pendiente", "Realizado", "Reclamado"].includes(pd.estado) && !pd.fechaEntregaPrevista);
@@ -11199,7 +11246,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
               const vencido = p.estado !== "Recibido" && p.estado !== "Cancelado" && p.fechaEntregaPrevista && new Date(p.fechaEntregaPrevista) < new Date();
               return (
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
-                  <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
+                  <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}{discrepanciasPedido(p).length > 0 && <span title="Fábrica y oficina no coinciden en este pedido" className="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 align-middle">⚠ fábrica</span>}</td>
                   <td className="px-4 py-3 font-medium text-slate-800">{(p.proveedorExterno || proveedorNombre(p.proveedorId))}{esAtrasado(p) && (() => { const pv = proveedores.find((x) => x.id === p.proveedorId); const tel = pv && (pv.movil || pv.telefono); return tel ? <a href={`tel:${String(tel).replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()} className="block text-[11px] font-semibold text-sky-700 hover:underline">📞 {tel}</a> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{resumenObraPedido(p, p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null)}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
@@ -11877,13 +11924,14 @@ const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
   return { filas, sobrantes: alb.filter((a) => a.resto > 0) };
 };
 
-function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante }) {
+function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante, infoInicial }) {
+  const [informe, setInforme] = useState(null); // dónde ha ido cada cristal y cada persiana al confirmar la entrada
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [lectura, setLectura] = useState(null); // { filas, sobrantes, archivo, info }
   const inputRef = useRef(null);
   const leer = async (file) => {
-    setLeyendo(true); setError(""); setLectura(null);
+    setLeyendo(true); setError(""); setLectura(null); setInforme(null);
     try {
       const info = await leerAlbaranRecepcion(file);
       if (!info.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
@@ -11893,6 +11941,13 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
     finally { setLeyendo(false); }
   };
   useEffect(() => { if (archivoInicial) { leer(archivoInicial); onArchivoUsado && onArchivoUsado(); } }, [archivoInicial]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Albarán ya leído desde fuera (Fábrica → Materiales pendientes): no se vuelve a leer, solo se compara con este pedido
+  useEffect(() => {
+    if (infoInicial && toArray(infoInicial.lineas).length) {
+      const r = emparejarAlbaran(pedido, infoInicial.lineas, materiales, nombreLinea);
+      setLectura({ ...r, archivo: infoInicial.archivo || "", info: infoInicial });
+    }
+  }, [infoInicial, pedido.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const setFila = (i, patch) => setLectura((x) => ({ ...x, filas: x.filas.map((f, j) => (j === i ? { ...f, ...patch } : f)) }));
   const num = (v) => Math.max(0, parseFloat(v) || 0);
   // Recepción a mano, sin foto de albarán: se enseñan las líneas pendientes con lo que
@@ -11915,8 +11970,9 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
   const confirmar = () => {
     const filas = lectura.filas.map((f) => ({ ...f, llega: num(f.llega), rotos: Math.min(num(f.rotos), num(f.llega)) }));
     if (!filas.some((f) => f.llega > 0)) { setError("No hay nada que recibir: pon cuántas han llegado."); return; }
-    onRecibirConAlbaran({ filas, archivo: lectura.archivo, numeroAlbaran: lectura.info.numeroAlbaran, numeroPedidoProveedor: lectura.info.numeroPedido });
+    const inf = onRecibirConAlbaran({ filas, archivo: lectura.archivo, numeroAlbaran: lectura.info.numeroAlbaran, numeroPedidoProveedor: lectura.info.numeroPedido });
     setLectura(null);
+    if (inf) setInforme(inf);
   };
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -11953,7 +12009,11 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
                   const distinto = f.precioRef > 0 && f.precioAlb > 0 && Math.abs(f.precioAlb - f.precioRef) / f.precioRef > 0.01;
                   return (
                     <tr key={f.lineaId} className={`border-t border-slate-100 ${f.pend === 0 ? "text-slate-300" : ""}`}>
-                      <td className="px-3 py-1.5">{f.nombre}{f.ancho && f.alto ? <span className="text-xs text-slate-400"> · {f.ancho}×{f.alto}</span> : null}{f.caballete ? <span className="text-xs text-slate-400"> · cab. {f.caballete}</span> : null}</td>
+                      <td className="px-3 py-1.5">{f.nombre}{f.ancho && f.alto ? <span className="text-xs text-slate-400"> · {f.ancho}×{f.alto}</span> : null}{f.caballete ? <span className="text-xs text-slate-400"> · cab. {f.caballete}</span> : null}
+                        {f.pend > 0 && num(f.llega) < f.pend && f.ancho && f.alto && (() => {
+                          const a = lectura.sobrantes.find((x) => x.ancho > 0 && x.alto > 0 && Math.abs(x.ancho - f.ancho) / f.ancho <= 0.05 && Math.abs(x.alto - f.alto) / f.alto <= 0.05);
+                          return a ? <div className="text-[11px] font-semibold text-orange-700">¿Medida distinta? En el albarán viene {a.ancho}×{a.alto} (pedido {f.ancho}×{f.alto})</div> : null;
+                        })()}</td>
                       <td className="px-3 py-1.5 text-right">{f.pend}</td>
                       <td className="px-3 py-1.5 text-right">{f.pend > 0 ? <input type="number" min="0" value={f.llega} onChange={(e) => setFila(i, { llega: e.target.value })} className={`w-16 text-right border rounded px-1.5 py-0.5 ${num(f.llega) < f.pend ? "border-amber-300 bg-amber-50" : "border-slate-200"}`} /> : "✓"}</td>
                       <td className="px-3 py-1.5 text-right">{f.pend > 0 ? <input type="number" min="0" value={f.rotos} onChange={(e) => setFila(i, { rotos: e.target.value })} className={`w-14 text-right border rounded px-1.5 py-0.5 ${num(f.rotos) > 0 ? "border-rose-300 bg-rose-50" : "border-slate-200"}`} /> : ""}</td>
@@ -11973,6 +12033,26 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
             <button type="button" onClick={confirmar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-md"><CheckCircle2 size={16} /> Confirmar entrada</button>
             <button type="button" onClick={() => setLectura(null)} className="px-4 py-2.5 rounded-md text-sm font-semibold text-slate-600 hover:bg-slate-100">Cancelar</button>
           </div>
+        </div>
+      )}
+      {informe && !lectura && (
+        <div className="mt-4 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3">
+          <div className="text-sm font-bold text-emerald-800 mb-1">Entrada registrada · dónde va cada cosa</div>
+          {informe.cristales.length > 0 && (
+            <div className="mb-2">
+              <div className="text-xs font-bold text-slate-700">Cristales</div>
+              <ul className="text-sm text-slate-800">{informe.cristales.map((c, i) => <li key={i}>Caballete <b>{c.caballete}</b> ({c.cantidad} cristales{c.expediente ? ` · EXP ${numsExpediente(c.expediente)[0] || c.expediente}` : ""}) → {c.donde ? <b className="text-emerald-800">{c.donde}</b> : <b className="text-amber-700">sin hueco libre: queda en «Pendientes de ubicar»</b>}</li>)}</ul>
+            </div>
+          )}
+          {informe.persianas.length > 0 && (
+            <div className="mb-2">
+              <div className="text-xs font-bold text-slate-700">Persianas</div>
+              <ul className="text-sm text-slate-800">{informe.persianas.map((x, i) => <li key={i}>{x.ref || "Persiana"} · {x.medida}{x.expediente ? ` · EXP ${numsExpediente(x.expediente)[0] || x.expediente}` : ""} → {x.donde ? <b className="text-emerald-800">{x.donde}</b> : <b className="text-amber-700">sin sitio en los carros (queda en «Sin sitio»)</b>}</li>)}</ul>
+            </div>
+          )}
+          {informe.aStock > 0 && <div className="text-sm text-slate-700">{informe.aStock} unidades de material al Stock.</div>}
+          {informe.rotos > 0 && <div className="text-sm font-semibold text-rose-700">{informe.rotos} rotas o con defecto.</div>}
+          {!informe.cristales.length && !informe.persianas.length && !informe.aStock && <div className="text-sm text-slate-600">Entrada apuntada en el pedido.</div>}
         </div>
       )}
       {!lectura && hayRecepciones && (
@@ -17878,10 +17958,158 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+// ── Discrepancias entre oficina y fábrica ──
+// Una línea tiene discrepancia si una de las dos partes la da por llegada y la otra no:
+//  · «fabrica»: fábrica ha confirmado que ha llegado pero oficina aún no tiene el pedido/la línea como recibido
+//  · «oficina»: oficina lo tiene como recibido pero fábrica no lo ha confirmado
+const ofiRecibida = (p, l) => p.estado === "Recibido" || l.estado === "Recibido" || ((parseFloat(l.recibidoBien) || 0) > 0 && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
+const discrepanciasPedido = (p) => {
+  if (!p || p.estado === "Cancelado" || p.discrepanciaIgnorada) return [];
+  if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return [];
+  const f = String(p.fechaRecibido || p.fechaRecepcion || "").slice(0, 10);
+  const viejo = !!f && (Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000 > 90; // pedidos recibidos hace más de 3 meses: no se avisa
+  return toArray(p.lineas).map((l) => {
+    const ofi = ofiRecibida(p, l), fab = !!l.confirmadoFabrica;
+    if (fab && !ofi) return { l, tipo: "fabrica" };
+    if (ofi && !fab && !viejo) return { l, tipo: "oficina" };
+    return null;
+  }).filter(Boolean);
+};
+const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
+function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarPedido, onIrAlbaran, onDarDeBaja }) {
+  const grupos = discrepanciasTodas(pedidos);
+  const prov = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "—";
+  const hoy = new Date().toISOString().slice(0, 10);
+  const confirmarOficinaYa = (p, items) => {
+    const ids = new Set(items.filter((x) => x.tipo === "oficina").map((x) => x.l.id));
+    onActualizarPedido(p.id, { lineas: toArray(p.lineas).map((l) => (ids.has(l.id) ? { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: "Fábrica (tras discrepancia)" } : l)) });
+  };
+  return (
+    <div className="space-y-4">
+      <div className="px-4 py-3 rounded-md bg-orange-50 border border-orange-200 text-orange-900 text-sm">
+        Aquí salen las líneas en las que <b>fábrica y oficina no coinciden</b>: una parte dice que ha llegado y la otra no. Oficina ve lo mismo desde Pedidos, en naranja. Cuando lo hayáis hablado, «Ya está hablado» deja de avisar de ese pedido.
+      </div>
+      {grupos.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">No hay discrepancias entre fábrica y oficina.</div>}
+      {grupos.map(({ p, items }) => {
+        const deOficina = items.filter((x) => x.tipo === "oficina");
+        return (
+          <div key={p.id} className="bg-white border-2 border-orange-300 rounded-lg overflow-hidden">
+            <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex flex-wrap items-center justify-between gap-2">
+              <div><span className="font-mono-num text-sm text-orange-700 font-bold">#{p.numero}</span><span className="ml-2 font-semibold text-slate-700">{prov(p)}</span><span className="ml-2 text-xs text-slate-500">Estado en oficina: {p.estado || "—"}</span></div>
+              <div className="flex gap-2">
+                {deOficina.length > 0 && <button onClick={() => confirmarOficinaYa(p, items)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90">Confirmar en fábrica las {deOficina.length} que oficina ya tiene recibidas</button>}
+                {onIrAlbaran && <button onClick={onIrAlbaran} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-orange-300 text-orange-800 hover:bg-white">Revisar con albarán</button>}
+                {onDarDeBaja && <button onClick={() => { if (window.confirm(`¿Dar de baja el pedido #${p.numero}? Se marcan como llegadas todas sus líneas en fábrica y desaparece de Materiales pendientes.`)) onDarDeBaja(p.id); }} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-red-300 text-red-700 hover:bg-white">Dar de baja el pedido</button>}
+                <button onClick={() => { if (window.confirm(`¿Ya está hablado lo del pedido #${p.numero}? Dejará de avisar de este pedido.`)) onActualizarPedido(p.id, { discrepanciaIgnorada: true }); }} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-white">Ya está hablado</button>
+              </div>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {items.map(({ l, tipo }) => (
+                <div key={l.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <div className="flex-1 min-w-[220px] text-sm text-slate-800">{nombreLinea(l)}{(l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : ""} — {l.cantidad} ud.</div>
+                  {tipo === "fabrica"
+                    ? <span className="text-xs font-semibold text-orange-800 bg-orange-100 px-2 py-1 rounded">Fábrica: ha llegado · Oficina: aún no lo tiene recibido</span>
+                    : <span className="text-xs font-semibold text-orange-800 bg-orange-100 px-2 py-1 rounded">Oficina: recibido · Fábrica: sin confirmar</span>}
+                  {tipo === "fabrica"
+                    ? <button onClick={() => onActualizarPedido(p.id, { lineas: toArray(p.lineas).map((x) => (x.id === l.id ? { ...x, confirmadoFabrica: false, fechaConfirmadoFabrica: null, confirmadoPorFabrica: null } : x)) })} className="text-xs font-semibold px-2.5 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">Quitar «ha llegado»</button>
+                    : <button onClick={() => onActualizarPedido(p.id, { lineas: toArray(p.lineas).map((x) => (x.id === l.id ? { ...x, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: "Fábrica (tras discrepancia)" } : x)) })} className="text-xs font-semibold px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50">Ha llegado</button>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+// ── Fábrica → Materiales pendientes: subir el albarán del proveedor ──
+// Una sola subida: se lee el albarán, se busca el pedido pendiente al que corresponde y se compara línea a línea
+// (medidas, códigos, nombres y precios). Al confirmar, lo que llega se marca, cada cristal y cada persiana va a su hueco
+// o carro (y se te dice cuál), y lo que falta se queda apuntado. Un botón cierra el pedido completo.
+function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecibirConAlbaran, onCrearPedidoFaltante, onCerrarPedido }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [error, setError] = useState("");
+  const [lect, setLect] = useState(null); // albarán leído: { proveedor, numeroAlbaran, numeroPedido, lineas, archivo }
+  const [selId, setSelId] = useState("");
+  const inputRef = useRef(null);
+  const nombreProv = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "";
+  const pendiente = (p) => p.estado !== "Recibido" && p.estado !== "Cancelado" && toArray(p.lineas).some((l) => (parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0) > 0);
+  const leer = async (file) => {
+    setLeyendo(true); setError(""); setLect(null); setSelId("");
+    try {
+      const r = await leerAlbaranRecepcion(file);
+      if (!r.lineas.length) throw new Error("no he encontrado líneas de material en el albarán");
+      setLect({ ...r, archivo: file.name || "" });
+    } catch (e) { setError("No se pudo leer el albarán: " + (e.message || "prueba con una foto más clara")); }
+    finally { setLeyendo(false); }
+  };
+  const lista = !lect ? [] : toArray(pedidos).filter(pendiente).map((p) => {
+    const num = normPedidoCristal(lect.numeroPedido);
+    const prov = String(lect.proveedor || "").trim().toLowerCase();
+    const nombre = nombreProv(p).toLowerCase();
+    const r = emparejarAlbaran(p, lect.lineas, materiales, nombreLinea);
+    const casadas = r.filas.filter((f) => f.llega > 0).length;
+    const porNumero = !!num && [p.numero, p.numeroPedidoProveedor].some((n) => normPedidoCristal(n) && normPedidoCristal(n) === num);
+    const porProv = !!prov && !!nombre && (nombre.includes(prov) || prov.includes(nombre));
+    return { p, casadas, porNumero, porProv, score: (porNumero ? 1000 : 0) + (porProv ? 100 : 0) + casadas };
+  }).sort((a, b) => b.score - a.score);
+  const buenos = lista.filter((c) => c.score > 0);
+  const elegido = lect ? (lista.find((c) => c.p.id === selId) || buenos[0] || null) : null;
+  const motivo = (c) => [c.porNumero ? "coincide el nº de pedido" : "", c.porProv ? "mismo proveedor" : "", c.casadas ? `${c.casadas} línea${c.casadas === 1 ? "" : "s"} cuadran` : ""].filter(Boolean).join(" · ") || "sin coincidencias";
+  const cerrarTodo = () => {
+    const n = toArray(elegido.p.lineas).filter((l) => !l.confirmadoFabrica).length;
+    if (window.confirm(`¿Dar por COMPLETO el pedido #${elegido.p.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} y desaparece de Materiales pendientes.\n\nHazlo solo si ya no falta nada: lo que no haya venido se da por recibido.`)) { onCerrarPedido(elegido.p.id); setLect(null); }
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[240px]">
+          <h2 className="font-display font-bold text-slate-800">Subir albarán del proveedor</h2>
+          <p className="text-xs text-slate-500">Foto, escaneo o PDF. Busco a qué pedido corresponde, comparo medidas, códigos y precios, marco lo que ha llegado, te digo qué falta y dónde va cada cristal y cada persiana.</p>
+        </div>
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current?.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+          className="flex items-center gap-2 text-sm font-semibold hover:opacity-90 disabled:opacity-50 px-4 py-2.5 rounded-md">
+          {leyendo ? <><Loader2 size={15} className="animate-spin" /> Leyendo el albarán (puede tardar un minuto)…</> : <><ImageIcon size={15} /> Subir albarán</>}
+        </button>
+        <input ref={inputRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+      </div>
+      {error && <div className="mt-3 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {error}</div>}
+      {lect && (
+        <div className="mt-4 space-y-3">
+          <div className="text-xs text-slate-500">Albarán {lect.numeroAlbaran || lect.archivo}{lect.proveedor ? ` · ${lect.proveedor}` : ""}{lect.numeroPedido ? ` · pedido ${lect.numeroPedido}` : ""} · {lect.lineas.length} línea{lect.lineas.length === 1 ? "" : "s"} leída{lect.lineas.length === 1 ? "" : "s"}</div>
+          {lista.length === 0 ? (
+            <div className="px-3 py-2.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm">No hay ningún pedido pendiente de recibir con el que comparar este albarán.</div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-slate-700">Pedido:</span>
+              <select value={elegido ? elegido.p.id : ""} onChange={(e) => setSelId(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm max-w-full">
+                {(buenos.length ? buenos : lista).map((c) => <option key={c.p.id} value={c.p.id}>#{c.p.numero} · {nombreProv(c.p) || "—"} · {motivo(c)}</option>)}
+              </select>
+              {!buenos.length && <span className="text-xs font-semibold text-amber-700">Ninguno cuadra claramente: elige a mano</span>}
+              {buenos.length > 1 && <span className="text-xs text-slate-500">Hay {buenos.length} pedidos que podrían ser: revisa que sea el tuyo</span>}
+            </div>
+          )}
+          {elegido && (
+            <>
+              <RecepcionPedido key={`${elegido.p.id}-${lect.archivo}-${lect.numeroAlbaran}`} pedido={elegido.p} materiales={materiales} nombreLinea={nombreLinea}
+                puedeRecibir={false} infoInicial={lect}
+                onRecibirConAlbaran={(datos) => onRecibirConAlbaran(elegido.p.id, datos)} onCrearPedidoFaltante={onCrearPedidoFaltante} />
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button type="button" onClick={cerrarTodo} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 px-3.5 py-2 rounded-md"><CheckCircle2 size={15} /> Dar el pedido por completo (quitarlo de pendientes)</button>
+                <button type="button" onClick={() => setLect(null)} className="px-3.5 py-2 rounded-md text-sm font-semibold text-slate-500 hover:bg-slate-100">Cerrar</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
   const nPanelesSinApuntar = panelesQueFaltan(cristales, ctxPaneles.paneles).length;
+  const nDiscrepancias = discrepanciasTodas(pedidos).reduce((t, x) => t + x.items.length, 0);
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState(() => { const t = tabInicialFabrica.actual; tabInicialFabrica.actual = null; return t || "listo"; });
@@ -18007,6 +18235,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "cristales" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Cristales
           {cristales.filter((c) => c.estado === "Pendiente").length > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{cristales.filter((c) => c.estado === "Pendiente").length}</Badge>}
+        </button>
+        <button onClick={() => setTab("discrepancias")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "discrepancias" ? "border-orange-500 text-orange-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Discrepancia con oficina
+          {nDiscrepancias > 0 && <Badge className="bg-orange-100 text-orange-700 ring-orange-300">{nDiscrepancias}</Badge>}
         </button>
         <button onClick={() => setTab("paneles")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "paneles" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -18175,6 +18408,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             Cuando llegue un material (cristal, persiana, aluminio, PVC...), márcalo aquí como "Ha llegado". Este control es tuyo, no depende de lo que oficina haya marcado — así luego se puede comparar y ver si todo cuadra.
           </div>
 
+          {onRecibirConAlbaran && (
+            <AlbaranFabrica pedidos={pedidos} materiales={materiales} proveedores={proveedores}
+              nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
+              onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
+          )}
           <div className="relative mb-4 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por proveedor, material, referencia..." className={inputCls + " pl-9"} />
@@ -18234,6 +18472,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                               {nombre}{esLibre && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : ""} — {l.cantidad} ud.
                             </div>
                             {l.confirmadoFabrica && <div className="text-xs text-emerald-600">Ha llegado · {fmtDate(l.fechaConfirmadoFabrica)} · {l.confirmadoPorFabrica}</div>}
+                            {!l.confirmadoFabrica && !pedido.discrepanciaIgnorada && ofiRecibida(pedido, l) && <div className="text-xs font-semibold text-orange-700">⚠ Oficina lo tiene como recibido y fábrica aún no lo ha confirmado</div>}
+                            {!l.confirmadoFabrica && (parseFloat(l.recibidoBien) || 0) > 0 && <div className="text-xs font-semibold text-amber-700">Han llegado {l.recibidoBien} de {l.cantidad}: faltan {Math.max(0, Math.round(((parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)) * 100) / 100)}</div>}
                           </div>
                         </label>
                       );
@@ -18249,6 +18489,11 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
             )}
           </div>
         </>
+      )}
+
+      {tab === "discrepancias" && (
+        <DiscrepanciasPedidos pedidos={pedidos} proveedores={proveedores} onActualizarPedido={onActualizarPedido || (() => {})} onIrAlbaran={() => setTab("materiales")} onDarDeBaja={onConfirmarPedidoEntero}
+          nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
