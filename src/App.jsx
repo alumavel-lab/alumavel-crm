@@ -5622,7 +5622,7 @@ export default function App() {
             onRecibirConAlbaran={recibirPedidoConAlbaran}
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
-            vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline}
+            vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
@@ -7081,6 +7081,10 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
           </Field>
           <Field label="Fecha de montaje">
             <TextInput type="date" value={f.fechaMontaje} onChange={set("fechaMontaje")} />
+          </Field>
+          <Field label="Taller de fabricación">
+            <Select value={TALLERES_FAB.includes(f.taller) ? f.taller : "PVC"} onChange={set("taller")}>{TALLERES_FAB.map((t) => <option key={t}>{t}</option>)}</Select>
+            <p className="text-xs text-slate-400 mt-1">PVC por defecto. También se puede cambiar en Fábrica → Listo para fabricar.</p>
           </Field>
         </div>
 
@@ -17962,26 +17966,120 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
+// ── Talleres: cada obra se fabrica en PVC (por defecto), Aluminio o Curvas ──
+const TALLERES_FAB = ["Aluminio", "Curvas", "PVC"];
+const tallerDe = (p) => (p && TALLERES_FAB.includes(p.taller) ? p.taller : "PVC");
+const diaFinLaborable = (acum, horasDia) => { const d = new Date(); d.setHours(12, 0, 0, 0); const finde = () => [0, 6].includes(d.getDay()); while (finde()) d.setDate(d.getDate() + 1); for (let n = Math.max(1, Math.ceil(acum / horasDia - 1e-9)) - 1; n > 0; n--) { d.setDate(d.getDate() + 1); while (finde()) d.setDate(d.getDate() + 1); } return d.toISOString().slice(0, 10); };
+// Planning de un taller que no es el de PVC (Aluminio o Curvas): las obras que se le han mandado, con sus horas y cuándo acabarían
+function PlanningTaller({ taller, proyectos = [], listoParaFabricar = [], uxExpedientes = [], configPlanning, clientes = [], onVerProyecto, onActualizarProyecto, onIniciarFabricacion }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const modo = taller === "Curvas" ? "curvas" : "aluminio";
+  const cfgId = modo === "curvas" ? "cfg-curvas" : "cfg";
+  const horasDia = parseFloat((toArray(ctx.tareasAluminio).find((x) => x.id === cfgId) || {}).horasDia) || 8;
+  const cliN = (p) => (toArray(clientes).find((c) => c.id === p.clienteId) || {}).nombre || "—";
+  const orden = (a, b) => String(a.fechaEntregaPrevista || "9999").localeCompare(String(b.fechaEntregaPrevista || "9999")) || String(a.numero).localeCompare(String(b.numero), "es", { numeric: true });
+  const enCurso = toArray(proyectos).filter((p) => tallerDe(p) === taller && p.estadoTrabajo === "En proceso").sort(orden);
+  const porEmpezar = toArray(listoParaFabricar).filter((p) => tallerDe(p) === taller).sort(orden);
+  let acum = 0;
+  const filas = enCurso.map((p) => { const h = horasDeObraListo(p, uxExpedientes, configPlanning).horas; acum += h; return { p, h, fin: h > 0 ? diaFinLaborable(acum, horasDia) : "" }; });
+  const totalH = filas.reduce((t, f) => t + f.h, 0);
+  return (
+    <div className="space-y-4 mb-6">
+      <div className="bg-white border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 flex flex-wrap gap-x-6 gap-y-1">
+        <span>Obras fabricándose en <b>{taller}</b>: <b>{enCurso.length}</b></span>
+        <span>Horas: <b>{fmtHoras(totalH)}</b> ≈ <b>{(totalH / horasDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> días con {fmtHoras(horasDia)} al día</span>
+        <span className="text-xs text-slate-400">(las horas al día se cambian más abajo)</span>
+      </div>
+      {porEmpezar.length > 0 && (
+        <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3">
+          <div className="text-sm font-semibold text-emerald-900 mb-2">Marcadas para {taller} en «Listo para fabricar», aún sin empezar ({porEmpezar.length})</div>
+          <div className="space-y-1.5">
+            {porEmpezar.map((p) => { const h = horasDeObraListo(p, uxExpedientes, configPlanning).horas; return (
+              <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-md px-3 py-2 border border-emerald-100">
+                <div className="text-sm text-slate-800">#{p.numero} — {p.nombre} <span className="text-xs text-slate-500">· {cliN(p)}{h ? ` · ${fmtHoras(h)}` : ""}</span></div>
+                <button onClick={() => onIniciarFabricacion && onIniciarFabricacion(p.id)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Empezar a fabricar</button>
+              </div>
+            ); })}
+          </div>
+        </div>
+      )}
+      {filas.length === 0 && porEmpezar.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-8 text-center text-slate-400 text-sm">No hay ninguna obra en {taller}. Mándala desde «Listo para fabricar» eligiendo el taller.</div>}
+      <div className="space-y-2">
+        {filas.map(({ p, h, fin }) => (
+          <div key={p.id} className="bg-white border border-sky-200 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
+              <div className="text-xs text-slate-500 mt-0.5">{cliN(p)} · Entrega prevista {fmtDate(p.fechaEntregaPrevista) || "—"}{h ? ` · ⏱ ${fmtHoras(h)}` : " · sin horas"}{fin ? ` · acabaría el ${fmtDate(fin)}` : ""}</div>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <select value={taller} onChange={(e) => onActualizarProyecto && onActualizarProyecto(p.id, { taller: e.target.value })} className="border border-slate-300 rounded px-2 py-1">{TALLERES_FAB.map((t) => <option key={t}>{t}</option>)}</select>
+              <span className="text-slate-400">Para darla por terminada: «En fabricación»</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <PlanningAluminio modo={modo} proyectos={proyectos} listoParaFabricar={listoParaFabricar} />
+    </div>
+  );
+}
+// Planning de montaje: todas las obras que llevan montaje (se añaden solas al marcar «lleva instalación») y sus instalaciones
+function PlanningMontaje({ instalaciones = [], proyectos = [], clientes = [], vehiculos = [], onVerProyecto }) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const pr = (id) => toArray(proyectos).find((p) => p.id === id);
+  const cliN = (p) => (toArray(clientes).find((c) => c.id === (p || {}).clienteId) || {}).nombre || "";
+  const veh = (id) => (toArray(vehiculos).find((v) => v.id === id) || {}).nombre || "";
+  const deInst = toArray(instalaciones).filter((i) => i.estado !== "Finalizada").map((i) => {
+    const p = pr(i.proyectoId);
+    return { key: "i" + i.id, numero: p ? p.numero : "", nombre: (p && p.nombre) || i.nombre || "Instalación", cliente: (p ? cliN(p) : "") || i.clienteNombre || "", dir: i.direccion || (p && p.ubicacion) || "", fecha: i.fechaMontaje || (p && p.fechaMontaje) || "", horas: parseFloat(i.horasMontaje) || 0, estado: i.estado || "Pendiente de instalación", vehiculo: veh(i.vehiculoId), fab: p ? p.estadoTrabajo : "", pid: p ? p.id : "" };
+  });
+  const conInst = new Set(toArray(instalaciones).map((i) => i.proyectoId));
+  const sinInst = toArray(proyectos).filter((p) => p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conInst.has(p.id)).map((p) => ({ key: "p" + p.id, numero: p.numero, nombre: p.nombre, cliente: cliN(p), dir: p.ubicacion || "", fecha: p.fechaMontaje || "", horas: 0, estado: "Sin instalación creada", vehiculo: "", fab: p.estadoTrabajo, pid: p.id }));
+  const filas = [...deInst, ...sinInst].sort((a, b) => String(a.fecha || "9999").localeCompare(String(b.fecha || "9999")) || String(a.numero).localeCompare(String(b.numero), "es", { numeric: true }));
+  const sinFecha = filas.filter((f) => !f.fecha).length;
+  return (
+    <div className="space-y-3 mb-6">
+      <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-900 text-sm">
+        Todas las obras que llevan <b>montaje</b>, ordenadas por fecha. Una obra entra aquí sola en cuanto se marca «lleva instalación» en su ficha. {filas.length > 0 && <span><b>{filas.length}</b> en total{sinFecha > 0 ? <>, <b className="text-amber-700">{sinFecha} sin fecha de montaje</b></> : ""}.</span>}
+      </div>
+      {filas.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-8 text-center text-slate-400 text-sm">No hay ningún montaje pendiente.</div>}
+      {filas.map((f) => (
+        <div key={f.key} className={`bg-white border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 ${f.fecha && f.fecha < hoy ? "border-red-300" : "border-slate-200"}`}>
+          <div>
+            <button onClick={() => f.pid && onVerProyecto && onVerProyecto(f.pid)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57] text-left">{f.numero ? `#${f.numero} — ` : ""}{f.nombre}</button>
+            <div className="text-xs text-slate-500 mt-0.5">{f.cliente}{f.dir ? ` · ${f.dir}` : ""}{f.fab ? ` · Fabricación: ${f.fab}` : ""}</div>
+          </div>
+          <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className={f.fecha ? (f.fecha < hoy ? "font-bold text-red-600" : "font-semibold") : "font-semibold text-amber-700"}>{f.fecha ? `Montaje: ${fmtDate(f.fecha)}` : "Sin fecha de montaje"}</span>
+            {f.horas > 0 && <span>⏱ {fmtHoras(f.horas)}</span>}
+            {f.vehiculo && <span>🚐 {f.vehiculo}</span>}
+            <span className="px-2 py-0.5 rounded-full bg-slate-100">{f.estado}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 // ── Planning de aluminio: lo que hay que hacer en aluminio (postigos y mosquiteras de obras PVC + trabajos a mano: curvos, etc.) ──
 const CONCEPTOS_ALUMINIO = [
   { id: "postigo", nombre: "Postigo" }, { id: "mosquitera", nombre: "Mosquitera" },
   { id: "curvo", nombre: "Aluminio curvo" }, { id: "otro", nombre: "Otro trabajo de aluminio" },
 ];
 const ESTADOS_ALUMINIO = { pendiente: "Por hacer", encargado: "En marcha", hecho: "Hecho", descartado: "No hace falta" };
-function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
+function PlanningAluminio({ proyectos = [], listoParaFabricar = [], modo = "aluminio" }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const store = toArray(ctx.tareasAluminio);
   const guardar = ctx.saveTareasAluminio || (() => {});
-  const cfg = store.find((x) => x.id === "cfg") || {};
+  const cfgId = modo === "curvas" ? "cfg-curvas" : "cfg";
+  const cfg = store.find((x) => x.id === cfgId) || {};
   const horasDia = parseFloat(cfg.horasDia) || 8;
-  const tareas = store.filter((x) => x.id !== "cfg");
+  const tareas = store.filter((x) => !String(x.id).startsWith("cfg"));
   const [ver, setVer] = useState("pendiente");
   const [form, setForm] = useState(null);
   const hoy = new Date().toISOString().slice(0, 10);
   // Obras PVC que ya están listas o fabricándose y llevan postigo o mosquitera → tarea automática en aluminio
   const obrasPVC = [...listoParaFabricar, ...toArray(proyectos).filter((p) => p.estadoTrabajo === "En proceso" && !listoParaFabricar.some((x) => x.id === p.id))].filter((p) => p.origen !== "portalUxcar");
   const derivadas = [];
-  obrasPVC.forEach((p) => {
+  (modo === "aluminio" ? obrasPVC : []).forEach((p) => {
     accesoriosDeObra(p).grupos.filter((g) => (g.id === "postigo" || g.id === "mosquitera") && g.lleva).forEach((g) => {
       const clave = `${p.id}|${g.id}`;
       const g0 = tareas.find((t) => t.clave === clave);
@@ -17989,7 +18087,7 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
       derivadas.push({ id: g0 ? g0.id : "auto-" + clave, clave, origen: "obra", proyectoId: p.id, concepto: g.id, numero: p.numero, nombre: p.nombre || "", color: listaColorDeObra(p).colores.join(" / "), detalle, necesarioPara: p.fechaFabricacion || p.fechaEntregaPrevista || "", horas: g0 ? g0.horas : "", estado: g0 ? g0.estado || "pendiente" : "pendiente", guardada: !!g0 });
     });
   });
-  const manuales = tareas.filter((t) => t.origen === "manual").map((t) => ({ ...t, guardada: true, estado: t.estado || "pendiente" }));
+  const manuales = tareas.filter((t) => t.origen === "manual" && (modo === "curvas" ? t.concepto === "curvo" : t.concepto !== "curvo")).map((t) => ({ ...t, guardada: true, estado: t.estado || "pendiente" }));
   const todas = [...derivadas, ...manuales];
   const visibles = todas.filter((t) => (ver === "pendiente" ? !["hecho", "descartado"].includes(t.estado) : ver === "hecho" ? t.estado === "hecho" : true))
     .sort((a, b) => String(a.necesarioPara || "9999").localeCompare(String(b.necesarioPara || "9999")) || String(a.numero || "").localeCompare(String(b.numero || ""), "es", { numeric: true }));
@@ -18004,7 +18102,7 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
     if (t.guardada) guardar(store.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
     else guardar([...store, { id: uid(), clave: t.clave, origen: "obra", proyectoId: t.proyectoId, concepto: t.concepto, estado: "pendiente", ...patch }]);
   };
-  const guardarCfg = (patch) => guardar(cfg.id ? store.map((x) => (x.id === "cfg" ? { ...x, ...patch } : x)) : [...store, { id: "cfg", ...patch }]);
+  const guardarCfg = (patch) => guardar(cfg.id ? store.map((x) => (x.id === cfgId ? { ...x, ...patch } : x)) : [...store, { id: cfgId, ...patch }]);
   const guardarForm = () => {
     if (!String(form.descripcion || "").trim()) { alert("Pon qué hay que hacer."); return; }
     guardar([...store, { id: uid(), origen: "manual", concepto: form.concepto, numero: form.numero || "", nombre: form.descripcion.trim(), detalle: form.detalle || "", horas: form.horas || "", necesarioPara: form.necesarioPara || "", estado: "pendiente", creado: hoy }]);
@@ -18014,7 +18112,7 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
   return (
     <div className="space-y-4">
       <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-900 text-sm">
-        Planning de <b>aluminio</b>, aparte del de PVC. Las obras de PVC que están listas o en fabricación y llevan <b>postigo o mosquitera</b> salen solas aquí como tarea (las persianas las tienes y no salen). Para curvos u otros trabajos de aluminio, usa «Añadir trabajo».
+        {modo === "curvas" ? <>Trabajos <b>curvos</b> sueltos que no son una obra completa. Añádelos con «Añadir trabajo».</> : <>Piezas de aluminio que hay que mandar hacer: las obras de PVC que están listas o en fabricación y llevan <b>postigo o mosquitera</b> salen solas aquí como tarea (las persianas las tienes y no salen). Para otros trabajos de aluminio, usa «Añadir trabajo».</>}
       </div>
       <div className="bg-white border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 flex flex-wrap items-center gap-x-6 gap-y-2">
         <label className="flex items-center gap-2">Horas de aluminio al día
@@ -18022,11 +18120,11 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
         </label>
         <span>Por hacer: <b>{fmtHoras(horasPend)}</b> ≈ <b>{(horasPend / horasDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> días</span>
         {sinHoras > 0 && <span className="text-amber-700 font-semibold">{sinHoras} tarea{sinHoras === 1 ? "" : "s"} sin horas puestas (no cuentan)</span>}
-        <button onClick={() => setForm({ concepto: "curvo", descripcion: "", numero: "", horas: "", necesarioPara: "", detalle: "" })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90">+ Añadir trabajo</button>
+        <button onClick={() => setForm({ concepto: modo === "curvas" ? "curvo" : "otro", descripcion: "", numero: "", horas: "", necesarioPara: "", detalle: "" })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90">+ Añadir trabajo</button>
       </div>
       {form && (
         <div className="bg-white border border-slate-300 rounded-lg p-4 grid sm:grid-cols-2 gap-3 text-sm">
-          <label className="flex flex-col gap-1">Tipo<select value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5">{CONCEPTOS_ALUMINIO.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
+          <label className="flex flex-col gap-1">Tipo<select value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5">{CONCEPTOS_ALUMINIO.filter((c) => (modo === "curvas" ? c.id === "curvo" : c.id !== "curvo")).map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
           <label className="flex flex-col gap-1">Qué hay que hacer<input value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" placeholder="Ej: 3 ventanas curvas Sr. García" /></label>
           <label className="flex flex-col gap-1">Nº de obra (si la hay)<input value={form.numero} onChange={(e) => setForm({ ...form, numero: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
           <label className="flex flex-col gap-1">Horas<input type="number" min="0" step="0.5" value={form.horas} onChange={(e) => setForm({ ...form, horas: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
@@ -18040,7 +18138,7 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
           <button key={k} onClick={() => setVer(k)} className={`px-3 py-1 rounded-full border ${ver === k ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>{l}</button>
         ))}
       </div>
-      {fila.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">No hay nada en el planning de aluminio.</div>}
+      {fila.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">No hay ninguna tarea suelta.</div>}
       <div className="space-y-2">
         {fila.map(({ t, fin }) => (
           <div key={t.id} className={`bg-white border rounded-lg p-3 flex flex-wrap items-center gap-x-4 gap-y-2 ${t.estado === "hecho" ? "border-emerald-200 opacity-70" : "border-sky-200"}`}>
@@ -18292,7 +18390,8 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+  const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
@@ -18429,10 +18528,6 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           Discrepancia con oficina
           {nDiscrepancias > 0 && <Badge className="bg-orange-100 text-orange-700 ring-orange-300">{nDiscrepancias}</Badge>}
         </button>
-        <button onClick={() => setTab("aluminio")}
-          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "aluminio" ? "border-sky-500 text-sky-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-          Planning aluminio
-        </button>
         <button onClick={() => setTab("paneles")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "paneles" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Paneles pendientes de cortar
@@ -18486,17 +18581,31 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       )}
 
       {tab === "preparar" && (
-        <Planning proyectos={proyectos} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar}
+        <div className="flex flex-wrap gap-2 mb-4">
+          {[["pvc", "Planning PVC"], ["Aluminio", "Planning aluminio"], ["Curvas", "Planning curvas"], ["montaje", "Planning montaje"]].map(([k, l]) => (
+            <button key={k} onClick={() => setSubPlan(k)} className={`px-4 py-2 rounded-full text-sm font-semibold border ${subPlan === k ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-200 hover:border-[#2E8B57]"}`}>{l}</button>
+          ))}
+        </div>
+      )}
+      {tab === "preparar" && (subPlan === "Aluminio" || subPlan === "Curvas") && (
+        <PlanningTaller taller={subPlan} proyectos={proyectos} listoParaFabricar={listoParaFabricar} uxExpedientes={uxExpedientes} configPlanning={configPlanning} clientes={clientes}
+          onVerProyecto={onVerProyecto} onActualizarProyecto={onActualizarProyecto} onIniciarFabricacion={onIniciarFabricacion} />
+      )}
+      {tab === "preparar" && subPlan === "montaje" && (
+        <PlanningMontaje instalaciones={instalaciones} proyectos={proyectos} clientes={clientes} vehiculos={vehiculos} onVerProyecto={onVerProyecto} />
+      )}
+      {tab === "preparar" && subPlan === "pvc" && (
+        <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
           lotesSinObra={etiquetasSinObra} puestos={puestosDe(configVentanasFab)}
           onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} />
       )}
-      {tab === "preparar" && (
+      {tab === "preparar" && subPlan === "pvc" && (
         <div className="mt-6">
           <PrioridadPuertasHoy proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />
         </div>
       )}
-      {tab === "preparar" && (
+      {tab === "preparar" && subPlan === "pvc" && (
         <div className="mt-6">
           <PreparacionProximoDia config={configPlanning} onSaveConfig={onSaveConfigPlanning} puestos={puestosDe(configVentanasFab)} cristales={cristales} onUpdateCristal={onUpdateCristal}
             caballetes={caballetesVentanas} onGuardarCaballete={onGuardarCaballete} configFab={configVentanasFab} proyectos={proyectos} uxExpedientes={uxExpedientes} />
@@ -18549,7 +18658,9 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                 <span><b>{fmtHoras(hSel)}</b> ≈ <b>{(hSel / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(hSel / hDia - 1) < 0.05 ? "" : "s"} con {fmtHoras(hDia)} al día</span>
                 {sinH > 0 && <span className="font-semibold text-amber-200">{sinH} sin horas (no suman)</span>}
                 <span className="ml-auto flex gap-2">
-                  <button onClick={() => { if (window.confirm(`¿Mandar a fabricar las ${marcadas.length} obras marcadas?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { marcadas.forEach((p) => onIniciarFabricacion(p.id)); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar las marcadas a fabricar</button>
+                  {TALLERES_FAB.map((t) => (
+                    <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
+                  ))}
                   <button onClick={() => setSelListo([])} className="px-3 py-1.5 rounded-md border border-white/60 text-white text-xs font-semibold hover:bg-white/10">Quitar marcas</button>
                 </span>
               </div>
@@ -18590,13 +18701,18 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}{(() => { const h = horasDeObraListo(p, uxExpedientes, configPlanning); return h.horas ? <span className="ml-2 font-bold text-slate-700">⏱ {fmtHoras(h.horas)} <span className="font-normal text-slate-400">({h.origen})</span></span> : <span className="ml-2 font-semibold text-amber-700">⏱ sin horas</span>; })()}</div>
                   <AccesoriosDeLaObra proyecto={p} />
                 </div>
-                <button
-                  onClick={() => onIniciarFabricacion(p.id)}
-                  style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-                  className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md"
-                >
-                  <Factory size={15} /> Empezar a fabricar
-                </button>
+                <div className="flex items-end gap-2">
+                  <label className="text-[11px] text-slate-500 flex flex-col gap-0.5">Taller
+                    <select value={tallerDe(p)} onChange={(e) => onActualizarProyecto && onActualizarProyecto(p.id, { taller: e.target.value })} className="border border-slate-300 rounded px-2 py-2 text-sm text-slate-800">{TALLERES_FAB.map((t) => <option key={t}>{t}</option>)}</select>
+                  </label>
+                  <button
+                    onClick={() => onIniciarFabricacion(p.id)}
+                    style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+                    className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md"
+                  >
+                    <Factory size={15} /> Empezar a fabricar{tallerDe(p) !== "PVC" ? ` en ${tallerDe(p)}` : ""}
+                  </button>
+                </div>
               </div>
             ))}
                   </div>
@@ -18749,8 +18865,6 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         <DiscrepanciasPedidos pedidos={pedidos} proveedores={proveedores} onActualizarPedido={onActualizarPedido || (() => {})} onIrAlbaran={() => setTab("materiales")} onDarDeBaja={onConfirmarPedidoEntero}
           nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
       )}
-
-      {tab === "aluminio" && <PlanningAluminio proyectos={proyectos} listoParaFabricar={listoParaFabricar} />}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
 
