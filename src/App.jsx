@@ -5612,6 +5612,21 @@ export default function App() {
           }}>
           {modulo === "fabrica" && (
           <FabricaModulo
+            albaranesEl={<AlbaranesChofer
+            caballetes={caballetesVentanas} onGuardarCaballete={guardarCaballete}
+            proyectos={proyectos} clientes={clientes} envios={enviosProceso} proveedores={proveedores} usuarios={usuarios}
+            currentUser={currentUser} isAdmin={isAdmin}
+            onGuardarAlbaranEntrega={(id, albaran, entregar, cargado) => {
+              const albaranEntrega = JSON.parse(JSON.stringify(albaran));
+              const pr = proyectos.find((x) => x.id === id);
+              // un solo guardado: el albarán firmado y (si toca) el cambio de estado
+              if (entregar) moverEstadoProyecto(id, "Entregado", { albaranEntrega });
+              else if (cargado && pr && ["Listo para reparto/recogida", "En proceso"].includes(pr.estadoTrabajo)) moverEstadoProyecto(id, "Albarán de carga firmado", { albaranEntrega, fechaCarga: new Date().toISOString().slice(0, 10) });
+              else updateProyectoInline(id, { albaranEntrega });
+            }}
+            onGuardarDocumentoEntrega={async (id, doc, recuento) => { updateProyectoInline(id, { documentoEntrega: doc, ...(recuento ? { recuento } : {}) }); showToast("Documento de entrega guardado"); }}
+            onUpsertEnvio={upsertEnvioProceso} onMarcarRecogido={marcarEnvioProcesoRecogido} onDeleteEnvio={deleteEnvioProceso}
+          />}
             proyectos={proyectos}
             pedidos={pedidos}
             proveedores={proveedores}
@@ -18417,7 +18432,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -18956,7 +18971,13 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         />
       )}
 
-      {tab === "procesoExterno" && (
+      {tab === "procesoExterno" && albaranesEl && (
+        <div>
+          <p className="text-xs text-slate-500 mb-3">Es el mismo módulo de <b>Albaranes</b> (sigue también en su sitio), aquí junto al resto de Fábrica: repartos, recogidas y albaranes de salida.</p>
+          {albaranesEl}
+        </div>
+      )}
+      {tab === "procesoExterno" && !albaranesEl && (
         <ProcesoExternoTab
           envios={enviosProceso}
           proyectos={proyectos}
@@ -18968,6 +18989,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           onDelete={onDeleteEnvioProceso}
         />
       )}
+
 
       {tab === "reparto" && (
         <SalidasFabrica proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} caballetes={caballetesVentanas} config={configVentanasFab} onGuardarCaballete={onGuardarCaballete}
@@ -19216,6 +19238,13 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
         {res.length > 0 && <span className="text-sky-700">Reservados: {res.map((c) => c.numero).join(", ")}</span>}
         {fue.length > 0 && <span className="text-amber-700 font-semibold">Fuera: {fue.map((c) => `${c.numero} (desde ${fmtDate(c.salida && c.salida.fecha)})`).join(", ")}</span>}
         {esListo(p) && faltan > 0 && <span className="text-rose-600 font-semibold">⚠ Faltan {faltan} por paletizar</span>}
+        {(() => {
+          const almsC = almacenesCaballetes(config);
+          const nomAlmC = (id) => (almsC.find((a) => a.id === id) || almsC[0] || {}).nombre || "Fábrica";
+          const suyos = [...new Map([...carg, ...fue, ...res, ...cabs.filter((c) => c.obra && c.obra.proyectoId === p.id && c.estado !== "libre")].map((c) => [c.id, c])).values()];
+          if (!suyos.length) return null;
+          return <span className="basis-full text-slate-700">📍 Dónde están: {suyos.map((c, i) => <span key={c.id}>{i ? " · " : ""}<b>{c.numero}</b> → {c.estado === "fuera" ? "fuera (entregado)" : `${nomAlmC(c.almacenId)}${c.ubicacion ? " · " + c.ubicacion : ""}`}</span>)}</span>;
+        })()}
       </div>
     );
   };
@@ -19773,7 +19802,8 @@ async function generarPdfAlbaranEntrega(p, { cliente, direccion }) {
 
   // Detrás, el tipo plano o el documento de entrega
   const d = p.documentoEntrega;
-  if (d && d.url) {
+  falloAdjuntoAlbaran.actual = "";
+  if (d && d.url) try {
     const r = await fetch(d.url);
     if (!r.ok) throw new Error("no se pudo descargar el documento de entrega");
     const bytes = new Uint8Array(await r.arrayBuffer());
@@ -19790,9 +19820,16 @@ async function generarPdfAlbaranEntrega(p, { cliente, direccion }) {
       pg.drawImage(img, { x: (W - img.width * esc) / 2, y: (H - img.height * esc) / 2, width: img.width * esc, height: img.height * esc });
       pg.drawText(limpio(pie), { x: 20, y: 10, size: 8, font: f, color: gris });
     }
+  } catch (e) {
+    // Si el navegador no puede bajar el tipo plano (p. ej. permisos CORS del almacenamiento), el albarán sale igual, sin las hojas del plano
+    falloAdjuntoAlbaran.actual = String(e && e.message || e);
+    const pgAviso = pdf.addPage([W, H]);
+    pgAviso.drawText(limpio("El tipo plano no se ha podido adjuntar automaticamente a este PDF."), { x: 40, y: H - 60, size: 12, font: f, color: gris });
+    pgAviso.drawText(limpio("Abrelo desde el CRM (Albaran > Dibujos de las ventanas) e imprimelo aparte."), { x: 40, y: H - 80, size: 10, font: f, color: gris });
   }
   return await pdf.save();
 }
+const falloAdjuntoAlbaran = { actual: "" };
 async function descargarPdfAlbaranEntrega(p, datos) {
   try {
     const bytes = await generarPdfAlbaranEntrega(p, datos);
@@ -19805,6 +19842,7 @@ async function descargarPdfAlbaranEntrega(p, datos) {
     enlace.click();
     enlace.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+    if (falloAdjuntoAlbaran.actual) alert("El albarán se ha descargado, pero SIN el tipo plano detrás (el navegador no pudo bajarlo: " + falloAdjuntoAlbaran.actual + "). Ábrelo con «Abrir en pantalla completa» e imprímelo aparte.");
   } catch (e) {
     alert("No se pudo generar el PDF del albarán: " + e.message);
   }
