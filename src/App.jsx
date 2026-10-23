@@ -15128,7 +15128,9 @@ const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos"
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
 // Clave del grupo de pedido: cristales y persianas/compactos son pedidos distintos aunque vayan al mismo proveedor.
-const claveGrupoPedido = (prov, seccion) => (SECCIONES_A_MEDIDA.includes(seccion) && prov && !String(prov).startsWith("sin:") ? `${prov}#${seccion}` : prov);
+// Aunque sea el mismo proveedor, cada familia es un pedido distinto: perfiles (con refuerzos), herrajes (con accesorios), persianas y cristales.
+const familiaPedidoSeccion = (seccion) => (seccion === "refuerzo" ? "perfiles" : seccion === "accesorios" ? "herraje" : seccion);
+const claveGrupoPedido = (prov, seccion) => (prov && !String(prov).startsWith("sin:") && seccion ? `${prov}#${familiaPedidoSeccion(seccion)}` : prov);
 // Proveedor al que se le pide normalmente cada sección (marcado en la ficha del proveedor,
 // "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
 const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
@@ -33505,19 +33507,19 @@ function UxRecuentoEditor({ lineas, onChange }) {
       {lista.length > 0 && (
         <>
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Modelo</th><th className="text-right py-1 px-1">Uds</th><th className="text-left py-1 px-1">Tipo</th><th className="text-right py-1 px-1">Hojas</th><th className="py-1 px-1">Persiana</th><th className="py-1 px-1">Cerradura</th><th className="text-right py-1 px-1" title="Ventanas unidas en el mismo dibujo">Juntas</th><th className="text-right py-1 px-1" title="Fijos unidos a la ventana">Fijos</th><th /></tr></thead>
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="text-slate-400 uppercase"><tr><th className="text-left py-1 pr-2">Modelo</th><th className="text-center py-1 px-1">Uds</th><th className="text-left py-1 px-1">Tipo</th><th className="text-center py-1 px-1">Hojas</th><th className="py-1 px-1">Persiana</th><th className="py-1 px-1">Cerradura</th><th className="text-right py-1 px-1" title="Ventanas unidas en el mismo dibujo">Juntas</th><th className="text-right py-1 px-1" title="Fijos unidos a la ventana">Fijos</th><th /></tr></thead>
               <tbody>
                 {lista.map((l, i) => (
                   <tr key={l.id || i} className="border-t border-slate-100">
                     <td className="py-1 pr-2"><TextInput value={l.modelo} onChange={(e) => setLinea(i, { modelo: e.target.value })} className="min-w-[110px]" /></td>
-                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.uds} onChange={(e) => setLinea(i, { uds: e.target.value })} className="w-16 text-right" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.uds} onChange={(e) => setLinea(i, { uds: e.target.value })} className="!w-20 min-w-[5rem] !px-2 text-center font-semibold" /></td>
                     <td className="py-1 px-1"><Select value={l.tipo} onChange={(e) => setLinea(i, { tipo: e.target.value })} className="min-w-[140px]">{UX_CARP_TIPOS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></td>
-                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.hojas} onChange={(e) => setLinea(i, { hojas: e.target.value })} className="w-14 text-right" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.hojas} onChange={(e) => setLinea(i, { hojas: e.target.value })} className="!w-20 min-w-[5rem] !px-2 text-center font-semibold" /></td>
                     <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.persiana} onChange={(e) => setLinea(i, { persiana: e.target.checked })} /></td>
                     <td className="py-1 px-1 text-center"><input type="checkbox" checked={!!l.cerradura} onChange={(e) => setLinea(i, { cerradura: e.target.checked })} /></td>
-                    <td className="py-1 px-1"><TextInput type="number" min="1" value={l.juntas || 1} onChange={(e) => setLinea(i, { juntas: e.target.value })} className="w-14 text-right" /></td>
-                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.fijos || 0} onChange={(e) => setLinea(i, { fijos: e.target.value })} className="w-14 text-right" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="1" value={l.juntas || 1} onChange={(e) => setLinea(i, { juntas: e.target.value })} className="!w-16 min-w-[4rem] !px-2 text-center" /></td>
+                    <td className="py-1 px-1"><TextInput type="number" min="0" value={l.fijos || 0} onChange={(e) => setLinea(i, { fijos: e.target.value })} className="!w-16 min-w-[4rem] !px-2 text-center" /></td>
                     <td className="py-1 pl-1 text-right"><button type="button" onClick={() => onChange(lista.filter((_, j) => j !== i))} className="text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button></td>
                   </tr>
                 ))}
