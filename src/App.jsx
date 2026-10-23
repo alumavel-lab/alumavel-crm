@@ -18022,6 +18022,64 @@ function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarP
     </div>
   );
 }
+// ── Listas por color en «Listo para fabricar»: blanco, roble dorado, nogal, 7016 y varios ──
+const LISTO_ENTRA_SOLO_EN_PLANNING = false; // true = como antes (lo listo entraba directo en el planning)
+const LISTAS_COLOR_FABRICA = [
+  { id: "blanco", nombre: "Blanco", re: /blanc/i, punto: "#e5e7eb" },
+  { id: "roble", nombre: "Roble dorado", re: /roble|dorado|golden|oak/i, punto: "#b8860b" },
+  { id: "nogal", nombre: "Nogal", re: /nogal|walnut/i, punto: "#6b4423" },
+  { id: "7016", nombre: "7016 (antracita)", re: /7016|antracit/i, punto: "#374151" },
+  { id: "varios", nombre: "Varios", re: null, punto: "#94a3b8" },
+];
+// A qué lista va una obra: si todos los colores de sus perfiles caen en la misma lista, esa; si mezcla
+// colores, no trae color o es otro color distinto, «Varios».
+const listaColorDeObra = (p) => {
+  const cols = coloresPerfilDeObra(p);
+  const listas = new Set(cols.map((c) => { const l = LISTAS_COLOR_FABRICA.find((x) => x.re && x.re.test(c)); return l ? l.id : "otro"; }));
+  const id = listas.size === 1 && !listas.has("otro") ? [...listas][0] : "varios";
+  return { id, colores: cols };
+};
+// ── Qué accesorios lleva una obra (mosquitera, postigo, tapajuntas), leído del listado de materiales ──
+const ACCESORIOS_OBRA = [
+  { id: "persiana", nombre: "Persiana", re: /persiana|compacto|CJ_|lama/i, color: "bg-emerald-100 text-emerald-800 ring-emerald-300", test: (l) => l.seccion === "persianas" && /persiana|compacto|CJ_|lama|caj[oó]n|gu[ií]a/i.test(txtLinea(l)) && !/mosquit|PLX|con tela/i.test(txtLinea(l)) },
+  { id: "mosquitera", nombre: "Mosquitera", re: /mosquit|PLX|con tela/i, color: "bg-sky-100 text-sky-800 ring-sky-300" },
+  { id: "postigo", nombre: "Postigo", re: /postigo/i, color: "bg-violet-100 text-violet-800 ring-violet-300" },
+  { id: "tapajuntas", nombre: "Tapajuntas", re: /tapajunt|tapa\s*-?\s*junta|(^|[^a-zñáéíóúü])tap([^a-zñáéíóúü]|$)/i, color: "bg-amber-100 text-amber-800 ring-amber-300" },
+];
+const accesoriosDeObra = (p) => {
+  const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
+  const out = { hayListado: lineas.length > 0, grupos: [] };
+  ACCESORIOS_OBRA.forEach((a) => {
+    const ls = lineas.filter((l) => (a.test ? a.test(l) : a.re.test(txtLinea(l))));
+    out.grupos.push({ ...a, lineas: ls, uds: ls.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0) });
+  });
+  return out;
+};
+function AccesoriosDeLaObra({ proyecto }) {
+  const a = accesoriosDeObra(proyecto);
+  if (!a.hayListado) return <div className="mt-1.5 text-[11px] font-semibold text-amber-700">⚠ Esta obra no tiene listado de materiales guardado: no puedo saber si lleva mosquitera, postigo o tapajuntas.</div>;
+  const medida = (l) => [l.longitud ? `${l.longitud} m` : "", l.ancho || l.alto ? `${l.ancho || "—"} x ${l.alto || "—"} mm` : ""].filter(Boolean).join(" · ");
+  const con = a.grupos.filter((g) => g.lineas.length > 0);
+  return (
+    <div className="mt-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {a.grupos.map((g) => g.lineas.length > 0
+          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()} · {g.uds} ud.</span>
+          : <span key={g.id} className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">sin {g.nombre.toLowerCase()}</span>)}
+      </div>
+      {con.length > 0 && (
+        <details className="mt-1">
+          <summary className="text-[11px] text-slate-500 cursor-pointer">Ver detalle (código, descripción y medida)</summary>
+          <div className="mt-1 text-xs text-slate-700 space-y-0.5">
+            {con.map((g) => g.lineas.map((l) => (
+              <div key={g.id + l.id}><b>{g.nombre}</b> · {l.codigo} — {l.descripcion || "sin descripción"} · {l.uds} ud.{medida(l) ? ` · ${medida(l)}` : ""}{l.color ? ` · ${l.color}` : ""}</div>
+            )))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
 // ── Fábrica → Materiales pendientes: subir el albarán del proveedor ──
 // Una sola subida: se lee el albarán, se busca el pedido pendiente al que corresponde y se compara línea a línea
 // (medidas, códigos, nombres y precios). Al confirmar, lo que llega se marca, cada cristal y cada persiana va a su hueco
@@ -18166,8 +18224,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
     if (tab === "listo") {
       cuerpo = `
         <table style="border-collapse:collapse;width:100%;">
-          ${cabeceraTabla(["Proyecto", "Entrega prevista", "Fabricación prevista"])}
-          ${listoParaFabricar.map((p) => filaTabla([`#${p.numero} — ${p.nombre}`, fmtDate(p.fechaEntregaPrevista) || "—", fmtDate(p.fechaFabricacion) || "—"])).join("")}
+          ${cabeceraTabla(["Proyecto", "Entrega prevista", "Fabricación prevista", "Lleva"])}
+          ${listoParaFabricar.map((p) => { const a = accesoriosDeObra(p); return filaTabla([`#${p.numero} — ${p.nombre}`, fmtDate(p.fechaEntregaPrevista) || "—", fmtDate(p.fechaFabricacion) || "—", !a.hayListado ? "Sin listado" : (a.grupos.filter((g) => g.lineas.length).map((g) => `${g.nombre} (${g.uds})`).join(", ") || "Nada de lo anterior")]); }).join("")}
         </table>`;
     } else if (tab === "materiales") {
       cuerpo = filtered.map((pedido) => {
@@ -18333,12 +18391,24 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
               </div>
             </details>
           )}
-          <div className="space-y-3">
-            {listoParaFabricar.map((p) => (
+          <div className="space-y-6">
+            {LISTAS_COLOR_FABRICA.map((lc) => {
+              const obras = listoParaFabricar.filter((p) => listaColorDeObra(p).id === lc.id);
+              if (!obras.length) return null;
+              return (
+                <section key={lc.id}>
+                  <h3 className="flex items-center gap-2 font-display font-bold text-slate-800 mb-2">
+                    <span className="inline-block w-3 h-3 rounded-full ring-1 ring-slate-300" style={{ backgroundColor: lc.punto }} />
+                    {lc.nombre} <span className="text-xs font-semibold text-slate-400">({obras.length})</span>
+                  </h3>
+                  <div className="space-y-3">
+            {obras.map((p) => (
               <div key={p.id} className="bg-white border border-emerald-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Entrega prevista {fmtDate(p.fechaEntregaPrevista)}{p.fechaFabricacion ? ` · Fabricación prevista ${fmtDate(p.fechaFabricacion)}` : ""}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}</div>
+                  <AccesoriosDeLaObra proyecto={p} />
                 </div>
                 <button
                   onClick={() => onIniciarFabricacion(p.id)}
@@ -18349,6 +18419,10 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                 </button>
               </div>
             ))}
+                  </div>
+                </section>
+              );
+            })}
             {listoParaFabricar.length === 0 && (
               <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">
                 Todavía no hay ningún proyecto con todo listo (oficina + fábrica + checklist completos).
@@ -41781,7 +41855,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const listas = [
     ...enCurso,
     ...[
-      ...listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto),
+      // Las obras de «Listo para fabricar» ya no entran solas en el planning: entran al pulsar «Empezar a fabricar»
+      ...(LISTO_ENTRA_SOLO_EN_PLANNING ? listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto) : []),
       ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraUx),
       ...rapidos,
     ].sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999")),
