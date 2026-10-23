@@ -1139,37 +1139,6 @@ export default function App() {
     return { bytes: Uint8Array.from(atob(d.base64), (c) => c.charCodeAt(0)), mimeType: d.contentType || "" };
   };
 
-  // Igual que descargarArchivoGuardado, pero para archivos GRANDES (más de ~4 MB): los pide
-  // al servidor por trozos y los junta aquí. Se usa para armar el PDF que se manda a firmar.
-  const descargarArchivoGrande = async (url) => {
-    const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
-    const pedirTrozo = async (desde) => {
-      const r = await fetch("/.netlify/functions/descargar-archivo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ url, desde }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.error || `No se pudo descargar (${r.status})`);
-      return { d, bytes: Uint8Array.from(atob(d.base64), (c) => c.charCodeAt(0)) };
-    };
-    const primero = await pedirTrozo(0);
-    const partes = [primero.bytes];
-    let recibido = primero.bytes.length;
-    const total = Number.isFinite(primero.d.total) ? primero.d.total : recibido;
-    while (recibido < total) {
-      const sig = await pedirTrozo(recibido);
-      if (!sig.bytes.length) break;
-      partes.push(sig.bytes);
-      recibido += sig.bytes.length;
-    }
-    const bytes = new Uint8Array(recibido);
-    let pos = 0;
-    for (const parte of partes) { bytes.set(parte, pos); pos += parte.length; }
-    if (recibido < total) throw new Error("la descarga quedó incompleta — vuelve a intentarlo");
-    return { bytes, mimeType: primero.d.contentType || "" };
-  };
-
   // documentoIds: lista de ids de los documentos a firmar (se juntan en un solo
   // PDF en el orden en que están guardados). Acepta también un id suelto o null
   // (null = todos los documentos guardados).
@@ -1195,7 +1164,7 @@ export default function App() {
             bytes = Uint8Array.from(atob(matchDataUri[2]), (c) => c.charCodeAt(0));
           } else if (doc.url) {
             // Documentos nuevos: URL de Firebase Storage — hay que descargarlos.
-            const descargado = await descargarArchivoGrande(doc.url);
+            const descargado = await descargarArchivoGuardado(doc.url);
             mimeType = descargado.mimeType;
             bytes = descargado.bytes;
             // Si el content-type no viene claro, se adivina por la extensión del nombre.
@@ -1280,12 +1249,9 @@ export default function App() {
     }
 
     const bytesFinales = await pdfDoc.save();
-    // PDF grande (más de ~3,5 MB): no cabe en una petición a Netlify (tope ~6 MB). Se devuelve
-    // sin base64 y quien lo manda lo sube a Storage y pasa solo la dirección.
-    if (bytesFinales.length > 3.5 * 1024 * 1024) return { base64: "", bytes: bytesFinales, fallos };
     let binario = "";
     for (let i = 0; i < bytesFinales.length; i++) binario += String.fromCharCode(bytesFinales[i]);
-    return { base64: btoa(binario), bytes: bytesFinales, fallos };
+    return { base64: btoa(binario), fallos };
   };
 
   // Sube un nuevo PDF de condiciones/contrato a Firebase Storage y guarda su URL
@@ -1313,30 +1279,12 @@ export default function App() {
   // en cuanto Firma.dev confirma el envío (el "firmado" llega luego por webhook).
   const enviarPresupuestoAFirmar = async (presupuesto, firmante, documentoIds) => {
     try {
-      const { base64: pdfBase64, bytes: pdfBytes, fallos } = await generarPdfBase64Presupuesto(presupuesto, documentoIds);
+      const { base64: pdfBase64, fallos } = await generarPdfBase64Presupuesto(presupuesto, documentoIds);
       if (fallos.length > 0) {
         // No se manda a firmar un resumen en lugar del presupuesto real: el cliente
         // tiene que firmar el documento de verdad. Se para aquí y se avisa.
         showToast(`No se ha enviado nada a firmar — no se pudo cargar el documento: ${fallos.join("; ")}`, "error");
         return;
-      }
-      // PDF grande: se sube a Storage (carpeta temporal) y se manda solo su dirección.
-      let pdfUrl = "";
-      if (!pdfBase64) {
-        if (pdfBytes.length > 19 * 1024 * 1024) {
-          showToast(`No se ha enviado nada a firmar — el PDF final pesa ${(pdfBytes.length / 1048576).toFixed(1)} MB y Firma.dev admite 20 MB como máximo — quita algún documento o comprímelo`, "error");
-          return;
-        }
-        const nombreTmp = `firmas-temporales/presupuesto-${presupuesto.id}-${Date.now()}.pdf`;
-        const subida = await fetch(
-          `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?uploadType=media&name=${encodeURIComponent(nombreTmp)}`,
-          { method: "POST", headers: { "Content-Type": "application/pdf" }, body: pdfBytes }
-        );
-        if (!subida.ok) {
-          showToast("No se ha enviado nada a firmar — no se pudo subir el PDF grande para mandarlo", "error");
-          return;
-        }
-        pdfUrl = `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(nombreTmp)}?alt=media`;
       }
       const tokenUsuario = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
       const response = await fetch("/.netlify/functions/firma-enviar", {
@@ -1345,8 +1293,7 @@ export default function App() {
         body: JSON.stringify({
           registroTipo: "presupuestos",
           registroId: presupuesto.id,
-          pdfBase64: pdfBase64 || undefined,
-          pdfUrl: pdfUrl || undefined,
+          pdfBase64,
           nombreDocumento: `Presupuesto ${presupuesto.numero}`,
           firmante,
         }),
@@ -3247,50 +3194,6 @@ export default function App() {
     const next = presupuestos.map((p) => (p.id === presupuestoId ? { ...p, firma: null } : p));
     savePresupuestos(next);
     showToast("Envío a firmar cancelado — ya puedes volver a mandarlo");
-  };
-
-  // Anular una firma ya completada (cliente que se equivoca, prueba...). Solo en el CRM:
-  // vuelve el presupuesto a "Enviado", borra los pedidos que se crearon solos al firmar y
-  // siguen "En espera", y quita de la obra la marca de "ya pedido". La obra NO se borra.
-  // La contraseña ya se ha comprobado en la tarjeta de firma; "quien" queda registrado.
-  const anularFirmaPresupuesto = (presupuestoId, quien) => {
-    const pre = presupuestos.find((p) => p.id === presupuestoId);
-    if (!pre || !pre.firma || pre.firma.estado !== "firmado") return;
-    const origen = `presupuesto ${pre.numero}`;
-    const esAuto = (pd) => pd && pd.creadoPor === "Automático (presupuesto firmado)" && pd.origenListado === origen;
-    const aBorrar = pedidos.filter((pd) => esAuto(pd) && pd.estado === "En espera");
-    const noBorrados = pedidos.filter((pd) => esAuto(pd) && pd.estado !== "En espera");
-    const idsBorrar = new Set(aBorrar.map((pd) => pd.id));
-    if (idsBorrar.size) savePedidos(pedidos.filter((pd) => !idsBorrar.has(pd.id)));
-    const obraId = pre.proyectoCreadoId || pre.proyectoId;
-    if (idsBorrar.size && obraId) {
-      saveProyectos(proyectosRef.current.map((x) => {
-        if (x.id !== obraId) return x;
-        const cl = toArray(x.checklistMateriales);
-        if (!cl.length) return x;
-        return {
-          ...x,
-          checklistMateriales: normalizarChecklist(cl).map((c) => {
-            const ids = toArray(c.pedidoIds);
-            if (!ids.some((i) => idsBorrar.has(i))) return c;
-            const resto = ids.filter((i) => !idsBorrar.has(i));
-            return resto.length ? { ...c, pedidoIds: resto } : { ...c, estado: null, pedidoIds: [], enStock: false };
-          }),
-        };
-      }));
-    }
-    savePresupuestos(presupuestos.map((p) => (p.id === presupuestoId ? {
-      ...p, firma: null, estado: "Enviado", fechaRespuesta: "",
-      // Constancia de quién anuló qué firma y cuándo
-      firmasAnuladas: [...toArray(p.firmasAnuladas), {
-        anuladaPor: quien || "", anuladaEn: Date.now(),
-        firmante: p.firma.firmanteNombre || p.firma.firmanteEmail || "", firmadoEn: p.firma.firmadoEn || null, metodo: p.firma.metodo || "firma.dev",
-      }],
-    } : p)));
-    showToast(
-      `Firma anulada. Pedidos en espera borrados: ${idsBorrar.size}. La obra no se ha tocado.${noBorrados.length ? ` OJO: ${noBorrados.length} pedido(s) ya no estaban en espera y NO se han borrado — revísalos en Pedidos.` : ""}`,
-      noBorrados.length ? "error" : "ok"
-    );
   };
 
   const deletePresupuesto = (id) => {
@@ -5560,7 +5463,6 @@ export default function App() {
             onGenerarPedido={enviarAPedido}
             onAdjuntarDocumento={agregarDocumentoPresupuesto}
             onCancelarFirma={cancelarFirmaPresupuesto}
-            onAnularFirma={anularFirmaPresupuesto}
             onComprobarFirma={comprobarFirmaPresupuesto}
             anadirPersianasAId={presupuestoParaAnadirPersianas}
             onClearAnadirPersianasA={() => setPresupuestoParaAnadirPersianas(null)}
@@ -9539,7 +9441,18 @@ function ProveedorForm({ initial, onCancel, onSave }) {
   );
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const [errorMsg, setErrorMsg] = useState("");
-  const submit = (e) => { e.preventDefault(); if (!f.nombre.trim()) { setErrorMsg("Falta el campo Nombre / Empresa (es obligatorio)."); return; } setErrorMsg(""); onSave(f); };
+  const submit = (e) => {
+    e.preventDefault();
+    const falla = (msg) => { setErrorMsg(msg); alert(msg); };
+    if (!f.nombre.trim()) { setErrorMsg("Falta el campo Nombre / Empresa (es obligatorio)."); return; }
+    // Al dar de alta un proveedor nuevo hay que tener sus datos de contacto: sin ellos no se le puede pedir nada
+    if (!initial) {
+      if (!String(f.cif || "").trim()) { falla("Falta el DNI / CIF del proveedor (es obligatorio para darlo de alta)."); return; }
+      if (!String(f.movil || "").trim() && !String(f.email || "").trim()) { falla("Falta un medio de contacto: pon al menos el Móvil o el Email del proveedor (uno de los dos es obligatorio)."); return; }
+      if (!String(f.direccion || "").trim() && !String(f.provincia || "").trim()) { falla("Falta la Dirección o la Provincia del proveedor (una de las dos es obligatoria)."); return; }
+    }
+    setErrorMsg(""); onSave(f);
+  };
 
   return (
     <div className="p-8 max-w-3xl">
@@ -9558,9 +9471,9 @@ function ProveedorForm({ initial, onCancel, onSave }) {
           <Field label="Apellidos"><TextInput value={f.apellidos} onChange={set("apellidos")} /></Field>
         </div>
         <div className="grid grid-cols-3 gap-4">
-          <Field label="DNI / CIF"><TextInput value={f.cif} onChange={set("cif")} /></Field>
-          <Field label="Email"><TextInput type="email" value={f.email} onChange={set("email")} /></Field>
-          <Field label="Móvil"><TextInput value={f.movil} onChange={set("movil")} /></Field>
+          <Field label="DNI / CIF" required={!initial}><TextInput value={f.cif} onChange={set("cif")} /></Field>
+          <Field label="Email (o móvil: uno de los dos es obligatorio)"><TextInput type="email" value={f.email} onChange={set("email")} /></Field>
+          <Field label="Móvil (o email: uno de los dos es obligatorio)"><TextInput value={f.movil} onChange={set("movil")} /></Field>
         </div>
         <Field label="Dirección"><TextInput value={f.direccion} onChange={set("direccion")} /></Field>
         <div className="grid grid-cols-2 gap-4">
@@ -10917,10 +10830,15 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
   const materialNombre = (id) => materiales.find((m) => m.id === id)?.descripcion || "—";
   const proyectoNombre = (id) => (id ? proyectos.find((p) => p.id === id)?.nombre : null) || "Stock";
 
+  const hoyAtraso = new Date().toISOString().slice(0, 10);
+  // Atrasado = ya pedido al proveedor, no recibido y con la fecha de llegada prevista ya pasada
+  const esAtrasado = (p) => ["Pendiente", "Realizado", "Reclamado"].includes(p.estado) && !!p.fechaEntregaPrevista && p.fechaEntregaPrevista < hoyAtraso;
+  const diasAtraso = (p) => Math.max(0, Math.round((new Date(hoyAtraso) - new Date(p.fechaEntregaPrevista)) / 86400000));
   const filtered = useMemo(() => {
-    return pedidos.filter((p) => {
+    const lista = pedidos.filter((p) => {
       if (!estado && !q && p.estado === "Recibido") return false;
-      if (estado && p.estado !== estado) return false;
+      if (estado === "__atrasados") { if (!esAtrasado(p)) return false; }
+      else if (estado && p.estado !== estado) return false;
       if (proveedorFiltro && p.proveedorId !== proveedorFiltro) return false;
       if (!q) return true;
       // También se busca por el proyecto del pedido (nº, nombre, cliente) y por su descripción/comentarios.
@@ -10929,6 +10847,8 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
       const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${textoProyecto} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialNombre(l.materialId)).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
+    // En "Atrasados" van primero los que más tarde llevan
+    return estado === "__atrasados" ? [...lista].sort((a, b) => String(a.fechaEntregaPrevista).localeCompare(String(b.fechaEntregaPrevista))) : lista;
   }, [pedidos, q, estado, proveedorFiltro, proveedores, materiales, proyectos]);
 
   // Borrar pedidos: los administradores cualquiera; los responsables de pedidos solo los
@@ -11073,7 +10993,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
           <div className="mb-3 space-y-2">
             {retrasados.length > 0 && (
               <div className="px-4 py-3 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 text-sm">
-                <div className="font-bold mb-1">⚠ {retrasados.length} pedido{retrasados.length === 1 ? "" : "s"} no ha{retrasados.length === 1 ? "" : "n"} llegado en la fecha prevista</div>
+                <div className="font-bold mb-1 flex flex-wrap items-center gap-2">⚠ {retrasados.length} pedido{retrasados.length === 1 ? "" : "s"} no ha{retrasados.length === 1 ? "" : "n"} llegado en la fecha prevista <button type="button" onClick={() => setEstado("__atrasados")} className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-2.5 py-1 rounded-md">Filtrar solo atrasados</button></div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">{retrasados.map((pd) => <button key={pd.id} onClick={() => { setDetailId(pd.id); setView("detail"); }} className="hover:underline">#{pd.numero} · {(proveedores.find((x) => x.id === pd.proveedorId) || {}).nombre || pd.proveedorExterno || "—"} · debía llegar el {fmtDate(pd.fechaEntregaPrevista)}</button>)}</div>
               </div>
             )}
@@ -11200,6 +11120,7 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         </Select>
         <Select value={estado} onChange={(e) => setEstado(e.target.value)} className="max-w-[180px]">
           <option value="">Todos los estados</option>
+          <option value="__atrasados">⚠ Atrasados ({pedidos.filter(esAtrasado).length})</option>
           {ESTADO_PEDIDO.map((t) => <option key={t}>{t}</option>)}
         </Select>
         <button
@@ -11241,12 +11162,12 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
               return (
                 <tr key={p.id} onClick={() => { setDetailId(p.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{(p.proveedorExterno || proveedorNombre(p.proveedorId))}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{(p.proveedorExterno || proveedorNombre(p.proveedorId))}{esAtrasado(p) && (() => { const pv = proveedores.find((x) => x.id === p.proveedorId); const tel = pv && (pv.movil || pv.telefono); return tel ? <a href={`tel:${String(tel).replace(/[^\d+]/g, "")}`} onClick={(e) => e.stopPropagation()} className="block text-[11px] font-semibold text-sky-700 hover:underline">📞 {tel}</a> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{resumenObraPedido(p, p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null)}</td>
                   <td className="px-4 py-3 text-slate-600">{(p.lineas || []).length} línea{(p.lineas || []).length === 1 ? "" : "s"}</td>
                   <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaCompra)}</td>
                   <td className="px-4 py-3 text-slate-500">{p.creadoPor || "—"}</td>
-                  <td className={`px-4 py-3 ${vencido ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
+                  <td className={`px-4 py-3 ${vencido ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}{esAtrasado(p) && <span className="block text-[11px] font-bold text-rose-600">{diasAtraso(p)} día{diasAtraso(p) === 1 ? "" : "s"} de retraso</span>}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={p.estado}
@@ -26310,7 +26231,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnularFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -26641,7 +26562,6 @@ function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProfor
         onGenerarPedido={onGenerarPedido}
         onAdjuntarDocumento={onAdjuntarDocumento}
         onCancelarFirma={onCancelarFirma}
-        onAnularFirma={onAnularFirma}
         onComprobarFirma={onComprobarFirma}
         onAnadirMasPersianas={() => onAbrirCalculadoraParaAnadirPersianas(presupuesto.id)}
       />
@@ -31933,7 +31853,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
 // solo cambia quién firma. El estado (enviado/firmado) se guarda en Firebase y
 // lo actualiza el webhook de Firma.dev en cuanto se firma — como la app carga
 // los datos una sola vez, hay un botón para refrescar solo este registro.
-function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma, onAnularFirma, esAdmin, onComprobarFirma, onConfirmarFirmaManual, usuarios }) {
+function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios }) {
   const [comprobandoFirma, setComprobandoFirma] = useState(false);
   // Al abrir un presupuesto pendiente de firma, se comprueba solo (sin avisos)
   // por si el cliente ya ha firmado.
@@ -31964,33 +31884,6 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
   const [passwordConfirma, setPasswordConfirma] = useState("");
   const [errorConfirmaManual, setErrorConfirmaManual] = useState("");
   const [confirmandoManual, setConfirmandoManual] = useState(false);
-  // Anular una firma ya completada: hace falta usuario administrador y su contraseña.
-  const [mostrarFormAnular, setMostrarFormAnular] = useState(false);
-  const [usuarioAnulaId, setUsuarioAnulaId] = useState("");
-  const [passwordAnula, setPasswordAnula] = useState("");
-  const [errorAnula, setErrorAnula] = useState("");
-  const [anulando, setAnulando] = useState(false);
-
-  const anularConPassword = async (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    const usuario = (usuarios || []).find((u) => u.id === usuarioAnulaId && u.rol === "Administrador");
-    if (!usuario) { setErrorAnula("Elige quién anula (solo administradores)."); return; }
-    setErrorAnula("");
-    setAnulando(true);
-    try {
-      // Se comprueba la contraseña contra su cuenta de acceso, sin cerrar la sesión actual.
-      await signInWithEmailAndPassword(fbAuthAltas, usuario.email, passwordAnula);
-      await signOut(fbAuthAltas).catch(() => {});
-    } catch (err) {
-      setAnulando(false);
-      setErrorAnula("Contraseña incorrecta.");
-      return;
-    }
-    onAnularFirma(presupuesto.id, `${usuario.nombre} ${usuario.apellidos || ""}`.trim());
-    setAnulando(false);
-    setMostrarFormAnular(false);
-    setPasswordAnula("");
-  };
 
   const confirmarManual = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
@@ -32043,36 +31936,6 @@ function FirmaPresupuestoCard({ presupuesto, proyectos, onEnviarFirma, onCancela
       <div className="mb-6 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm">
         <p className="font-semibold">✓ Firmado por {firma.firmanteNombre || firma.firmanteEmail} el {fmtDate(new Date(firma.firmadoEn).toISOString().slice(0, 10))}</p>
         {firma.pdfUrl && <a href={firma.pdfUrl} target="_blank" rel="noopener noreferrer" className="underline">Ver documento firmado</a>}
-        {onAnularFirma && esAdmin && (
-          !mostrarFormAnular ? (
-            <button type="button" onClick={() => setMostrarFormAnular(true)} className="block mt-2 text-xs font-semibold text-rose-700 hover:underline">
-              Anular firma (pide contraseña)
-            </button>
-          ) : (
-            <form onSubmit={anularConPassword} className="mt-2 space-y-2 bg-white border border-rose-200 rounded-md p-3 text-slate-700">
-              <p className="text-xs font-semibold text-rose-700">Anular la firma de este presupuesto</p>
-              <p className="text-xs text-slate-600">El presupuesto vuelve a «Enviado» y se borran los pedidos de material creados solos al firmar que sigan «En espera». La obra NO se borra. Solo se anula en el CRM: si el cliente aún tiene el enlace de Firma.dev, hay que cancelarlo también allí.</p>
-              {errorAnula && <p className="text-xs text-rose-600 font-semibold">⚠ {errorAnula}</p>}
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Quién anula">
-                  <Select value={usuarioAnulaId} onChange={(e) => setUsuarioAnulaId(e.target.value)}>
-                    <option value="">Selecciona...</option>
-                    {(usuarios || []).filter((u) => u.rol === "Administrador").map((u) => <option key={u.id} value={u.id}>{u.nombre} {u.apellidos || ""}</option>)}
-                  </Select>
-                </Field>
-                <Field label="Contraseña">
-                  <TextInput type="password" value={passwordAnula} onChange={(e) => setPasswordAnula(e.target.value)} />
-                </Field>
-              </div>
-              <div className="flex gap-2">
-                <button type="submit" disabled={anulando || !usuarioAnulaId || !passwordAnula} className="text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3.5 py-2 rounded-md disabled:opacity-60">
-                  {anulando ? "Comprobando..." : "Anular firma"}
-                </button>
-                <button type="button" onClick={() => { setMostrarFormAnular(false); setErrorAnula(""); setPasswordAnula(""); }} className="text-sm font-semibold text-slate-500 px-3.5 py-2">Cancelar</button>
-              </div>
-            </form>
-          )
-        )}
       </div>
     );
   }
@@ -32237,7 +32100,7 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
   );
 }
 
-function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onAnularFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
   const dias = diasSinRespuestaDe(presupuesto);
@@ -32584,7 +32447,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         );
       })()}
 
-      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onAnularFirma={onAnularFirma} esAdmin={isAdmin} onComprobarFirma={onComprobarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
+      <FirmaPresupuestoCard presupuesto={presupuesto} proyectos={proyectos} onEnviarFirma={onEnviarFirma} onCancelarFirma={onCancelarFirma} onComprobarFirma={onComprobarFirma} onConfirmarFirmaManual={onConfirmarFirmaManual} usuarios={usuarios} />
 
       <CornerFrame className="bg-white border border-slate-200 rounded-lg p-6 mb-6">
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
