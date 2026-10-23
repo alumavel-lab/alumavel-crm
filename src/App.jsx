@@ -2466,6 +2466,12 @@ export default function App() {
   const marcarPedidoEnviado = (pedidoId, metodo, fechaEntrega, darPorRecibido = false) => {
     const hoy = new Date().toISOString().slice(0, 10);
     let aviso = "";
+    // La fecha de llegada es obligatoria: sin ella el pedido no se da por hecho
+    const pedActual = pedidos.find((x) => x.id === pedidoId);
+    if (pedActual && !(fechaEntrega || pedActual.fechaEntregaPrevista)) {
+      showToast("Pon la fecha de llegada prevista: sin ella no se puede dar el pedido por hecho", "error");
+      return;
+    }
     savePedidos(pedidos.map((p) => {
       if (p.id !== pedidoId) return p;
       const prov = proveedores.find((x) => x.id === p.proveedorId);
@@ -2475,6 +2481,7 @@ export default function App() {
       return {
         ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString(),
         ...(sinHacer ? { estado: "Realizado", fechaCompra: hoy } : {}),
+        ...(!p.fechaCompra ? { fechaCompra: hoy } : {}),
         fechaEntregaPrevista: llegada,
         // Material que no se controla en fábrica (perfiles, herrajes…): se da por recibido desde oficina.
         // OJO: no suma nada al Stock; solo evita que fábrica tenga que confirmar la llegada.
@@ -7623,11 +7630,13 @@ async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) 
   }
 }
 
+// Frase que va en todos los mensajes de pedido al proveedor: fecha prevista y petición de aviso.
+const fraseLlegadaProveedor = (fecha) => `Tenemos previsto que nos llegue el día ${fmtDate(fecha)}. Si por cualquier motivo no pueden entregarlo en la fecha indicada, les agradeceríamos que nos avisen con tiempo para poder organizarnos.`;
 // Texto del pedido para mandarlo al proveedor (WhatsApp o email)
-const textoPedidoProveedor = (pedido, proyecto, materiales) => {
+const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
   if (pedido && pedido.soloDocumentoProveedor) {
     const docs = toArray(pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
-    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}`;
+    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
   }
   const lineas = toArray(pedido.lineas).map((l) => {
     const mat = l.modo === "libre" ? null : toArray(materiales).find((m) => m.id === l.materialId);
@@ -7635,7 +7644,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales) => {
     const medidas = l.ancho || l.alto ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
     return `- ${nombre}${medidas}: ${l.cantidad} ud.`;
   }).join("\n");
-  return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+  return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
 };
 
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
@@ -7653,10 +7662,10 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const prov = proveedores.find((pr) => pr.id === p.proveedorId);
         const sinPedir = !p.envioConfirmado && (p.estado === "En espera" || p.estado === "Pendiente" || !p.estado);
         const telProv = String((prov && prov.movil) || "").replace(/[^\d+]/g, "");
-        const waProv = telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(textoPedidoProveedor(p, proyecto, materiales))}` : "";
-        const mailProv = prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales)}\n\nUn saludo,\nALUMAVEL`)}` : "";
-        const empezar = (metodo, abrir) => {
-          if (abrir) window.open(abrir, "_blank", "noopener");
+        // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
+        const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}`)}` : "";
+        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nUn saludo,\nALUMAVEL`)}` : "";
+        const empezar = (metodo) => {
           setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
         };
         const { dias, enColor } = diasEntregaPedido(prov, p, materiales);
@@ -7697,9 +7706,9 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                   </Select>
                 ) : confirmando && confirmando.id === p.id ? (
                   <>
-                    <span className="text-xs text-slate-600">¿Cuándo llega, más o menos?{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
+                    <span className="text-xs text-slate-600 font-semibold">Fecha de llegada (obligatoria, va en el mensaje al proveedor):{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
                     <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-xs" />
-                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url) window.open(url, "_blank", "noopener"); onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
                     {!tipoPedidoMaterial(p) && (
                       <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
                         <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
@@ -7727,10 +7736,10 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                       {!p.proveedorId && <option value="">{p.proveedorExterno || "Proveedor…"}</option>}
                       {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
                     </Select>
-                    {waProv && <button onClick={() => empezar("whatsapp", waProv)} className="flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md"><MessageCircle size={12} /> Pedir por WhatsApp</button>}
-                    {mailProv && <button onClick={() => empezar("email", mailProv)} className="flex items-center gap-1 text-xs font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md"><Mail size={12} /> Pedir por email</button>}
-                    <button onClick={() => empezar("manual", "")} className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-md">Ya lo he pedido de otra forma</button>
-                    {!waProv && !mailProv && <span className="text-[11px] text-slate-400">(el proveedor no tiene móvil ni email en su ficha)</span>}
+                    {telProv && <button onClick={() => empezar("whatsapp")} className="flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md"><MessageCircle size={12} /> Pedir por WhatsApp</button>}
+                    {prov && prov.email && <button onClick={() => empezar("email")} className="flex items-center gap-1 text-xs font-semibold text-slate-700 border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md"><Mail size={12} /> Pedir por email</button>}
+                    <button onClick={() => empezar("manual")} className="text-xs font-semibold text-amber-800 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-md">Ya lo he pedido de otra forma</button>
+                    {!telProv && !(prov && prov.email) && <span className="text-[11px] text-slate-400">(el proveedor no tiene móvil ni email en su ficha)</span>}
                   </>
                 )}
               </div>
@@ -12094,12 +12103,18 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     }).join("\n");
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
+  const falta_fecha = () => {
+    if (pedido.fechaEntregaPrevista) return false;
+    alert("Antes de enviar el pedido pon la fecha de llegada prevista (botón Editar). Es obligatoria: va en el mensaje al proveedor.");
+    return true;
+  };
   const enviarEmailAutomatico = async () => {
     if (!proveedor?.email) return;
+    if (falta_fecha()) return;
     setEnviandoEmail(true);
     setErrorEnvioEmail("");
     setEmailEnviadoOk(false);
@@ -12110,13 +12125,13 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       if (tieneAdjuntos) {
         // Con PDF adjunto no hace falta repetir el desglose por escrito: el propio
         // documento ya trae las medidas, solo hace falta un texto breve dirigido al proveedor.
-        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido en el documento adjunto.\n\n${bloqueObra}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido en el documento adjunto.\n\n${bloqueObra}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
       } else {
         const lineasTexto = pedido.lineas.map((l) => {
           const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
           return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
         }).join("\n");
-        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
       }
 
       const response = await fetch("/.netlify/functions/enviar-email", {
@@ -12158,7 +12173,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
     // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
     const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
-    const texto = `Pedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\nEntrega prevista: ${fmtDate(pedido.fechaEntregaPrevista) || "a concretar"}.${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const texto = `Buenos días,\n\nPedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
     const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
@@ -12242,7 +12257,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
               {errorEnvioEmail && (
                 <div className="text-xs text-rose-600 font-semibold text-right max-w-[220px]">
                   ⚠ {errorEnvioEmail}
-                  <a href={enlaceEmailProveedor()} onClick={() => setConfirmarEnvio("email")} className="block underline mt-0.5">Abrir en mi correo</a>
+                  <a href={enlaceEmailProveedor()} onClick={(e) => { if (falta_fecha()) { e.preventDefault(); return; } setConfirmarEnvio("email"); }} className="block underline mt-0.5">Abrir en mi correo</a>
                 </div>
               )}
             </div>
@@ -12252,7 +12267,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
             </span>
           )}
           {enlaceWhatsappProveedor() ? (
-            <a href={enlaceWhatsappProveedor()} target="_blank" rel="noreferrer" onClick={() => setConfirmarEnvio("whatsapp")} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
+            <a href={enlaceWhatsappProveedor()} target="_blank" rel="noreferrer" onClick={(e) => { if (falta_fecha()) { e.preventDefault(); return; } setConfirmarEnvio("whatsapp"); }} className="flex items-center gap-1.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 rounded-md">
               <MessageCircle size={14} /> Enviar por WhatsApp
             </a>
           ) : (
@@ -17712,10 +17727,16 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                     <div>
                       <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{pedido.numero}</span>
                       <span className="ml-2 font-semibold text-slate-700">{(pedido.proveedorExterno || proveedorNombre(pedido.proveedorId))}</span>
-                      {proyecto && <span className="ml-2 text-xs text-slate-500">Proyecto #{proyecto.numero} — {proyecto.nombre}</span>}
+                      {proyecto && (
+                        <button type="button" onClick={() => onVerProyecto && onVerProyecto(proyecto.id)} title="Abrir el proyecto" className="ml-2 text-xs text-slate-500 hover:text-[#2E8B57] hover:underline text-left">
+                          Proyecto #{proyecto.numero} — {proyecto.nombre}
+                          {(() => { const cl = (clientes || []).find((c) => c.id === proyecto.clienteId); return cl ? ` · Cliente: ${cl.nombre}` : ""; })()}
+                        </button>
+                      )}
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-slate-400">Entrega prevista {fmtDate(pedido.fechaEntregaPrevista)}</span>
+                      <span className="text-xs text-slate-500">Pedido hecho: {pedido.fechaCompra ? fmtDate(pedido.fechaCompra) : <b className="text-red-600">sin fecha</b>}</span>
+                      <span className="text-xs text-slate-500">Entrega prevista: {pedido.fechaEntregaPrevista ? fmtDate(pedido.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}</span>
                       {onConfirmarPedidoEntero && (pedido.lineas || []).some((l) => !l.confirmadoFabrica) && (
                         <button
                           onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id); }}
