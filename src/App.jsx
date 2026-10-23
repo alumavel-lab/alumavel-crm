@@ -15150,8 +15150,46 @@ async function leerDocumentoCristalConIA(file, prompt) {
   catch (e) {
     // Arreglo de lo más habitual: comillas dentro de un texto (p.ej. PERFIL UNION "L")
     // o una coma de más al final de una lista.
-    return JSON.parse(repararJsonIA(trozo));
+    try { return JSON.parse(repararJsonIA(trozo)); }
+    catch (e2) {
+      // Último recurso: se salva objeto a objeto lo que sí está bien escrito. Si alguno no se puede leer
+      // NO se sigue en silencio (faltarían cristales en el control): se avisa para volver a subirlo.
+      const s = salvarJsonIA(trozo);
+      if (s.perdidos > 0) throw new Error(`la IA ha devuelto el listado con un error de formato y solo he podido leer ${s.leidos} de ${s.leidos + s.perdidos} líneas. Vuelve a subir el archivo (suele salir bien a la segunda).`);
+      if (s.leidos === 0) throw e2;
+      return s.obj;
+    }
   }
+}
+// Rescata un JSON con errores: campos sueltos de la cabecera y, de cada lista, los objetos que se pueden leer.
+function salvarJsonIA(txt) {
+  const obj = {};
+  const cab = txt.slice(0, txt.indexOf("[") > -1 ? txt.indexOf("[") : txt.length);
+  for (const m of cab.matchAll(/"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)/g)) { try { obj[m[1]] = JSON.parse(m[2]); } catch (e) { /* se ignora */ } }
+  let leidos = 0, perdidos = 0;
+  for (const m of txt.matchAll(/"(\w+)"\s*:\s*\[/g)) {
+    const lista = [];
+    let i = m.index + m[0].length, prof = 0, ini = -1, dentro = false;
+    for (; i < txt.length; i++) {
+      const c = txt[i];
+      if (dentro) { if (c === "\\") i++; else if (c === '"') dentro = false; continue; }
+      if (c === '"') { dentro = true; continue; }
+      if (c === "{") { if (prof === 0) ini = i; prof++; }
+      else if (c === "}") {
+        prof--;
+        if (prof === 0 && ini > -1) {
+          const crudo = txt.slice(ini, i + 1);
+          let o = null;
+          try { o = JSON.parse(crudo); } catch (e) { try { o = JSON.parse(repararJsonIA(crudo)); } catch (e2) { o = null; } }
+          if (o) { lista.push(o); leidos++; } else perdidos++;
+          ini = -1;
+        }
+      } else if (c === "]" && prof === 0) break;
+    }
+    if (prof > 0) perdidos++; // un objeto sin cerrar
+    obj[m[1]] = lista;
+  }
+  return { obj, leidos, perdidos };
 }
 // Manda el documento a la IA en segundo plano (sin límite de tiempo) y devuelve el texto tal cual.
 async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60) {
@@ -15192,7 +15230,7 @@ function repararJsonIA(txt) {
     if (dentro && (c === "\n" || c === "\r")) { out += " "; continue; }
     out += c;
   }
-  return out.replace(/,\s*([}\]])/g, "$1");
+  return out.replace(/,\s*([}\]])/g, "$1").replace(/}\s*{/g, "},{");
 }
 
 /* ---------- Listado de materiales ("Análisis materiales" del programa de ventanas) ---------- */
@@ -15470,8 +15508,10 @@ function calcularControlCristal(conf, cristales) {
   const candidatas = piezas.filter(({ c, p }) => {
     const ped = p.pedido || c.secuencia;
     if (conf.numeroPedido && String(conf.numeroPedido).split(",").some((n) => String(ped).split(",").some((m) => mismoPedidoCristal(n, m)))) return true;
-    const e = String(p.expediente || c.expediente || "").replace(/\D/g, "");
-    return !conf.numeroPedido && exps.length > 0 && e && exps.some((x) => e.includes(x));
+    // También cuenta si el cristal es del mismo expediente, aunque el nº de pedido que trae el packing list no
+    // coincida con el de la confirmación (el proveedor usa números distintos en cada documento).
+    // Da igual si el caballete está ubicado o pendiente de ubicar: si está en el almacén, ha llegado.
+    return exps.length > 0 && numsExpediente(p.expediente || c.expediente).some((n) => exps.includes(n));
   });
   const lineas = (conf.lineas || []).map((l, idx) => {
     let llegadas = 0, conProblema = 0, faltaMarcada = 0;
@@ -15501,7 +15541,7 @@ function calcularControlCristal(conf, cristales) {
     const bien = Math.max(0, llegadas - conProblema - faltaMarcada);
     const pendientes = Math.max(0, conProblema + noLlegadas - repuestas);
     const cabs = [...new Set(encontradas.map((x) => x.c.lote).filter(Boolean))];
-    return { ...l, idx, pedidas, bien, conProblema, noLlegadas, repuestas, pendientes, caballetes: cabs };
+    return { ...l, idx, pedidas, bien, conProblema, noLlegadas, repuestas, pendientes, caballetes: cabs, sinUbicar: encontradas.some((x) => !x.c.ubicacion) };
   });
   const tot = (k) => lineas.reduce((a, l) => a + l[k], 0);
   return { lineas, pedidas: tot("pedidas"), bien: tot("bien"), conProblema: tot("conProblema"), noLlegadas: tot("noLlegadas"), repuestas: tot("repuestas"), pendientes: tot("pendientes") };
@@ -15668,7 +15708,7 @@ function ControlPedidosCristal({ cristales, proveedores, abrirSelector = 0 }) {
                               className="w-12 border border-slate-200 rounded px-1" title="Cristales de reposición ya recibidos" />
                           ) : ""}
                         </td>
-                        <td className="pr-2 font-mono-num">{l.caballetes.join(", ") || "—"}</td>
+                        <td className="pr-2 font-mono-num">{l.caballetes.join(", ") || "—"}{l.sinUbicar && <span className="ml-1 text-[11px] font-semibold text-amber-700">(pendiente de ubicar)</span>}</td>
                       </tr>
                     ))}
                   </tbody>
