@@ -13514,6 +13514,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [mostrarNuevo, setMostrarNuevo] = useState(false);
   const [verFotosPegatinas, setVerFotosPegatinas] = useState(() => { try { return !!localStorage.getItem(BORRADOR_CABALLETE_FOTOS); } catch (e) { return false; } });
   const [avisoOk, setAvisoOk] = useState("");
+  const [avisoPaneles, setAvisoPaneles] = useState("");
   const [numeroFotos, setNumeroFotos] = useState("");
   const inputPackingRef = useRef(null);
 
@@ -13545,6 +13546,15 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   // "Pendientes de ubicar" para darles hueco a mano.
   const colocarYGuardarCaballetes = (items, opciones = {}) => {
     const sinUbicarAuto = !!opciones.sinUbicar;
+    // Si en lo que se importa viene un panel (sándwich, acústico…) y no está en «Paneles pendientes de cortar», se apunta para cortarlo.
+    // Los cristales y caballetes se guardan igual que siempre.
+    if (ctxAlmacen && ctxAlmacen.savePaneles) {
+      const nuevosP = panelesQueFaltan(items, ctxAlmacen.paneles);
+      if (nuevosP.length) {
+        ctxAlmacen.savePaneles([...nuevosP, ...toArray(ctxAlmacen.paneles)]);
+        setAvisoPaneles(`${nuevosP.length} panel${nuevosP.length === 1 ? "" : "es"} apuntado${nuevosP.length === 1 ? "" : "s"} en «Paneles pendientes de cortar»: ${nuevosP.map((x) => `EXP ${numsExpediente(x.expediente)[0] || "—"} ${x.ancho}×${x.alto}`).join(", ")}.`);
+      }
+    }
     const entradaId = uid(); // marca de esta entrada, para poder identificar la última importación
     // Mismo nº de caballete = MISMO caballete, aunque venga en otra hoja u otra foto:
     // sus cristales se añaden al caballete que ya existe (sin repetir los que ya tenía).
@@ -13842,6 +13852,12 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           <Plus size={14} /> Nuevo caballete
         </button>
       </div>
+      {avisoPaneles && (
+        <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-amber-50 border border-amber-300">
+          <p className="text-xs text-amber-900 font-semibold">✂ {avisoPaneles}</p>
+          <button onClick={() => setAvisoPaneles("")} className="text-amber-500 hover:text-amber-700 text-xs font-bold shrink-0">✕</button>
+        </div>
+      )}
       {avisoOk && (
         <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-emerald-50 border border-emerald-200">
           <p className="text-xs text-emerald-700 font-semibold">✓ {avisoOk}</p>
@@ -16712,9 +16728,37 @@ const panelDeLinea = (conf, l) => ({
   observaciones: l.observaciones || "", detalle: l.detalle || "",
   tipo: tipoPanel(l), estado: "pendiente", fecha: new Date().toISOString().slice(0, 10), fechaCortado: "",
 });
-function PanelesPendientes() {
+// Paneles que hay en los caballetes (packing list, fotos…) y que NO están en «Paneles pendientes de cortar».
+// No quita nada de los caballetes: solo devuelve los paneles que faltan por apuntar para que se corten.
+const piezaEsPanel = (p) => esLineaPanel({ descripcion: Object.values(p || {}).filter((v) => typeof v === "string").join(" ") });
+const panelesQueFaltan = (caballetes, paneles) => {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const todos = [...toArray(paneles)];
+  const nuevos = [];
+  toArray(caballetes).forEach((c) => toArray(c && c.piezas).forEach((pz) => {
+    if (!pz || pz.puesto || !piezaEsPanel(pz)) return;
+    const exp = pz.expediente || c.expediente || "";
+    const nums = numsExpediente(exp);
+    const yaEsta = todos.some((x) => mismaMedidaCristal(x.ancho, x.alto, pz.ancho, pz.alto)
+      && (!nums.length || !numsExpediente(x.expediente).length || numsExpediente(x.expediente).some((n) => nums.includes(n)))
+      && (!x.ref || !pz.ref || normPedidoCristal(x.ref) === normPedidoCristal(pz.ref)));
+    if (yaEsta) return;
+    const textos = Object.entries(pz).filter(([k, v]) => typeof v === "string" && v.trim()).map(([k, v]) => `${k}: ${v.trim()}`).join(" | ");
+    const nuevo = {
+      ...panelDeLinea({ numeroPedido: c.secuencia || "", proveedor: c.proveedor || "", fecha: hoy },
+        { pedido: pz.pedido || "", ref: pz.ref || "", expediente: exp, ancho: pz.ancho, alto: pz.alto, cantidad: pz.cantidad,
+          descripcion: String(pz.texto || pz.descripcion || "").trim(), color: pz.color || "", modelo: pz.modelo || "", presupuesto: pz.presupuesto || c.presupuesto || "",
+          detalle: `Caballete ${c.lote || "?"}${c.cliente ? ` · ${c.cliente}` : ""} · ${textos}` }),
+      origen: `caballete ${c.lote || "?"}`,
+    };
+    nuevos.push(nuevo); todos.push(nuevo);
+  }));
+  return nuevos;
+};
+function PanelesPendientes({ cristales = [] }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const paneles = toArray(ctx.paneles);
+  const sinApuntar = panelesQueFaltan(cristales, paneles);
   const guardar = ctx.savePaneles || (() => {});
   const [ver, setVer] = useState("pendiente");
   const [buscar, setBuscar] = useState("");
@@ -16752,6 +16796,16 @@ function PanelesPendientes() {
         <button onClick={() => setForm(form ? null : { expediente: "", ref: "", ancho: "", alto: "", cantidad: 1, descripcion: "", color: "", modelo: "", presupuesto: "" })}
           className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">+ Añadir panel a mano</button>
       </div>
+      {sinApuntar.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
+          <div className="text-sm font-bold text-amber-900 mb-1">Hay {sinApuntar.length} panel{sinApuntar.length === 1 ? "" : "es"} en los caballetes que no están en esta lista</div>
+          <ul className="text-xs text-amber-900 space-y-0.5 mb-2">
+            {sinApuntar.slice(0, 8).map((x) => <li key={x.id}>EXP {numsExpediente(x.expediente)[0] || x.expediente || "—"} · {x.ref || "sin vivienda"} · {x.ancho} × {x.alto} mm · {x.cantidad} ud · {x.descripcion || x.tipo} · {x.origen}</li>)}
+            {sinApuntar.length > 8 && <li>… y {sinApuntar.length - 8} más</li>}
+          </ul>
+          <button onClick={() => guardar([...sinApuntar, ...paneles])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-4 py-2 rounded-lg hover:opacity-90">Apuntarlos para cortar</button>
+        </div>
+      )}
       {form && (
         <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4 grid grid-cols-2 md:grid-cols-4 gap-2">
           {[["expediente", "Expediente"], ["ref", "Vivienda / ref."], ["ancho", "Ancho (mm)"], ["alto", "Alto (mm)"], ["cantidad", "Unidades"], ["color", "Color"], ["modelo", "Modelo"], ["presupuesto", "Presupuesto"]].map(([k, etq]) => (
@@ -17827,6 +17881,7 @@ function EstadisticasCristales({ cristales }) {
 function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onIniciarFabricacion, cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
+  const nPanelesSinApuntar = panelesQueFaltan(cristales, ctxPaneles.paneles).length;
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
   const [tab, setTab] = useState(() => { const t = tabInicialFabrica.actual; tabInicialFabrica.actual = null; return t || "listo"; });
@@ -17957,6 +18012,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "paneles" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Paneles pendientes de cortar
           {nPanelesPend > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{nPanelesPend}</Badge>}
+          {nPanelesSinApuntar > 0 && <Badge className="bg-rose-50 text-rose-700 ring-rose-200" title="Paneles en los caballetes que aún no están apuntados para cortar">+{nPanelesSinApuntar}</Badge>}
         </button>
         <button onClick={() => setTab("persianasAlmacen")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "persianasAlmacen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -18195,7 +18251,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         </>
       )}
 
-      {tab === "paneles" && <PanelesPendientes />}
+      {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
