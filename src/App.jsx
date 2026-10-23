@@ -11171,7 +11171,10 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
                       value={p.estado}
-                      onChange={(e) => { if (e.target.value === "Recibido") { onRecibir(p.id); } else { onUpsert({ ...p, estado: e.target.value }); } }}
+                      onChange={(e) => {
+                        if (["Realizado", "Reclamado", "Recibido"].includes(e.target.value) && !p.fechaEntregaPrevista) { alert(`El pedido #${p.numero} no tiene fecha de llegada prevista. Ponla primero (abre el pedido → Editar): sin ella no se puede dar por hecho.`); return; }
+                        if (e.target.value === "Recibido") { onRecibir(p.id); } else { onUpsert({ ...p, estado: e.target.value, ...(e.target.value === "Realizado" && !p.fechaCompra ? { fechaCompra: new Date().toISOString().slice(0, 10) } : {}) }); }
+                      }}
                       className={`text-[11px] font-medium ring-1 whitespace-nowrap rounded px-2 py-0.5 border-0 cursor-pointer ${ESTADO_PEDIDO_STYLE[p.estado]}`}
                     >
                       {Object.keys(ESTADO_PEDIDO_STYLE).map((e) => <option key={e} value={e}>{e}</option>)}
@@ -17461,15 +17464,20 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
   const proyectosEnFabricacion = proyectos.filter((p) => ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
 
   // Pendientes de recibir en fábrica: de momento solo cristales y compactos
-  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
+  // Solo los que ya se han pedido de verdad al proveedor (un pedido sin hacer todavía no puede "llegar")
+  const yaPedido = (p) => !!p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado);
+  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
+  const [provFiltroFab, setProvFiltroFab] = useState("");
+  const proveedoresEnCurso = [...new Map(pedidosEnCurso.filter((p) => p.proveedorId).map((p) => [p.proveedorId, proveedorNombre(p.proveedorId)])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
 
   const filtered = useMemo(() => {
-    if (!q) return pedidosEnCurso;
-    return pedidosEnCurso.filter((p) => {
+    const base = provFiltroFab ? pedidosEnCurso.filter((p) => p.proveedorId === provFiltroFab) : pedidosEnCurso;
+    if (!q) return base;
+    return base.filter((p) => {
       const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [pedidosEnCurso, q]);
+  }, [pedidosEnCurso, q, provFiltroFab]);
 
   // Proyectos donde TODO coincide: oficina ha recibido todos los pedidos, fábrica ha
   // confirmado la llegada de todas las líneas, y el checklist "Qué lleva la obra" está
@@ -17737,6 +17745,12 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           <div className="relative mb-4 max-w-sm">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por proveedor, material, referencia..." className={inputCls + " pl-9"} />
+          </div>
+          <div className="mb-4 max-w-xs">
+            <Select value={provFiltroFab} onChange={(e) => setProvFiltroFab(e.target.value)}>
+              <option value="">Todos los proveedores</option>
+              {proveedoresEnCurso.map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
+            </Select>
           </div>
 
           <div className="space-y-4">
