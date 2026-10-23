@@ -2463,7 +2463,7 @@ export default function App() {
     }));
     showToast(`Guardado: ${LISTADO_SECCIONES[seccion] || seccion} → ${(proveedores.find((x) => x.id === proveedorId) || {}).nombre || "proveedor"}`);
   };
-  const marcarPedidoEnviado = (pedidoId, metodo, fechaEntrega) => {
+  const marcarPedidoEnviado = (pedidoId, metodo, fechaEntrega, darPorRecibido = false) => {
     const hoy = new Date().toISOString().slice(0, 10);
     let aviso = "";
     savePedidos(pedidos.map((p) => {
@@ -2476,9 +2476,15 @@ export default function App() {
         ...p, envioConfirmado: true, envioMetodo: metodo, fechaEnvioConfirmado: new Date().toISOString(),
         ...(sinHacer ? { estado: "Realizado", fechaCompra: hoy } : {}),
         fechaEntregaPrevista: llegada,
+        // Material que no se controla en fábrica (perfiles, herrajes…): se da por recibido desde oficina.
+        // OJO: no suma nada al Stock; solo evita que fábrica tenga que confirmar la llegada.
+        ...(darPorRecibido && !esPedidoCristalOCompacto(p) ? {
+          estado: "Recibido", fechaRecepcion: hoy, recibidoDesdeOficina: true,
+          lineas: toArray(p.lineas).map((l) => ({ ...l, estado: "Recibido", confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: "Oficina" })),
+        } : {}),
       };
     }));
-    showToast((metodo === "email" ? "Marcado como enviado por email" : metodo === "whatsapp" ? "Marcado como enviado por WhatsApp" : "Pedido marcado como realizado") + aviso, aviso ? "error" : "ok");
+    showToast((darPorRecibido ? "Pedido hecho y dado por recibido (sin tocar el Stock)" : metodo === "email" ? "Marcado como enviado por email" : metodo === "whatsapp" ? "Marcado como enviado por WhatsApp" : "Pedido marcado como realizado") + aviso, aviso ? "error" : "ok");
   };
 
   // Confirmación INDEPENDIENTE desde el almacén/fábrica de que un material ha llegado.
@@ -7693,7 +7699,13 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                   <>
                     <span className="text-xs text-slate-600">¿Cuándo llega, más o menos?{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
                     <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-xs" />
-                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    {!tipoPedidoMaterial(p) && (
+                      <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
+                        <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
+                        Darlo ya por recibido (fábrica no tiene que confirmarlo)
+                      </label>
+                    )}
                     <button onClick={() => setConfirmando(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
                   </>
                 ) : (
