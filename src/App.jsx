@@ -41894,6 +41894,49 @@ function PreparacionProximoDia({ config, onSaveConfig, puestos, cristales = [], 
         {MATERIALES_PREPARACION.map(([mat]) => selectorDestino(mat))}
       </div>
       {aviso && <div className="text-sm bg-[#EEF7E4] text-[#1F5F3A] rounded-md px-3 py-2">{aviso}</div>}
+      {plan && empiezan.length > 0 && (() => {
+        const listaC = [], listaP = [];
+        empiezan.forEach((o) => {
+          const nom = o.obra.nombre || "";
+          cristales.filter((c) => deObra(o.obra.expNums, c.expediente) || toArray(c.piezas).some((q) => deObra(o.obra.expNums, q.expediente))).forEach((c) => { if (!listaC.some((y) => y.c.id === c.id)) listaC.push({ c, nom }); });
+          itemsP.filter((x) => !x.entregada && deObra(o.obra.expNums, x.expediente)).forEach((x) => listaP.push({ x, nom }));
+        });
+        const destC = destinoPrepTexto(destinos.cristales, almacenes, almCab) || "sin destino elegido";
+        const destP = destinoPrepTexto(destinos.persianas, almacenes, almCab) || "sin destino elegido";
+        const dondeC = (c) => (c.enPuesto ? `ya en ${c.enPuesto}` : c.ubicacion ? ubicacionTexto(c.ubicacion) : "sin ubicar");
+        listaC.sort((a2, b2) => dondeC(a2.c).localeCompare(dondeC(b2.c), "es", { numeric: true }));
+        listaP.sort((a2, b2) => donde(a2.x).localeCompare(donde(b2.x), "es", { numeric: true }));
+        if (!listaC.length && !listaP.length) return null;
+        const imprimirLlevar = () => {
+          const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+          const tabla = (tit, dest, filas) => `<h3 style="margin:16px 0 4px">${esc(tit)} → ${esc(dest)}</h3><table style="width:100%;border-collapse:collapse">${filas.map(([a3, b3, c3]) => `<tr><td style="border:1px solid #333;padding:6px">${esc(a3)}</td><td style="border:1px solid #333;padding:6px">${esc(b3)}</td><td style="border:1px solid #333;padding:6px;color:#555">${esc(c3)}</td><td style="border:1px solid #333;padding:6px;width:36px"></td></tr>`).join("")}</table>`;
+          const html = `<html><head><meta charset="utf-8"><title>Lista para llevar ${esc(f2)}</title></head><body style="font-family:Arial;font-size:13px;padding:24px"><h2 style="margin:0">Lista para llevar · ${esc(f2.split("-").reverse().join("/"))}</h2>${listaC.length ? tabla("Cristales (caballetes)", destC, listaC.map(({ c, nom }) => [c.lote || c.numero || "caballete", "Ahora: " + dondeC(c), nom])) : ""}${listaP.length ? tabla("Persianas", destP, listaP.map(({ x, nom }) => [`${x.ref || "—"} ${largoPersiana(x)}${x.alto ? "×" + x.alto : ""}`, "Ahora: " + donde(x), nom])) : ""}</body></html>`;
+          const w = window.open("", "_blank");
+          if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
+        };
+        return (
+          <div className="border border-[#2E8B57]/40 rounded-lg p-3 bg-emerald-50/40">
+            <div className="flex items-center gap-3 mb-2">
+              <b className="text-slate-800 mr-auto">Lista para llevar ese día</b>
+              <button onClick={imprimirLlevar} className="px-3 py-1.5 rounded-md text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">🖨 Imprimir</button>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <div className="font-semibold text-slate-700 mb-1">Cristales ({listaC.length} caballetes) <span className="text-xs font-normal text-slate-500">→ {destC}</span></div>
+                {listaC.length === 0 ? <div className="text-xs text-slate-400">Ninguno.</div> : listaC.map(({ c, nom }) => (
+                  <div key={c.id} className="flex flex-wrap gap-x-2 py-0.5 border-b border-slate-100"><b>{c.lote || c.numero || "caballete"}</b><span className="text-slate-600">{dondeC(c)}</span><span className="text-xs text-slate-400 ml-auto">{nom}</span></div>
+                ))}
+              </div>
+              <div>
+                <div className="font-semibold text-slate-700 mb-1">Persianas ({listaP.length}) <span className="text-xs font-normal text-slate-500">→ {destP}</span></div>
+                {listaP.length === 0 ? <div className="text-xs text-slate-400">Ninguna.</div> : listaP.map(({ x, nom }) => (
+                  <div key={x.id} className="flex flex-wrap gap-x-2 py-0.5 border-b border-slate-100"><b>{x.ref || "—"} {largoPersiana(x)}{x.alto ? "×" + x.alto : ""}</b><span className="text-slate-600">{donde(x)}</span><span className="text-xs text-slate-400 ml-auto">{nom}</span></div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {!plan ? <p className="text-sm text-slate-400">No hay ningún planning confirmado.</p>
         : empiezan.length === 0 ? <p className="text-sm text-slate-400">El {f2.split("-").reverse().join("/")} no empieza ninguna obra nueva según el planning confirmado.</p>
         : empiezan.map((o) => {
