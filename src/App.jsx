@@ -5625,6 +5625,7 @@ export default function App() {
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
+              if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return; }
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
               showToast("Proyecto marcado como en fabricación");
             }}
@@ -15906,6 +15907,26 @@ function huecoExpedienteNuevo(zona, estaOcupado) {
 // funciones sacan los expedientes de cada caballete y buscan un hueco libre en la fila
 // donde ya están los del mismo expediente, lo más cerca posible de ellos.
 const numsExpediente = (txt) => (String(txt || "").match(/\d{2,}/g) || []);
+
+// Buscador de obras por nº de presupuesto / expediente / nombre / cliente (6633 ≈ 6.633 ≈ "Presupuesto 6633")
+const normBusca = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const soloDigitos = (t) => String(t || "").replace(/\D/g, "");
+const obraCoincideBusqueda = (p, q, uxExpedientes, clientes) => {
+  const qq = normBusca(q).trim();
+  if (!qq) return true;
+  const qd = soloDigitos(qq);
+  const esNumero = /^[\d.\s]+$/.test(qq) && qd.length > 0;
+  const exps = toArray(uxExpedientes).filter((e) => e && e.proyectoId === p.id).map((e) => String(e.numero || ""));
+  const cli = toArray(clientes).find((c) => c.id === p.clienteId);
+  if (esNumero) {
+    const numsNombre = String(p.nombre || "").match(/\d[\d.]*/g) || [];
+    const candidatos = [p.numero, p.expediente, ...exps, ...numsNombre].map(soloDigitos).filter(Boolean);
+    return candidatos.some((c) => c === qd || (qd.length >= 3 && c.includes(qd)));
+  }
+  const texto = normBusca([p.numero, p.nombre, p.ubicacion, p.direccion, p.expediente, cli && cli.nombre, ...exps].join(" "));
+  const textoSinPuntos = texto.replace(/(\d)\.(?=\d)/g, "$1");
+  return qq.split(/\s+/).every((w) => texto.includes(w) || textoSinPuntos.includes(w));
+};
 function expedientesDeCaballete(c) {
   const set = new Set(numsExpediente(c.expediente));
   (c.piezas || []).forEach((p) => numsExpediente(p.expediente).forEach((n) => set.add(n)));
@@ -17968,7 +17989,13 @@ function EstadisticasCristales({ cristales }) {
 
 // ── Talleres: cada obra se fabrica en PVC (por defecto), Aluminio o Curvas ──
 const TALLERES_FAB = ["Aluminio", "Curvas", "PVC"];
+const celdaMat = (esp, lleg, tieneListado, unidad) => {
+  if (!esp && !lleg) return <span className="text-slate-400">{tieneListado ? "No lleva" : "Sin listado cargado"}</span>;
+  if (lleg >= esp) return <span className="text-emerald-700 font-bold">✓ Todo llegado <span className="font-normal text-slate-500">({lleg} {unidad})</span></span>;
+  return <span><b>FALTAN {esp - lleg}</b> <span className="font-normal">de {esp} · han llegado {lleg}</span></span>;
+};
 const tallerDe = (p) => (p && TALLERES_FAB.includes(p.taller) ? p.taller : "PVC");
+const salidaDefinida = (p) => !!p && (!!p.llevaInstalacion || p.estadoLogistica === "Reparto (camión)" || p.estadoLogistica === "Recogida en fábrica");
 const diaFinLaborable = (acum, horasDia) => { const d = new Date(); d.setHours(12, 0, 0, 0); const finde = () => [0, 6].includes(d.getDay()); while (finde()) d.setDate(d.getDate() + 1); for (let n = Math.max(1, Math.ceil(acum / horasDia - 1e-9)) - 1; n > 0; n--) { d.setDate(d.getDate() + 1); while (finde()) d.setDate(d.getDate() + 1); } return d.toISOString().slice(0, 10); };
 // Planning de un taller que no es el de PVC (Aluminio o Curvas): las obras que se le han mandado, con sus horas y cuándo acabarían
 function PlanningTaller({ taller, proyectos = [], listoParaFabricar = [], uxExpedientes = [], configPlanning, clientes = [], onVerProyecto, onActualizarProyecto, onIniciarFabricacion }) {
@@ -18392,6 +18419,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
 }
 function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
+  const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
@@ -18503,6 +18531,31 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
   return (
     <div className="p-8">
       <Header icon={<Factory size={20} className="text-[#2E8B57]" />} title="Fábrica" manualKey="fabrica" subtitle="Control desde almacén — independiente del control de oficina" />
+
+      <div className="mb-5">
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="🔍 Buscar obra: nº de presupuesto (6633), expediente, nombre o cliente…"
+          className="w-full max-w-xl px-4 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]" />
+        {busca.trim() && (() => {
+          const res = proyectos.filter((p) => obraCoincideBusqueda(p, busca, uxExpedientes, clientes)).slice(0, 25);
+          const dondeEsta = (p) => {
+            if (listoParaFabricar.some((x) => x.id === p.id)) return { t: "Listo para fabricar", c: "bg-emerald-50 text-emerald-700" };
+            if (bloqueadosMaterial.some((x) => x.p.id === p.id)) return { t: "Esperando material", c: "bg-amber-50 text-amber-800" };
+            if (p.estadoTrabajo === "En proceso") return { t: `En fabricación · ${tallerDe(p)}`, c: "bg-blue-50 text-blue-700" };
+            return { t: p.estadoTrabajo || "Sin estado", c: "bg-slate-100 text-slate-600" };
+          };
+          return (
+            <div className="mt-2 max-w-xl bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 shadow-sm">
+              {res.length === 0 && <div className="px-4 py-3 text-sm text-slate-500">Ninguna obra coincide con «{busca}».</div>}
+              {res.map((p) => { const d = dondeEsta(p); return (
+                <button key={p.id} onClick={() => onVerProyecto && onVerProyecto(p.id)} className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center gap-3">
+                  <span className="text-sm font-semibold text-slate-800 flex-1 truncate">#{p.numero} — {p.nombre}</span>
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded ${d.c}`}>{d.t}</span>
+                </button>
+              ); })}
+            </div>
+          );
+        })()}
+      </div>
 
       <div className="flex flex-wrap items-center gap-1 mb-6 border-b border-slate-200">
         <button onClick={() => setTab("listo")}
@@ -18659,7 +18712,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                 {sinH > 0 && <span className="font-semibold text-amber-200">{sinH} sin horas (no suman)</span>}
                 <span className="ml-auto flex gap-2">
                   {TALLERES_FAB.map((t) => (
-                    <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
+                    <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { const sinS = marcadas.filter((p) => !salidaDefinida(p)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`); return; } marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
                   ))}
                   <button onClick={() => setSelListo([])} className="px-3 py-1.5 rounded-md border border-white/60 text-white text-xs font-semibold hover:bg-white/10">Quitar marcas</button>
                 </span>
@@ -18668,7 +18721,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           })()}
           <div className="space-y-6">
             {LISTAS_COLOR_FABRICA.map((lc) => {
-              const obras = listoParaFabricar.filter((p) => listaColorDeObra(p).id === lc.id);
+              const obras = listoParaFabricar.filter((p) => listaColorDeObra(p).id === lc.id && obraCoincideBusqueda(p, busca, uxExpedientes, clientes));
               if (!obras.length) return null;
               const hLista = obras.reduce((t, o) => t + horasDeObraListo(o, uxExpedientes, configPlanning).horas, 0);
               return (
@@ -18686,7 +18739,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                         <span className="text-xs text-slate-500 font-normal">Mandar toda la lista a:</span>
                         {TALLERES_FAB.map((t) => (
                           <button key={t}
-                            onClick={() => { if (window.confirm(`¿Mandar las ${obras.length} obras de la lista «${lc.nombre}» al taller de ${t}?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) obras.forEach((o) => { if (onActualizarProyecto) onActualizarProyecto(o.id, { taller: t }); onIniciarFabricacion(o.id); }); }}
+                            onClick={() => { if (window.confirm(`¿Mandar las ${obras.length} obras de la lista «${lc.nombre}» al taller de ${t}?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) { const sinS = obras.filter((o) => !salidaDefinida(o)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`); return; } obras.forEach((o) => { if (onActualizarProyecto) onActualizarProyecto(o.id, { taller: t }); onIniciarFabricacion(o.id); }); } }}
                             style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
                             className="flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md"
                           >
@@ -18707,13 +18760,23 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                   <AccesoriosDeLaObra proyecto={p} />
                 </div>
                 <div className="flex items-end gap-2">
-                  <label className="text-[11px] text-slate-500 flex flex-col gap-0.5">Taller
-                    <select value={tallerDe(p)} onChange={(e) => onActualizarProyecto && onActualizarProyecto(p.id, { taller: e.target.value })} className="border border-slate-300 rounded px-2 py-2 text-sm text-slate-800">{TALLERES_FAB.map((t) => <option key={t}>{t}</option>)}</select>
+                  <label className="text-[11px] text-slate-500 flex flex-col gap-0.5">Salida *
+                    <select value={p.llevaInstalacion && p.estadoLogistica !== "Reparto (camión)" ? "Instalación" : (p.estadoLogistica === "Reparto (camión)" || p.estadoLogistica === "Recogida en fábrica") ? p.estadoLogistica : ""}
+                      onChange={(e) => { const v = e.target.value; if (!onActualizarProyecto) return; onActualizarProyecto(p.id, v === "Instalación" ? { llevaInstalacion: true } : { estadoLogistica: v }); }}
+                      className={`border rounded px-2 py-2 text-sm ${salidaDefinida(p) ? "border-slate-300" : "border-red-400 bg-red-50"}`}>
+                      <option value="">Elegir…</option><option value="Reparto (camión)">Reparto</option><option value="Recogida en fábrica">Recogida</option><option value="Instalación">Instalación</option>
+                    </select>
+                  </label>
+                  <label className="text-[11px] text-slate-500 flex flex-col gap-0.5">Taller *
+                    <select value={TALLERES_FAB.includes(p.taller) ? p.taller : ""} onChange={(e) => onActualizarProyecto && onActualizarProyecto(p.id, { taller: e.target.value })}
+                      className={`border rounded px-2 py-2 text-sm ${TALLERES_FAB.includes(p.taller) ? "border-slate-300" : "border-red-400 bg-red-50"}`}>
+                      <option value="">Elegir…</option>{TALLERES_FAB.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
                   </label>
                   <button
-                    onClick={() => onIniciarFabricacion(p.id)}
+                    onClick={() => onIniciarFabricacion(p.id)} disabled={!salidaDefinida(p) || !TALLERES_FAB.includes(p.taller)} title={!salidaDefinida(p) || !TALLERES_FAB.includes(p.taller) ? "Elige salida y taller" : ""}
                     style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
-                    className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md"
+                    className="flex items-center gap-1.5 text-sm font-semibold hover:opacity-90 px-4 py-2.5 rounded-md disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Factory size={15} /> Empezar a fabricar{tallerDe(p) !== "PVC" ? ` en ${tallerDe(p)}` : ""}
                   </button>
@@ -19124,8 +19187,8 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
   const instalacion = vivos.filter((p) => p.llevaInstalacion && p.estadoLogistica !== "Reparto (camión)");
   // Las obras de Uxcar sin forma de salida se tratan como recogida (casi siempre vienen a por ellas)
   const sinForma = (p) => !p.estadoLogistica || p.estadoLogistica === "Sin definir";
-  const recogida = vivos.filter((p) => (p.estadoLogistica === "Recogida en fábrica" || (p.origen === "portalUxcar" && sinForma(p))) && !p.llevaInstalacion);
-  const sinDefinir = vivos.filter((p) => sinForma(p) && p.origen !== "portalUxcar" && !p.llevaInstalacion && ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
+  const recogida = vivos.filter((p) => p.estadoLogistica === "Recogida en fábrica" && !p.llevaInstalacion);
+  const sinDefinir = vivos.filter((p) => sinForma(p) && !p.llevaInstalacion && ["En proceso", "Listo para reparto/recogida"].includes(p.estadoTrabajo));
   const esListo = (p) => ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(p.estadoTrabajo);
   const cuentaListos = (arr) => arr.filter(esListo).length;
   const clienteDe = (p) => clientes.find((c) => c.id === p.clienteId);
@@ -19191,7 +19254,17 @@ function SalidasFabrica({ proyectos, clientes, uxExpedientes, caballetes, config
       </div>
       {sinDefinir.length > 0 && (
         <div className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-md px-3 py-2">
-          <b>Sin forma de salida:</b> {sinDefinir.map((p) => <button key={p.id} onClick={() => onVerProyecto(p.id)} className="underline mr-2">#{p.numero} {p.nombre}</button>)} — ponles en la ficha del proyecto si es reparto, recogida o lleva instalación, para que aparezcan aquí.
+          <b>Sin forma de salida</b> — elige cómo sale cada obra (se guarda al momento):
+          <div className="mt-1.5 space-y-1">
+            {sinDefinir.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-2 bg-white/60 rounded px-2 py-1">
+                <button onClick={() => onVerProyecto(p.id)} className="underline text-left flex-1 min-w-[200px]">#{p.numero} {p.nombre}</button>
+                {[["Reparto (camión)", { estadoLogistica: "Reparto (camión)" }, "Reparto"], ["Recogida en fábrica", { estadoLogistica: "Recogida en fábrica" }, "Recogida"], ["Instalación", { llevaInstalacion: true }, "Instalación"]].map(([k, patch, t]) => (
+                  <button key={k} onClick={() => onActualizarProyecto && onActualizarProyecto(p.id, patch)} className="px-2.5 py-1 rounded border border-amber-400 bg-white text-amber-900 font-semibold hover:bg-amber-100">{t}</button>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {vista === "reparto" && (onActualizarProyecto
@@ -41507,17 +41580,14 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
     vistas.add(t.id);
     obras.push({ id: t.id, dia: d, obra: o });
   }));
-  const juntos = juntarListados(obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas } })), ["perfiles", "refuerzo", "herraje", "accesorios"]);
-  const grupos = new Map();
-  juntos.forEach((l) => {
-    const alm = l.almacen || "Sin almacén asignado";
-    const est = l.estanteria || "Sin estantería";
-    const gk = `${alm} · ${est}`;
-    if (!grupos.has(gk)) grupos.set(gk, { gk, alm, est, lineas: [] });
-    grupos.get(gk).lineas.push(l);
-  });
-  const listaGrupos = [...grupos.values()].sort((a, b) => a.alm.localeCompare(b.alm, "es") || a.est.localeCompare(b.est, "es", { numeric: true }));
-  listaGrupos.forEach((g) => g.lineas.sort((a, b) => String(a.descripcion || "").localeCompare(String(b.descripcion || ""), "es", { numeric: true })));
+  const listadosObras = obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas } }));
+  const ubicDe = (l) => (l.almacen || l.estanteria) ? `${l.almacen || "Almacén sin asignar"}${l.estanteria ? " · " + l.estanteria : ""}` : "Sin ubicación";
+  const ordenUbic = (a, b) => ubicDe(a).localeCompare(ubicDe(b), "es", { numeric: true }) || String(a.descripcion || "").localeCompare(String(b.descripcion || ""), "es", { numeric: true });
+  // Una lista por persona: perfiles (uno) · herraje + accesorios (otro). Misma referencia y color = una sola línea, sin importar la obra.
+  const listaGrupos = [
+    ["Perfiles", "Para el que prepara los perfiles", ["perfiles", "refuerzo"]],
+    ["Herraje y accesorios", "Para el que prepara herraje y accesorios", ["herraje", "accesorios"]],
+  ].map(([gk, quien2, secs]) => ({ gk, alm: gk, quien2, lineas: juntarListados(listadosObras, secs).sort(ordenUbic) })).filter((g) => g.lineas.length > 0);
   const claveGrupo = (gk) => String(gk).replace(/[.#$\[\]\/]/g, "_");
   const hechosG = estado.grupos || {};
   const nHechos = listaGrupos.filter((g) => hechosG[claveGrupo(g.gk)]).length;
@@ -41535,7 +41605,7 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
   const tick = (gk) => fbSet(ruta(`grupos/${claveGrupo(gk)}`), hechosG[claveGrupo(gk)] ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
   const todoPuesto = () => {
     const sinMarcar = listaGrupos.length - nHechos;
-    const aviso = [sinMarcar ? `${sinMarcar} estantería(s) sin marcar` : "", faltan ? `${faltan} obra(s) con persianas o cristales sin llegar del todo` : ""].filter(Boolean).join(" y ");
+    const aviso = [sinMarcar ? `${sinMarcar} lista(s) sin marcar como preparada` : "", faltan ? `${faltan} obra(s) con persianas o cristales sin llegar del todo` : ""].filter(Boolean).join(" y ");
     if (aviso && !window.confirm(`Ojo: hay ${aviso}. ¿Confirmas igualmente que está todo puesto?`)) return;
     fbSet(ruta("todo"), { por: quien, en: Date.now(), sinMarcar, obrasConFaltas: faltan, obras: obras.length }).catch((e) => alert("No se pudo guardar: " + e.message));
   };
@@ -41565,13 +41635,14 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3">
-                <div className="text-sm text-slate-600 mr-auto"><b>{obras.length}</b> obras · estanterías marcadas <b>{nHechos}/{listaGrupos.length}</b>{faltan > 0 ? <span className="text-amber-700 font-semibold"> · {faltan} obra(s) con persianas o cristales sin llegar</span> : ""}</div>
+                <div className="text-sm text-slate-600 mr-auto"><b>{obras.length}</b> obras · listas preparadas <b>{nHechos}/{listaGrupos.length}</b>{faltan > 0 ? <span className="text-amber-700 font-semibold"> · {faltan} obra(s) con persianas o cristales sin llegar</span> : ""}</div>
                 <button onClick={todoPuesto} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-5 py-3 rounded-lg text-base font-bold">Todo puesto</button>
               </div>
             )}
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h4 className="font-semibold text-slate-800 text-sm mb-2">Persianas y cristales por obra (llegado / esperado)</h4>
+            <h4 className="font-semibold text-slate-800 text-sm mb-2">Persianas y cristales por obra</h4>
+            <p className="text-xs text-slate-600 mb-2"><b className="text-emerald-700">✓ Todo llegado</b> = puedes empezar · <b className="text-amber-700">FALTAN</b> = aún no ha llegado ese material (casilla naranja) · «No lleva» = esa obra no tiene ese material</p>
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Persianas</th><th className={th}>Cristales</th></tr></thead>
@@ -41580,8 +41651,8 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
                     <tr key={x.id}>
                       <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
                       <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
-                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe || x.pl ? `${x.pl} / ${x.pe}` : "—"}</td>
-                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce || x.cl ? `${x.cl} / ${x.ce}` : "—"}</td>
+                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}</td>
+                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -41590,25 +41661,25 @@ function PuestoPreparacionMaterial({ cristales = [] }) {
             <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h4 className="font-semibold text-slate-800 text-sm mb-1">Perfiles, herrajes y accesorios, juntos por estantería</h4>
-            <p className="text-xs text-slate-500 mb-3">Marca cada estantería cuando esté preparada. Aquí no se comprueba si el material ha llegado: mira el pedido.</p>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Perfiles, herrajes y accesorios</h4>
+            <p className="text-xs text-slate-500 mb-3">Todas las obras juntas: misma referencia y color = una sola línea. A la derecha, dónde está en el almacén. Aquí no se comprueba si ha llegado: mira el pedido.</p>
             {listaGrupos.length === 0 ? <p className="text-sm text-slate-400">Las obras de este periodo no tienen listado de materiales cargado.</p> : (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {listaGrupos.map((g) => {
                   const h = hechosG[claveGrupo(g.gk)];
                   return (
                     <div key={g.gk} className={`border rounded-lg ${h ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
                       <div className="flex items-center gap-3 px-3 py-2">
-                        <span className="font-semibold text-slate-800 mr-auto">{g.alm} · {g.est} <span className="text-slate-400 font-normal">({g.lineas.length})</span></span>
+                        <span className="font-semibold text-slate-800 mr-auto">{g.gk} <span className="text-slate-400 font-normal text-xs">({g.lineas.length} referencias)</span></span>
                         {h ? <span className="text-xs text-emerald-700 font-semibold">✓ {(h.por || "").split("@")[0]}</span> : null}
-                        <button onClick={() => tick(g.gk)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparada"}</button>
+                        <button onClick={() => tick(g.gk)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparado"}</button>
                       </div>
                       <div className="divide-y divide-slate-100 border-t border-slate-100">
                         {g.lineas.map((l) => (
-                          <div key={l.id} className="flex flex-wrap items-baseline gap-x-3 px-3 py-1.5 text-sm">
-                            <span className="font-bold text-slate-800 w-12 text-right">{Math.round(l.uds * 100) / 100}</span>
-                            <span className="text-slate-700 flex-1 min-w-[180px]">{l.descripcion}{l.color ? ` · ${l.color}` : ""} <span className="text-slate-400 text-xs">{l.codigo}</span></span>
-                            <span className="text-[11px] text-slate-400">{l.obras.map((o) => `${o.nombre} (${o.uds})`).join(" · ")}</span>
+                          <div key={l.id} className="flex items-baseline gap-3 px-3 py-1.5 text-sm">
+                            <span className="font-bold text-slate-800 w-14 text-right shrink-0">{Math.round(l.uds * 100) / 100}</span>
+                            <span className="text-slate-700 flex-1">{l.descripcion}{l.color ? ` · ${l.color}` : ""} <span className="text-slate-400 text-xs">{l.codigo}</span></span>
+                            <span className={`text-xs shrink-0 ${l.almacen || l.estanteria ? "text-slate-600 font-semibold" : "text-slate-300"}`}>{ubicDe(l)}</span>
                           </div>
                         ))}
                       </div>
