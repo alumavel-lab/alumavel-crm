@@ -751,6 +751,7 @@ export default function App() {
   const [carrosPersianas, setCarrosPersianas] = useState([]);
   const [persianasAlmacen, setPersianasAlmacen] = useState([]);
   const [almacenesPersianas, setAlmacenesPersianas] = useState([]);
+  const [tareasAluminio, setTareasAluminio] = useState([]); // planning de aluminio: tareas de postigo/mosquitera de obras PVC y trabajos de aluminio a mano
   const [panelesFabrica, setPanelesFabrica] = useState([]); // paneles (sándwich, acústicos…) pendientes de cortar / cortados
   const [pedidosPersianas, setPedidosPersianas] = useState([]); // persianas PEDIDAS al proveedor y aún no llegadas (no cuentan como "dentro" del almacén)
   const [fichajes, setFichajes] = useState([]);
@@ -897,7 +898,7 @@ export default function App() {
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
           "articulos", "facturas", "presupuestos", "ingresos", "solicitudes_pedido", "instalaciones",
           "vehiculos", "fichajes", "usuarios", "cristales", "mediciones", "sesionesUsuario", "tareas", "archivosEmpresa",
-          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas", "panelesFabrica"];
+          "tarifasPersianas", "configuracionFirma", "leads", "enviosProceso", "tarifasAluminio", "modelosVentana", "configVentanas", "tarifasCristal", "confirmacionesCristal", "carrosPersianas", "persianasAlmacen", "almacenesPersianas", "pedidosPersianas", "panelesFabrica", "tareasAluminio"];
         const resultados = {};
         const fallos = [];
         await Promise.all(claves.map(async (k) => {
@@ -937,6 +938,7 @@ export default function App() {
         if (resultados.cristales) setCristales(toArray(resultados.cristales));
         if (resultados.confirmacionesCristal) setConfirmacionesCristal(toArray(resultados.confirmacionesCristal));
         setPanelesFabrica(toArray(resultados.panelesFabrica));
+        setTareasAluminio(toArray(resultados.tareasAluminio));
         setCarrosPersianas(resultados.carrosPersianas ? toArray(resultados.carrosPersianas) : carrosPersianasPorDefecto());
         if (resultados.persianasAlmacen) setPersianasAlmacen(toArray(resultados.persianasAlmacen));
         if (resultados.pedidosPersianas) setPedidosPersianas(toArray(resultados.pedidosPersianas));
@@ -2538,6 +2540,7 @@ export default function App() {
   const saveCarrosPersianas = (next) => { setCarrosPersianas(next); persist("carrosPersianas", next); };
   const savePersianasAlmacen = (next) => { setPersianasAlmacen(next); persist("persianasAlmacen", next); };
   const savePanelesFabrica = (next) => { setPanelesFabrica(next); persist("panelesFabrica", next); };
+  const saveTareasAluminio = (next) => { setTareasAluminio(next); persist("tareasAluminio", next); };
   const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
   almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
@@ -5572,7 +5575,7 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
-            paneles: panelesFabrica, savePaneles: savePanelesFabrica,
+            paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
@@ -17958,6 +17961,109 @@ function EstadisticasCristales({ cristales }) {
   );
 }
 
+// ── Planning de aluminio: lo que hay que hacer en aluminio (postigos y mosquiteras de obras PVC + trabajos a mano: curvos, etc.) ──
+const CONCEPTOS_ALUMINIO = [
+  { id: "postigo", nombre: "Postigo" }, { id: "mosquitera", nombre: "Mosquitera" },
+  { id: "curvo", nombre: "Aluminio curvo" }, { id: "otro", nombre: "Otro trabajo de aluminio" },
+];
+const ESTADOS_ALUMINIO = { pendiente: "Por hacer", encargado: "En marcha", hecho: "Hecho", descartado: "No hace falta" };
+function PlanningAluminio({ proyectos = [], listoParaFabricar = [] }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const store = toArray(ctx.tareasAluminio);
+  const guardar = ctx.saveTareasAluminio || (() => {});
+  const cfg = store.find((x) => x.id === "cfg") || {};
+  const horasDia = parseFloat(cfg.horasDia) || 8;
+  const tareas = store.filter((x) => x.id !== "cfg");
+  const [ver, setVer] = useState("pendiente");
+  const [form, setForm] = useState(null);
+  const hoy = new Date().toISOString().slice(0, 10);
+  // Obras PVC que ya están listas o fabricándose y llevan postigo o mosquitera → tarea automática en aluminio
+  const obrasPVC = [...listoParaFabricar, ...toArray(proyectos).filter((p) => p.estadoTrabajo === "En proceso" && !listoParaFabricar.some((x) => x.id === p.id))].filter((p) => p.origen !== "portalUxcar");
+  const derivadas = [];
+  obrasPVC.forEach((p) => {
+    accesoriosDeObra(p).grupos.filter((g) => (g.id === "postigo" || g.id === "mosquitera") && g.lleva).forEach((g) => {
+      const clave = `${p.id}|${g.id}`;
+      const g0 = tareas.find((t) => t.clave === clave);
+      const detalle = g.lineas.length ? g.lineas.map((l) => `${l.descripcion || l.codigo}${l.uds ? ` ×${l.uds}` : ""}`).join("; ") : "lo pone el nombre de la obra o el checklist: mira las medidas en la hoja de carga";
+      derivadas.push({ id: g0 ? g0.id : "auto-" + clave, clave, origen: "obra", proyectoId: p.id, concepto: g.id, numero: p.numero, nombre: p.nombre || "", color: listaColorDeObra(p).colores.join(" / "), detalle, necesarioPara: p.fechaFabricacion || p.fechaEntregaPrevista || "", horas: g0 ? g0.horas : "", estado: g0 ? g0.estado || "pendiente" : "pendiente", guardada: !!g0 });
+    });
+  });
+  const manuales = tareas.filter((t) => t.origen === "manual").map((t) => ({ ...t, guardada: true, estado: t.estado || "pendiente" }));
+  const todas = [...derivadas, ...manuales];
+  const visibles = todas.filter((t) => (ver === "pendiente" ? !["hecho", "descartado"].includes(t.estado) : ver === "hecho" ? t.estado === "hecho" : true))
+    .sort((a, b) => String(a.necesarioPara || "9999").localeCompare(String(b.necesarioPara || "9999")) || String(a.numero || "").localeCompare(String(b.numero || ""), "es", { numeric: true }));
+  const pendientes = todas.filter((t) => !["hecho", "descartado"].includes(t.estado));
+  const horasPend = pendientes.reduce((a, t) => a + (parseFloat(t.horas) || 0), 0);
+  const sinHoras = pendientes.filter((t) => !(parseFloat(t.horas) > 0)).length;
+  // día en que acabaría cada tarea pendiente (en el orden de la lista, sin contar sábados ni domingos)
+  const diaFin = (acum) => { const d = new Date(); d.setHours(12, 0, 0, 0); const finde = () => [0, 6].includes(d.getDay()); while (finde()) d.setDate(d.getDate() + 1); for (let n = Math.max(1, Math.ceil(acum / horasDia - 1e-9)) - 1; n > 0; n--) { d.setDate(d.getDate() + 1); while (finde()) d.setDate(d.getDate() + 1); } return d.toISOString().slice(0, 10); };
+  let acum = 0;
+  const fila = visibles.map((t) => { const pend = !["hecho", "descartado"].includes(t.estado); if (pend) acum += parseFloat(t.horas) || 0; return { t, fin: pend && acum > 0 ? diaFin(acum) : "" }; });
+  const actualizar = (t, patch) => {
+    if (t.guardada) guardar(store.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
+    else guardar([...store, { id: uid(), clave: t.clave, origen: "obra", proyectoId: t.proyectoId, concepto: t.concepto, estado: "pendiente", ...patch }]);
+  };
+  const guardarCfg = (patch) => guardar(cfg.id ? store.map((x) => (x.id === "cfg" ? { ...x, ...patch } : x)) : [...store, { id: "cfg", ...patch }]);
+  const guardarForm = () => {
+    if (!String(form.descripcion || "").trim()) { alert("Pon qué hay que hacer."); return; }
+    guardar([...store, { id: uid(), origen: "manual", concepto: form.concepto, numero: form.numero || "", nombre: form.descripcion.trim(), detalle: form.detalle || "", horas: form.horas || "", necesarioPara: form.necesarioPara || "", estado: "pendiente", creado: hoy }]);
+    setForm(null);
+  };
+  const conc = (id) => (CONCEPTOS_ALUMINIO.find((c) => c.id === id) || {}).nombre || id;
+  return (
+    <div className="space-y-4">
+      <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-900 text-sm">
+        Planning de <b>aluminio</b>, aparte del de PVC. Las obras de PVC que están listas o en fabricación y llevan <b>postigo o mosquitera</b> salen solas aquí como tarea (las persianas las tienes y no salen). Para curvos u otros trabajos de aluminio, usa «Añadir trabajo».
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg px-4 py-3 text-sm text-slate-700 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <label className="flex items-center gap-2">Horas de aluminio al día
+          <input type="number" min="1" step="0.5" defaultValue={horasDia} onBlur={(e) => guardarCfg({ horasDia: parseFloat(e.target.value) || 8 })} className="w-20 border border-slate-300 rounded px-2 py-1 text-sm" />
+        </label>
+        <span>Por hacer: <b>{fmtHoras(horasPend)}</b> ≈ <b>{(horasPend / horasDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> días</span>
+        {sinHoras > 0 && <span className="text-amber-700 font-semibold">{sinHoras} tarea{sinHoras === 1 ? "" : "s"} sin horas puestas (no cuentan)</span>}
+        <button onClick={() => setForm({ concepto: "curvo", descripcion: "", numero: "", horas: "", necesarioPara: "", detalle: "" })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90">+ Añadir trabajo</button>
+      </div>
+      {form && (
+        <div className="bg-white border border-slate-300 rounded-lg p-4 grid sm:grid-cols-2 gap-3 text-sm">
+          <label className="flex flex-col gap-1">Tipo<select value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5">{CONCEPTOS_ALUMINIO.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
+          <label className="flex flex-col gap-1">Qué hay que hacer<input value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" placeholder="Ej: 3 ventanas curvas Sr. García" /></label>
+          <label className="flex flex-col gap-1">Nº de obra (si la hay)<input value={form.numero} onChange={(e) => setForm({ ...form, numero: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
+          <label className="flex flex-col gap-1">Horas<input type="number" min="0" step="0.5" value={form.horas} onChange={(e) => setForm({ ...form, horas: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
+          <label className="flex flex-col gap-1">Necesario para<input type="date" value={form.necesarioPara} onChange={(e) => setForm({ ...form, necesarioPara: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
+          <label className="flex flex-col gap-1">Detalle (medidas, color…)<input value={form.detalle} onChange={(e) => setForm({ ...form, detalle: e.target.value })} className="border border-slate-300 rounded px-2 py-1.5" /></label>
+          <div className="sm:col-span-2 flex gap-2"><button onClick={guardarForm} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Guardar</button><button onClick={() => setForm(null)} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600">Cancelar</button></div>
+        </div>
+      )}
+      <div className="flex gap-1.5 text-xs">
+        {[["pendiente", `Por hacer (${pendientes.length})`], ["hecho", "Hechas"], ["todas", "Todas"]].map(([k, l]) => (
+          <button key={k} onClick={() => setVer(k)} className={`px-3 py-1 rounded-full border ${ver === k ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-300"}`}>{l}</button>
+        ))}
+      </div>
+      {fila.length === 0 && <div className="bg-white border border-slate-200 rounded-lg px-4 py-10 text-center text-slate-400 text-sm">No hay nada en el planning de aluminio.</div>}
+      <div className="space-y-2">
+        {fila.map(({ t, fin }) => (
+          <div key={t.id} className={`bg-white border rounded-lg p-3 flex flex-wrap items-center gap-x-4 gap-y-2 ${t.estado === "hecho" ? "border-emerald-200 opacity-70" : "border-sky-200"}`}>
+            <div className="flex-1 min-w-[240px]">
+              <div className="text-sm font-semibold text-slate-800">
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 mr-2">{conc(t.concepto)}</span>
+                {t.origen === "obra" ? `#${t.numero} — ${t.nombre}` : `${t.numero ? `#${t.numero} — ` : ""}${t.nombre}`}
+              </div>
+              <div className="text-xs text-slate-500 mt-0.5">{t.origen === "obra" ? "De una obra de PVC · " : ""}{t.color ? `Color: ${t.color} · ` : ""}{t.necesarioPara ? `Necesario para ${fmtDate(t.necesarioPara)}` : "sin fecha"}{fin ? ` · acabaría el ${fmtDate(fin)}` : ""}</div>
+              {t.detalle && <div className="text-xs text-slate-600 mt-0.5">{t.detalle}</div>}
+            </div>
+            <label className="text-xs text-slate-500 flex items-center gap-1">h
+              <input type="number" min="0" step="0.5" defaultValue={t.horas || ""} onBlur={(e) => { if ((e.target.value || "") !== String(t.horas || "")) actualizar(t, { horas: e.target.value }); }} className="w-16 border border-slate-300 rounded px-1.5 py-1 text-sm" />
+            </label>
+            <select value={t.estado} onChange={(e) => actualizar(t, { estado: e.target.value })} className="text-xs border border-slate-300 rounded px-2 py-1.5">
+              {Object.entries(ESTADOS_ALUMINIO).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+            {t.origen === "manual" && <button onClick={() => { if (window.confirm("¿Borrar este trabajo?")) guardar(store.filter((x) => x.id !== t.id)); }} className="text-xs text-red-600 hover:underline">Borrar</button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 // ── Discrepancias entre oficina y fábrica ──
 // Una línea tiene discrepancia si una de las dos partes la da por llegada y la otra no:
 //  · «fabrica»: fábrica ha confirmado que ha llegado pero oficina aún no tiene el pedido/la línea como recibido
@@ -18023,6 +18129,16 @@ function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarP
   );
 }
 // ── Listas por color en «Listo para fabricar»: blanco, roble dorado, nogal, 7016 y varios ──
+// Horas de fabricación de una obra: las puestas a mano → las del «Listado mano de obra» → estimación por sus ventanas (mismo criterio que el planning)
+const horasDeObraListo = (p, uxExpedientes, cfgPlanning) => {
+  try {
+    const tiempos = { ...PLANNING_TIEMPOS_DEF, ...((cfgPlanning && cfgPlanning.tiempos) || {}) };
+    const v = ventanasDeObra(p, uxExpedientes);
+    const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas);
+    return r.horas > 0 ? { horas: r.horas, origen: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas" } : { horas: 0, origen: "" };
+  } catch (e) { return { horas: 0, origen: "" }; }
+};
+const fmtHoras = (h) => `${(Math.round(h * 10) / 10).toLocaleString("es-ES")} h`;
 const LISTO_ENTRA_SOLO_EN_PLANNING = false; // true = como antes (lo listo entraba directo en el planning)
 const LISTAS_COLOR_FABRICA = [
   { id: "blanco", nombre: "Blanco", re: /blanc/i, punto: "#e5e7eb" },
@@ -18049,22 +18165,34 @@ const ACCESORIOS_OBRA = [
 const accesoriosDeObra = (p) => {
   const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
   const out = { hayListado: lineas.length > 0, grupos: [] };
+  // También cuenta lo que se dice en el nombre de la obra / sus especificaciones («PVC ventanas nogal con postigo»)
+  // y lo marcado «Sí» en el checklist «Qué lleva la obra». Un «sin postigo» en el texto no cuenta.
+  const texto = [p && p.nombre, p && p.especificaciones, p && p.observaciones, p && p.listadoMateriales && p.listadoMateriales.referencia].filter(Boolean).join(" · ");
+  const check = toArray(p && p.checklistMateriales);
   ACCESORIOS_OBRA.forEach((a) => {
     const ls = lineas.filter((l) => (a.test ? a.test(l) : a.re.test(txtLinea(l))));
-    out.grupos.push({ ...a, lineas: ls, uds: ls.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0) });
+    const base = (a.id === "tapajuntas" ? "tapajunt|tapa\\s*junta" : a.id === "mosquitera" ? "mosquit" : a.id === "postigo" ? "postigo" : "persiana");
+    const reTexto = new RegExp(`(^|[^a-zñáéíóúü])(?!sin\\s)(?:${base})`, "i");
+    const reNeg = new RegExp(`\\b(sin|no\\s+lleva)\\s+(${base})`, "gi");
+    const textoSinNeg = texto.replace(reNeg, " ");
+    const deTexto = new RegExp(base, "i").test(textoSinNeg);
+    const deChecklist = check.some((c) => new RegExp(base, "i").test(c.nombre || "") && c.estado === "si" && !/gu[ií]a/i.test(c.nombre || ""));
+    out.grupos.push({ ...a, lineas: ls, uds: ls.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0), deTexto, deChecklist, lleva: ls.length > 0 || deTexto || deChecklist });
   });
   return out;
 };
 function AccesoriosDeLaObra({ proyecto }) {
   const a = accesoriosDeObra(proyecto);
-  if (!a.hayListado) return <div className="mt-1.5 text-[11px] font-semibold text-amber-700">⚠ Esta obra no tiene listado de materiales guardado: no puedo saber si lleva mosquitera, postigo o tapajuntas.</div>;
+  const algo = a.grupos.some((g) => g.lleva);
+  const aviso = !a.hayListado && !algo ? <div className="mt-1.5 text-[11px] font-semibold text-amber-700">⚠ Esta obra no tiene listado de materiales guardado y su nombre no dice nada: no puedo saber si lleva persiana, mosquitera, postigo o tapajuntas.</div> : null;
+  if (aviso) return aviso;
   const medida = (l) => [l.longitud ? `${l.longitud} m` : "", l.ancho || l.alto ? `${l.ancho || "—"} x ${l.alto || "—"} mm` : ""].filter(Boolean).join(" · ");
   const con = a.grupos.filter((g) => g.lineas.length > 0);
   return (
     <div className="mt-1.5">
       <div className="flex flex-wrap gap-1.5">
-        {a.grupos.map((g) => g.lineas.length > 0
-          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()} · {g.uds} ud.</span>
+        {a.grupos.map((g) => g.lleva
+          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()}{g.lineas.length > 0 ? ` · ${g.uds} ud.` : g.deTexto ? " · según el nombre de la obra" : " · según el checklist"}</span>
           : <span key={g.id} className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">sin {g.nombre.toLowerCase()}</span>)}
       </div>
       {con.length > 0 && (
@@ -18225,7 +18353,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
       cuerpo = `
         <table style="border-collapse:collapse;width:100%;">
           ${cabeceraTabla(["Proyecto", "Entrega prevista", "Fabricación prevista", "Lleva"])}
-          ${listoParaFabricar.map((p) => { const a = accesoriosDeObra(p); return filaTabla([`#${p.numero} — ${p.nombre}`, fmtDate(p.fechaEntregaPrevista) || "—", fmtDate(p.fechaFabricacion) || "—", !a.hayListado ? "Sin listado" : (a.grupos.filter((g) => g.lineas.length).map((g) => `${g.nombre} (${g.uds})`).join(", ") || "Nada de lo anterior")]); }).join("")}
+          ${listoParaFabricar.map((p) => { const a = accesoriosDeObra(p); return filaTabla([`#${p.numero} — ${p.nombre}`, fmtDate(p.fechaEntregaPrevista) || "—", fmtDate(p.fechaFabricacion) || "—", !a.hayListado && !a.grupos.some((g) => g.lleva) ? "Sin listado" : (a.grupos.filter((g) => g.lleva).map((g) => g.lineas.length ? `${g.nombre} (${g.uds})` : g.nombre).join(", ") || "Nada de lo anterior")]); }).join("")}
         </table>`;
     } else if (tab === "materiales") {
       cuerpo = filtered.map((pedido) => {
@@ -18298,6 +18426,10 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "discrepancias" ? "border-orange-500 text-orange-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Discrepancia con oficina
           {nDiscrepancias > 0 && <Badge className="bg-orange-100 text-orange-700 ring-orange-300">{nDiscrepancias}</Badge>}
+        </button>
+        <button onClick={() => setTab("aluminio")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "aluminio" ? "border-sky-500 text-sky-600" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          Planning aluminio
         </button>
         <button onClick={() => setTab("paneles")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "paneles" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -18391,15 +18523,29 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
               </div>
             </details>
           )}
+          {(() => {
+            const hDia = parseFloat(configPlanning && configPlanning.horasDia) || 16;
+            const tot = listoParaFabricar.reduce((t, p) => t + horasDeObraListo(p, uxExpedientes, configPlanning).horas, 0);
+            const sinH = listoParaFabricar.filter((p) => !horasDeObraListo(p, uxExpedientes, configPlanning).horas).length;
+            return (
+              <div className="mb-4 px-4 py-3 rounded-lg bg-white border border-slate-200 text-sm text-slate-700 flex flex-wrap gap-x-6 gap-y-1">
+                <span>Horas de fábrica al día: <b>{fmtHoras(hDia)}</b> <span className="text-xs text-slate-400">(las del planning)</span></span>
+                <span>Todo lo listo: <b>{fmtHoras(tot)}</b> ≈ <b>{(tot / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(tot / hDia - 1) < 0.05 ? "" : "s"}</span>
+                {sinH > 0 && <span className="text-amber-700 font-semibold">{sinH} obra{sinH === 1 ? "" : "s"} sin horas calculables</span>}
+              </div>
+            );
+          })()}
           <div className="space-y-6">
             {LISTAS_COLOR_FABRICA.map((lc) => {
               const obras = listoParaFabricar.filter((p) => listaColorDeObra(p).id === lc.id);
               if (!obras.length) return null;
+              const hLista = obras.reduce((t, o) => t + horasDeObraListo(o, uxExpedientes, configPlanning).horas, 0);
               return (
                 <section key={lc.id}>
                   <h3 className="flex items-center gap-2 font-display font-bold text-slate-800 mb-2">
                     <span className="inline-block w-3 h-3 rounded-full ring-1 ring-slate-300" style={{ backgroundColor: lc.punto }} />
                     {lc.nombre} <span className="text-xs font-semibold text-slate-400">({obras.length})</span>
+                    <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">{fmtHoras(hLista)} · ≈ {(hLista / (parseFloat(configPlanning && configPlanning.horasDia) || 16)).toLocaleString("es-ES", { maximumFractionDigits: 1 })} d</span>
                     <span className="text-xs font-mono-num text-slate-500 font-normal">{obras.map((o) => `#${o.numero}`).join(" · ")}</span>
                     {obras.length > 1 && (
                       <button
@@ -18417,7 +18563,7 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
                 <div>
                   <div className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Entrega prevista {fmtDate(p.fechaEntregaPrevista)}{p.fechaFabricacion ? ` · Fabricación prevista ${fmtDate(p.fechaFabricacion)}` : ""}</div>
-                  <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}{(() => { const h = horasDeObraListo(p, uxExpedientes, configPlanning); return h.horas ? <span className="ml-2 font-bold text-slate-700">⏱ {fmtHoras(h.horas)} <span className="font-normal text-slate-400">({h.origen})</span></span> : <span className="ml-2 font-semibold text-amber-700">⏱ sin horas</span>; })()}</div>
                   <AccesoriosDeLaObra proyecto={p} />
                 </div>
                 <button
@@ -18579,6 +18725,8 @@ function FabricaModulo({ proyectos, pedidos, proveedores, materiales, clientes, 
         <DiscrepanciasPedidos pedidos={pedidos} proveedores={proveedores} onActualizarPedido={onActualizarPedido || (() => {})} onIrAlbaran={() => setTab("materiales")} onDarDeBaja={onConfirmarPedidoEntero}
           nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))} />
       )}
+
+      {tab === "aluminio" && <PlanningAluminio proyectos={proyectos} listoParaFabricar={listoParaFabricar} />}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
 
