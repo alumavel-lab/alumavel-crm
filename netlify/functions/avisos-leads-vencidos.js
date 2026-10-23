@@ -81,9 +81,9 @@ export const handler = async () => {
     const lineaLead = (l) => `• ${l.nombre || "Sin nombre"} — ${l.telefono || "sin teléfono"} — fecha prevista: ${l.proximaAccionFecha} — estado: ${l.estado || "Pendiente"}`;
 
     const transporter = nodemailer.createTransport({
-      host: "smtp.office365.com",
-      port: 587,
-      secure: false,
+      host: process.env.SMTP_HOST || "smtp.alumavel.es",
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: Number(process.env.SMTP_PORT || 465) === 465, // 465 = SSL/TLS directo (CDmon)
       auth: { user, pass },
     });
 

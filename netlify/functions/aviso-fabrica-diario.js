@@ -57,7 +57,7 @@ async function enviar({ to, subject, text }) {
   }
   const user = process.env.EMAIL_USER, pass = process.env.EMAIL_PASSWORD;
   if (!user || !pass) throw new Error("Correo sin configurar (faltan RESEND_API_KEY o EMAIL_USER/EMAIL_PASSWORD)");
-  const t = nodemailer.createTransport({ host: "smtp.office365.com", port: 587, secure: false, auth: { user, pass } });
+  const t = nodemailer.createTransport({ host: process.env.SMTP_HOST || "smtp.alumavel.es", port: Number(process.env.SMTP_PORT || 465), secure: Number(process.env.SMTP_PORT || 465) === 465, auth: { user, pass } });
   await t.sendMail({ from: `"Planning Ecowin PVC" <${user}>`, to, subject, text });
 }
 

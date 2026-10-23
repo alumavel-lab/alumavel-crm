@@ -1,15 +1,10 @@
-// Envía correos desde el CRM usando la cuenta de Microsoft 365 de la empresa
-// (alumavel@alumavel.es), sin que el usuario tenga que abrir su propio correo.
+// Envía correos desde el CRM usando el buzón de la empresa en CDmon
+// (alumavel@alumavel.es, servidor smtp.alumavel.es, puerto 465), sin que el usuario tenga que abrir su propio correo.
 //
 // Variables de entorno necesarias en Netlify (Site settings > Environment variables):
 //   EMAIL_USER     = alumavel@alumavel.es
-//   EMAIL_PASSWORD = la contraseña de la cuenta (o una "contraseña de aplicación"
-//                    si la cuenta tiene verificación en dos pasos activada)
-//
-// Si el envío falla con un error de autenticación, lo más probable es que la
-// cuenta tenga desactivado el "SMTP autenticado" — hay que activarlo desde el
-// Centro de administración de Microsoft 365 (Exchange admin center > buzones >
-// esta cuenta > administrar aplicaciones de correo > activar "SMTP autenticado").
+//   EMAIL_PASSWORD = la contraseña del buzón en CDmon
+// Opcionales (por defecto smtp.alumavel.es y 465): SMTP_HOST, SMTP_PORT
 
 import nodemailer from "nodemailer";
 
@@ -29,9 +24,9 @@ export const handler = async (event) => {
     }
 
     const transporter = nodemailer.createTransport({
-      host: "smtp.office365.com",
-      port: 587,
-      secure: false, // usa STARTTLS en el puerto 587
+      host: process.env.SMTP_HOST || "smtp.alumavel.es",
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: Number(process.env.SMTP_PORT || 465) === 465, // 465 = SSL/TLS directo (CDmon)
       auth: { user, pass },
     });
 
