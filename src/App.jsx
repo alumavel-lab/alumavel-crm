@@ -10242,9 +10242,12 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
   const ctxAlm = React.useContext(TarifasVentanasCtx) || {};
   const almacenes = listaAlmacenes(ctxAlm.configVentanas);
   const [filtroAlmacen, setFiltroAlmacen] = useState("");
+  const [filtroProv, setFiltroProv] = useState("");
+  const [agruparProv, setAgruparProv] = useState(() => { try { return localStorage.getItem("stockAgruparProv") !== "0"; } catch (e) { return true; } });
   const [editandoAlmacenes, setEditandoAlmacenes] = useState(false);
   const filtered = useMemo(() => {
-    return materiales.filter((m) => {
+    const lista = materiales.filter((m) => {
+      if (filtroProv && (filtroProv === "__sinprov" ? !!m.proveedorId : m.proveedorId !== filtroProv)) return false;
       if (filtroAlmacen) {
         const almacenesDelMaterial = (m.stockPorAlmacen || []).length ? m.stockPorAlmacen.map((x) => x.almacen) : [m.almacen];
         const tieneAlmacen = almacenesDelMaterial.some(Boolean);
@@ -10254,7 +10257,10 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
       const s = `${m.codigo} ${m.descripcion} ${m.categoria} ${m.familia} ${proveedorNombre(m.proveedorId)} ${m.almacen || ""} ${m.estanteria || ""}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
-  }, [materiales, q, proveedores, filtroAlmacen]);
+    if (!agruparProv) return lista;
+    const nom = (m) => (proveedores.find((p) => p.id === m.proveedorId) || {}).nombre || "";
+    return [...lista].sort((a, b) => { const na = nom(a), nb = nom(b); if (!na !== !nb) return na ? -1 : 1; return na.localeCompare(nb, "es") || String(a.codigo || "").localeCompare(String(b.codigo || ""), "es", { numeric: true }); });
+  }, [materiales, q, proveedores, filtroAlmacen, filtroProv, agruparProv]);
 
   const necesitaReponer = materiales.filter((m) => m.stockReal <= m.stockMinimo);
   const bajoMinimoCount = necesitaReponer.length;
@@ -10424,6 +10430,12 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
               {almacenes.map((a) => <option key={a} value={a}>{a}</option>)}
               <option value="__sin">Sin almacén asignado</option>
             </Select>
+            <Select value={filtroProv} onChange={(e) => setFiltroProv(e.target.value)} className="!w-auto text-sm">
+              <option value="">Todos los proveedores</option>
+              {[...proveedores].sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              <option value="__sinprov">Sin proveedor</option>
+            </Select>
+            <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none"><input type="checkbox" checked={agruparProv} onChange={(e) => { setAgruparProv(e.target.checked); try { localStorage.setItem("stockAgruparProv", e.target.checked ? "1" : "0"); } catch (er) { /* */ } }} /> Agrupar por proveedor</label>
             {ctxAlm.saveConfigVentanas && <button onClick={() => setEditandoAlmacenes(!editandoAlmacenes)} className="text-sm font-semibold text-slate-600 hover:underline">Almacenes</button>}
             {seleccionados.length > 0 && (
               <div className="flex items-center gap-2 ml-auto bg-emerald-50 border border-emerald-200 rounded-md px-3 py-1.5">
@@ -10476,10 +10488,16 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
                 {filtered.length === 0 && (
                   <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400 text-sm">No hay materiales que coincidan con la búsqueda.</td></tr>
                 )}
-                {filtered.map((m) => {
+                {filtered.map((m, idxM) => {
                   const bajo = m.stockReal <= m.stockMinimo;
+                  const provM = proveedorNombre(m.proveedorId);
+                  const nuevoGrupo = agruparProv && (idxM === 0 || proveedorNombre(filtered[idxM - 1].proveedorId) !== provM);
                   return (
-                    <tr key={m.id} onClick={() => { setDetailId(m.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
+                    <React.Fragment key={m.id}>
+                    {nuevoGrupo && (
+                      <tr className="bg-slate-100 border-y border-slate-200"><td colSpan={9} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-slate-600">{m.proveedorId ? provM : "Sin proveedor"} <span className="font-normal normal-case text-slate-400">· {filtered.filter((x) => proveedorNombre(x.proveedorId) === provM).length} referencias</span></td></tr>
+                    )}
+                    <tr onClick={() => { setDetailId(m.id); setView("detail"); }} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition">
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" checked={seleccionados.includes(m.id)}
                           onChange={(e) => setSeleccionados(e.target.checked ? [...seleccionados, m.id] : seleccionados.filter((id) => id !== m.id))} />
@@ -10497,6 +10515,7 @@ function StockModulo({ materiales, proveedores, view, setView, editId, setEditId
                         </button>)}
                       </td>
                     </tr>
+                    </React.Fragment>
                   );
                 })}
               </tbody>
