@@ -1419,6 +1419,26 @@ export default function App() {
   // Lo que ve cada cliente en su portal: una copia reducida de SUS trabajos, facturas e incidencias
   // (no puede leer el resto del CRM). Se actualiza sola mientras alguien del equipo tiene el CRM abierto.
   const portalSyncRef = useRef({});
+  // Qué material lleva cada trabajo, resumido por tipo (sin proveedores ni precios): lo peor manda.
+  const materialesParaCliente = (proyectoId) => {
+    const orden = { porPedir: 0, reclamado: 1, pedido: 2, recibido: 3 };
+    const porTipo = {};
+    pedidos.filter((pd) => pd && pd.proyectoId === proyectoId && pd.estado !== "Cancelado").forEach((pd) => {
+      const t = tipoPedidoMaterial(pd);
+      const tipo = t === "cristal" ? "Cristales" : t === "persianas" ? "Persianas / compactos" : "Otros materiales";
+      const estado = pd.estado === "Recibido" ? "recibido" : pd.estado === "Reclamado" ? "reclamado" : pd.estado === "Realizado" ? "pedido" : "porPedir";
+      const llegada = estado === "pedido" || estado === "reclamado" ? (pd.fechaEntregaPrevista || "") : "";
+      const act = porTipo[tipo];
+      if (!act || orden[estado] < orden[act.estado]) porTipo[tipo] = { tipo, estado, llegada };
+    });
+    return Object.values(porTipo);
+  };
+  // Avisos del buzón del portal (solo equipo): para saber qué cliente ha escrito.
+  const [buzonTodos, setBuzonTodos] = useState({});
+  useEffect(() => {
+    if (!authUser || !usuarios.find((u) => u.authUid === authUser.uid)) return undefined;
+    return onValue(ref(fbDb, "portalClientesBuzon"), (snap) => setBuzonTodos(snap.val() || {}), () => {});
+  }, [authUser, usuarios]);
   useEffect(() => {
     if (!authUser || !usuarios.find((u) => u.authUid === authUser.uid)) return undefined;
     const t = setTimeout(() => {
@@ -1426,9 +1446,9 @@ export default function App() {
         const ps = proyectos.filter((p) => p && p.clienteId === c.id);
         const ids = new Set(ps.map((p) => p.id));
         const datos = {
-          proyectos: ps.map((p) => ({ id: p.id, numero: p.numero || "", nombre: p.nombre || "", estadoPresupuesto: p.estadoPresupuesto || "", estadoTrabajo: p.estadoTrabajo || "", importePresupuesto: p.importePresupuesto || 0, fechaEntregaPrevista: p.fechaEntregaPrevista || "" })),
+          proyectos: ps.map((p) => ({ id: p.id, numero: p.numero || "", nombre: p.nombre || "", estadoPresupuesto: p.estadoPresupuesto || "", estadoTrabajo: p.estadoTrabajo || "", importePresupuesto: p.importePresupuesto || 0, fechaEntregaPrevista: p.fechaEntregaPrevista || "", materiales: materialesParaCliente(p.id) })),
           facturas: facturas.filter((f) => f && f.clienteId === c.id && !f.anulada).map((f) => ({ id: f.id, numero: f.numero || "", tipo: f.tipo || "", fecha: f.fecha || "", total: f.total || 0, pagos: (f.pagos || []).map((x) => ({ importe: x.importe || 0 })) })),
-          incidencias: incidencias.filter((i) => i && ids.has(i.proyectoId)).map((i) => ({ id: i.id, numero: i.numero || "", fecha: i.fecha || "", estadoIncidencia: i.estadoIncidencia || "" })),
+          incidencias: incidencias.filter((i) => i && ids.has(i.proyectoId)).map((i) => ({ id: i.id, numero: i.numero || "", fecha: i.fecha || "", estadoIncidencia: i.estadoIncidencia || "", proyectoId: i.proyectoId || "" })),
         };
         const huella = JSON.stringify(datos);
         if (portalSyncRef.current[c.id] === huella) return;
@@ -1437,7 +1457,7 @@ export default function App() {
       });
     }, 3000);
     return () => clearTimeout(t);
-  }, [clientes, proyectos, facturas, incidencias, authUser, usuarios]);
+  }, [clientes, proyectos, facturas, incidencias, pedidos, authUser, usuarios]);
 
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
@@ -5419,6 +5439,8 @@ export default function App() {
             onUpsert={upsertCliente}
             onDelete={deleteCliente}
             onImportarMasivo={importarContactosMasivo}
+            buzonTodos={buzonTodos}
+            onRegistrarIncidenciaPortal={(data) => { const num = nextNumeroIncidencia(); upsertIncidencia(data); return num; }}
             isAdmin={isAdmin}
             prefill={clientePrefill}
             onClearPrefill={() => setClientePrefill(null)}
@@ -6118,7 +6140,7 @@ export default function App() {
 
 /* ================= CLIENTES ================= */
 
-function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onImportarMasivo, openProyecto, isAdmin, prefill, onClearPrefill }) {
+function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onImportarMasivo, openProyecto, isAdmin, prefill, onClearPrefill, buzonTodos, onRegistrarIncidenciaPortal }) {
   const [q, setQ] = useState("");
   const [tipo, setTipo] = useState("");
   const inputContactosRef = useRef(null);
@@ -6189,9 +6211,15 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
         onDelete={() => onDelete(cliente.id)}
         isAdmin={isAdmin}
         openProyecto={openProyecto}
+        onRegistrarIncidenciaPortal={onRegistrarIncidenciaPortal}
       />
     );
   }
+
+  const clientesConMensajes = clientes.filter((c) => {
+    const m = c && c.portalAuthUid && buzonTodos && buzonTodos[c.portalAuthUid] && buzonTodos[c.portalAuthUid].meta;
+    return m && (m.ultimoCliente || 0) > (m.leidoOficina || 0);
+  });
 
   return (
     <div className="p-8 max-w-6xl overflow-x-hidden">
@@ -6201,6 +6229,15 @@ function ClientesModulo({ clientes, proyectos, ingresos, view, setView, editId, 
         manualKey="clientes"
         subtitle={`${clientes.length} cliente${clientes.length === 1 ? "" : "s"} registrado${clientes.length === 1 ? "" : "s"}`}
       />
+      {clientesConMensajes.length > 0 && (
+        <div className="mb-3 px-4 py-3 rounded-md bg-sky-50 border border-sky-300 text-sky-900 text-sm">
+          <span className="font-bold">Te han escrito desde el portal:</span>{" "}
+          {clientesConMensajes.map((c, i) => (
+            <button key={c.id} onClick={() => { setDetailId(c.id); setView("detail"); }} className="font-semibold underline underline-offset-2 hover:text-sky-700 mr-2">{c.nombre}{i < clientesConMensajes.length - 1 ? "," : ""}</button>
+          ))}
+        </div>
+      )}
+
 
       <button
         onClick={() => { setEditId(null); setView("form"); }}
@@ -6826,7 +6863,7 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
   );
 }
 
-function ClienteDetail({ cliente, trabajos, ingresos, onBack, onEdit, onDelete, openProyecto, isAdmin }) {
+function ClienteDetail({ cliente, trabajos, ingresos, onBack, onEdit, onDelete, openProyecto, isAdmin, onRegistrarIncidenciaPortal }) {
   const limiteCredito = parseFloat(cliente.limiteCredito) || 0;
   const riesgoActual = trabajos.reduce((s, p) => {
     const importePresupuesto = parseFloat(p.importePresupuesto) || 0;
@@ -6931,6 +6968,9 @@ function ClienteDetail({ cliente, trabajos, ingresos, onBack, onEdit, onDelete, 
           </table>
         )}
       </div>
+      {cliente.portalActivo && cliente.portalAuthUid && (
+        <PortalBuzonStaff cliente={cliente} trabajos={trabajos} onRegistrarIncidencia={onRegistrarIncidenciaPortal} />
+      )}
     </div>
   );
 }
@@ -45740,17 +45780,239 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
   );
 }
 
-/* ---- Portal de cliente (solo lectura) ---- */
+/* ---- Buzón del portal de cliente: mensajes, documentos e incidencias ---- */
+
+const PORTAL_MAX_ARCHIVO = 10 * 1024 * 1024;
+const portalUrlOk = (u) => typeof u === "string" && u.startsWith(`https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/`);
+const portalFechaHora = (ts) => { try { return new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+
+async function portalSubirArchivo(uidCliente, file) {
+  if (file.size > PORTAL_MAX_ARCHIVO) throw new Error(`"${file.name}" pesa más de 10 MB`);
+  const nombreArchivo = `portal/${uidCliente}/${Date.now()}-${String(file.name).replace(/[^\w.\-]+/g, "_")}`;
+  const bytes = await file.arrayBuffer();
+  const r = await fetch(
+    `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?uploadType=media&name=${encodeURIComponent(nombreArchivo)}`,
+    { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: bytes }
+  );
+  if (!r.ok) throw new Error("No se pudo subir el archivo (revisa las reglas de Storage)");
+  return { nombre: file.name, url: `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(nombreArchivo)}?alt=media` };
+}
+
+function usePortalBuzon(uidCliente) {
+  const [b, setB] = useState(undefined);
+  useEffect(() => {
+    if (!uidCliente) return undefined;
+    return onValue(ref(fbDb, `portalClientesBuzon/${uidCliente}`), (snap) => setB(snap.val() || {}), () => setB({}));
+  }, [uidCliente]);
+  return b;
+}
+
+function PortalAdjuntos({ adjuntos }) {
+  // Solo se enlazan archivos de nuestro propio almacenamiento: el cliente no puede colar enlaces externos.
+  const ok = toArray(adjuntos).filter((a) => a && portalUrlOk(a.url));
+  if (!ok.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1.5">
+      {ok.map((a, i) => (
+        <a key={i} href={a.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-sky-700 bg-sky-50 border border-sky-200 rounded px-2 py-1 hover:bg-sky-100">
+          <FileText size={12} /> {String(a.nombre || "Archivo").slice(0, 60)}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function PortalSelectorArchivos({ files, setFiles }) {
+  const ref_ = useRef(null);
+  return (
+    <div>
+      <input ref={ref_} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx" className="hidden" onChange={(e) => { setFiles([...files, ...Array.from(e.target.files || [])].slice(0, 6)); e.target.value = ""; }} />
+      <button type="button" onClick={() => ref_.current && ref_.current.click()} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-300 rounded px-3 py-1.5 hover:bg-slate-50">
+        <Upload size={13} /> Adjuntar archivo o foto
+      </button>
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {files.map((f, i) => (
+            <span key={i} className="inline-flex items-center gap-1 text-xs bg-slate-100 border border-slate-200 rounded px-2 py-1">
+              {f.name.slice(0, 40)}
+              <button type="button" onClick={() => setFiles(files.filter((_, j) => j !== i))} className="text-slate-400 hover:text-rose-600"><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortalHilo({ uidCliente, quien, mensajes }) {
+  const [texto, setTexto] = useState("");
+  const [files, setFiles] = useState([]);
+  const [enviando, setEnviando] = useState(false);
+  const [err, setErr] = useState("");
+  const lista = toArray(mensajes).filter(Boolean).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const enviar = async () => {
+    if (enviando || (!texto.trim() && !files.length)) return;
+    setEnviando(true); setErr("");
+    try {
+      const adj = [];
+      for (const f of files) adj.push(await portalSubirArchivo(uidCliente, f));
+      const id = uid(); const ts = Date.now();
+      await fbSet(ref(fbDb, `portalClientesBuzon/${uidCliente}/mensajes/${id}`), { id, de: quien, texto: texto.trim().slice(0, 2000), adjuntos: adj, ts });
+      await fbUpdate(ref(fbDb, `portalClientesBuzon/${uidCliente}/meta`), quien === "cliente" ? { ultimoCliente: ts } : { ultimoOficina: ts, leidoOficina: ts });
+      setTexto(""); setFiles([]);
+    } catch (e) { setErr((e && e.message) || "No se pudo enviar. Inténtalo de nuevo."); }
+    setEnviando(false);
+  };
+  return (
+    <div>
+      <div className="space-y-2 mb-4 max-h-[420px] overflow-y-auto pr-1">
+        {lista.length === 0 && <p className="text-sm text-slate-400 text-center py-6">Todavía no hay mensajes.</p>}
+        {lista.map((m) => {
+          const mio = m.de === quien;
+          return (
+            <div key={m.id} className={`flex ${mio ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${mio ? "bg-[#2E8B57] text-white" : "bg-white border border-slate-200 text-slate-800"}`}>
+                <div className={`text-[10px] font-semibold mb-0.5 ${mio ? "text-white/70" : "text-slate-400"}`}>{m.de === "oficina" ? "Ecowin / Alumavel" : "Cliente"} · {portalFechaHora(m.ts)}</div>
+                {m.texto && <div className="whitespace-pre-wrap break-words">{m.texto}</div>}
+                <PortalAdjuntos adjuntos={m.adjuntos} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+        <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} maxLength={2000} placeholder={quien === "cliente" ? "Escríbenos lo que necesites…" : "Escribe al cliente…"} className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
+        <PortalSelectorArchivos files={files} setFiles={setFiles} />
+        {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+        <div className="flex justify-end">
+          <button type="button" onClick={enviar} disabled={enviando || (!texto.trim() && !files.length)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-40">
+            {enviando ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Enviar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PortalNuevaIncidencia({ uidCliente, proyectos, onHecho }) {
+  const [pid, setPid] = useState(proyectos[0] ? proyectos[0].id : "");
+  const [texto, setTexto] = useState("");
+  const [files, setFiles] = useState([]);
+  const [enviando, setEnviando] = useState(false);
+  const [err, setErr] = useState("");
+  const enviar = async () => {
+    if (enviando) return;
+    if (!pid) { setErr("Elige a qué trabajo se refiere."); return; }
+    if (texto.trim().length < 5) { setErr("Cuéntanos qué ha pasado."); return; }
+    setEnviando(true); setErr("");
+    try {
+      const adj = [];
+      for (const f of files) adj.push(await portalSubirArchivo(uidCliente, f));
+      const p = proyectos.find((x) => x.id === pid);
+      const id = uid(); const ts = Date.now();
+      await fbSet(ref(fbDb, `portalClientesBuzon/${uidCliente}/incidencias/${id}`), { id, proyectoId: pid, proyectoNombre: p ? `#${p.numero} ${p.nombre}`.slice(0, 120) : "", texto: texto.trim().slice(0, 2000), adjuntos: adj, ts, estado: "Recibida" });
+      await fbUpdate(ref(fbDb, `portalClientesBuzon/${uidCliente}/meta`), { ultimoCliente: ts });
+      onHecho();
+    } catch (e) { setErr((e && e.message) || "No se pudo enviar. Inténtalo de nuevo."); }
+    setEnviando(false);
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
+      <div className="text-sm font-bold text-slate-800">Nueva incidencia</div>
+      <select value={pid} onChange={(e) => setPid(e.target.value)} className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm">
+        {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} · {p.nombre}</option>)}
+      </select>
+      <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={4} maxLength={2000} placeholder="Qué ha pasado, en qué ventana o pieza, y si hace falta algo urgente…" className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
+      <PortalSelectorArchivos files={files} setFiles={setFiles} />
+      {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onHecho} className="text-sm font-semibold text-slate-500 px-3 py-2 hover:bg-slate-100 rounded-md">Cancelar</button>
+        <button type="button" onClick={enviar} disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-40">
+          {enviando ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Enviar incidencia
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Lo que ve el equipo en la ficha del cliente: mensajes, documentos enviados e incidencias pedidas desde el portal.
+function PortalBuzonStaff({ cliente, trabajos, onRegistrarIncidencia }) {
+  const uidC = cliente.portalAuthUid;
+  const b = usePortalBuzon(uidC);
+  const meta = (b && b.meta) || {};
+  useEffect(() => {
+    if (b && (meta.ultimoCliente || 0) > (meta.leidoOficina || 0)) fbUpdate(ref(fbDb, `portalClientesBuzon/${uidC}/meta`), { leidoOficina: Date.now() }).catch(() => {});
+  }, [b, uidC]); // eslint-disable-line
+  if (b === undefined) return null;
+  const incs = toArray(b.incidencias).filter(Boolean).sort((a, c) => (c.ts || 0) - (a.ts || 0));
+  const registrar = async (i) => {
+    if (!trabajos.some((t) => t.id === i.proyectoId)) { alert("El trabajo de esta incidencia ya no existe en el CRM."); return; }
+    const extra = toArray(i.adjuntos).filter((a) => a && portalUrlOk(a.url)).map((a) => `${a.nombre}: ${a.url}`).join("\n");
+    const num = onRegistrarIncidencia({
+      proyectoId: i.proyectoId, fecha: new Date().toISOString().slice(0, 10),
+      especificaciones: i.texto, observaciones: `Alta desde el portal del cliente.${extra ? "\n" + extra : ""}`,
+      responsableInicial: "", comercialAsociado: "", responsableActual: "",
+      estadoTrabajo: "Pendiente revisión", estadoIncidencia: "Pendiente revisión", fechaEntregaPrevista: "", fechaEntregado: "",
+    });
+    await fbUpdate(ref(fbDb, `portalClientesBuzon/${uidC}/incidencias/${i.id}`), { estado: "Registrada", numero: num }).catch(() => {});
+  };
+  return (
+    <div className="mt-6 bg-white border border-slate-200 rounded-lg p-5">
+      <h2 className="font-display text-lg font-extrabold text-slate-900 mb-1 flex items-center gap-2"><Globe size={16} className="text-sky-600" /> Portal del cliente: mensajes y documentos</h2>
+      <p className="text-xs text-slate-500 mb-4">Lo que escribas aquí lo ve el cliente en su portal. Para mandarle un presupuesto, adjunta el PDF.</p>
+      {incs.length > 0 && (
+        <div className="mb-5 space-y-2">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Incidencias pedidas por el cliente</div>
+          {incs.map((i) => (
+            <div key={i.id} className="border border-amber-200 bg-amber-50 rounded-md px-3 py-2 text-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold text-amber-800">{i.proyectoNombre || "Sin trabajo"} · {portalFechaHora(i.ts)}</div>
+                  <div className="whitespace-pre-wrap break-words text-slate-800">{i.texto}</div>
+                  <PortalAdjuntos adjuntos={i.adjuntos} />
+                </div>
+                {i.estado === "Registrada"
+                  ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Registrada #{i.numero}</Badge>
+                  : <button onClick={() => registrar(i)} className="whitespace-nowrap text-xs font-bold text-white bg-[#2E8B57] rounded px-3 py-1.5 hover:opacity-90">Registrar en el CRM</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <PortalHilo uidCliente={uidC} quien="oficina" mensajes={b.mensajes} />
+    </div>
+  );
+}
+
+const portalEstadoTrabajo = (p) =>
+  p.estadoTrabajo === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado"
+    ? ["Aceptado · pendiente de fabricar", "bg-sky-50 text-sky-700 ring-sky-200"]
+    : [p.estadoTrabajo, ESTADO_TRABAJO_STYLE[p.estadoTrabajo]];
+
+const PORTAL_MAT_ESTADO = {
+  porPedir: ["Por pedir", "bg-slate-100 text-slate-600 ring-slate-200"],
+  pedido: ["Pedido", "bg-sky-50 text-sky-700 ring-sky-200"],
+  reclamado: ["Reclamado al proveedor", "bg-amber-50 text-amber-800 ring-amber-200"],
+  recibido: ["Recibido", "bg-emerald-50 text-emerald-700 ring-emerald-200"],
+};
+
+/* ---- Portal de cliente ---- */
 
 function PortalClienteVista({ authUser, perfil, onLogout }) {
   const [d, setD] = useState(undefined);
+  const buzon = usePortalBuzon(authUser.uid);
   useEffect(() => onValue(ref(fbDb, `portalClientesDatos/${authUser.uid}`), (snap) => setD(snap.val() || {}), () => setD({})), [authUser.uid]);
   if (d === undefined) return <div className="min-h-screen flex items-center justify-center bg-[#F4F5F3]"><Loader2 className="animate-spin text-slate-400" size={20} /></div>;
-  return <ClientePortal cliente={{ nombre: perfil.nombre || "" }} proyectos={toArray(d.proyectos)} facturas={toArray(d.facturas)} incidencias={toArray(d.incidencias)} onLogout={onLogout} />;
+  return <ClientePortal cliente={{ nombre: perfil.nombre || "" }} uidCliente={authUser.uid} buzon={buzon || {}} proyectos={toArray(d.proyectos)} facturas={toArray(d.facturas)} incidencias={toArray(d.incidencias)} onLogout={onLogout} />;
 }
 
-function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) {
+function ClientePortal({ cliente, uidCliente, buzon, proyectos, facturas, incidencias, onLogout }) {
   const [tab, setTab] = useState("proyectos");
+  const [abierto, setAbierto] = useState(null);
+  const [nuevaInc, setNuevaInc] = useState(false);
+  const incsEnviadas = toArray(buzon && buzon.incidencias).filter(Boolean).sort((a, c) => (c.ts || 0) - (a.ts || 0));
+  const msgs = toArray(buzon && buzon.mensajes).filter(Boolean);
+  const docsOficina = msgs.filter((m) => m.de === "oficina").flatMap((m) => toArray(m.adjuntos).map((a) => ({ ...a, ts: m.ts }))).filter((a) => a && portalUrlOk(a.url)).sort((a, c) => (c.ts || 0) - (a.ts || 0));
 
   return (
     <div className="min-h-screen bg-[#F4F5F3]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -45790,7 +46052,8 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
           {[
             { id: "proyectos", label: `Mis trabajos (${proyectos.length})`, icon: Briefcase },
             { id: "facturas", label: `Mis facturas (${facturas.length})`, icon: Receipt },
-            { id: "incidencias", label: `Incidencias (${incidencias.length})`, icon: AlertOctagon },
+            { id: "incidencias", label: `Incidencias (${incidencias.length + incsEnviadas.length})`, icon: AlertOctagon },
+            { id: "mensajes", label: `Mensajes y documentos${msgs.length ? ` (${msgs.length})` : ""}`, icon: MessageCircle },
           ].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === t.id ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <t.icon size={14} /> {t.label}
@@ -45800,6 +46063,7 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
 
         {tab === "proyectos" && (
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            {proyectos.length > 0 && <p className="px-4 py-2 text-xs text-slate-400 bg-slate-50 border-b border-slate-100">Pulsa un trabajo para ver su material e incidencias.</p>}
             {proyectos.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-slate-400">Todavía no tienes trabajos registrados.</p>
             ) : (
@@ -45815,16 +46079,53 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
                   </tr>
                 </thead>
                 <tbody>
-                  {proyectos.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-100 last:border-0">
-                      <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                      <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}</td>
-                      <td className="px-4 py-3"><Badge className={ESTADO_PRESUPUESTO_STYLE[p.estadoPresupuesto]}>{p.estadoPresupuesto}</Badge></td>
-                      <td className="px-4 py-3"><Badge className={ESTADO_TRABAJO_STYLE[p.estadoTrabajo]}>{p.estadoTrabajo}</Badge></td>
-                      <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaEntregaPrevista)}</td>
-                    </tr>
-                  ))}
+                  {proyectos.map((p) => {
+                    const [etq, cls] = portalEstadoTrabajo(p);
+                    const mats = toArray(p.materiales);
+                    const incsP = incidencias.filter((i) => i.proyectoId === p.id);
+                    const abiertas = incsP.filter((i) => !["Entregado", "Solucionado"].includes(i.estadoIncidencia)).length;
+                    return (
+                      <React.Fragment key={p.id}>
+                        <tr onClick={() => setAbierto(abierto === p.id ? null : p.id)} className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50">
+                          <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
+                          <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{abiertas > 0 && <span className="ml-2 text-[11px] font-semibold text-amber-700">⚠ {abiertas} incidencia{abiertas === 1 ? "" : "s"}</span>}</td>
+                          <td className="px-4 py-3"><Badge className={ESTADO_PRESUPUESTO_STYLE[p.estadoPresupuesto]}>{p.estadoPresupuesto}</Badge></td>
+                          <td className="px-4 py-3"><Badge className={cls}>{etq}</Badge></td>
+                          <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
+                          <td className="px-4 py-3 text-slate-500">{fmtDate(p.fechaEntregaPrevista)}</td>
+                        </tr>
+                        {abierto === p.id && (
+                          <tr className="bg-slate-50 border-b border-slate-100">
+                            <td colSpan={6} className="px-6 py-4">
+                              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Material</div>
+                              {mats.length === 0 ? <p className="text-sm text-slate-400 mb-3">Todavía no se ha pedido material para este trabajo.</p> : (
+                                <div className="flex flex-wrap gap-2 mb-3">
+                                  {mats.map((m, i) => { const [t, c] = PORTAL_MAT_ESTADO[m.estado] || PORTAL_MAT_ESTADO.porPedir; return (
+                                    <span key={i} className="inline-flex items-center gap-1.5 text-sm bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+                                      <span className="font-medium text-slate-700">{m.tipo}</span>
+                                      <Badge className={c}>{t}</Badge>
+                                      {m.llegada && m.estado !== "recibido" && <span className="text-xs text-slate-500">llega aprox. {fmtDate(m.llegada)}</span>}
+                                    </span>
+                                  ); })}
+                                </div>
+                              )}
+                              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Incidencias de este trabajo</div>
+                              {incsP.length === 0 ? <p className="text-sm text-slate-400">Ninguna.</p> : (
+                                <div className="flex flex-wrap gap-2">
+                                  {incsP.map((i) => (
+                                    <span key={i.id} className="inline-flex items-center gap-1.5 text-sm bg-white border border-slate-200 rounded-md px-2.5 py-1.5">
+                                      <span className="font-mono-num text-slate-500">#{i.numero}</span> <span className="text-slate-500">{fmtDate(i.fecha)}</span>
+                                      <Badge className={ESTADO_INCIDENCIA_STYLE[i.estadoIncidencia]}>{i.estadoIncidencia}</Badge>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             )}
@@ -45871,6 +46172,25 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
         )}
 
         {tab === "incidencias" && (
+          <div>
+            {nuevaInc
+              ? <PortalNuevaIncidencia uidCliente={uidCliente} proyectos={proyectos} onHecho={() => setNuevaInc(false)} />
+              : proyectos.length > 0 && <button onClick={() => setNuevaInc(true)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md mb-4"><Plus size={14} /> Avisar de una incidencia</button>}
+            {incsEnviadas.length > 0 && (
+              <div className="bg-white border border-slate-200 rounded-lg mb-4 divide-y divide-slate-100">
+                <div className="px-4 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-500 bg-slate-50 rounded-t-lg">Avisos que has enviado</div>
+                {incsEnviadas.map((i) => (
+                  <div key={i.id} className="px-4 py-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-slate-500">{i.proyectoNombre} · {portalFechaHora(i.ts)}</span>
+                      <Badge className={i.estado === "Registrada" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-amber-200"}>{i.estado === "Registrada" ? `En gestión · #${i.numero}` : "Recibida"}</Badge>
+                    </div>
+                    <div className="whitespace-pre-wrap break-words text-slate-700 mt-1">{i.texto}</div>
+                    <PortalAdjuntos adjuntos={i.adjuntos} />
+                  </div>
+                ))}
+              </div>
+            )}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             {incidencias.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-slate-400">No tienes incidencias registradas.</p>
@@ -45894,6 +46214,19 @@ function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) 
                 </tbody>
               </table>
             )}
+          </div>
+          </div>
+        )}
+
+        {tab === "mensajes" && (
+          <div>
+            {docsOficina.length > 0 && (
+              <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Documentos que te hemos enviado</div>
+                <PortalAdjuntos adjuntos={docsOficina} />
+              </div>
+            )}
+            <PortalHilo uidCliente={uidCliente} quien="cliente" mensajes={buzon && buzon.mensajes} />
           </div>
         )}
       </main>
