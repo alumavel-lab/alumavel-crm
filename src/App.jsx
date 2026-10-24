@@ -14271,7 +14271,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                 return (
                 <React.Fragment key={c.id}>
                 <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"}{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
                     {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
                     {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
@@ -15150,6 +15150,16 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
   );
 }
 
+// Cambiar el nº de caballete (lote) de uno ya creado. Avisa si ya existe otro con ese número.
+const cambiarNumeroCaballete = (cristal, todos, onUpdate) => {
+  const nuevo = window.prompt(`Nº de caballete (ahora: ${cristal.lote || "sin número"}). Escribe el nuevo número:`, cristal.lote || "");
+  if (nuevo == null) return;
+  const n = String(nuevo).trim();
+  if (!n || n === String(cristal.lote || "").trim()) return;
+  const repetido = toArray(todos).some((o) => o.id !== cristal.id && String(o.lote || "").trim().toLowerCase() === n.toLowerCase());
+  if (repetido && !window.confirm(`Ya hay otro caballete con el número ${n}. ¿Lo pongo igualmente (quedarán dos con el mismo número)?`)) return;
+  onUpdate(cristal.id, { lote: n });
+};
 function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onMoverTaller, onUpdate, todos }) {
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
@@ -15167,7 +15177,7 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
           {cristalesEnHueco.map((cristal) => (
             <div key={cristal.id} className="border border-slate-200 rounded-md p-3">
               <div className="text-sm text-slate-600 space-y-1 mb-2">
-                <p><b>Nº caballete:</b> {cristal.lote || "—"}</p>
+                <p><b>Nº caballete:</b> {cristal.lote || "—"} <button onClick={() => cambiarNumeroCaballete(cristal, todos, onUpdate)} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar número</button></p>
                 <p><b>Nº pedido:</b> {cristal.secuencia || "—"}</p>
                 <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
                 <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
