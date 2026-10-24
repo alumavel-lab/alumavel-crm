@@ -5757,7 +5757,8 @@ export default function App() {
             },
             pinReorganizarHash: (configVentanas && configVentanas.pinReorganizarHash) || "",
             esAdmin: isAdmin,
-            materialesPrep: materiales, pedidosPrep: pedidos, ubicarMaterialesLote,
+            materialesPrep: materiales, pedidosPrep: pedidos, ubicarMaterialesLote, etiquetasSinObraPrep: etiquetasSinObra,
+            quienPrep: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "",
             puestosPrep: (currentUser && currentUser.puestosPrep) || [],
             puedeGestionarPrep: isAdmin || !!(currentUser && currentUser.responsablePedidos),
             huecosTrabajo: (configVentanas && configVentanas.huecosTrabajoCristales) || 6,
@@ -42574,11 +42575,14 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
       {ve("auxiliares") && vv("auxiliares") && (
         <div className="bg-white border border-slate-200 rounded-xl p-5">
           <h4 className="font-semibold text-slate-800 text-sm mb-1">Auxiliares</h4>
-          <p className="text-xs text-slate-500 mb-3">Las pegatinas y el control de los auxiliares se hacen en Línea (pistola) → Auxiliares. Aquí marcas que los de este periodo están preparados, o avisas si falta algo.</p>
+          <p className="text-xs text-slate-500 mb-3">Aquí abajo están las guías de persiana, solapes, inversores y demás auxiliares: lo que falta por cortar por obra, con sus referencias, la pegatina y dónde dejarlos. Cuando estén todos, márcalos preparados o avisa si falta algo.</p>
           <div className="flex flex-wrap items-center gap-3">
             {hechoSimple("aux", "ok") ? <span className="text-sm font-semibold text-emerald-700">✓ Auxiliares preparados · {(hechoSimple("aux", "ok").por || "").split("@")[0]} · {hora(hechoSimple("aux", "ok").en)}</span> : null}
             <button onClick={() => tickSimple("aux/ok")} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${hechoSimple("aux", "ok") ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{hechoSimple("aux", "ok") ? "Quitar" : "Auxiliares preparados"}</button>
             {celdaFalta("aux", { puesto: "auxiliares", titulo: "Auxiliares", detalle: `Periodo ${clave}`, obras: obras.map((x) => x.obra.nombre).join(", "), pedido: "" })}
+          </div>
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <AuxiliaresLinea proyectos={toArray(ctx.proyectos)} uxExpedientes={toArray(ctx.uxExpedientes)} sinObra={toArray(ctx.etiquetasSinObraPrep)} quien={ctx.quienPrep || ""} admin={!!ctx.esAdmin} />
           </div>
         </div>
       )}
