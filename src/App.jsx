@@ -24665,6 +24665,159 @@ function UxcEnvio({ exp, guardar }) {
   );
 }
 
+// ---------- RESUMEN PARA FÁBRICA + COMPROBAR CONTRA EL PRESUPUESTO ----------
+// Una sola hoja, lo mínimo que necesita fábrica de cada ventana.
+function uxcFilaFabrica(exp, v) {
+  const o = uxcObs(v);
+  const vi = uxcVid(exp, v);
+  const extras = [
+    o.persiana ? `Persiana${o.cajonTipo ? " " + o.cajonTipo : ""}${v.cajon ? " " + v.cajon : ""}${v.guia ? " · guía " + v.guia : ""}` : "",
+    o.mosquitera ? `Mosquitera${v.mosqMedida ? " " + v.mosqMedida : ""}` : "",
+    o.oscilo ? "Oscilobatiente" : "", o.cerradura ? "Cerradura" : "", o.frailero ? "Frailero" : "", o.dobleManilla ? "Doble manilla" : "",
+    o.vidrioTraslucido ? "Vidrio traslúcido" : "", o.controlSolar ? "Control solar" : "", o.obra ? "Lleva obra" : "",
+    v.solape ? `Solape ${v.solape}${v.anchoSolape ? "/" + v.anchoSolape : ""}` : "",
+  ].filter(Boolean);
+  const medida = v.anchoFab && v.altoFab ? `${v.anchoFab} × ${uxcAltoTxt(v)}` : "";
+  const vid = uxcEsPuerta(v) ? "" : [vi.ext && `${vi.ext}`, vi.camara && `${vi.camara}${vi.gas ? " " + vi.gas : ""}`, vi.int && `${vi.int}`, vi.be && "BE", vi.cs && vi.cs].filter(Boolean).join("/");
+  return { v, medida, extras, vid, mano: uxcManoTexto(v) };
+}
+function uxcHojaFabricaHTML(exp) {
+  const cab = exp.cab || {};
+  const vs = uxcLista(exp.ventanas).filter((v) => !v.rechazada);
+  const filas = vs.map((v) => uxcFilaFabrica(exp, v));
+  const cuenta = (f) => filas.filter(f).length;
+  const sinMedida = filas.filter((f) => !f.medida).length;
+  const filasHtml = filas.map((f) => `<tr><td><b>${escapeHtml(f.v.ref)}</b><br>${escapeHtml(f.v.estancia || "")}</td><td>${escapeHtml(f.v.tipo || "")}<br>${escapeHtml(f.v.material || "")}</td><td class="c">${f.medida ? "<b>" + escapeHtml(f.medida) + "</b>" : "<span class='mal'>PENDIENTE</span>"}</td><td>${escapeHtml(f.mano || "")}</td><td>${escapeHtml(f.vid)}</td><td>${f.extras.map(escapeHtml).join("<br>")}</td><td>${escapeHtml(f.v.obs || "")}</td></tr>`).join("");
+  return `<div class="hoja"><h1>RESUMEN PARA FÁBRICA</h1>
+  <div class="caja" style="margin-bottom:6px"><b>${escapeHtml(cab.expediente || "")}</b> · ${escapeHtml(cab.direccion || "")}${cab.cliente ? " · " + escapeHtml(cab.cliente) : ""} · Color: <b>${escapeHtml(cab.color || "")}</b></div>
+  ${sinMedida ? `<div class="aviso">⚠ Faltan medidas de fabricación en ${sinMedida} ventana(s).</div>` : ""}
+  <table class="t"><tr><th>Ref. / estancia</th><th>Tipo / color</th><th>Medida (mm)</th><th>Mano</th><th>Vidrio</th><th>Lleva</th><th>Obs.</th></tr>${filasHtml}</table>
+  <div class="caja" style="margin-top:6px"><b>TOTAL:</b> ${filas.length} ventana(s)/puerta(s) · Persianas: <b>${cuenta((f) => uxcObs(f.v).persiana)}</b> · Mosquiteras: <b>${cuenta((f) => uxcObs(f.v).mosquitera)}</b> · Oscilobatientes: <b>${cuenta((f) => uxcObs(f.v).oscilo)}</b> · Cerraduras: <b>${cuenta((f) => uxcObs(f.v).cerradura)}</b></div></div>`;
+}
+function uxcTextoFabrica(exp) {
+  const cab = exp.cab || {};
+  const filas = uxcLista(exp.ventanas).filter((v) => !v.rechazada).map((v) => uxcFilaFabrica(exp, v));
+  return [`RESUMEN PARA FÁBRICA — ${cab.expediente || ""} · ${cab.direccion || ""}`, ...filas.map((f) => `${f.v.ref} ${f.v.estancia || ""} · ${f.v.tipo || ""} ${f.v.material || ""} · ${f.medida || "MEDIDA PENDIENTE"}${f.mano ? " · " + f.mano : ""}${f.extras.length ? " · " + f.extras.join(", ") : ""}`), `Total: ${filas.length}`].join("\n");
+}
+// Lo que el presupuesto debería llevar según lo medido, por clases de accesorio.
+const UXC_CLASES_PPTO = [
+  ["persiana", "Persiana / cajón", /persian|caj[oó]n|monoblock|compacto/i, (o) => !!o.persiana],
+  ["mosquitera", "Mosquitera", /mosquit/i, (o) => !!o.mosquitera],
+  ["oscilo", "Oscilobatiente", /oscilo/i, (o) => !!o.oscilo],
+  ["cerradura", "Cerradura", /cerradura|cerrojo/i, (o) => !!o.cerradura],
+  ["frailero", "Frailero", /frailer/i, (o) => !!o.frailero],
+  ["dobleManilla", "Doble manilla", /doble\s*manilla|manilla\s*doble/i, (o) => !!o.dobleManilla],
+  ["vidrioTraslucido", "Vidrio traslúcido", /transl[uú]c|mate\b|satinado/i, (o) => !!o.vidrioTraslucido],
+  ["controlSolar", "Control solar", /control\s*solar|solar/i, (o) => !!o.controlSolar],
+  ["tapajuntas", "Tapajuntas", /tapajunt/i, null],
+];
+async function leerLineasPresupuesto(file) {
+  const prompt = [
+    "Esto es un PRESUPUESTO de ventanas (de un programa de ventanas o similar). Puede venir en PDF, Excel o Word. Revisa TODO el documento.",
+    "Responde SOLO con líneas de texto, sin explicaciones ni JSON ni ```. Separa los campos con | y no uses | dentro de los textos.",
+    "UNA línea por cada concepto del presupuesto: L|posicion|concepto|uds",
+    "- posicion: la referencia de la ventana o puerta tal como figura (p.ej. V02/004, V02, P01) si el concepto es de una ventana concreta; vacío si es general de toda la obra.",
+    "- concepto: la descripción. Si la descripción de una ventana incluye accesorios (persiana o cajón, mosquitera, oscilobatiente, cerradura, tapajuntas, guías, manilla doble, vidrio traslúcido, control solar…), saca CADA accesorio en su propia línea con la misma posición.",
+    "- uds: unidades como número (si no pone, 1).",
+    "Ejemplo: L|V02/004|Ventana abatible 2H PVC blanco|1",
+    "L|V02/004|Mosquitera enrollable|1",
+  ].join("\n");
+  const esPdf = /\.pdf$/i.test(file.name || "") || file.type === "application/pdf";
+  const paginas = esPdf ? await dividirPdfEnTrozos(file, 1) : null;
+  let texto = "";
+  if (paginas && paginas.length) {
+    for (let i = 0; i < paginas.length; i++) {
+      let t = "", err = null;
+      for (let k = 0; k < 2 && !t; k++) { try { t = await pedirTextoIAEnSegundoPlano(paginas[i].archivo, prompt, 16000); } catch (e) { err = e; } }
+      if (!t && i === 0) throw err || new Error("la IA no ha devuelto nada");
+      texto += "\n" + (t || "");
+    }
+  } else texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000);
+  const out = [];
+  texto.split(/\r?\n/).forEach((fila) => {
+    const c = fila.split("|").map((x) => x.trim());
+    if (c[0] === "L" && c[2]) out.push({ pos: c[1] || "", concepto: c[2], uds: parseFloat(String(c[3] || "1").replace(",", ".")) || 1 });
+  });
+  if (!out.length) throw new Error("no he encontrado líneas en ese presupuesto");
+  return out;
+}
+function uxcCompararPresupuesto(exp, lineas) {
+  const vs = uxcLista(exp.ventanas).filter((v) => !v.rechazada);
+  const hayPos = lineas.some((l) => l.pos);
+  const resultado = [];
+  UXC_CLASES_PPTO.forEach(([id, nombre, re, f]) => {
+    const delPpto = lineas.filter((l) => re.test(l.concepto));
+    const uds = delPpto.reduce((a, l) => a + l.uds, 0);
+    let medido = null, faltan = [], sobran = [];
+    if (f) {
+      const con = vs.filter((v) => f(uxcObs(v)));
+      medido = con.length;
+      if (hayPos) {
+        const posPpto = (v) => delPpto.filter((l) => l.pos && (uxcNorm(l.pos) === uxcNorm(v.ref) || uxcNorm(v.ref).startsWith(uxcNorm(l.pos)) && uxcNorm(l.pos).length >= 3));
+        con.forEach((v) => { if (!posPpto(v).length) faltan.push(v.ref); });
+        vs.filter((v) => !f(uxcObs(v))).forEach((v) => { if (posPpto(v).length) sobran.push(v.ref); });
+      }
+    } else {
+      // Tapajuntas: no se mide por ventana; se mira lo marcado en imprevistos de la hoja de medición.
+      let marcados = 0;
+      UXC_IMPREVISTOS.filter((i) => /tapajunt/i.test(i.t)).forEach((i) => { const m = (exp.imprevistos || {})[uxcKeyImp(i.cod)]; if (m) Object.keys(m).forEach((k) => { if (m[k]) marcados += 1; }); });
+      medido = marcados;
+    }
+    if (medido === 0 && uds === 0) return;
+    const estado = !hayPos && medido !== null && uds < medido ? "falta" : faltan.length ? "falta" : !hayPos && medido === 0 && uds > 0 ? "revisar" : sobran.length ? "revisar" : medido === null ? (uds === 0 ? "revisar" : "ok") : (uds === 0 && medido > 0 ? "falta" : "ok");
+    resultado.push({ id, nombre, medido, uds, faltan, sobran, estado });
+  });
+  return { fecha: Date.now(), lineas: lineas.length, hayPos, resultado };
+}
+function UxcResumenFabrica({ exp, guardar }) {
+  const [leyendo, setLeyendo] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+  const cab = exp.cab || {};
+  const comp = exp.comprobacionPpto || null;
+  const items = comp ? toArray(comp.resultado) : [];
+  const subir = async (file) => {
+    if (!file) return;
+    setLeyendo(true); setErr("");
+    try {
+      const lineas = await leerLineasPresupuesto(file);
+      const r = uxcCompararPresupuesto(exp, lineas);
+      guardar("comprobacionPpto", { ...r, archivo: file.name, resultado: r.resultado.map((x) => ({ ...x, faltan: x.faltan.join(", "), sobran: x.sobran.join(", ") })) });
+    } catch (e) { setErr("No he podido leer el presupuesto: " + ((e && e.message) || e)); }
+    finally { setLeyendo(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+  const texto = uxcTextoFabrica(exp);
+  const asunto = `Resumen para fábrica ${cab.expediente || ""}`;
+  const col = { ok: "text-emerald-700", falta: "text-rose-700 font-bold", revisar: "text-amber-700 font-semibold" };
+  const ico = { ok: "✓ OK", falta: "✕ FALTA en el presupuesto", revisar: "⚠ Revisar" };
+  const problemas = items.filter((x) => x.estado !== "ok").length;
+  return (
+    <div className="mb-4 bg-white border border-slate-200 rounded-lg p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => uxcAbrirImpresion(asunto, uxcHojaFabricaHTML(exp))} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md bg-[#2E8B57] text-white"><Printer size={14} /> Resumen para fábrica (PDF)</button>
+        <a href={`mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(texto.slice(0, 1800))}`} className="text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50">Enviar por correo</a>
+        <a href={`https://wa.me/?text=${encodeURIComponent(texto.slice(0, 3500))}`} target="_blank" rel="noreferrer" className="text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50">WhatsApp</a>
+        <span className="mx-1 text-slate-300">|</span>
+        <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.doc,.docx" className="hidden" onChange={(e) => subir(e.target.files[0])} />
+        <button disabled={leyendo} onClick={() => fileRef.current && fileRef.current.click()} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md border-2 border-[#2E8B57] text-[#2E8B57] disabled:opacity-60">{leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo el presupuesto…" : comp ? "Comprobar otro presupuesto" : "Meter el presupuesto y comprobar"}</button>
+      </div>
+      <p className="text-[11px] text-slate-400 mt-1.5">El resumen es una hoja corta (una fila por ventana). Si es largo, el correo y el WhatsApp llevan solo el principio: manda el PDF. Para guardar PDF, en la ventana de impresión elige «Guardar como PDF».</p>
+      {err && <div className="mt-2 text-sm text-rose-600">{err}</div>}
+      {comp && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <div className="text-sm font-bold text-slate-800 mb-1">Medición contra presupuesto{comp.archivo ? ` (${comp.archivo})` : ""}: {problemas ? <span className="text-rose-700">{problemas} cosa(s) a revisar</span> : <span className="text-emerald-700">todo cuadra</span>}</div>
+          {!comp.hayPos && <div className="text-xs text-amber-700 mb-1">El presupuesto no trae las ventanas por posición: solo he podido comparar totales, no ventana a ventana.</div>}
+          <table className="w-full text-xs"><thead className="text-slate-500 text-left"><tr><th className="py-1">Concepto</th><th>Medido</th><th>En presupuesto</th><th>Resultado</th></tr></thead><tbody>
+            {items.map((x) => (
+              <tr key={x.id} className="border-t border-slate-100"><td className="py-1.5 font-semibold text-slate-700">{x.nombre}</td><td>{x.medido === null ? "—" : x.medido}</td><td>{x.uds}</td>
+                <td className={col[x.estado]}>{ico[x.estado]}{x.faltan ? <span className="font-normal"> · sin él: {x.faltan}</span> : null}{x.sobran ? <span className="font-normal"> · lo lleva y no se midió: {x.sobran}</span> : null}{x.id === "tapajuntas" ? <span className="font-normal text-slate-500"> · en la medición se mira lo marcado en Imprevistos</span> : null}</td></tr>))}
+          </tbody></table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UxcExpediente({ exp, onBack }) {
   const propia = !!exp.propia;
   const [tab, setTab] = useState(exp.propia ? "ventanas" : "plano");
@@ -24695,6 +24848,7 @@ function UxcExpediente({ exp, onBack }) {
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
       </div>
       <UxcEnvio exp={exp} guardar={guardar} />
+      <UxcResumenFabrica exp={exp} guardar={guardar} />
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
         {propia
           ? <><T k="ventanas">Ventanas ({vs.length})</T><T k="resumen">Datos de la obra</T><T k="imprimir">Imprimir</T></>
