@@ -5506,7 +5506,7 @@ export default function App() {
         )}
         {modulo === "incfabrica" && veFabrica && (
           <div className="p-4 sm:p-8 max-w-4xl">
-            <Header icon={<AlertOctagon size={20} className="text-[#2E8B57]" />} title="Incidencias de fábrica" subtitle="Avisos internos de los puestos. Hay que resolverlas en menos de 1 hora" />
+            <Header icon={<AlertOctagon size={20} className="text-[#2E8B57]" />} title="Incidencias de fábrica" manualKey="incidenciasFabrica" subtitle="Avisos internos de los puestos. Hay que resolverlas en menos de 1 hora" />
             <IncidenciasFabricaModulo
               incidencias={incidenciasFabrica} usuarios={usuarios} currentUser={currentUser} isAdmin={isAdmin}
               onAsignar={asignarIncFab} onResolver={resolverIncFab} onReabrir={reabrirIncFab}
@@ -5860,13 +5860,13 @@ export default function App() {
           )}
           {modulo === "prepmaterial" && (
             <div className="p-4 sm:p-8 max-w-5xl">
-              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Preparación de material" subtitle="El material de las obras del día o de la semana, junto" />
+              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Preparación de material" manualKey="prepMaterial" subtitle="El material de las obras del día o de la semana, junto" />
               <PuestoPreparacionMaterial cristales={cristales} onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }} />
             </div>
           )}
           {modulo === "lineapistola" && (
             <div className="p-4 sm:p-8 max-w-4xl">
-              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" subtitle="Puesto, almacén de ventanas y estanterías, todo en un sitio" />
+              <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Línea (pistola)" manualKey="lineaPistola" subtitle="Puesto, almacén de ventanas y estanterías, todo en un sitio" />
               <LineaModulo
                 proyectos={proyectos} uxExpedientes={uxExpedientes} etiquetasSinObra={etiquetasSinObra}
                 quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
@@ -6258,6 +6258,7 @@ const MANUALES = {
       "Un proyecto normalmente nace de un presupuesto aceptado (desde la pestaña Presupuestos), pero también puedes crear uno directamente con el botón de nuevo proyecto.",
       "Dentro de la ficha de un proyecto tienes varias pestañas: Datos, Artículos usados, Presupuesto vs Real (compara lo presupuestado con lo gastado), Gastos asociados, Registro horario, Pagos/Facturas, Pedidos de materiales, \"Qué lleva la obra\" (checklist), \"Despiece de techos\" (si la obra tiene techos calculados), \"Control de persianas\" (si tiene persianas) e Historial.",
       "Desde aquí también puedes generar el pedido de materiales de un proyecto directamente hacia Pedidos.",
+      "DOCUMENTOS: dentro de la obra, en Pedidos → «Subir documentos de la obra», se suben todos a la vez. Al crear el proyecto: presupuesto, análisis de materiales (obligatorio), listado de mano de obra (obligatorio), listado de dibujos, cristales y persianas. Al sacar a fabricar y hacer el lote: hoja de corte y etiquetas de la línea (antes no existen). Mismo nº de presupuesto y versión en todos, y nunca el mismo documento en dos sitios.",
     ],
   },
   proveedores: {
@@ -6308,6 +6309,7 @@ const MANUALES = {
       "\"Planning\": se eligen las obras de la semana por taller, con listas por color y ticks de lo ya preparado.",
       "\"Salidas\": obras listas para salir, con dónde está cada caballete. El chófer firma al cargar y el cliente al recibir; en las firmas el DNI es OBLIGATORIO (el nombre no).",
       "Albarán de entrega: lleva el tipo plano (dibujos de las ventanas). Si el archivo no se puede mostrar o adjuntar, el CRM lo avisa pero deja firmar.",
+      "DOCUMENTOS: si una obra no sale bien aquí es que le falta algún documento. Al crear el proyecto se suben presupuesto, análisis de materiales, mano de obra, dibujos, cristales y persianas. La hoja de corte y las etiquetas de la línea solo existen al sacar a fabricar y hacer el lote.",
       "En la mayoría de pestañas puedes descargar esa vista como documento Word.",
     ],
   },
@@ -6415,6 +6417,69 @@ const MANUALES = {
     puntos: [
       "Control horario de los empleados: fichar entrada, salida, y pausas.",
       "Como administrador puedes ver y corregir los fichajes de todos los empleados.",
+    ],
+  },
+  incidenciasFabrica: {
+    puntos: [
+      "Aquí salen los avisos internos de los puestos de fábrica (falta material, cristal roto, problema en una ventana…). Cada incidencia hay que resolverla en menos de 1 hora.",
+      "Pulsa «Resolver» cuando esté arreglada. Si no es tuya, avisa a quien corresponda desde el chat.",
+      "Para avisar tú de un problema, usa el botón rojo «Incidencia» que sale abajo a la derecha en cualquier pantalla.",
+    ],
+  },
+  prepMaterial: {
+    puntos: [
+      "Aquí preparas el material de las obras que empiezan el día (o la semana) elegido, según el planning confirmado. Si cambia el planning, tiene que estar publicado para que salga aquí.",
+      "Los cuadrados de arriba filtran por puesto: Perfiles · Herraje y accesorios · Cristales · Compactos · Auxiliares. Cada persona ve solo los que le ha dado el administrador.",
+      "Perfiles y herraje: misma referencia y color = una sola línea. Marca cada línea cuando la saques del almacén. En perfiles, saca también la barra de margen por roturas que sale entre paréntesis. A la derecha ves dónde está; si la ubicación está mal, pulsa «cambiar».",
+      "Si falta material, pulsa «Falta»: le llega un aviso urgente al responsable de pedidos. Si no hay pedido hecho, sale «SIN PEDIDO».",
+      "Material suelto sin sitio: «Ubicar material suelto con una foto». Haz la foto con las etiquetas de frente y se coloca en un almacén de una vez.",
+      "Cuando todo esté preparado, pulsa «Preparado» en la lista (o en la obra, en cristales y compactos).",
+      "DOCUMENTOS: si arriba sale un recuadro rojo «Faltan documentos», es que a una obra le falta el análisis de materiales o su hoja de corte. Sin ellos no sale qué material y qué auxiliares lleva. Avisa a oficina para que los suban. La hoja de corte solo existe cuando la obra ya está sacada a fabricar y tiene lote: antes no se puede subir.",
+      "Auxiliares: aquí salen las guías de persiana, solapes, inversores y demás perfiles que se cortan aparte. Salen de la hoja de corte: si una obra no sale, es que su hoja no está subida.",
+    ],
+  },
+  lineaPistola: {
+    puntos: [
+      "Aquí trabaja el puesto de la línea con la pistola: pasa la pistola por la etiqueta de una ventana y te dice qué es y dónde va.",
+      "Incluye el almacén de ventanas (caballetes), las estanterías y el botón «Auxiliares» con las pegatinas de los perfiles que se cortan en la doble cabeza.",
+      "Para que la pistola reconozca una ventana hacen falta las etiquetas de la línea de esa obra, y para los auxiliares su hoja de corte. Las dos aparecen cuando la obra se saca a fabricar y se hace el lote: antes no se pueden subir.",
+      "Si una ventana no se reconoce o falta algo, usa el botón rojo «Incidencia».",
+    ],
+  },
+  albaranes: {
+    puntos: [
+      "Aquí están todos los albaranes de fábrica para firmar desde el móvil: reparto, recogida y salidas.",
+      "El chófer firma al cargar y el cliente al recibir. En las firmas el DNI es obligatorio (el nombre no).",
+      "El albarán de entrega lleva el tipo plano (dibujos de las ventanas). Si no se puede adjuntar, el CRM avisa pero deja firmar.",
+      "Si no sale el tipo plano, falta subir el listado de dibujos de la obra: se sube con el resto de documentos de la obra.",
+    ],
+  },
+  planningMontajes: {
+    puntos: [
+      "Aquí ves las obras ya fabricadas, listas para instalar, repartidas por días según las horas de montaje.",
+      "Una obra solo se reparte bien si tiene sus horas. Las horas salen del listado de mano de obra de la obra; si falta, el CRM las calcula con el recuento de ventanas y puede fallar.",
+    ],
+  },
+  miPuesto: {
+    puntos: [
+      "Aquí ves tus obras de hoy, puedes fichar y enviar partes.",
+      "Si algo no coincide con lo que tienes que hacer, avisa con el botón rojo «Incidencia».",
+    ],
+  },
+  uxcarGestion: {
+    puntos: [
+      "Aquí ves los expedientes que mete Uxcar desde su portal, con sus pedidos, su stock y sus almacenes.",
+      "Para fabricar un expediente de Uxcar hacen falta el listado de vidrios y la hoja de corte. Con ellos solo, usa «Expediente rápido». La hoja de corte la tienen cuando el pedido ya está lanzado.",
+      "Tanto aquí como en el resto de módulos, nunca subas el mismo documento en dos sitios.",
+    ],
+  },
+  documentosObra: {
+    puntos: [
+      "DOCUMENTOS DE UNA OBRA (se suben todos a la vez, con un solo botón, en la ficha del proyecto → Pedidos → «Subir documentos de la obra»):",
+      "Al crear el proyecto: presupuesto · análisis de materiales (obligatorio) · listado de mano de obra (obligatorio; da las horas) · listado de dibujos / tipo plano · listado de cristales · listado de persianas (solo si lleva persiana).",
+      "Al sacar a fabricar y hacer el lote: hoja de corte (la usan los auxiliares y la pistola) y etiquetas de la línea. Antes de eso no se pueden subir.",
+      "Comprueba que todos los PDF tengan el mismo nº de presupuesto y la misma versión. Nunca subas lo mismo en dos sitios.",
+      "Encima del botón está la lista «Documentos de la obra»: ✓ lo que está, ✗ lo que falta.",
     ],
   },
   administracion: {
@@ -20337,7 +20402,7 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
 
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
-      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
+      <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
         {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
@@ -26076,6 +26141,17 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
     else if (ev.type === "incidencia") openIncidencia(ev.id);
   };
 
+  const [arrastrando, setArrastrando] = useState(null);
+  const [encima, setEncima] = useState("");
+  const soltarEn = (diaDestino) => {
+    const ev = arrastrando;
+    setArrastrando(null); setEncima("");
+    if (!ev || !diaDestino || ev.dia === diaDestino) return;
+    const txt = new Date(diaDestino + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+    if (!window.confirm(`¿Mover «${ev.label}» al ${txt}?`)) return;
+    cambiarFecha(ev, diaDestino);
+    setSelectedDay(diaDestino);
+  };
   const cambiarFecha = (ev, nuevaFecha) => {
     if (ev.type.startsWith("proyecto_")) onCambiarFechaProyecto(ev.id, ev.campo, nuevaFecha);
     else if (ev.type === "pedido") onCambiarFechaPedido(ev.id, ev.campo, nuevaFecha);
@@ -26147,11 +26223,15 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
                 const isToday = key === todayKey;
                 const isSelected = key === selectedDay;
                 return (
-                  <button
+                  <div
                     key={di}
+                    role="button" tabIndex={0}
                     onClick={() => setSelectedDay(key)}
-                    className={`min-h-[92px] border-r border-slate-100 last:border-0 p-1.5 text-left align-top flex flex-col gap-1 transition ${
-                      isSelected ? "bg-[#EAF1F8]" : "hover:bg-slate-50"
+                    onDragOver={(e) => { if (arrastrando) { e.preventDefault(); if (encima !== key) setEncima(key); } }}
+                    onDragLeave={() => { if (encima === key) setEncima(""); }}
+                    onDrop={(e) => { e.preventDefault(); soltarEn(key); }}
+                    className={`min-h-[92px] border-r border-slate-100 last:border-0 p-1.5 text-left align-top flex flex-col gap-1 transition cursor-pointer ${
+                      encima === key ? "bg-emerald-100 ring-2 ring-inset ring-[#2E8B57]" : isSelected ? "bg-[#EAF1F8]" : "hover:bg-slate-50"
                     }`}
                   >
                     <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-mono-num ${isToday ? "bg-[#2E8B57] text-white font-bold" : "text-slate-500"}`}>
@@ -26159,13 +26239,13 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
                     </span>
                     <div className="flex flex-col gap-0.5">
                       {evs.slice(0, 2).map((ev, i) => (
-                        <span key={i} className={`text-[10px] px-1 py-0.5 rounded truncate ring-1 ${ev.badge}`} title={ev.label}>
+                        <span key={i} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", ev.label); } catch (er) { /* */ } setArrastrando({ ...ev, dia: key }); }} onDragEnd={() => { setArrastrando(null); setEncima(""); }} className={`text-[10px] px-1 py-0.5 rounded truncate ring-1 cursor-grab ${ev.badge}`} title={`${ev.label} — arrástralo a otro día para cambiarle la fecha`}>
                           {ev.label}
                         </span>
                       ))}
                       {evs.length > 2 && <span className="text-[10px] text-slate-400 px-1">+{evs.length - 2} más</span>}
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -26182,7 +26262,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
           ) : (
             <div className="space-y-2">
               {selectedEvents.map((ev, i) => (
-                <div key={i} className={`rounded-md ring-1 text-sm ${ev.badge}`}>
+                <div key={i} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", ev.label); } catch (er) { /* */ } setArrastrando({ ...ev, dia: selectedDay }); }} onDragEnd={() => { setArrastrando(null); setEncima(""); }} className={`rounded-md ring-1 text-sm cursor-grab ${ev.badge}`}>
                   <div className="flex items-center gap-1">
                     <button onClick={() => openEvent(ev)} className="flex-1 text-left px-3 py-2.5 hover:opacity-80 transition">
                       {ev.label}
@@ -39749,7 +39829,7 @@ function PlanningMontajes({ instalaciones, proyectos, clientes, pedidos = [], co
   return (
     <div className="p-4 sm:p-8 max-w-6xl space-y-5">
       <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
-      <Header icon={<CalendarDays size={20} className="text-[#2E8B57]" />} title="Planning de montajes" subtitle="Obras fabricadas para instalar, repartidas por días según las horas de montaje" />
+      <Header icon={<CalendarDays size={20} className="text-[#2E8B57]" />} title="Planning de montajes" manualKey="planningMontajes" subtitle="Obras fabricadas para instalar, repartidas por días según las horas de montaje" />
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-end gap-4">
         <Field label="Montadores"><TextInput type="number" min="1" defaultValue={montadores} onBlur={(e) => guardarCfg({ montadores: parseFloat(e.target.value) || 1 })} className="!w-20" /></Field>
         <Field label="Horas al día por montador"><TextInput type="number" min="1" step="0.5" defaultValue={horasPersona} onBlur={(e) => guardarCfg({ horasDia: parseFloat(e.target.value) || 8 })} className="!w-24" /></Field>
@@ -42552,7 +42632,8 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
           const nombre = x.obra.nombre || k;
           const sinAnalisis = !toArray(lis && lis.lineas).length && !toArray(x.obra.lineas).length;
           const ppto = digitosPresu(lis && lis.numero) || digitosPresu(pr && pr.presupuestoNumero);
-          const sinHoja = !ppto || !(hojasAuxP && hojasAuxP[ppto]);
+          const conLote = toArray((pr && pr.etiquetasFab) || (ex && ex.etiquetasFab)).length > 0;
+          const sinHoja = conLote && (!ppto || !(hojasAuxP && hojasAuxP[ppto]));
           if (sinAnalisis || sinHoja) falta.push({ nombre, sinAnalisis, sinHoja, ppto });
         });
         if (!falta.length) return null;
@@ -43150,7 +43231,7 @@ function MiPuesto({ sinFichar = false, currentUser, usuarios, config, proyectos,
   if (!puesto) {
     return (
       <div className="p-4 sm:p-8 max-w-xl space-y-4">
-        <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Mi puesto de trabajo" subtitle="Tus obras de hoy, fichar y partes" />
+        <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Mi puesto de trabajo" manualKey="miPuesto" subtitle="Tus obras de hoy, fichar y partes" />
         {mios.length > 1 && (
           <div className="space-y-2">{mios.map((p) => <button key={p.id} onClick={() => setPuestoId(p.id)} className="w-full text-left bg-white border border-slate-200 rounded-lg px-4 py-3 font-semibold hover:border-[#2E8B57]">{p.nombre} <span className="text-xs text-slate-400">({p.codigo})</span></button>)}</div>
         )}
@@ -45263,7 +45344,7 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl">
-      <Header icon={<Globe size={20} className="text-[#2E8B57]" />} title="Uxcar" subtitle="Expedientes que mete Uxcar desde su portal" />
+      <Header icon={<Globe size={20} className="text-[#2E8B57]" />} title="Uxcar" manualKey="uxcarGestion" subtitle="Expedientes que mete Uxcar desde su portal" />
       <div className="flex gap-2 mb-5 border-b border-slate-200">
         {tab("lista", "Expedientes")}
         {tab("resumen", "Resumen")}
@@ -46773,8 +46854,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const activas = cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim());
     const sinPrefijo = (c) => c.replace(/^[A-Z]{1,2}\./, "");
     const obras = [
-      ...toArray(proyectos).map((pr) => ({ nombre: `#${pr.numero} ${pr.nombre}`, lis: pr.listadoMateriales, ppto: pr.presupuestoNumero })),
-      ...toArray(uxExpedientes).map((e) => ({ nombre: `Uxcar exp. ${e.numero}`, lis: e.listadoMateriales, ppto: "" })),
+      ...toArray(proyectos).filter((pr) => toArray(pr.etiquetasFab).length > 0).map((pr) => ({ nombre: `#${pr.numero} ${pr.nombre}`, lis: pr.listadoMateriales, ppto: pr.presupuestoNumero })),
+      ...toArray(uxExpedientes).filter((e) => toArray(e.etiquetasFab).length > 0).map((e) => ({ nombre: `Uxcar exp. ${e.numero}`, lis: e.listadoMateriales, ppto: "" })),
     ];
     const out = [];
     obras.forEach((o) => {
@@ -46932,12 +47013,21 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         </div>
       )}
       {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
-      {cruce.length > 0 && (
-        <div className="px-3 py-2 rounded-md bg-rose-50 border border-rose-300 text-rose-900 text-xs space-y-1">
-          <div className="font-bold">El análisis de materiales dice que estas obras llevan auxiliares que NO tengo para cortar ({cruce.length}):</div>
-          {cruce.map((c, i) => <div key={i}>⚠ {c.obra}{c.ppto ? ` (Ppto ${pptoBonito(c.ppto)})` : ""}: {c.nombre} ({c.ref}){c.uds ? ` · ${c.uds} ud en el análisis` : ""} — {c.sinHoja ? "no hay hoja de corte cargada de esa obra: súbela arriba." : "la hoja de corte cargada no trae ninguna fila con esa referencia. Revisa que sea la hoja completa y de la misma versión; si está, dime cómo sale esa línea en el PDF."}</div>)}
-        </div>
-      )}
+      {cruce.length > 0 && (() => {
+        const porObra = [];
+        cruce.forEach((c) => { let g = porObra.find((x) => x.obra === c.obra); if (!g) { g = { obra: c.obra, ppto: c.ppto, sinHoja: c.sinHoja, items: [] }; porObra.push(g); } g.items.push(c); });
+        const sinHojaN = porObra.filter((g) => g.sinHoja).length;
+        return (
+          <details className="rounded-md bg-rose-50 border border-rose-300 text-rose-900 text-xs" open={porObra.length <= 6}>
+            <summary className="px-3 py-2 font-bold cursor-pointer">⚠ {porObra.length} obra{porObra.length === 1 ? "" : "s"} con auxiliares en el análisis de materiales que no tengo para cortar{sinHojaN ? ` · ${sinHojaN} sin hoja de corte cargada` : ""} (pulsa para ver)</summary>
+            <div className="px-3 pb-2 space-y-1">
+              {porObra.map((g, i) => (
+                <div key={i}>• <b>{g.obra}</b>{g.ppto ? ` (Ppto ${pptoBonito(g.ppto)})` : ""}: {g.items.map((c) => `${c.nombre}${c.uds ? ` ×${c.uds}` : ""}`).join(", ")} — {g.sinHoja ? "falta subir su hoja de corte" : "la hoja cargada no trae esas referencias"}</div>
+              ))}
+            </div>
+          </details>
+        );
+      })()}
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex flex-wrap items-center gap-2">
           <input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
