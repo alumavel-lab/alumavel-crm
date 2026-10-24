@@ -16666,9 +16666,10 @@ async function leerPackingPersianas(file) {
       alto: parseFloat(valorPorCabeceras(f, ["alto", "altura", "height"])) || 0,
       cantidad: parseFloat(valorPorCabeceras(f, ["cantidad", "uds", "unidades", "qty"])) || 1,
       pedido: String(valorPorCabeceras(f, ["pedido", "order", "albaran"]) || "").trim(),
+      recogedor: String(valorPorCabeceras(f, ["recogedor", "ladorecogedor", "lado", "mando", "salida"]) || "").trim(),
     }));
   } else {
-    const prompt = 'Esto es un packing list, albarán o etiquetas de PERSIANAS (cajones de persiana embalados, por ejemplo de Dealux). Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","filas":[{"expediente":"","ref":"","largo":numero,"alto":numero,"cantidad":numero,"pedido":""}]}. "largo" es el ANCHO / LARGO de la persiana (lo que mide el cajón a lo largo) en MILÍMETROS; si viene en cm o m, pásalo a mm. "alto" en mm. "expediente" es el número de obra / expediente / referencia de cliente. "ref" es la vivienda o posición. Deja en blanco (o 0) lo que no encuentres.';
+    const prompt = 'Esto es un packing list, albarán o etiquetas de PERSIANAS (cajones de persiana embalados, por ejemplo de Dealux). Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"proveedor":"","filas":[{"expediente":"","ref":"","largo":numero,"alto":numero,"cantidad":numero,"pedido":"","recogedor":""}]}. "recogedor" = el lado del recogedor / mando / salida de la cinta: Derecha o Izquierda si el documento lo indica (puede venir como D / I, Dcha / Izq, "recogedor derecho"…); vacío si no aparece. "largo" es el ANCHO / LARGO de la persiana (lo que mide el cajón a lo largo) en MILÍMETROS; si viene en cm o m, pásalo a mm. "alto" en mm. "expediente" es el número de obra / expediente / referencia de cliente. "ref" es la vivienda o posición. Deja en blanco (o 0) lo que no encuentres.';
     const o = await leerDocumentoCristalConIA(file, prompt);
     filas = (o.filas || []).map((f) => ({ ...f, proveedor: o.proveedor || "" }));
   }
@@ -16680,6 +16681,7 @@ async function leerPackingPersianas(file) {
       unidades.push({
         id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), parte: normParte(f.expediente), ref: String(f.ref || "").trim(),
         largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
+        recogedor: /^\s*(izq|i\b)/i.test(String(f.recogedor || "")) ? "Izquierda" : /^\s*(der|dch|dcha|d\b)/i.test(String(f.recogedor || "")) ? "Derecha" : "",
         proveedor: String(f.proveedor || "").trim(), fechaEntrada: new Date().toISOString().slice(0, 10),
         estante: null, entregada: false,
       });
@@ -16899,6 +16901,10 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
           </button>
           <button onClick={() => inputGaleriaRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2.5 rounded-md hover:bg-slate-50">
             <ImageIcon size={15} /> Subir varias fotos
+          </button>
+          <button onClick={() => setFilas((fs) => { const u = [...fs].reverse().find((x) => x.estado === "ok"); return [...fs, { id: uid(), estado: "ok", error: "", thumb: "", proveedor: u ? u.proveedor : "", cliente: u ? u.cliente : "", pedido: u ? u.pedido : "", expediente: u ? u.expediente : "", parte: u ? u.parte : "", obra: u ? u.obra : "", ref: "", largo: "", alto: "", medidaTexto: "", cantidad: 1, pieza: "", color: u ? u.color : "", descripcion: "" }]; })}
+            className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2.5 rounded-md hover:bg-slate-50">
+            + Añadir a mano
           </button>
           <input ref={inputCamaraRef} type="file" accept="image/*" capture="environment" className="hidden"
             onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
@@ -17606,6 +17612,24 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setAviso(`${xs.length} ${cosa} movidas al carro ${n}.`);
   };
 
+  // Cambiar UNA persiana a un estante concreto (carro, lado y estante), sin pasar por la colocación automática.
+  const moverAEstante = (x, key) => {
+    const e = estantes.find((q) => q.key === key);
+    if (!e) return;
+    const estado = estadoOcupacionPersianas(items.filter((y) => y.id !== x.id));
+    const L = largoPersiana(x);
+    const min = (TIPOS_CARRO_PERSIANA[e.tipo] || {}).minimoMm || 0;
+    let fila = e.porUds ? -2 : filaLibreEstante(estado, e, L);
+    const noCabe = e.porUds ? (estado.uds && estado.uds[key] || 0) >= e.capacidad : (L < min || fila === -1);
+    if (noCabe) {
+      if (!window.confirm(`Parece que no cabe en ${textoEstante(e)} (poco sitio o mide menos que el mínimo de ese carro). ¿La pongo igualmente?`)) return;
+      fila = 1;
+    }
+    const nuevo = { carro: e.carro, lado: e.lado, nivel: e.nivel, ...(fila >= 0 ? { fila: fila === 0 ? "interior" : "exterior" } : {}) };
+    guardarItems(items.map((y) => (y.id === x.id ? { ...y, estante: nuevo, enPuesto: "" } : y)));
+    setAviso(`${cosa.charAt(0).toUpperCase() + cosa.slice(1, -1)} movida a ${textoEstante(nuevo)}.`);
+  };
+
   const devolverDePuesto = (x) => {
     const { sitio } = colocar([x]);
     guardarItems(items.map((y) => (y.id === x.id ? { ...y, enPuesto: "", estante: sitio[x.id] || null } : y)));
@@ -17647,11 +17671,23 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
-      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (
+      {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (<>
         <select value="" onChange={(e) => { if (e.target.value) moverACarro([x], e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-violet-700 border border-violet-300 rounded px-1 py-0.5 bg-white">
           <option value="">Mover a…</option>
           {opcionesCarro(x.estante.carro)}
-        </select>)}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
+        </select>
+        <select value="" onChange={(e) => { if (e.target.value) moverAEstante(x, e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1 py-0.5 bg-white" title="Cambiar de lado o de estante">
+          <option value="">Cambiar estante…</option>
+          {[...new Set(estantes.map((q) => q.carro))].map((c) => (
+            <optgroup key={c} label={`Carro ${c}`}>
+              {estantes.filter((q) => q.carro === c).map((q) => {
+                const n = (ocup.uds && ocup.uds[q.key]) || 0;
+                const aqui = x.estante && x.estante.carro === q.carro && x.estante.lado === q.lado && x.estante.nivel === q.nivel;
+                return <option key={q.key} value={q.key} disabled={aqui}>{`lado ${q.lado} · estante ${q.nivel} (${n} ${n === 1 ? "persiana" : "persianas"}${aqui ? " · está aquí" : ""})`}</option>;
+              })}
+            </optgroup>
+          ))}
+        </select></>)}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
@@ -17889,7 +17925,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Ubicación / cliente</th><th className="pr-2">Carro</th><th></th></tr></thead>
+              <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Lado</th><th className="pr-2">Ubicación / cliente</th><th className="pr-2">Carro</th><th></th></tr></thead>
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
@@ -17897,6 +17933,13 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <td className="pr-2">{x.ref || "—"}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
+                    <td className="pr-2">
+                      <select value={x.recogedor || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, recogedor: e.target.value } : y)))} className={`border rounded px-1 py-0.5 bg-white ${x.recogedor ? "border-slate-200" : "border-amber-300"}`}>
+                        <option value="">— ?</option>
+                        <option value="Izquierda">Izquierda</option>
+                        <option value="Derecha">Derecha</option>
+                      </select>
+                    </td>
                     <td className="pr-2 text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ") || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
@@ -44330,6 +44373,18 @@ function CondicionesModulo({ isAdmin, usuario }) {
     guiasAnticuadas.forEach(({ g, d }) => { patch[`${COND_RUTAS[g.para]}/${d.id}`] = { ...d, contenido: g.contenido, version: g.version, actualizado: hoy, actualizadoPor: usuario || "" }; });
     try { await fbUpdate(ref(fbDb), patch); avisar("Guías actualizadas"); } catch (e) { avisar("No se pudieron actualizar"); }
   };
+  // Al entrar un administrador, las guías nuevas se cargan y las anticuadas se actualizan solas (sin tener que pulsar nada).
+  // El texto anterior se guarda en "contenidoAnterior" por si alguien había cambiado algo a mano.
+  const autoGuiasRef = useRef(false);
+  useEffect(() => {
+    if (!isAdmin || autoGuiasRef.current || !(guiasAnticuadas.length || guiasQueFaltan.length)) return;
+    autoGuiasRef.current = true;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const patch = {};
+    guiasQueFaltan.forEach((g) => { const id = uid(); patch[`${COND_RUTAS[g.para]}/${id}`] = { ...g, version: g.version || 1, id, fecha: hoy, actualizado: hoy, actualizadoPor: "automático" }; });
+    guiasAnticuadas.forEach(({ g, d }) => { patch[`${COND_RUTAS[g.para]}/${d.id}`] = { ...d, contenidoAnterior: d.contenido || "", contenido: g.contenido, version: g.version, actualizado: hoy, actualizadoPor: "automático" }; });
+    fbUpdate(ref(fbDb), patch).then(() => avisar("Guías puestas al día automáticamente")).catch(() => { autoGuiasRef.current = false; });
+  }, [isAdmin, guiasAnticuadas.length, guiasQueFaltan.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="p-4 md:p-6">
@@ -44378,6 +44433,68 @@ function CondicionesModulo({ isAdmin, usuario }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// Almacenes de ventanas de Uxcar (los marcados "De Uxcar" en el CRM: Valencia, Palma…), solo lectura:
+// qué caballetes hay en cada uno, para qué obra y qué ventanas llevan.
+function UxAlmacenesVentanas() {
+  const cabsObj = useObjetoFb("caballetesVentanas");
+  const cfg = useObjetoFb("configVentanas");
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState({});
+  const almacenes = almacenesCaballetes(cfg).filter((a) => a.dueno === "uxcar");
+  const cabs = toArray(cabsObj);
+  const norm = (t) => String(t || "").toLowerCase();
+  const textoCab = (c) => norm(`${c.numero} ${(c.obra && c.obra.nombre) || ""} ${(c.reserva && c.reserva.nombre) || ""} ${c.ubicacion || ""} ${toArray(c.ventanas).map((w) => `${w.pos} ${w.num} ${w.fab} ${w.color || ""}`).join(" ")}`);
+  const estadoTxt = (c) => ((c.estado || "libre") === "libre" ? (c.reserva ? "Reservado" : "Libre") : c.estado === "cargado" ? "Cargado en camión" : c.estado === "fuera" ? "Fuera (entregado)" : "Con ventanas");
+  if (!almacenes.length) return <p className="text-sm text-slate-500">Todavía no hay almacenes de ventanas tuyos. Se crean desde Ecowin PVC.</p>;
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Dónde están vuestras ventanas ya fabricadas. Es solo para consultar: lo mueve fábrica.</p>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, obra, ventana, color…" className="border border-slate-300 rounded-md px-3 py-2 text-sm w-full max-w-md" />
+      {almacenes.map((a) => {
+        const suyos = cabs.filter((c) => c.almacenId === a.id);
+        const visibles = q.trim() ? suyos.filter((c) => textoCab(c).includes(norm(q.trim()))) : suyos;
+        const ocupados = suyos.filter((c) => (c.estado || "libre") !== "libre" || toArray(c.ventanas).length).length;
+        return (
+          <div key={a.id} className="bg-white border border-slate-200 rounded-xl">
+            <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-baseline gap-2">
+              <h3 className="font-bold text-slate-800">{a.nombreBase || a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</h3>
+              <span className="text-xs text-slate-500">{suyos.length} caballete{suyos.length === 1 ? "" : "s"} · {ocupados} con material</span>
+            </div>
+            {visibles.length === 0 ? <p className="p-4 text-sm text-slate-400">{suyos.length ? "Nada coincide con la búsqueda." : "Este almacén aún no tiene caballetes."}</p> : (
+              <div className="divide-y divide-slate-100">
+                {visibles.map((c) => {
+                  const vs = toArray(c.ventanas);
+                  const abre = !!abierto[c.id] || !!q.trim();
+                  return (
+                    <div key={c.id} className="px-4 py-2.5">
+                      <button onClick={() => setAbierto({ ...abierto, [c.id]: !abierto[c.id] })} className="w-full flex flex-wrap items-center gap-x-3 gap-y-0.5 text-left">
+                        <span className="font-bold text-slate-800">{c.numero}</span>
+                        <span className={`text-xs font-semibold ${(c.estado || "libre") === "libre" ? "text-slate-400" : "text-emerald-700"}`}>{estadoTxt(c)}</span>
+                        <span className="text-sm text-slate-600">{(c.obra && c.obra.nombre) || (c.reserva && c.reserva.nombre) || ""}</span>
+                        {c.ubicacion ? <span className="text-xs text-slate-500">· {c.ubicacion}</span> : null}
+                        <span className="ml-auto text-xs text-slate-500">{vs.length} ventana{vs.length === 1 ? "" : "s"}</span>
+                      </button>
+                      {abre && vs.length > 0 && (
+                        <div className="mt-2 grid sm:grid-cols-2 gap-1">
+                          {vs.map((w, i) => (
+                            <div key={i} className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+                              <b>{w.pos}</b> · nº {w.num}{w.color ? ` · ${w.color}` : ""} <span className="text-slate-400">· {toArray(w.escaneadas).length}/{w.total} piezas</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -44640,7 +44757,7 @@ Con el albarán firmado, la obra queda pendiente de facturar.
 - [ ] La obra está cerrada cuando tiene **factura emitida** y el **cobro apuntado** con justificante.`,
   },
   {
-    para: "uxcar", orden: 1, version: 12, titulo: "Guía para Uxcar: subir un expediente",
+    para: "uxcar", orden: 1, version: 13, titulo: "Guía para Uxcar: subir un expediente",
     contenido: `## Qué se sube y dónde
 Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa de ventanas. Con ellos sabemos cuántas ventanas son, qué material preparar y cuándo estarán listas.
 
@@ -44677,6 +44794,9 @@ La lectura de cada PDF puede tardar un par de minutos. No cierres la página mie
 Para un expediente que ya está pedido, basta con **tres PDF**: el **listado de vidrios**, la **hoja de corte** y el **listado de dibujos** (de él sale el número de recuadro de cada ventana, que se ve en la pegatina y en toda la fábrica). En la ficha del expediente, en el recuadro de etiquetas, pulsa **"Expediente rápido (vidrios + hoja de corte)"** y selecciona los dos a la vez (con Ctrl pulsado). Ecowin PVC saca una pegatina por cada ventana con presupuesto, posición, color, medidas, sistema y vidrio.
 - [ ] Los dos PDF son de la **misma versión** de cada presupuesto.
 - [ ] Si el CRM avisa de algo en rojo (por ejemplo un vidrio sin argón), **no lo guardes**: avisa a Ecowin PVC.
+
+## Mis almacenes de ventanas
+En la pestaña **Mis almacenes de ventanas** veis dónde están vuestras ventanas ya fabricadas, almacén por almacén (Valencia, Palma de Mallorca…): qué caballetes hay, para qué obra y qué ventanas lleva cada uno. Es **solo para consultar**: lo mueve fábrica. Podéis buscar por caballete, obra, ventana o color.
 
 ## Mi stock de perfiles
 En la pestaña **Mi stock de perfiles** veis **lo que tenéis** de vuestros perfiles y **lo que os falta** para los expedientes que todavía no han pasado a producción. Es solo vuestro y no se mezcla con el de Ecowin PVC.
@@ -44918,6 +45038,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("pedidos", "Pedidos")}
           {tab("materiales", "Informe de materiales")}
           {tab("stock", "Mi stock de perfiles")}
+          {tab("almacenv", "Mis almacenes de ventanas")}
           {tab("incidencias", "Incidencias")}
           {tab("proveedores", "Proveedores")}
           {tab("resumen", "Resumen")}
@@ -44936,6 +45057,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           <UxResumen expedientes={expedientes} />
         ) : vista === "materiales" ? (
           <UxSubirInformes expedientes={expedientes} onGuardar={async (exp, lis) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: lis }); return true; } catch (e) { return false; } }} />
+        ) : vista === "almacenv" ? (
+          <UxAlmacenesVentanas />
         ) : vista === "incidencias" ? (
           <UxIncidencias incidencias={datos.incidencias} expedientes={expedientes} nombre={nombre} aviso={aviso} />
         ) : vista === "stock" ? (
