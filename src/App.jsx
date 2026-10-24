@@ -26043,10 +26043,12 @@ const CALENDARIO_TABS = [
   { id: "incidencia", label: "Incidencias" },
 ];
 
+// Fecha local (no UTC): con toISOString() en España cada casilla salía con la fecha del día anterior.
+const claveLocalCal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProyecto, openPedido, openIncidencia, onCambiarFechaProyecto, onCambiarFechaPedido, onCambiarFechaIncidencia }) {
   const today = new Date();
   const [cursor, setCursor] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const [selectedDay, setSelectedDay] = useState(toKey(today.toISOString().slice(0, 10)));
+  const [selectedDay, setSelectedDay] = useState(toKey(claveLocalCal(today)));
   const [filtroEstado, setFiltroEstado] = useState("");
   const [tab, setTab] = useState("todo");
   const [editandoFechaId, setEditandoFechaId] = useState(null);
@@ -26132,7 +26134,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
   }, [proyectos, pedidos, incidencias, filtroEstado, tab]);
 
   const weeks = useMemo(() => buildMonthMatrix(cursor.getFullYear(), cursor.getMonth()), [cursor]);
-  const todayKey = today.toISOString().slice(0, 10);
+  const todayKey = claveLocalCal(today);
   const selectedEvents = eventsByDay[selectedDay] || [];
 
   const openEvent = (ev) => {
@@ -26142,6 +26144,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
   };
 
   const [arrastrando, setArrastrando] = useState(null);
+  const [diasAbiertos, setDiasAbiertos] = useState({}); // días con todos los eventos desplegados en la casilla
   const [encima, setEncima] = useState("");
   const soltarEn = (diaDestino) => {
     const ev = arrastrando;
@@ -26187,7 +26190,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
             <ChevronRight size={16} />
           </button>
           <button
-            onClick={() => { const t = new Date(); setCursor(new Date(t.getFullYear(), t.getMonth(), 1)); setSelectedDay(t.toISOString().slice(0, 10)); }}
+            onClick={() => { const t = new Date(); setCursor(new Date(t.getFullYear(), t.getMonth(), 1)); setSelectedDay(claveLocalCal(t)); }}
             className="ml-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]"
           >
             Hoy
@@ -26218,7 +26221,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
             <div key={wi} className="grid grid-cols-7 border-b border-slate-100 last:border-0">
               {week.map((day, di) => {
                 if (!day) return <div key={di} className="min-h-[92px] border-r border-slate-100 last:border-0 bg-slate-50/40" />;
-                const key = day.toISOString().slice(0, 10);
+                const key = claveLocalCal(day);
                 const evs = eventsByDay[key] || [];
                 const isToday = key === todayKey;
                 const isSelected = key === selectedDay;
@@ -26238,12 +26241,12 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
                       {day.getDate()}
                     </span>
                     <div className="flex flex-col gap-0.5">
-                      {evs.slice(0, 2).map((ev, i) => (
+                      {(diasAbiertos[key] ? evs : evs.slice(0, 2)).map((ev, i) => (
                         <span key={i} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", ev.label); } catch (er) { /* */ } setArrastrando({ ...ev, dia: key }); }} onDragEnd={() => { setArrastrando(null); setEncima(""); }} className={`text-[10px] px-1 py-0.5 rounded truncate ring-1 cursor-grab ${ev.badge}`} title={`${ev.label} — arrástralo a otro día para cambiarle la fecha`}>
                           {ev.label}
                         </span>
                       ))}
-                      {evs.length > 2 && <span className="text-[10px] text-slate-400 px-1">+{evs.length - 2} más</span>}
+                      {evs.length > 2 && <button type="button" onClick={(e) => { e.stopPropagation(); setSelectedDay(key); setDiasAbiertos((m) => ({ ...m, [key]: !m[key] })); }} className="text-[10px] font-semibold text-[#2E8B57] hover:underline px-1 text-left">{diasAbiertos[key] ? "ver menos" : `+${evs.length - 2} más`}</button>}
                     </div>
                   </div>
                 );
@@ -26260,7 +26263,7 @@ function CalendarioModulo({ proyectos, clientes, pedidos, incidencias, openProye
           {selectedEvents.length === 0 ? (
             <p className="text-sm text-slate-400 py-4 text-center">Sin eventos este día.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-1">
               {selectedEvents.map((ev, i) => (
                 <div key={i} draggable onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", ev.label); } catch (er) { /* */ } setArrastrando({ ...ev, dia: selectedDay }); }} onDragEnd={() => { setArrastrando(null); setEncima(""); }} className={`rounded-md ring-1 text-sm cursor-grab ${ev.badge}`}>
                   <div className="flex items-center gap-1">
