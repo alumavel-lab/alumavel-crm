@@ -42372,6 +42372,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   const filtroPuestos = (ctx.esAdmin || !toArray(ctx.puestosPrep).length) ? null : toArray(ctx.puestosPrep);
   const ve = (pu) => !filtroPuestos || filtroPuestos.includes(pu);
   const alertasObj = useObjetoFb("alertasPrep");
+  const hojasAuxP = useObjetoFb("auxiliaresHojas");
   const { f: siguiente } = siguienteDiaLaborable();
   const hoyMadrid = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" }));
   const esJueves = hoyMadrid.getDay() === 4;
@@ -42510,9 +42511,11 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   };
   const abiertasPrep = Object.entries(alertasObj || {}).filter(([, a]) => a && a.estado === "abierta").sort((a, b) => (b[1].en || 0) - (a[1].en || 0));
   const [vista, setVista] = useState("");
-  const tilesBase = [["perfiles", "Perfiles y herraje", "perfiles"], ["cristales", "Cristales", "cristales"], ["persianas", "Compactos", "cristales"], ["auxiliares", "Auxiliares", "auxiliares"]].filter((t2) => ve(t2[2]));
+  const tilesBase = [["perfiles", "Perfiles", "perfiles"], ["herraje", "Herraje y accesorios", "perfiles"], ["cristales", "Cristales", "cristales"], ["persianas", "Compactos", "cristales"], ["auxiliares", "Auxiliares", "auxiliares"]].filter((t2) => ve(t2[2]));
   const vistaAct = tilesBase.some((t2) => t2[0] === vista) ? vista : "";
-  const vv = (id) => !vistaAct || vistaAct === id;
+  const vv = (id) => !vistaAct || vistaAct === id || (id === "perfiles" && vistaAct === "herraje");
+  const esGrupoHerraje = (g) => g.gk === "Herraje y accesorios";
+  const gruposVista = listaGrupos.filter((g) => !vistaAct || (vistaAct === "herraje" ? esGrupoHerraje(g) : vistaAct === "perfiles" ? !esGrupoHerraje(g) : true));
   const hc = (id) => ((vistaAct === "cristales" && id !== "cristales") || (vistaAct === "persianas" && id === "cristales") ? "hidden" : "");
   const imprimirLista = (g) => {
     const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -42538,9 +42541,32 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
         </div>
         <p className="text-xs text-slate-500">Junta el material de todas las obras que <b>empiezan</b> {modo === "dia" ? "ese día" : `entre el ${fmtDate(dias[0])} y el ${fmtDate(dias[4])}`} según el planning confirmado. {esJueves && modo === "semana" ? "Es jueves: se enseña la semana siguiente." : ""}</p>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+      {(() => {
+        // Documentos que faltan por subir de las obras de este periodo: análisis de materiales y hoja de corte
+        const falta = [];
+        obras.forEach((x) => {
+          const k = String(x.id);
+          const pr = k.startsWith("p-") ? toArray(ctx.proyectos).find((q) => `p-${q.id}` === k || q.id === k.slice(2)) : null;
+          const ex = k.startsWith("u-") ? toArray(ctx.uxExpedientes).find((q) => q.id === k.slice(2)) : null;
+          const lis = (pr && pr.listadoMateriales) || (ex && ex.listadoMateriales) || null;
+          const nombre = x.obra.nombre || k;
+          const sinAnalisis = !toArray(lis && lis.lineas).length && !toArray(x.obra.lineas).length;
+          const ppto = digitosPresu(lis && lis.numero) || digitosPresu(pr && pr.presupuestoNumero);
+          const sinHoja = !ppto || !(hojasAuxP && hojasAuxP[ppto]);
+          if (sinAnalisis || sinHoja) falta.push({ nombre, sinAnalisis, sinHoja, ppto });
+        });
+        if (!falta.length) return null;
+        return (
+          <div className="px-3 py-2 rounded-md bg-rose-50 border border-rose-300 text-rose-900 text-xs space-y-1">
+            <div className="font-bold">Faltan documentos por subir ({falta.length} obra{falta.length === 1 ? "" : "s"} de este periodo):</div>
+            {falta.map((f, i) => <div key={i}>⚠ {f.nombre}: {[f.sinAnalisis ? "análisis de materiales" : "", f.sinHoja ? `hoja de corte${f.ppto ? ` (Ppto ${pptoBonito(f.ppto)})` : " (no sé de qué presupuesto es)"}` : ""].filter(Boolean).join(" y ")}</div>)}
+            <div className="text-rose-700">Sin ellos no puedo decir qué material y qué auxiliares lleva la obra. Súbelos en el expediente de la obra (el análisis) y en Auxiliares (la hoja de corte).</div>
+          </div>
+        );
+      })()}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[["", "Todo", ""], ...tilesBase].map(([id, nombre]) => {
-          const n = id === "perfiles" ? `${nHechos}/${listaGrupos.length}` : (id === "cristales" || id === "persianas") ? `${filasObra.filter((x) => hechoSimple("obras", sanea(x.id))).length}/${filasObra.length} obras` : id === "auxiliares" ? (hechoSimple("aux", "ok") ? "✓" : "pendiente") : "";
+          const n = id === "perfiles" ? `${listaGrupos.filter((g) => !esGrupoHerraje(g) && hechosG[claveGrupo(g.gk)]).length}/${listaGrupos.filter((g) => !esGrupoHerraje(g)).length}` : id === "herraje" ? `${listaGrupos.filter((g) => esGrupoHerraje(g) && hechosG[claveGrupo(g.gk)]).length}/${listaGrupos.filter(esGrupoHerraje).length}` : (id === "cristales" || id === "persianas") ? `${filasObra.filter((x) => hechoSimple("obras", sanea(x.id))).length}/${filasObra.length} obras` : id === "auxiliares" ? (hechoSimple("aux", "ok") ? "✓" : "pendiente") : "";
           return (
             <button key={id || "todo"} onClick={() => setVista(id)} className={`rounded-xl border-2 px-3 py-4 text-left ${vistaAct === id ? "bg-[#2E8B57] border-[#2E8B57] text-white" : "bg-white border-slate-200 text-slate-800 hover:border-[#2E8B57]"}`}>
               <div className="font-display font-bold text-base leading-tight">{nombre}</div>
@@ -42628,11 +42654,11 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
             <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
           </div>
           <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("perfiles") && vv("perfiles") ? "" : "hidden"}`}>
-            <h4 className="font-semibold text-slate-800 text-sm mb-1">Perfiles, herrajes y accesorios</h4>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">{vistaAct === "perfiles" ? "Perfiles" : vistaAct === "herraje" ? "Herraje y accesorios" : "Perfiles, herrajes y accesorios"}</h4>
             <p className="text-xs text-slate-500 mb-3">Todas las obras juntas: misma referencia y color = una sola línea. A la derecha, dónde está en el almacén. Aquí no se comprueba si ha llegado: mira el pedido.</p>
-            {listaGrupos.length === 0 ? <p className="text-sm text-slate-400">Las obras de este periodo no tienen listado de materiales cargado.</p> : (
+            {gruposVista.length === 0 ? <p className="text-sm text-slate-400">{listaGrupos.length === 0 ? "Las obras de este periodo no tienen listado de materiales cargado." : "Nada de esto en las obras de este periodo."}</p> : (
               <div className="space-y-4">
-                {listaGrupos.map((g) => {
+                {gruposVista.map((g) => {
                   const h = hechosG[claveGrupo(g.gk)];
                   return (
                     <div key={g.gk} className={`border rounded-lg ${h ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
@@ -46742,6 +46768,31 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
   const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas), [hojas, cfg, ventanas]);
+  // Cruce con el análisis de materiales: lo que el análisis dice que lleva la obra (inversor, guía de persiana…) y la hoja de corte no trae
+  const cruce = useMemo(() => {
+    const activas = cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim());
+    const sinPrefijo = (c) => c.replace(/^[A-Z]{1,2}\./, "");
+    const obras = [
+      ...toArray(proyectos).map((pr) => ({ nombre: `#${pr.numero} ${pr.nombre}`, lis: pr.listadoMateriales, ppto: pr.presupuestoNumero })),
+      ...toArray(uxExpedientes).map((e) => ({ nombre: `Uxcar exp. ${e.numero}`, lis: e.listadoMateriales, ppto: "" })),
+    ];
+    const out = [];
+    obras.forEach((o) => {
+      const lineas = toArray(o.lis && o.lis.lineas);
+      if (!lineas.length) return;
+      const ppto = digitosPresu(o.lis.numero) || digitosPresu(o.ppto);
+      const h = ppto && hojas ? hojas[ppto] : null;
+      activas.forEach((rc) => {
+        const cod = normCodigo(rc.ref);
+        const suyas = lineas.filter((l) => { const c = normCodigo(l.codigo); return c === cod || sinPrefijo(c) === sinPrefijo(cod); });
+        if (!suyas.length) return;
+        const uds = suyas.reduce((a, l) => a + (parseFloat(l.uds != null ? l.uds : l.cantidad) || 0), 0);
+        const enHoja = h ? toArray(h.modelos).reduce((a, m) => a + toArray(m.filas).filter((f) => normCodigo(f.ref) === cod).length, 0) : 0;
+        if (!enHoja) out.push({ obra: o.nombre, ppto, ref: rc.ref, nombre: rc.nombre || rc.ref, uds, sinHoja: !h });
+      });
+    });
+    return out;
+  }, [proyectos, uxExpedientes, hojas, cfg]);
   const [orden, setOrden] = useState("ventana");
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
@@ -46881,6 +46932,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         </div>
       )}
       {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
+      {cruce.length > 0 && (
+        <div className="px-3 py-2 rounded-md bg-rose-50 border border-rose-300 text-rose-900 text-xs space-y-1">
+          <div className="font-bold">El análisis de materiales dice que estas obras llevan auxiliares que NO tengo para cortar ({cruce.length}):</div>
+          {cruce.map((c, i) => <div key={i}>⚠ {c.obra}{c.ppto ? ` (Ppto ${pptoBonito(c.ppto)})` : ""}: {c.nombre} ({c.ref}){c.uds ? ` · ${c.uds} ud en el análisis` : ""} — {c.sinHoja ? "no hay hoja de corte cargada de esa obra: súbela arriba." : "la hoja de corte cargada no trae ninguna fila con esa referencia. Revisa que sea la hoja completa y de la misma versión; si está, dime cómo sale esa línea en el PDF."}</div>)}
+        </div>
+      )}
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex flex-wrap items-center gap-2">
           <input value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
