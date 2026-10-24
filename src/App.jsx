@@ -1511,6 +1511,51 @@ export default function App() {
   const saveTarifasCristal = (next) => { setTarifasCristal(next); persist("tarifasCristal", next); };
   // Descuenta varias referencias del stock de una sola vez (una única escritura, para
   // no pisar cambios como pasaría llamando a addMovimiento en bucle).
+  RESERVAS_STOCK.proyectos = proyectos; RESERVAS_STOCK.materiales = materiales; // para que las comparaciones con el stock aparten lo de las demás obras
+  // Al empezar a fabricar una obra: se descuenta de nuestro stock lo que lleva su análisis de materiales (perfiles, herraje…).
+  // En las obras de Uxcar solo el herraje y los accesorios (los perfiles son de su stock). Una sola vez por obra (stockDescontado).
+  const descontarStockObra = (proyecto) => {
+    if (!proyecto || proyecto.stockDescontado || !proyecto.listadoMateriales) return null;
+    const porId = {}; const porPerfil = {}; let sinMaterial = 0;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const nuevos = new Map(); // lo que el análisis pide y no está en Stock: se da de alta solo, con la referencia del análisis, y queda a cero o en negativo
+    lineasQueSalenDeNuestroStock(proyecto).forEach((l) => {
+      const m = buscarMaterialListado(l, materiales);
+      const u = parseFloat(l.uds) || 0;
+      if (!m) {
+        if (!l.codigo) { sinMaterial++; return; }
+        const k = `${normCodigo(l.codigo)}|${String(l.color || "").trim().toLowerCase()}`;
+        const n = nuevos.get(k) || { l, uds: 0, perf: 0 };
+        n.uds += u; if (esLineaPerfil(l)) n.perf += u; nuevos.set(k, n); return;
+      }
+      porId[m.id] = (porId[m.id] || 0) + u;
+      if (esLineaPerfil(l)) porPerfil[m.id] = (porPerfil[m.id] || 0) + u;
+    });
+    Object.entries(porPerfil).forEach(([id, b]) => { porId[id] += mermaBarras(b); }); // margen por roturas, sin escribirlo en ningún sitio
+    const ids = Object.keys(porId);
+    const altas = [...nuevos.values()].map(({ l, uds: udsBase, perf }) => {
+      const uds = udsBase + mermaBarras(perf);
+      const habitual = proveedorHabitualDeSeccion(l.seccion, proveedores);
+      return {
+        id: uid(), codigo: String(l.codigo).trim(), descripcion: l.descripcion || String(l.codigo), proveedorId: (habitual && habitual.id) || "",
+        stockReal: -uds, stockMinimo: 0, stockOptimo: 0, color: l.color || "", acabadoDescripcion: l.color || "",
+        longitud: l.longitud ? String(l.longitud) : "", ancho: "", alto: "", grueso: "",
+        precioCompra: l.precioUd || "", precioVenta: "", unidadCompra: "Unidad",
+        categoria: ["perfiles", "refuerzo"].includes(l.seccion) ? "Perfil PVC" : l.seccion === "herraje" ? "Herraje" : "Accesorios", familia: "",
+        foto: "", creadoAutomatico: true,
+        movimientos: [{ id: uid(), tipo: "salida", cantidad: uds, contacto: `Obra #${proyecto.numero} — creado solo desde el análisis`, estado: "Recibido", fecha: hoy, usoId: `fab-${proyecto.id}` }],
+        historicoPrecios: [],
+      };
+    });
+    if (ids.length || altas.length) {
+      saveMateriales([...altas, ...materiales.map((m) => {
+        const cant = porId[m.id];
+        if (!cant) return m;
+        return { ...m, ...aplicarDeltaStock(m, -cant), movimientos: [...(m.movimientos || []), { id: uid(), tipo: "salida", cantidad: cant, contacto: `Obra #${proyecto.numero} — empieza a fabricarse`, estado: "Recibido", fecha: hoy, usoId: `fab-${proyecto.id}` }] };
+      })]);
+    }
+    return { n: ids.length + altas.length, creados: altas.length, sinMaterial, fecha: hoy };
+  };
   const descontarStockLote = (lista, motivo) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const porId = {};
@@ -1857,6 +1902,19 @@ export default function App() {
 
   const saveProveedores = (next) => { setProveedores(next); persist("proveedores", next); };
   const saveMateriales = (next) => { setMateriales(next); persist("materiales", next); };
+  // Cambiar dónde está un material en el almacén (lo usa el puesto de Preparación de material). No toca cantidades.
+  const conUbicacionNueva = (x, almacen, estanteria) => {
+    const n = { ...x, almacen: almacen || "", estanteria: estanteria || "" };
+    if (toArray(x.stockPorAlmacen).length === 1) n.stockPorAlmacen = [{ ...x.stockPorAlmacen[0], almacen: almacen || "", estanteria: estanteria || "" }];
+    return n;
+  };
+  const ubicarMaterialesLote = (ids, almacen, estanteria) => {
+    const set = new Set(ids || []);
+    if (!set.size) return 0;
+    saveMateriales(materiales.map((x) => (set.has(x.id) ? conUbicacionNueva(x, almacen, estanteria) : x)));
+    showToast(`${set.size} material(es) ubicados`);
+    return set.size;
+  };
 
   // Importación masiva de tarifas de materiales: si el código o la descripción
   // ya existen, actualiza el precio; si no, da de alta el material nuevo.
@@ -2332,6 +2390,7 @@ export default function App() {
     toArray(pedido.lineas).forEach((l) => {
       const f = porId[l.id];
       if (!f || f.tipo !== "stock") return;
+      if (esUxcar) return; // el material de Uxcar nunca entra en nuestro stock (llevan el suyo en su portal)
       const bien = bienDe(f);
       if (!bien) return;
       aStock += bien;
@@ -3743,6 +3802,10 @@ export default function App() {
   const autoPresRef = useRef(false);
   const [avisoFirmadosAbierto, setAvisoFirmadosAbierto] = useState(false);
   const [avisoDocsAbierto, setAvisoDocsAbierto] = useState(false);
+  // Recordatorio de recuento de stock: a los 45 días de activarlo (y luego cada 45 días) sale un aviso fijo hasta que se marque como hecho
+  const [recuentoStock, setRecuentoStock] = useState(undefined);
+  useEffect(() => onValue(ref(fbDb, "recordatorios/recuentoStock"), (snap) => setRecuentoStock(snap.val() || null), () => setRecuentoStock(null)), []);
+  const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
   useEffect(() => {
     if (!currentUser) return undefined;
@@ -4051,7 +4114,7 @@ export default function App() {
           const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
           const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
           const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
-          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS);
+          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
           const extra = { listadoMateriales: l, listadoUxClave: t.k };
           if (Object.keys(grupos).length) crearPedidosEsperaListado(t.p, grupos, origen, extra);
           else crearPedidosEsperaListado(t.p, {}, origen, extra);
@@ -4235,12 +4298,59 @@ export default function App() {
     showToast(ids.size === 1 ? "Instalación finalizada: proyecto pasado a Entregado" : `${ids.size} proyectos pasados a Entregado (instalaciones finalizadas)`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instalaciones, proyectos, currentUser?.id, loading]);
+  // Si el informe de materiales de Uxcar pide un perfil que no está en su stock, se da de alta solo (a cero) con la referencia del informe.
+  const [stockUxAuto, setStockUxAuto] = useState(null);
+  const autoStockUxRef = useRef(false);
+  const [incidenciasUx, setIncidenciasUx] = useState([]);
+  useEffect(() => onValue(ref(fbDb, "portalUxcar/incidencias"), (snap) => setIncidenciasUx(toArray(snap.val() || {})), () => {}), []);
+  useEffect(() => onValue(ref(fbDb, "portalUxcar/stock"), (snap) => setStockUxAuto(snap.val() || {}), () => {}), []);
+  useEffect(() => {
+    if (stockUxAuto === null || autoStockUxRef.current) return;
+    const lista = toArray(stockUxAuto);
+    const faltan = new Map();
+    toArray(uxExpedientes).filter((e) => e.estado !== "entregado" && e.listadoMateriales).forEach((e) => toArray(e.listadoMateriales.lineas)
+      .filter((l) => ["perfiles", "refuerzo"].includes(l.seccion) && l.codigo).forEach((l) => {
+        if (cruzarStockUx(lista, l).estado === "ok") return;
+        const k = claveStockUx(l.codigo, l.color);
+        if (!faltan.has(k)) faltan.set(k, { l, exp: e.numero });
+      }));
+    if (!faltan.size) return;
+    autoStockUxRef.current = true;
+    (async () => {
+      try {
+        for (const [k, { l, exp }] of [...faltan].slice(0, 60)) {
+          const id = "auto_" + k.replace(/[^a-z0-9]/g, "_");
+          await runTransaction(ref(fbDb, `portalUxcar/stock/${id}`), (cur) => (cur ? undefined : { id, referencia: String(l.codigo).trim(), descripcion: l.descripcion || "", color: l.color || "", cantidad: 0, minimo: 0, ubicacion: "", auto: true, desdeExpediente: exp, movimientos: [] }));
+        }
+      } catch (e) { /* se reintenta en el próximo cambio */ } finally { autoStockUxRef.current = false; }
+    })();
+  }, [stockUxAuto, uxExpedientes]);
   const uxPasarProduccion = async (exp) => {
     const hoy = uxHoy();
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
-    if (!(await uxActualizar(exp, { estado: "produccion", fechaProduccion: hoy, fechaEntrega: entrega }))) return;
+    // Los perfiles del informe salen del stock de Uxcar al pasar a producción (con el mismo margen por roturas, sin avisar a Uxcar). Una vez por expediente.
+    let descUx = null;
+    if (!exp.stockDescontado && exp.listadoMateriales) {
+      const lista = toArray(stockUxAuto);
+      const por = {}, perf = {};
+      toArray(exp.listadoMateriales.lineas).filter((l) => esLineaPerfil(l) && l.codigo).forEach((l) => {
+        const c = cruzarStockUx(lista, l);
+        if (c.estado !== "ok") return;
+        const u = parseFloat(l.uds) || 0;
+        por[c.item.id] = (por[c.item.id] || 0) + u; perf[c.item.id] = (perf[c.item.id] || 0) + u;
+      });
+      descUx = Object.keys(por).map((id) => {
+        const it = lista.find((x) => x.id === id);
+        const cant = por[id] + mermaBarras(perf[id]);
+        return { ...it, cantidad: (parseFloat(it.cantidad) || 0) - cant, movimientos: [...toArray(it.movimientos), { id: uid(), fecha: hoy, tipo: "salida", cantidad: cant, nota: `Expediente ${exp.numero}`, por: "CRM" }].slice(-60) };
+      });
+    }
+    if (!(await uxActualizar(exp, { estado: "produccion", fechaProduccion: hoy, fechaEntrega: entrega, ...(descUx ? { stockDescontado: true } : {}) }))) return;
+    if (descUx && descUx.length) { try { for (const it of descUx) await fbSet(ref(fbDb, `portalUxcar/stock/${it.id}`), it); } catch (e) { /* el stock de Uxcar se corrige a mano */ } }
     if (exp.proyectoId && proyectos.some((p) => p.id === exp.proyectoId)) {
-      updateProyectoInline(exp.proyectoId, { estadoTrabajo: "En proceso", fechaFabricacion: hoy, fechaEntregaPrevista: entrega });
+      const desc = descontarStockObra(proyectos.find((p) => p.id === exp.proyectoId));
+      updateProyectoInline(exp.proyectoId, { estadoTrabajo: "En proceso", fechaFabricacion: hoy, fechaEntregaPrevista: entrega, ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+      if (desc && desc.n) showToast(`Stock descontado (herraje y accesorios): ${desc.n} referencia${desc.n === 1 ? "" : "s"}`);
     }
     showToast(`${exp.numero} pasa a producción · entrega ${uxFecha(entrega)}`);
   };
@@ -4396,6 +4506,11 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
+  useEffect(() => {
+    if (recuentoStock !== null || !currentUser || !isAdmin) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    fbSet(ref(fbDb, "recordatorios/recuentoStock"), { proximo: sumarDiasISO(hoy, 45), creado: hoy }).catch(() => {});
+  }, [recuentoStock, currentUser, isAdmin]);
   const modulosPermitidos = isAdmin
     ? MODULOS_DISPONIBLES.map((m) => m.id)
     : (currentUser?.modulos || MODULOS_DISPONIBLES.map((m) => m.id));
@@ -4937,13 +5052,15 @@ export default function App() {
         })()}
         {(() => {
           if (!currentUser || modulo === "pedidos" || (modulo === "fabrica")) return null;
-          const disc = discrepanciasTodas(pedidos);
-          if (!disc.length) return null;
           const aPedidos = tieneAcceso("pedidos");
-          if (!aPedidos && !veFabrica) return null;
+          const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
+          if (modulo === "uxcar" && soloUx) return null;
+          const disc = discrepanciasTodas(pedidos).filter((x) => !soloUx || esPedidoUxcar(x.p, proyectos));
+          if (!disc.length) return null;
+          if (!aPedidos && !veFabrica && !soloUx) return null;
           return (
             <button
-              onClick={() => { if (aPedidos) setModulo("pedidos"); else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
+              onClick={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
             >
               ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →
@@ -4997,6 +5114,7 @@ export default function App() {
           // Viviendas de medición Uxcar (Aena) enviadas a oficina hace más de un día sin marcar «materiales pedidos»
           // Lo ve todo el equipo (también la oficina, que es quien tiene que pedir); solo abre el módulo quien tiene acceso a Mediciones
           if (!currentUser) return null;
+          if (!(isAdmin || tieneAcceso("mediciones") || tieneAcceso("proyectos") || tieneAcceso("pedidos"))) return null; // quien entra por el portal de Uxcar no lo ve
           const limite = Date.now() - 24 * 3600 * 1000;
           // Con obra creada, «pedidos» = que en la obra ya no falte nada por pedir (lo mira el CRM solo); sin obra, el botón manual
           const tarde = uxcEnviados.filter((x) => {
@@ -5045,6 +5163,58 @@ export default function App() {
                 </div>
               )}
             </div>
+          );
+        })()}
+        {(() => {
+          // Recordatorio de recuento de stock (solo administrador)
+          if (!currentUser || !isAdmin || !recuentoStock || !recuentoStock.proximo) return null;
+          const hoy = new Date().toISOString().slice(0, 10);
+          if (recuentoStock.proximo > hoy) return null;
+          const guardar = (proximo) => fbSet(ref(fbDb, "recordatorios/recuentoStock"), { ...recuentoStock, proximo, ultimo: hoy }).catch(() => showToast("No se pudo guardar el recordatorio", "error"));
+          return (
+            <div className="bg-violet-50 text-violet-900 border-b border-violet-200 px-6 py-2.5 text-sm flex flex-wrap items-center gap-3">
+              <span className="font-semibold mr-auto">🔢 Toca recontar el stock del almacén (las cantidades del CRM se van desajustando con los descuentos automáticos).</span>
+              <button onClick={() => { if (confirm("¿Ya has recontado y ajustado el stock? El próximo aviso será dentro de 45 días.")) guardar(sumarDiasISO(hoy, 45)); }} className="px-3 py-1 rounded-md bg-violet-600 text-white text-xs font-semibold">Ya está recontado</button>
+              <button onClick={() => guardar(sumarDiasISO(hoy, 7))} className="px-3 py-1 rounded-md border border-violet-300 text-xs font-semibold hover:bg-violet-100">Recordármelo en 7 días</button>
+            </div>
+          );
+        })()}
+        {(() => {
+          // Avisos URGENTES de falta de material desde el puesto de Preparación de material
+          if (!currentUser || !(isAdmin || currentUser.responsablePedidos)) return null;
+          const ab = Object.values(alertasPrep || {}).filter((a) => a && a.estado === "abierta");
+          if (!ab.length) return null;
+          return (
+            <button type="button" onClick={() => setModulo("prepmaterial")} className="w-full text-left bg-rose-600 hover:bg-rose-700 text-white px-6 py-2.5 text-sm font-bold">
+              🚨 URGENTE — {ab.length} aviso{ab.length === 1 ? "" : "s"} de falta de material desde preparación: {ab.slice(0, 2).map((a) => a.titulo).join(" · ")}{ab.length > 2 ? "…" : ""} (toca para ver)
+            </button>
+          );
+        })()}
+        {(() => {
+          // Material que falta en el stock de las obras que ya están en el programa y aún no han empezado a fabricar
+          // (descontando lo que ya tienen apartado las demás obras). Se ve desde que se sube el análisis de materiales.
+          if (!currentUser || !(isAdmin || tieneAcceso("proyectos") || tieneAcceso("pedidos"))) return null;
+          const filas = proyectos.filter((p) => p.listadoMateriales && !ESTADOS_OBRA_EMPEZADA.includes(p.estadoTrabajo || "Pendiente de aceptación") && !p.stockDescontado)
+            .map((p) => {
+              const propias = p.origen === "portalUxcar" ? UX_SECCIONES_PROPIAS : SECCIONES_A_MEDIDA;
+              const faltan = compararListadoConStock(p.listadoMateriales, materiales, p.id).filter((f) => f.falta > 0 && !propias.includes(f.seccion));
+              const origen = p.listadoMateriales.numero || p.listadoMateriales.archivo;
+              const conPedido = pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && pd.origenListado && pd.origenListado === origen);
+              return { p, faltan, conPedido };
+            }).filter((x) => x.faltan.length);
+          if (!filas.length) return null;
+          return (
+            <details className="bg-rose-50 text-rose-900 border-b border-rose-100">
+              <summary className="cursor-pointer px-6 py-2.5 text-sm font-semibold hover:bg-rose-100">📦 Falta material en stock: {filas.length} obra{filas.length === 1 ? "" : "s"} (toca para ver cuál)</summary>
+              <div className="px-6 pb-3 space-y-1.5 text-sm">
+                {filas.map(({ p, faltan, conPedido }) => (
+                  <button key={p.id} onClick={() => { setModulo("proyectos"); setProyectoDetailId(p.id); setProyectoView("detail"); }} className="block w-full text-left px-3 py-2 rounded-md bg-white border border-rose-200 hover:border-rose-400">
+                    <span className="font-semibold">{p.origen === "portalUxcar" ? "Uxcar " : "Obra "}{p.numero}</span> — {p.nombre || ""}
+                    <span className="block text-xs text-rose-700">{faltan.length} referencia{faltan.length === 1 ? "" : "s"} sin stock suficiente: {faltan.slice(0, 6).map((f) => `${f.codigo || f.descripcion}${f.color ? " " + f.color : ""} (faltan ${f.falta})`).join(" · ")}{faltan.length > 6 ? ` … y ${faltan.length - 6} más` : ""}. {conPedido ? "Ya hay pedido en espera." : "Aún no hay pedido en espera."}</span>
+                  </button>
+                ))}
+              </div>
+            </details>
           );
         })()}
         {(() => {
@@ -5587,6 +5757,9 @@ export default function App() {
             },
             pinReorganizarHash: (configVentanas && configVentanas.pinReorganizarHash) || "",
             esAdmin: isAdmin,
+            materialesPrep: materiales, pedidosPrep: pedidos, ubicarMaterialesLote,
+            puestosPrep: (currentUser && currentUser.puestosPrep) || [],
+            puedeGestionarPrep: isAdmin || !!(currentUser && currentUser.responsablePedidos),
             huecosTrabajo: (configVentanas && configVentanas.huecosTrabajoCristales) || 6,
             setHuecosTrabajo: (n) => saveConfigVentanas({ ...(configVentanas || {}), huecosTrabajoCristales: Math.max(1, Math.min(60, n)) }),
             actualizarPiezasLote: (cambios) => saveCristales(aplicarCambiosPiezas(cristales, cambios)),
@@ -5641,8 +5814,9 @@ export default function App() {
             onIniciarFabricacion={(proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return; }
-              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso" });
-              showToast("Proyecto marcado como en fabricación");
+              const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
+              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+              showToast(desc ? `En fabricación. Stock descontado: ${desc.n} referencia${desc.n === 1 ? "" : "s"}${desc.creados ? ` (${desc.creados} dada${desc.creados === 1 ? "" : "s"} de alta sola${desc.creados === 1 ? "" : "s"} en Stock, en negativo)` : ""}${desc.sinMaterial ? ` · ${desc.sinMaterial} línea${desc.sinMaterial === 1 ? "" : "s"} sin material dado de alta en Stock (no descontadas)` : ""}` : "Proyecto marcado como en fabricación");
             }}
             cristales={cristales}
             onAddCristal={addCristal}
@@ -5789,6 +5963,8 @@ export default function App() {
         {modulo === "condiciones" && <CondicionesModulo isAdmin={isAdmin} usuario={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""} />}
         {modulo === "uxcar" && (
           <UxcarModulo
+            incidenciasUx={incidenciasUx} stockUx={stockUxAuto} nombreUsuarioUx={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Ecowin PVC"}
+            pedidos={pedidos} proveedores={proveedores} materiales={materiales} onActualizarPedido={actualizarPedido} onDarDeBaja={confirmarPedidoEnteroFabrica} todosProyectos={proyectos}
             tarifaUx={uxTarifa(configVentanas)}
             onGuardarTarifaUx={(t) => { saveConfigVentanas({ ...(configVentanas || {}), tarifaUxcar: t }); showToast("Precios de Uxcar guardados"); }}
             expedientes={uxExpedientes}
@@ -6118,12 +6294,19 @@ const MANUALES = {
   fabrica: {
     puntos: [
       "Este módulo controla lo que pasa en el almacén/taller, independientemente de la parte de oficina.",
-      "\"Listo para fabricar\": líneas de pedido ya recibidas y listas para empezar a fabricar.",
-      "\"Materiales pendientes\": lo que aún falta para poder fabricar.",
-      "\"En fabricación\": lo que ya se está fabricando.",
-      "\"Cristales\": aquí se gestiona la ubicación física de los caballetes de cristal en el almacén (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y el sistema coloca automáticamente cada caballete en un hueco libre. Si los cristales llegan sueltos, en \"Nuevo caballete\" → \"Hacer fotos a las pegatinas\" haces una foto a la pegatina de cada cristal y el caballete se forma solo.",
-      "\"Albarán de salida\": material que sale de fábrica (p.ej. a lacar o a otro proceso externo), con su albarán para imprimir o firmar en pantalla por el chófer.",
-      "\"Reparto\": obras ya listas para repartir o recoger.",
+      "🔍 Buscador de arriba: escribe el nº de presupuesto (6633), el expediente, el nombre o el cliente y te dice en qué pestaña está esa obra; al tocar el resultado te lleva allí.",
+      "\"Listo para fabricar\": obras con todo el material recibido. Al pulsar \"Empezar a fabricar\" es OBLIGATORIO elegir la forma de salida (reparto, recogida o instalación) y el taller. Si no se pone, no deja pasar. Las de Uxcar (busca) también llevan su salida.",
+      "\"Materiales pendientes\": lo que aún falta para poder fabricar, con el albarán del proveedor.",
+      "\"En fabricación\": lo que ya se está fabricando. \"Fabricación terminada\" exige el tipo plano.",
+      "\"Cristales\": ubicación física de los caballetes de cristal (zona Arriba/Uxcar y Abajo/ALUMAVEL). Puedes importar un packing list en foto o PDF y se colocan solos, o hacer foto a las pegatinas de cada cristal en \"Nuevo caballete\".",
+      "\"Discrepancia con oficina\": diferencias entre lo pedido y lo recibido, de los pedidos nuestros y de Uxcar.",
+      "\"Almacén persianas y mosquiteras\": carros y estantes; cada persiana/mosquitera queda en su carro, lado y nivel.",
+      "\"Albarán de salida\": material que sale de fábrica (p. ej. a lacar), con albarán para imprimir o firmar. Dentro de esta pestaña están también los albaranes de reparto y recogida, igual que en el módulo Albaranes.",
+      "\"Almacenes de ventanas\": en Gestionar almacenes puedes crear los que quieras; los marcados \"De Uxcar\" (Valencia, Palma…) salen como \"Uxcar · …\" al elegir almacén de cada caballete.",
+      "\"Preparación material\": todo el material de las obras del día o de la semana junto, sin separar por obras. Cada línea marca LLEGADO / FALTAN. Listas separadas de Perfiles y de Herraje + accesorios (misma referencia y mismo color se suman), con botón Imprimir para llevarla al taller. Los perfiles de Uxcar salen en lista aparte, con su stock de Uxcar; el herraje de Uxcar es nuestro. Cristales, persianas, mosquiteras y postigos dicen dónde están (caballete, carro). Al tocar un sitio vas directo a él. \"Lista para llevar\" resume lo que hay que preparar del próximo día. Arriba hay cuadrados (Todo · Perfiles y herraje · Cristales · Compactos · Auxiliares): pincha uno y ves solo eso; cada persona ve solo los puestos que le dé el administrador. Cada línea y cada obra se marca Preparado. La lista de perfiles suma la barra de margen por roturas (1 por cada 10): sácala también. Si falta algo pulsa Falta: aviso urgente al administrador, con indicación de si hay pedido hecho. Se puede cambiar la ubicación de un material y ubicar material suelto con una foto.",
+      "\"Planning\": se eligen las obras de la semana por taller, con listas por color y ticks de lo ya preparado.",
+      "\"Salidas\": obras listas para salir, con dónde está cada caballete. El chófer firma al cargar y el cliente al recibir; en las firmas el DNI es OBLIGATORIO (el nombre no).",
+      "Albarán de entrega: lleva el tipo plano (dibujos de las ventanas). Si el archivo no se puede mostrar o adjuntar, el CRM lo avisa pero deja firmar.",
       "En la mayoría de pestañas puedes descargar esa vista como documento Word.",
     ],
   },
@@ -7996,7 +8179,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       const yaHabia = pedidosObra.some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && pd.origenListado && pd.origenListado === origen);
       // Cristales y compactos NO se piden desde el análisis: se piden con sus documentos del programa de
       // ventanas (listado de vidrios y pedido compra), cada uno en su pedido, con su proveedor.
-      const faltanAuto = compararListadoConStock(l, materiales).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
+      const faltanAuto = compararListadoConStock(l, materiales, proyecto.id).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
       if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
@@ -8020,7 +8203,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     } catch (e) { setError("No se pudo leer el listado: " + e.message); }
     finally { setLeyendo(false); }
   };
-  const filas = listado ? compararListadoConStock(listado, materiales) : [];
+  const filas = listado ? compararListadoConStock(listado, materiales, proyecto.id) : [];
   const faltan = filas.filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
   const sinAlta = filas.filter((f) => !f.mat && !f.aMedida);
   const yaCreados = pedidosObra.filter((pd) => pd.origenListado && listado && pd.origenListado === (listado.numero || listado.archivo));
@@ -8088,7 +8271,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
                       <td className="px-2 py-1 font-mono-num whitespace-nowrap">{f.codigo}</td>
                       <td className="px-2 py-1">{f.descripcion}{f.color ? <span className="text-slate-400"> · {f.color}</span> : null}</td>
                       <td className="px-2 py-1 text-right">{f.uds}</td>
-                      <td className="px-2 py-1 text-right">{f.aMedida ? <span className="text-slate-400">{f.ancho && f.alto ? `${f.ancho}×${f.alto}` : "a medida"}</span> : f.mat ? f.stock : <span className="text-amber-700">no dado de alta</span>}</td>
+                      <td className="px-2 py-1 text-right">{f.aMedida ? <span className="text-slate-400">{f.ancho && f.alto ? `${f.ancho}×${f.alto}` : "a medida"}</span> : f.mat ? <span title={f.reservado > 0 ? `En stock ${f.stockFisico}, de los cuales ${f.reservado} ya están apartados para otras obras` : ""}>{f.stock}{f.reservado > 0 && <span className="text-[10px] text-amber-600"> (−{f.reservado} otras obras)</span>}</span> : <span className="text-amber-700">no dado de alta</span>}</td>
                       <td className={`px-2 py-1 text-right font-semibold ${f.falta > 0 ? "text-rose-600" : "text-emerald-700"}`}>{f.falta > 0 ? f.falta : "✓"}</td>
                       <td className="px-2 py-1 text-right whitespace-nowrap">{f.precioUd ? money(f.precioUd) : "—"}</td>
                       <td className={`px-2 py-1 text-right whitespace-nowrap ${f.difPrecio ? "text-orange-700 font-semibold" : "text-slate-400"}`}>{f.precioStock ? money(f.precioStock) : "—"}</td>
@@ -11167,7 +11350,20 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
             <button onClick={() => { setCandidatosAlbaran(null); setDatosAlbaran(null); }} className="text-slate-300 hover:text-rose-500"><X size={16} /></button>
           </div>
           {candidatosAlbaran.length === 0 ? (
-            <p className="text-sm text-slate-500">No he encontrado ningún pedido en marcha que coincida por número o proveedor. Búscalo a mano en "Control de pedidos", o crea un pedido nuevo a partir de esta misma foto con el botón de arriba.</p>
+            <div className="space-y-2">
+              <p className="text-sm text-amber-700 font-semibold">⚠ Ningún pedido en marcha coincide por nº de pedido ni por proveedor. Un albarán no se puede recibir sin pedido: elige a cuál corresponde, o crea el pedido con el botón de arriba.</p>
+              <select
+                defaultValue=""
+                onChange={(e) => { const id = e.target.value; if (!id) return; setArchivoParaDetalle(archivoAlbaranGeneral); setCandidatosAlbaran(null); setDatosAlbaran(null); setDetailId(id); setView("detail"); }}
+                className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm bg-white"
+              >
+                <option value="">Elegir pedido en marcha…</option>
+                {pedidos.filter((x) => x.estado !== "Recibido" && x.estado !== "Cancelado").map((x) => (
+                  <option key={x.id} value={x.id}>#{x.numero} — {(x.proveedorExterno || proveedorNombre(x.proveedorId))} · {x.fechaCompra || "sin fecha"} · {x.estado}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400">Al abrirlo, el albarán se compara línea a línea con ese pedido y tú confirmas lo que ha llegado.</p>
+            </div>
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-slate-400 mb-1">{candidatosAlbaran.length === 1 ? "He encontrado este pedido en marcha que coincide:" : "He encontrado varios pedidos en marcha que podrían coincidir — elige el correcto:"}</p>
@@ -15372,13 +15568,14 @@ const claveGrupoPedido = (prov, seccion) => (prov && !String(prov).startsWith("s
 // "Le pido normalmente…"). Sirve mientras el material no esté dado de alta en Stock.
 const proveedorHabitualDeSeccion = (seccion, proveedores) => toArray(proveedores).find((pr) => toArray(pr.seccionesHabituales).includes(seccion)) || null;
 // Lo que Uxcar pide por su cuenta a sus proveedores (desde su portal): no sale de nuestro stock
-const UX_SECCIONES_PROPIAS = ["persianas", "cristal"];
+// (los perfiles y refuerzos tampoco: Uxcar los compra y lleva su propio stock en su portal; el herraje y los accesorios sí son nuestros)
+const UX_SECCIONES_PROPIAS = ["persianas", "cristal", "perfiles", "refuerzo"];
 // Identifica un listado subido (para saber si ya se ha pasado de un sitio a otro)
 const claveListado = (l) => (l ? `${l.numero || ""}|${l.archivo || ""}|${l.fecha || ""}|${toArray(l.lineas).length}|${l.horas || 0}` : "");
 // Líneas de pedido "en espera" de lo que falta en stock según un listado, agrupadas por proveedor
-const gruposPedidoDesdeListado = (listado, materiales, proveedores, excluir = []) => {
+const gruposPedidoDesdeListado = (listado, materiales, proveedores, excluir = [], proyectoId) => {
   const grupos = {};
-  compararListadoConStock(listado, materiales).filter((f) => f.falta > 0 && !excluir.includes(f.seccion)).forEach((f) => {
+  compararListadoConStock(listado, materiales, proyectoId).filter((f) => f.falta > 0 && !excluir.includes(f.seccion)).forEach((f) => {
     const habitual = proveedorHabitualDeSeccion(f.seccion, proveedores);
     const prov = claveGrupoPedido((f.mat && f.mat.proveedorId) || (habitual && habitual.id) || `sin:${f.seccion || "otros"}`, f.seccion);
     (grupos[prov] = grupos[prov] || []).push(f.mat
@@ -15587,15 +15784,46 @@ const buscarMaterialListado = (linea, materiales) => {
   const col = String(linea.color || "").toLowerCase().split(/[\s(]/)[0];
   return mismos.find((m) => col && `${m.color || ""} ${m.acabadoDescripcion || ""} ${m.descripcion || ""}`.toLowerCase().includes(col)) || mismos[0];
 };
-const compararListadoConStock = (listado, materiales) => toArray(listado && listado.lineas).map((l) => {
+// RESERVAS: lo que necesitan las obras que aún no han empezado a fabricar (ya están en el programa) se aparta del stock,
+// para que dos obras no cuenten con las mismas barras. Al empezar a fabricar se descuenta de verdad (stockDescontado).
+const RESERVAS_STOCK = { proyectos: null, materiales: null, mapa: null };
+const ESTADOS_OBRA_EMPEZADA = ["En proceso", "Listo para reparto/recogida", "Albarán de carga firmado", "Entregado", "Cancelado"];
+const lineasQueSalenDeNuestroStock = (p) => toArray(p && p.listadoMateriales && p.listadoMateriales.lineas)
+  .filter((l) => !SECCIONES_A_MEDIDA.includes(l.seccion) && !(p.origen === "portalUxcar" && UX_SECCIONES_PROPIAS.includes(l.seccion)));
+// Margen por roturas y cortes: por cada 10 barras de perfil que gasta una obra se descuenta una más. No se escribe en ningún sitio: el stock simplemente baja.
+const MERMA_CADA_BARRAS = 10;
+const mermaBarras = (barras) => Math.floor((parseFloat(barras) || 0) / MERMA_CADA_BARRAS);
+const esLineaPerfil = (l) => ["perfiles", "refuerzo"].includes(l.seccion);
+const mapaReservasStock = () => {
+  if (RESERVAS_STOCK.mapa && RESERVAS_STOCK.mapaProy === RESERVAS_STOCK.proyectos && RESERVAS_STOCK.mapaMat === RESERVAS_STOCK.materiales) return RESERVAS_STOCK.mapa;
+  const mapa = {};
+  toArray(RESERVAS_STOCK.proyectos).filter((p) => p && !p.stockDescontado && !ESTADOS_OBRA_EMPEZADA.includes(p.estadoTrabajo || "Pendiente de aceptación") && p.listadoMateriales).forEach((p) => {
+    lineasQueSalenDeNuestroStock(p).forEach((l) => {
+      const m = buscarMaterialListado(l, RESERVAS_STOCK.materiales);
+      if (!m) return;
+      const e = (mapa[m.id] = mapa[m.id] || { total: 0, por: {}, perf: {} });
+      const u = parseFloat(l.uds) || 0;
+      e.total += u; e.por[p.id] = (e.por[p.id] || 0) + u;
+      if (esLineaPerfil(l)) e.perf[p.id] = (e.perf[p.id] || 0) + u;
+    });
+  });
+  // la merma de cada obra (1 barra por cada 10) también se aparta
+  Object.values(mapa).forEach((e) => Object.entries(e.perf).forEach(([pid, b]) => { const mm = mermaBarras(b); if (mm) { e.total += mm; e.por[pid] = (e.por[pid] || 0) + mm; } }));
+  RESERVAS_STOCK.mapa = mapa; RESERVAS_STOCK.mapaProy = RESERVAS_STOCK.proyectos; RESERVAS_STOCK.mapaMat = RESERVAS_STOCK.materiales;
+  return mapa;
+};
+const reservadoPorOtras = (materialId, proyectoId) => { const e = mapaReservasStock()[materialId]; return e ? Math.max(0, e.total - (proyectoId ? e.por[proyectoId] || 0 : 0)) : 0; };
+const compararListadoConStock = (listado, materiales, proyectoId) => toArray(listado && listado.lineas).map((l) => {
   // Persianas y cristales se hacen a medida: no se miran en stock, se piden todos
   if (SECCIONES_A_MEDIDA.includes(l.seccion)) return { ...l, mat: null, stock: 0, falta: Math.ceil(l.uds), precioStock: 0, difPrecio: false, aMedida: true };
   const mat = buscarMaterialListado(l, materiales);
-  const stock = mat ? parseFloat(mat.stockReal) || 0 : 0;
+  const stockFisico = mat ? parseFloat(mat.stockReal) || 0 : 0;
+  const reservado = mat && proyectoId ? reservadoPorOtras(mat.id, proyectoId) : 0;
+  const stock = stockFisico - reservado;
   const falta = Math.max(0, Math.ceil(l.uds - stock));
   const precioStock = mat ? parseFloat(mat.precioCompra) || 0 : 0;
   const difPrecio = mat && precioStock > 0 && l.precioUd > 0 && Math.abs(precioStock - l.precioUd) / l.precioUd > 0.01;
-  return { ...l, mat, stock, falta, precioStock, difPrecio };
+  return { ...l, mat, stock, stockFisico, reservado, falta, precioStock, difPrecio };
 });
 
 async function leerConfirmacionCristal(file) {
@@ -16507,6 +16735,8 @@ const BORRADOR_PERSIANAS_FOTOS = "crm_persianasFotos_borrador";
 function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null }) {
   const [filas, setFilas] = useState([]);
   const [carroDestino, setCarroDestino] = useState(""); // "" = automático
+  const planFotos = usePlanningPublicado();
+  const ctxFotos = React.useContext(IncidenciasCristalCtx) || {};
   const [recuperado, setRecuperado] = useState(false);
   const inputCamaraRef = useRef(null);
   const inputGaleriaRef = useRef(null);
@@ -16603,6 +16833,15 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
   const sinLargo = filas.filter((f) => f.estado === "ok" && !(parseFloat(f.largo) > 0)).length;
   const totalUds = buenas.reduce((a, f) => a + (Math.max(1, parseInt(f.cantidad, 10) || 1)), 0);
   const expsResumen = [...new Set(buenas.map((f) => f.expediente).filter(Boolean))];
+  // Cuántas lleva ya cada obra contra las que necesita según el planning publicado (aproximado: cuenta lo que hay en los almacenes de ese expediente).
+  const progresoFotos = expsResumen.map((e) => {
+    const nums = numsExpediente(e);
+    const obrasE = Object.values((planFotos && planFotos.obras) || {}).filter((o) => nums.some((n) => toArray(o.expNums).includes(n)));
+    const esperadas = obrasE.reduce((a, o) => a + toArray(o.lineas).filter((l) => l.seccion === "persianas").reduce((b, l) => b + (parseFloat(l.uds) || 0), 0), 0);
+    const ya = toArray(ctxFotos.persianasAlmacen).filter((x) => !x.entregada && numsExpediente(x.expediente).some((n) => nums.includes(n))).length;
+    const estas = buenas.filter((f) => f.expediente === e).reduce((a, f) => a + Math.max(1, parseInt(f.cantidad, 10) || 1), 0);
+    return { e, nombre: obrasE.map((o) => o.nombre).join(", "), esperadas, ya, estas };
+  });
 
   const colocar = () => {
     if (leyendo) { alert("Espera a que terminen de leerse las fotos."); return; }
@@ -16667,6 +16906,18 @@ function EtiquetasPersianasPorFotos({ onColocar, onCerrar, opcionesCarro = null 
             onChange={(e) => { anadirFotos(e.target.files); e.target.value = ""; }} />
         </div>
 
+        {progresoFotos.length > 0 && (
+          <div className="mb-2 space-y-1">
+            {progresoFotos.map((p) => {
+              const van = p.ya + p.estas;
+              return (
+                <div key={p.e} className={`text-xs rounded px-2 py-1.5 border ${p.esperadas && van < p.esperadas ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+                  <b>Expediente {p.e}</b>{p.nombre ? ` · ${p.nombre}` : ""}: {p.esperadas ? `van ${van} de ${p.esperadas} persianas (${p.estas} en esta foto${p.ya ? ` + ${p.ya} ya en el almacén` : ""})${van < p.esperadas ? ` — faltan ${p.esperadas - van}` : van > p.esperadas ? " — ¡sobran! revisa" : " — completas"}` : `${p.estas} persiana(s) en esta foto (esta obra no está en el planning publicado: no sé cuántas esperar)`}
+                </div>
+              );
+            })}
+          </div>
+        )}
         <div className="text-xs text-slate-600 mb-2 flex flex-wrap gap-x-4 gap-y-1">
           <span><b>{totalUds}</b> persiana(s) listas</span>
           {leyendo > 0 && <span className="text-sky-700 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> leyendo {leyendo}…</span>}
@@ -17208,7 +17459,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [aviso, setAviso] = useState("");
   const [manual, setManual] = useState(null); // formulario «Añadir persiana a mano»
   const [borrador, setBorrador] = useState(null);
-  const [verFotosEtiquetas, setVerFotosEtiquetasRaw] = useState(() => { try { return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) && (localStorage.getItem(CLAVE_ALMACEN_BORRADOR_FOTOS) || ALMACEN_PRINCIPAL_ID) === almacen.id; } catch (e) { return false; } });
+  const [verFotosEtiquetas, setVerFotosEtiquetasRaw] = useState(() => { try { if (abrirFotosPersianas.actual && almacen.id === ALMACEN_PRINCIPAL_ID) return true; return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) && (localStorage.getItem(CLAVE_ALMACEN_BORRADOR_FOTOS) || ALMACEN_PRINCIPAL_ID) === almacen.id; } catch (e) { return false; } });
+  useEffect(() => { abrirFotosPersianas.actual = false; }, []);
   const setVerFotosEtiquetas = (v) => { if (v) { try { localStorage.setItem(CLAVE_ALMACEN_BORRADOR_FOTOS, almacen.id); } catch (e) { /* nada */ } } setVerFotosEtiquetasRaw(v); };
   const inputRef = useRef(null);
   useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } }, [irA && irA.t]);
@@ -18222,6 +18474,7 @@ const discrepanciasPedido = (p) => {
     return null;
   }).filter(Boolean);
 };
+const esPedidoUxcar = (pd, proyectos) => !!pd && (pd.origen === "portalUxcar" || !!pd.uxcarExpedienteId || (((toArray(proyectos).find((x) => x.id === pd.proyectoId)) || {}).origen === "portalUxcar"));
 const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
 function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarPedido, onIrAlbaran, onDarDeBaja }) {
   const grupos = discrepanciasTodas(pedidos);
@@ -23088,7 +23341,7 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
    personas puedan medir ventanas distintas a la vez sin pisarse. */
 const UXC_NODO = "medicionesUxcar";
 const uxcPuente = { crearProyecto: null, nombresClientes: () => [] }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
-const uxcNav = { id: null, propia: false }; // el aviso de arriba deja aquí el expediente que hay que abrir
+const uxcNav = { id: null, propia: false, discrepancias: false }; // el aviso de arriba deja aquí el expediente que hay que abrir
 const UXC_FOTOS = "medicionesUxcarFotos"; // fotos de cada ventana (fallos, estado del hueco…), aparte para no cargar la lista
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
 
@@ -35078,6 +35331,335 @@ function UxProveedorForm({ initial, onCancel, onSave }) {
   );
 }
 
+// Stock de perfiles de Uxcar (solo perfiles; el herraje lo ponemos nosotros). Vive en portalUxcar/stock, NO en el stock de Ecowin PVC.
+const claveStockUx = (ref, color) => `${String(ref || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}|${String(color || "").trim().toLowerCase()}`;
+const codigoStockUx = (v) => claveStockUx(v, "").split("|")[0];
+// Cruza una línea del análisis con el stock de Uxcar: por código y luego por color. estado: ok | color (el código existe pero no ese color) | nada
+const cruzarStockUx = (lista, l) => {
+  const cl = codigoStockUx(l.codigo);
+  const mismo = toArray(lista).filter((x) => codigoStockUx(x.referencia) === cl || (x.codigo2 && codigoStockUx(x.codigo2) === cl));
+  if (!cl || !mismo.length) return { estado: "nada", mismo: [] };
+  const color = String(l.color || "").trim().toLowerCase();
+  const it = mismo.find((x) => String(x.color || "").trim().toLowerCase() === color) || (mismo.length === 1 && !color ? mismo[0] : null);
+  return it ? { estado: "ok", item: it, mismo } : { estado: "color", mismo };
+};
+function UxStockPerfiles({ stock, nombre, aviso, expedientes = [], modo = "portal" }) {
+  const admin = true; // Uxcar también puede añadir perfiles, subir su Excel y tocar cantidades; "Me falta" se ve siempre
+  const esPortal = modo !== "admin";
+  const lista = toArray(stock).sort((a, b) => String(a.referencia).localeCompare(String(b.referencia), "es", { numeric: true }));
+  const [busca, setBusca] = useState("");
+  const [f, setF] = useState({ referencia: "", descripcion: "", color: "", cantidad: "", minimo: "", ubicacion: "" });
+  const [mov, setMov] = useState({}); // id → cantidad a mover
+  const guardar = async (it) => { try { await fbSet(ref(fbDb, `portalUxcar/stock/${it.id}`), it); return true; } catch (e) { aviso("No se pudo guardar"); return false; } };
+  const alta = async () => {
+    if (!f.referencia.trim()) { aviso("Pon la referencia"); return; }
+    const ya = lista.find((x) => claveStockUx(x.referencia, x.color) === claveStockUx(f.referencia, f.color));
+    if (ya) { aviso("Esa referencia y color ya existe: súmale material con el botón +"); return; }
+    const id = uid();
+    const cant = parseFloat(String(f.cantidad).replace(",", ".")) || 0;
+    const ok = await guardar({ id, referencia: f.referencia.trim(), descripcion: f.descripcion.trim(), color: f.color.trim(), cantidad: cant, minimo: parseFloat(String(f.minimo).replace(",", ".")) || 0, ubicacion: f.ubicacion.trim(), movimientos: cant ? [{ id: uid(), fecha: new Date().toISOString().slice(0, 10), tipo: "entrada", cantidad: cant, nota: "Alta", por: nombre }] : [] });
+    if (ok) { setF({ referencia: "", descripcion: "", color: "", cantidad: "", minimo: "", ubicacion: "" }); aviso("Perfil añadido"); }
+  };
+  const mover = async (it, signo) => {
+    const c = parseFloat(String(mov[it.id] || "").replace(",", "."));
+    if (!c || c <= 0) { aviso("Escribe cuánto"); return; }
+    if (signo < 0 && c > (parseFloat(it.cantidad) || 0) && !confirm(`Solo quedan ${it.cantidad}. ¿Sacar ${c} y dejarlo en negativo?`)) return;
+    const ok = await guardar({ ...it, auto: false, cantidad: (parseFloat(it.cantidad) || 0) + signo * c, movimientos: [...toArray(it.movimientos), { id: uid(), fecha: new Date().toISOString().slice(0, 10), tipo: signo > 0 ? "entrada" : "salida", cantidad: c, por: nombre }].slice(-60) });
+    if (ok) setMov({ ...mov, [it.id]: "" });
+  };
+  const [importando, setImportando] = useState(false);
+  const plantilla = () => {
+    const ws = XLSX.utils.aoa_to_sheet([["Referencia", "Descripción", "Color", "Barras", "Mínimo", "Dónde está"], ["8830", "Marco 70 mm", "Blanco", 20, 5, "Estantería 3"]]);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Stock perfiles");
+    XLSX.writeFile(wb, "plantilla_stock_perfiles_uxcar.xlsx");
+  };
+  const importarExcel = async (file) => {
+    if (!file) return;
+    setImportando(true);
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+      const norm = (v) => String(v || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+      const buscaCol = (cab, claves) => cab.findIndex((c) => claves.some((k) => norm(c).startsWith(k)));
+      let h = filas.findIndex((r) => r.some((c) => /^(ref|cod)/.test(norm(c))));
+      if (h < 0) { aviso("No encuentro la columna Referencia. Usa la plantilla."); setImportando(false); return; }
+      const cab = filas[h];
+      let iRef = cab.findIndex((c) => norm(c).startsWith("ref"));
+      const iCod = cab.findIndex((c, k) => norm(c).startsWith("cod") && k !== iRef);
+      if (iRef < 0) iRef = cab.findIndex((c) => norm(c).startsWith("cod"));
+      const col = { ref: iRef, cod2: iCod >= 0 ? iCod : -1, desc: buscaCol(cab, ["desc", "articulo", "nombre"]), color: buscaCol(cab, ["color", "acabado"]), cant: buscaCol(cab, ["barra", "cant", "stock", "uds", "unidad"]), min: buscaCol(cab, ["min"]), donde: buscaCol(cab, ["donde", "ubic", "almacen", "estant"]) };
+      const num = (v) => { const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+      const usadas = new Set(Object.values(col).filter((k) => k >= 0));
+      // Formato "matriz": una fila por perfil y una columna por color (Embero, Blanco, Nogal…)
+      const colsColor = col.color < 0 && col.cant < 0 ? cab.map((c, k) => ({ k, nombre: String(c || "").trim() })).filter((x) => x.nombre && !usadas.has(x.k)) : [];
+      let leidas = [];
+      if (colsColor.length) {
+        filas.slice(h + 1).forEach((r) => {
+          const referencia = String(r[col.ref] || "").trim();
+          if (!referencia) return;
+          colsColor.forEach((cc) => {
+            const v = r[cc.k];
+            if (v === "" || v === null || v === undefined) return;
+            leidas.push({ referencia, codigo2: col.cod2 >= 0 ? String(r[col.cod2] || "").trim() : "", descripcion: col.desc >= 0 ? String(r[col.desc] || "").trim() : "", color: cc.nombre, cantidad: num(v), minimo: 0, ubicacion: "" });
+          });
+        });
+      } else {
+        leidas = filas.slice(h + 1).map((r) => ({ referencia: String(r[col.ref] || "").trim(), codigo2: col.cod2 >= 0 ? String(r[col.cod2] || "").trim() : "", descripcion: col.desc >= 0 ? String(r[col.desc] || "").trim() : "", color: col.color >= 0 ? String(r[col.color] || "").trim() : "", cantidad: col.cant >= 0 ? num(r[col.cant]) : 0, minimo: col.min >= 0 ? num(r[col.min]) : 0, ubicacion: col.donde >= 0 ? String(r[col.donde] || "").trim() : "" })).filter((x) => x.referencia);
+      }
+      const nNeg = leidas.filter((x) => x.cantidad < 0).length;
+      if (nNeg) aviso(`Ojo: ${nNeg} cantidades salen en negativo en el Excel; se importan tal cual.`);
+      if (!leidas.length) { aviso("El Excel no tiene líneas con referencia"); setImportando(false); return; }
+      const mapa = new Map();
+      leidas.forEach((x) => { const k = claveStockUx(x.referencia, x.color); if (mapa.has(k)) mapa.get(k).cantidad += x.cantidad; else mapa.set(k, { ...x }); });
+      const unicas = [...mapa.values()];
+      const existentes = unicas.filter((x) => lista.some((y) => claveStockUx(y.referencia, y.color) === claveStockUx(x.referencia, x.color)));
+      const nuevas = unicas.length - existentes.length;
+      const actualizar = existentes.length > 0 && confirm(`Excel leído: ${unicas.length} perfiles (${nuevas} nuevos, ${existentes.length} ya existían).\n\n¿Poner en los ${existentes.length} que ya existen la cantidad del Excel?\nAceptar = sustituir la cantidad · Cancelar = dejar esos como están.`);
+      if (!existentes.length && !confirm(`Excel leído: ${unicas.length} perfiles nuevos. ¿Añadirlos a tu stock?`)) { setImportando(false); return; }
+      const hoy = new Date().toISOString().slice(0, 10);
+      const patch = {};
+      unicas.forEach((x) => {
+        const y = lista.find((z) => claveStockUx(z.referencia, z.color) === claveStockUx(x.referencia, x.color));
+        if (!y) { const id = uid(); patch[id] = { id, ...x, movimientos: x.cantidad ? [{ id: uid(), fecha: hoy, tipo: "entrada", cantidad: x.cantidad, nota: "Importado de Excel", por: nombre }] : [] }; }
+        else if (actualizar) patch[y.id] = { ...y, codigo2: x.codigo2 || y.codigo2 || "", cantidad: x.cantidad, minimo: x.minimo || y.minimo || 0, ubicacion: x.ubicacion || y.ubicacion || "", descripcion: y.descripcion || x.descripcion, movimientos: [...toArray(y.movimientos), { id: uid(), fecha: hoy, tipo: "ajuste", cantidad: x.cantidad, nota: `Ajustado desde Excel (antes ${y.cantidad})`, por: nombre }].slice(-60) };
+      });
+      const ids = Object.keys(patch);
+      for (const id of ids) await fbSet(ref(fbDb, `portalUxcar/stock/${id}`), patch[id]);
+      aviso(`Excel importado: ${ids.length} perfiles guardados`);
+    } catch (e) { aviso("No se pudo leer el archivo: " + (e.message || e)); }
+    setImportando(false);
+  };
+  // Lo que piden los expedientes que aún no han pasado a producción (solo perfiles), por perfil del stock
+  const necesidad = {};
+  toArray(expedientes).filter((e) => e.estado === "virtual" && e.listadoMateriales).forEach((e) => toArray(e.listadoMateriales.lineas).filter((l) => ["perfiles", "refuerzo"].includes(l.seccion) && l.codigo).forEach((l) => {
+    const c = cruzarStockUx(lista, l);
+    if (c.estado === "ok") necesidad[c.item.id] = (necesidad[c.item.id] || 0) + (parseFloat(l.uds) || 0);
+  }));
+  const falta = (it) => Math.max(0, Math.ceil((necesidad[it.id] || 0) - (parseFloat(it.cantidad) || 0)));
+  // Entrada con albarán: se lee el albarán/factura y las barras entran en el stock
+  const [alb, setAlb] = useState(null); // { leyendo, error, numero, lineas: [{ codigo, descripcion, cantidad, destino }] }
+  const leerAlbaran = async (file) => {
+    if (!file) return;
+    const tipoMime = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+    if (tipoMime !== "application/pdf" && !tipoMime.startsWith("image/")) { aviso("Sube una foto o un PDF del albarán"); return; }
+    setAlb({ leyendo: true, lineas: [] });
+    try {
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+      const info = await uxLeerAlbaranConClaude(dataUrl, tipoMime);
+      const lineas = toArray(info.lineas).filter((l) => l.codigo || l.descripcion).map((l) => {
+        const c = cruzarStockUx(lista, { codigo: l.codigo, color: l.color || "" });
+        const mismo = c.estado === "ok" ? c.item.id : c.mismo && c.mismo.length === 1 ? c.mismo[0].id : "";
+        return { codigo: String(l.codigo || "").trim(), descripcion: l.descripcion || "", color: l.color || "", cantidad: parseFloat(l.cantidad) || 0, destino: mismo || "nuevo" };
+      });
+      setAlb({ leyendo: false, numero: info.numeroAlbaran || file.name, lineas });
+      if (!lineas.length) aviso("No he encontrado líneas en el albarán");
+    } catch (e) { setAlb({ leyendo: false, error: "No se pudo leer el albarán: " + (e.message || e), lineas: [] }); }
+  };
+  const darEntradaAlbaran = async () => {
+    if (!alb || !alb.lineas.length) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const sumar = {};
+    try {
+      for (const l of alb.lineas) {
+        if (!l.cantidad || l.cantidad <= 0 || !l.codigo) continue;
+        const mov = { id: uid(), fecha: hoy, tipo: "entrada", cantidad: l.cantidad, nota: `Albarán ${alb.numero || ""}`.trim(), por: nombre };
+        if (l.destino === "nuevo") {
+          const id = uid();
+          await fbSet(ref(fbDb, `portalUxcar/stock/${id}`), { id, referencia: l.codigo, descripcion: l.descripcion, color: l.color, cantidad: l.cantidad, minimo: 0, ubicacion: "", movimientos: [mov] });
+        } else {
+          const it = (sumar[l.destino] || lista.find((x) => x.id === l.destino));
+          if (!it) continue;
+          sumar[l.destino] = { ...it, auto: false, cantidad: (parseFloat(it.cantidad) || 0) + l.cantidad, movimientos: [...toArray(it.movimientos), mov].slice(-60) };
+          await fbSet(ref(fbDb, `portalUxcar/stock/${l.destino}`), sumar[l.destino]);
+        }
+      }
+      aviso("Entrada guardada"); setAlb(null);
+    } catch (e) { aviso("No se pudo guardar la entrada"); }
+  };
+  const visibles = lista.filter((x) => !busca.trim() || `${x.referencia} ${x.descripcion} ${x.color}`.toLowerCase().includes(busca.trim().toLowerCase()));
+  return (
+    <div className="space-y-4">
+      {esPortal && <p className="text-sm text-slate-600">Vuestros perfiles: lo que tenéis y lo que os falta para los expedientes pendientes.</p>}
+      <div className={`bg-white border border-slate-200 rounded-lg p-4 ${admin ? "" : "hidden"}`}>
+        <p className="text-sm text-slate-600 mb-3">Aquí llevas <b>tu stock de perfiles</b> (los que compráis vosotros). Es solo vuestro: no se mezcla con el de Ecowin PVC. El herraje y los accesorios los pone Ecowin PVC.</p>
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+          <input value={f.referencia} onChange={(e) => setF({ ...f, referencia: e.target.value })} placeholder="Referencia (8830)" className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
+          <input value={f.descripcion} onChange={(e) => setF({ ...f, descripcion: e.target.value })} placeholder="Descripción" className="border border-slate-300 rounded px-2 py-1.5 text-sm sm:col-span-2" />
+          <input value={f.color} onChange={(e) => setF({ ...f, color: e.target.value })} placeholder="Color" className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
+          <input value={f.cantidad} onChange={(e) => setF({ ...f, cantidad: e.target.value })} placeholder="Barras" inputMode="decimal" className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
+          <input value={f.minimo} onChange={(e) => setF({ ...f, minimo: e.target.value })} placeholder="Mínimo" inputMode="decimal" className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
+          <input value={f.ubicacion} onChange={(e) => setF({ ...f, ubicacion: e.target.value })} placeholder="Dónde está (estantería, almacén…)" className="border border-slate-300 rounded px-2 py-1.5 text-sm sm:col-span-4" />
+          <button onClick={alta} className="sm:col-span-2 text-sm font-semibold text-white rounded px-3 py-1.5" style={{ backgroundColor: "#7c3aed" }}>Añadir perfil</button>
+        </div>
+        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3">
+          <label className={`text-sm font-semibold rounded px-3 py-1.5 border border-violet-300 text-violet-700 cursor-pointer hover:bg-violet-50 ${importando ? "opacity-50 pointer-events-none" : ""}`}>
+            {importando ? "Leyendo…" : "📥 Subir stock desde Excel"}
+            <input type="file" accept=".xlsx,.xls,.ods,.csv" className="hidden" onChange={(e) => { importarExcel(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+          </label>
+          <button onClick={plantilla} className="text-xs text-slate-500 underline">Descargar plantilla de Excel</button>
+          <span className="text-xs text-slate-400">Vale una fila por perfil y color (Referencia · Descripción · Color · Barras · Mínimo · Dónde está) o una columna por color (Embero, Blanco, Nogal…)</span>
+        </div>
+      </div>
+      {(() => {
+        // Referencias del informe de materiales de vuestros expedientes que no cruzan con vuestro stock: hay que corregir la referencia o el color
+        const avisos = [];
+        toArray(expedientes).filter((e) => e.estado !== "entregado" && e.listadoMateriales).forEach((e) => {
+          const vistos = new Set();
+          toArray(e.listadoMateriales.lineas).filter((l) => ["perfiles", "refuerzo"].includes(l.seccion)).forEach((l) => {
+            const k = `${l.codigo}|${l.color}`; if (vistos.has(k)) return; vistos.add(k);
+            const c = cruzarStockUx(lista, l);
+            if (c.estado === "ok") return;
+            avisos.push({ exp: e.numero, l, c });
+          });
+        });
+        if (!admin || !avisos.length || !lista.length) return null;
+        return (
+          <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-900">
+            <div className="font-semibold mb-1">⚠ {avisos.length} referencia{avisos.length === 1 ? "" : "s"} de vuestros expedientes no coincide{avisos.length === 1 ? "" : "n"} con vuestro stock</div>
+            <p className="text-xs mb-2">Cambiad la referencia o el color en vuestro stock para que sea <b>igual que en el informe de materiales</b>. Si no, no se sabe que ya lo tenéis.</p>
+            <ul className="space-y-1 max-h-60 overflow-y-auto">
+              {avisos.slice(0, 40).map((a, i) => (
+                <li key={i} className="text-xs bg-white border border-amber-200 rounded px-2 py-1">
+                  Exp. <b>{a.exp}</b> pide <b>{a.l.codigo}</b> {a.l.color ? `en color «${a.l.color}»` : ""}
+                  {a.c.estado === "color" ? <> · en vuestro stock ese perfil está en: <b>{a.c.mismo.map((x) => x.color || "sin color").join(", ")}</b>. Poned el color como «{a.l.color}».</> : <> · <b>no está</b> en vuestro stock con esa referencia. Revisad la referencia (o añadidlo si no lo tenéis).</>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
+      {(() => {
+        const autos = lista.filter((x) => x.auto);
+        if (!admin || !autos.length) return null;
+        return (
+          <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-sm text-sky-900">
+            <div className="font-semibold mb-1">ℹ {autos.length} perfil{autos.length === 1 ? "" : "es"} dado{autos.length === 1 ? "" : "s"} de alta solo{autos.length === 1 ? "" : "s"}, a cero</div>
+            <p className="text-xs mb-1">Los pide el informe de materiales y no estaban en vuestro stock. Si ya lo tenéis con otra referencia o color, corregidlo allí y borrad este. Si no lo tenéis, ponedle las barras con el +.</p>
+            <div className="flex flex-wrap gap-1.5">{autos.slice(0, 40).map((x) => <span key={x.id} className="text-xs bg-white border border-sky-200 rounded px-2 py-0.5"><b>{x.referencia}</b> {x.color}{x.desdeExpediente ? ` · exp. ${x.desdeExpediente}` : ""}</span>)}</div>
+          </div>
+        );
+      })()}
+      <div className="flex flex-wrap items-center gap-3">
+        <label className={`text-sm font-semibold rounded px-3 py-2 text-white cursor-pointer ${alb && alb.leyendo ? "opacity-50 pointer-events-none" : ""}`} style={{ backgroundColor: "#7c3aed" }}>
+          {alb && alb.leyendo ? "Leyendo albarán…" : "📄 Subir la factura o albarán de perfiles"}
+          <input type="file" accept="application/pdf,image/*" className="hidden" onChange={(e) => { leerAlbaran(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        </label>
+        <span className="text-xs text-slate-400">Foto o PDF de la factura: las barras entran solas en vuestro stock, sin meterlas una a una</span>
+      </div>
+      {alb && !alb.leyendo && (
+        <div className="bg-white border-2 border-violet-300 rounded-lg p-3 space-y-2">
+          <div className="text-sm font-semibold text-slate-800">Albarán {alb.numero || ""}: revisa las líneas antes de dar entrada</div>
+          {alb.error && <p className="text-sm text-rose-600">{alb.error}</p>}
+          {alb.lineas.map((l, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 text-sm border-t border-slate-100 pt-1.5">
+              <input value={l.cantidad} onChange={(e) => setAlb({ ...alb, lineas: alb.lineas.map((x, j) => (j === i ? { ...x, cantidad: parseFloat(String(e.target.value).replace(",", ".")) || 0 } : x)) })} className="w-16 border border-slate-300 rounded px-2 py-1 text-sm text-right" inputMode="decimal" />
+              <span className="font-semibold">{l.codigo}</span><span className="text-slate-500 text-xs flex-1 min-w-[120px]">{l.descripcion}</span>
+              <select value={l.destino} onChange={(e) => setAlb({ ...alb, lineas: alb.lineas.map((x, j) => (j === i ? { ...x, destino: e.target.value } : x)) })} className="border border-slate-300 rounded px-2 py-1 text-xs max-w-[220px]">
+                <option value="nuevo">➕ Perfil nuevo{l.color ? ` (${l.color})` : ""}</option>
+                {lista.map((x) => <option key={x.id} value={x.id}>{x.referencia} · {x.color || "sin color"}</option>)}
+              </select>
+            </div>
+          ))}
+          <div className="flex gap-2 pt-1">
+            <button onClick={darEntradaAlbaran} disabled={!alb.lineas.length} className="text-sm font-semibold text-white rounded px-3 py-1.5 disabled:opacity-40" style={{ backgroundColor: "#7c3aed" }}>Dar entrada</button>
+            <button onClick={() => setAlb(null)} className="text-sm text-slate-500 hover:underline">Cancelar</button>
+          </div>
+        </div>
+      )}
+      <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="🔍 Buscar referencia, descripción o color" className="w-full max-w-md border border-slate-300 rounded px-3 py-2 text-sm" />
+      {visibles.length === 0 ? <p className="text-sm text-slate-400">{lista.length ? "Nada coincide." : "Todavía no has metido ningún perfil."}</p> : (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="text-left px-3 py-2">Perfil</th><th className="text-left px-3 py-2">Color</th><th className="text-right px-3 py-2">Tengo</th><th className="text-right px-3 py-2">Me falta</th>{admin && <th className="text-left px-3 py-2">Dónde</th>}{admin && <th className="px-3 py-2">Mover</th>}</tr></thead>
+            <tbody>
+              {visibles.map((it) => {
+                const bajo = (parseFloat(it.minimo) || 0) > 0 && (parseFloat(it.cantidad) || 0) <= (parseFloat(it.minimo) || 0);
+                return (
+                  <tr key={it.id} className="border-t border-slate-100">
+                    <td className="px-3 py-2"><b>{it.referencia}</b>{it.codigo2 ? <span className="text-xs text-slate-400"> · {it.codigo2}</span> : null}<div className="text-xs text-slate-500">{it.descripcion}</div></td>
+                    <td className="px-3 py-2">{it.color}</td>
+                    <td className={`px-3 py-2 text-right font-bold ${bajo ? "text-rose-600" : "text-slate-800"}`}>{it.cantidad}{bajo && <div className="text-[10px] font-semibold">bajo mínimo ({it.minimo})</div>}</td>
+                    {admin && <td className="px-3 py-2"><input defaultValue={it.ubicacion || ""} onBlur={(e) => e.target.value !== (it.ubicacion || "") && guardar({ ...it, ubicacion: e.target.value })} className="w-32 border border-slate-200 rounded px-2 py-1 text-xs" /></td>}
+                    <td className="px-3 py-2 text-right font-bold text-rose-600">{falta(it) > 0 ? falta(it) : <span className="text-slate-300 font-normal">—</span>}</td>
+                    {admin && <td className="px-3 py-2">
+                      <div className="flex items-center gap-1 justify-end">
+                        <input value={mov[it.id] || ""} onChange={(e) => setMov({ ...mov, [it.id]: e.target.value })} inputMode="decimal" placeholder="nº" className="w-14 border border-slate-300 rounded px-2 py-1 text-xs" />
+                        <button onClick={() => mover(it, 1)} title="Entra material" className="px-2 py-1 rounded bg-emerald-600 text-white text-xs font-bold">+</button>
+                        <button onClick={() => mover(it, -1)} title="Sale material" className="px-2 py-1 rounded bg-rose-600 text-white text-xs font-bold">−</button>
+                      </div>
+                    </td>}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+// Incidencias de Uxcar: ellos las ponen desde su portal (con foto si quieren) y Ecowin PVC las ve y las resuelve en el módulo Uxcar.
+function UxIncidencias({ incidencias, expedientes = [], nombre, aviso, modo = "portal" }) {
+  const esCrm = modo === "crm";
+  const lista = toArray(incidencias).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  const [exp, setExp] = useState("");
+  const [texto, setTexto] = useState("");
+  const [foto, setFoto] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+  const guardarInc = async (inc) => { try { await fbSet(ref(fbDb, `portalUxcar/incidencias/${inc.id}`), JSON.parse(JSON.stringify(inc))); return true; } catch (e) { aviso("No se pudo guardar"); return false; } };
+  const enviar = async () => {
+    if (!texto.trim()) { aviso("Cuenta qué ha pasado"); return; }
+    setEnviando(true);
+    try {
+      const url = foto ? await subirArchivoAStorage(foto, "uxcar-incidencias") : "";
+      const ok = await guardarInc({ id: uid(), fecha: new Date().toISOString(), expediente: exp, texto: texto.trim(), foto: url, por: nombre, estado: "abierta" });
+      if (ok) { setTexto(""); setExp(""); setFoto(null); aviso("Incidencia enviada"); }
+    } catch (e) { aviso("No se pudo subir la foto"); }
+    setEnviando(false);
+  };
+  const [resp, setResp] = useState({});
+  return (
+    <div className="space-y-4">
+      {!esCrm && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 max-w-2xl">
+          <div className="text-sm font-semibold text-slate-800">Poner una incidencia</div>
+          <p className="text-xs text-slate-500">Algo que ha llegado mal, roto, que falta, o cualquier problema con un expediente. Ecowin PVC la ve al momento.</p>
+          <select value={exp} onChange={(e) => setExp(e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+            <option value="">— Expediente (si es de uno) —</option>
+            {toArray(expedientes).map((e) => <option key={e.id} value={e.numero}>{e.numero}</option>)}
+          </select>
+          <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} placeholder="Qué ha pasado" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="text-xs font-semibold text-violet-700 cursor-pointer border border-violet-300 rounded px-2.5 py-1.5 hover:bg-violet-50">📷 {foto ? foto.name : "Añadir foto"}<input type="file" accept="image/*" className="hidden" onChange={(e) => setFoto((e.target.files && e.target.files[0]) || null)} /></label>
+            <button onClick={enviar} disabled={enviando} className="ml-auto text-sm font-semibold text-white rounded px-4 py-1.5 disabled:opacity-60" style={{ backgroundColor: "#7c3aed" }}>{enviando ? "Enviando…" : "Enviar incidencia"}</button>
+          </div>
+        </div>
+      )}
+      {lista.length === 0 ? <p className="text-sm text-slate-400">No hay incidencias.</p> : (
+        <div className="space-y-2 max-w-3xl">
+          {lista.map((i) => (
+            <div key={i.id} className={`border rounded-lg p-3 text-sm ${i.estado === "resuelta" ? "bg-slate-50 border-slate-200" : "bg-white border-orange-300"}`}>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${i.estado === "resuelta" ? "text-emerald-700 border-emerald-200 bg-emerald-50" : "text-orange-700 border-orange-300 bg-orange-50"}`}>{i.estado === "resuelta" ? "Resuelta" : "Abierta"}</span>
+                {i.expediente && <b>Exp. {i.expediente}</b>}
+                <span className="text-xs text-slate-400 ml-auto">{new Date(i.fecha).toLocaleDateString("es-ES")} · {i.por}</span>
+              </div>
+              <p className="whitespace-pre-wrap text-slate-800">{i.texto}</p>
+              {i.foto && <a href={i.foto} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[#2E8B57] hover:underline">Ver foto</a>}
+              {i.respuesta && <p className="mt-1 text-xs text-slate-600 bg-slate-100 rounded px-2 py-1"><b>Respuesta:</b> {i.respuesta}</p>}
+              {esCrm && i.estado !== "resuelta" && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <input value={resp[i.id] || ""} onChange={(e) => setResp({ ...resp, [i.id]: e.target.value })} placeholder="Respuesta (opcional)" className="flex-1 min-w-[160px] border border-slate-300 rounded px-2 py-1 text-xs" />
+                  <button onClick={() => guardarInc({ ...i, estado: "resuelta", respuesta: (resp[i.id] || "").trim(), resueltaPor: nombre, resueltaFecha: new Date().toISOString() })} className="text-xs font-semibold px-3 py-1 rounded bg-emerald-600 text-white">Marcar resuelta</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 function UxProveedores({ proveedores, onGuardar, onBorrar }) {
   const [editando, setEditando] = useState(null); // null | "nuevo" | id
   return (
@@ -35446,7 +36028,7 @@ const uxCasarAlbaran = (pedidas, llegadoActual, lineasAlbaran) => {
   return { llegado, extras };
 };
 
-function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
+function UxAlbaranEntrada({ pedido, quien, onGuardar, emailProveedor = "", movilProveedor = "", replyTo = "" }) {
   const pedidas = uxLineasPedidas(pedido);
   const previa = pedido.recepcion || {};
   const [llegado, setLlegado] = useState(() => ({ ...(previa.lineas || {}) }));
@@ -35487,6 +36069,11 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
 
   const faltan = pedidas.filter((l) => (parseFloat(llegado[l.key]) || 0) < l.pedido);
   const completo = pedidas.length > 0 && faltan.length === 0;
+  const [reclamando, setReclamando] = useState(false);
+  const [msgReclamo, setMsgReclamo] = useState("");
+  const textoReclamo = () => `Buenos días,\n\nSobre nuestro pedido ${pedido.numero || ""}${uxDocsPedido(pedido).length ? "" : ""}: al comprobar el albarán que nos ha llegado, esto no coincide con lo pedido:\n\n${faltan.map((l) => `- ${[l.exp, l.modelo, l.codigo, l.descripcion, l.color].filter(Boolean).join(" · ")}${l.ancho || l.alto ? ` (${l.ancho} x ${l.alto})` : ""}: pedidas ${l.pedido}, recibidas ${parseFloat(llegado[l.key]) || 0}`).join("\n")}${comentario.trim() ? `\n\nObservaciones: ${comentario.trim()}` : ""}\n\nPor favor, confirmadnos cuándo llegará lo que falta (o reponedlo si venía roto).\n\nGracias.`;
+  const marcarReclamado = async () => { if (previa.fecha) await onGuardar({ ...previa, reclamado: new Date().toISOString(), reclamadoPor: quien || "" }); };
+  const copiarReclamo = async () => { try { await navigator.clipboard.writeText(textoReclamo()); setMsgReclamo("Texto copiado: pégalo en un correo o WhatsApp"); marcarReclamado(); } catch (e) { setMsgReclamo("No se pudo copiar"); } };
 
   const guardar = async () => {
     setGuardando(true); setAviso(""); setOk("");
@@ -35563,6 +36150,19 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar }) {
           {guardando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} {completo ? "Confirmar entrada y ponerlo en marcha" : "Guardar entrada (falta material)"}
         </button>
       </div>
+      {(faltan.length > 0 || comentario.trim()) && pedidas.length > 0 && (
+        <div className="rounded-md border border-orange-200 bg-orange-50 p-3 space-y-2">
+          <div className="text-sm font-semibold text-orange-800">¿Falta o ha venido roto? Reclámalo al proveedor</div>
+          <p className="text-xs text-orange-700">Se manda lo que falta de la comparación y tu comentario.</p>
+          <div className="flex flex-wrap gap-2">
+            {emailProveedor && <a onClick={() => marcarReclamado()} href={`mailto:${emailProveedor}?subject=${encodeURIComponent(`Reclamación pedido ${pedido.numero || ""} — Uxcar`)}&body=${encodeURIComponent(textoReclamo())}`} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-orange-600 text-white">Abrir en mi correo</a>}
+            {movilProveedor && <a target="_blank" rel="noreferrer" onClick={() => marcarReclamado()} href={`https://wa.me/${String(movilProveedor).replace(/\D/g, "")}?text=${encodeURIComponent(textoReclamo())}`} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-emerald-600 text-white">Reclamar por WhatsApp</a>}
+            <button type="button" onClick={copiarReclamo} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-orange-300 text-orange-800">Copiar texto</button>
+          </div>
+          {msgReclamo && <p className="text-xs font-semibold text-orange-800">{msgReclamo}</p>}
+          {previa.reclamado && <p className="text-[11px] text-slate-500">Ya se reclamó el {uxFecha(String(previa.reclamado).slice(0, 10))}{previa.reclamadoPor ? ` (${previa.reclamadoPor})` : ""}.</p>}
+        </div>
+      )}
       {ok && <p className="text-sm font-semibold text-emerald-700">{ok}</p>}
       {previa.fecha && !ok && <p className="text-[11px] text-slate-400">Última entrada guardada el {uxFecha(previa.fecha)}{previa.por ? ` por ${previa.por}` : ""}.</p>}
     </div>
@@ -37597,7 +38197,9 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
 }
 
 // Almacenes donde pueden estar los caballetes (fábrica, otras ciudades, montadores…)
-const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }]);
+// Almacenes de ventanas. Los marcados "de Uxcar" (Valencia, Palma de Mallorca…) salen con "Uxcar ·" delante en todos los selectores.
+const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }])
+  .map((a) => (a.dueno === "uxcar" ? { ...a, nombreBase: a.nombre, nombre: `Uxcar · ${a.nombre}` } : a));
 
 // Estanterías de ventanas terminadas (36) y solape (36): para saber dónde está cada ventana desde el almacén
 function EstanteriasTerminadas({ indice, isAdmin }) {
@@ -37746,7 +38348,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [gestionando, setGestionando] = useState(false);
   const nombreAlmacen = (id) => (almacenes.find((a) => a.id === id) || almacenes[0] || {}).nombre || "Fábrica";
   const almacenDe = (c) => (almacenes.some((a) => a.id === c.almacenId) ? c.almacenId : almacenes[0].id);
-  const guardarAlmacenes = (lista) => onSaveConfig && onSaveConfig({ ...(config || {}), almacenesCaballetes: lista });
+  const guardarAlmacenes = (lista) => onSaveConfig && onSaveConfig({ ...(config || {}), almacenesCaballetes: lista.map(({ nombreBase, ...r }) => (nombreBase !== undefined ? { ...r, nombre: nombreBase } : r)) });
   const [editando, setEditando] = useState(null); // caballete que se está cargando
   const [filtro, setFiltro] = useState("");
   const [codigo, setCodigo] = useState("");
@@ -38656,12 +39258,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           <p className="text-xs text-slate-500">Crea los que necesites: la fábrica, almacenes en otras ciudades, la furgoneta de cada montador… Luego en cada caballete eliges dónde está.</p>
           {almacenes.map((a, i) => (
             <div key={a.id} className="flex flex-wrap items-center gap-2">
-              <TextInput defaultValue={a.nombre} onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== a.nombre) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, nombre: v } : x))); }} className="!w-56" placeholder="Nombre" />
+              <TextInput defaultValue={a.nombreBase !== undefined ? a.nombreBase : a.nombre} onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== (a.nombreBase !== undefined ? a.nombreBase : a.nombre)) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, nombre: v, ...(x.nombreBase !== undefined ? { nombreBase: v } : {}) } : x))); }} className="!w-56" placeholder="Nombre" />
               <TextInput defaultValue={a.ciudad || ""} onBlur={(e) => { if (e.target.value !== (a.ciudad || "")) guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, ciudad: e.target.value.trim() } : x))); }} className="!w-40" placeholder="Ciudad" />
+              <label className="flex items-center gap-1 text-xs font-semibold text-violet-700"><input type="checkbox" checked={a.dueno === "uxcar"} onChange={(e) => guardarAlmacenes(almacenes.map((x, j) => (j === i ? { ...x, dueno: e.target.checked ? "uxcar" : "" } : x)))} /> De Uxcar</label>
               {almacenes.length > 1 && <button onClick={() => { const n = lista.filter((c) => almacenDe(c) === a.id).length; if (n) { alert(`No se puede quitar: tiene ${n} caballete(s). Muévelos antes a otro almacén.`); return; } if (confirm(`¿Quitar el almacén "${a.nombre}"?`)) guardarAlmacenes(almacenes.filter((x) => x.id !== a.id)); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>}
             </div>
           ))}
-          <button onClick={() => guardarAlmacenes([...almacenes, { id: uid(), nombre: `Almacén ${almacenes.length + 1}`, ciudad: "" }])} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir almacén</button>
+          <div className="flex flex-wrap gap-4">
+            <button onClick={() => guardarAlmacenes([...almacenes, { id: uid(), nombre: `Almacén ${almacenes.length + 1}`, ciudad: "" }])} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:underline"><Plus size={14} /> Añadir almacén</button>
+            <button onClick={() => guardarAlmacenes([...almacenes, { id: uid(), nombre: "Nuevo almacén", ciudad: "", dueno: "uxcar" }])} className="flex items-center gap-1 text-sm font-semibold text-violet-700 hover:underline"><Plus size={14} /> Añadir almacén de Uxcar</button>
+          </div>
+          {!almacenes.some((a) => a.dueno === "uxcar") && <p className="text-xs text-slate-500">Para Uxcar: pulsa "Añadir almacén de Uxcar" y ponle el nombre (Valencia, Palma de Mallorca…). Luego sale en cada caballete al elegir almacén.</p>}
         </div>
       )}
       <div className="bg-white border-2 border-slate-300 rounded-lg p-3 flex flex-wrap items-center gap-2">
@@ -40337,6 +40944,7 @@ function PegatinasSoldadora({ indice, escaneos }) {
 
 // Foco pendiente: la pantalla de línea lo deja aquí y el almacén (cristales/persianas) lo recoge al abrirse para encender el sitio.
 const focoAlmacen = { actual: null };
+const abrirFotosPersianas = { actual: false }; // desde Preparación de material → abre directamente la entrada de persianas con fotos
 // Registro de quién mueve cada caballete (ruta propia, solo se añaden filas: no pisa el array de cristales).
 const textoSitioCab = (c) => (c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? `en ${c.enPuesto}` : "sin ubicar");
 function registrarMovimientosCaballetes(antes, despues, por) {
@@ -41608,10 +42216,108 @@ const usePlanningPublicado = () => {
 
 /* ---------- PUESTO DE PREPARACIÓN DE MATERIAL: lo de todas las obras del día (o de la semana), junto, y "todo puesto" ---------- */
 const addDiasISO = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// Material suelto sin ubicar: se hace una foto (con las etiquetas a la vista), se leen las referencias,
+// se casan con el stock por código y se les pone almacén y estantería de una vez.
+const reducirFotoPrep = (file, max = 1600) => new Promise((res, rej) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    res(c.toDataURL("image/jpeg", 0.82).split(",")[1]);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("No se pudo abrir la foto")); };
+  img.src = url;
+});
+function UbicarPorFoto() {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const mats = toArray(ctx.materialesPrep);
+  const [abierto, setAbierto] = useState(false);
+  const [leyendo, setLeyendo] = useState(false);
+  const [filas, setFilas] = useState(null);
+  const [error, setError] = useState("");
+  const [alm, setAlm] = useState("");
+  const [est, setEst] = useState("");
+  const [hecho, setHecho] = useState("");
+  const inputRef = useRef(null);
+  const almacenes = [...new Set(mats.map((m) => m.almacen).filter(Boolean))];
+  const leer = async (file) => {
+    setLeyendo(true); setError(""); setFilas(null); setHecho("");
+    try {
+      const b64 = await reducirFotoPrep(file);
+      const prompt = 'Esta foto muestra material de una fábrica de ventanas (perfiles, herrajes, accesorios) con sus etiquetas o referencias a la vista. Devuelve ÚNICAMENTE un JSON válido (sin texto adicional ni backticks) con este formato: {"materiales":[{"codigo":"referencia o código tal como se lee","color":"color si se ve, si no vacío","descripcion":"qué es","cantidad":número de unidades o barras si se puede contar, si no 0}]}. Una entrada por referencia distinta. Si no consigues leer ninguna referencia, devuelve {"materiales":[]}. No inventes códigos.';
+      const response = await fetch("/.netlify/functions/anthropic-proxy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 3000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } }, { type: "text", text: prompt }] }] }),
+      });
+      if (!response.ok) throw new Error("Respuesta no válida de la API: " + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "Error de la API");
+      const txt = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("").replace(/```json|```/g, "").trim();
+      const a = txt.indexOf("{"), b = txt.lastIndexOf("}");
+      const info = JSON.parse(a !== -1 && b !== -1 ? txt.slice(a, b + 1) : txt);
+      setFilas(toArray(info.materiales).map((x, i) => ({ i, codigo: String(x.codigo || ""), color: String(x.color || ""), descripcion: String(x.descripcion || ""), cantidad: x.cantidad || 0, mat: x.codigo ? buscarMaterialListado({ codigo: x.codigo, color: x.color }, mats) : null, marcado: true })));
+    } catch (e) { setError("No he podido leer la foto: " + e.message + ". Prueba con más luz y con las etiquetas de frente."); }
+    finally { setLeyendo(false); }
+  };
+  const aplicar = () => {
+    if (!alm.trim() && !est.trim()) { setError("Pon al menos el almacén."); return; }
+    const ids = filas.filter((f) => f.mat && f.marcado).map((f) => f.mat.id);
+    const n = ctx.ubicarMaterialesLote ? ctx.ubicarMaterialesLote(ids, alm.trim(), est.trim()) : 0;
+    setHecho(`${n} referencia(s) ubicadas en ${alm.trim()}${est.trim() ? " · " + est.trim() : ""}.`);
+    setFilas(null); setError("");
+  };
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="mr-auto">
+          <h4 className="font-semibold text-slate-800 text-sm">📷 Ubicar material suelto con una foto</h4>
+          <p className="text-xs text-slate-500">Para lo que está por ahí sin sitio: haz la foto con las etiquetas de frente y lo ubicas en un almacén de una vez.</p>
+        </div>
+        <button onClick={() => setAbierto((v) => !v)} className="px-3 py-1.5 rounded-md text-xs font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">{abierto ? "Cerrar" : "Abrir"}</button>
+      </div>
+      {abierto && (
+        <div className="mt-3 space-y-3">
+          <input ref={inputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+          <button onClick={() => inputRef.current && inputRef.current.click()} disabled={leyendo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2.5 rounded-md text-sm font-semibold disabled:opacity-50">{leyendo ? "Leyendo la foto…" : "Hacer o subir foto"}</button>
+          {error && <p className="text-sm text-rose-700 font-semibold">⚠ {error}</p>}
+          {hecho && <p className="text-sm text-emerald-700 font-semibold">✓ {hecho}</p>}
+          {filas && (filas.length === 0 ? <p className="text-sm text-slate-500">No he leído ninguna referencia en la foto.</p> : (
+            <div className="space-y-2">
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-md">
+                {filas.map((f) => (
+                  <label key={f.i} className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <input type="checkbox" disabled={!f.mat} checked={f.marcado && !!f.mat} onChange={() => setFilas(filas.map((x) => (x.i === f.i ? { ...x, marcado: !x.marcado } : x)))} className="h-4 w-4 rounded border-slate-300 text-[#2E8B57]" />
+                    <span className="flex-1">{f.codigo}{f.color ? ` · ${f.color}` : ""} <span className="text-slate-400 text-xs">{f.descripcion}{f.cantidad ? ` · ~${f.cantidad} ud.` : ""}</span></span>
+                    {f.mat ? <span className="text-xs text-slate-500">en stock: {f.mat.descripcion || f.mat.codigo}{(f.mat.almacen || f.mat.estanteria) ? ` (ahora: ${[f.mat.almacen, f.mat.estanteria].filter(Boolean).join(" · ")})` : " (sin ubicación)"}</span> : <span className="text-xs font-semibold text-rose-600">No está en el stock: avisa</span>}
+                  </label>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input list="dl-almacenes-foto" value={alm} onChange={(e) => setAlm(e.target.value)} placeholder="Almacén" className="border border-slate-300 rounded px-2 py-1.5 text-sm w-40" />
+                <datalist id="dl-almacenes-foto">{almacenes.map((a) => <option key={a} value={a} />)}</datalist>
+                <input value={est} onChange={(e) => setEst(e.target.value)} placeholder="Estantería (opcional)" className="border border-slate-300 rounded px-2 py-1.5 text-sm w-44" />
+                <button onClick={aplicar} disabled={!filas.some((f) => f.mat && f.marcado)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-4 py-2 rounded-md text-sm font-semibold disabled:opacity-40">Ubicar los marcados</button>
+              </div>
+              <p className="text-[11px] text-slate-400">Solo cambia dónde está; no toca las cantidades del stock. Revisa lo que ha leído antes de ubicar.</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   const plan = usePlanningPublicado();
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const itemsP = toArray(ctx.persianasAlmacen);
+  const filtroPuestos = (ctx.esAdmin || !toArray(ctx.puestosPrep).length) ? null : toArray(ctx.puestosPrep);
+  const ve = (pu) => !filtroPuestos || filtroPuestos.includes(pu);
+  const alertasObj = useObjetoFb("alertasPrep");
   const { f: siguiente } = siguienteDiaLaborable();
   const hoyMadrid = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Madrid" }));
   const esJueves = hoyMadrid.getDay() === 4;
@@ -41635,14 +42341,31 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
     vistas.add(t.id);
     obras.push({ id: t.id, dia: d, obra: o });
   }));
-  const listadosObras = obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas } }));
-  const ubicDe = (l) => (l.almacen || l.estanteria) ? `${l.almacen || "Almacén sin asignar"}${l.estanteria ? " · " + l.estanteria : ""}` : "Sin ubicación";
+  const stockUxP = useObjetoFb("portalUxcar/stock");
+  const stockUxLista = toArray(stockUxP);
+  const listadosObras = obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas }, deUx: String(x.id).startsWith("u-") }));
+  // La ubicación sale del stock (en vivo), no de la copia que va dentro del planning publicado.
+  const matsPrep = toArray(ctx.materialesPrep);
+  const matDe = (l) => (l.codigo ? buscarMaterialListado(l, matsPrep) : null);
+  const ubicDe = (l) => { const src = matDe(l) || l; return (src.almacen || src.estanteria) ? `${src.almacen || "Almacén sin asignar"}${src.estanteria ? " · " + src.estanteria : ""}` : "Sin ubicación"; };
+  const almacenesConocidos = [...new Set(matsPrep.map((m) => m.almacen).filter(Boolean))];
   const ordenUbic = (a, b) => ubicDe(a).localeCompare(ubicDe(b), "es", { numeric: true }) || String(a.descripcion || "").localeCompare(String(b.descripcion || ""), "es", { numeric: true });
   // Una lista por persona: perfiles (uno) · herraje + accesorios (otro). Misma referencia y color = una sola línea, sin importar la obra.
+  // Los perfiles de Uxcar salen aparte (de su stock, no del nuestro). El herraje y los accesorios son siempre nuestros, también en las obras de Uxcar.
+  // Barra de margen por roturas: por cada 10 barras de una referencia en una obra se descuenta una más del stock, así que también hay que sacarla del almacén.
+  const conMerma = (l) => (esLineaPerfil(l) ? { ...l, extra: toArray(l.obras).reduce((a, o) => a + mermaBarras(o.uds), 0) } : l);
   const listaGrupos = [
-    ["Perfiles", "Para el que prepara los perfiles", ["perfiles", "refuerzo"]],
-    ["Herraje y accesorios", "Para el que prepara herraje y accesorios", ["herraje", "accesorios"]],
-  ].map(([gk, quien2, secs]) => ({ gk, alm: gk, quien2, lineas: juntarListados(listadosObras, secs).sort(ordenUbic) })).filter((g) => g.lineas.length > 0);
+    ["Perfiles", "Para el que prepara los perfiles", ["perfiles", "refuerzo"], (o) => !o.deUx, false],
+    ["Perfiles de Uxcar (de su stock)", "Perfiles de las obras de Uxcar: salen del stock de Uxcar", ["perfiles", "refuerzo"], (o) => o.deUx, true],
+    ["Herraje y accesorios", "Para el que prepara herraje y accesorios", ["herraje", "accesorios"], () => true, false],
+  ].map(([gk, quien2, secs, filtro, ux]) => ({ gk, alm: gk, quien2, ux, lineas: juntarListados(listadosObras.filter(filtro), secs).map(conMerma).sort(ordenUbic) })).filter((g) => ve("perfiles") && g.lineas.length > 0);
+  // Se busca por CÓDIGO (la referencia o el código alternativo del Excel de Uxcar). Dentro del código, por color; si el color no coincide, se dice en qué colores hay.
+  const stockUxDe = (l) => {
+    const c = cruzarStockUx(stockUxLista, l);
+    if (c.estado === "nada") return null;
+    if (c.estado === "ok") return { cant: parseFloat(c.item.cantidad) || 0, donde: c.item.ubicacion || "" };
+    return { cant: 0, donde: "", otros: c.mismo.map((x) => `${x.color || "sin color"} ${x.cantidad}`).join(" · ") };
+  };
   const claveGrupo = (gk) => String(gk).replace(/[.#$\[\]\/]/g, "_");
   const hechosG = estado.grupos || {};
   const nHechos = listaGrupos.filter((g) => hechosG[claveGrupo(g.gk)]).length;
@@ -41687,10 +42410,60 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
     fbSet(ruta("todo"), { por: quien, en: Date.now(), sinMarcar, obrasConFaltas: faltan, obras: obras.length }).catch((e) => alert("No se pudo guardar: " + e.message));
   };
   const quitarTodo = () => { if (window.confirm("¿Quitar la confirmación de \"todo puesto\"?")) fbSet(ruta("todo"), null).catch(() => {}); };
+  const sanea = (t) => String(t).replace(/[.#$\[\]\/]/g, "_");
+  const hechasL = estado.lineas || {};
+  const tickLinea = (l) => fbSet(ruta(`lineas/${sanea(l.id)}`), hechasL[sanea(l.id)] ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const tickG = (g) => {
+    const h = hechosG[claveGrupo(g.gk)];
+    if (!h) {
+      const sin = g.lineas.filter((l) => !hechasL[sanea(l.id)]).length;
+      if (sin && !window.confirm(`Quedan ${sin} línea(s) sin marcar en «${g.gk}». ¿Dar la lista por preparada igualmente?`)) return;
+    }
+    tick(g.gk);
+  };
+  const tickSimple = (sub) => fbSet(ruta(sub), (estado[sub.split("/")[0]] || {})[sub.split("/")[1]] ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const hechoSimple = (a, b) => (estado[a] || {})[b];
+  // Aviso URGENTE de falta de material: le llega al administrador / responsable de pedidos arriba del todo, hasta que lo marque como resuelto.
+  const [faltaK, setFaltaK] = useState(null);
+  const [faltaNota, setFaltaNota] = useState("");
+  const [editU, setEditU] = useState(null);
+  const idAlerta = (k) => sanea(`${clave}__${k}`);
+  const pedidoDe = (l) => {
+    const m = matDe(l);
+    if (!m) return "no_en_stock";
+    return toArray(ctx.pedidosPrep).some((pd) => pd.estado !== "Recibido" && pd.estado !== "Cancelado" && toArray(pd.lineas).some((x) => x.materialId === m.id)) ? "con_pedido" : "sin_pedido";
+  };
+  const avisar = (k, datos) => fbSet(ref(fbDb, `alertasPrep/${idAlerta(k)}`), { estado: "abierta", urgente: true, periodo: clave, ...datos, nota: faltaNota.trim(), por: quien, en: Date.now() })
+    .then(() => { setFaltaK(null); setFaltaNota(""); }).catch((e) => alert("No se pudo avisar: " + e.message));
+  const resolverAlerta = (id) => fbSet(ref(fbDb, `alertasPrep/${id}`), { ...(alertasObj[id] || {}), estado: "resuelta", resueltaPor: quien, resueltaEn: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const celdaFalta = (k, datos) => {
+    const a = alertasObj[idAlerta(k)];
+    if (a && a.estado === "abierta") return <span className="text-xs font-bold text-rose-700">⚠ Avisado{a.pedido === "sin_pedido" || a.pedido === "no_en_stock" ? " · SIN PEDIDO" : ""}{ctx.puedeGestionarPrep && <button onClick={() => resolverAlerta(idAlerta(k))} className="ml-2 font-normal underline text-slate-500">resuelto</button>}</span>;
+    if (faltaK === k) return (
+      <span className="flex flex-wrap items-center gap-1.5">
+        <input autoFocus value={faltaNota} onChange={(e) => setFaltaNota(e.target.value)} placeholder="Qué falta / cuántas" className="border border-rose-300 rounded px-2 py-1 text-xs w-40" />
+        <button onClick={() => avisar(k, datos)} className="px-2.5 py-1 rounded bg-rose-600 text-white text-xs font-bold">Avisar urgente</button>
+        <button onClick={() => { setFaltaK(null); setFaltaNota(""); }} className="text-xs text-slate-400 underline">cancelar</button>
+      </span>
+    );
+    return <button onClick={() => { setFaltaK(k); setFaltaNota(""); }} className="px-2.5 py-1 rounded border border-rose-300 text-rose-700 text-xs font-semibold hover:bg-rose-50">Falta</button>;
+  };
+  const guardarUbic = (l) => {
+    if (!editU) return;
+    if (!matDe(l)) { alert("Esta referencia no está dada de alta en el stock: no puedo cambiarle la ubicación. Avisa de que falta."); return; }
+    ctx.ubicarMaterialesLote && ctx.ubicarMaterialesLote([matDe(l).id], editU.almacen.trim(), editU.estanteria.trim());
+    setEditU(null);
+  };
+  const abiertasPrep = Object.entries(alertasObj || {}).filter(([, a]) => a && a.estado === "abierta").sort((a, b) => (b[1].en || 0) - (a[1].en || 0));
+  const [vista, setVista] = useState("");
+  const tilesBase = [["perfiles", "Perfiles y herraje", "perfiles"], ["cristales", "Cristales", "cristales"], ["persianas", "Compactos", "cristales"], ["auxiliares", "Auxiliares", "auxiliares"]].filter((t2) => ve(t2[2]));
+  const vistaAct = tilesBase.some((t2) => t2[0] === vista) ? vista : "";
+  const vv = (id) => !vistaAct || vistaAct === id;
+  const hc = (id) => ((vistaAct === "cristales" && id !== "cristales") || (vistaAct === "persianas" && id === "cristales") ? "hidden" : "");
   const imprimirLista = (g) => {
     const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const periodo = modo === "dia" ? fmtDate(base) : `semana del ${fmtDate(dias[0])} al ${fmtDate(dias[4])}`;
-    const filas = g.lineas.map((l) => `<tr><td style="border:1px solid #333;padding:6px;text-align:center;font-weight:bold;width:60px">${esc(Math.round(l.uds * 100) / 100)}</td><td style="border:1px solid #333;padding:6px">${esc(l.descripcion)}${l.color ? " · " + esc(l.color) : ""} <span style="color:#666">${esc(l.codigo)}</span></td><td style="border:1px solid #333;padding:6px">${esc(ubicDe(l))}</td><td style="border:1px solid #333;padding:6px;width:40px"></td></tr>`).join("");
+    const filas = g.lineas.map((l) => `<tr><td style="border:1px solid #333;padding:6px;text-align:center;font-weight:bold;width:60px">${esc(Math.round((l.uds + (l.extra || 0)) * 100) / 100)}${l.extra ? " (" + esc(Math.round(l.uds * 100) / 100) + "+" + esc(l.extra) + ")" : ""}</td><td style="border:1px solid #333;padding:6px">${esc(l.descripcion)}${l.color ? " · " + esc(l.color) : ""} <span style="color:#666">${esc(l.codigo)}</span></td><td style="border:1px solid #333;padding:6px">${esc(ubicDe(l))}</td><td style="border:1px solid #333;padding:6px;width:40px"></td></tr>`).join("");
     const html = `<html><head><meta charset="utf-8"><title>${esc(g.gk)} · ${esc(periodo)}</title></head><body style="font-family:Arial;font-size:13px;padding:24px">
       <h2 style="margin:0 0 4px">${esc(g.gk)}</h2><div style="color:#555;margin-bottom:12px">Preparación de material · ${esc(periodo)} · ${g.lineas.length} referencias</div>
       <table style="width:100%;border-collapse:collapse"><tr style="background:#f1f5f9"><th style="border:1px solid #333;padding:6px">Uds</th><th style="border:1px solid #333;padding:6px;text-align:left">Referencia</th><th style="border:1px solid #333;padding:6px;text-align:left">Dónde está</th><th style="border:1px solid #333;padding:6px">✓</th></tr>${filas}</table></body></html>`;
@@ -41711,9 +42484,55 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
         </div>
         <p className="text-xs text-slate-500">Junta el material de todas las obras que <b>empiezan</b> {modo === "dia" ? "ese día" : `entre el ${fmtDate(dias[0])} y el ${fmtDate(dias[4])}`} según el planning confirmado. {esJueves && modo === "semana" ? "Es jueves: se enseña la semana siguiente." : ""}</p>
       </div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {[["", "Todo", ""], ...tilesBase].map(([id, nombre]) => {
+          const n = id === "perfiles" ? `${nHechos}/${listaGrupos.length}` : (id === "cristales" || id === "persianas") ? `${filasObra.filter((x) => hechoSimple("obras", sanea(x.id))).length}/${filasObra.length} obras` : id === "auxiliares" ? (hechoSimple("aux", "ok") ? "✓" : "pendiente") : "";
+          return (
+            <button key={id || "todo"} onClick={() => setVista(id)} className={`rounded-xl border-2 px-3 py-4 text-left ${vistaAct === id ? "bg-[#2E8B57] border-[#2E8B57] text-white" : "bg-white border-slate-200 text-slate-800 hover:border-[#2E8B57]"}`}>
+              <div className="font-display font-bold text-base leading-tight">{nombre}</div>
+              {n && <div className={`text-xs mt-1 ${vistaAct === id ? "text-emerald-50" : "text-slate-500"}`}>{n}</div>}
+            </button>
+          );
+        })}
+      </div>
+      {vistaAct === "persianas" && onIrA && (
+        <button onClick={() => { abrirFotosPersianas.actual = true; onIrA("persianasAlmacen"); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="w-full flex items-center justify-center gap-2 text-sm font-semibold px-4 py-3 rounded-lg">
+          📷 Ubicar compactos con foto de la carga (te dice cuántos van y los coloca en un carro)
+        </button>
+      )}
+      {ctx.puedeGestionarPrep && abiertasPrep.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-4">
+          <h4 className="font-bold text-rose-800 text-sm mb-2">🚨 Avisos urgentes de falta de material ({abiertasPrep.length})</h4>
+          <div className="space-y-2">
+            {abiertasPrep.map(([id, a]) => (
+              <div key={id} className="flex flex-wrap items-start gap-2 bg-white border border-rose-200 rounded-md px-3 py-2 text-sm">
+                <div className="mr-auto">
+                  <div className="font-semibold text-slate-800">{a.titulo}{(a.pedido === "sin_pedido" || a.pedido === "no_en_stock") && <span className="ml-2 text-[11px] font-bold text-white bg-rose-600 rounded px-1.5 py-0.5">{a.pedido === "no_en_stock" ? "NO ESTÁ EN STOCK NI PEDIDO" : "SIN PEDIDO HECHO"}</span>}{a.pedido === "con_pedido" && <span className="ml-2 text-[11px] font-bold text-amber-800 bg-amber-100 rounded px-1.5 py-0.5">hay pedido en marcha</span>}</div>
+                  <div className="text-xs text-slate-600">{a.detalle}{a.obras ? ` · Obras: ${a.obras}` : ""}{a.nota ? ` · «${a.nota}»` : ""}</div>
+                  <div className="text-[11px] text-slate-400">{(a.por || "").split("@")[0]} · {hora(a.en)}</div>
+                </div>
+                <button onClick={() => resolverAlerta(id)} className="px-3 py-1.5 rounded-md text-xs font-semibold bg-[#2E8B57] text-white">Resuelto</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {ve("perfiles") && vv("perfiles") && <UbicarPorFoto />}
+      {ve("auxiliares") && vv("auxiliares") && (
+        <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <h4 className="font-semibold text-slate-800 text-sm mb-1">Auxiliares</h4>
+          <p className="text-xs text-slate-500 mb-3">Las pegatinas y el control de los auxiliares se hacen en Línea (pistola) → Auxiliares. Aquí marcas que los de este periodo están preparados, o avisas si falta algo.</p>
+          <div className="flex flex-wrap items-center gap-3">
+            {hechoSimple("aux", "ok") ? <span className="text-sm font-semibold text-emerald-700">✓ Auxiliares preparados · {(hechoSimple("aux", "ok").por || "").split("@")[0]} · {hora(hechoSimple("aux", "ok").en)}</span> : null}
+            <button onClick={() => tickSimple("aux/ok")} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${hechoSimple("aux", "ok") ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{hechoSimple("aux", "ok") ? "Quitar" : "Auxiliares preparados"}</button>
+            {celdaFalta("aux", { puesto: "auxiliares", titulo: "Auxiliares", detalle: `Periodo ${clave}`, obras: obras.map((x) => x.obra.nombre).join(", "), pedido: "" })}
+          </div>
+        </div>
+      )}
+      <datalist id="dl-almacenes-prep">{almacenesConocidos.map((a) => <option key={a} value={a} />)}</datalist>
       {!plan ? <p className="text-sm text-slate-400">No hay ningún planning confirmado.</p> : obras.length === 0 ? <p className="text-sm text-slate-400">No empieza ninguna obra en este periodo según el planning confirmado.</p> : (
         <>
-          <div className={`rounded-xl p-5 border ${estado.todo ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+          <div className={`rounded-xl p-5 border ${filtroPuestos || vistaAct ? "hidden" : ""} ${estado.todo ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
             {estado.todo ? (
               <div className="flex flex-wrap items-center gap-3">
                 <span className="text-lg font-extrabold text-emerald-800">✓ TODO PUESTO</span>
@@ -41727,21 +42546,23 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
               </div>
             )}
           </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
-            <h4 className="font-semibold text-slate-800 text-sm mb-2">Persianas y cristales por obra</h4>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-2">{vistaAct === "cristales" ? "Cristales por obra" : vistaAct === "persianas" ? "Compactos (persianas), mosquiteras y postigos por obra" : "Cristales y compactos por obra"}</h4>
             <p className="text-xs text-slate-600 mb-2"><b className="text-emerald-700">✓ Todo llegado</b> = puedes empezar · <b className="text-amber-700">FALTAN</b> = aún no ha llegado ese material (casilla naranja) · «No lleva» = esa obra no tiene ese material</p>
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Persianas</th><th className={th}>Cristales</th><th className={th}>Mosquiteras</th><th className={th}>Postigos</th></tr></thead>
+                <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={`${th} ${hc("persianas")}`}>Compactos</th><th className={`${th} ${hc("cristales")}`}>Cristales</th><th className={`${th} ${hc("persianas")}`}>Mosquiteras</th><th className={`${th} ${hc("persianas")}`}>Postigos</th><th className={th}>Preparado</th><th className={th}>Falta</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {filasObra.map((x) => (
                     <tr key={x.id}>
                       <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
                       <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
-                      <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}{x.sitiosP.length > 0 && <div className="mt-0.5">{x.sitiosP.map((sv, k) => chipSitio(sv, k))}</div>}</td>
-                      <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}{x.sitiosC.length > 0 && <div className="mt-0.5">{x.sitiosC.map((sv, k) => chipSitio(sv, k))}</div>}</td>
-                      <td className={`px-3 py-2 ${x.mosqFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "mosquitera")}</td>
-                      <td className={`px-3 py-2 ${x.postFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "postigo")}</td>
+                      <td className={`px-3 py-2 ${hc("persianas")} ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.pe, x.pl, toArray(x.obra.lineas).length > 0, "persianas")}{x.sitiosP.length > 0 && <div className="mt-0.5">{x.sitiosP.map((sv, k) => chipSitio(sv, k))}</div>}</td>
+                      <td className={`px-3 py-2 ${hc("cristales")} ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{celdaMat(x.ce, x.cl, toArray(x.obra.lineas).length > 0, "cristales")}{x.sitiosC.length > 0 && <div className="mt-0.5">{x.sitiosC.map((sv, k) => chipSitio(sv, k))}</div>}</td>
+                      <td className={`px-3 py-2 ${hc("persianas")} ${x.mosqFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "mosquitera")}</td>
+                      <td className={`px-3 py-2 ${hc("persianas")} ${x.postFalta ? "bg-amber-50 text-amber-800" : "text-slate-600"}`}>{celdaAcc(x, "postigo")}</td>
+                      <td className="px-3 py-2">{hechoSimple("obras", sanea(x.id)) ? <span className="text-emerald-700 font-bold text-xs">✓ {(hechoSimple("obras", sanea(x.id)).por || "").split("@")[0]} <button onClick={() => tickSimple(`obras/${sanea(x.id)}`)} className="font-normal text-slate-400 underline ml-1">quitar</button></span> : <button onClick={() => tickSimple(`obras/${sanea(x.id)}`)} className="px-2.5 py-1 rounded bg-[#2E8B57] text-white text-xs font-semibold">Preparado</button>}</td>
+                      <td className="px-3 py-2">{celdaFalta(`obra_${x.id}`, { puesto: "cristales", titulo: `${x.obra.nombre}: falta material`, detalle: [x.pe && x.pl < x.pe ? `persianas ${x.pl}/${x.pe}` : "", x.ce && x.cl < x.ce ? `cristales ${x.cl}/${x.ce}` : "", x.mosqFalta ? "mosquiteras" : "", x.postFalta ? "postigos" : ""].filter(Boolean).join(", ") || "indicado en la nota", obras: x.obra.nombre, pedido: "" })}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -41749,7 +42570,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
             </div>
             <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
           </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-5">
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("perfiles") && vv("perfiles") ? "" : "hidden"}`}>
             <h4 className="font-semibold text-slate-800 text-sm mb-1">Perfiles, herrajes y accesorios</h4>
             <p className="text-xs text-slate-500 mb-3">Todas las obras juntas: misma referencia y color = una sola línea. A la derecha, dónde está en el almacén. Aquí no se comprueba si ha llegado: mira el pedido.</p>
             {listaGrupos.length === 0 ? <p className="text-sm text-slate-400">Las obras de este periodo no tienen listado de materiales cargado.</p> : (
@@ -41762,14 +42583,26 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
                         <span className="font-semibold text-slate-800 mr-auto">{g.gk} <span className="text-slate-400 font-normal text-xs">({g.lineas.length} referencias)</span></span>
                         {h ? <span className="text-xs text-emerald-700 font-semibold">✓ {(h.por || "").split("@")[0]}</span> : null}
                         <button onClick={() => imprimirLista(g)} className="px-3 py-1.5 rounded-md text-xs font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">🖨 Imprimir</button>
-                        <button onClick={() => tick(g.gk)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparado"}</button>
+                        <button onClick={() => tickG(g)} className={`px-3 py-1.5 rounded-md text-xs font-semibold ${h ? "text-slate-500 border border-slate-300" : "bg-[#2E8B57] text-white"}`}>{h ? "Quitar" : "Preparado"}</button>
                       </div>
                       <div className="divide-y divide-slate-100 border-t border-slate-100">
                         {g.lineas.map((l) => (
-                          <div key={l.id} className="flex items-baseline gap-3 px-3 py-1.5 text-sm">
-                            <span className="font-bold text-slate-800 w-14 text-right shrink-0">{Math.round(l.uds * 100) / 100}</span>
-                            <span className="text-slate-700 flex-1">{l.descripcion}{l.color ? ` · ${l.color}` : ""} <span className="text-slate-400 text-xs">{l.codigo}</span></span>
-                            <span className={`text-xs shrink-0 ${l.almacen || l.estanteria ? "text-slate-600 font-semibold" : "text-slate-300"}`}>{ubicDe(l)}</span>
+                          <div key={l.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-1.5 text-sm">
+                            <input type="checkbox" checked={!!hechasL[sanea(l.id)]} onChange={() => tickLinea(l)} className="h-5 w-5 rounded border-slate-300 text-[#2E8B57] shrink-0 self-center" title="Preparado" />
+                            <span className="font-bold text-slate-800 w-14 text-right shrink-0">{Math.round((l.uds + (l.extra || 0)) * 100) / 100}</span>
+                            <span className="text-slate-700 flex-1">{l.descripcion}{l.color ? ` · ${l.color}` : ""} <span className="text-slate-400 text-xs">{l.codigo}</span>{l.extra ? <span className="text-xs font-semibold text-amber-700"> ({Math.round(l.uds * 100) / 100} + {l.extra} de margen por roturas: sácala también)</span> : null}</span>
+                            {g.ux
+                              ? (() => { const su = stockUxDe(l); return su ? <span className={`text-xs shrink-0 font-semibold ${su.cant >= l.uds ? "text-violet-700" : "text-rose-600"}`}>{su.otros ? `Sin ese color en stock Uxcar (tienen: ${su.otros})` : `Stock Uxcar: ${su.cant}${su.donde ? " · " + su.donde : ""}${su.cant < l.uds ? " ⚠ no llega" : ""}`}</span> : <span className="text-xs shrink-0 font-semibold text-rose-600">Sin stock Uxcar</span>; })()
+                              : <span className={`text-xs shrink-0 ${ubicDe(l) !== "Sin ubicación" ? "text-slate-600 font-semibold" : "text-rose-400"}`}>{ubicDe(l)} <button onClick={() => { const src = matDe(l) || l; setEditU({ id: l.id, almacen: src.almacen || "", estanteria: src.estanteria || "" }); }} className="ml-1 text-[#2E8B57] underline font-normal" title="Cambiar la ubicación">cambiar</button></span>}
+                            <span className="shrink-0">{celdaFalta(`l_${l.id}`, { puesto: "perfiles", titulo: `${l.descripcion || l.codigo}${l.color ? " · " + l.color : ""} (${l.codigo})`, detalle: `Hacen falta ${Math.round((l.uds + (l.extra || 0)) * 100) / 100} ud.${l.extra ? " (con " + l.extra + " de margen)" : ""}`, obras: toArray(l.obras).map((o) => o.nombre).join(", "), pedido: g.ux ? "" : pedidoDe(l) })}</span>
+                            {editU && editU.id === l.id && (
+                              <div className="w-full flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5">
+                                <input list="dl-almacenes-prep" value={editU.almacen} onChange={(e) => setEditU({ ...editU, almacen: e.target.value })} placeholder="Almacén" className="border border-slate-300 rounded px-2 py-1 text-xs w-36" />
+                                <input value={editU.estanteria} onChange={(e) => setEditU({ ...editU, estanteria: e.target.value })} placeholder="Estantería / hueco" className="border border-slate-300 rounded px-2 py-1 text-xs w-36" />
+                                <button onClick={() => guardarUbic(l)} className="px-3 py-1 rounded bg-[#2E8B57] text-white text-xs font-semibold">Guardar</button>
+                                <button onClick={() => setEditU(null)} className="text-xs text-slate-400 underline">cancelar</button>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -42957,9 +43790,9 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
         <div className="text-sm font-semibold text-slate-800">Mandar al proveedor</div>
         <div className="flex flex-wrap gap-2">
           {email ? (
-            <button onClick={enviarCorreo} disabled={enviando} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
-              {enviando ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />} {pedido.enviadoEmail ? "Volver a mandar por correo" : "Mandar por correo"}
-            </button>
+            <a href={`mailto:${email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={() => { onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
+              <Mail size={14} /> Abrir en mi correo
+            </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene correo puesto.</span>}
           {enlaceWhatsapp ? (
             <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={() => { onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
@@ -42970,7 +43803,7 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
             <button onClick={() => onMarcar({ enviadoManual: new Date().toISOString() })} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
           )}
         </div>
-        <p className="text-xs text-slate-500">El correo sale a nombre de Uxcar y, si el proveedor contesta, la respuesta os llega a vuestro correo. Por WhatsApp va el enlace al documento en el mensaje.</p>
+        <p className="text-xs text-slate-500">Se abre vuestro propio correo con el mensaje escrito (el CRM no manda correos). Por WhatsApp va el enlace al documento en el mensaje.</p>
         {msg && <p className="text-sm font-semibold text-emerald-700">{msg}</p>}
         {err && <p className="text-sm text-rose-600">{err}</p>}
         {(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual) && (
@@ -42979,7 +43812,7 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
       </div>
 
       {onRecepcion && (pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual || pedido.recepcion) && (
-        <UxAlbaranEntrada key={pedido.id} pedido={pedido} quien={(perfil && perfil.nombre) || authUser.email} onGuardar={onRecepcion} />
+        <UxAlbaranEntrada key={pedido.id} pedido={pedido} quien={(perfil && perfil.nombre) || authUser.email} onGuardar={onRecepcion} emailProveedor={email} movilProveedor={movil} replyTo={perfil.email || authUser.email || ""} />
       )}
 
       {exps.map((x, i) => (
@@ -43217,15 +44050,14 @@ function estadoDocumentosObra(p) {
     { nombre: "Listado de dibujos (tipo plano)", ok: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length), nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" },
     { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
     { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
-    { nombre: "Etiquetas", ok: lotes.length > 0, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
-    { nombre: "Hoja de corte", ok: lotesConCorte(lotes), nota: lotesConCorte(lotes) ? "aplicada" : lotes.length ? "" : "va después de las etiquetas" },
-    parseFloat(p.horasFabricacion) > 0
-      ? { nombre: "Horas de fabricación", ok: true, nota: `${p.horasFabricacion} h puestas a mano` }
-      : lis && parseFloat(lis.horas) > 0
-        ? { nombre: "Listado de mano de obra (horas)", ok: true, nota: `${lis.horas} h para el planning` }
-        : { nombre: "Listado de mano de obra (horas)", ok: false, opcional: true, nota: "opcional: sin él, las horas se calculan con el recuento" },
+    { nombre: "Etiquetas", ok: lotes.length > 0, opcional: true, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
+    { nombre: "Hoja de corte", ok: lotesConCorte(lotes), opcional: true, nota: lotesConCorte(lotes) ? "aplicada" : lotes.length ? "" : "va después de las etiquetas" },
+    lis && parseFloat(lis.horas) > 0
+      ? { nombre: "Listado de mano de obra (horas)", ok: true, nota: `${lis.horas} h para el planning` }
+      : { nombre: "Listado de mano de obra (horas)", ok: false, nota: "sin él, el planning usa las horas calculadas con el recuento (las de Fábrica → Planning)" },
   ];
 }
+const tieneHorasListado = (x) => !!(x && x.listadoMateriales && parseFloat(x.listadoMateriales.horas) > 0);
 function documentosQueFaltanObra(p) {
   const lis = p.listadoMateriales;
   const docs = toArray(p.documentos);
@@ -43240,12 +44072,10 @@ function documentosQueFaltanObra(p) {
   if (toArray(p.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
   const faltan = [];
+  // Basta con el análisis de materiales: de él salen los cristales, las persianas y el resto. Dibujos, cristales y persianas sueltos ya no se exigen.
   if (!tiene.analisis) faltan.push("análisis de materiales");
-  if (!tiene.dibujos) faltan.push("listado de dibujos");
-  if (!tiene.cristales) faltan.push("listado de cristales");
-  if (!tiene.persianas && (!lis || llevaPersianas(p.recuento, lis))) faltan.push("listado de persianas");
-  if (!tiene.etiquetas) faltan.push("etiquetas");
-  if (!tiene.corte) faltan.push("hoja de corte");
+  if (!tieneHorasListado(p)) faltan.push("listado de mano de obra (horas)");
+  // Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola
   return faltan;
 }
 function documentosQueFaltanUx(e, uxPedidos) {
@@ -43263,10 +44093,10 @@ function documentosQueFaltanUx(e, uxPedidos) {
   const faltan = [];
   if (!tiene.dibujos) faltan.push("listado de dibujos");
   if (!tiene.analisis) faltan.push("informe de materiales");
+  if (!tieneHorasListado(e)) faltan.push("listado de mano de obra (horas)");
   if (!tiene.cristales) faltan.push("pedido de cristales");
   if (!tiene.persianas && (!lis || llevaPersianas(e.recuento, lis))) faltan.push("pedido de persianas");
-  if (!tiene.etiquetas) faltan.push("etiquetas");
-  if (!tiene.corte) faltan.push("hoja de corte");
+  // Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola
   return faltan;
 }
 
@@ -43628,7 +44458,7 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 5, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 6, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
@@ -43639,9 +44469,11 @@ Todos los documentos de una obra se suben **de una vez, con un solo botón**, de
 | Listado de dibujos | Tipo plano (va con el albarán) y recuento de ventanas | No |
 | Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
 | Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
-| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete | No |
-| Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
-| Listado de mano de obra (si el programa lo saca) | **Horas de fabricación exactas** para el planning | No |
+| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Opcional por ahora** (hasta que esté la línea con pistola) | No |
+| Hoja de corte (opcional por ahora) | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
+| Listado de mano de obra | **Horas de fabricación exactas** para el planning. Si falta, el planning usa las horas calculadas con el recuento y sale el aviso "Faltan documentos" | No |
+
+**Obligatorio:** el análisis de materiales (de él salen cristales, persianas y el resto) y el **listado de mano de obra** (las horas de fabricación). Si falta el listado de mano de obra, la obra **no se bloquea**: el planning usa las horas calculadas con el recuento (las que están programadas en Fábrica → Planning). Pero el aviso amarillo "Faltan documentos" se queda para que lo tengáis controlado. Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola; entonces volverán a ser obligatorias.
 
 **Atajo:** si la obra solo tiene el listado de vidrios y la hoja de corte (por ejemplo un expediente de Uxcar ya pedido), no hace falta nada más: usa **"Expediente rápido"** (ver la guía "Expediente rápido") y no saldrá el aviso de documentos que faltan.
 
@@ -43668,15 +44500,15 @@ El planning reparte las obras por días según sus horas. Salen así, por este o
 4. Espera. Pone "Leyendo…" y puede tardar **un par de minutos**. No cierres ni cambies de pantalla.
 5. **Lee el aviso** que sale: dice qué ha hecho con cada PDF y si hay **versiones distintas** o un listado repetido que no ha usado.
 6. Arriba sale el **pedido de cristales** (y el de **persianas** si lleva). Revisa las líneas y **confírmalo**. Si cierras sin confirmar, el pedido no se crea.
-7. Si faltaba algún PDF, súbelo luego con el mismo botón. Mientras falte alguno, sale arriba el aviso amarillo **"Faltan documentos"**.
+7. Si faltaba algún PDF, súbelo luego con el mismo botón. Mientras falte el análisis de materiales o el listado de mano de obra, sale arriba el aviso amarillo **"Faltan documentos"**.
 
 ## Qué revisar después
 - [ ] **Recuento de ventanas**: fijos (con sus huecos), puertas (con o sin cerradura), ventanas unidas y nº de hojas, como en el listado de dibujos.
 - [ ] **Pedidos en espera**: hay uno por proveedor con lo que falta. **No debe haber dos pedidos iguales.**
 - [ ] **Pedido de cristales** confirmado (y de persianas si lleva).
 - [ ] **"Qué lleva la obra"** está relleno solo.
-- [ ] **Etiquetas**: el aviso dice cuántas ventanas ha leído; tiene que ser el total de la obra.
-- [ ] **Hoja de corte**: "aplicada a X ventanas (N fijos, N puertas)". X tiene que ser el total.
+- [ ] **Etiquetas** (si se han subido): el aviso dice cuántas ventanas ha leído; tiene que ser el total de la obra.
+- [ ] **Hoja de corte** (si se ha subido): "aplicada a X ventanas (N fijos, N puertas)". X tiene que ser el total.
 
 ## Si algo sale mal
 Ante cualquier aviso raro: **no lo vuelvas a subir**. Haz una captura del aviso y mándasela a Miguel.
@@ -43699,19 +44531,19 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, version: 3, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 9, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
-Cuando la obra tiene sus 6 documentos subidos, empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
+Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; etiquetas y hoja de corte son opcionales por ahora), empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
 | Paso | Quién | Dónde en el CRM | Cuándo está hecho |
 | --- | --- | --- | --- |
 | 1. Pedir el material | Oficina (responsable de pedidos) | Pedidos | Pedidos enviados con fecha de llegada |
-| 2. Recibir el material | Fábrica | Pedidos → Recibir con el albarán | Todo el pedido llegado y confirmado |
+| 2. Recibir el material | Fábrica | Pedidos → Recibir con el albarán | Todo el pedido llegado y confirmado (un albarán siempre va contra un pedido) |
 | 3. Planning de la semana | Encargado | Fábrica → Planning | Planning confirmado |
 | 4. Empezar a fabricar | Encargado | Fábrica → Listo para fabricar | Obra "En fabricación" |
 | 5. Fabricar por puestos | Cada operario | Mi puesto de trabajo y Línea (pistola) | Todas las ventanas leídas en la línea |
 | 6. Caballetes y fin de fabricación | Carga | Línea (pistola) y Fábrica → En fabricación | Caballetes cargados y "Fabricación terminada" |
-| 7. Salida y entrega | Chófer o cliente | Albaranes | Albarán de entrega firmado por el cliente |
+| 7. Salida y entrega | Chófer o cliente | Albaranes (o Fábrica → Albarán de salida) | Albarán de entrega firmado por el cliente |
 | 8. Facturar y cobrar | Oficina | Facturas y Entrada de dinero | Factura emitida y dinero cobrado |
 
 ## 1. Pedir el material
@@ -43724,9 +44556,12 @@ Al subir los documentos de la obra (con el botón único), el CRM crea solo los 
 - [ ] Solo los responsables pueden hacer pedidos. El resto los **solicita**.
 - [ ] Si un pedido no llega en su fecha, sale un aviso azul arriba.
 
+### Avisos de falta de material
+Desde que se sube el análisis de materiales, arriba sale el aviso rojo **"📦 Falta material en stock"** con las obras a las que les falta algo. Cuenta el stock **menos lo que ya tienen apartado las demás obras que aún no han empezado**, para que dos obras no cuenten con las mismas barras. Dice si ya hay pedido en espera.
+
 ## 2. Recibir el material
 Cuando llega el camión, se comprueba lo que viene contra lo pedido.
-1. En **Pedidos**, abre el pedido y pulsa **Recibir con el albarán**.
+1. En **Pedidos**, pulsa **Confirmar entrada por foto de albarán** (el CRM busca solo el pedido por su número o por el proveedor) o abre el pedido y pulsa **Recibir con el albarán**. **Un albarán siempre se recibe contra un pedido**: si no encuentra ninguno, te obliga a elegir a cuál corresponde o a crear el pedido.
 2. Haz una **foto del albarán** (o sube el PDF). El CRM lo compara solo con lo pedido.
 3. Revisa lo que falta, lo que viene roto y lo que ha venido sin pedirlo, y confirma la entrada.
 4. Los **cristales** pasan a Fábrica → Cristales. Colócalos en su caballete del almacén de cristales.
@@ -43734,21 +44569,35 @@ Cuando llega el camión, se comprueba lo que viene contra lo pedido.
 
 - [ ] Si falta o viene roto algo, se abre una **incidencia** y queda el pedido de reposición en espera.
 
-## 3. Planning de la semana
+## 3. Planning de la semana y preparación del material
 La semana antes se eligen las obras a fabricar.
-1. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
-2. Elige las obras (tuyas y de Uxcar). Puedes cambiar el orden y las horas. Las horas de cada obra salen del **listado de mano de obra** si se subió; si no, del recuento de ventanas.
-3. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
-4. Confirma el planning.
-5. Imprime la **Hoja de preparación por almacén** para preparar el material.
+1. Para encontrar una obra rápido, usa el **buscador** de arriba en Fábrica: escribe el nº de presupuesto (6633), el expediente, el nombre o el cliente.
+2. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
+3. Elige las obras (tuyas y de Uxcar), cada una en su **taller**. Puedes cambiar el orden y las horas. Las horas salen del **listado de mano de obra** si se subió; si no, del recuento de ventanas. Las listas salen por color y se pueden ir marcando con tick.
+4. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
+5. Confirma el planning.
+6. En **Preparación de material** ves el material de los días (o de la semana) que elijas, todo junto, sin separar por obras. Arriba hay **cuadrados**: Todo · Perfiles y herraje · Cristales · Compactos · Auxiliares. Pincha uno y solo ves lo de ese puesto. Cada persona ve solo los puestos que el administrador le haya dado (en Administración → Usuarios → «Puestos de Preparación de material»; sin ninguno marcado ve todo):
+   - **Perfiles**: una lista; la misma referencia y el mismo color se suman (8830 blanco = una línea). Colores distintos, líneas distintas. **Ojo con la barra de margen**: por cada 10 barras de una referencia en una obra hay que sacar **una más** por roturas y cortes. La lista ya la suma y lo dice («20 + 2 de margen»): sácala siempre del almacén y métela para dentro con el resto.
+   - **Perfiles de Uxcar**: lista aparte. Salen del **stock de Uxcar** (el de su portal), no del nuestro, y dice si les llega o no. El **herraje y los accesorios** de las obras de Uxcar sí son nuestros y van en la lista de herraje.
+   - **Herraje y accesorios**: otra lista, todo junto en el mismo sitio.
+   - **Cristales, persianas, mosquiteras y postigos**: dicen LLEGADO o FALTAN y **dónde están** (caballete, carro, lado y nivel). Tócalo para ir a ese sitio.
+   - **Imprimir**: saca el papel de perfiles y de herraje para llevarlo al taller.
+   - **Preparado**: marca cada línea (y cada obra de cristales y compactos) cuando está sacada. Al acabar, «Preparado» en la lista. Así el administrador sabe que no falta nada.
+   - **Falta**: si algo no está, no ha llegado o no hay pedido hecho, pulsa **Falta** y escribe qué y cuántas. Le llega un **aviso urgente** (barra roja arriba) al administrador y a los responsables de pedidos, y dice si hay o no pedido hecho. Se quita cuando lo marcan como resuelto. Solo se ve con el CRM abierto: si es muy urgente, llama también.
+   - **Cambiar ubicación**: si la ubicación de un material está mal o falta, pulsa **cambiar** y pon almacén y estantería. Se guarda en el stock para todos.
+   - **📷 Ubicar material suelto**: haz una foto del material suelto con las etiquetas de frente; el CRM lee las referencias, las casa con el stock y las ubica todas en el almacén que elijas. Revisa lo que ha leído. Si una referencia no está en el stock, avisa. Solo cambia la ubicación, no las cantidades.
+   - **Compactos con foto de la carga**: en el cuadrado Compactos, pulsa **📷 Ubicar compactos con foto**. Haz foto a las etiquetas de lo que ha llegado (puedes subir varias): el CRM las lee, dice cuántas lleva cada obra contra las que necesita («van 5 de 8») y las coloca solo en un carro, o en el que elijas. Revisa las medidas leídas antes de colocar.
+   - **Planning**: solo sale lo que está en el planning **publicado**; si no está publicado, la lista sale vacía.
+   - **Lista para llevar** (preparar el próximo día): los cristales y persianas que hay que dejar listos.
 
 Una obra nunca entra antes de que le llegue el material, aunque la pongas antes en el orden.
 
 ## 4. Empezar a fabricar
 Una obra está lista cuando se cumplen tres cosas: oficina recibió todos los pedidos, fábrica confirmó todo lo llegado y "Qué lleva la obra" está completo.
-1. En **Fábrica → Listo para fabricar**, pulsa **Empezar a fabricar** en la obra.
-2. Las de Uxcar se pasan a producción desde el módulo Uxcar.
-3. Si la obra no sale ahí, mira **Fábrica → Materiales pendientes**: dice qué le falta.
+1. En **Fábrica → Listo para fabricar**, pulsa **Empezar a fabricar** en la obra. Es **obligatorio** elegir la **forma de salida** (reparto, recogida o instalación) y el **taller**; sin eso no deja pasar. Así no se quedan obras "sin forma de salida".
+2. Al empezar a fabricar se **descuenta del stock** lo que lleva el análisis de materiales de esa obra (perfiles, herraje y accesorios). En las de Uxcar solo el herraje y los accesorios. Lo que no esté dado de alta en Stock se **crea solo** con la referencia del análisis y queda en **negativo** (lo que falta por entrar); no bloquea nada. Solo se descuenta una vez por obra.
+3. Las de Uxcar se pasan a producción desde el módulo Uxcar y también llevan su salida (las que montamos nosotros las llevamos nosotros).
+4. Si la obra no sale ahí, mira **Fábrica → Materiales pendientes**: dice qué le falta.
 
 ## 5. Fabricar por puestos
 Cada operario trabaja desde **Mi puesto de trabajo**.
@@ -43769,12 +44618,14 @@ Al subir las etiquetas, el CRM ya reserva los caballetes que necesita la obra.
 - [ ] Sin el **tipo plano** (listado de dibujos) no se puede terminar: es obligatorio porque va con el albarán de entrega.
 
 ## 7. Salida y entrega
-La obra sale de tres formas: reparto, recogida en fábrica (Uxcar casi siempre) o instalación.
-1. En **Fábrica → Salidas** están las obras listas para salir, con sus caballetes.
-2. Al cargar el camión, el chófer firma en **Albaranes**: **"Firma al cargar el camión"**.
-3. En la entrega, el chófer abre el albarán en el móvil y **le da el móvil al cliente para que firme** al recibirlo.
-4. Si recoge el cliente en fábrica, firma el albarán allí mismo.
-5. Los caballetes que se quedan en la obra quedan **pendientes de devolver**.
+La obra sale de tres formas: reparto, recogida en fábrica (Uxcar casi siempre) o instalación. La forma de salida se eligió al empezar a fabricar.
+1. En **Fábrica → Salidas** están las obras listas para salir, con sus caballetes y **dónde está cada uno** (almacén y hueco). Los almacenes de ventanas de Uxcar (Valencia, Palma de Mallorca…) salen como "Uxcar · …"; se crean en Cristales/almacén de ventanas → Gestionar almacenes → "Añadir almacén de Uxcar".
+2. Los albaranes están en el módulo **Albaranes** y también dentro de **Fábrica → Albarán de salida**: es el mismo albarán, no hay que hacerlo dos veces.
+3. Al cargar el camión, el chófer firma: **"Firma al cargar el camión"**. El **DNI es obligatorio**; el nombre da igual.
+4. En la entrega, el chófer abre el albarán en el móvil y **le da el móvil al cliente para que firme** al recibirlo (también con DNI obligatorio).
+5. El albarán lleva el **tipo plano** (dibujos de las ventanas). Si no se puede mostrar o adjuntar el archivo, sale un aviso, pero se puede firmar igual: avisa a Miguel.
+6. Si recoge el cliente en fábrica, firma el albarán allí mismo.
+7. Los caballetes que se quedan en la obra quedan **pendientes de devolver**.
 
 - [ ] Sin la firma del cliente, la obra no cuenta como entregada ni se puede facturar.
 
@@ -43789,7 +44640,7 @@ Con el albarán firmado, la obra queda pendiente de facturar.
 - [ ] La obra está cerrada cuando tiene **factura emitida** y el **cobro apuntado** con justificante.`,
   },
   {
-    para: "uxcar", orden: 1, version: 2, titulo: "Guía para Uxcar: subir un expediente",
+    para: "uxcar", orden: 1, version: 12, titulo: "Guía para Uxcar: subir un expediente",
     contenido: `## Qué se sube y dónde
 Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa de ventanas. Con ellos sabemos cuántas ventanas son, qué material preparar y cuándo estarán listas.
 
@@ -43801,6 +44652,8 @@ Cada expediente se mete en el portal de Ecowin PVC con 6 PDF de vuestro programa
 | Listado de persianas | **Pedidos → nuevo pedido** de persianas |
 | Etiquetas de la línea | Ficha del expediente, recuadro de **etiquetas** |
 | Hoja de corte | Ficha del expediente, mismo recuadro, **después** de las etiquetas |
+
+Las **etiquetas** y la **hoja de corte** son **opcionales por ahora**. El aviso de "faltan documentos" pide el listado de dibujos, el informe de materiales, los pedidos de cristales y persianas y el **listado de mano de obra** (las horas). Si falta, el expediente pasa igual y el planning usa las horas calculadas con el recuento, pero queda el aviso de que falta.
 
 ## Antes de empezar
 - [ ] Los 6 PDF son del **mismo expediente** y de la **misma versión**.
@@ -43824,6 +44677,24 @@ La lectura de cada PDF puede tardar un par de minutos. No cierres la página mie
 Para un expediente que ya está pedido, basta con **tres PDF**: el **listado de vidrios**, la **hoja de corte** y el **listado de dibujos** (de él sale el número de recuadro de cada ventana, que se ve en la pegatina y en toda la fábrica). En la ficha del expediente, en el recuadro de etiquetas, pulsa **"Expediente rápido (vidrios + hoja de corte)"** y selecciona los dos a la vez (con Ctrl pulsado). Ecowin PVC saca una pegatina por cada ventana con presupuesto, posición, color, medidas, sistema y vidrio.
 - [ ] Los dos PDF son de la **misma versión** de cada presupuesto.
 - [ ] Si el CRM avisa de algo en rojo (por ejemplo un vidrio sin argón), **no lo guardes**: avisa a Ecowin PVC.
+
+## Mi stock de perfiles
+En la pestaña **Mi stock de perfiles** veis **lo que tenéis** de vuestros perfiles y **lo que os falta** para los expedientes que todavía no han pasado a producción. Es solo vuestro y no se mezcla con el de Ecowin PVC.
+- Cuando os llegue un pedido de perfiles, pulsad **"Subir la factura o albarán de perfiles"** (foto o PDF): revisad las líneas y pulsad **Dar entrada**; las barras entran solas, sin meterlas una a una.
+- También podéis **añadir perfiles**, **subir vuestro Excel** y **tocar las cantidades** con + y −. La columna **Me falta** os dice lo que os falta para los expedientes pendientes.
+- Cuando Ecowin PVC pasa un expediente a producción, los perfiles de su informe se descuentan solos.
+- El **herraje y los accesorios los pone Ecowin PVC**: no hay que meterlos aquí.
+
+## Cuando llega un pedido: comparar y reclamar
+Abrid el pedido en **Pedidos**, subid la foto o el PDF del **albarán** y el CRM lo compara con lo que pedisteis: ✓ llegado, faltan N o no ha llegado. Corregid lo que haga falta y guardad la entrada.
+- Si falta algo o ha venido roto, aparece el recuadro naranja **"Reclámalo al proveedor"**: podéis mandarlo por **WhatsApp**, abrirlo en **vuestro correo** o **copiar el texto**. El CRM no manda correos por su cuenta. Sale con las líneas que faltan y vuestro comentario.
+- Cuando llegue el resto, subid el nuevo albarán y se actualiza la comparación.
+
+## Incidencias
+En la pestaña **Incidencias** podéis avisar de cualquier problema (material roto, que no llega, un error en un expediente): elegid el expediente si es de uno, contad qué ha pasado y, si queréis, añadid una **foto**. Ecowin PVC la ve al momento y la marca como resuelta, con su respuesta.
+
+## Discrepancias
+Cuando llega vuestro pedido, el chico de Uxcar lo **da de baja** en el portal, igual que hace fábrica. Si algo no coincide con lo pedido (falta, roto o de más), aparece en la pestaña **Discrepancias**. Revisadlo allí y avisad a Ecowin PVC. Cada uno ve solo **sus** pedidos: los pedidos que hace Ecowin PVC por su cuenta no salen en el portal.
 
 ## Comprobar y avisar
 - [ ] El número de ventanas, puertas y oscilo-paralelas es el correcto.
@@ -44046,6 +44917,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("nuevo", "+ Nuevo expediente")}
           {tab("pedidos", "Pedidos")}
           {tab("materiales", "Informe de materiales")}
+          {tab("stock", "Mi stock de perfiles")}
+          {tab("incidencias", "Incidencias")}
           {tab("proveedores", "Proveedores")}
           {tab("resumen", "Resumen")}
           {tab("condiciones", "Condiciones")}
@@ -44063,6 +44936,10 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           <UxResumen expedientes={expedientes} />
         ) : vista === "materiales" ? (
           <UxSubirInformes expedientes={expedientes} onGuardar={async (exp, lis) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: lis }); return true; } catch (e) { return false; } }} />
+        ) : vista === "incidencias" ? (
+          <UxIncidencias incidencias={datos.incidencias} expedientes={expedientes} nombre={nombre} aviso={aviso} />
+        ) : vista === "stock" ? (
+          <UxStockPerfiles stock={datos.stock} nombre={nombre} aviso={aviso} expedientes={expedientes} />
         ) : vista === "proveedores" ? (
           <UxProveedores proveedores={proveedoresUx} onGuardar={guardarProveedor} onBorrar={borrarProveedor} />
         ) : vista === "nuevoPedido" ? (
@@ -44202,9 +45079,12 @@ function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
   );
 }
 
-function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
-  const [vista, setVista] = useState("lista");
+function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+  const [vista, setVista] = useState(() => { if (uxcNav.discrepancias) { uxcNav.discrepancias = false; return "discrepancias"; } return "lista"; });
   const [abiertoId, setAbiertoId] = useState(null);
+  const [avisoStockUx, setAvisoStockUx] = useState("");
+  const pedidosUx = toArray(pedidos).filter((pd) => esPedidoUxcar(pd, todosProyectos));
+  const nDiscUx = discrepanciasTodas(pedidosUx).reduce((t0, x) => t0 + x.items.length, 0);
   const tipos = config && config.tipos ? toArray(config.tipos) : [];
   const [tiposTexto, setTiposTexto] = useState(tipos.join("\n"));
   useEffect(() => { setTiposTexto(tipos.join("\n")); /* eslint-disable-next-line */ }, [tipos.join("|")]);
@@ -44224,6 +45104,9 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
       <div className="flex gap-2 mb-5 border-b border-slate-200">
         {tab("lista", "Expedientes")}
         {tab("resumen", "Resumen")}
+        {tab("discrepancias", `Discrepancias${nDiscUx ? ` (${nDiscUx})` : ""}`)}
+        {tab("incidenciasUx", `Incidencias Uxcar${incidenciasUx.filter((x) => x.estado !== "resuelta").length ? ` (${incidenciasUx.filter((x) => x.estado !== "resuelta").length})` : ""}`)}
+        {isAdmin && tab("stock", "Stock de perfiles")}
         {isAdmin && tab("config", "Tipos de expediente")}
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
@@ -44234,8 +45117,21 @@ function UxcarModulo({ tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [],
           {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
         </div>
       )}
-      {vista === "resumen" ? (
+      {vista === "discrepancias" ? (
+        <DiscrepanciasPedidos pedidos={pedidosUx} proveedores={proveedores} onActualizarPedido={onActualizarPedido || (() => {})} onIrAlbaran={() => {}} onDarDeBaja={onDarDeBaja}
+          nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : (((materiales || []).find((m) => m.id === l.materialId) || {}).descripcion || "Material eliminado"))} />
+      ) : vista === "resumen" ? (
         <UxResumen expedientes={expedientes} />
+      ) : vista === "incidenciasUx" ? (
+        <div>
+          {avisoStockUx && <div className="mb-3 text-sm font-semibold text-emerald-700">{avisoStockUx}</div>}
+          <UxIncidencias modo="crm" incidencias={incidenciasUx} expedientes={expedientes} nombre={nombreUsuarioUx || "Ecowin PVC"} aviso={(m) => { setAvisoStockUx(m); setTimeout(() => setAvisoStockUx(""), 3500); }} />
+        </div>
+      ) : vista === "stock" && isAdmin ? (
+        <div>
+          {avisoStockUx && <div className="mb-3 text-sm font-semibold text-emerald-700">{avisoStockUx}</div>}
+          <UxStockPerfiles modo="admin" stock={stockUx} nombre={nombreUsuarioUx || "Ecowin PVC"} expedientes={expedientes} aviso={(m) => { setAvisoStockUx(m); setTimeout(() => setAvisoStockUx(""), 3500); }} />
+        </div>
       ) : vista === "precios" && isAdmin ? (
         <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-lg space-y-3">
           <p className="text-sm text-slate-600">Lo que cobráis a Uxcar por cada cosa (sin IVA). Dos ventanas juntas en el mismo dibujo se cobran como dos. Las puertas sin cerradura, correderas y oscilo-paralelas se cobran como ventana.</p>
@@ -46107,6 +47003,19 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             </div>
             <p className="text-xs text-slate-500 mt-1">«Oficina» aparece en el desplegable «Asignar el trabajo a» al registrar una llamada en una obra. No cambia lo que ve el usuario.</p>
             <p className="text-xs text-slate-500 mt-1">Montaje ve las incidencias de postventa. Fábrica ve las incidencias de fábrica (y puede abrirlas desde los puestos). Se pueden marcar las dos. Sin marcar: ve lo de siempre y no puede abrir incidencias de fábrica.</p>
+          </Field>
+        )}
+        {f.rol !== "Administrador" && (
+          <Field label="Puestos de Preparación de material">
+            <div className="space-y-1.5">
+              {[["perfiles", "Perfiles, herrajes y accesorios"], ["cristales", "Cristales, persianas y compactos"], ["auxiliares", "Auxiliares"]].map(([id, nombre]) => (
+                <label key={id} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={toArray(f.puestosPrep).includes(id)} onChange={(e) => setF({ ...f, puestosPrep: e.target.checked ? [...toArray(f.puestosPrep), id] : toArray(f.puestosPrep).filter((x) => x !== id) })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                  {nombre}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">En Preparación de material solo verá los puestos marcados (puedes marcar varios). Sin ninguno marcado ve todo. Para que entre solo ahí, marca únicamente el módulo «Preparación de material (puesto)».</p>
           </Field>
         )}
         {f.rol !== "Administrador" && (
