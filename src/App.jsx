@@ -1439,6 +1439,12 @@ export default function App() {
     if (!authUser || !usuarios.find((u) => u.authUid === authUser.uid)) return undefined;
     return onValue(ref(fbDb, "portalClientesBuzon"), (snap) => setBuzonTodos(snap.val() || {}), () => {});
   }, [authUser, usuarios]);
+  // Qué clientes del portal necesitan algo de nosotros: mensaje sin leer o incidencia sin registrar.
+  const portalPendientes = clientes.filter((c) => c && c.portalActivo && c.portalAuthUid).map((c) => {
+    const b = buzonTodos[c.portalAuthUid] || {};
+    const m = b.meta || {};
+    return { c, sinLeer: (m.ultimoCliente || 0) > (m.leidoOficina || 0), incPend: toArray(b.incidencias).filter((i) => i && i.estado !== "Registrada").length };
+  }).filter((x) => x.sinLeer || x.incPend > 0);
   useEffect(() => {
     if (!authUser || !usuarios.find((u) => u.authUid === authUser.uid)) return undefined;
     const t = setTimeout(() => {
@@ -4619,6 +4625,7 @@ export default function App() {
   const tieneAcceso = (id) => {
     if (id === "condiciones") return true; // Condiciones la ve todo el equipo
     if (id === "incfabrica") return veFabrica;
+    if (id === "portalclientes") return modulosPermitidos.includes("clientes");
     if (id === "incidencias") return modulosPermitidos.includes(id) && veMontaje;
     return modulosPermitidos.includes(id);
   };
@@ -4803,6 +4810,19 @@ export default function App() {
             }`}
           >
             <Users size={16} /> Clientes
+          </button>
+          )}
+          {tieneAcceso("portalclientes") && (
+          <button
+            onClick={() => setModulo("portalclientes")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition ${
+              modulo === "portalclientes" ? "bg-[#2E8B57] text-white" : "text-slate-300 hover:bg-white/5"
+            }`}
+          >
+            <Globe size={16} /> Portal clientes
+            {portalPendientes.length > 0 && (
+              <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 px-1 flex items-center justify-center animate-pulse">{portalPendientes.length}</span>
+            )}
           </button>
           )}
           {tieneAcceso("leads") && (
@@ -5112,6 +5132,18 @@ export default function App() {
           <img src={LOGO_ALUMAVEL} alt="Alumavel" className="h-8 w-auto rounded" />
           <span className="rounded bg-[#333645] px-2 py-1.5"><img src={LOGO_ECOWIN} alt="Ecowin PVC" className="h-4 w-auto" /></span>
         </div>
+        {tieneAcceso("portalclientes") && modulo !== "portalclientes" && portalPendientes.length > 0 && (
+          <button
+            onClick={() => setModulo("portalclientes")}
+            className="w-full flex items-center gap-2 px-6 py-3 text-sm font-bold text-left transition bg-sky-600 text-white hover:bg-sky-700"
+          >
+            <MessageCircle size={16} />
+            Portal de clientes: {portalPendientes.slice(0, 3).map((x) => x.c.nombre).join(", ")}{portalPendientes.length > 3 ? ` y ${portalPendientes.length - 3} más` : ""}
+            {portalPendientes.some((x) => x.sinLeer) ? " te ha escrito" : ""}
+            {portalPendientes.some((x) => x.incPend > 0) ? ` · ${portalPendientes.reduce((n, x) => n + x.incPend, 0)} incidencia${portalPendientes.reduce((n, x) => n + x.incPend, 0) === 1 ? "" : "s"} por registrar` : ""}
+            . Toca para verlo →
+          </button>
+        )}
         {isAdmin && <AvisoSoldaduraLinea />}
         {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
@@ -5425,6 +5457,13 @@ export default function App() {
             </button>
           );
         })()}
+        {modulo === "portalclientes" && (
+          <PortalClientesModulo
+            clientes={clientes}
+            buzonTodos={buzonTodos}
+            onAbrirCliente={(id) => { setClienteDetailId(id); setClienteView("detail"); setModulo("clientes"); }}
+          />
+        )}
         {modulo === "clientes" && (
           <ClientesModulo
             clientes={clientes}
@@ -6356,6 +6395,14 @@ const MANUALES = {
       "Puedes adjuntar el PDF del presupuesto que le mandaste directamente en la ficha del lead, sin tener que crearlo como presupuesto formal en el CRM.",
       "Cuando el lead se convierte en negocio real, pulsa \"CONVERTIR EN CLIENTE\" para darlo de alta como cliente sin volver a escribir sus datos.",
       "Si no eres administrador, solo ves los leads que tienes asignados a ti como comercial.",
+    ],
+  },
+  portalclientes: {
+    puntos: [
+      "Aquí ves los clientes que tienen acceso al portal y lo que han hecho: mensajes sin leer e incidencias que te han pedido registrar.",
+      "Los que necesitan algo de ti salen arriba. Pulsa uno para abrir su ficha: ahí contestas, mandas documentos y pulsas \"Registrar en el CRM\" en sus incidencias.",
+      "El número rojo del menú y la barra azul de arriba te avisan desde cualquier pantalla mientras tengas el CRM abierto.",
+      "Los presupuestos que mandas por email o por WhatsApp a un cliente con portal se guardan también aquí, en su buzón.",
     ],
   },
   clientes: {
@@ -34132,6 +34179,38 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
   const [errorGenerarPdf, setErrorGenerarPdf] = useState("");
   const [enviandoEmail, setEnviandoEmail] = useState(false);
   const [emailEnviadoOk, setEmailEnviadoOk] = useState(false);
+  // Si el cliente de este presupuesto tiene portal, el PDF que le mandas se guarda también en su buzón.
+  const clientePortal = toArray(clientes).find((c) => c && c.portalActivo && c.portalAuthUid && ((presupuesto.clienteId && c.id === presupuesto.clienteId) || (presupuesto.clienteNombre && String(c.nombre || "").trim().toLowerCase() === String(presupuesto.clienteNombre).trim().toLowerCase())));
+  const [portalEstado, setPortalEstado] = useState("");
+  const dejarEnPortal = async () => {
+    if (!clientePortal) return false;
+    setPortalEstado("Guardando en el portal del cliente…");
+    try {
+      const nombreArchivo = `Presupuesto ${presupuesto.numero || presupuesto.id}.pdf`;
+      const pdfReal = toArray(presupuesto.documentos).filter((d) => /\.pdf$/i.test(d.nombre || "") && !/firmado/i.test(d.nombre || "")).slice(-1)[0];
+      let adj;
+      if (pdfReal && portalUrlOk(pdfReal.url)) adj = { nombre: nombreArchivo, url: pdfReal.url };
+      else {
+        let file;
+        if (pdfReal) {
+          const du = await archivoGuardadoComoDataUrl(pdfReal.url, pdfReal.nombre);
+          file = new File([await (await fetch(du)).blob()], nombreArchivo, { type: "application/pdf" });
+        } else {
+          const bytes = await generarPdfBytesPresupuesto(presupuesto);
+          file = new File([new Blob([bytes], { type: "application/pdf" })], nombreArchivo, { type: "application/pdf" });
+        }
+        adj = await portalSubirArchivo(clientePortal.portalAuthUid, file);
+      }
+      const id = uid(); const ts = Date.now();
+      await fbSet(ref(fbDb, `portalClientesBuzon/${clientePortal.portalAuthUid}/mensajes/${id}`), { id, de: "oficina", texto: `Te hemos enviado el presupuesto ${presupuesto.numero || ""}.`, adjuntos: [adj], ts });
+      await fbUpdate(ref(fbDb, `portalClientesBuzon/${clientePortal.portalAuthUid}/meta`), { ultimoOficina: ts });
+      setPortalEstado(`✓ Guardado en el portal de ${clientePortal.nombre}`);
+      return true;
+    } catch (e) {
+      setPortalEstado(`No se pudo dejar en el portal: ${(e && e.message) || "error"}`);
+      return false;
+    }
+  };
   const [errorEnvioEmail, setErrorEnvioEmail] = useState("");
 
   const enlaceEmailManual = () => {
@@ -34181,6 +34260,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
       if (!response.ok || data.error) throw new Error(data.error || "No se pudo enviar el correo.");
       setEmailEnviadoOk(true);
       onMarcarEnviado("email");
+      dejarEnPortal();
     } catch (err) {
       console.error("Error enviando el presupuesto por email:", err);
       setErrorEnvioEmail(err.message + " Puedes usar el enlace de abajo para enviarlo desde tu propio correo mientras tanto.");
@@ -34316,6 +34396,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
                 const url = enlaceWhatsapp({ ...presupuesto, telefono: tel }, modo);
                 if (!url) { alert("Ese teléfono no parece válido."); return; }
                 window.open(url, "_blank", "noopener");
+                if (modo === "envio") dejarEnPortal();
                 const hoy = new Date().toISOString().slice(0, 10);
                 const en7 = new Date(); en7.setDate(en7.getDate() + 7);
                 // Enviar: pasa a "Enviado" (si no lo estaba). Teléfono nuevo y estado, en un solo guardado.
@@ -34328,6 +34409,14 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
               <MessageCircle size={14} /> {modo === "envio" ? "Enviar presupuesto" : "Seguimiento"}
             </button>
           ))}
+          {clientePortal && (
+            <div className="flex flex-col items-start gap-1">
+              <button type="button" onClick={dejarEnPortal} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md text-sky-700 border border-sky-300 hover:bg-sky-50">
+                <Globe size={14} /> Dejar en su portal
+              </button>
+              {portalEstado && <span className={`text-[11px] font-semibold ${portalEstado.startsWith("✓") ? "text-emerald-700" : portalEstado.startsWith("No se pudo") ? "text-rose-600" : "text-slate-500"}`}>{portalEstado}</span>}
+            </div>
+          )}
           {presupuesto.email && (
             <div className="flex flex-col items-end gap-1">
               <button
@@ -45936,6 +46025,46 @@ function PortalNuevaIncidencia({ uidCliente, proyectos, onHecho }) {
 }
 
 // Lo que ve el equipo en la ficha del cliente: mensajes, documentos enviados e incidencias pedidas desde el portal.
+function PortalClientesModulo({ clientes, buzonTodos, onAbrirCliente }) {
+  const lista = clientes.filter((c) => c && c.portalActivo && c.portalAuthUid).map((c) => {
+    const b = buzonTodos[c.portalAuthUid] || {};
+    const m = b.meta || {};
+    const msgs = toArray(b.mensajes).filter(Boolean).sort((a, z) => (a.ts || 0) - (z.ts || 0));
+    return {
+      c, ultimo: msgs[msgs.length - 1] || null,
+      sinLeer: (m.ultimoCliente || 0) > (m.leidoOficina || 0),
+      incPend: toArray(b.incidencias).filter((i) => i && i.estado !== "Registrada").length,
+      actividad: Math.max(m.ultimoCliente || 0, m.ultimoOficina || 0),
+    };
+  }).sort((a, z) => ((z.sinLeer || z.incPend > 0) - (a.sinLeer || a.incPend > 0)) || z.actividad - a.actividad);
+  return (
+    <div className="p-8 max-w-4xl">
+      <Header icon={<Globe size={20} className="text-[#2E8B57]" />} title="Portal clientes" manualKey="portalclientes" subtitle={`${lista.length} cliente${lista.length === 1 ? "" : "s"} con acceso al portal`} />
+      {lista.length === 0 ? (
+        <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg px-4 py-10 text-center">Ningún cliente tiene acceso al portal todavía. Se da desde la ficha del cliente, en Editar → «Dar acceso al portal».</p>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+          {lista.map(({ c, ultimo, sinLeer, incPend }) => (
+            <button key={c.id} onClick={() => onAbrirCliente(c.id)} className={`w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-slate-50 ${sinLeer || incPend > 0 ? "bg-sky-50/60" : ""}`}>
+              <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${sinLeer || incPend > 0 ? "bg-rose-500 animate-pulse" : "bg-slate-200"}`} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-slate-900">{c.nombre}</span>
+                  {sinLeer && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Mensaje nuevo</Badge>}
+                  {incPend > 0 && <Badge className="bg-amber-50 text-amber-800 ring-amber-200">{incPend} incidencia{incPend === 1 ? "" : "s"} por registrar</Badge>}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5 truncate">
+                  {ultimo ? `${ultimo.de === "oficina" ? "Tú: " : ""}${ultimo.texto || (toArray(ultimo.adjuntos).length ? "📎 archivo adjunto" : "")} · ${portalFechaHora(ultimo.ts)}` : "Sin mensajes todavía"}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PortalBuzonStaff({ cliente, trabajos, onRegistrarIncidencia }) {
   const uidC = cliente.portalAuthUid;
   const b = usePortalBuzon(uidC);
