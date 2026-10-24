@@ -725,6 +725,8 @@ export default function App() {
   const [usuariosLeidosOk, setUsuariosLeidosOk] = useState(false);
   // Si quien entra es un usuario del portal de Uxcar, aquí va su ficha (y solo ve el portal)
   const [portalPerfil, setPortalPerfil] = useState(null);
+  // Si quien entra es un CLIENTE con acceso al portal, aquí va su ficha (y solo ve sus trabajos, facturas e incidencias)
+  const [portalCliente, setPortalCliente] = useState(null);
   const [uxExpedientes, setUxExpedientes] = useState([]);
   const [uxConfig, setUxConfig] = useState({});
   const [uxPedidos, setUxPedidos] = useState([]);
@@ -893,6 +895,12 @@ export default function App() {
         const perfilSnap = await fbGet(ref(fbDb, `portalUsuarios/${authUser.uid}`)).catch(() => null);
         if (perfilSnap && perfilSnap.exists()) {
           setPortalPerfil(perfilSnap.val());
+          return;
+        }
+        // ¿Es un cliente con acceso al portal? Tampoco se carga nada del CRM.
+        const clienteSnap = await fbGet(ref(fbDb, `portalClientes/${authUser.uid}`)).catch(() => null);
+        if (clienteSnap && clienteSnap.exists()) {
+          setPortalCliente(clienteSnap.val());
           return;
         }
         const claves = ["clientes", "proyectos", "proveedores", "materiales", "pedidos", "incidencias",
@@ -1347,13 +1355,53 @@ export default function App() {
     proyectosRef.current = next; setProyectos(next); persist("proyectos", next);
   };
 
-  const upsertCliente = (data) => {
+  const upsertCliente = async (dataEntrada) => {
+    const data = { ...dataEntrada };
+    const esNuevo = !data.id;
+    if (esNuevo) data.id = uid();
+    const emailP = String(data.email || "").trim().toLowerCase();
+    // Acceso al portal: se crea la cuenta de acceso (la contraseña NUNCA se guarda en la base de datos)
+    if (data.portalActivo) {
+      if (!data.portalAuthUid) {
+        if (usuarios.some((u) => (u.email || "").toLowerCase() === emailP)) { showToast("Ese email es de un usuario del equipo. Usa otro para el cliente.", "error"); return; }
+        let authUid = null;
+        try {
+          const cred = await createUserWithEmailAndPassword(fbAuthAltas, emailP, data.portalPassword);
+          authUid = cred.user.uid;
+          await signOut(fbAuthAltas).catch(() => {});
+        } catch (err) {
+          if (err && err.code === "auth/email-already-in-use") {
+            const snap = await fbGet(ref(fbDb, `authCuentas/${emailKey(emailP)}`)).catch(() => null);
+            const eq = snap && snap.exists() ? await fbGet(ref(fbDb, `equipo/${snap.val()}`)).catch(() => null) : null;
+            if (snap && snap.exists() && !(eq && eq.exists() && eq.val())) {
+              authUid = snap.val();
+              sendPasswordResetEmail(fbAuth, emailP).catch(() => {});
+              showToast("Ese email ya tenía cuenta: se le ha enviado un correo para poner su contraseña.");
+            } else { showToast("Ese email ya tiene una cuenta de acceso. Usa otro.", "error"); return; }
+          } else { showToast(traducirErrorAuth(err), "error"); return; }
+        }
+        try {
+          await fbSet(ref(fbDb, `portalClientes/${authUid}`), { clienteId: data.id, nombre: String(data.nombre || "").trim(), email: emailP, fechaAlta: new Date().toISOString().slice(0, 10) });
+          await fbSet(ref(fbDb, `authCuentas/${emailKey(emailP)}`), authUid);
+        } catch (e) { showToast("No se pudo guardar el acceso del cliente: " + e.message, "error"); return; }
+        data.portalAuthUid = authUid;
+        showToast(`${data.nombre} ya puede entrar al portal con ${emailP}`);
+      } else if (String(data.portalPassword || "").trim()) {
+        sendPasswordResetEmail(fbAuth, emailP).then(() => showToast("Se le ha enviado un correo para cambiar su contraseña.")).catch(() => {});
+      }
+    } else if (data.portalAuthUid) {
+      // Se le quita el acceso
+      await fbSet(ref(fbDb, `portalClientes/${data.portalAuthUid}`), null).catch(() => {});
+      await fbSet(ref(fbDb, `portalClientesDatos/${data.portalAuthUid}`), null).catch(() => {});
+      data.portalAuthUid = null;
+    }
+    data.portalPassword = "";
     let next;
-    if (data.id) {
+    if (!esNuevo) {
       next = clientes.map((c) => (c.id === data.id ? data : c));
       showToast("Cliente actualizado");
     } else {
-      const nc = { ...data, id: uid() };
+      const nc = data;
       next = [nc, ...clientes];
       showToast("Cliente dado de alta");
       // Si el alta viene de "Convertir en Cliente" desde un lead, el lead
@@ -1367,6 +1415,29 @@ export default function App() {
     saveClientes(next);
     setClienteView("list");
   };
+
+  // Lo que ve cada cliente en su portal: una copia reducida de SUS trabajos, facturas e incidencias
+  // (no puede leer el resto del CRM). Se actualiza sola mientras alguien del equipo tiene el CRM abierto.
+  const portalSyncRef = useRef({});
+  useEffect(() => {
+    if (!authUser || !usuarios.find((u) => u.authUid === authUser.uid)) return undefined;
+    const t = setTimeout(() => {
+      clientes.filter((c) => c && c.portalActivo && c.portalAuthUid).forEach((c) => {
+        const ps = proyectos.filter((p) => p && p.clienteId === c.id);
+        const ids = new Set(ps.map((p) => p.id));
+        const datos = {
+          proyectos: ps.map((p) => ({ id: p.id, numero: p.numero || "", nombre: p.nombre || "", estadoPresupuesto: p.estadoPresupuesto || "", estadoTrabajo: p.estadoTrabajo || "", importePresupuesto: p.importePresupuesto || 0, fechaEntregaPrevista: p.fechaEntregaPrevista || "" })),
+          facturas: facturas.filter((f) => f && f.clienteId === c.id && !f.anulada).map((f) => ({ id: f.id, numero: f.numero || "", tipo: f.tipo || "", fecha: f.fecha || "", total: f.total || 0, pagos: (f.pagos || []).map((x) => ({ importe: x.importe || 0 })) })),
+          incidencias: incidencias.filter((i) => i && ids.has(i.proyectoId)).map((i) => ({ id: i.id, numero: i.numero || "", fecha: i.fecha || "", estadoIncidencia: i.estadoIncidencia || "" })),
+        };
+        const huella = JSON.stringify(datos);
+        if (portalSyncRef.current[c.id] === huella) return;
+        portalSyncRef.current[c.id] = huella;
+        fbSet(ref(fbDb, `portalClientesDatos/${c.portalAuthUid}`), JSON.parse(huella)).catch(() => { delete portalSyncRef.current[c.id]; });
+      });
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [clientes, proyectos, facturas, incidencias, authUser, usuarios]);
 
   // Alta rápida de cliente desde dentro del formulario de Presupuesto, sin navegar
   // fuera de él — solo pide lo mínimo obligatorio (nombre y límite de crédito).
@@ -1386,6 +1457,11 @@ export default function App() {
     if (proyectos.some((p) => p.clienteId === id)) {
       showToast("No se puede eliminar: tiene proyectos asociados", "error");
       return;
+    }
+    const cdel = clientes.find((c) => c.id === id);
+    if (cdel && cdel.portalAuthUid) {
+      fbSet(ref(fbDb, `portalClientes/${cdel.portalAuthUid}`), null).catch(() => {});
+      fbSet(ref(fbDb, `portalClientesDatos/${cdel.portalAuthUid}`), null).catch(() => {});
     }
     saveClientes(clientes.filter((c) => c.id !== id));
     setClienteView("list");
@@ -4643,6 +4719,9 @@ export default function App() {
   if (portalPerfil) {
     return <PortalUxcar authUser={authUser} perfil={portalPerfil} onLogout={cerrarSesion} />;
   }
+  if (portalCliente) {
+    return <PortalClienteVista authUser={authUser} perfil={portalCliente} onLogout={cerrarSesion} />;
+  }
 
   if (!currentUser) {
     if (!hayUsuariosNuevos && usuariosLeidosOk) {
@@ -6606,8 +6685,12 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
       setErrorMsg("Falta el Límite de crédito asegurado (es obligatorio y tiene que ser mayor que 0).");
       return;
     }
-    if (f.portalActivo && (!f.email.trim() || !f.portalPassword.trim())) {
+    if (f.portalActivo && (!f.email.trim() || (!f.portalAuthUid && !f.portalPassword.trim()))) {
       alert("Para activar el acceso al portal, el cliente necesita email y contraseña.");
+      return;
+    }
+    if (f.portalActivo && !f.portalAuthUid && f.portalPassword.trim().length < 6) {
+      alert("La contraseña del portal tiene que tener al menos 6 caracteres.");
       return;
     }
     setErrorMsg("");
@@ -6725,8 +6808,8 @@ function ClienteForm({ initial, clientes, onCancel, onSave, prefill, onClearPref
               <Field label="Email de acceso" required>
                 <TextInput type="email" value={f.email} onChange={set("email")} required placeholder="Usa el email del cliente" />
               </Field>
-              <Field label="Contraseña del portal" required>
-                <TextInput type="password" value={f.portalPassword} onChange={set("portalPassword")} required />
+              <Field label={f.portalAuthUid ? "Contraseña (ya tiene acceso: si escribes algo, se le envía un correo para cambiarla)" : "Contraseña del portal (mínimo 6 caracteres)"} required={!f.portalAuthUid}>
+                <TextInput type="password" value={f.portalPassword} onChange={set("portalPassword")} required={!f.portalAuthUid} />
               </Field>
             </div>
           )}
@@ -23577,6 +23660,7 @@ function uxcObs(v) {
     cajonTipo: !persianaFin ? "" : has("MB") ? "monoblock" : has("CE") ? "exterior" : has("CP") ? "interior/capialzado" : "cajón",
     vidrioTraslucido: ov("vidTras", has("VT") ? true : null),
     controlSolar: ov("cs", has("CS") ? true : null),
+    tapajuntas: ov("tapajuntas", has("TP") ? true : null),
     sinPersiana: persianaFin === false ? true : has("SP"),
     desconocidos: toks.filter((t) => !UXC_LEYENDA[t]),
   };
@@ -23701,6 +23785,7 @@ function uxcHojaVentanaHTML(exp, v) {
       <div><span>&nbsp;&nbsp;- CAJÓN DE:</span><span class="l">${escapeHtml(v.cajon || "")}</span>${uxcSq("SI", !!o.persiana)}${uxcSq("185", String(v.cajon || "") === "185")}</div>
       ${fila("VIDRIO TRASLÚCIDO:", o.vidrioTraslucido)}
       ${fila("CONTROL SOLAR:", o.controlSolar)}
+      ${fila("TAPAJUNTAS:", o.tapajuntas)}
       ${fila("LLEVA OBRA:", o.obra)}
       <div><span>FONDO PERSIANA:</span><span class="l">${escapeHtml(v.fondoPersiana || "")}</span></div>
     </div>
@@ -24346,7 +24431,7 @@ function UxcHojaPantalla({ exp, v, vs, guardar, onCerrar, onIr, onNueva }) {
   const { pagadas, noPagadas } = uxcPartidasDeVentana(exp, v);
   const cab = exp.cab || {};
   const idx = vs.findIndex((x) => x.id === v.id);
-  const filas = [["cerradura", "Cerradura", o.cerradura], ["dobleManilla", "Doble manilla", o.dobleManilla], ["frailero", "Frailero", o.frailero], ["mosquitera", "Mosquitera", o.mosquitera], ["oscilo", "Oscilobatiente", o.oscilo], ["persiana", "Persiana", o.persiana], ["vidTras", "Vidrio traslúcido", o.vidrioTraslucido], ["cs", "Control solar", o.controlSolar], ["obra", "Lleva obra (albañilería)", o.obra]];
+  const filas = [["cerradura", "Cerradura", o.cerradura], ["dobleManilla", "Doble manilla", o.dobleManilla], ["frailero", "Frailero", o.frailero], ["mosquitera", "Mosquitera", o.mosquitera], ["oscilo", "Oscilobatiente", o.oscilo], ["persiana", "Persiana", o.persiana], ["vidTras", "Vidrio traslúcido", o.vidrioTraslucido], ["cs", "Control solar", o.controlSolar], ["tapajuntas", "Tapajuntas", o.tapajuntas], ["obra", "Lleva obra (albañilería)", o.obra]];
   const aviso = [];
   if (v.rechazada) aviso.push("El plano marca esta carpintería como «RECHAZA»: confirmar con oficina antes de medir.");
   if (!propia && o.oscilo && !uxcLista(exp.extras).some((e) => e.pagada)) aviso.push("Oscilobatiente = extra de pago aparte: no fabricar hasta confirmar el ingreso de la proforma.");
@@ -24674,7 +24759,7 @@ function uxcFilaFabrica(exp, v) {
     o.persiana ? `Persiana${o.cajonTipo ? " " + o.cajonTipo : ""}${v.cajon ? " " + v.cajon : ""}${v.guia ? " · guía " + v.guia : ""}` : "",
     o.mosquitera ? `Mosquitera${v.mosqMedida ? " " + v.mosqMedida : ""}` : "",
     o.oscilo ? "Oscilobatiente" : "", o.cerradura ? "Cerradura" : "", o.frailero ? "Frailero" : "", o.dobleManilla ? "Doble manilla" : "",
-    o.vidrioTraslucido ? "Vidrio traslúcido" : "", o.controlSolar ? "Control solar" : "", o.obra ? "Lleva obra" : "",
+    o.vidrioTraslucido ? "Vidrio traslúcido" : "", o.controlSolar ? "Control solar" : "", o.tapajuntas ? "Tapajuntas" : "", o.obra ? "Lleva obra" : "",
     v.solape ? `Solape ${v.solape}${v.anchoSolape ? "/" + v.anchoSolape : ""}` : "",
   ].filter(Boolean);
   const medida = v.anchoFab && v.altoFab ? `${v.anchoFab} × ${uxcAltoTxt(v)}` : "";
@@ -24709,7 +24794,7 @@ const UXC_CLASES_PPTO = [
   ["dobleManilla", "Doble manilla", /doble\s*manilla|manilla\s*doble/i, (o) => !!o.dobleManilla],
   ["vidrioTraslucido", "Vidrio traslúcido", /transl[uú]c|mate\b|satinado/i, (o) => !!o.vidrioTraslucido],
   ["controlSolar", "Control solar", /control\s*solar|solar/i, (o) => !!o.controlSolar],
-  ["tapajuntas", "Tapajuntas", /tapajunt/i, null],
+  ["tapajuntas", "Tapajuntas", /tapajunt/i, (o) => !!o.tapajuntas],
 ];
 async function leerLineasPresupuesto(file) {
   const prompt = [
@@ -45656,6 +45741,13 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
 }
 
 /* ---- Portal de cliente (solo lectura) ---- */
+
+function PortalClienteVista({ authUser, perfil, onLogout }) {
+  const [d, setD] = useState(undefined);
+  useEffect(() => onValue(ref(fbDb, `portalClientesDatos/${authUser.uid}`), (snap) => setD(snap.val() || {}), () => setD({})), [authUser.uid]);
+  if (d === undefined) return <div className="min-h-screen flex items-center justify-center bg-[#F4F5F3]"><Loader2 className="animate-spin text-slate-400" size={20} /></div>;
+  return <ClientePortal cliente={{ nombre: perfil.nombre || "" }} proyectos={toArray(d.proyectos)} facturas={toArray(d.facturas)} incidencias={toArray(d.incidencias)} onLogout={onLogout} />;
+}
 
 function ClientePortal({ cliente, proyectos, facturas, incidencias, onLogout }) {
   const [tab, setTab] = useState("proyectos");
