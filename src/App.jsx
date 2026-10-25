@@ -4626,6 +4626,7 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
+  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen;
   useEffect(() => {
     if (recuentoStock !== null || !currentUser || !isAdmin) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -5922,10 +5923,11 @@ export default function App() {
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
-            guardarPackingCaballetes: (nuevos, fusiones) => {
+            guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
-              saveCristales([...altas, ...cristales.map((c) => (fusiones && fusiones[c.id] ? { ...c, ...fusiones[c.id] } : c))]);
+              const quitar = new Set(eliminar || []);
+              saveCristales([...altas, ...cristales.filter((c) => !quitar.has(c.id)).map((c) => (fusiones && fusiones[c.id] ? { ...c, ...fusiones[c.id] } : c))]);
             },
             pinReorganizarHash: (configVentanas && configVentanas.pinReorganizarHash) || "",
             esAdmin: isAdmin,
@@ -14159,13 +14161,19 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
     const claveP = (p) => `${claveLote(p.pedido)}|${claveLote(p.ref)}|${parseFloat(p.ancho) || ""}|${parseFloat(p.alto) || ""}|${p.pos || ""}`;
     const decisiones = {}; // por nº de caballete repetido: true = añadir al existente, false = crear uno nuevo aparte
     const lotesAparte = [];
+    const eliminarIds = new Set(); // caballetes existentes que se borran para meter el nuevo en su lugar
+    const lotesReemplazados = [];
     items = items.filter((it) => {
       const kLote = claveLote(it.lote);
       const ex = existentes[kLote];
       if (!ex) return true;
       if (!(kLote in decisiones)) {
+        if (window.confirm(`El caballete ${ex.lote} YA EXISTE en el almacén (${(ex.piezas || []).length} cristales${ex.expediente ? ` · ${ex.expediente}` : ""}${ex.ubicacion ? " · ya colocado en el mapa" : ""}).\n\n¿Quieres BORRAR el que ya existe y dejar solo este nuevo?\nAceptar = borrar el existente y crear el nuevo en su lugar (se pierde lo que tenía: cristales, ubicación y lo marcado a mano).\nCancelar = te pregunto otras opciones (crearlo aparte o añadirlo al existente).`)) {
+          decisiones[kLote] = false; eliminarIds.add(ex.id); lotesReemplazados.push(ex.lote);
+        } else {
         decisiones[kLote] = !window.confirm(`El caballete ${ex.lote} YA EXISTE en el almacén (${(ex.piezas || []).length} cristales${ex.expediente ? ` · ${ex.expediente}` : ""}).\n\nAceptar = crear un caballete NUEVO aparte con este packing list.\nCancelar = añadirlo al que ya existe.`);
         if (!decisiones[kLote]) lotesAparte.push(ex.lote);
+        }
       }
       if (!decisiones[kLote]) return true;
       const base = fusiones[ex.id] || { piezas: [...(ex.piezas || [])], expediente: ex.expediente || "", secuencia: ex.secuencia || "" };
@@ -14232,8 +14240,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
       }
     });
     const ctxPacking = ctxAlmacen?.guardarPackingCaballetes;
-    if (ctxPacking) ctxPacking(aGuardar, fusiones);
+    if (ctxPacking) ctxPacking(aGuardar, fusiones, [...eliminarIds]);
     else if (onAddMany) onAddMany(aGuardar); else aGuardar.forEach((x) => onAdd(x));
+    if (lotesReemplazados.length > 0) setAvisoOk(`Borrado${lotesReemplazados.length === 1 ? "" : "s"} el${lotesReemplazados.length === 1 ? "" : "los"} caballete${lotesReemplazados.length === 1 ? "" : "s"} ${lotesReemplazados.join(", ")} que ya existía${lotesReemplazados.length === 1 ? "" : "n"} y creado${lotesReemplazados.length === 1 ? "" : "s"} de nuevo con este packing list.`);
     if (lotesAparte.length > 0 && nFusionados === 0) {
       setAvisoOk(`Creado como caballete nuevo aparte (ya existía otro con el nº ${lotesAparte.join(", ")}). Ahora hay dos con el mismo número: conviene cambiar el nº de uno.`);
     }
@@ -17820,6 +17829,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setVerPedidas(true);
     setAviso(`Pedido ${cab.pedido || ""} (EXP ${cab.expediente}): ${nuevas.length} persianas guardadas${yaLlegadas ? `, ${yaLlegadas} ya estaban en el almacén (marcadas como recibidas)` : ""}. Las pendientes NO cuentan como "dentro" hasta que lleguen.`.replace("  ", " "));
   };
+  // Las persianas pedidas que ya han llegado a la fábrica: se pasan a la pantalla de revisión (con el aviso de «mismo carro que el caballete de cristal»),
+  // se colocan en los carros y al confirmar quedan como recibidas.
+  const colocarDesdePedidas = (ps) => {
+    if (!ps.length) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    setBorrador(ps.map((p) => ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || "", largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || "", pedido: p.pedido || "", proveedor: p.proveedor || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" })));
+    setVerPedidas(false);
+    setAviso(`${ps.length} ${cosa} pedidas pasadas a revisión. Mira abajo, agrúpalas por caballete de cristal si sale el aviso, y confirma para colocarlas en carros.`);
+  };
   // Al dar entrada a persianas (packing list, fotos o a mano) las que estaban pedidas pasan solas a "recibidas".
   const conciliarPedidas = (nuevas) => {
     if (esMosq || !pendientesPedido.length) return 0;
@@ -18259,12 +18277,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
             return (
               <div className="mt-2 space-y-3 max-h-80 overflow-y-auto">
+                <button onClick={() => colocarDesdePedidas(pendientesPedido)} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#2E8B57] text-white">Han llegado: colocar las {pendientesPedido.length} pendientes en carros</button>
                 {Object.entries(grupos).map(([k, ps]) => (
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
                       <span>EXP {ps[0].expediente || "—"}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
-                      <button onClick={() => { if (window.confirm(`¿Quitar las ${ps.length} persianas pendientes de este pedido? (No se borra nada del almacén)`)) quitar(ps.map((p) => p.id)); }} className="ml-auto text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded hover:bg-rose-50">Quitar pedido</button>
+                      <button onClick={() => colocarDesdePedidas(ps)} className="ml-auto text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-0.5 rounded hover:bg-[#EEF7E4]">Han llegado: colocar</button>
+                      <button onClick={() => { if (window.confirm(`¿Quitar las ${ps.length} persianas pendientes de este pedido? (No se borra nada del almacén)`)) quitar(ps.map((p) => p.id)); }} className="text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded hover:bg-rose-50">Quitar pedido</button>
                     </div>
                     <table className="w-full text-xs">
                       <tbody>
@@ -18326,6 +18346,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se bloquea la entrada y no se guarda nada.</span>
             {repetidasEnAlmacen(borrador).length > 0 && <button onClick={quitarYaExistentes} className="px-2 py-1 rounded bg-rose-600 text-white font-semibold">Quitar las {repetidasEnAlmacen(borrador).length} que ya están</button>}
           </div>
+          {gruposCaballete(borrador).length === 0 && toArray(ctxM.cristalesCaballetes).length === 0 && <p className="mb-2 text-xs text-slate-500">No hay caballetes de cristal en el CRM: si quieres agrupar estas {cosa} por caballete, importa antes el packing list de cristales.</p>}
           {gruposCaballete(borrador).map((g) => {
             const k = g.exps.join("-");
             const nombresCab = g.cabs.map((c) => c.codigo || c.nombre || c.numero || c.id).filter(Boolean).slice(0, 3).join(", ");
@@ -35268,9 +35289,21 @@ const uxLlevaPersiana = (exp) => {
   if (r.length === 0) return null;
   return r.some((l) => l.persiana);
 };
+// Lo que hay en los almacenes de la fábrica (lo rellena la oficina en cada pintado; en el portal de Uxcar queda vacío)
+const uxAlmacenGlobal = { cristales: [], persianas: [] };
+// ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
+const uxEnAlmacen = (exp, k) => {
+  const d = String((exp && exp.numero) || "").replace(/\D/g, "");
+  if (d.length < 2) return false;
+  if (k === "vidrios") return toArray(uxAlmacenGlobal.cristales).some((c) => expedientesDeCaballete(c).has(d));
+  if (k === "compactos") return toArray(uxAlmacenGlobal.persianas).some((x) => !x.entregada && String(x.expediente || "").replace(/\D/g, "") === d);
+  return false;
+};
 const uxEstadoMat = (exp, k) => {
   if (k === "compactos" && uxLlevaPersiana(exp) === false) return "no_lleva";
-  return (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente";
+  const e = (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente";
+  if (e !== "recibido" && uxEnAlmacen(exp, k)) return "recibido"; // ya está en el almacén de la fábrica
+  return e;
 };
 // Semáforo de material: verde = persianas y cristales en fábrica, amarillo = falta algo, rojo = falta todo
 const uxSemaforo = (exp) => {
@@ -35294,7 +35327,7 @@ const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
   const enviado = (p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual;
   let r;
   if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
-  else if (est === "recibido") r = { t: "✓ Ha llegado todo", c: "text-emerald-700" };
+  else if (est === "recibido") r = { t: uxEnAlmacen(exp, clave) && !(exp.materiales && exp.materiales[clave] && exp.materiales[clave].estado === "recibido") ? "✓ Ya está en el almacén de la fábrica" : "✓ Ha llegado todo", c: "text-emerald-700" };
   else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
   else if (peds.some((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy())) r = { t: `⚠ Retrasado: debía llegar el ${uxFecha(peds.filter((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy()).map((p) => p.llegadaPrevista).sort()[0])}`, c: "text-rose-700 font-semibold" };
   else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
@@ -35506,7 +35539,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
   const lista = uxOrdenar(expedientes).filter((e) => {
     if (filtro === "activos" && e.estado === "entregado") return false;
     if (filtro !== "activos" && filtro !== "todos" && e.estado !== filtro) return false;
-    if (busca.trim() && !`${e.numero} ${e.tipo} ${e.observaciones || ""}`.toLowerCase().includes(busca.trim().toLowerCase())) return false;
+    if (busca.trim() && !`${e.numero} ${e.presupuesto || ""} ${e.tipo} ${e.observaciones || ""}`.toLowerCase().includes(busca.trim().toLowerCase())) return false;
     return true;
   });
   return (
@@ -35533,7 +35566,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
             {lista.map((e) => (
               <tr key={e.id} onClick={() => onAbrir(e.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2"><UxSemaforo exp={e} /></td>
-                <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{e.numero}</td>
+                <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{e.numero}{e.presupuesto ? <span className="block text-[10px] font-normal text-slate-500">ppto {e.presupuesto}</span> : null}</td>
                 <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
                 <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
                 <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
@@ -37621,7 +37654,11 @@ function crearExpedienteRapido(listados, cortes) {
   listados.forEach((L) => {
     if (L.sinFab && !L.fabDeDibujos) avisos.push(`Listado de vidrios sin número de fabricación (formato «opción con persiana»): he usado el presupuesto ${pptoBonito(L.fab)} como lote y expediente.${L.avisoTotal ? " " + L.avisoTotal : ""}`);
     if (!L.fab) { avisos.push("Un listado de vidrios no trae el número de fabricación: no se puede crear el lote."); return; }
-    const exp = L.expediente || ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || L.fab;
+    // El EXPEDIENTE sale de la referencia del presupuesto ("EXP 703 …"). Si el listado no trae número de fabricación,
+    // el expediente que se había cogido era el número de PRESUPUESTO: en ese caso manda siempre el EXP de la referencia.
+    const expRef = ([...L.presupuestos.values()].map((p) => (p.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1]).find(Boolean)) || "";
+    const exp = (L.sinFab || L.fabDeDibujos ? (expRef || L.expediente) : (L.expediente || expRef)) || L.fab;
+    const pptosTxt = [...L.presupuestos.keys()].map((k) => pptoBonito(k)).join(" · ");
     const ventanas = [];
     let seq = 0;
     const dePpto = [...L.presupuestos.keys()];
@@ -37696,7 +37733,7 @@ function crearExpedienteRapido(listados, cortes) {
       const sinN = ventanas.filter((w) => !w.posicionLote).length;
       if (sinN) avisos.push(`Dibujos: ${sinN} ventana(s) del lote ${L.fab} se quedan sin número de recuadro.`);
     }
-    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => (ordV.get(a.piezas[0].c) - ordV.get(b.piezas[0].c)) || nat(a.piezas[0].c, b.piezas[0].c)) });
+    if (ventanas.length) lotes.push({ fab: L.fab, expediente: exp, pptos: pptosTxt, parte: L.parte, rapido: true, ventanas: ventanas.sort((a, b) => (ordV.get(a.piezas[0].c) - ordV.get(b.piezas[0].c)) || nat(a.piezas[0].c, b.piezas[0].c)) });
   });
   if (sinPerfilPos.length) avisos.push(`No he encontrado «hoja de ventana / puerta / balconera» en la hoja de corte de ${sinPerfilPos.length} posición(es): ${sinPerfilPos.slice(0, 12).join(", ")}${sinPerfilPos.length > 12 ? "…" : ""}. Las clasifico por el nombre (las que empiezan por P, como puerta): revísalas.`);
   cortes.filter((c) => !usadas.has(c)).forEach((c) => avisos.push(`Hoja de corte del presupuesto ${pptoBonito(c.ppto)} (${c.pos}): no está en ningún listado de vidrios subido. No se ha creado.`));
@@ -44922,8 +44959,8 @@ function documentosQueFaltanUx(e, uxPedidos) {
   const tiene = {
     analisis: !!(lis && toArray(lis.lineas).length),
     dibujos: toArray(e.recuento).length > 0,
-    cristales: pedidosDe("Cristales"),
-    persianas: pedidosDe("Persianas"),
+    cristales: pedidosDe("Cristales") || uxEnAlmacen(e, "vidrios"),
+    persianas: pedidosDe("Persianas") || uxEnAlmacen(e, "compactos"),
     etiquetas: toArray(e.etiquetasFab).length > 0,
     corte: lotesConCorte(e.etiquetasFab),
   };
@@ -45678,9 +45715,10 @@ function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
       for (const [num, lotes] of por) {
         const ya = expedientes.find((e) => String(e.numero).replace(/\D/g, "") === num.replace(/\D/g, "") && num.replace(/\D/g, ""));
         if (ya) { await guardarEn(ya, [...toArray(ya.etiquetasFab).filter((x) => !lotes.some((l) => l.fab === x.fab)), ...lotes]); continue; }
+        const pptosNuevo = [...new Set(lotes.flatMap((l) => String(l.pptos || "").split(" · ")).filter(Boolean))].join(" · ");
         const id = uid();
         await fbSet(ref(fbDb, `portalUxcar/expedientes/${id}`), JSON.parse(JSON.stringify({
-          id, numero: num, tipo: tipos[0] || "", ventanas: lotes.reduce((a, l) => a + toArray(l.ventanas).length, 0), puertas: "", osciloParalelas: "", recuento: [], controlOtros: false,
+          id, numero: num, presupuesto: pptosNuevo, tipo: tipos[0] || "", ventanas: lotes.reduce((a, l) => a + toArray(l.ventanas).length, 0), puertas: "", osciloParalelas: "", recuento: [], controlOtros: false,
           observaciones: "URGENTE · metido con Expediente rápido (listado de vidrios + hoja de corte)", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid, etiquetasFab: lotes,
         })));
         aviso(`Expediente ${num} creado y guardado. Ecowin PVC ya puede fabricarlo.`);
