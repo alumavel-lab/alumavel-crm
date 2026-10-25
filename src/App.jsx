@@ -14212,6 +14212,8 @@ function EscanerPegatinaCristal({ cristales, onVerEnMapa }) {
 }
 
 function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, onAddMany, onDeleteMany, onUpdate, onDelete, onUbicar, onLiberar }) {
+  const ctxFusion = React.useContext(IncidenciasCristalCtx) || {};
+  const guardarFusion = ctxFusion.guardarPackingCaballetes ? (destino, origen) => ctxFusion.guardarPackingCaballetes([], { [destino.id]: parcheFusionCaballetes(destino, origen) }, [origen.id]) : null;
   const [subTab, setSubTab] = useState(() => (focoAlmacen.actual && focoAlmacen.actual.tipo === "cristal" && focoAlmacen.actual.ubicacion ? "mapa" : "pendientes")); // «Ver en el mapa» desde Cristales abre el mapa (o los pendientes si el caballete no tiene hueco)
   const [abrirPedidoCristal, setAbrirPedidoCristal] = useState(0); // al pulsar «Subir pedido de cristales» se salta a «Control de pedidos» y se abre el selector de archivo
   const [verReorganizar, setVerReorganizar] = useState(false);
@@ -14762,7 +14764,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                 return (
                 <React.Fragment key={c.id}>
                 <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
                     {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
                     {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
@@ -15642,16 +15644,30 @@ function ListaCristalesSueltos({ cristales, filtros, onUpdate }) {
 }
 
 // Cambiar el nº de caballete (lote) de uno ya creado. Avisa si ya existe otro con ese número.
-const cambiarNumeroCaballete = (cristal, todos, onUpdate) => {
+// Une el caballete «origen» dentro de «destino» (mismo número): se suman sus cristales y el origen desaparece. Devuelve los cambios a aplicar al destino.
+const parcheFusionCaballetes = (destino, origen) => {
+  const unirT = (a, b) => [...new Set(`${a || ""}, ${b || ""}`.split(",").map((x) => x.trim()).filter(Boolean))].join(", ");
+  const pd = toArray(destino.piezas), po = toArray(origen.piezas);
+  if (pd.length && po.length) { const r = recalcularCaballete(destino, [...pd, ...po]); return { piezas: r.piezas, cantidad: r.cantidad, medida: r.medida, expediente: unirT(destino.expediente, r.expediente), secuencia: unirT(destino.secuencia, origen.secuencia) }; }
+  return { piezas: [...pd, ...po], cantidad: (parseFloat(destino.cantidad) || 0) + (parseFloat(origen.cantidad) || 0), expediente: unirT(destino.expediente, origen.expediente), secuencia: unirT(destino.secuencia, origen.secuencia) };
+};
+const cambiarNumeroCaballete = (cristal, todos, onUpdate, guardarFusion) => {
   const nuevo = window.prompt(`Nº de caballete (ahora: ${cristal.lote || "sin número"}). Escribe el nuevo número:`, cristal.lote || "");
   if (nuevo == null) return;
   const n = String(nuevo).trim();
   if (!n || n === String(cristal.lote || "").trim()) return;
   const repetido = toArray(todos).some((o) => o.id !== cristal.id && String(o.lote || "").trim().toLowerCase() === n.toLowerCase());
+  if (repetido && guardarFusion) {
+    const destino = toArray(todos).find((o) => o.id !== cristal.id && String(o.lote || "").trim().toLowerCase() === n.toLowerCase());
+    if (window.confirm(`Ya hay un caballete con el número ${n}. ¿Añado los cristales de este al caballete ${n}? (queda uno solo, con todos los cristales)\n\nAceptar = unirlos · Cancelar = dejarlo como está`)) { guardarFusion(destino, cristal); return; }
+    return;
+  }
   if (repetido && !window.confirm(`Ya hay otro caballete con el número ${n}. ¿Lo pongo igualmente (quedarán dos con el mismo número)?`)) return;
   onUpdate(cristal.id, { lote: n });
 };
 function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, onEliminar, onMover, onMoverTaller, onUpdate, todos }) {
+  const ctxFusionM = React.useContext(IncidenciasCristalCtx) || {};
+  const guardarFusionM = ctxFusionM.guardarPackingCaballetes ? (destino, origen) => ctxFusionM.guardarPackingCaballetes([], { [destino.id]: parcheFusionCaballetes(destino, origen) }, [origen.id]) : null;
   useEffect(() => {
     if (cristalesEnHueco.length === 0) onClose();
   }, [cristalesEnHueco.length]);
@@ -15668,7 +15684,7 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
           {cristalesEnHueco.map((cristal) => (
             <div key={cristal.id} className="border border-slate-200 rounded-md p-3">
               <div className="text-sm text-slate-600 space-y-1 mb-2">
-                <p><b>Nº caballete:</b> {cristal.lote || "—"} <button onClick={() => cambiarNumeroCaballete(cristal, todos, onUpdate)} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar número</button></p>
+                <p><b>Nº caballete:</b> {cristal.lote || "—"} <button onClick={() => cambiarNumeroCaballete(cristal, todos, onUpdate, guardarFusionM)} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar número</button></p>
                 <p><b>Nº pedido:</b> {cristal.secuencia || "—"}</p>
                 <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
                 <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
