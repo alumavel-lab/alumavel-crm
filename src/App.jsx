@@ -4335,7 +4335,8 @@ export default function App() {
           toArray(p.expedientes).forEach((e) => {
             const x = toArray(uxExpedientes).find((y) => y.id === e.expedienteId);
             const K = x ? uxClaves(x) : { d: String(e.numero || "").replace(/\D/g, ""), pptos: new Set() };
-            const exp = K.d;
+            const esPpto = !!x && /^\s*[\d.]+\s*-\s*\d+\s*$/.test(String(x.numero || "")) && K.pptos.size > 0;
+            const exp = esPpto ? [...K.pptos][0] : K.d; // "6.490-1" es el presupuesto 6490 (versión 1), no el expediente 64901
             if (!exp) return;
             const ppto = [...K.pptos].join(" · ");
             toArray(e.lineas).forEach((l) => {
@@ -17913,7 +17914,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
     const hoy = new Date().toISOString().slice(0, 10);
-    setBorrador(ps.map((p) => ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || "", largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || "", pedido: p.pedido || "", proveedor: p.proveedor || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" })));
+    setBorrador(ps.map((p) => ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || "", largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" })));
     setVerPedidas(false);
     setAviso(`${ps.length} ${cosa} pedidas pasadas a revisión. Mira abajo, agrúpalas por caballete de cristal si sale el aviso, y confirma para colocarlas en carros.`);
   };
@@ -17985,11 +17986,16 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const cabs = toArray(ctxM.cristalesCaballetes);
     if (!cabs.length || !Array.isArray(lista)) return [];
     const expsLista = new Set(lista.map((x) => soloDigitos(x.expediente)).filter(Boolean));
+    // presupuestos de cada expediente de la lista (las pedidas de Uxcar los traen): el caballete también puede casar por presupuesto
+    const pptosDe = {};
+    lista.forEach((x) => { const e = soloDigitos(x.expediente); if (!e) return; String(x.presupuesto || "").split(/[·,;\s]+/).forEach((t) => { const d = uxPptoDigitos(t); if (d.length >= 3) (pptosDe[e] = pptosDe[e] || new Set()).add(d); }); });
     const padre = {};
     const raiz = (a) => { while (padre[a] && padre[a] !== a) a = padre[a]; return a; };
     const info = {};
     cabs.forEach((c) => {
-      const comunes = [...expedientesDeCaballete(c)].filter((e) => expsLista.has(e));
+      const cPptos = new Set(String(c.presupuesto || "").split(/[·,;\s]+/).map((t) => uxPptoDigitos(t)).filter((d) => d.length >= 3));
+      const deCab = expedientesDeCaballete(c);
+      const comunes = [...expsLista].filter((e) => deCab.has(e) || [...(pptosDe[e] || [])].some((d) => cPptos.has(d)));
       if (comunes.length < 2) return;
       comunes.forEach((e) => { if (!padre[e]) padre[e] = e; (info[e] = info[e] || []).push(c); });
       comunes.slice(1).forEach((e) => { padre[raiz(e)] = raiz(comunes[0]); });
@@ -18028,6 +18034,38 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   const [avisoGrupo, setAvisoGrupo] = useState({});
   const [carroGrupo, setCarroGrupo] = useState({});
+  const [resumenSugerencias, setResumenSugerencias] = useState("");
+  // Mira los caballetes de cristal y, para cada grupo de expedientes que comparten caballete, busca el primer carro donde caben TODAS sus persianas
+  // juntas (contando lo que ya hay y lo que se va asignando a los grupos anteriores) y las asigna. Lo que no cabe se queda como estaba.
+  const ponerJuntasTodas = () => {
+    if (!borrador) return;
+    const grupos = gruposCaballete(borrador);
+    if (!grupos.length) { setResumenSugerencias("No hay ningún grupo de expedientes que comparta caballete de cristal."); return; }
+    const clonar = (v) => (v instanceof Set ? new Set(v) : Array.isArray(v) ? v.map(clonar) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clonar(x)])) : v);
+    let estado = estadoOcupacionPersianas(items);
+    const asignado = {};
+    const lineas = [];
+    const sinSitioG = [];
+    grupos.forEach((g) => {
+      const set = new Set(g.exps);
+      const piezas = borrador.filter((x) => set.has(soloDigitos(x.expediente)));
+      const porExp = {};
+      piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+      let elegido = null;
+      for (const c of ordenados) {
+        const destino = estantes.filter((e) => e.carro === c.numero);
+        if (!destino.length) continue;
+        const prueba = clonar(estado);
+        const cabe = Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, prueba).res).length === xs.length);
+        if (cabe) { elegido = c.numero; estado = prueba; break; }
+      }
+      const nombresCab = g.cabs.map((c) => c.codigo || c.nombre || c.numero || c.id).filter(Boolean).slice(0, 2).join(", ");
+      if (elegido) { g.exps.forEach((e) => { asignado[e] = elegido; }); lineas.push(`Carro ${elegido}: expedientes ${g.exps.join(", ")}${nombresCab ? ` (caballete ${nombresCab})` : ""}`); }
+      else sinSitioG.push(`${g.exps.join(", ")}${nombresCab ? ` (caballete ${nombresCab})` : ""}`);
+    });
+    if (Object.keys(asignado).length) setBorrador(borrador.map((x) => { const c = asignado[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; }));
+    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `No caben juntos en ningún carro: ${sinSitioG.join("; ")}. Se colocarán expediente a expediente.` : ""].filter(Boolean).join(" "));
+  };
 
   const todasPersianas = () => (ctxM.persianasAlmacen ? toArray(ctxM.persianasAlmacen) : items);
   const repetidasEnAlmacen = (entrada) => {
@@ -18426,6 +18464,13 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             {repetidasEnAlmacen(borrador).length > 0 && <button onClick={quitarYaExistentes} className="px-2 py-1 rounded bg-rose-600 text-white font-semibold">Quitar las {repetidasEnAlmacen(borrador).length} que ya están</button>}
           </div>
           {gruposCaballete(borrador).length === 0 && toArray(ctxM.cristalesCaballetes).length === 0 && <p className="mb-2 text-xs text-slate-500">No hay caballetes de cristal en el CRM: si quieres agrupar estas {cosa} por caballete, importa antes el packing list de cristales.</p>}
+          {gruposCaballete(borrador).length > 0 && (
+            <div className="mb-2 rounded-lg border border-amber-400 bg-amber-100 p-2 text-xs flex flex-wrap items-center gap-2">
+              <span className="text-amber-900 font-semibold">{gruposCaballete(borrador).length} grupo{gruposCaballete(borrador).length === 1 ? "" : "s"} de expedientes comparten caballete de cristal.</span>
+              <button onClick={ponerJuntasTodas} className="px-2.5 py-1 rounded bg-amber-700 text-white font-semibold">Buscar carro y poner juntas todas</button>
+              {resumenSugerencias && <span className="basis-full font-semibold text-amber-900">{resumenSugerencias}</span>}
+            </div>
+          )}
           {gruposCaballete(borrador).map((g) => {
             const k = g.exps.join("-");
             const nombresCab = g.cabs.map((c) => c.codigo || c.nombre || c.numero || c.id).filter(Boolean).slice(0, 3).join(", ");
@@ -35394,7 +35439,15 @@ const uxEnAlmacen = (exp, k) => {
 const uxEstadoMat = (exp, k) => {
   if (k === "compactos" && uxLlevaPersiana(exp) === false) return "no_lleva";
   const e = (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente";
-  if (e !== "recibido" && uxEnAlmacen(exp, k)) return "recibido"; // ya está en el almacén de la fábrica
+  // Cristales y persianas necesitan DOS confirmaciones: la de Uxcar (con su albarán, estado "recibido" del expediente)
+  // y la de fábrica (con su albarán: ya está colocado en tus almacenes). Solo con las dos está "recibido" (verde).
+  if (k === "vidrios" || k === "compactos") {
+    const ux = e === "recibido";
+    const fab = uxEnAlmacen(exp, k);
+    if (ux && fab) return "recibido";
+    if (ux) return "llegado_ux";
+    if (fab) return "en_fabrica";
+  }
   return e;
 };
 // Semáforo de material: verde = persianas y cristales en fábrica, amarillo = falta algo, rojo = falta todo
@@ -35402,8 +35455,9 @@ const uxSemaforo = (exp) => {
   const mats = [...UX_CONTROL, ...(exp.controlOtros ? UX_OTROS : [])].map(([k]) => uxEstadoMat(exp, k)).filter((e) => e !== "no_lleva");
   if (mats.length === 0) return "verde";
   const rec = mats.filter((e) => e === "recibido").length;
+  const medias = mats.filter((e) => e === "llegado_ux" || e === "en_fabrica").length;
   if (rec === mats.length) return "verde";
-  if (rec === 0) return "rojo";
+  if (rec === 0 && medias === 0) return "rojo";
   return "amarillo";
 };
 const UX_SEMAFORO = {
@@ -35419,7 +35473,9 @@ const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
   const enviado = (p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual;
   let r;
   if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
-  else if (est === "recibido") r = { t: uxEnAlmacen(exp, clave) && !(exp.materiales && exp.materiales[clave] && exp.materiales[clave].estado === "recibido") ? "✓ Ya está en el almacén de la fábrica" : "✓ Ha llegado todo", c: "text-emerald-700" };
+  else if (est === "recibido") r = { t: "✓ Ha llegado todo: Uxcar y fábrica lo han confirmado", c: "text-emerald-700" };
+  else if (est === "llegado_ux") r = { t: "Uxcar ha confirmado su albarán · falta que lo confirme la fábrica", c: "text-amber-700 font-semibold" };
+  else if (est === "en_fabrica") r = { t: "Ya está en el almacén de la fábrica · falta el albarán de Uxcar", c: "text-amber-700 font-semibold" };
   else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
   else if (peds.some((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy())) r = { t: `⚠ Retrasado: debía llegar el ${uxFecha(peds.filter((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy()).map((p) => p.llegadaPrevista).sort()[0])}`, c: "text-rose-700 font-semibold" };
   else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
@@ -35662,7 +35718,7 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
                 <td className="px-3 py-2 text-slate-600">{e.tipo || "—"}</td>
                 <td className="px-3 py-2 text-right font-semibold">{uxNum(e.ventanas)}</td>
                 <td className="px-3 py-2 text-right">{uxNum(e.puertas)}</td>
-                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`}>{st === "recibido" ? "✓ Llegado" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
+                {UX_CONTROL.map(([k]) => { const st = uxEstadoMat(e, k); return <td key={k} className={`px-3 py-2 text-xs font-semibold whitespace-nowrap ${st === "recibido" ? "text-emerald-700" : st === "llegado_ux" || st === "en_fabrica" ? "text-amber-700" : st === "pedido" ? "text-sky-700" : st === "no_lleva" ? "text-slate-400" : "text-rose-600"}`} title={st === "llegado_ux" ? "Uxcar ha confirmado su albarán; falta la fábrica" : st === "en_fabrica" ? "Ya está en la fábrica; falta el albarán de Uxcar" : undefined}>{st === "recibido" ? "✓ Llegado" : st === "llegado_ux" ? "Uxcar ✓ · falta fábrica" : st === "en_fabrica" ? "Fábrica ✓ · falta Uxcar" : st === "pedido" ? "Pedido" : st === "no_lleva" ? "No lleva" : "✗ Sin pedir"}</td>; })}
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(e.fechaAlta)}</td>
                 <td className="px-3 py-2"><UxEstado estado={e.estado} /></td>
                 <td className="px-3 py-2 whitespace-nowrap font-semibold">{uxFecha(e.fechaEntrega)}</td>
