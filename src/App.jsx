@@ -5336,6 +5336,16 @@ export default function App() {
           );
         })()}
         {(() => {
+          if (!currentUser || modulo === "pedidos") return null;
+          const aPedidos = tieneAcceso("pedidos");
+          const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
+          if (modulo === "uxcar" && soloUx) return null;
+          if (!aPedidos && !veFabrica && !soloUx) return null;
+          const disc = discrepanciasTodas(pedidos).filter((x) => !soloUx || esPedidoUxcar(x.p, proyectos));
+          const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
+          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+        })()}
+        {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
           const hoy = new Date().toISOString().slice(0, 10);
           const pedidosRetrasados = pedidos.filter((p) =>
@@ -19664,6 +19674,49 @@ const discrepanciasPedido = (p) => {
 };
 const esPedidoUxcar = (pd, proyectos) => !!pd && (pd.origen === "portalUxcar" || !!pd.uxcarExpedienteId || (((toArray(proyectos).find((x) => x.id === pd.proyectoId)) || {}).origen === "portalUxcar"));
 const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
+// Aviso que INSISTE: mientras haya un pedido que una parte da por llegado y la otra no, sale una ventana que pregunta por qué no se ha marcado
+// y vuelve a salir cada 15 minutos (y al entrar) hasta que se resuelva. «Más tarde» solo la aplaza.
+const MIN_INSISTE_DISCREPANCIA = 15;
+function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor }) {
+  const [abierto, setAbierto] = useState(true);
+  const hay = disc.length > 0;
+  useEffect(() => {
+    if (!hay) { setAbierto(false); return undefined; }
+    const t = setInterval(() => setAbierto(true), MIN_INSISTE_DISCREPANCIA * 60 * 1000);
+    return () => clearInterval(t);
+  }, [hay]);
+  useEffect(() => { if (hay) setAbierto(true); }, [disc.length]);
+  if (!hay || !abierto) return null;
+  const dias = (p) => { const f = String(p.fechaRecibido || p.fechaRecepcion || p.fechaCompra || "").slice(0, 10); return f ? Math.max(0, Math.floor((Date.now() - new Date(f + "T12:00:00").getTime()) / 86400000)) : null; };
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-xl max-h-[85vh] flex flex-col border-4 border-orange-500">
+        <div className="px-5 pt-4 pb-2">
+          <h3 className="font-bold text-orange-700 text-lg">⚠ Material que una parte da por llegado y la otra no</h3>
+          <p className="text-xs text-slate-500 mt-1">No se quita hasta que fábrica y oficina coincidan. Avisa a la otra parte y averigua por qué no se ha marcado.</p>
+        </div>
+        <div className="px-5 py-2 overflow-y-auto space-y-2">
+          {disc.map(({ p, items }) => {
+            const d = dias(p);
+            const faltaOficina = items.filter((x) => x.tipo === "fabrica").length;
+            const faltaFabrica = items.filter((x) => x.tipo === "oficina").length;
+            return (
+              <div key={p.id} className="border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 text-sm">
+                <div className="font-bold text-slate-800">Pedido #{p.numero} · {nombreProveedor(p)}{p.tipoUxcar ? ` · Uxcar (${p.tipoUxcar})` : ""}{d != null ? <span className="font-normal text-xs text-slate-500"> · {d} día{d === 1 ? "" : "s"}</span> : null}</div>
+                {faltaOficina > 0 && <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>}
+                {faltaFabrica > 0 && <div className="text-orange-800">Oficina lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
+              </div>
+            );
+          })}
+        </div>
+        <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap justify-end gap-2">
+          <button onClick={() => setAbierto(false)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">Más tarde (vuelve a avisar en {MIN_INSISTE_DISCREPANCIA} min)</button>
+          <button onClick={() => { setAbierto(false); onIr(); }} className="text-sm font-semibold text-white bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg">Resolverlo ahora →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarPedido, onIrAlbaran, onDarDeBaja }) {
   const grupos = discrepanciasTodas(pedidos);
   const prov = (p) => p.proveedorExterno || (toArray(proveedores).find((x) => x.id === p.proveedorId) || {}).nombre || "—";
@@ -19917,16 +19970,20 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
       const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
-      const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
+      // Uxcar no rellena el checklist «Qué lleva la obra»: para sus obras basta con que todos sus pedidos de cristal/persiana hayan llegado (Uxcar) y fábrica los haya confirmado
+      const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
       return oficinaOk && fabricaOk && checklistOk;
     });
   }, [proyectos, pedidos]);
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
   const bloqueadosMaterial = useMemo(() => proyectos.filter((p) => {
-    if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) || p.origen === "portalUxcar") return false;
+    if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) || false) return false;
     if (listoParaFabricar.some((x) => x.id === p.id)) return false;
+    if (p.origen === "portalUxcar") return pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
     return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
-  }).map((p) => ({ p, faltan: condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
+  }).map((p) => ({ p, faltan: p.origen === "portalUxcar"
+    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => pd.estado !== "Recibido" ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+    : condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
 
   const descargarWord = () => {
     const titulos = { listo: "Listo para fabricar", materiales: "Materiales pendientes", enfab: "En fabricación" };
