@@ -18169,6 +18169,32 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     if (n) { const hoy = new Date().toISOString().slice(0, 10); guardarPedidos(pedidosTodos.map((p) => (marcadas[p.id] ? { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: marcadas[p.id] } : p))); }
     return n;
   };
+  // Las «pedidas, pendientes de llegar» que YA están en el almacén se dan solas por recibidas (así no se vuelven a colocar ni salen en el reparto).
+  // Se casan por expediente, vivienda y largo; si el pedido de Uxcar trae el presupuesto en vez del expediente, se busca el expediente real por el presupuesto (como en el reparto).
+  const refYaEstaban = useRef("");
+  useEffect(() => {
+    if (esMosq) return;
+    const pend = toArray(ctxM.pedidosPersianas).filter((p) => p && p.estado !== "recibida");
+    const pool = toArray(ctxM.persianasAlmacen).filter((x) => x && !x.entregada);
+    if (!pend.length || !pool.length) return;
+    const usadas = new Set(toArray(ctxM.pedidosPersianas).map((p) => p && p.recibidaId).filter(Boolean));
+    const marcadas = {};
+    pend.forEach((p) => {
+      let real = "";
+      try { real = expedienteRealDe(p); } catch (er) { real = ""; }
+      const y = pool.find((z) => !usadas.has(z.id) && (casaPedidaConPersiana(p, z) || (real && real !== String(p.expediente || "").replace(/\D/g, "") && casaPedidaConPersiana({ ...p, expediente: real }, z))));
+      if (y) { usadas.add(y.id); marcadas[p.id] = y.id; }
+    });
+    const n = Object.keys(marcadas).length;
+    if (!n) return;
+    const firma = Object.keys(marcadas).sort().join(",");
+    if (refYaEstaban.current === firma) return;
+    refYaEstaban.current = firma;
+    const hoy = new Date().toISOString().slice(0, 10);
+    guardarPedidos(toArray(ctxM.pedidosPersianas).map((p) => (p && marcadas[p.id] ? { ...p, estado: "recibida", fechaRecibida: hoy, recibidaId: marcadas[p.id], notaRecibida: "Ya estaba en el almacén" } : p)));
+    setAviso(`${n} persianas «pedidas» ya estaban en el almacén: las he marcado como recibidas (ya no salen en pendientes ni en el reparto).`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctxM.pedidosPersianas, ctxM.persianasAlmacen]);
 
   const activos = items.filter((x) => !x.entregada);
   const sinSitio = activos.filter((x) => !x.estante && !x.enPuesto);
