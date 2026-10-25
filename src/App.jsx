@@ -43258,6 +43258,7 @@ function PrepMaterialConAlmacenes({ cristales, cristalesProps, puedeFabrica, onI
 function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
+  const [qIn, setQIn] = useState(""); // filtro dentro de la obra: vivienda, medida, presupuesto, caballete…
   const proyectos = toArray(ctx.proyectos), uxs = toArray(ctx.uxExpedientes), clientes = toArray(ctx.clientes);
   const itemsP = toArray(ctx.persianasAlmacen), almsP = toArray(ctx.almacenesPersianas);
   const pedidos = toArray(ctx.pedidosPrep), pedidasPers = toArray(ctx.pedidosPersianas);
@@ -43283,18 +43284,20 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   const sueltos = (() => {
     if (qq.length < 2 || qd.length < 2) return [];
     const mapa = new Map();
-    const add = (exp, lista) => {
+    const add = (exp, lista, ref) => {
       const e = soloDigitos(exp);
       if (!e || e.length < 2) return;
-      const o = mapa.get(e) || { exp: e, pptos: new Set() };
+      const o = mapa.get(e) || { exp: e, pptos: new Set(), refs: new Set() };
       String(lista || "").split(/[·,;\s]+/).forEach((t) => { const d = uxPptoDigitos(t); if (d.length >= 3) o.pptos.add(d); });
+      if (ref) o.refs.add(normBusq(ref));
       mapa.set(e, o);
     };
-    toArray(cristales).forEach((c) => { expedientesDeCaballete(c).forEach((e) => add(e, c.presupuesto)); });
-    itemsP.filter((x) => !x.entregada).forEach((x) => add(x.expediente, x.presupuesto));
-    pedidasPers.forEach((x) => add(x.expediente, x.presupuesto));
+    toArray(cristales).forEach((c) => { expedientesDeCaballete(c).forEach((e) => add(e, c.presupuesto)); toArray(c.piezas).forEach((pz) => add(pz.expediente || c.expediente, pz.presupuesto || pz.ppto, pz.ref)); });
+    itemsP.filter((x) => !x.entregada).forEach((x) => add(x.expediente, x.presupuesto, x.ref));
+    pedidasPers.forEach((x) => add(x.expediente, x.presupuesto, x.ref));
+    const qr = normBusq(qq);
     return [...mapa.values()]
-      .filter((o) => o.exp === qd || o.pptos.has(qd))
+      .filter((o) => o.exp === qd || o.pptos.has(qd) || (qr.length >= 4 && o.refs.has(qr)))
       .filter((o) => !cands0.some((c) => c.claves.includes(o.exp)))
       .slice(0, 6)
       .map((o) => ({ key: `m-${o.exp}`, titulo: `EXP ${o.exp} · material en el almacén`, cliente: "", claves: [o.exp, ...o.pptos], listado: null, proy: null, proyectoId: "" }));
@@ -43319,6 +43322,9 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
         <label className="text-sm font-bold text-slate-800 block mb-1">Comprobar una obra</label>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Nº de presupuesto, de expediente, nombre o cliente (ej. 6537)" className="w-full border border-slate-300 rounded-md px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
         <p className="text-[11px] text-slate-500 mt-1.5">Te dice si han llegado los cristales y los compactos, dónde están y si hay pedido. Solo mira: no cambia nada.</p>
+        <label className="text-xs font-bold text-slate-700 block mt-3 mb-1">Buscar dentro de la obra (opcional)</label>
+        <input value={qIn} onChange={(e) => setQIn(e.target.value)} placeholder="Vivienda (V01.303), presupuesto (6554), medida (1200x1400), caballete…" className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]" />
+        <p className="text-[11px] text-slate-500 mt-1">Te lista las persianas y los cristales concretos que coinciden, con el carro o el caballete donde están.</p>
       </div>
       {qq.length >= 2 && cands.length === 0 && <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg px-4 py-8 text-center">No encuentro ninguna obra con «{qq}».</p>}
       <div className="space-y-4">
@@ -43369,6 +43375,31 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
                     : <span className={itMosq.length >= Math.max(1, mosq.uds || 1) ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{itMosq.length >= Math.max(1, mosq.uds || 1) ? "✓ En el almacén" : "Lleva"}{mosq.uds ? ` · ${mosq.uds} ud.` : ""} · {itMosq.length} en carros</span>}
                   <div className="mt-1">{sitiosP(itMosq).map((sv, k) => chip(sv, k))}</div>
                 </div>
+                {qIn.trim() && (() => {
+                  const b = normBusq(qIn);
+                  const okTxt = (t, ppto) => normBusq(t).includes(b) || (soloDigitos(qIn).length >= 3 && pptoCoincideBusq(qIn, ppto));
+                  const dp = itPers.concat(itMosq).filter((x) => okTxt(`${x.ref} ${x.parte || ""} ${x.expediente} ${x.largo || ""} ${x.alto || ""} ${x.largo || ""}x${x.alto || ""} ${x.presupuesto || ""}`, x.presupuesto));
+                  const dc = [];
+                  cr.forEach((c) => toArray(c.piezas).forEach((pz) => {
+                    if (!deObra(o.claves, pz.expediente || c.expediente)) return;
+                    if (okTxt(`${pz.ref || ""} ${pz.expediente || c.expediente || ""} ${pz.ancho}x${pz.alto} ${pz.ancho} ${pz.alto} ${c.lote || ""} ${c.presupuesto || ""} ${pz.presupuesto || ""} ${ubicacionPieza(pz)}`, `${c.presupuesto || ""} ${pz.presupuesto || ""}`)) dc.push({ c, pz });
+                  }));
+                  const PP = pedidasPers.filter((x) => x && deObra(o.claves, x.expediente) && okTxt(`${x.ref || ""} ${x.largo || ""} ${x.alto || ""} ${x.largo || ""}x${x.alto || ""} ${x.presupuesto || ""}`, x.presupuesto));
+                  return (
+                    <div className="px-4 py-3 bg-emerald-50/50">
+                      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Lo que coincide con «{qIn.trim()}»</div>
+                      {dp.length + dc.length + PP.length === 0 && <div className="text-xs text-slate-500">No hay nada de esta obra que coincida.</div>}
+                      {dc.length > 0 && <div className="mb-2"><div className="text-xs font-semibold text-slate-700">Cristales ({dc.length})</div>
+                        {dc.slice(0, 60).map(({ c, pz }, i) => <div key={i} className="text-[11px] text-slate-600">{pz.ref || "—"} · {pz.ancho}×{pz.alto} · caballete {c.lote || "—"} · {textoSitioCab(c)}{c.presupuesto ? ` · ppto ${c.presupuesto}` : ""}</div>)}
+                        {dc.length > 60 && <div className="text-[11px] text-slate-400">… y {dc.length - 60} más: afina la búsqueda.</div>}</div>}
+                      {dp.length > 0 && <div className="mb-2"><div className="text-xs font-semibold text-slate-700">Persianas en los carros ({dp.length})</div>
+                        {dp.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"}{x.parte ? ` · ${x.parte}` : ""} · {largoPersiana(x)}{x.alto ? `×${x.alto}` : ""} · {x.estante ? textoEstante(x.estante) : "sin colocar"}</div>)}
+                        {dp.length > 60 && <div className="text-[11px] text-slate-400">… y {dp.length - 60} más: afina la búsqueda.</div>}</div>}
+                      {PP.length > 0 && <div><div className="text-xs font-semibold text-slate-700">Persianas pedidas, sin llegar ({PP.length})</div>
+                        {PP.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"} · {x.largo}{x.alto ? `×${x.alto}` : ""} · pedido {x.pedido || "—"}</div>)}</div>}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           );
