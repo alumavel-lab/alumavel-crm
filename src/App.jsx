@@ -16987,7 +16987,7 @@ function estantesAlmacenPersianas(carros) {
     const niveles = t.porUds ? 1 : (parseInt(c.niveles, 10) || t.nivelesDefecto || 4);
     LADOS_CARRO.forEach((lado) => {
       for (let nivel = 1; nivel <= niveles; nivel++) {
-        lista.push({ key: `${c.numero}|${lado}|${nivel}`, carro: c.numero, lado, nivel, tipo: c.tipo, largo: parseFloat(c.largo) || LARGO_ESTANTE_MM,
+        lista.push({ key: `${c.numero}|${lado}|${nivel}`, carro: c.numero, lado, nivel, tipo: c.tipo, largo: parseFloat(c.largo) || LARGO_ESTANTE_MM, ...(c.minimo != null && c.minimo !== "" && !isNaN(parseFloat(c.minimo)) ? { minimoMm: parseFloat(c.minimo) } : {}),
           ...(t.porUds ? { porUds: true, capacidad: parseInt(c.capacidad, 10) || t.capacidadDefecto } : {}) });
       }
     });
@@ -17023,7 +17023,7 @@ function colocarUnGrupoPersianas(items, key, exp, estantes, estado) {
   const idx = Object.fromEntries(estantes.map((e, i) => [e.key, i]));
   const cabe = (e, L) => {
     if (e.porUds) return (estado.uds?.[e.key] || 0) < e.capacidad;
-    const min = TIPOS_CARRO_PERSIANA[e.tipo]?.minimoMm || 0;
+    const min = e.minimoMm !== undefined ? e.minimoMm : (TIPOS_CARRO_PERSIANA[e.tipo]?.minimoMm || 0);
     if (L < min) return false;
     // Cada estante tiene DOS filas (interior y exterior) y en cada fila van las persianas una detrás de otra mientras sumen
     // lo que mide el estante. Una fila vacía admite cualquiera, mida lo que mida (una de 3 m también entra: sobresale del carro)
@@ -18631,7 +18631,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     if (!e) return;
     const estado = estadoOcupacionPersianas(items.filter((y) => y.id !== x.id));
     const L = largoPersiana(x);
-    const min = (TIPOS_CARRO_PERSIANA[e.tipo] || {}).minimoMm || 0;
+    const min = e.minimoMm !== undefined ? e.minimoMm : ((TIPOS_CARRO_PERSIANA[e.tipo] || {}).minimoMm || 0);
     let fila = e.porUds ? -2 : filaLibreEstante(estado, e, L);
     const noCabe = e.porUds ? (estado.uds && estado.uds[key] || 0) >= e.capacidad : (L < min || fila === -1);
     if (noCabe) {
@@ -18823,7 +18823,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
     return { pct: total ? usado / total : 0, exps: [...exps], n };
   };
-  const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${(TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || ""} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
+  const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${c.minimo != null && c.minimo !== "" && !isNaN(parseFloat(c.minimo)) ? `desde ${Math.round(parseFloat(c.minimo) / 10)} cm` : ((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
   const opcionesCarro = (excluir) => ordenados.filter((c) => c.numero !== excluir).map((c) => <option key={c.numero} value={c.numero}>{etiquetaCarro(c)}</option>);
 
   return (
@@ -19264,11 +19264,18 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <Field label="Estantes por lado">
                 <TextInput type="number" value={carroSel.niveles} onChange={(e) => actualizarCarro(carroSel.numero, { niveles: parseInt(e.target.value, 10) || 1 })} />
               </Field>
+              <Field label="Medida mínima de persiana (mm)">
+                <TextInput type="number" value={carroSel.minimo ?? (TIPOS_CARRO_PERSIANA[carroSel.tipo]?.minimoMm ?? "")} onChange={(e) => actualizarCarro(carroSel.numero, { minimo: e.target.value === "" ? null : Math.max(0, parseInt(e.target.value, 10) || 0) })} placeholder="Ej: 400" />
+              </Field>
               <Field label="Largo del estante (mm)">
                 <TextInput type="number" value={carroSel.largo} onChange={(e) => actualizarCarro(carroSel.numero, { largo: parseInt(e.target.value, 10) || LARGO_ESTANTE_MM })} />
               </Field>
               </>)}
             </div>
+            {!TIPOS_CARRO_PERSIANA[carroSel.tipo]?.porUds && activos.some((x) => x.estante && x.estante.carro === carroSel.numero) && (
+              <button onClick={() => { const xs = activos.filter((x) => x.estante && x.estante.carro === carroSel.numero); if (window.confirm(`¿Volver a colocar las ${xs.length} ${cosa} de este carro con el largo actual (${carroSel.largo} mm)? Se quedan en este mismo carro.`)) moverACarro(xs, carroSel.numero); }}
+                className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg mb-2 hover:bg-emerald-50">Volver a colocar las de este carro (aprovechar el largo)</button>
+            )}
             <label className="flex items-center gap-2 text-sm mb-2">
               <input type="checkbox" checked={!!carroSel.movido} onChange={(e) => actualizarCarro(carroSel.numero, { movido: e.target.checked, notaSitio: e.target.checked ? carroSel.notaSitio : "" })} />
               Este carro no está en su sitio
@@ -19284,15 +19291,17 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     return (
                       <div key={e.key} className="mb-1.5">
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
-                        <div className="flex h-7 bg-slate-100 rounded overflow-hidden">
-                          {dentro.map((x) => (
+                        {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
+                        <div key={fi} className="flex h-6 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
+                          {fila.map((x) => (
                             <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
-                              className="h-7 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
+                              className="h-6 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
                               style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
                               {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
                             </div>
                           ))}
                         </div>
+                        ))}
                       </div>
                     );
                   })}
