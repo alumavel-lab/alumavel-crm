@@ -43266,7 +43266,7 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   const tipoAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana";
   const nomAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || {}).nombre || "";
   const qq = q.trim();
-  const cands = qq.length < 2 ? [] : [
+  const cands0 = qq.length < 2 ? [] : [
     ...proyectos.filter((pr) => pr && !pr.anulado && pr.estadoTrabajo !== "Cancelado" && pr.origen !== "portalUxcar" && obraCoincideBusqueda(pr, qq, uxs, clientes)).map((pr) => {
       const pres = (String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1];
       const cli = clientes.find((c) => c.id === pr.clienteId);
@@ -43277,6 +43277,29 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
       key: `u-${e.id}`, titulo: `Uxcar ${e.numero}${e.nombre ? " · " + e.nombre : ""}`, cliente: "Uxcar", claves: [soloDigitos(e.numero)].filter((x) => x && x.length >= 2), listado: e.listadoMateriales, proy: null, proyectoId: "",
     })),
   ].slice(0, 8);
+  // Expedientes que no son una obra del CRM pero tienen material en tus almacenes (caballetes de cristal, carros de persianas o persianas pedidas):
+  // se buscan por su número de expediente o por cualquiera de sus presupuestos (ej. 632 o 6554).
+  const qd = soloDigitos(qq);
+  const sueltos = (() => {
+    if (qq.length < 2 || qd.length < 2) return [];
+    const mapa = new Map();
+    const add = (exp, lista) => {
+      const e = soloDigitos(exp);
+      if (!e || e.length < 2) return;
+      const o = mapa.get(e) || { exp: e, pptos: new Set() };
+      String(lista || "").split(/[·,;\s]+/).forEach((t) => { const d = uxPptoDigitos(t); if (d.length >= 3) o.pptos.add(d); });
+      mapa.set(e, o);
+    };
+    toArray(cristales).forEach((c) => { expedientesDeCaballete(c).forEach((e) => add(e, c.presupuesto)); });
+    itemsP.filter((x) => !x.entregada).forEach((x) => add(x.expediente, x.presupuesto));
+    pedidasPers.forEach((x) => add(x.expediente, x.presupuesto));
+    return [...mapa.values()]
+      .filter((o) => o.exp === qd || o.pptos.has(qd))
+      .filter((o) => !cands0.some((c) => c.claves.includes(o.exp)))
+      .slice(0, 6)
+      .map((o) => ({ key: `m-${o.exp}`, titulo: `EXP ${o.exp} · material en el almacén`, cliente: "", claves: [o.exp, ...o.pptos], listado: null, proy: null, proyectoId: "" }));
+  })();
+  const cands = [...cands0, ...sueltos];
 
   const esp = (lineas, sec) => lineas.filter((l) => l.seccion === sec).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
   const estadoPedido = (e) => (e === "Recibido" ? "recibido" : e === "Realizado" ? "pedido al proveedor" : e === "Reclamado" ? "reclamado" : "sin enviar al proveedor");
