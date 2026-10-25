@@ -44662,7 +44662,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   );
 }
 
-function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar, onRecepcion }) {
+function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar, onRecepcion, onBorrar }) {
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -44702,6 +44702,7 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xl font-extrabold text-slate-900">Pedido {pedido.numero}</h2>
         <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span>
+        {onBorrar && <button onClick={onBorrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar pedido</button>}
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
         <div><div className="text-xs text-slate-400">Qué</div><div className="font-semibold">{pedido.tipo}</div></div>
@@ -45970,6 +45971,19 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             perfil={perfil} authUser={authUser}
             onVolver={() => setVista("pedidos")}
             onMarcar={(d) => marcarPedido(pedidoAbiertoId, d)}
+            onBorrar={async () => {
+              const ped = pedidosUx.find((p) => p.id === pedidoAbiertoId);
+              if (!ped) return;
+              if (!window.confirm(`¿Borrar el pedido ${ped.numero}${ped.tipo ? ` (${ped.tipo})` : ""}? Se borra de tu lista y no se puede recuperar. Los expedientes se quedan. Si en el CRM de Ecowin PVC se creó una copia del pedido, hay que borrarla allí.`)) return;
+              try {
+                const patch = { [`pedidos/${ped.id}`]: null };
+                const k = uxMatAlbaran(ped.tipo);
+                if (k) toArray(ped.expedientes).forEach((x) => { const ex = expedientes.find((y) => y.id === x.expedienteId); if (ex && ex.materiales && ex.materiales[k] && ex.materiales[k].estado === "pedido") patch[`expedientes/${ex.id}/materiales/${k}/estado`] = "pendiente"; });
+                await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+                aviso(`Pedido ${ped.numero} borrado`);
+                setPedidoAbiertoId(null); setVista("pedidos");
+              } catch (er) { aviso("No se pudo borrar: " + er.message); }
+            }}
             onRecepcion={async (recepcion) => {
               const ped = pedidosUx.find((p) => p.id === pedidoAbiertoId);
               if (!ped) return false;
