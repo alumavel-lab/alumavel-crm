@@ -4250,11 +4250,11 @@ export default function App() {
     if (!currentUser || loading || !toArray(uxExpedientes).length) return;
     const res = {};
     toArray(uxExpedientes).forEach((e) => {
-      const d = String(e.numero || "").replace(/\D/g, "");
-      if (d.length < 2) return;
-      const c = toArray(cristales).filter((x) => expedientesDeCaballete(x).has(d)).length;
-      const pe = toArray(persianasAlmacen).filter((x) => !x.entregada && String(x.expediente || "").replace(/\D/g, "") === d).length;
-      if (c || pe) res[d] = { c, p: pe };
+      const K = uxClaves(e);
+      if (K.d.length < 2) return;
+      const c = toArray(cristales).filter((x) => uxCaballeteEs(x, K)).length;
+      const pe = toArray(persianasAlmacen).filter((x) => uxPersianaEs(x, K)).length;
+      if (c || pe) res[K.d] = { c, p: pe };
     });
     const txt = JSON.stringify(res);
     if (txt === enFabricaUxRef.current) return;
@@ -35309,13 +35309,25 @@ const uxLlevaPersiana = (exp) => {
 };
 // Lo que hay en los almacenes de la fábrica (lo rellena la oficina en cada pintado; en el portal de Uxcar queda vacío)
 const uxAlmacenGlobal = { cristales: [], persianas: [], resumen: null };
+// Los números con los que se busca un expediente de Uxcar en tus almacenes: su número de expediente y su número de presupuesto.
+// "6.710-1" es el presupuesto 6710 (versión 1); tus caballetes y persianas llevan EXP 800 y, aparte, el presupuesto 6710.
+const uxPptoDigitos = (t) => String(t || "").trim().replace(/-\d+$/, "").replace(/\D/g, "");
+const uxClaves = (exp) => {
+  const num = String((exp && exp.numero) || "");
+  const pptos = new Set();
+  if (/^\s*[\d.]+\s*-\s*\d+\s*$/.test(num)) pptos.add(uxPptoDigitos(num));
+  String((exp && exp.presupuesto) || "").split(/[·,]/).forEach((x) => { const d = uxPptoDigitos(x); if (d.length >= 3) pptos.add(d); });
+  return { d: num.replace(/\D/g, ""), pptos };
+};
+const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || String(c.presupuesto || "").split(/[·,]/).some((x) => K.pptos.has(uxPptoDigitos(x)));
+const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => K.pptos.has(uxPptoDigitos(y)))));
 // ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
 const uxEnAlmacen = (exp, k) => {
-  const d = String((exp && exp.numero) || "").replace(/\D/g, "");
-  if (d.length < 2) return false;
-  if (uxAlmacenGlobal.resumen) { const r = uxAlmacenGlobal.resumen[d]; return !!r && (k === "vidrios" ? r.c > 0 : k === "compactos" ? r.p > 0 : false); } // portal de Uxcar: resumen escrito por la oficina
-  if (k === "vidrios") return toArray(uxAlmacenGlobal.cristales).some((c) => expedientesDeCaballete(c).has(d));
-  if (k === "compactos") return toArray(uxAlmacenGlobal.persianas).some((x) => !x.entregada && String(x.expediente || "").replace(/\D/g, "") === d);
+  const K = uxClaves(exp);
+  if (K.d.length < 2 && K.pptos.size === 0) return false;
+  if (uxAlmacenGlobal.resumen) { const r = uxAlmacenGlobal.resumen[K.d]; return !!r && (k === "vidrios" ? r.c > 0 : k === "compactos" ? r.p > 0 : false); } // portal de Uxcar: resumen escrito por la oficina
+  if (k === "vidrios") return toArray(uxAlmacenGlobal.cristales).some((c) => uxCaballeteEs(c, K));
+  if (k === "compactos") return toArray(uxAlmacenGlobal.persianas).some((x) => uxPersianaEs(x, K));
   return false;
 };
 const uxEstadoMat = (exp, k) => {
