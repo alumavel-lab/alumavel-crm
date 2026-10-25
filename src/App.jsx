@@ -17817,6 +17817,14 @@ function AlmacenPersianas() {
   const items = todosItems.filter((x) => almacenDe(x) === almacen.id);
   const guardarCarros = (next) => saveCarros([...todosCarros.filter((c) => almacenDe(c) !== almacen.id), ...next.map((c) => ({ ...c, almacenId: almacen.id }))]);
   const guardarItems = (next) => saveItems([...todosItems.filter((x) => almacenDe(x) !== almacen.id), ...next.map((x) => ({ ...x, almacenId: almacen.id }))]);
+  // Deshacer una salida: las piezas que figuran como entregadas vuelven al almacén (quedan en «Sin sitio»; ahí se pulsa «Volver a colocar»).
+  const recuperarEntregadas = (xs) => {
+    if (!xs.length) return;
+    if (!window.confirm(`¿Recuperar ${xs.length} ${xs.length === 1 ? "pieza" : "piezas"} que figuran como salidas?\n\nVuelven al almacén y quedan en «Sin sitio»: luego pulsa «Volver a colocar» para ponerlas en un carro.`)) return;
+    const ids = new Set(xs.map((x) => x.id));
+    saveItems(todosItems.map((y) => (ids.has(y.id) ? { ...y, entregada: false, fechaSalida: "", estante: null, enPuesto: "" } : y)));
+    setBusca("");
+  };
   const cuenta = (a) => todosItems.filter((x) => almacenDe(x) === a.id && !x.entregada).length;
 
   const abrir = (modo) => {
@@ -17888,6 +17896,9 @@ function AlmacenPersianas() {
         {busca.trim() && (
           <div className="mt-2 max-h-[45vh] overflow-y-auto">
             <div className="text-xs text-slate-500 mb-1">{resultados.length} encontrada(s){resultados.length > 100 ? " · mostrando las 100 primeras" : ""}</div>
+            {resultados.some((x) => x.entregada) && (resultados.filter((x) => x.entregada).length <= 60
+              ? <button onClick={() => recuperarEntregadas(resultados.filter((x) => x.entregada))} className="mb-2 text-xs font-semibold text-white px-3 py-1.5 rounded-md hover:opacity-90" style={{ backgroundColor: "#d97706" }}>↩ Recuperar las {resultados.filter((x) => x.entregada).length} que figuran como salidas (vuelven al almacén)</button>
+              : <div className="mb-2 text-xs text-amber-700">Hay más de 60 salidas en esta búsqueda: escribe un expediente concreto para poder recuperarlas.</div>)}
             {resultados.slice(0, 100).map((x) => (
               <button key={x.id} disabled={!x.estante || x.entregada}
                 onClick={() => { setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
@@ -20026,6 +20037,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "prepMaterial" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Preparación material
         </button>
+        <button onClick={() => setTab("comprobarExp")}
+          className={`px-4 py-2.5 text-sm font-bold crm-tab border-b-2 -mb-px transition ${tab === "comprobarExp" ? "border-red-600 text-red-700 bg-red-50" : "border-transparent text-red-600 hover:text-red-700 hover:bg-red-50"}`}>
+          Comprobar expediente
+        </button>
         <button onClick={() => setTab("puestos")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "puestos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Puestos y partes
@@ -20046,7 +20061,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             <Badge className="bg-teal-50 text-teal-700 ring-teal-200">{proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida").length}</Badge>
           )}
         </button>
-        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "linea" && tab !== "prepMaterial" && tab !== "caballetes" && (
+        {tab !== "cristales" && tab !== "procesoExterno" && tab !== "reparto" && tab !== "persianasAlmacen" && tab !== "entradasUx" && tab !== "preparar" && tab !== "puestos" && tab !== "linea" && tab !== "prepMaterial" && tab !== "comprobarExp" && tab !== "caballetes" && (
         <button onClick={descargarWord} className="ml-auto mb-1 flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">
           <FileText size={14} /> Descargar esta vista (Word)
         </button>
@@ -20054,6 +20069,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       </div>
 
       {tab === "prepMaterial" && <PuestoPreparacionMaterial cristales={cristales} onIrA={(t) => setTab(t)} />}
+
+      {tab === "comprobarExp" && <ComprobarExpedienteMaterial cristales={cristales} onIrA={(t) => setTab(t)} />}
 
       {tab === "puestos" && (
         <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
