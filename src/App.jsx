@@ -18059,6 +18059,20 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Las persianas pedidas que ya han llegado a la fábrica: se pasan a la pantalla de revisión (con el aviso de «mismo carro que el caballete de cristal»),
   // se colocan en los carros y al confirmar quedan como recibidas.
+  // ¿Es nuestra (Alumavel/Ecowin) o de Uxcar? Primero lo que dice la propia pieza; si no, por el cliente; y solo como pista, por si el número coincide con un expediente de Uxcar.
+  const duenoDe = (x) => {
+    if (x.dueno === "uxcar" || x.origen === "portalUxcar" || x.uxcarPedidoId) return "UXCAR";
+    if (x.dueno === "propio" || x.origen === "pedidoCRM" || x.crmPedidoId) return "PROPIO";
+    if (/uxcar/i.test(String(x.cliente || "")) || /uxcar/i.test(String(x.obraUx || ""))) return "UXCAR";
+    try {
+      const d = String(x.expediente || "").replace(/\D/g, "");
+      const pd = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => uxPptoDigitos(t)).filter(Boolean);
+      const hit = toArray(ctxM.uxExpedientes).some((e) => { if (!e) return false; const K = uxClaves(e); return (d && (K.d === d || K.pptos.has(d))) || pd.some((q) => K.pptos.has(q)); });
+      if (hit) return "¿UXCAR?";
+    } catch (e) { /* nada */ }
+    return "PROPIO";
+  };
+  const etqDueno = (x) => { const d = duenoDe(x); return d === "PROPIO" ? "Propio" : d === "UXCAR" ? "UXCAR" : "¿UXCAR?"; };
   // El EXP y el presupuesto son cosas distintas. Si el "expediente" de una pedida es en realidad el presupuesto (mismos dígitos), se busca el EXP real
   // en los caballetes de cristal de ese presupuesto; si no se encuentra, se dice "sin dato" en vez de repetir el presupuesto.
   const expedienteRealDe = (p) => {
@@ -18089,7 +18103,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
     const hoy = new Date().toISOString().slice(0, 10);
-    setBorrador(ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" }); }));
+    setBorrador(ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" }); }));
     setVerPedidas(false);
     setAviso(`${ps.length} ${cosa} pedidas pasadas a revisión. Mira abajo, agrúpalas por caballete de cristal si sale el aviso, y confirma para colocarlas en carros.`);
   };
@@ -18270,9 +18284,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // REPARTO GLOBAL: solo carros VACÍOS (sin empezar), un expediente entero en un mismo carro siempre que quepa, los que comparten caballete juntos,
   // y rellenando primero los carros ya abiertos en este reparto para gastar los menos carros posibles. Lo que no cabe entero se parte pieza a pieza.
-  const calcularReparto = (lista) => {
+  const calcularRepartoUno = (lista, excluir) => {
     if (!lista || !lista.length) return { asig: {}, partidos: [], usados: [], sinSitioP: [], expDe: (x) => "" };
-    const vacios = ordenados.filter((c) => !activos.some((x) => x.estante && x.estante.carro === c.numero));
+    const vacios = ordenados.filter((c) => !excluir.has(c.numero) && !activos.some((x) => x.estante && x.estante.carro === c.numero));
     let estado = estadoOcupacionPersianas(items);
     const expDe = (x) => soloDigitos(x.expediente) || String(x.expediente || "—");
     const piezasDe = {};
@@ -18332,12 +18346,21 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
     return { asig, partidos, usados, sinSitioP, expDe };
   };
+  // Carros INDEPENDIENTES: lo nuestro y lo de Uxcar nunca comparten carro. Primero se reparte lo nuestro y luego lo de Uxcar en otros carros vacíos.
+  const calcularReparto = (lista) => {
+    const propias = (lista || []).filter((x) => duenoDe(x) === "PROPIO");
+    const uxcar = (lista || []).filter((x) => duenoDe(x) !== "PROPIO");
+    const r1 = calcularRepartoUno(propias, new Set());
+    const r2 = calcularRepartoUno(uxcar, new Set(r1.usados));
+    return { asig: { ...r1.asig, ...r2.asig }, partidos: [...r1.partidos, ...r2.partidos], usados: [...new Set([...r1.usados, ...r2.usados])].sort((x, y) => x - y), sinSitioP: [...r1.sinSitioP, ...r2.sinSitioP], expDe: r1.expDe || r2.expDe, usadosPropias: r1.usados, usadosUxcar: r2.usados };
+  };
   const repartoGlobal = () => {
     if (!borrador || !borrador.length) return;
-    const { asig, partidos, usados, sinSitioP, expDe } = calcularReparto(borrador);
+    const rr = calcularReparto(borrador);
+    const { asig, partidos, usados, sinSitioP, expDe } = rr;
     setBorrador(borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x)));
     setResumenSugerencias([
-      `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos (${usados.join(", ")}). Nada se ha guardado todavía.`,
+      `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos. Carros nuestros: ${rr.usadosPropias.join(", ") || "ninguno"} · carros de Uxcar: ${rr.usadosUxcar.join(", ") || "ninguno"}. Nada se ha guardado todavía.`,
       partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
       sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): añade carros o dalas de baja.` : "",
     ].filter(Boolean).join(" "));
@@ -18559,7 +18582,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
     const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
-    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}<br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const secciones = Object.keys(porCarro).sort((a, b) => a - b).map((n) => {
       const xs = porCarro[n].sort((a, b) => String(a.e.nivel).localeCompare(String(b.e.nivel), "es", { numeric: true }) || String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
       const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
@@ -18573,9 +18596,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const xs = porCarro[n];
       const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
       const pocas = xs.length <= 3;
-      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${pocas ? "pocas persianas" : ""}</td></tr>`;
+      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
     }).join("");
-    const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th></th></tr>${resumenFilas}</table></section>`;
+    const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th>Propias / Uxcar</th></tr>${resumenFilas}</table></section>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Reparto previsto en carros</title><style>
       body{font-family:Arial,sans-serif;margin:12mm;color:#111} h1{font-size:18px;margin:0 0 4px} h2{font-size:20px;margin:0 0 6px} h2 small{font-size:13px;font-weight:normal;color:#444}
       section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse} .lados{display:flex;gap:14px}.lado{flex:1;min-width:0} h3{font-size:15px;margin:6px 0 4px}
@@ -18725,6 +18748,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
                       <span>EXP {expedienteRealDe(ps[0]) || "sin dato"}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      <span className={`px-2 py-0.5 rounded font-bold ${duenoDe(ps[0]) === "PROPIO" ? "bg-emerald-100 text-emerald-900" : "bg-violet-200 text-violet-900"}`}>{etqDueno(ps[0])}</span>
                       {nombreObraDe(ps[0]) && <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-900 font-semibold">{nombreObraDe(ps[0])}</span>}
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
                       <button onClick={() => colocarDesdePedidas(ps)} className="ml-auto text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-0.5 rounded hover:bg-[#EEF7E4]">Han llegado: colocar</button>
@@ -18831,7 +18855,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
-                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" />{x.presupuesto && !expedienteRealDe(x) ? <div className="text-[10px] text-amber-700">= presupuesto; EXP sin dato</div> : null}</td>
+                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" />{x.presupuesto && !expedienteRealDe(x) ? <div className="text-[10px] text-amber-700">= presupuesto; EXP sin dato</div> : null}<div className={`text-[10px] font-bold ${duenoDe(x) === "PROPIO" ? "text-emerald-700" : "text-violet-700"}`}>{etqDueno(x)}</div></td>
                     <td className="pr-2">{x.ref || "—"}{x.habitacion ? <div className="text-[10px] text-slate-500">{x.habitacion}</div> : null}{x.descripcion ? <div className="text-[10px] text-slate-400 max-w-[200px] truncate" title={x.descripcion}>{x.descripcion}</div> : null}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
