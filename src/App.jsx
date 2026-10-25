@@ -17997,6 +17997,17 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Las persianas pedidas que ya han llegado a la fábrica: se pasan a la pantalla de revisión (con el aviso de «mismo carro que el caballete de cristal»),
   // se colocan en los carros y al confirmar quedan como recibidas.
+  // Nombre de la obra / cliente de una persiana pedida (para reconocerla): de la obra del CRM o del expediente de Uxcar
+  const nombreObraDe = (p) => {
+    try {
+      const d = String(p.refObra || p.expediente || "").replace(/\D/g, "");
+      const ux = toArray(ctxM.uxExpedientes).find((e) => e && (String(e.numero || "") === String(p.refObra || "") || (d && String(e.numero || "").replace(/\D/g, "") === d)));
+      if (ux && (ux.nombre || ux.cliente)) return [ux.nombre, ux.cliente].filter(Boolean).join(" · ");
+      const pr = toArray(ctxM.proyectos).find((y) => y && (y.id === p.proyectoId || (d && (String(y.numero || "").replace(/\D/g, "") === d || String(y.expediente || "").replace(/\D/g, "") === d))));
+      if (pr) { const cl = toArray(ctxM.clientes).find((c) => c.id === pr.clienteId); return [pr.nombre, cl && cl.nombre].filter(Boolean).join(" · "); }
+    } catch (e) { /* nada */ }
+    return p.cliente && p.cliente !== "Uxcar" ? p.cliente : "";
+  };
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -18534,6 +18545,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
                       <span>EXP {ps[0].expediente || "—"}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      {nombreObraDe(ps[0]) && <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-900 font-semibold">{nombreObraDe(ps[0])}</span>}
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
                       <button onClick={() => colocarDesdePedidas(ps)} className="ml-auto text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-0.5 rounded hover:bg-[#EEF7E4]">Han llegado: colocar</button>
                       <button onClick={() => { if (window.confirm(`¿Quitar las ${ps.length} persianas pendientes de este pedido? (No se borra nada del almacén)`)) quitar(ps.map((p) => p.id)); }} className="text-[11px] font-semibold text-rose-600 border border-rose-200 px-2 py-0.5 rounded hover:bg-rose-50">Quitar pedido</button>
@@ -18647,7 +18659,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <option value="Eléctrica">Eléctrica</option>
                       </select>
                     </td>
-                    <td className="pr-2 text-slate-500">{[x.refObra || x.obraUx, x.presupuesto ? `Ppto ${x.presupuesto}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
+                    <td className="pr-2 text-slate-500">{[x.nombreObra, x.refObra || x.obraUx, x.presupuesto ? `Ppto ${x.presupuesto}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
                     <td className={`pr-2 text-[11px] font-semibold ${colorCristal(cristalDe(x))}`}>{textoCristal(cristalDe(x)) || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
