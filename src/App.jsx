@@ -43268,6 +43268,32 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   const tipoAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana";
   const nomAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || {}).nombre || "";
   const qq = q.trim();
+  // Tipo de cristal (mate, transparente, 5+5…) de una pieza: lo que lleve la propia pieza o, si no, la línea de la confirmación de pedido de cristales
+  // que coincide (misma vivienda y medida). Si no se subió la confirmación del pedido, no hay dato.
+  const lineasConf = toArray(ctx.confirmaciones).flatMap((cf) => toArray(cf && cf.lineas));
+  const tipoCristalDe = (pz) => {
+    const propio = [pz.composicion, pz.material, pz.descripcion, pz.espesor, pz.color].filter(Boolean).join(" · ");
+    if (propio) return propio;
+    const r = normBusq(pz.ref), w = parseFloat(pz.ancho) || 0, h = parseFloat(pz.alto) || 0;
+    if (!w || !h) return "";
+    const l = lineasConf.find((x) => {
+      const xw = parseFloat(x.ancho) || 0, xh = parseFloat(x.alto) || 0;
+      const medida = (Math.abs(xw - w) <= 3 && Math.abs(xh - h) <= 3) || (Math.abs(xw - h) <= 3 && Math.abs(xh - w) <= 3);
+      return medida && (!r || !normBusq(x.ref) || normBusq(x.ref) === r);
+    });
+    return l ? [l.descripcion, l.espesor, l.color].filter(Boolean).join(" · ") : "";
+  };
+  const resumenTipos = (piezas) => {
+    const m = new Map();
+    piezas.forEach((pz) => { const t = tipoCristalDe(pz) || "tipo sin dato"; m.set(t, (m.get(t) || 0) + (parseFloat(pz.cantidad) || 1)); });
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  };
+  const irCab = (c) => {
+    if (!onIrA) return;
+    focoAlmacen.actual = c.ubicacion ? { tipo: "cristal", exp: String(c.expediente || ""), viv: "", ubicacion: c.ubicacion } : { tipo: "cristal", exp: soloDigitos(c.expediente), viv: "" };
+    onIrA("cristales");
+  };
+  const irCarro = (x) => { if (!onIrA || !x.estante) return; focoAlmacen.actual = { tipo: "persiana", almacenId: almacenDe(x), carro: x.estante.carro }; onIrA("persianasAlmacen"); };
   const cands0 = qq.length < 2 ? [] : [
     ...proyectos.filter((pr) => pr && !pr.anulado && pr.estadoTrabajo !== "Cancelado" && pr.origen !== "portalUxcar" && obraCoincideBusqueda(pr, qq, uxs, clientes)).map((pr) => {
       const pres = (String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1];
@@ -43373,10 +43399,13 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
               <div className="px-4 py-3">
                 <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Cristales</div>
                 {cabs.length === 0 ? <span className="text-slate-500">No hay cristales con este presupuesto en el almacén.</span> : <span className="text-emerald-700 font-bold">{totC} pieza{totC === 1 ? "" : "s"} en {cabs.length} caballete{cabs.length === 1 ? "" : "s"}</span>}
+                {cabs.length > 0 && <div className="mt-1 text-[11px] text-slate-700">{resumenTipos(cabs.flatMap((k) => k.pz)).map(([t, n]) => `${t}: ${n} ud.`).join(" · ")}</div>}
                 {cabs.slice(0, 20).map(({ c, pz }, i) => (
-                  <div key={i} className="mt-1 text-[11px] text-slate-600">
-                    <div className="font-semibold text-slate-700">Caballete {c.lote || "—"} · {textoSitioCab(c)} · EXP {c.expediente || "—"}{c.presupuesto ? ` · ppto ${c.presupuesto}` : ""}</div>
-                    {pz.slice(0, 40).map((x, j) => <div key={j} className="pl-3">{x.ref || "—"} · {x.ancho}×{x.alto}{x.expediente && String(x.expediente) !== String(c.expediente) ? ` · EXP ${x.expediente}` : ""}</div>)}
+                  <div key={i} className="mt-1.5 text-[11px] text-slate-600">
+                    <div className="font-semibold text-slate-700">Caballete {c.lote || "—"} · EXP {String(c.expediente || "—").replace(/^\s*EXP\.?\s*/i, "")}{c.presupuesto ? ` · ppto ${c.presupuesto}` : ""} · {pz.reduce((a, x) => a + (parseFloat(x.cantidad) || 1), 0)} ud.
+                      {onIrA ? <button onClick={() => irCab(c)} className="ml-2 text-[#2E8B57] underline hover:text-emerald-800">{textoSitioCab(c)} → ver en el almacén</button> : <span className="ml-2 font-normal">{textoSitioCab(c)}</span>}
+                    </div>
+                    {pz.slice(0, 40).map((x, j) => <div key={j} className="pl-3">{x.ref || "—"} · {x.ancho}×{x.alto} · {parseFloat(x.cantidad) || 1} ud. · {tipoCristalDe(x) || "tipo sin dato"}{x.expediente && String(x.expediente) !== String(c.expediente) ? ` · EXP ${x.expediente}` : ""}</div>)}
                     {pz.length > 40 && <div className="pl-3 text-slate-400">… y {pz.length - 40} más</div>}
                   </div>
                 ))}
@@ -43384,7 +43413,7 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
               <div className="px-4 py-3">
                 <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Persianas en los carros</div>
                 {pers.length === 0 ? <span className="text-slate-500">No hay persianas de este presupuesto en los carros.</span> : <span className="text-emerald-700 font-bold">{pers.length} en los carros</span>}
-                {pers.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"}{x.parte ? ` · ${x.parte}` : ""} · EXP {x.expediente} · {largoPersiana(x)}{x.alto ? `×${x.alto}` : ""} · {x.estante ? textoEstante(x.estante) : "sin colocar"}</div>)}
+                {pers.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"}{x.parte ? ` · ${x.parte}` : ""} · EXP {String(x.expediente).replace(/^\s*EXP\.?\s*/i, "")} · {largoPersiana(x)}{x.alto ? `×${x.alto}` : ""} · {x.estante && onIrA ? <button onClick={() => irCarro(x)} className="text-[#2E8B57] underline hover:text-emerald-800">{textoEstante(x.estante)} → ver en el carro</button> : x.estante ? textoEstante(x.estante) : "sin colocar"}</div>)}
                 {pers.length > 60 && <div className="text-[11px] text-slate-400">… y {pers.length - 60} más</div>}
               </div>
               <div className="px-4 py-3">
@@ -43427,6 +43456,7 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
                   <Veredicto lleva={ce > 0} esperadas={ce} llegadas={cl} hayListado={hay} />
                   {!hay && cl > 0 && <span className="ml-2 text-slate-600">· hay {cl} en el almacén</span>}
                   <div className="mt-1">{sitiosC.map((sv, k) => chip(sv, k))}</div>
+                  {cr.length > 0 && <div className="mt-1 text-[11px] text-slate-700">{resumenTipos(cr.flatMap((c) => toArray(c.piezas).filter((pz) => deObra(o.claves, pz.expediente || c.expediente)))).map(([t, n]) => `${t}: ${n} ud.`).join(" · ")}</div>}
                   {pedObra.filter((pd) => tipoPedidoMaterial(pd) === "cristal").map((pd) => <div key={pd.id} className="text-[11px] text-slate-600 mt-1">Pedido #{pd.numero}: {estadoPedido(pd.estado)}{pd.estado !== "Recibido" && pd.fechaEntregaPrevista ? ` · llega aprox. ${fmtDate(pd.fechaEntregaPrevista)}` : ""}</div>)}
                   {hay && ce > 0 && cl < ce && pedObra.filter((pd) => tipoPedidoMaterial(pd) === "cristal").length === 0 && <div className="text-[11px] font-bold text-rose-700 mt-1">⚠ No encuentro ningún pedido de cristales de esta obra</div>}
                 </div>
@@ -43459,10 +43489,10 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
                       <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Lo que coincide con «{qIn.trim()}»</div>
                       {dp.length + dc.length + PP.length === 0 && <div className="text-xs text-slate-500">No hay nada de esta obra que coincida.</div>}
                       {dc.length > 0 && <div className="mb-2"><div className="text-xs font-semibold text-slate-700">Cristales ({dc.length})</div>
-                        {dc.slice(0, 60).map(({ c, pz }, i) => <div key={i} className="text-[11px] text-slate-600">{pz.ref || "—"} · {pz.ancho}×{pz.alto} · caballete {c.lote || "—"} · {textoSitioCab(c)}{c.presupuesto ? ` · ppto ${c.presupuesto}` : ""}</div>)}
+                        {dc.slice(0, 60).map(({ c, pz }, i) => <div key={i} className="text-[11px] text-slate-600">{pz.ref || "—"} · {pz.ancho}×{pz.alto} · {parseFloat(pz.cantidad) || 1} ud. · {tipoCristalDe(pz) || "tipo sin dato"} · caballete {c.lote || "—"} · {onIrA ? <button onClick={() => irCab(c)} className="text-[#2E8B57] underline">{textoSitioCab(c)} → ver</button> : textoSitioCab(c)}{c.presupuesto ? ` · ppto ${c.presupuesto}` : ""}</div>)}
                         {dc.length > 60 && <div className="text-[11px] text-slate-400">… y {dc.length - 60} más: afina la búsqueda.</div>}</div>}
                       {dp.length > 0 && <div className="mb-2"><div className="text-xs font-semibold text-slate-700">Persianas en los carros ({dp.length})</div>
-                        {dp.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"}{x.parte ? ` · ${x.parte}` : ""} · {largoPersiana(x)}{x.alto ? `×${x.alto}` : ""} · {x.estante ? textoEstante(x.estante) : "sin colocar"}</div>)}
+                        {dp.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"}{x.parte ? ` · ${x.parte}` : ""} · {largoPersiana(x)}{x.alto ? `×${x.alto}` : ""} · {x.estante && onIrA ? <button onClick={() => irCarro(x)} className="text-[#2E8B57] underline">{textoEstante(x.estante)} → ver</button> : x.estante ? textoEstante(x.estante) : "sin colocar"}</div>)}
                         {dp.length > 60 && <div className="text-[11px] text-slate-400">… y {dp.length - 60} más: afina la búsqueda.</div>}</div>}
                       {PP.length > 0 && <div><div className="text-xs font-semibold text-slate-700">Persianas pedidas, sin llegar ({PP.length})</div>
                         {PP.slice(0, 60).map((x, i) => <div key={i} className="text-[11px] text-slate-600">{x.ref || "—"} · {x.largo}{x.alto ? `×${x.alto}` : ""} · pedido {x.pedido || "—"}</div>)}</div>}
