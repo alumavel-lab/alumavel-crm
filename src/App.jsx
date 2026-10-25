@@ -18080,34 +18080,55 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [resumenSugerencias, setResumenSugerencias] = useState("");
   // Mira los caballetes de cristal y, para cada grupo de expedientes que comparten caballete, busca el primer carro donde caben TODAS sus persianas
   // juntas (contando lo que ya hay y lo que se va asignando a los grupos anteriores) y las asigna. Lo que no cabe se queda como estaba.
+  const clonarEst = (v) => (v instanceof Set ? new Set(v) : Array.isArray(v) ? v.map(clonarEst) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clonarEst(x)])) : v);
+  // Coloca un grupo: primero intenta TODO en un mismo carro; si no cabe, reparte por expedientes completos en los carros que hagan falta
+  // (llena un carro con los expedientes que caben, sigue con el siguiente). Devuelve { asignado:{exp:carro}, estado, sinSitio:[exp], carros:[n] }.
+  const repartirGrupo = (g, estadoIn) => {
+    let estado = estadoIn;
+    const porExpDe = (exps) => { const set = new Set(exps); const m = {}; borrador.filter((x) => set.has(soloDigitos(x.expediente))).forEach((x) => { (m[x.expediente || "—"] = m[x.expediente || "—"] || []).push(x); }); return m; };
+    const cabeEn = (porExp, destino, st) => Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, st).res).length === xs.length);
+    const asignado = {};
+    for (const c of ordenados) {
+      const destino = estantes.filter((e) => e.carro === c.numero);
+      if (!destino.length) continue;
+      const prueba = clonarEst(estado);
+      if (cabeEn(porExpDe(g.exps), destino, prueba)) { g.exps.forEach((e) => { asignado[e] = c.numero; }); return { asignado, estado: prueba, sinSitio: [], carros: [c.numero], junto: true }; }
+    }
+    // no cabe todo en un carro: por expedientes, de uno en uno, llenando carros en orden
+    let restantes = [...g.exps].filter((e) => borrador.some((x) => soloDigitos(x.expediente) === e));
+    const usados = [];
+    for (const c of ordenados) {
+      if (!restantes.length) break;
+      const destino = estantes.filter((e) => e.carro === c.numero);
+      if (!destino.length) continue;
+      const quedan = [];
+      restantes.forEach((e) => {
+        const prueba = clonarEst(estado);
+        if (cabeEn(porExpDe([e]), destino, prueba)) { estado = prueba; asignado[e] = c.numero; if (!usados.includes(c.numero)) usados.push(c.numero); } else quedan.push(e);
+      });
+      restantes = quedan;
+    }
+    return { asignado, estado, sinSitio: restantes, carros: usados, junto: false };
+  };
   const ponerJuntasTodas = () => {
     if (!borrador) return;
     const grupos = gruposCaballete(borrador);
     if (!grupos.length) { setResumenSugerencias("No hay ningún grupo de expedientes que comparta caballete de cristal."); return; }
-    const clonar = (v) => (v instanceof Set ? new Set(v) : Array.isArray(v) ? v.map(clonar) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clonar(x)])) : v);
     let estado = estadoOcupacionPersianas(items);
-    const asignado = {};
+    const asignadoTodo = {};
     const lineas = [];
     const sinSitioG = [];
     grupos.forEach((g) => {
-      const set = new Set(g.exps);
-      const piezas = borrador.filter((x) => set.has(soloDigitos(x.expediente)));
-      const porExp = {};
-      piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
-      let elegido = null;
-      for (const c of ordenados) {
-        const destino = estantes.filter((e) => e.carro === c.numero);
-        if (!destino.length) continue;
-        const prueba = clonar(estado);
-        const cabe = Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, prueba).res).length === xs.length);
-        if (cabe) { elegido = c.numero; estado = prueba; break; }
-      }
-      const nombresCab = g.cabs.map((c) => c.codigo || c.nombre || c.numero || c.id).filter(Boolean).slice(0, 2).join(", ");
-      if (elegido) { g.exps.forEach((e) => { asignado[e] = elegido; }); lineas.push(`Carro ${elegido}: expedientes ${g.exps.join(", ")}${nombresCab ? ` (caballete ${nombresCab})` : ""}`); }
-      else sinSitioG.push(`${g.exps.join(", ")}${nombresCab ? ` (caballete ${nombresCab})` : ""}`);
+      const r = repartirGrupo(g, estado);
+      estado = r.estado;
+      Object.assign(asignadoTodo, r.asignado);
+      const porCarro = {};
+      Object.entries(r.asignado).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); });
+      Object.entries(porCarro).forEach(([c, es]) => lineas.push(`Carro ${c}: ${es.sort().join(", ")}`));
+      if (r.sinSitio.length) sinSitioG.push(r.sinSitio.join(", "));
     });
-    if (Object.keys(asignado).length) setBorrador(borrador.map((x) => { const c = asignado[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; }));
-    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `No caben juntos en ningún carro: ${sinSitioG.join("; ")}. Se colocarán expediente a expediente.` : ""].filter(Boolean).join(" "));
+    if (Object.keys(asignadoTodo).length) setBorrador(borrador.map((x) => { const c = asignadoTodo[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; }));
+    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `Sin sitio en ningún carro: expedientes ${sinSitioG.join("; ")}. Se colocarán como siempre o añade carros.` : ""].filter(Boolean).join(" "));
   };
 
   const todasPersianas = () => (ctxM.persianasAlmacen ? toArray(ctxM.persianasAlmacen) : items);
@@ -18532,6 +18553,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 </select>
                 <button disabled={!carroGrupo[k]} onClick={() => juntarEnCarro(g.exps, carroGrupo[k], k)} className="px-2 py-1 rounded bg-amber-600 text-white font-semibold disabled:opacity-40">Poner juntas</button>
                 <button onClick={() => { const c = primerCarroQueCabe(g.exps); setAvisoGrupo({ ...avisoGrupo, [k]: c ? `Caben todas en el carro ${c}.` : "No caben todas juntas en ningún carro." }); if (c) setCarroGrupo({ ...carroGrupo, [k]: String(c) }); }} className="px-2 py-1 rounded border border-amber-600 text-amber-800 font-semibold">Buscar carro donde quepan</button>
+                <button onClick={() => { const r = repartirGrupo(g, estadoOcupacionPersianas(items)); const asig = r.asignado; if (Object.keys(asig).length) setBorrador(borrador.map((x) => { const c = asig[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; })); const porCarro = {}; Object.entries(asig).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); }); setAvisoGrupo({ ...avisoGrupo, [k]: (r.junto ? `Todas juntas en el carro ${r.carros[0]}.` : `Repartidas en ${r.carros.length} carro${r.carros.length === 1 ? "" : "s"}: ` + Object.entries(porCarro).map(([c, es]) => `carro ${c} (${es.sort().join(", ")})`).join(" · ") + ".") + (r.sinSitio.length ? ` Sin sitio: ${r.sinSitio.join(", ")}.` : "") }); }} className="px-2 py-1 rounded bg-amber-700 text-white font-semibold">Repartir en los carros que hagan falta</button>
                 {avisoGrupo[k] && <span className="basis-full font-semibold text-amber-900">{avisoGrupo[k]}</span>}
               </div>
             );
