@@ -1877,6 +1877,16 @@ export default function App() {
     if (data.id) {
       const anterior = proyectos.find((p) => p.id === data.id);
 
+      // Obra de Uxcar: no se pasa a fabricar si a su expediente le faltan documentos
+      if (data.estadoTrabajo === "En proceso" && anterior && anterior.estadoTrabajo !== "En proceso" && anterior.origen === "portalUxcar") {
+        const expUx = uxExpedientes.find((e) => e.id === anterior.uxcarExpedienteId);
+        const faltUx = expUx ? documentosQueFaltanUx(expUx, uxPedidos) : [];
+        if (faltUx.length > 0) {
+          const texto = `No se puede pasar a fabricar #${anterior.numero} (Uxcar ${expUx.numero}) todavía. Falta:\n\n- ${faltUx.join("\n- ")}`;
+          if (!isAdmin) { alert(texto + "\n\nLo sube Uxcar desde su portal."); return; }
+          if (!confirm(texto + "\n\nEres administrador: ¿pasarlo a fabricar igualmente?")) return;
+        }
+      }
       // No se puede pasar a fabricar si falta material de lo que "lleva" la obra
       if (data.estadoTrabajo === "En proceso" && anterior && anterior.estadoTrabajo !== "En proceso" && anterior.origen !== "portalUxcar") {
         const faltan = condicionesPendientesChecklist({ ...anterior, ...data }, pedidos);
@@ -4427,7 +4437,15 @@ export default function App() {
       } catch (e) { /* se reintenta en el próximo cambio */ } finally { autoStockUxRef.current = false; }
     })();
   }, [stockUxAuto, uxExpedientes]);
+  // Documentos que faltan para pasar un expediente de Uxcar a fabricar (el "Expediente rápido" no cuenta como completo)
+  const faltanDocsUxParaFabricar = (exp) => (exp ? documentosQueFaltanUx(exp, uxPedidos) : []);
   const uxPasarProduccion = async (exp) => {
+    const falt = faltanDocsUxParaFabricar(exp);
+    if (falt.length > 0) {
+      const texto = `No se puede pasar a fabricar el expediente ${exp.numero} todavía. Falta:\n\n- ${falt.join("\n- ")}`;
+      if (!isAdmin) { alert(texto + "\n\nLo sube Uxcar desde su portal."); return; }
+      if (!window.confirm(texto + "\n\nEres administrador: ¿pasarlo a fabricar igualmente?")) return;
+    }
     const hoy = uxHoy();
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
     // Los perfiles del informe salen del stock de Uxcar al pasar a producción (con el mismo margen por roturas, sin avisar a Uxcar). Una vez por expediente.
@@ -5346,6 +5364,20 @@ export default function App() {
                 ))}
               </div>
             </details>
+          );
+        })()}
+        {(() => {
+          // Pedidos de material de Uxcar que ya deberían haber llegado y no han llegado
+          if (!currentUser || !(isAdmin || tieneAcceso("uxcar"))) return null;
+          const hoyR = new Date().toISOString().slice(0, 10);
+          const tarde = uxPedidos.filter((pd) => pd && !pd.recibido && pd.llegadaPrevista && pd.llegadaPrevista < hoyR && (pd.enviadoEmail || pd.enviadoWhatsapp || pd.enviadoManual));
+          if (!tarde.length) return null;
+          return (
+            <button onClick={() => setModulo("uxcar")} className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left bg-rose-50 text-rose-800 border-b border-rose-100 hover:bg-rose-100 transition">
+              <AlertTriangle size={15} />
+              Material de Uxcar retrasado: {tarde.length} pedido{tarde.length === 1 ? "" : "s"} ya deber{tarde.length === 1 ? "ía" : "ían"} haber llegado ({tarde.slice(0, 3).map((pd) => `${pd.numero || pd.tipo || "pedido"} · ${pd.tipo || ""} ${String(pd.llegadaPrevista).split("-").reverse().join("/")}`).join(" · ")}{tarde.length > 3 ? "…" : ""})
+              <span className="ml-auto text-xs">Ver en Uxcar →</span>
+            </button>
           );
         })()}
         {(() => {
@@ -35264,6 +35296,7 @@ const uxEstadoControl = (exp, pedidos, clave, tipoPedido) => {
   if (est === "no_lleva") r = { t: clave === "compactos" ? "No lleva persianas" : "No lleva", c: "text-slate-400" };
   else if (est === "recibido") r = { t: "✓ Ha llegado todo", c: "text-emerald-700" };
   else if (peds.some((p) => p.recepcion && !p.recepcion.completo)) r = { t: "⚠ Ha llegado en parte: falta material", c: "text-orange-700" };
+  else if (peds.some((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy())) r = { t: `⚠ Retrasado: debía llegar el ${uxFecha(peds.filter((p) => !p.recibido && p.llegadaPrevista && p.llegadaPrevista < uxHoy()).map((p) => p.llegadaPrevista).sort()[0])}`, c: "text-rose-700 font-semibold" };
   else if (peds.some(enviado)) r = { t: "Pedido · esperando que llegue", c: "text-sky-700" };
   else if (peds.length > 0) r = { t: "Pedido hecho · falta mandarlo al proveedor", c: "text-amber-700" };
   else if (est === "pedido") r = { t: "Pedido (hecho fuera del portal)", c: "text-sky-700" };
@@ -44875,7 +44908,6 @@ function documentosQueFaltanObra(p) {
     etiquetas: toArray(p.etiquetasFab).length > 0,
     corte: lotesConCorte(p.etiquetasFab),
   };
-  if (toArray(p.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
   const faltan = [];
   // Basta con el análisis de materiales: de él salen los cristales, las persianas y el resto. Dibujos, cristales y persianas sueltos ya no se exigen.
@@ -44895,7 +44927,6 @@ function documentosQueFaltanUx(e, uxPedidos) {
     etiquetas: toArray(e.etiquetasFab).length > 0,
     corte: lotesConCorte(e.etiquetasFab),
   };
-  if (toArray(e.etiquetasFab).some((l) => l && l.rapido)) return []; // "Expediente rápido": solo lleva listado de vidrios y hoja de corte
   const faltan = [];
   if (!tiene.dibujos) faltan.push("listado de dibujos");
   if (!tiene.analisis) faltan.push("informe de materiales");
@@ -45808,6 +45839,21 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("condiciones", "Condiciones")}
         </div>
         {datos && vista === "lista" && <PortalRapidoArriba expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} aviso={aviso} />}
+        {datos && vista === "lista" && (() => {
+          const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado)).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
+          if (!pend.length) return null;
+          return (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold mb-1">Te faltan documentos antes de que estos expedientes pasen a fábrica:</p>
+              <ul className="space-y-1">
+                {pend.map(({ e, faltan }) => (
+                  <li key={e.id}><button onClick={() => { setAbiertoId(e.id); setVista("ficha"); }} className="text-left hover:underline"><b>{e.numero}</b>: falta {faltan.join(" · ")}</button></li>
+                ))}
+              </ul>
+              <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.</p>
+            </div>
+          );
+        })()}
         {error && <p className="text-sm text-rose-600 mb-3">{error}</p>}
         {!datos ? (
           <div className="flex items-center gap-2 text-slate-500 text-sm"><Loader2 className="animate-spin" size={16} /> Cargando…</div>
