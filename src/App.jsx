@@ -14912,7 +14912,9 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           g.cabs.add(`Cab. ${c.lote || c.numero || "?"}${c.ubicacion ? "" : " (pendiente)"}`);
         }));
         const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs] }));
-        return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" />;
+        const mapaP = {};
+        toArray(ctxFusion.persianasAlmacen).filter((x) => x && x.estante && !x.entregada).forEach((x) => { const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—"; mapaP[k] = (mapaP[k] || 0) + (parseFloat(x.cantidad) || 1); });
+        return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" extra={{ label: "persianas", mapa: mapaP }} />;
       })()}
 
       {subTab === "trabajo" && (
@@ -17586,7 +17588,7 @@ const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlan
   return { obra: `#${p.numero}${p.nombre ? " " + p.nombre : ""}`, horas: r.horas > 0 ? r.horas : null, origenHoras: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas", color: cols[0] || "", otrosColores: cols.slice(1) };
 };
 // filas: [{ exp, uds, sitios: [texto], aparte: nº de unidades sin ubicar (opcional) }]
-function ExpedientesConMaterial({ filas, proyectos, cosa }) {
+function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const ctxH = React.useContext(IncidenciasCristalCtx) || {};
   const [orden, setOrden] = useState("exp");
   const [buscar, setBuscar] = useState("");
@@ -17611,10 +17613,10 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
   const imprimirExpedientes = () => {
     const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const hoy = new Date().toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
-    const filasHtml = lista.map((f) => `<tr><td><b>${esc(f.exp)}</b></td><td>${esc(f.h ? f.h.obra : "")}</td><td style="text-align:right">${esc(f.uds)}</td></tr>`).join("");
+    const filasHtml = lista.map((f) => `<tr><td><b>${esc(f.exp)}</b></td><td>${esc(f.h ? f.h.obra : "")}</td><td style="text-align:right">${esc(f.uds)}</td>${extra ? `<td style="text-align:right">${esc(extra.mapa[f.exp] || "")}</td>` : ""}</tr>`).join("");
     const w = window.open("", "_blank");
     if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para esta página."); return; }
-    w.document.write(`<html><head><title>Expedientes en el almacén</title><style>body{font-family:Arial,sans-serif;font-size:13px;margin:20px}h2{margin:0 0 4px}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #999;padding:4px 8px;text-align:left}th{background:#eee}</style></head><body><h2>Expedientes en el almacén de ${esc(cosa)}</h2><div>${lista.length} expediente(s) · ${esc(totalUds)} ${esc(cosa)} · ${esc(hoy)}</div><table><thead><tr><th>Expediente</th><th>Obra</th><th style="text-align:right">${esc(cosa)}</th></tr></thead><tbody>${filasHtml}</tbody></table></body></html>`);
+    w.document.write(`<html><head><title>Expedientes en el almacén</title><style>body{font-family:Arial,sans-serif;font-size:13px;margin:20px}h2{margin:0 0 4px}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #999;padding:4px 8px;text-align:left}th{background:#eee}</style></head><body><h2>Expedientes en el almacén de ${esc(cosa)}</h2><div>${lista.length} expediente(s) · ${esc(totalUds)} ${esc(cosa)} · ${esc(hoy)}</div><table><thead><tr><th>Expediente</th><th>Obra</th><th style="text-align:right">${esc(cosa)}</th>${extra ? `<th style="text-align:right">${esc(extra.label)}</th>` : ""}</tr></thead><tbody>${filasHtml}</tbody></table></body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
   };
   const chip = (valor, texto) => (
@@ -17643,7 +17645,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
         <div className="overflow-x-auto border border-slate-200 rounded-lg">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
-              <tr><th className="text-left px-3 py-2">Expediente</th><th className="text-left px-3 py-2">Obra</th><th className="text-left px-3 py-2">Color</th><th className="text-right px-3 py-2">{cosa}</th><th className="text-left px-3 py-2">Dónde está</th><th className="text-right px-3 py-2">Horas fabricación</th></tr>
+              <tr><th className="text-left px-3 py-2">Expediente</th><th className="text-left px-3 py-2">Obra</th><th className="text-left px-3 py-2">Color</th><th className="text-right px-3 py-2">{cosa}</th>{extra && <th className="text-right px-3 py-2">{extra.label}</th>}<th className="text-left px-3 py-2">Dónde está</th><th className="text-right px-3 py-2">Horas fabricación</th></tr>
             </thead>
             <tbody>
               {lista.map((f) => (
@@ -17652,6 +17654,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
                   <td className="px-3 py-2 text-slate-600">{f.h ? f.h.obra : <span className="text-slate-400">no encuentro la obra</span>}</td>
                   <td className="px-3 py-2 text-xs">{colorDe(f) === SIN ? <span className="text-slate-400">—</span> : <span className="font-semibold">{colorDe(f)}</span>}{f.h && f.h.otrosColores.length > 0 && <div className="text-[11px] text-amber-700">+ {f.h.otrosColores.join(", ")}</div>}</td>
                   <td className="px-3 py-2 text-right font-mono-num">{f.uds}{f.aparte > 0 && <div className="text-[11px] text-amber-700 font-semibold">{f.aparte} sin ubicar</div>}</td>
+                  {extra && <td className="px-3 py-2 text-right font-mono-num">{(extra.mapa[f.exp] || 0) > 0 ? extra.mapa[f.exp] : <span className="text-slate-300">—</span>}</td>}
                   <td className="px-3 py-2 text-xs text-slate-600">{toArray(f.sitios).join(" · ") || "—"}</td>
                   <td className="px-3 py-2 text-right font-mono-num">{f.h && f.h.horas ? <>{`${String(f.h.horas).replace(".", ",")} h`}{f.h.origenHoras === "estimadas" && <div className="text-[11px] text-slate-400">estimadas</div>}</> : <span className="text-slate-400">sin horas</span>}</td>
                 </tr>
@@ -19221,7 +19224,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           g.carros.add(x.estante.carro);
         });
         const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`) }));
-        return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} />;
+        const mapaC = {};
+        toArray(ctxM.cristalesCaballetes).forEach((c) => toArray(c.piezas).forEach((pz) => { if (pz.puesto) return; const k = numsExpediente(pz.expediente || c.expediente)[0] || String(pz.expediente || c.expediente || "").trim() || "—"; mapaC[k] = (mapaC[k] || 0) + (parseFloat(pz.cantidad) || 1); }));
+        return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} extra={esMosq ? null : { label: "cristales", mapa: mapaC }} />;
       })()}
 
       {vista === "sinsitio" && (
