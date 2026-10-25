@@ -18268,27 +18268,77 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     g.cabs.forEach((c) => { const cs = new Set([...expedientesDeCaballete(c)].filter((e) => asignado[e]).map((e) => asignado[e])); if (cs.size > 1) separados.push(`${c.codigo || c.nombre || c.numero || c.id} (carros ${[...cs].sort((a, b) => a - b).join(" y ")})`); });
     return { asignado, estado, sinSitio: restantes, carros: usados, junto: false, nVacios: vacios.length, separados, infoSin };
   };
-  const ponerJuntasTodas = () => {
-    if (!borrador) return;
-    const grupos = gruposCaballete(borrador);
-    if (!grupos.length) { setResumenSugerencias("No hay ningún grupo de expedientes que comparta caballete de cristal."); return; }
+  // REPARTO GLOBAL: solo carros VACÍOS (sin empezar), un expediente entero en un mismo carro siempre que quepa, los que comparten caballete juntos,
+  // y rellenando primero los carros ya abiertos en este reparto para gastar los menos carros posibles. Lo que no cabe entero se parte pieza a pieza.
+  const repartoGlobal = () => {
+    if (!borrador || !borrador.length) return;
+    const vacios = ordenados.filter((c) => !activos.some((x) => x.estante && x.estante.carro === c.numero));
     let estado = estadoOcupacionPersianas(items);
-    const asignadoTodo = {};
-    const lineas = [];
-    const sinSitioG = [];
-    grupos.forEach((g) => {
-      const r = repartirGrupo(g, estado);
-      estado = r.estado;
-      Object.assign(asignadoTodo, r.asignado);
-      const porCarro = {};
-      Object.entries(r.asignado).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); });
-      Object.entries(porCarro).forEach(([c, es]) => lineas.push(`Carro ${c}: ${es.sort().join(", ")}`));
-      if (r.sinSitio.length) sinSitioG.push((r.infoSin || r.sinSitio).join("; "));
-      if (r.separados && r.separados.length) lineas.push(`(por falta de espacio quedan separados: ${r.separados.slice(0, 6).join("; ")})`);
+    const expDe = (x) => soloDigitos(x.expediente) || String(x.expediente || "—");
+    const piezasDe = {};
+    borrador.forEach((x) => { (piezasDe[expDe(x)] = piezasDe[expDe(x)] || []).push(x); });
+    const grupos = gruposCaballete(borrador);
+    const enGrupo = new Set(grupos.flatMap((g) => g.exps));
+    const unidades = grupos.map((g) => ({ exps: g.exps.filter((e) => piezasDe[e]), g })).filter((u) => u.exps.length);
+    Object.keys(piezasDe).filter((e) => !enGrupo.has(e)).forEach((e) => unidades.push({ exps: [e], g: null }));
+    const tam = (u) => u.exps.reduce((t, e) => t + (piezasDe[e] || []).length, 0);
+    unidades.sort((a, b) => tam(b) - tam(a));
+    const ordenVecindad = (u) => {
+      if (!u.g) return u.exps;
+      const enU = new Set(u.exps);
+      const vec = {};
+      u.exps.forEach((e) => { vec[e] = new Set(); });
+      u.g.cabs.forEach((c) => { const es = [...expedientesDeCaballete(c)].filter((e) => enU.has(e)); es.forEach((a) => es.forEach((b) => { if (a !== b) vec[a].add(b); })); });
+      const orden = []; const vistos = new Set();
+      [...u.exps].sort((x, y) => vec[x].size - vec[y].size || x.localeCompare(y)).forEach((e0) => {
+        if (vistos.has(e0)) return;
+        const cola = [e0]; vistos.add(e0);
+        while (cola.length) { const e = cola.shift(); orden.push(e); [...vec[e]].sort().forEach((v) => { if (!vistos.has(v)) { vistos.add(v); cola.push(v); } }); }
+      });
+      return orden;
+    };
+    const asig = {};
+    const abiertos = [];
+    const sinSitioP = [];
+    const intenta = (piezas, carro, st) => {
+      const destino = estantes.filter((e) => e.carro === carro.numero);
+      if (!destino.length) return false;
+      const porExp = {};
+      piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+      return Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, st).res).length === xs.length);
+    };
+    const candidatos = () => [...abiertos, ...vacios.filter((c) => !abiertos.includes(c))];
+    const colocarTodas = (piezas) => {
+      for (const c of candidatos()) {
+        const pr = clonarEst(estado);
+        if (intenta(piezas, c, pr)) { estado = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); if (!abiertos.includes(c)) abiertos.push(c); return true; }
+      }
+      return false;
+    };
+    const colocarPorPieza = (piezas) => {
+      [...piezas].sort((a, b) => largoPersiana(b) - largoPersiana(a)).forEach((x) => {
+        for (const c of candidatos()) {
+          const pr = clonarEst(estado);
+          if (intenta([x], c, pr)) { estado = pr; asig[x.id] = c.numero; if (!abiertos.includes(c)) abiertos.push(c); return; }
+        }
+        sinSitioP.push(x);
+      });
+    };
+    unidades.forEach((u) => {
+      if (colocarTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
+      ordenVecindad(u).forEach((e) => { if (!colocarTodas(piezasDe[e])) colocarPorPieza(piezasDe[e]); });
     });
-    if (Object.keys(asignadoTodo).length) setBorrador(borrador.map((x) => { const c = asignadoTodo[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; }));
-    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `No cabe entero en ningún carro vacío: ${sinSitioG.join("; ")}. Se colocará como siempre o cámbialo a mano en la columna Carro.` : ""].filter(Boolean).join(" "));
+    const nuevo = borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x));
+    setBorrador(nuevo);
+    const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => `${e} (carros ${[...new Set(xs.map((x) => asig[x.id]).filter(Boolean))].sort((a, b) => a - b).join(" y ")})`);
+    const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
+    setResumenSugerencias([
+      `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos (${usados.join(", ")}). Nada se ha guardado todavía.`,
+      partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
+      sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): añade carros o dalas de baja.` : "",
+    ].filter(Boolean).join(" "));
   };
+  const ponerJuntasTodas = () => repartoGlobal();
 
   const todasPersianas = () => (ctxM.persianasAlmacen ? toArray(ctxM.persianasAlmacen) : items);
   const repetidasEnAlmacen = (entrada) => {
@@ -18735,6 +18785,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </select>
             <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se bloquea la entrada y no se guarda nada.</span>
             {repetidasEnAlmacen(borrador).length > 0 && <button onClick={quitarYaExistentes} className="px-2 py-1 rounded bg-rose-600 text-white font-semibold">Quitar las {repetidasEnAlmacen(borrador).length} que ya están</button>}
+          </div>
+          <div className="mb-2 rounded-lg border border-slate-300 bg-white p-2 text-xs flex flex-wrap items-center gap-2">
+            <button onClick={repartoGlobal} className="px-3 py-1.5 rounded bg-slate-900 text-white font-semibold">Repartir todo en carros vacíos (sin partir expedientes)</button>
+            <span className="text-slate-500">Usa solo carros sin empezar, junta los expedientes que comparten caballete y gasta los menos carros posibles. Luego imprime el reparto previsto y cambia lo que quieras.</span>
+            {gruposCaballete(borrador).length === 0 && resumenSugerencias && <span className="basis-full font-semibold text-slate-900">{resumenSugerencias}</span>}
           </div>
           {gruposCaballete(borrador).length === 0 && toArray(ctxM.cristalesCaballetes).length === 0 && <p className="mb-2 text-xs text-slate-500">No hay caballetes de cristal en el CRM: si quieres agrupar estas {cosa} por caballete, importa antes el packing list de cristales.</p>}
           {gruposCaballete(borrador).length > 0 && (
