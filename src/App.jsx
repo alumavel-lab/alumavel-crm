@@ -35943,6 +35943,55 @@ function UxFormExpediente({ initial, tipos, expedientes, onCancel, onSave }) {
 }
 
 // Ficha de un expediente (solo lectura) con materiales y fechas
+// Historial de un expediente de Uxcar: sus pedidos guardados (con los documentos) y todo lo que se ha ido haciendo, en orden.
+// Se calcula con los datos que ya tiene el expediente y sus pedidos: no hay nada nuevo que guardar.
+function UxHistorial({ exp, pedidos }) {
+  const peds = toArray(pedidos).filter((p) => toArray(p.expedientes).some((x) => x.expedienteId === exp.id));
+  const ev = [];
+  const fechaDe = (v) => (typeof v === "number" ? new Date(v).toISOString().slice(0, 10) : String(v || "").slice(0, 10));
+  ev.push({ f: exp.fechaAlta || "", t: `Expediente creado${exp.creadoPor ? ` por ${exp.creadoPor}` : ""}` });
+  if (toArray(exp.listadoMateriales && exp.listadoMateriales.lineas).length) ev.push({ f: "", t: `Informe de materiales subido${exp.listadoMateriales.archivo ? `: ${exp.listadoMateriales.archivo}` : ""}` });
+  toArray(exp.etiquetasFab).forEach((l) => ev.push({ f: "", t: `Documentos de fabricación: lote ${l.fab || "—"}${l.pptos ? ` (ppto ${l.pptos})` : ""}, ${toArray(l.ventanas).length} ventana(s)${l.rapido ? " · expediente rápido" : ""}` }));
+  peds.forEach((p) => {
+    ev.push({ f: p.fecha || fechaDe(p.creadoAt), t: `Pedido ${p.numero || ""} de ${String(p.tipo || "material").toLowerCase()} guardado${p.proveedorNombre ? ` · ${p.proveedorNombre}` : ""}${p.creadoPor ? ` · ${p.creadoPor}` : ""}` });
+    if (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual) ev.push({ f: "", t: `Pedido ${p.numero || ""} enviado al proveedor (${p.enviadoEmail ? "correo" : p.enviadoWhatsapp ? "WhatsApp" : "a mano"})` });
+    if (p.llegadaPrevista) ev.push({ f: p.llegadaPrevista, t: `Llegada prevista del pedido ${p.numero || ""}` });
+    if (p.recibido) ev.push({ f: p.recibido, t: `Pedido ${p.numero || ""} recibido en fábrica` });
+    else if (p.recepcion && !p.recepcion.completo) ev.push({ f: "", t: `Pedido ${p.numero || ""}: ha llegado en parte, falta material` });
+  });
+  if (exp.fechaProduccion) ev.push({ f: exp.fechaProduccion, t: "Pasa a producción" });
+  if (exp.fechaTerminado) ev.push({ f: exp.fechaTerminado, t: "Terminado en fábrica" });
+  if (exp.fechaEntregado) ev.push({ f: exp.fechaEntregado, t: "Entregado" });
+  const conFecha = ev.filter((e) => e.f).sort((a, b) => String(a.f).localeCompare(String(b.f)));
+  const sinFecha = ev.filter((e) => !e.f);
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-xs font-semibold text-slate-500 mb-1.5">Pedidos guardados de este expediente</div>
+        {peds.length === 0 ? <p className="text-xs text-slate-400">Todavía no hay ningún pedido guardado.</p> : (
+          <ul className="space-y-1.5">
+            {peds.map((p) => (
+              <li key={p.id} className="text-sm border border-slate-200 rounded-md px-3 py-2">
+                <span className="font-semibold">{p.numero || "Pedido"}</span> · {p.tipo || "Material"} · {p.fecha ? uxFecha(p.fecha) : "—"}
+                {p.llegadaPrevista ? <span className="text-slate-500"> · llega {uxFecha(p.llegadaPrevista)}</span> : null}
+                <span className="block text-xs text-slate-500">{uxEstadoPedido(p).label}</span>
+                {uxDocsPedido(p).length > 0 && <span className="block text-xs">{uxDocsPedido(p).map((d, i) => (portalUrlOk(d.url) ? <a key={i} href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] underline mr-2">{d.nombre || "documento"}</a> : <span key={i} className="mr-2 text-slate-500">{d.nombre || "documento"}</span>))}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <div className="text-xs font-semibold text-slate-500 mb-1.5">Historial</div>
+        <ul className="text-xs space-y-1">
+          {conFecha.map((e, i) => <li key={`c${i}`} className="flex gap-2"><span className="w-20 shrink-0 text-slate-400">{uxFecha(e.f)}</span><span className="text-slate-700">{e.t}</span></li>)}
+          {sinFecha.map((e, i) => <li key={`s${i}`} className="flex gap-2"><span className="w-20 shrink-0 text-slate-300">sin fecha</span><span className="text-slate-700">{e.t}</span></li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function UxFichaDatos({ exp }) {
   return (
     <div className="space-y-4">
@@ -45945,6 +45994,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             <UxControl3 exp={abierto} pedidos={pedidosUx} onAbrirPedido={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }}
               onGuardarListado={async (exp, lis) => { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); aviso("Listado de materiales guardado"); }} />
             <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
+            <div className="mt-4"><UxHistorial exp={abierto} pedidos={pedidosUx} /></div>
             <div className="mt-4"><EtiquetasFabricacionObra portal lotes={abierto.etiquetasFab} onGuardar={async (l) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${abierto.id}`), { etiquetasFab: JSON.parse(JSON.stringify(l)) }); aviso("Etiquetas guardadas"); } catch (e) { aviso("No se pudieron guardar las etiquetas: " + e.message); } }} /></div>
             {abierto.estado === "virtual" ? (
               <button onClick={() => setVista("editar")} className="mt-4 flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Editar</button>
@@ -46177,6 +46227,7 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
             onGuardarListado={onGuardarListadoUx} />
           <div className="mt-4"><UxPrecioFicha exp={abierto} tarifa={tarifaUx} /></div>
           <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
+          <div className="mt-4"><UxHistorial exp={abierto} pedidos={uxPedidos} /></div>
           {onGuardarEtiquetasUx && <div className="mt-4"><EtiquetasFabricacionObra lotes={abierto.etiquetasFab} onGuardar={(l) => onGuardarEtiquetasUx(abierto, l)} /></div>}
           <div className="mt-5 flex flex-wrap items-end gap-3">
             {abierto.estado === "virtual" && (
