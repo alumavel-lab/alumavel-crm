@@ -18169,6 +18169,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
 
   const [carroDestinoGlobal, setCarroDestinoGlobal] = useState("");
+  const [soloExps, setSoloExps] = useState("358, 624, 630, 643, 678, 680, 689, 691, 696, 700, 729, 734, 771, 800");
 
   // Grupos de expedientes de lo que se está recibiendo que comparten caballete de cristal (para ponerlos en el mismo carro)
   const gruposCaballete = (lista) => {
@@ -18342,7 +18343,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       if (colocarTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
       ordenVecindad(u).forEach((e) => { if (!colocarTodas(piezasDe[e])) colocarPorPieza(piezasDe[e]); });
     });
-    const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => `${e} (carros ${[...new Set(xs.map((x) => asig[x.id]).filter(Boolean))].sort((a, b) => a - b).join(" y ")})`);
+    const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => { const cnt = {}; xs.forEach((x) => { if (asig[x.id]) cnt[asig[x.id]] = (cnt[asig[x.id]] || 0) + 1; }); return `${e}: ${xs.length} persianas, no caben en un carro → ${Object.keys(cnt).sort((a, b) => a - b).map((c) => `carro ${c} (${cnt[c]})`).join(" + ")}`; });
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
     return { asig, partidos, usados, sinSitioP, expDe };
   };
@@ -18598,13 +18599,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const pocas = xs.length <= 3;
       return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
     }).join("");
+    const partidosImp = calcularReparto(borrador).partidos;
+    const partidosHtml = partidosImp.length ? `<div style="border:2px solid #b45309;background:#fffbeb;padding:6px 10px;margin:0 0 10px;font-size:12px"><b>Expedientes que no caben enteros en un carro (quedan repartidos):</b><br>${partidosImp.map((t) => esc(t)).join("<br>")}</div>` : "";
     const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th>Propias / Uxcar</th></tr>${resumenFilas}</table></section>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Reparto previsto en carros</title><style>
       body{font-family:Arial,sans-serif;margin:12mm;color:#111} h1{font-size:18px;margin:0 0 4px} h2{font-size:20px;margin:0 0 6px} h2 small{font-size:13px;font-weight:normal;color:#444}
       section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse} .lados{display:flex;gap:14px}.lado{flex:1;min-width:0} h3{font-size:15px;margin:6px 0 4px}
       td,th{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top} th{background:#eee}
       @media print{@page{size:A4 landscape;margin:10mm}}
-    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${resumenHtml}${secciones}${sin}</body></html>`;
+    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${partidosHtml}${resumenHtml}${secciones}${sin}</body></html>`;
     try {
       const fr = document.createElement("iframe");
       fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
@@ -18818,6 +18821,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </select>
             <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se bloquea la entrada y no se guarda nada.</span>
             {repetidasEnAlmacen(borrador).length > 0 && <button onClick={quitarYaExistentes} className="px-2 py-1 rounded bg-rose-600 text-white font-semibold">Quitar las {repetidasEnAlmacen(borrador).length} que ya están</button>}
+          </div>
+          <div className="mb-2 rounded-lg border border-sky-300 bg-sky-50 p-2 text-xs flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-sky-900">Solo estos expedientes:</span>
+            <input value={soloExps} onChange={(e) => setSoloExps(e.target.value)} placeholder="358, 624, 630, 643…" className="flex-1 min-w-[260px] border border-slate-300 rounded px-2 py-1 bg-white" />
+            <button onClick={() => { const set = new Set(String(soloExps).split(/[^0-9]+/).filter(Boolean)); if (!set.size) return; const fuera = borrador.filter((x) => !set.has(String(x.expediente || "").replace(/\D/g, "")) && !set.has(expedienteRealDe(x))); if (!fuera.length) { setResumenSugerencias("Ya solo hay esos expedientes."); return; } if (!window.confirm(`Quito de esta revisión ${fuera.length} persianas de otros expedientes (${[...new Set(fuera.map((x) => x.expediente))].slice(0, 12).join(", ")}). Siguen en «pendientes de llegar». ¿Sigo?`)) return; setBorrador(borrador.filter((x) => !fuera.includes(x))); setResumenSugerencias(""); }} className="px-3 py-1.5 rounded bg-sky-700 text-white font-semibold">Quedarme solo con ellos</button>
           </div>
           <div className="mb-2 rounded-lg border border-slate-300 bg-white p-2 text-xs flex flex-wrap items-center gap-2">
             <button onClick={repartoGlobal} className="px-3 py-1.5 rounded bg-slate-900 text-white font-semibold">Repartir todo en carros vacíos (sin partir expedientes)</button>
