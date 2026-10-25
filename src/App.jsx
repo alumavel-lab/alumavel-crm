@@ -18198,7 +18198,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const sitio = {};
     let fallan = 0;
     let desbordan = 0;
-    Object.entries(porExp).forEach(([k, xs]) => {
+    // Orden: primero lo que lleva carro elegido (carro a carro, el expediente más grande primero, igual que en el cálculo del reparto) y al final lo que va sin carro.
+    Object.entries(porExp).sort((p, q) => (parseInt(p[0], 10) || 1e9) - (parseInt(q[0], 10) || 1e9) || q[1].length - p[1].length).forEach(([k, xs]) => {
       const exp = k.slice(k.indexOf("§") + 1);
       const dest = parseInt(k.slice(0, k.indexOf("§")), 10);
       let restantes = xs;
@@ -18407,7 +18408,80 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     };
     let mejor = null;
     ["vec", "tam", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
-    const { asig, sinSitioP } = mejor || { asig: {}, sinSitioP: [] };
+    const sinSitioP = mejor ? mejor.sinSitioP : [];
+    // SEGUNDA FASE: si queda algún expediente partido, se prueba a meterlo ENTERO en otro carro sacando de ese carro a los expedientes que hagan falta
+    // (como mucho 2) y recolocándolos enteros en otros carros con sitio (por ejemplo el hueco que deja el trozo que se mueve). Regla: un expediente siempre entero.
+    const mejorar = (asig0) => {
+      const A = { ...asig0 };
+      const numsC = vacios.map((c) => c.numero);
+      const cache = new Map();
+      const cabeP = (num, piezas) => {
+        if (!piezas.length) return true;
+        const key = `${num}|${piezas.map((x) => x.id).sort().join(",")}`;
+        if (cache.has(key)) return cache.get(key);
+        const destino = estantes.filter((e) => e.carro === num);
+        let ok = destino.length > 0;
+        if (ok) {
+          const porExp = {};
+          piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+          const st = clonarEst(estadoOcupacionPersianas(items));
+          ok = Object.entries(porExp).sort((p, q) => q[1].length - p[1].length).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, st).res).length === xs.length);
+        }
+        cache.set(key, ok);
+        return ok;
+      };
+      const carrosDe = (e, M) => { const m = {}; piezasDe[e].forEach((x) => { if (M[x.id]) m[M[x.id]] = (m[M[x.id]] || 0) + 1; }); return m; };
+      const partido = (e, M) => Object.keys(carrosDe(e, M)).length > 1;
+      const enCarro = (num, M) => lista.filter((x) => M[x.id] === num);
+      const enteroEn = (e, M) => { const c = carrosDe(e, M); const k = Object.keys(c); return k.length === 1 && c[k[0]] === piezasDe[e].length ? Number(k[0]) : null; };
+      const inicio = Date.now();
+      let cambio = true, vueltas = 0;
+      while (cambio && vueltas < 12 && Date.now() - inicio < 6000) {
+        cambio = false; vueltas += 1;
+        const partidos0 = Object.keys(piezasDe).filter((e) => partido(e, A)).sort((x, y) => piezasDe[y].length - piezasDe[x].length);
+        for (const E of partidos0) {
+          if (Date.now() - inicio > 6000) break;
+          if (!partido(E, A)) continue;
+          const piezasE = piezasDe[E];
+          const sinE = { ...A }; piezasE.forEach((x) => { delete sinE[x.id]; });
+          // carros candidatos: primero los que ya llevan piezas de E, luego el resto
+          const propios = Object.keys(carrosDe(E, A)).map(Number);
+          const orden = [...propios, ...numsC.filter((n) => !propios.includes(n))];
+          let hecho = false;
+          for (const C of orden) {
+            if (hecho) break;
+            const base = enCarro(C, sinE);
+            if (cabeP(C, [...piezasE, ...base])) { piezasE.forEach((x) => { A[x.id] = C; }); hecho = true; break; }
+            const evict = [...new Set(base.map((x) => expDe(x)))].filter((e) => enteroEn(e, sinE) === C).sort((x, y) => piezasDe[x].length - piezasDe[y].length).slice(0, 8);
+            const combos = [];
+            evict.forEach((x) => combos.push([x]));
+            evict.forEach((x, i) => evict.slice(i + 1).forEach((y) => combos.push([x, y])));
+            for (const cb of combos) {
+              const quitar = new Set(cb);
+              const queda = base.filter((x) => !quitar.has(expDe(x)));
+              if (!cabeP(C, [...piezasE, ...queda])) continue;
+              const T = { ...sinE };
+              cb.forEach((e) => piezasDe[e].forEach((x) => { delete T[x.id]; }));
+              let todos = true;
+              for (const X of [...cb].sort((x, y) => piezasDe[y].length - piezasDe[x].length)) {
+                const destinoX = [...numsC].filter((n) => n !== C).find((n) => cabeP(n, [...enCarro(n, T), ...piezasDe[X]]));
+                if (destinoX == null) { todos = false; break; }
+                piezasDe[X].forEach((x) => { T[x.id] = destinoX; });
+              }
+              if (!todos) continue;
+              piezasE.forEach((x) => { T[x.id] = C; });
+              Object.keys(A).forEach((k) => { delete A[k]; });
+              Object.assign(A, T);
+              hecho = true;
+              break;
+            }
+          }
+          if (hecho) cambio = true;
+        }
+      }
+      return A;
+    };
+    const asig = mejorar(mejor ? mejor.asig : {});
     const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => { const cnt = {}; xs.forEach((x) => { if (asig[x.id]) cnt[asig[x.id]] = (cnt[asig[x.id]] || 0) + 1; }); return `${e}: ${xs.length} persianas, no caben en un carro → ${Object.keys(cnt).sort((a, b) => a - b).map((c) => `carro ${c} (${cnt[c]})`).join(" + ")}`; });
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
     return { asig, partidos, usados, sinSitioP, expDe };
@@ -43703,7 +43777,7 @@ function PrepMaterialConAlmacenes({ cristales, cristalesProps, puedeFabrica, onI
     else if (t === "persianasAlmacen") setTab("persianas");
     else if (puedeFabrica && onIrFabrica) onIrFabrica(t);
   };
-  const tabs = [["prep", "Preparación del día"], ["comprobar", "Comprobar expediente"], ["cristales", "Almacén de cristales"], ["persianas", "Almacén de compactos"]];
+  const tabs = [["prep", "Preparación del día"], ["pedidos", "Control de pedidos"], ["comprobar", "Comprobar expediente"], ["cristales", "Almacén de cristales"], ["persianas", "Almacén de compactos"]];
   return (
     <div>
       <div className="flex flex-wrap gap-2 mb-5">
@@ -43712,6 +43786,7 @@ function PrepMaterialConAlmacenes({ cristales, cristalesProps, puedeFabrica, onI
         ))}
       </div>
       {tab === "prep" && <PuestoPreparacionMaterial cristales={cristales} onIrA={irA} />}
+      {tab === "pedidos" && <PuestoPreparacionMaterial cristales={cristales} onIrA={irA} soloPedidos />}
       {tab === "comprobar" && <ComprobarExpedienteMaterial cristales={cristales} onIrA={irA} />}
       {tab === "cristales" && <CristalesModulo {...cristalesProps} />}
       {tab === "persianas" && <AlmacenPersianas />}
@@ -43975,7 +44050,7 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   );
 }
 
-function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
+function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false }) {
   const plan = usePlanningPublicado();
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const itemsP = toArray(ctx.persianasAlmacen);
@@ -44211,6 +44286,81 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
     if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
   };
   const th = "px-3 py-2 text-left text-xs uppercase text-slate-500";
+  // Pestaña «Control de pedidos»: lo que viene (próximas obras, material pedido por obra y lista de pedidos abiertos)
+  const bloquesPedidos = (
+    <>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Próximas obras por preparar <span className="text-slate-400 font-normal text-xs">({filasProx.length} en las próximas 3 semanas)</span></h4>
+            <p className="text-xs text-slate-500 mb-2">Obras del planning de después de este periodo, con lo que ya ha llegado de compactos y cristales.</p>
+            {filasProx.length === 0 ? <p className="text-sm text-slate-400">No hay obras planificadas en las próximas 3 semanas.</p> : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Compactos</th><th className={th}>Cristales</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filasProx.map((x) => (
+                      <tr key={x.id}>
+                        <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
+                        <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
+                        <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe ? `${x.pl}/${x.pe}` : "—"}</td>
+                        <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce ? `${x.cl}/${x.ce}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+      <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+        <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
+        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
+        {ctrlObras.length === 0 ? <p className="text-sm text-slate-400">No hay pedidos abiertos de cristales ni compactos.</p> : (
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>De</th><th className={th}>Cristales</th><th className={th}>Compactos</th><th className={th}>Llega</th><th className={th}>Planificada</th></tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {ctrlObras.map((f) => (
+                  <tr key={f.key}>
+                    <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
+                    <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
+                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
+                    <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
+                    <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Pedidos de cristales y compactos abiertos <span className="text-slate-400 font-normal text-xs">({sinPlanificar.length} pedidos · {nSinPlan} sin planificar)</span></h4>
+            <p className="text-xs text-slate-500 mb-2">Todo pedido nuestro o de Uxcar de cristales o compactos que entra en el programa y aún no está recibido, con su obra. Primero los de obras sin planificar. Si ves alguno viejo, ciérralo o cancélalo en Pedidos.</p>
+            {sinPlanificar.length === 0 ? <p className="text-sm text-slate-400">Ninguno.</p> : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50"><tr><th className={th}>Pedido</th><th className={th}>De</th><th className={th}>Material</th><th className={th}>Obra</th><th className={th}>Estado</th><th className={th}>Entrega prevista</th><th className={th}>Planificada</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {sinPlanificar.slice(0, 80).map(({ pd, pr, dia }) => (
+                      <tr key={pd.id}>
+                        <td className="px-3 py-2 font-semibold text-slate-800">#{pd.numero}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.tipoUxcar ? <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800">UXCAR</span> : <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
+                        <td className="px-3 py-2 text-slate-600">{tipoMatPrep(pd) === "cristal" ? "Cristales" : "Compactos"}</td>
+                        <td className="px-3 py-2 text-slate-600">{pr ? `#${pr.numero} ${pr.nombre || ""}` : "sin obra enlazada"}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.estado}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.fechaEntregaPrevista ? fmtDia(pd.fechaEntregaPrevista) : "—"}</td>
+                        <td className={`px-3 py-2 ${dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{dia ? fmtDia(dia) : "No"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {sinPlanificar.length > 80 && <p className="text-[11px] text-slate-400 px-3 py-2">Se enseñan los 80 primeros.</p>}
+              </div>
+            )}
+          </div>
+    </>
+  );
+  if (soloPedidos) return <div className="space-y-5">{bloquesPedidos}</div>;
   return (
     <div className="space-y-5">
       <div className="bg-white border border-slate-200 rounded-xl p-5">
@@ -44336,75 +44486,6 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
               </table>
             </div>
             <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
-          </div>
-          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
-            <h4 className="font-semibold text-slate-800 text-sm mb-1">Próximas obras por preparar <span className="text-slate-400 font-normal text-xs">({filasProx.length} en las próximas 3 semanas)</span></h4>
-            <p className="text-xs text-slate-500 mb-2">Obras del planning de después de este periodo, con lo que ya ha llegado de compactos y cristales.</p>
-            {filasProx.length === 0 ? <p className="text-sm text-slate-400">No hay obras planificadas en las próximas 3 semanas.</p> : (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Compactos</th><th className={th}>Cristales</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filasProx.map((x) => (
-                      <tr key={x.id}>
-                        <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
-                        <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
-                        <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe ? `${x.pl}/${x.pe}` : "—"}</td>
-                        <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce ? `${x.cl}/${x.ce}` : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
-            <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
-            <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
-            {ctrlObras.length === 0 ? <p className="text-sm text-slate-400">No hay pedidos abiertos de cristales ni compactos.</p> : (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>De</th><th className={th}>Cristales</th><th className={th}>Compactos</th><th className={th}>Llega</th><th className={th}>Planificada</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {ctrlObras.map((f) => (
-                      <tr key={f.key}>
-                        <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
-                        <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
-                        <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
-                        <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
-                        <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
-                        <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
-            <h4 className="font-semibold text-slate-800 text-sm mb-1">Pedidos de cristales y compactos abiertos <span className="text-slate-400 font-normal text-xs">({sinPlanificar.length} pedidos · {nSinPlan} sin planificar)</span></h4>
-            <p className="text-xs text-slate-500 mb-2">Todo pedido nuestro o de Uxcar de cristales o compactos que entra en el programa y aún no está recibido, con su obra. Primero los de obras sin planificar. Si ves alguno viejo, ciérralo o cancélalo en Pedidos.</p>
-            {sinPlanificar.length === 0 ? <p className="text-sm text-slate-400">Ninguno.</p> : (
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50"><tr><th className={th}>Pedido</th><th className={th}>De</th><th className={th}>Material</th><th className={th}>Obra</th><th className={th}>Estado</th><th className={th}>Entrega prevista</th><th className={th}>Planificada</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {sinPlanificar.slice(0, 80).map(({ pd, pr, dia }) => (
-                      <tr key={pd.id}>
-                        <td className="px-3 py-2 font-semibold text-slate-800">#{pd.numero}</td>
-                        <td className="px-3 py-2 text-slate-600">{pd.tipoUxcar ? <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800">UXCAR</span> : <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
-                        <td className="px-3 py-2 text-slate-600">{tipoMatPrep(pd) === "cristal" ? "Cristales" : "Compactos"}</td>
-                        <td className="px-3 py-2 text-slate-600">{pr ? `#${pr.numero} ${pr.nombre || ""}` : "sin obra enlazada"}</td>
-                        <td className="px-3 py-2 text-slate-600">{pd.estado}</td>
-                        <td className="px-3 py-2 text-slate-600">{pd.fechaEntregaPrevista ? fmtDia(pd.fechaEntregaPrevista) : "—"}</td>
-                        <td className={`px-3 py-2 ${dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{dia ? fmtDia(dia) : "No"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {sinPlanificar.length > 80 && <p className="text-[11px] text-slate-400 px-3 py-2">Se enseñan los 80 primeros.</p>}
-              </div>
-            )}
           </div>
           <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("perfiles") && vv("perfiles") ? "" : "hidden"}`}>
             <h4 className="font-semibold text-slate-800 text-sm mb-1">{vistaAct === "perfiles" ? "Perfiles" : vistaAct === "herraje" ? "Herraje y accesorios" : "Perfiles, herrajes y accesorios"}</h4>
