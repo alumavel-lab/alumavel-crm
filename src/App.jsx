@@ -14579,6 +14579,68 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           <Plus size={14} /> Nuevo caballete
         </button>
       </div>
+      {(() => {
+        const norm = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const unidades = (c) => { const ps = toArray(c.piezas); return ps.length ? ps.reduce((t, pz) => t + (parseFloat(pz.cantidad) || 1), 0) : (parseFloat(c.cantidad) || 0); };
+        const firma = (c) => toArray(c.piezas).map((pz) => `${norm(pz.ref)}-${Math.round(parseFloat(pz.ancho) || 0)}x${Math.round(parseFloat(pz.alto) || 0)}x${parseFloat(pz.cantidad) || 1}`).sort().join("|");
+        const porClave = {};
+        toArray(cristales).forEach((c) => {
+          const k1 = norm(c.lote);
+          const f = firma(c);
+          const k = k1 ? `L:${k1}` : (f ? `P:${norm(c.expediente)}:${f}` : "");
+          if (k) (porClave[k] = porClave[k] || []).push(c);
+        });
+        const dups = Object.entries(porClave).filter(([, v]) => v.length > 1);
+        if (!dups.length) return null;
+        return (
+          <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 p-3">
+            <div className="text-sm font-bold text-rose-900 mb-1">{dups.length} caballete{dups.length === 1 ? "" : "s"} repetido{dups.length === 1 ? "" : "s"}</div>
+            <p className="text-xs text-rose-900 mb-2">Mismo número de caballete (o mismas piezas) apuntado más de una vez. Deja uno y borra los demás: así no se duplican las unidades.</p>
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {dups.map(([k, v]) => (
+                <div key={k} className="bg-white border border-rose-200 rounded-md p-2">
+                  <div className="text-xs font-bold text-slate-800 mb-1">Caballete {v[0].lote || "sin número"} · {v.length} veces</div>
+                  {v.map((c) => (
+                    <div key={c.id} className="flex flex-wrap items-center gap-2 text-xs text-slate-700 py-0.5">
+                      <span className="font-semibold">EXP {c.expediente || "—"}</span>
+                      <span>{unidades(c)} ud · {toArray(c.piezas).length} pieza{toArray(c.piezas).length === 1 ? "" : "s"}</span>
+                      <span className="text-slate-500">{textoSitioCab(c)}</span>
+                      {c.fechaEntrada || c.fecha ? <span className="text-slate-400">{fmtDate(c.fechaEntrada || c.fecha)}</span> : null}
+                      <button onClick={() => { if (window.confirm(`¿Borrar este caballete ${c.lote || ""} (EXP ${c.expediente || "—"}, ${unidades(c)} ud, ${textoSitioCab(c)})? No se puede deshacer.`)) onDelete(c.id); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar este</button>
+                    </div>
+                  ))}
+                  <button onClick={() => {
+                    const dejar = v.find((c) => c.ubicacion) || v[0];
+                    const sobran = v.filter((c) => c.id !== dejar.id);
+                    if (window.confirm(`Dejo el caballete ${dejar.lote || ""} (${textoSitioCab(dejar)}) y borro los otros ${sobran.length}. No se puede deshacer. ¿Sigo?`)) { if (onDeleteMany) onDeleteMany(sobran.map((c) => c.id)); else sobran.forEach((c) => onDelete(c.id)); }
+                  }} className="mt-1 text-[11px] font-semibold text-rose-700 border border-rose-300 px-2 py-0.5 rounded hover:bg-rose-100">Dejar el ubicado y borrar los demás</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+      {(() => {
+        const vacios = toArray(cristales).filter((c) => toArray(c.piezas).length === 0 && !(parseFloat(c.cantidad) > 0));
+        if (!vacios.length) return null;
+        return (
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3">
+            <div className="text-sm font-bold text-amber-900 mb-1">{vacios.length} caballete{vacios.length === 1 ? "" : "s"} sin cristales</div>
+            <p className="text-xs text-amber-900 mb-2">No tienen ninguna pieza dentro. Al borrarlos, el hueco que ocupaban queda libre.</p>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {vacios.map((c) => (
+                <div key={c.id} className="flex flex-wrap items-center gap-2 text-xs text-slate-700 bg-white border border-amber-200 rounded-md px-2 py-1">
+                  <span className="font-semibold">Caballete {c.lote || "sin número"}</span>
+                  <span>EXP {c.expediente || "—"}</span>
+                  <span className="text-slate-500">{textoSitioCab(c)}</span>
+                  <button onClick={() => { if (window.confirm(`¿Borrar el caballete ${c.lote || ""} (sin cristales, ${textoSitioCab(c)})? El hueco queda libre.`)) onDelete(c.id); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar y dejar el sitio libre</button>
+                </div>
+              ))}
+            </div>
+            {vacios.length > 1 && <button onClick={() => { if (window.confirm(`¿Borrar los ${vacios.length} caballetes sin cristales y dejar sus huecos libres? No se puede deshacer.`)) { if (onDeleteMany) onDeleteMany(vacios.map((c) => c.id)); else vacios.forEach((c) => onDelete(c.id)); } }} className="mt-2 text-xs font-semibold text-rose-700 border border-rose-300 px-3 py-1 rounded hover:bg-rose-100">Borrar los {vacios.length} vacíos</button>}
+          </div>
+        );
+      })()}
       {avisoPaneles && (
         <div className="flex items-start justify-between gap-3 mb-4 px-3 py-2 rounded-md bg-amber-50 border border-amber-300">
           <p className="text-xs text-amber-900 font-semibold">✂ {avisoPaneles}</p>
