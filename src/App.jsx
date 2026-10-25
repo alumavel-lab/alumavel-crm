@@ -5999,9 +5999,14 @@ export default function App() {
           />
           )}
           {modulo === "prepmaterial" && (
-            <div className="p-4 sm:p-8 max-w-5xl">
+            <div className="p-4 sm:p-8 max-w-6xl">
               <Header icon={<Wrench size={20} className="text-[#2E8B57]" />} title="Preparación de material" manualKey="prepMaterial" subtitle="El material de las obras del día o de la semana, junto" />
-              <PuestoPreparacionMaterial cristales={cristales} onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }} />
+              <PrepMaterialConAlmacenes
+                cristales={cristales}
+                cristalesProps={{ cristales, proyectos, proveedores, clientes, onAdd: addCristal, onAddMany: addCristalesLote, onDeleteMany: deleteCristalesLote, onUpdate: updateCristal, onDelete: deleteCristal, onUbicar: ubicarCristal, onLiberar: liberarCristal }}
+                puedeFabrica={tieneAcceso("fabrica")}
+                onIrFabrica={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }}
+              />
             </div>
           )}
           {modulo === "lineapistola" && (
@@ -6591,6 +6596,7 @@ const MANUALES = {
   },
   prepMaterial: {
     puntos: [
+      "Arriba tienes cuatro pestañas: «Preparación del día», «Comprobar expediente» (escribes el nº de presupuesto o expediente y te dice si han llegado los cristales y los compactos, dónde están y si hay pedido), «Almacén de cristales» y «Almacén de compactos» (para colocar y ordenar).",
       "Aquí preparas el material de las obras que empiezan el día (o la semana) elegido, según el planning confirmado. Si cambia el planning, tiene que estar publicado para que salga aquí.",
       "Los cuadrados de arriba filtran por puesto: Perfiles · Herraje y accesorios · Cristales · Compactos · Auxiliares. Cada persona ve solo los que le ha dado el administrador.",
       "Perfiles y herraje: misma referencia y color = una sola línea. Marca cada línea cuando la saques del almacén. En perfiles, saca también la barra de margen por roturas que sale entre paréntesis. A la derecha ves dónde está; si la ubicación está mal, pulsa «cambiar».",
@@ -42831,6 +42837,134 @@ function UbicarPorFoto() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- PREPARACIÓN DE MATERIAL con acceso a los almacenes y comprobador de expediente ---------- */
+
+function PrepMaterialConAlmacenes({ cristales, cristalesProps, puedeFabrica, onIrFabrica }) {
+  const [tab, setTab] = useState("prep");
+  const irA = (t) => {
+    if (t === "cristales") setTab("cristales");
+    else if (t === "persianasAlmacen") setTab("persianas");
+    else if (puedeFabrica && onIrFabrica) onIrFabrica(t);
+  };
+  const tabs = [["prep", "Preparación del día"], ["comprobar", "Comprobar expediente"], ["cristales", "Almacén de cristales"], ["persianas", "Almacén de compactos"]];
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-5">
+        {tabs.map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} className={`px-4 py-2 rounded-full text-sm font-semibold border ${tab === k ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-200 hover:border-[#2E8B57]"}`}>{l}</button>
+        ))}
+      </div>
+      {tab === "prep" && <PuestoPreparacionMaterial cristales={cristales} onIrA={irA} />}
+      {tab === "comprobar" && <ComprobarExpedienteMaterial cristales={cristales} onIrA={irA} />}
+      {tab === "cristales" && <CristalesModulo {...cristalesProps} />}
+      {tab === "persianas" && <AlmacenPersianas />}
+    </div>
+  );
+}
+
+// Escribes un expediente / nº de presupuesto / nombre y te dice, por obra, si ya tienes los cristales y los compactos
+// (y las mosquiteras), dónde están y si hay pedido. Solo lee: no cambia nada.
+function ComprobarExpedienteMaterial({ cristales, onIrA }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const [q, setQ] = useState("");
+  const proyectos = toArray(ctx.proyectos), uxs = toArray(ctx.uxExpedientes), clientes = toArray(ctx.clientes);
+  const itemsP = toArray(ctx.persianasAlmacen), almsP = toArray(ctx.almacenesPersianas);
+  const pedidos = toArray(ctx.pedidosPrep), pedidasPers = toArray(ctx.pedidosPersianas);
+  const nums = (t) => [...new Set([...numsExpediente(t), ...numsExpediente(String(t || "").replace(/(\d)\.(?=\d)/g, "$1"))])];
+  const deObra = (claves, exp) => nums(exp).some((n) => claves.includes(n));
+  const tipoAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana";
+  const nomAlm = (x) => (almsP.find((a) => a.id === almacenDe(x)) || {}).nombre || "";
+  const qq = q.trim();
+  const cands = qq.length < 2 ? [] : [
+    ...proyectos.filter((pr) => pr && !pr.anulado && pr.estadoTrabajo !== "Cancelado" && pr.origen !== "portalUxcar" && obraCoincideBusqueda(pr, qq, uxs, clientes)).map((pr) => {
+      const pres = (String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1];
+      const cli = clientes.find((c) => c.id === pr.clienteId);
+      return { key: `p-${pr.id}`, titulo: `#${pr.numero} ${pr.nombre}`, cliente: cli ? cli.nombre : "", claves: [...new Set([pr.numero, pr.expediente, pres].map(soloDigitos).filter((x) => x && x.length >= 2))], listado: pr.listadoMateriales, proy: pr, proyectoId: pr.id };
+    }),
+    ...uxs.filter((e) => e && !e.anulado && (normBusca(`${e.numero} ${e.nombre || ""}`).includes(normBusca(qq)) || (soloDigitos(qq).length >= 2 && soloDigitos(e.numero) === soloDigitos(qq)))
+      && !proyectos.some((pr) => pr && pr.id === e.proyectoId && obraCoincideBusqueda(pr, qq, uxs, clientes))).map((e) => ({
+      key: `u-${e.id}`, titulo: `Uxcar ${e.numero}${e.nombre ? " · " + e.nombre : ""}`, cliente: "Uxcar", claves: [soloDigitos(e.numero)].filter((x) => x && x.length >= 2), listado: e.listadoMateriales, proy: null, proyectoId: "",
+    })),
+  ].slice(0, 8);
+
+  const esp = (lineas, sec) => lineas.filter((l) => l.seccion === sec).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
+  const estadoPedido = (e) => (e === "Recibido" ? "recibido" : e === "Realizado" ? "pedido al proveedor" : e === "Reclamado" ? "reclamado" : "sin enviar al proveedor");
+  const verSitio = (sv) => { if (!sv.foco || !onIrA) return; focoAlmacen.actual = sv.foco; onIrA(sv.to); };
+  const chip = (sv, k) => (sv.foco && onIrA
+    ? <button key={k} onClick={() => verSitio(sv)} className="block text-left text-[11px] text-[#2E8B57] font-semibold underline hover:text-emerald-800">{sv.t} →</button>
+    : <span key={k} className="block text-[11px] text-slate-600">{sv.t}</span>);
+  const Veredicto = ({ lleva, esperadas, llegadas, hayListado }) => {
+    if (!hayListado) return <span className="text-amber-700 font-bold">Sin análisis de materiales: no sé cuántos lleva</span>;
+    if (!lleva) return <span className="text-slate-400">No lleva</span>;
+    if (llegadas >= esperadas) return <span className="text-emerald-700 font-bold">✓ Está todo: {llegadas} de {esperadas}</span>;
+    return <span className="text-rose-700 font-bold">FALTAN {esperadas - llegadas} de {esperadas} · han llegado {llegadas}</span>;
+  };
+  return (
+    <div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+        <label className="text-sm font-bold text-slate-800 block mb-1">Comprobar una obra</label>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Nº de presupuesto, de expediente, nombre o cliente (ej. 6537)" className="w-full border border-slate-300 rounded-md px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]/40" />
+        <p className="text-[11px] text-slate-500 mt-1.5">Te dice si han llegado los cristales y los compactos, dónde están y si hay pedido. Solo mira: no cambia nada.</p>
+      </div>
+      {qq.length >= 2 && cands.length === 0 && <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-lg px-4 py-8 text-center">No encuentro ninguna obra con «{qq}».</p>}
+      <div className="space-y-4">
+        {cands.map((o) => {
+          const lineas = toArray(o.listado && o.listado.lineas);
+          const hay = lineas.length > 0;
+          const ce = esp(lineas, "cristal"), pe = esp(lineas, "persianas");
+          const cr = cristales.filter((c) => deObra(o.claves, c.expediente) || toArray(c.piezas).some((x) => deObra(o.claves, x.expediente || c.expediente)));
+          const cl = cristales.reduce((a, c) => {
+            const ps = toArray(c.piezas).filter((x) => deObra(o.claves, x.expediente || c.expediente));
+            if (ps.length) return a + ps.reduce((b, x) => b + (parseFloat(x.cantidad) || 1), 0);
+            return deObra(o.claves, c.expediente) ? a + (parseFloat(c.cantidad) || 0) : a;
+          }, 0);
+          const sitiosC = (() => { const m = new Map(); cr.forEach((c) => { const t = `Caballete: ${textoSitioCab(c)}`; if (!m.has(t)) m.set(t, { t, foco: c.ubicacion ? { tipo: "cristal", exp: String(c.expediente || ""), viv: "", ubicacion: c.ubicacion } : null, to: "cristales" }); }); return [...m.values()].slice(0, 4); })();
+          const itPers = itemsP.filter((x) => !x.entregada && tipoAlm(x) === "persiana" && deObra(o.claves, x.expediente));
+          const itMosq = itemsP.filter((x) => !x.entregada && tipoAlm(x) === "mosquitera" && deObra(o.claves, x.expediente));
+          const sitiosP = (xs) => { const m = new Map(); xs.forEach((x) => { const t = x.estante ? `${almsP.length > 1 ? nomAlm(x) + " · " : ""}${textoEstante(x.estante)}` : "sin colocar"; if (!m.has(t)) m.set(t, { t, foco: x.estante ? { tipo: "persiana", almacenId: almacenDe(x), carro: x.estante.carro } : null, to: "persianasAlmacen" }); }); return [...m.values()].slice(0, 4); };
+          const acc = accesoriosDeObra({ nombre: o.proy ? o.proy.nombre : o.titulo, listadoMateriales: { lineas }, checklistMateriales: o.proy ? o.proy.checklistMateriales : [] });
+          const mosq = acc.grupos.find((g) => g.id === "mosquitera") || {};
+          const pedObra = o.proyectoId ? pedidos.filter((pd) => pd && pd.proyectoId === o.proyectoId && pd.estado !== "Cancelado" && tipoPedidoMaterial(pd)) : [];
+          const pedPersObra = pedidasPers.filter((x) => x && deObra(o.claves, x.expediente)).length;
+          return (
+            <div key={o.key} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                <div className="font-bold text-slate-900">{o.titulo}</div>
+                <div className="text-[11px] text-slate-500">{o.cliente ? `${o.cliente} · ` : ""}Busco el material por: {o.claves.length ? o.claves.join(", ") : "—"}</div>
+              </div>
+              <div className="divide-y divide-slate-100 text-sm">
+                <div className="px-4 py-3">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Cristales</div>
+                  <Veredicto lleva={ce > 0} esperadas={ce} llegadas={cl} hayListado={hay} />
+                  {!hay && cl > 0 && <span className="ml-2 text-slate-600">· hay {cl} en el almacén</span>}
+                  <div className="mt-1">{sitiosC.map((sv, k) => chip(sv, k))}</div>
+                  {pedObra.filter((pd) => tipoPedidoMaterial(pd) === "cristal").map((pd) => <div key={pd.id} className="text-[11px] text-slate-600 mt-1">Pedido #{pd.numero}: {estadoPedido(pd.estado)}{pd.estado !== "Recibido" && pd.fechaEntregaPrevista ? ` · llega aprox. ${fmtDate(pd.fechaEntregaPrevista)}` : ""}</div>)}
+                  {hay && ce > 0 && cl < ce && pedObra.filter((pd) => tipoPedidoMaterial(pd) === "cristal").length === 0 && <div className="text-[11px] font-bold text-rose-700 mt-1">⚠ No encuentro ningún pedido de cristales de esta obra</div>}
+                </div>
+                <div className="px-4 py-3">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Compactos (persianas)</div>
+                  <Veredicto lleva={pe > 0} esperadas={pe} llegadas={itPers.length} hayListado={hay} />
+                  {!hay && itPers.length > 0 && <span className="ml-2 text-slate-600">· hay {itPers.length} en los carros</span>}
+                  <div className="mt-1">{sitiosP(itPers).map((sv, k) => chip(sv, k))}</div>
+                  {pedPersObra > 0 && <div className="text-[11px] text-slate-600 mt-1">{pedPersObra} pedida{pedPersObra === 1 ? "" : "s"} al proveedor y sin llegar</div>}
+                  {pedObra.filter((pd) => tipoPedidoMaterial(pd) === "persianas").map((pd) => <div key={pd.id} className="text-[11px] text-slate-600 mt-1">Pedido #{pd.numero}: {estadoPedido(pd.estado)}{pd.estado !== "Recibido" && pd.fechaEntregaPrevista ? ` · llega aprox. ${fmtDate(pd.fechaEntregaPrevista)}` : ""}</div>)}
+                </div>
+                <div className="px-4 py-3">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Mosquiteras</div>
+                  {!mosq.lleva ? <span className="text-slate-400">No lleva{!hay ? " (o sin análisis)" : ""}</span>
+                    : <span className={itMosq.length >= Math.max(1, mosq.uds || 1) ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{itMosq.length >= Math.max(1, mosq.uds || 1) ? "✓ En el almacén" : "Lleva"}{mosq.uds ? ` · ${mosq.uds} ud.` : ""} · {itMosq.length} en carros</span>}
+                  <div className="mt-1">{sitiosP(itMosq).map((sv, k) => chip(sv, k))}</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {cands.length > 0 && <p className="text-[11px] text-slate-400 mt-3">Perfiles y herraje no están aquí: se comprueban en la pestaña «Preparación del día».</p>}
     </div>
   );
 }
