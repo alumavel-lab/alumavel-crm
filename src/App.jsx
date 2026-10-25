@@ -18482,7 +18482,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       return A;
     };
     const asig = mejorar(mejor ? mejor.asig : {});
-    const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => { const cnt = {}; xs.forEach((x) => { if (asig[x.id]) cnt[asig[x.id]] = (cnt[asig[x.id]] || 0) + 1; }); return `${e}: ${xs.length} persianas, no caben en un carro → ${Object.keys(cnt).sort((a, b) => a - b).map((c) => `carro ${c} (${cnt[c]})`).join(" + ")}`; });
+    const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => { const cnt = {}; xs.forEach((x) => { if (asig[x.id]) cnt[asig[x.id]] = (cnt[asig[x.id]] || 0) + 1; }); const mm = xs.reduce((t, x) => t + largoPersiana(x), 0); const solo = vacios.some((c) => intenta(xs, c, clonarEst(estadoOcupacionPersianas(items)))); const motivo = solo ? "SÍ cabría solo en un carro vacío: no se ha encontrado la combinación" : `NO cabe entero ni solo en un carro vacío (${(mm / 1000).toFixed(1)} m de persianas; un carro son 8 estantes de 2 filas de 2 m y cada estante lleva un solo expediente)`; return `${e}: ${xs.length} persianas → ${Object.keys(cnt).sort((a, b) => a - b).map((c) => `carro ${c} (${cnt[c]})`).join(" + ")} · ${motivo}`; });
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
     return { asig, partidos, usados, sinSitioP, expDe };
   };
@@ -18756,7 +18756,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse} .lados{display:flex;gap:14px}.lado{flex:1;min-width:0} h3{font-size:15px;margin:6px 0 4px}
       td,th{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top} th{background:#eee}
       @media print{@page{size:A4 landscape;margin:10mm}}
-    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${partidosHtml}${resumenHtml}${secciones}${sin}</body></html>`;
+    </style></head><body><h1>REPARTO PREVISTO — aún no colocado <small style="font-size:10px;color:#888;font-weight:normal">(reparto v3: expediente entero)</small></h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${partidosHtml}${resumenHtml}${secciones}${sin}</body></html>`;
     try {
       const fr = document.createElement("iframe");
       fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
