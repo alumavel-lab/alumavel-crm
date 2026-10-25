@@ -18337,7 +18337,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const calcularRepartoUno = (lista, excluir) => {
     if (!lista || !lista.length) return { asig: {}, partidos: [], usados: [], sinSitioP: [], expDe: (x) => "" };
     const vacios = ordenados.filter((c) => !excluir.has(c.numero) && !activos.some((x) => x.estante && x.estante.carro === c.numero));
-    let estado = estadoOcupacionPersianas(items);
     const expDe = (x) => soloDigitos(x.expediente) || String(x.expediente || "—");
     const piezasDe = {};
     lista.forEach((x) => { (piezasDe[expDe(x)] = piezasDe[expDe(x)] || []).push(x); });
@@ -18361,9 +18360,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       });
       return orden;
     };
-    const asig = {};
-    const abiertos = [];
-    const sinSitioP = [];
     const intenta = (piezas, carro, st) => {
       const destino = estantes.filter((e) => e.carro === carro.numero);
       if (!destino.length) return false;
@@ -18371,27 +18367,47 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
       return Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, st).res).length === xs.length);
     };
-    const candidatos = () => [...abiertos, ...vacios.filter((c) => !abiertos.includes(c))];
-    const colocarTodas = (piezas) => {
-      for (const c of candidatos()) {
-        const pr = clonarEst(estado);
-        if (intenta(piezas, c, pr)) { estado = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); if (!abiertos.includes(c)) abiertos.push(c); return true; }
-      }
-      return false;
-    };
-    const colocarPorPieza = (piezas) => {
-      [...piezas].sort((a, b) => largoPersiana(b) - largoPersiana(a)).forEach((x) => {
-        for (const c of candidatos()) {
-          const pr = clonarEst(estado);
-          if (intenta([x], c, pr)) { estado = pr; asig[x.id] = c.numero; if (!abiertos.includes(c)) abiertos.push(c); return; }
+    // Se prueban varias formas de repartir y se queda la que menos expedientes parte (y, a igualdad, la que gasta menos carros):
+    //  «vec»: grupos de caballete juntos y dentro del grupo por vecindad · «tam»: igual pero los expedientes más grandes primero · «ffd»: todos los expedientes por tamaño, de mayor a menor.
+    const ejecutar = (modo) => {
+      let est = estadoOcupacionPersianas(items);
+      const asig = {};
+      const abiertos = [];
+      const sinSitioP = [];
+      const cands = () => [...abiertos, ...vacios.filter((c) => !abiertos.includes(c))];
+      const colTodas = (piezas) => {
+        for (const c of cands()) {
+          const pr = clonarEst(est);
+          if (intenta(piezas, c, pr)) { est = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); if (!abiertos.includes(c)) abiertos.push(c); return true; }
         }
-        sinSitioP.push(x);
-      });
+        return false;
+      };
+      const colPieza = (piezas) => {
+        [...piezas].sort((a, b) => largoPersiana(b) - largoPersiana(a)).forEach((x) => {
+          for (const c of cands()) {
+            const pr = clonarEst(est);
+            if (intenta([x], c, pr)) { est = pr; asig[x.id] = c.numero; if (!abiertos.includes(c)) abiertos.push(c); return; }
+          }
+          sinSitioP.push(x);
+        });
+      };
+      if (modo === "ffd") {
+        Object.keys(piezasDe).sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)).forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
+      } else {
+        unidades.forEach((u) => {
+          if (colTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
+          const ord = modo === "tam" ? [...u.exps].sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)) : ordenVecindad(u);
+          ord.forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
+        });
+      }
+      const nPartidos = Object.values(piezasDe).filter((xs) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).length;
+      let sepCab = 0;
+      grupos.forEach((g) => g.cabs.forEach((c) => { const cs = new Set([...expedientesDeCaballete(c)].filter((e) => piezasDe[e]).flatMap((e) => piezasDe[e].map((x) => asig[x.id]).filter(Boolean))); if (cs.size > 1) sepCab += 1; }));
+      return { asig, abiertos, sinSitioP, puntos: sinSitioP.length * 100000 + nPartidos * 1000 + abiertos.length * 10 + sepCab };
     };
-    unidades.forEach((u) => {
-      if (colocarTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
-      ordenVecindad(u).forEach((e) => { if (!colocarTodas(piezasDe[e])) colocarPorPieza(piezasDe[e]); });
-    });
+    let mejor = null;
+    ["vec", "tam", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
+    const { asig, sinSitioP } = mejor || { asig: {}, sinSitioP: [] };
     const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => { const cnt = {}; xs.forEach((x) => { if (asig[x.id]) cnt[asig[x.id]] = (cnt[asig[x.id]] || 0) + 1; }); return `${e}: ${xs.length} persianas, no caben en un carro → ${Object.keys(cnt).sort((a, b) => a - b).map((c) => `carro ${c} (${cnt[c]})`).join(" + ")}`; });
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
     return { asig, partidos, usados, sinSitioP, expDe };
