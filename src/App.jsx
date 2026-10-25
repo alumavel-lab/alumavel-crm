@@ -18088,27 +18088,52 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const porExpDe = (exps) => { const set = new Set(exps); const m = {}; borrador.filter((x) => set.has(soloDigitos(x.expediente))).forEach((x) => { (m[x.expediente || "—"] = m[x.expediente || "—"] || []).push(x); }); return m; };
     const cabeEn = (porExp, destino, st) => Object.entries(porExp).every(([exp, xs]) => Object.keys(colocarGrupoPersianas(xs, exp, destino, st).res).length === xs.length);
     const asignado = {};
-    for (const c of ordenados) {
+    // Solo carros SIN EMPEZAR (vacíos): los que ya tienen persianas no se tocan hasta que se den de baja
+    const vacios = ordenados.filter((c) => !activos.some((x) => x.estante && x.estante.carro === c.numero));
+    for (const c of vacios) {
       const destino = estantes.filter((e) => e.carro === c.numero);
       if (!destino.length) continue;
       const prueba = clonarEst(estado);
-      if (cabeEn(porExpDe(g.exps), destino, prueba)) { g.exps.forEach((e) => { asignado[e] = c.numero; }); return { asignado, estado: prueba, sinSitio: [], carros: [c.numero], junto: true }; }
+      if (cabeEn(porExpDe(g.exps), destino, prueba)) { g.exps.forEach((e) => { asignado[e] = c.numero; }); return { asignado, estado: prueba, sinSitio: [], carros: [c.numero], junto: true, nVacios: vacios.length }; }
     }
     // no cabe todo en un carro: por expedientes, de uno en uno, llenando carros en orden
-    let restantes = [...g.exps].filter((e) => borrador.some((x) => soloDigitos(x.expediente) === e));
+    // Orden por vecindad: los expedientes que comparten caballete quedan seguidos, y se llena carro tras carro en ese orden,
+    // así el corte entre carros cae donde menos caballetes se separan.
+    const enG = new Set(g.exps);
+    const vecinos = {};
+    g.exps.forEach((e) => { vecinos[e] = new Set(); });
+    g.cabs.forEach((c) => { const es = [...expedientesDeCaballete(c)].filter((e) => enG.has(e)); es.forEach((a) => es.forEach((b) => { if (a !== b) vecinos[a].add(b); })); });
+    const nPiezas = (e) => borrador.filter((x) => soloDigitos(x.expediente) === e).length;
+    const orden = [];
+    const vistos = new Set();
+    const empezar = [...g.exps].filter((e) => nPiezas(e) > 0).sort((x, y) => vecinos[x].size - vecinos[y].size || x.localeCompare(y));
+    empezar.forEach((e0) => {
+      if (vistos.has(e0)) return;
+      const cola = [e0]; vistos.add(e0);
+      while (cola.length) { const e = cola.shift(); orden.push(e); [...vecinos[e]].sort().forEach((v) => { if (!vistos.has(v) && nPiezas(v) > 0) { vistos.add(v); cola.push(v); } }); }
+    });
+    let restantes = orden.filter((e) => nPiezas(e) > 0);
     const usados = [];
-    for (const c of ordenados) {
-      if (!restantes.length) break;
+    const sinSitio = [];
+    let ci = 0;
+    while (restantes.length && ci < vacios.length) {
+      const c = vacios[ci];
       const destino = estantes.filter((e) => e.carro === c.numero);
-      if (!destino.length) continue;
-      const quedan = [];
-      restantes.forEach((e) => {
-        const prueba = clonarEst(estado);
-        if (cabeEn(porExpDe([e]), destino, prueba)) { estado = prueba; asignado[e] = c.numero; if (!usados.includes(c.numero)) usados.push(c.numero); } else quedan.push(e);
-      });
-      restantes = quedan;
+      let metidos = 0;
+      if (destino.length) {
+        while (restantes.length) {
+          const e = restantes[0];
+          const prueba = clonarEst(estado);
+          if (cabeEn(porExpDe([e]), destino, prueba)) { estado = prueba; asignado[e] = c.numero; metidos++; restantes.shift(); if (!usados.includes(c.numero)) usados.push(c.numero); }
+          else { if (metidos === 0) { sinSitio.push(e); restantes.shift(); continue; } break; }
+        }
+      }
+      ci++;
     }
-    return { asignado, estado, sinSitio: restantes, carros: usados, junto: false };
+    restantes = [...sinSitio, ...restantes];
+    const separados = [];
+    g.cabs.forEach((c) => { const cs = new Set([...expedientesDeCaballete(c)].filter((e) => asignado[e]).map((e) => asignado[e])); if (cs.size > 1) separados.push(`${c.codigo || c.nombre || c.numero || c.id} (carros ${[...cs].sort((a, b) => a - b).join(" y ")})`); });
+    return { asignado, estado, sinSitio: restantes, carros: usados, junto: false, nVacios: vacios.length, separados };
   };
   const ponerJuntasTodas = () => {
     if (!borrador) return;
@@ -18126,9 +18151,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       Object.entries(r.asignado).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); });
       Object.entries(porCarro).forEach(([c, es]) => lineas.push(`Carro ${c}: ${es.sort().join(", ")}`));
       if (r.sinSitio.length) sinSitioG.push(r.sinSitio.join(", "));
+      if (r.separados && r.separados.length) lineas.push(`(por falta de espacio quedan separados: ${r.separados.slice(0, 6).join("; ")})`);
     });
     if (Object.keys(asignadoTodo).length) setBorrador(borrador.map((x) => { const c = asignadoTodo[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; }));
-    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `Sin sitio en ningún carro: expedientes ${sinSitioG.join("; ")}. Se colocarán como siempre o añade carros.` : ""].filter(Boolean).join(" "));
+    setResumenSugerencias([lineas.length ? `Hecho. ${lineas.join(" · ")}.` : "", sinSitioG.length ? `Sin sitio en carros vacíos: expedientes ${sinSitioG.join("; ")}. Añade carros nuevos o da de baja alguno.` : ""].filter(Boolean).join(" "));
   };
 
   const todasPersianas = () => (ctxM.persianasAlmacen ? toArray(ctxM.persianasAlmacen) : items);
@@ -18553,7 +18579,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 </select>
                 <button disabled={!carroGrupo[k]} onClick={() => juntarEnCarro(g.exps, carroGrupo[k], k)} className="px-2 py-1 rounded bg-amber-600 text-white font-semibold disabled:opacity-40">Poner juntas</button>
                 <button onClick={() => { const c = primerCarroQueCabe(g.exps); setAvisoGrupo({ ...avisoGrupo, [k]: c ? `Caben todas en el carro ${c}.` : "No caben todas juntas en ningún carro." }); if (c) setCarroGrupo({ ...carroGrupo, [k]: String(c) }); }} className="px-2 py-1 rounded border border-amber-600 text-amber-800 font-semibold">Buscar carro donde quepan</button>
-                <button onClick={() => { const r = repartirGrupo(g, estadoOcupacionPersianas(items)); const asig = r.asignado; if (Object.keys(asig).length) setBorrador(borrador.map((x) => { const c = asig[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; })); const porCarro = {}; Object.entries(asig).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); }); setAvisoGrupo({ ...avisoGrupo, [k]: (r.junto ? `Todas juntas en el carro ${r.carros[0]}.` : `Repartidas en ${r.carros.length} carro${r.carros.length === 1 ? "" : "s"}: ` + Object.entries(porCarro).map(([c, es]) => `carro ${c} (${es.sort().join(", ")})`).join(" · ") + ".") + (r.sinSitio.length ? ` Sin sitio: ${r.sinSitio.join(", ")}.` : "") }); }} className="px-2 py-1 rounded bg-amber-700 text-white font-semibold">Repartir en los carros que hagan falta</button>
+                <button onClick={() => { const r = repartirGrupo(g, estadoOcupacionPersianas(items)); const asig = r.asignado; if (Object.keys(asig).length) setBorrador(borrador.map((x) => { const c = asig[soloDigitos(x.expediente)]; return c ? { ...x, carroDestino: c } : x; })); const porCarro = {}; Object.entries(asig).forEach(([e, c]) => { (porCarro[c] = porCarro[c] || []).push(e); }); setAvisoGrupo({ ...avisoGrupo, [k]: (r.junto ? `Todas juntas en el carro ${r.carros[0]}.` : `Caben todas en ${r.carros.length} carro${r.carros.length === 1 ? "" : "s"} vacío${r.carros.length === 1 ? "" : "s"}: ` + Object.entries(porCarro).map(([c, es]) => `carro ${c} (${es.sort().join(", ")})`).join(" · ") + ".") + (r.separados && r.separados.length ? ` Por falta de espacio quedan separados los caballetes: ${r.separados.slice(0, 6).join("; ")}.` : "") + (r.sinSitio.length ? ` Sin sitio en carros vacíos (hay ${r.nVacios}): expedientes ${r.sinSitio.join(", ")}. Añade carros o da de baja alguno.` : "") }); }} className="px-2 py-1 rounded bg-amber-700 text-white font-semibold">Repartir en los carros que hagan falta</button>
                 {avisoGrupo[k] && <span className="basis-full font-semibold text-amber-900">{avisoGrupo[k]}</span>}
               </div>
             );
