@@ -18499,18 +18499,30 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     entrada.forEach((x) => { const e = sitio[x.id]; if (e) (porCarro[e.carro] = porCarro[e.carro] || []).push({ x, e }); else sinSitioP.push(x); });
     const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
+    const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
+    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const secciones = Object.keys(porCarro).sort((a, b) => a - b).map((n) => {
-      const xs = porCarro[n].sort((a, b) => String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
+      const xs = porCarro[n].sort((a, b) => String(a.e.nivel).localeCompare(String(b.e.nivel), "es", { numeric: true }) || String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
       const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
-      return `<section><h2>Carro ${esc(n)} <small>· ${xs.length} persianas · EXP ${esc(exps.join(", "))}</small></h2><table>${cab}${xs.map(fila).join("")}</table></section>`;
+      const lado = (l) => { const ys = xs.filter((o) => String(o.e.lado) === l); return `<div class="lado"><h3>Lado ${l} <small>(${ys.length})</small></h3>${ys.length ? `<table>${cab2}${ys.map(fila2).join("")}</table>` : '<i style="color:#999">vacío</i>'}</div>`; };
+      const otros = xs.filter((o) => !["A", "B"].includes(String(o.e.lado)));
+      return `<section><h2>Carro ${esc(n)} <small>· ${xs.length} persianas · EXP ${esc(exps.join(", "))}</small></h2><div class="lados">${lado("A")}${lado("B")}</div>${otros.length ? `<table>${cab2}${otros.map(fila2).join("")}</table>` : ""}</section>`;
     }).join("");
     const sin = sinSitioP.length ? `<section><h2>Sin sitio (${sinSitioP.length})</h2><table><tr><th>Expediente</th><th>Vivienda</th><th>Medida</th></tr>${sinSitioP.map((x) => `<tr><td>EXP ${esc(expedienteRealDe(x) || "sin dato")}</td><td>${esc(x.ref || "—")}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td></tr>`).join("")}</table></section>` : "";
+    const resumenFilas = Object.keys(porCarro).sort((x, y) => x - y).map((n) => {
+      const c = carros.find((q) => String(q.numero) === String(n)) || {};
+      const xs = porCarro[n];
+      const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
+      const pocas = xs.length <= 3;
+      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${pocas ? "pocas persianas" : ""}</td></tr>`;
+    }).join("");
+    const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th></th></tr>${resumenFilas}</table></section>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Reparto previsto en carros</title><style>
       body{font-family:Arial,sans-serif;margin:12mm;color:#111} h1{font-size:18px;margin:0 0 4px} h2{font-size:20px;margin:0 0 6px} h2 small{font-size:13px;font-weight:normal;color:#444}
-      section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse}
+      section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse} .lados{display:flex;gap:14px}.lado{flex:1;min-width:0} h3{font-size:15px;margin:6px 0 4px}
       td,th{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top} th{background:#eee}
       @media print{@page{size:A4 landscape;margin:10mm}}
-    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${secciones}${sin}</body></html>`;
+    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${resumenHtml}${secciones}${sin}</body></html>`;
     try {
       const fr = document.createElement("iframe");
       fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
