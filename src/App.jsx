@@ -18488,6 +18488,37 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300);
     } catch (e) { alert("No se pudo preparar la impresión: " + ((e && e.message) || e)); }
   };
+  // Imprime el reparto PREVISTO (lo que pasaría al pulsar «Colocar en los carros») para revisarlo en papel antes de colocar nada. No guarda nada.
+  const imprimirPrevision = () => {
+    if (!borrador || !borrador.length) return;
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const entrada = borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || "" }));
+    const { sitio } = colocar(entrada);
+    const porCarro = {};
+    const sinSitioP = [];
+    entrada.forEach((x) => { const e = sitio[x.id]; if (e) (porCarro[e.carro] = porCarro[e.carro] || []).push({ x, e }); else sinSitioP.push(x); });
+    const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
+    const secciones = Object.keys(porCarro).sort((a, b) => a - b).map((n) => {
+      const xs = porCarro[n].sort((a, b) => String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
+      const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
+      return `<section><h2>Carro ${esc(n)} <small>· ${xs.length} persianas · EXP ${esc(exps.join(", "))}</small></h2><table>${cab}${xs.map(fila).join("")}</table></section>`;
+    }).join("");
+    const sin = sinSitioP.length ? `<section><h2>Sin sitio (${sinSitioP.length})</h2><table><tr><th>Expediente</th><th>Vivienda</th><th>Medida</th></tr>${sinSitioP.map((x) => `<tr><td>EXP ${esc(expedienteRealDe(x) || "sin dato")}</td><td>${esc(x.ref || "—")}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td></tr>`).join("")}</table></section>` : "";
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Reparto previsto en carros</title><style>
+      body{font-family:Arial,sans-serif;margin:12mm;color:#111} h1{font-size:18px;margin:0 0 4px} h2{font-size:20px;margin:0 0 6px} h2 small{font-size:13px;font-weight:normal;color:#444}
+      section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse}
+      td,th{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top} th{background:#eee}
+      @media print{@page{size:A4 landscape;margin:10mm}}
+    </style></head><body><h1>REPARTO PREVISTO — aún no colocado</h1><p style="font-size:11px;color:#666;margin:0 0 10px">${entrada.length} persianas · ${Object.keys(porCarro).length} carros · ${new Date().toLocaleString("es-ES")}</p>${secciones}${sin}</body></html>`;
+    try {
+      const fr = document.createElement("iframe");
+      fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+      document.body.appendChild(fr);
+      const d = fr.contentWindow.document; d.open(); d.write(html); d.close();
+      setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300);
+    } catch (e) { alert("No se pudo preparar la impresión: " + ((e && e.message) || e)); }
+  };
   const aplicarPlan = () => {
     const destino = {};
     plan.movimientos.forEach((m, i) => { if (hechos[i]) m.items.forEach((x) => { destino[x.id] = m.hasta; }); });
@@ -18753,6 +18784,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
           <div className="flex gap-2 mt-3">
             <button onClick={() => { setBorrador(null); setCarroDestinoGlobal(""); }} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
+            <button onClick={imprimirPrevision} className="text-sm font-semibold px-3.5 py-2 rounded-lg border border-slate-400 text-slate-800 bg-white hover:bg-slate-50">🖨 Imprimir reparto previsto</button>
             <button onClick={() => confirmarEntrada()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Colocar en los carros</button>
           </div>
         </div>
