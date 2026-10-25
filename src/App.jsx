@@ -18270,14 +18270,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // REPARTO GLOBAL: solo carros VACÍOS (sin empezar), un expediente entero en un mismo carro siempre que quepa, los que comparten caballete juntos,
   // y rellenando primero los carros ya abiertos en este reparto para gastar los menos carros posibles. Lo que no cabe entero se parte pieza a pieza.
-  const repartoGlobal = () => {
-    if (!borrador || !borrador.length) return;
+  const calcularReparto = (lista) => {
+    if (!lista || !lista.length) return { asig: {}, partidos: [], usados: [], sinSitioP: [], expDe: (x) => "" };
     const vacios = ordenados.filter((c) => !activos.some((x) => x.estante && x.estante.carro === c.numero));
     let estado = estadoOcupacionPersianas(items);
     const expDe = (x) => soloDigitos(x.expediente) || String(x.expediente || "—");
     const piezasDe = {};
-    borrador.forEach((x) => { (piezasDe[expDe(x)] = piezasDe[expDe(x)] || []).push(x); });
-    const grupos = gruposCaballete(borrador);
+    lista.forEach((x) => { (piezasDe[expDe(x)] = piezasDe[expDe(x)] || []).push(x); });
+    const grupos = gruposCaballete(lista);
     const enGrupo = new Set(grupos.flatMap((g) => g.exps));
     const unidades = grupos.map((g) => ({ exps: g.exps.filter((e) => piezasDe[e]), g })).filter((u) => u.exps.length);
     Object.keys(piezasDe).filter((e) => !enGrupo.has(e)).forEach((e) => unidades.push({ exps: [e], g: null }));
@@ -18328,15 +18328,24 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       if (colocarTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
       ordenVecindad(u).forEach((e) => { if (!colocarTodas(piezasDe[e])) colocarPorPieza(piezasDe[e]); });
     });
-    const nuevo = borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x));
-    setBorrador(nuevo);
     const partidos = Object.entries(piezasDe).filter(([, xs]) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).map(([e, xs]) => `${e} (carros ${[...new Set(xs.map((x) => asig[x.id]).filter(Boolean))].sort((a, b) => a - b).join(" y ")})`);
     const usados = [...new Set(Object.values(asig))].sort((a, b) => a - b);
+    return { asig, partidos, usados, sinSitioP, expDe };
+  };
+  const repartoGlobal = () => {
+    if (!borrador || !borrador.length) return;
+    const { asig, partidos, usados, sinSitioP, expDe } = calcularReparto(borrador);
+    setBorrador(borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x)));
     setResumenSugerencias([
       `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos (${usados.join(", ")}). Nada se ha guardado todavía.`,
       partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
       sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): añade carros o dalas de baja.` : "",
     ].filter(Boolean).join(" "));
+  };
+  // Entrada tal como se colocaría: lo elegido a mano manda; lo que está en «Automático» usa el reparto en carros vacíos sin partir expedientes
+  const entradaConReparto = () => {
+    const r = calcularReparto(borrador);
+    return borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || r.asig[x.id] || "" }));
   };
   const ponerJuntasTodas = () => repartoGlobal();
 
@@ -18366,7 +18375,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
 
   const confirmarEntrada = (lista) => {
-    const entrada = Array.isArray(lista) ? lista : borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || "" }));
+    const entrada = Array.isArray(lista) ? lista : entradaConReparto();
     // BLOQUEO 1: ya están en el almacén (mismo expediente, referencia y largo)
     const repes = repetidasEnAlmacen(entrada);
     if (repes.length) {
@@ -18542,7 +18551,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const imprimirPrevision = () => {
     if (!borrador || !borrador.length) return;
     const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const entrada = borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || "" }));
+    const entrada = entradaConReparto();
     const { sitio } = colocar(entrada);
     const porCarro = {};
     const sinSitioP = [];
@@ -18780,7 +18789,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
             <label className="font-semibold text-slate-700">Carro de destino:</label>
             <select value={carroDestinoGlobal} onChange={(e) => setCarroDestinoGlobal(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 bg-white">
-              <option value="">Automático</option>
+              <option value="">Automático (carros vacíos, expedientes enteros)</option>
               {opcionesCarro(null)}
             </select>
             <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se bloquea la entrada y no se guarda nada.</span>
