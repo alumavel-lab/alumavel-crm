@@ -6040,7 +6040,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            pedidosCrm: pedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -18615,8 +18615,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     entrada.forEach((x) => { const e = sitio[x.id]; if (e) (porCarro[e.carro] = porCarro[e.carro] || []).push({ x, e }); else sinSitioP.push(x); });
     const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
-    const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
-    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${esc(etqExp(x))}</b>${` · Ppto ${esc(pptoDe(x) || "sin dato")}`}<br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "mano sin dato")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Presupuesto</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Cliente</th></tr>';
+    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${esc(etqExp(x))}</b><br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td>${esc(pptoDe(x) || "sin dato")}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "mano sin dato")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const secciones = Object.keys(porCarro).sort((a, b) => a - b).map((n) => {
       const xs = porCarro[n].sort((a, b) => String(a.e.nivel).localeCompare(String(b.e.nivel), "es", { numeric: true }) || String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
       const exps = [...new Set(xs.map((o) => expTexto(o.x)))];
@@ -18630,18 +18630,21 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const xs = porCarro[n];
       const porExp = {};
       xs.forEach((o) => { const k = expTexto(o.x); (porExp[k] = porExp[k] || []).push(o.x); });
-      const lineasExp = Object.keys(porExp).map((k) => {
+      const colExp = [], colPpto = [], colCli = [];
+      Object.keys(porExp).forEach((k) => {
         const ys = porExp[k];
         const ppto = ys.map((y) => pptoDe(y)).find(Boolean) || "";
         const cli = ys.map((y) => y.nombreObra || nombreObraDe(y) || "").find(Boolean) || "";
-        return `<b>${esc(/\d/.test(k) ? "EXP " + k : k)}</b> (${ys.length}) · Ppto ${esc(ppto || "sin dato")} · ${esc(cli || "cliente sin dato")}`;
+        colExp.push(`<b>${esc(/\d/.test(k) ? "EXP " + k : k)}</b> (${ys.length})`);
+        colPpto.push(esc(ppto || "sin dato"));
+        colCli.push(esc(cli || "sin dato"));
       });
       const pocas = xs.length <= 3;
-      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${lineasExp.join("<br>")}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
+      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${colExp.join("<br>")}</td><td>${colPpto.join("<br>")}</td><td>${colCli.join("<br>")}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
     }).join("");
     const partidosImp = calcularReparto(borrador).partidos;
     const partidosHtml = partidosImp.length ? `<div style="border:2px solid #b45309;background:#fffbeb;padding:6px 10px;margin:0 0 10px;font-size:12px"><b>Expedientes que no caben enteros en un carro (quedan repartidos):</b><br>${partidosImp.map((t) => esc(t)).join("<br>")}</div>` : "";
-    const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th>Propias / Uxcar</th></tr>${resumenFilas}</table></section>`;
+    const resumenHtml = `<section><h2>Resumen por carro</h2><table><tr><th>Carro</th><th>Tipo</th><th>Persianas</th><th>Expedientes</th><th>Presupuesto</th><th>Cliente</th><th>Propias / Uxcar</th></tr>${resumenFilas}</table></section>`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Reparto previsto en carros</title><style>
       body{font-family:Arial,sans-serif;margin:12mm;color:#111} h1{font-size:18px;margin:0 0 4px} h2{font-size:20px;margin:0 0 6px} h2 small{font-size:13px;font-weight:normal;color:#444}
       section{page-break-after:always;margin-bottom:14px} section:last-child{page-break-after:auto} table{width:100%;border-collapse:collapse} .lados{display:flex;gap:14px}.lado{flex:1;min-width:0} h3{font-size:15px;margin:6px 0 4px}
@@ -43940,7 +43943,8 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   useEffect(() => onValue(ref(fbDb, "materialObra"), (snap) => setMatObra(snap.val() || {}), () => setMatObra({})), []);
   const quien = (fbAuth.currentUser && fbAuth.currentUser.email) || "";
   const clave = modo === "dia" ? base : `semana-${lunesDe(base)}`;
-  useEffect(() => onValue(ref(fbDb, `preparacionTodoPuesto/${clave}`), (snap) => setEstado(snap.val() || {}), () => setEstado({})), [clave]);
+  const [cargadoC, setCargadoC] = useState("");
+  useEffect(() => onValue(ref(fbDb, `preparacionTodoPuesto/${clave}`), (snap) => { setEstado(snap.val() || {}); setCargadoC(clave); }, () => { setEstado({}); }), [clave]);
   const dias = modo === "dia" ? [base] : [0, 1, 2, 3, 4].map((i) => addDiasISO(lunesDe(base), i));
   const deObraL = (expNums, exp) => numsExpediente(exp).some((n) => (expNums || []).includes(n));
   const vistas = new Set();
@@ -43952,6 +43956,21 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
     vistas.add(t.id);
     obras.push({ id: t.id, dia: d, obra: o });
   }));
+  // Próximas obras: las que el planning tiene en los días siguientes al periodo elegido (hasta 3 semanas) y aún no se ven arriba.
+  const vistasP = new Set(vistas);
+  const proximas = [];
+  const ultimoDiaP = dias[dias.length - 1];
+  const limiteP = addDiasISO(ultimoDiaP, 21);
+  Object.keys((plan && plan.dias) || {}).sort().forEach((d) => {
+    if (d <= ultimoDiaP || d > limiteP) return;
+    toArray(plan.dias[d]).forEach((t) => {
+      const o = (plan.obras || {})[t.id];
+      if (!o || vistasP.has(t.id)) return;
+      if (o.inicio && o.inicio !== d) return;
+      vistasP.add(t.id);
+      proximas.push({ id: t.id, dia: d, obra: o });
+    });
+  });
   const stockUxP = useObjetoFb("portalUxcar/stock");
   const stockUxLista = toArray(stockUxP);
   const listadosObras = obras.map((x) => ({ nombre: x.obra.nombre, listado: { lineas: x.obra.lineas }, deUx: String(x.id).startsWith("u-") }));
@@ -43999,8 +44018,36 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
   }, 0);
   const accDe = (x) => { const a = accesoriosDeObra({ nombre: x.obra.nombre, listadoMateriales: { lineas: x.obra.lineas } }); const g = (id) => a.grupos.find((y) => y.id === id) || {}; return { mosq: g("mosquitera"), post: g("postigo") }; };
   const marcaAcc = (x, id) => (matObra[x.id] || {})[id];
+  const filasProx = proximas.map((x) => ({ ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra) }));
+  // Pedidos nuestros de cristal o compactos aún abiertos cuya obra no está en el planning (ni en este periodo ni en las próximas semanas).
+  const numsPlanif = new Map();
+  [...obras, ...proximas].forEach((x) => toArray(x.obra.expNums).forEach((n) => { if (!numsPlanif.has(String(n))) numsPlanif.set(String(n), x.dia); }));
+  const tipoMatPrep = (pd) => (pd.tipoUxcar ? (/persian|compact/i.test(pd.tipoUxcar) ? "persianas" : /cristal|vidrio|panel/i.test(pd.tipoUxcar) ? "cristal" : "") : tipoPedidoMaterial(pd));
+  const sinPlanificar = toArray(ctx.pedidosCrm).filter((pd) => {
+    if (!pd || pd.estado === "Cancelado" || pd.estado === "Recibido") return false;
+    if (!["cristal", "persianas"].includes(tipoMatPrep(pd))) return false;
+    if (!toArray(pd.lineas).some((l) => l && l.estado !== "Recibido")) return false;
+    return true;
+  }).map((pd) => {
+    const pr = toArray(ctx.proyectos).find((y) => y && y.id === pd.proyectoId);
+    const nn = pr ? numsExpediente(pr.numero || pr.expediente || "").find((n) => numsPlanif.has(String(n))) : null;
+    return { pd, pr, dia: nn ? numsPlanif.get(String(nn)) : "" };
+  }).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
+  const nSinPlan = sinPlanificar.filter((x) => !x.dia).length;
   const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqLleg: itemsObra(x.obra, "mosquitera").length, sitiosP: sitiosItems(itemsObra(x.obra, "persiana")), sitiosM: sitiosItems(itemsObra(x.obra, "mosquitera")), sitiosC: sitiosCris(x.obra), mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera") && !(itemsObra(x.obra, "mosquitera").length >= Math.max(1, (ac.mosq.uds || 1))), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
   const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce || x.mosqFalta || x.postFalta).length;
+  // Cuando a una obra de este periodo le ha llegado TODO lo que lleva (compactos, cristales, mosquiteras y postigos), se marca sola como «Preparado»
+  // (una sola vez por obra: si luego la quitas a mano, no se vuelve a marcar).
+  const claveAuto = filasObra.filter((x) => (x.pe > 0 || x.ce > 0) && x.pl >= x.pe && x.cl >= x.ce && !x.mosqFalta && !x.postFalta).map((x) => String(x.id).replace(/[.#$\[\]\/|]/g, "_")).sort().join("|");
+  useEffect(() => {
+    if (cargadoC !== clave || !claveAuto) return;
+    claveAuto.split("|").forEach((k) => {
+      if ((estado.obras || {})[k] || (estado.autoHecho || {})[k]) return;
+      fbSet(ref(fbDb, `preparacionTodoPuesto/${clave}/obras/${k}`), { por: "automático", en: Date.now(), auto: true }).catch(() => {});
+      fbSet(ref(fbDb, `preparacionTodoPuesto/${clave}/autoHecho/${k}`), true).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claveAuto, cargadoC, clave, estado]);
   const marcarAcc = (x, id) => { const hecho = marcaAcc(x, id); fbSet(ref(fbDb, `materialObra/${x.id}/${id}`), hecho ? null : { por: quien, en: Date.now() }).catch((e) => alert("No se pudo guardar: " + e.message)); };
   const celdaAcc = (x, id, nombre) => {
     const g = id === "mosquitera" ? x.ac.mosq : x.ac.post;
@@ -44209,6 +44256,52 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
               </table>
             </div>
             <p className="text-[11px] text-slate-400 mt-2">Orientativo: compara lo que dice el listado de la obra con lo que hay dado de entrada en los almacenes. Si una obra no tiene el listado cargado, sale "—".</p>
+          </div>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Próximas obras por preparar <span className="text-slate-400 font-normal text-xs">({filasProx.length} en las próximas 3 semanas)</span></h4>
+            <p className="text-xs text-slate-500 mb-2">Obras del planning de después de este periodo, con lo que ya ha llegado de compactos y cristales.</p>
+            {filasProx.length === 0 ? <p className="text-sm text-slate-400">No hay obras planificadas en las próximas 3 semanas.</p> : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>Empieza</th><th className={th}>Compactos</th><th className={th}>Cristales</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filasProx.map((x) => (
+                      <tr key={x.id}>
+                        <td className="px-3 py-2 font-semibold text-slate-800">{x.obra.nombre}</td>
+                        <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
+                        <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe ? `${x.pl}/${x.pe}` : "—"}</td>
+                        <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce ? `${x.cl}/${x.ce}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Pedidos de cristales y compactos abiertos <span className="text-slate-400 font-normal text-xs">({sinPlanificar.length} pedidos · {nSinPlan} sin planificar)</span></h4>
+            <p className="text-xs text-slate-500 mb-2">Todo pedido nuestro o de Uxcar de cristales o compactos que entra en el programa y aún no está recibido, con su obra. Primero los de obras sin planificar. Si ves alguno viejo, ciérralo o cancélalo en Pedidos.</p>
+            {sinPlanificar.length === 0 ? <p className="text-sm text-slate-400">Ninguno.</p> : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50"><tr><th className={th}>Pedido</th><th className={th}>De</th><th className={th}>Material</th><th className={th}>Obra</th><th className={th}>Estado</th><th className={th}>Entrega prevista</th><th className={th}>Planificada</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {sinPlanificar.slice(0, 80).map(({ pd, pr, dia }) => (
+                      <tr key={pd.id}>
+                        <td className="px-3 py-2 font-semibold text-slate-800">#{pd.numero}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.tipoUxcar ? <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800">UXCAR</span> : <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
+                        <td className="px-3 py-2 text-slate-600">{tipoMatPrep(pd) === "cristal" ? "Cristales" : "Compactos"}</td>
+                        <td className="px-3 py-2 text-slate-600">{pr ? `#${pr.numero} ${pr.nombre || ""}` : "sin obra enlazada"}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.estado}</td>
+                        <td className="px-3 py-2 text-slate-600">{pd.fechaEntregaPrevista ? fmtDia(pd.fechaEntregaPrevista) : "—"}</td>
+                        <td className={`px-3 py-2 ${dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{dia ? fmtDia(dia) : "No"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {sinPlanificar.length > 80 && <p className="text-[11px] text-slate-400 px-3 py-2">Se enseñan los 80 primeros.</p>}
+              </div>
+            )}
           </div>
           <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("perfiles") && vv("perfiles") ? "" : "hidden"}`}>
             <h4 className="font-semibold text-slate-800 text-sm mb-1">{vistaAct === "perfiles" ? "Perfiles" : vistaAct === "herraje" ? "Herraje y accesorios" : "Perfiles, herrajes y accesorios"}</h4>
