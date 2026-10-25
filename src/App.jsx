@@ -4314,6 +4314,58 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxPedidos, uxExpedientes, proyectos, currentUser?.id, loading]);
 
+  // Los pedidos de PERSIANAS que Uxcar hace desde su portal entran solos en "Pedidas, pendientes de llegar" del almacén de persianas
+  // (una por persiana, con el EXP y el presupuesto de su expediente). Así, al llegar, se colocan en carros sin volver a subir el pedido.
+  // Se "reserva" cada pedido con una transacción (persCreado) para que no se duplique ni se vuelva a crear si lo borras a mano.
+  const uxPersPedidasRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || uxPersPedidasRef.current) return;
+    const listos = toArray(uxPedidos).filter((p) => p && p.id && p.tipo === "Persianas" && !p.persCreado && toArray(p.expedientes).some((e) => toArray(e.lineas).length));
+    if (listos.length === 0) return;
+    uxPersPedidasRef.current = true;
+    (async () => {
+      try {
+        const hoy = new Date().toISOString().slice(0, 10);
+        const nuevas = [];
+        const enAlmacen = toArray(persianasAlmacen);
+        const usadas = new Set();
+        for (const p of listos) {
+          const res = await runTransaction(ref(fbDb, `portalUxcar/pedidos/${p.id}/persCreado`), (actual) => (actual ? undefined : true)).catch(() => null);
+          if (!res || !res.committed) continue;
+          toArray(p.expedientes).forEach((e) => {
+            const x = toArray(uxExpedientes).find((y) => y.id === e.expedienteId);
+            const K = x ? uxClaves(x) : { d: String(e.numero || "").replace(/\D/g, ""), pptos: new Set() };
+            const exp = K.d;
+            if (!exp) return;
+            const ppto = [...K.pptos].join(" · ");
+            toArray(e.lineas).forEach((l) => {
+              const largo = parseFloat(String(l.ancho || "").replace(/\./g, "").replace(",", ".")) || 0;
+              if (largo < 100) return;
+              const n = Math.max(1, Math.min(60, parseInt(l.uds, 10) || 1));
+              for (let k = 0; k < n; k++) {
+                const q = { id: uid(), expediente: exp, parte: "", ref: "", largo, alto: parseFloat(String(l.alto || "").replace(/\./g, "").replace(",", ".")) || 0, recogedor: "",
+                  descripcion: [l.modelo, l.codigo, l.descripcion, l.color].filter(Boolean).join(" · "), pedido: p.numero || "", presupuesto: ppto, refObra: (x && x.numero) || e.numero || "", cliente: "Uxcar",
+                  proveedor: p.proveedorNombre || "", fechaPedido: p.fecha || hoy, fechaEntrega: p.llegadaPrevista || "", fechaAlta: hoy, estado: "pedida", origen: "portalUxcar", uxcarPedidoId: p.id };
+                // Si esa persiana ya está en el almacén (llegó antes de que Uxcar subiera el pedido), no se queda pendiente para siempre
+                const y = enAlmacen.find((z) => !usadas.has(z.id) && casaPedidaConPersiana(q, z));
+                if (y) { usadas.add(y.id); nuevas.push({ ...q, estado: "recibida", fechaRecibida: hoy, recibidaId: y.id, notaRecibida: "Ya estaba en el almacén al subir el pedido" }); }
+                else nuevas.push(q);
+              }
+            });
+          });
+        }
+        if (nuevas.length > 0) {
+          savePedidosPersianas([...toArray(pedidosPersianas), ...nuevas]);
+          const pend = nuevas.filter((q) => q.estado === "pedida").length;
+          showToast(`Persianas de Uxcar: ${nuevas.length} pedidas${pend < nuevas.length ? ` (${nuevas.length - pend} ya estaban en el almacén)` : ""} en el almacén de persianas`);
+        }
+      } finally {
+        uxPersPedidasRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxPedidos, uxExpedientes, persianasAlmacen, pedidosPersianas, currentUser?.id, loading]);
+
   // Ida y vuelta entre el portal y el CRM: cuando Uxcar marca el pedido como enviado al
   // proveedor, el pedido del CRM queda "enviado" (y ya se puede recibir); cuando el
   // equipo lo recibe en el CRM, Uxcar lo ve como recibido en su portal (y, si son
@@ -13713,10 +13765,16 @@ function CaballetePorFotos({ cristales, onGuardarNuevo, onAnadirAExistente, onCe
 const normBusq = (s) => (s || "").toString().toLowerCase().replace(/\s+/g, "").replace(/[×*]/g, "x").replace(/[.\-_/]/g, "");
 // Expediente: además ignora el prefijo "EXP" / "Expediente" ("EXP 852" == "852").
 const normExpBusq = (s) => normBusq(s).replace(/^exp(ediente)?:?/, "");
-const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", otro: "" };
-const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.otro));
+const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", ppto: "", otro: "" };
+const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.ppto || f.otro));
+// Búsqueda por número de presupuesto: "6710" encuentra "6.710", "6710-1" y "6554, 6556, 6710"
+const pptoCoincideBusq = (q, ...textos) => {
+  const b = String(q || "").replace(/\D/g, "");
+  if (!b) return true;
+  return textos.some((t) => String(t || "").split(/[·,;\s]+/).some((x) => x.replace(/\D/g, "").includes(b)));
+};
 function textoFiltrosCristales(f) {
-  return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
+  return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.ppto && `presupuesto ${f.ppto}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
 }
 // ¿Esta línea de cristal (pieza) cumple los filtros? (la usa la pestaña "Cristales")
 function piezaCoincideFiltros(c, p, f) {
@@ -13724,6 +13782,7 @@ function piezaCoincideFiltros(c, p, f) {
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (viv && !normBusq(p.ref).includes(viv)) return false;
   if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
+  if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, p.presupuesto, p.ppto)) return false;
   if (otro && !normBusq(`${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
   return true;
 }
@@ -13731,6 +13790,7 @@ function piezaCoincideFiltros(c, p, f) {
 function cristalCoincideFiltros(c, f) {
   const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
+  if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, ...(c.piezas || []).map((p) => p.presupuesto || p.ppto))) return false;
   if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
@@ -13748,6 +13808,7 @@ function BuscadoresCristales({ filtros, setFiltros }) {
       {campo("cab", "Caballete (ej. 343)", "flex-1 min-w-[130px]")}
       {campo("viv", "Vivienda (ej. V03.103)", "flex-1 min-w-[130px]")}
       {campo("exp", "Expediente (ej. 662)", "flex-1 min-w-[130px]")}
+      {campo("ppto", "Presupuesto (ej. 6710)", "flex-1 min-w-[130px]")}
       {campo("otro", "Otro: medida, cliente, pedido", "flex-1 min-w-[150px]")}
       {hayFiltroCristales(filtros) && (
         <button type="button" onClick={() => setFiltros(FILTROS_CRISTALES_VACIOS)} className="text-xs font-semibold text-slate-500 hover:text-slate-800 px-2 py-1.5">Limpiar</button>
