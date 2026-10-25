@@ -17077,7 +17077,7 @@ async function leerPackingPersianas(file) {
       unidades.push({
         id: uid(), expediente: m ? m[0] : String(f.expediente || "").trim(), parte: normParte(f.expediente), ref: String(f.ref || "").trim(),
         largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0, pedido: String(f.pedido || "").trim(),
-        recogedor: /^\s*(izq|i\b)/i.test(String(f.recogedor || "")) ? "Izquierda" : /^\s*(der|dch|dcha|d\b)/i.test(String(f.recogedor || "")) ? "Derecha" : "",
+        recogedor: /el[eé]ctric|motor/i.test(String(f.recogedor || "")) ? "Eléctrica" : /doble/i.test(String(f.recogedor || "")) ? "Doble" : /^\s*(izq|i\b)/i.test(String(f.recogedor || "")) ? "Izquierda" : /^\s*(der|dch|dcha|d\b)/i.test(String(f.recogedor || "")) ? "Derecha" : "",
         proveedor: String(f.proveedor || "").trim(), fechaEntrada: new Date().toISOString().slice(0, 10),
         estante: null, entregada: false,
       });
@@ -17096,10 +17096,11 @@ const normRefPers = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "
 const parseLineaPersiana = (texto) => {
   const t = String(texto || "");
   const ref = (t.match(/\b[A-Z]{1,2}\d{1,2}[.\-]\d{2,3}\b/i) || [""])[0].toUpperCase();
-  const recogedor = /izq/i.test(t) ? "Izquierda" : /der(?:ech)?/i.test(t) ? "Derecha" : "";
+  const recogedor = /el[eé]ctric|motor/i.test(t) ? "Eléctrica" : /doble/i.test(t) ? "Doble" : /izq/i.test(t) ? "Izquierda" : /der(?:ech)?/i.test(t) ? "Derecha" : "";
   const habitacion = (t.match(/\b(dormitorio\s*\w*|salón|salon|cocina|baño|bano|terraza|comedor|pasillo|despacho|estudio|vestidor|hab(?:itaci[oó]n)?\.?\s*\d*)\b/i) || [""])[0].trim();
   return { ref, recogedor, habitacion };
 };
+const etiquetaMano = (r) => (r === "Izquierda" ? "Recogedor izquierda" : r === "Derecha" ? "Recogedor derecha" : r === "Doble" ? "Doble recogedor" : r === "Eléctrica" ? "Eléctrica (motor)" : "");
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
 const TOL_PEDIDO_MM = 30; // diferencia de largo que se admite entre lo pedido y lo que llega (sin verificar con packing lists reales)
 // ¿Esta persiana que ha llegado es la que se pidió? Mismo expediente + misma vivienda/ref. (si ambas la traen) + largo parecido.
@@ -17129,7 +17130,7 @@ async function leerPedidoPersianas(file) {
     const n = Math.max(1, Math.min(60, parseInt(f.cantidad, 10) || 1));
     for (let k = 0; k < n; k++) {
       filas.push({ id: uid(), ref: String(f.ref || "").trim(), largo: parseFloat(f.ancho) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
+        recogedor: /el[eé]ctric|motor/i.test(`${f.recogedor || ""} ${f.descripcion || ""}`) ? "Eléctrica" : /doble/i.test(f.recogedor || "") ? "Doble" : /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
     }
   });
   return { cab, filas };
@@ -17610,6 +17611,7 @@ function PanelesPendientes({ cristales = [] }) {
         ))}
         <span className="text-xs text-slate-500 ml-2">{lista.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0)} panel{lista.length === 1 ? "" : "es"} en esta vista</span>
       </div>
+      <datalist id="sitios-paneles">{[...new Set(["Carro de paneles", "Mesa de corte", ...paneles.map((x) => x.sitio).filter(Boolean)])].map((v) => <option key={v} value={v} />)}</datalist>
       {grupos.length === 0 && <div className="text-sm text-slate-400 text-center py-8 border border-dashed border-slate-300 rounded-lg">No hay paneles en esta vista.</div>}
       {grupos.map((g) => {
         const o = obraDe(g.items[0].expediente);
@@ -17642,6 +17644,9 @@ function PanelesPendientes({ cristales = [] }) {
                     {(x.estado || "pendiente") === "pendiente"
                       ? <button onClick={() => actualizar(x.id, { estado: "cortado", fechaCortado: hoy })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90">Marcar cortado</button>
                       : <><span className="text-xs font-semibold text-emerald-700">Cortado el {fmtDate(x.fechaCortado)}</span><button onClick={() => actualizar(x.id, { estado: "pendiente", fechaCortado: "" })} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300">Volver a pendiente</button></>}
+                    <label className="flex items-center gap-1 text-xs text-slate-600">Sitio / carro:
+                      <input list="sitios-paneles" defaultValue={x.sitio || ""} onBlur={(e) => { if (e.target.value !== (x.sitio || "")) actualizar(x.id, { sitio: e.target.value.trim() }); }} placeholder="ej. Carro paneles, mesa de corte" className="border border-slate-300 rounded-md px-2 py-1 text-xs w-48" />
+                    </label>
                     <span className="text-[11px] text-slate-400">{x.origen === "a mano" ? "añadido a mano" : `de la confirmación del ${fmtDate(x.fechaPedido || x.fecha)}`}</span>
                     <button onClick={() => { if (window.confirm("¿Borrar este panel?")) guardar(paneles.filter((y) => y.id !== x.id)); }} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-lg hover:bg-rose-50">Borrar</button>
                   </div>
@@ -17885,6 +17890,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const e = soloDigitos(x.expediente);
     const pd = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => uxPptoDigitos(t)).filter((d) => d.length >= 3);
     const rp = normBusq(x.ref || parseLineaPersiana(x.descripcion).ref);
+    // Las puertas llevan panel (sándwich, acústico) y no cristal: van a «Paneles pendientes de cortar», no a un caballete
+    if (rp) {
+      const pn = toArray(ctxM.paneles).find((z) => normBusq(z.ref) === rp && ((e.length >= 2 && numsExpediente(z.expediente).includes(e)) || String(z.presupuesto || "").split(/[·,;\s]+/).some((t) => pd.includes(uxPptoDigitos(t)))));
+      if (pn) return { estado: "panel", pn };
+    }
     const delExp = cabs.filter((c) => (e.length >= 2 && expedientesDeCaballete(c).has(e)) || String(c.presupuesto || "").split(/[·,;\s]+/).some((t) => pd.includes(uxPptoDigitos(t))));
     if (!delExp.length) return { estado: "nada" };
     if (rp) {
@@ -17893,10 +17903,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     }
     return { estado: "grupo", n: delExp.length, c: delExp[0] };
   };
-  const textoCristal = (r) => r.estado === "si" ? `✓ Cristal ${r.pz.ancho}×${r.pz.alto} · caballete ${r.c.lote || "—"} · ${textoSitioCab(r.c)}`
+  const textoCristal = (r) => r.estado === "panel" ? `Panel (no cristal) ${r.pn.ancho}×${r.pn.alto} · está en «Paneles pendientes de cortar»${r.pn.sitio ? " · sitio: " + r.pn.sitio : ""}` : r.estado === "si" ? `✓ Cristal ${r.pz.ancho}×${r.pz.alto} · caballete ${r.c.lote || "—"} · ${textoSitioCab(r.c)}`
     : r.estado === "grupo" ? `${r.n} caballete${r.n === 1 ? "" : "s"} de este expediente (${textoSitioCab(r.c)})`
-    : r.estado === "otravivienda" ? "Hay caballetes de este expediente pero NO esta vivienda" : r.estado === "nada" ? "Sin cristal en el almacén" : "";
-  const colorCristal = (r) => (r.estado === "si" ? "text-emerald-700" : r.estado === "grupo" ? "text-sky-700" : "text-rose-600");
+    : r.estado === "otravivienda" ? "Hay caballetes de este expediente pero ni cristal ni panel de esta vivienda (¿puerta sin cristal?)" : r.estado === "nada" ? "Sin cristal en el almacén" : "";
+  const colorCristal = (r) => (r.estado === "si" ? "text-emerald-700" : r.estado === "grupo" || r.estado === "panel" ? "text-sky-700" : "text-rose-600");
   const guardarPedidos = ctxM.savePedidosPersianas || (() => {});
   const esRecepcion = !esMosq && almacenRecepcionPersianas(toArray(ctxM.almacenesPersianas)) === almacen.id;
   const pendientesPedido = pedidosTodos.filter((p) => p.estado !== "recibida");
@@ -18394,7 +18404,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       <td className="pr-2"><input type="number" value={f.alto} onChange={(e) => cambiaFila(i, { alto: parseFloat(e.target.value) || 0 })} className="w-20 border border-slate-200 rounded px-1 bg-white" /></td>
                       <td className="pr-2">
                         <select value={f.recogedor} onChange={(e) => cambiaFila(i, { recogedor: e.target.value })} className="border border-slate-200 rounded px-1 py-0.5 bg-white">
-                          <option value="">—</option><option value="Derecha">Derecha</option><option value="Izquierda">Izquierda</option>
+                          <option value="">—</option><option value="Derecha">Derecha</option><option value="Izquierda">Izquierda</option><option value="Doble">Doble recogedor</option><option value="Eléctrica">Eléctrica</option>
                         </select>
                       </td>
                       <td><button onClick={() => setBorradorPedido({ ...borradorPedido, filas: filas.filter((_, j) => j !== i) })} className="text-rose-500"><Trash2 size={12} /></button></td>
@@ -18441,7 +18451,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                             {(() => { const pl = parseLineaPersiana(p.descripcion); const cr = cristalDe(p); return (<>
                             <td className="py-1 pr-2 font-semibold w-24">{p.ref || pl.ref || "—"}{(p.habitacion || pl.habitacion) ? <div className="text-[10px] font-normal text-slate-500">{p.habitacion || pl.habitacion}</div> : null}</td>
                             <td className="pr-2 font-mono-num">{p.largo}{p.alto ? ` × ${p.alto}` : ""}</td>
-                            <td className="pr-2 text-slate-500">{(p.recogedor || pl.recogedor) ? `Recogedor ${(p.recogedor || pl.recogedor).toLowerCase()}` : "mano sin dato"}</td>
+                            <td className="pr-2 text-slate-500">{etiquetaMano(p.recogedor || pl.recogedor) || "mano sin dato"}</td>
                             <td className="pr-2 text-slate-500 max-w-[260px] truncate" title={p.descripcion || ""}>{p.descripcion || ""}</td>
                             <td className={`pr-2 text-[11px] font-semibold ${colorCristal(cr)}`}>{textoCristal(cr)}</td>
                             </>); })()}
@@ -18538,6 +18548,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <option value="">— ?</option>
                         <option value="Izquierda">Izquierda</option>
                         <option value="Derecha">Derecha</option>
+                        <option value="Doble">Doble recogedor</option>
+                        <option value="Eléctrica">Eléctrica</option>
                       </select>
                     </td>
                     <td className="pr-2 text-slate-500">{[x.refObra || x.obraUx, x.presupuesto ? `Ppto ${x.presupuesto}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
