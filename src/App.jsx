@@ -37243,7 +37243,25 @@ const uxEstadoPedido = (p) => {
   return { label: "Sin enviar al proveedor", cls: "bg-amber-100 text-amber-800 border-amber-300" };
 };
 
-function UxListaPedidos({ pedidos, onAbrir, onNuevo }) {
+// El número que aparece como "expediente" en un pedido de Uxcar puede ser en realidad un presupuesto con versión («6.490-1»).
+// Aquí se separan: expedientes (números de expediente de verdad) por un lado y presupuestos por otro.
+const uxEsPpto = (n) => /^\s*[\d.]+\s*-\s*\d+\s*$/.test(String(n || ""));
+const uxDesglosaExp = (p, exps) => {
+  const exp = [], ppto = [];
+  let sinExp = 0;
+  toArray(p.expedientes).forEach((x) => {
+    const e = toArray(exps).find((y) => y && y.id === x.expedienteId);
+    const num = String(x.numero || (e && e.numero) || "").trim();
+    const pp = e && e.presupuesto ? String(e.presupuesto).trim() : "";
+    if (!num && !pp) return;
+    if (uxEsPpto(num)) { ppto.push(num); sinExp += 1; return; }
+    exp.push(num);
+    if (pp) ppto.push(pp);
+  });
+  return { exp: [...new Set(exp)], ppto: [...new Set(ppto)], sinExp };
+};
+const uxTextoExp = (d) => (d.exp.length ? d.exp.join(", ") + (d.sinExp ? ` · +${d.sinExp} sin expediente` : "") : (d.ppto.length ? "sin dato" : "—"));
+function UxListaPedidos({ pedidos, expedientes, onAbrir, onNuevo }) {
   const lista = [...pedidos].sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
   return (
     <div className="space-y-3">
@@ -37252,16 +37270,17 @@ function UxListaPedidos({ pedidos, onAbrir, onNuevo }) {
       </div>
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Presupuestos</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
           <tbody>
-            {lista.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">Todavía no hay pedidos.</td></tr>}
+            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">Todavía no hay pedidos.</td></tr>}
             {lista.map((p) => { const e = uxEstadoPedido(p); return (
               <tr key={p.id} onClick={() => onAbrir(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{p.numero}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
                 <td className="px-3 py-2">{p.tipo}</td>
                 <td className="px-3 py-2">{p.proveedorNombre}</td>
-                <td className="px-3 py-2 text-slate-600">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</td>
+                <td className="px-3 py-2 text-slate-600">{uxTextoExp(uxDesglosaExp(p, expedientes))}</td>
+                <td className="px-3 py-2 text-slate-600">{uxDesglosaExp(p, expedientes).ppto.join(", ") || "—"}</td>
                 <td className="px-3 py-2"><span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border whitespace-nowrap ${e.cls}`}>{e.label}</span></td>
               </tr>
             ); })}
@@ -45427,6 +45446,7 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
 
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
+  const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
   const lista = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
@@ -45439,7 +45459,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
           <h2 className="text-lg font-extrabold text-slate-900">Pedido {abierto.numero} de Uxcar</h2>
           <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${uxEstadoPedido(abierto).cls}`}>{uxEstadoPedido(abierto).label}</span>
         </div>
-        <div className="text-sm text-slate-600">{abierto.tipo} · {abierto.proveedorNombre} · {uxFecha(abierto.fecha)} · Exp. {toArray(abierto.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</div>
+        <div className="text-sm text-slate-600">{abierto.tipo} · {abierto.proveedorNombre} · {uxFecha(abierto.fecha)} · Exp. {uxTextoExp(uxDesglosaExp(abierto, expsUx))} · Ppto {uxDesglosaExp(abierto, expsUx).ppto.join(", ") || "—"}</div>
         {uxDocsPedido(abierto).length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{uxDocsPedido(abierto).map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-[#2E8B57] hover:underline"><FileText size={13} /> Pedido: {d.nombre}</a>)}</div>}
         <UxAlbaranEntrada key={abierto.id} pedido={abierto} quien={quien} onGuardar={(r) => onGuardarRecepcion(abierto, r)} />
       </div>
@@ -45453,13 +45473,13 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       </div>
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
+          <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Presupuestos</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
           <tbody>
-            {lista.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No hay pedidos de Uxcar pendientes de llegar.</td></tr>}
+            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No hay pedidos de Uxcar pendientes de llegar.</td></tr>}
             {lista.map((p) => { const e = uxEstadoPedido(p); return (
               <tr key={p.id} onClick={() => setAbiertoId(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2 font-semibold">{p.numero}</td><td className="px-3 py-2">{p.tipo}</td><td className="px-3 py-2">{p.proveedorNombre}</td>
-                <td className="px-3 py-2">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "—"}</td><td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
+                <td className="px-3 py-2">{uxTextoExp(uxDesglosaExp(p, expsUx))}</td><td className="px-3 py-2">{uxDesglosaExp(p, expsUx).ppto.join(", ") || "—"}</td><td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
                 <td className="px-3 py-2"><span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${e.cls}`}>{e.label}</span></td>
               </tr>
             ); })}
@@ -46802,7 +46822,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             }}
           />
         ) : vista === "pedidos" || vista === "fichaPedido" ? (
-          <UxListaPedidos pedidos={pedidosUx} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
+          <UxListaPedidos pedidos={pedidosUx} expedientes={expedientes} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
         ) : vista === "editar" && abierto ? (
           <UxFormExpediente initial={abierto} tipos={tipos} expedientes={expedientes} onCancel={() => setVista("ficha")} onSave={guardarEdicion} />
         ) : vista === "ficha" && abierto ? (
