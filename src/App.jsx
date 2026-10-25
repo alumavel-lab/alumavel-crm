@@ -4388,14 +4388,16 @@ export default function App() {
         const pr = toArray(proyectos).find((x) => x.id === pd.proyectoId);
         const exp = soloDigitos((pr && (pr.expediente || pr.numero)) || "");
         const prov = toArray(proveedores).find((x) => x.id === pd.proveedorId);
-        const ppto = ((String((pr && pr.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
+        const ppto = String((pr && pr.presupuestoNumero) || "").trim() || ((String((pr && pr.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
+        const cliPr = pr ? toArray(clientes).find((c) => c && c.id === pr.clienteId) : null;
+        const nomCli = [pr && pr.nombre, cliPr && cliPr.nombre].filter(Boolean).join(" · ");
         toArray(pd.lineas).forEach((l) => {
           if (!l || l.estado === "Recibido" || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) || tipoLineaRecepcion(l, pd) !== "persiana") return;
           const n = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
           for (let k = 0; k < n; k++) {
             const pl = parseLineaPersiana(l.referencia || "");
             const q = { id: uid(), expediente: exp, parte: "", ref: pl.ref, largo: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, recogedor: pl.recogedor, habitacion: pl.habitacion,
-              descripcion: l.referencia || "", pedido: pd.numero || "", presupuesto: ppto, refObra: (pr && pr.numero) || "", cliente: (pr && pr.nombre) || "",
+              descripcion: l.referencia || "", pedido: pd.numero || "", presupuesto: ppto, refObra: (pr && pr.numero) || "", cliente: nomCli,
               proveedor: (prov && prov.nombre) || "", fechaPedido: pd.fechaCompra || hoy, fechaEntrega: pd.fechaEntregaPrevista || "", fechaAlta: hoy, estado: "pedida", origen: "pedidoCRM", crmPedidoId: pd.id };
             const y = enAlmacen.find((z) => !usadas.has(z.id) && casaPedidaConPersiana(q, z));
             if (y) { usadas.add(y.id); nuevas.push({ ...q, estado: "recibida", fechaRecibida: hoy, recibidaId: y.id, notaRecibida: "Ya estaba en el almacén" }); } else nuevas.push(q);
@@ -18059,6 +18061,27 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Las persianas pedidas que ya han llegado a la fábrica: se pasan a la pantalla de revisión (con el aviso de «mismo carro que el caballete de cristal»),
   // se colocan en los carros y al confirmar quedan como recibidas.
+  // Presupuesto y mano de una persiana: lo que traiga la pieza; si no, se busca (presupuesto: en la obra del CRM o en los caballetes de cristal de ese expediente; mano: en el texto de la línea).
+  const pptoDe = (x) => {
+    if (x.presupuesto) return String(x.presupuesto);
+    try {
+      const e = String(x.expediente || "").replace(/\D/g, "");
+      if (!e) return "";
+      const pr = toArray(ctxM.proyectos).find((y) => y && (String(y.expediente || "").replace(/\D/g, "") === e || String(y.numero || "").replace(/\D/g, "") === e));
+      if (pr && String(pr.presupuestoNumero || "").trim()) return String(pr.presupuestoNumero).trim();
+      const m = pr && String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i);
+      if (m) return m[1];
+      const cab = toArray(ctxM.cristalesCaballetes).find((c) => c.presupuesto && expedientesDeCaballete(c).has(e));
+      if (cab) return String(cab.presupuesto);
+      const otro = [...toArray(ctxM.persianasAlmacen), ...toArray(ctxM.pedidosPersianas)].find((y) => y && y.presupuesto && String(y.expediente || "").replace(/\D/g, "") === e);
+      if (otro) return String(otro.presupuesto);
+    } catch (er) { /* nada */ }
+    return "";
+  };
+  const manoDe = (x) => x.recogedor || parseLineaPersiana(`${x.descripcion || ""} ${x.ref || ""} ${x.medidaEtiqueta || ""}`).recogedor || "";
+  // Lo que se muestra como "expediente": el número; y si en vez de número lo que hay es el nombre del cliente (como en muchos pedidos nuestros), ese nombre.
+  const expTexto = (x) => { const r = expedienteRealDe(x); if (r) return r; const raw = String(x.expediente || "").trim(); return raw && !/\d/.test(raw) ? raw : "sin dato"; };
+  const etqExp = (x) => { const t = expTexto(x); return /\d/.test(t) ? `EXP ${t}` : t; };
   // ¿Es nuestra (Alumavel/Ecowin) o de Uxcar? Primero lo que dice la propia pieza; si no, por el cliente; y solo como pista, por si el número coincide con un expediente de Uxcar.
   const duenoDe = (x) => {
     if (x.dueno === "uxcar" || x.origen === "portalUxcar" || x.uxcarPedidoId) return "UXCAR";
@@ -18098,6 +18121,16 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const pr = toArray(ctxM.proyectos).find((y) => y && (y.id === p.proyectoId || (d && (String(y.numero || "").replace(/\D/g, "") === d || String(y.expediente || "").replace(/\D/g, "") === d))));
       if (pr) { const cl = toArray(ctxM.clientes).find((c) => c.id === pr.clienteId); return [pr.nombre, cl && cl.nombre].filter(Boolean).join(" · "); }
     } catch (e) { /* nada */ }
+    if (String(p.expediente || "").trim() && !/\d/.test(String(p.expediente))) return String(p.expediente).trim();
+    try {
+      const e = String(p.expediente || "").replace(/\D/g, "");
+      if (e) {
+        const cab = toArray(ctxM.cristalesCaballetes).find((c) => c && c.cliente && expedientesDeCaballete(c).has(e));
+        if (cab) return String(cab.cliente);
+        const otro = [...toArray(ctxM.persianasAlmacen), ...toArray(ctxM.pedidosPersianas)].find((y) => y && y.cliente && y.cliente !== "Uxcar" && String(y.expediente || "").replace(/\D/g, "") === e);
+        if (otro) return String(otro.cliente);
+      }
+    } catch (er) { /* nada */ }
     return p.cliente && p.cliente !== "Uxcar" ? p.cliente : "";
   };
   const colocarDesdePedidas = (ps) => {
@@ -18583,19 +18616,19 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
     const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
-    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}<br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${esc(etqExp(x))}</b>${` · Ppto ${esc(pptoDe(x) || "sin dato")}`}<br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "mano sin dato")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const secciones = Object.keys(porCarro).sort((a, b) => a - b).map((n) => {
       const xs = porCarro[n].sort((a, b) => String(a.e.nivel).localeCompare(String(b.e.nivel), "es", { numeric: true }) || String(a.x.expediente).localeCompare(String(b.x.expediente), "es", { numeric: true }) || String(a.x.ref || "").localeCompare(String(b.x.ref || ""), "es", { numeric: true }));
-      const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
+      const exps = [...new Set(xs.map((o) => expTexto(o.x)))];
       const lado = (l) => { const ys = xs.filter((o) => String(o.e.lado) === l); return `<div class="lado"><h3>Lado ${l} <small>(${ys.length})</small></h3>${ys.length ? `<table>${cab2}${ys.map(fila2).join("")}</table>` : '<i style="color:#999">vacío</i>'}</div>`; };
       const otros = xs.filter((o) => !["A", "B"].includes(String(o.e.lado)));
       return `<section><h2>Carro ${esc(n)} <small>· ${xs.length} persianas · EXP ${esc(exps.join(", "))}</small></h2><div class="lados">${lado("A")}${lado("B")}</div>${otros.length ? `<table>${cab2}${otros.map(fila2).join("")}</table>` : ""}</section>`;
     }).join("");
-    const sin = sinSitioP.length ? `<section><h2>Sin sitio (${sinSitioP.length})</h2><table><tr><th>Expediente</th><th>Vivienda</th><th>Medida</th></tr>${sinSitioP.map((x) => `<tr><td>EXP ${esc(expedienteRealDe(x) || "sin dato")}</td><td>${esc(x.ref || "—")}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td></tr>`).join("")}</table></section>` : "";
+    const sin = sinSitioP.length ? `<section><h2>Sin sitio (${sinSitioP.length})</h2><table><tr><th>Expediente</th><th>Vivienda</th><th>Medida</th></tr>${sinSitioP.map((x) => `<tr><td>${esc(etqExp(x))}</td><td>${esc(x.ref || "—")}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td></tr>`).join("")}</table></section>` : "";
     const resumenFilas = Object.keys(porCarro).sort((x, y) => x - y).map((n) => {
       const c = carros.find((q) => String(q.numero) === String(n)) || {};
       const xs = porCarro[n];
-      const exps = [...new Set(xs.map((o) => expedienteRealDe(o.x) || o.x.expediente))];
+      const exps = [...new Set(xs.map((o) => expTexto(o.x)))];
       const pocas = xs.length <= 3;
       return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
     }).join("");
@@ -18750,7 +18783,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 {Object.entries(grupos).map(([k, ps]) => (
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
-                      <span>EXP {expedienteRealDe(ps[0]) || "sin dato"}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      <span>{etqExp(ps[0])}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
                       <span className={`px-2 py-0.5 rounded font-bold ${duenoDe(ps[0]) === "PROPIO" ? "bg-emerald-100 text-emerald-900" : "bg-violet-200 text-violet-900"}`}>{etqDueno(ps[0])}</span>
                       {nombreObraDe(ps[0]) && <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-900 font-semibold">{nombreObraDe(ps[0])}</span>}
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
@@ -18863,7 +18896,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
-                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" />{x.presupuesto && !expedienteRealDe(x) ? <div className="text-[10px] text-amber-700">= presupuesto; EXP sin dato</div> : null}<div className={`text-[10px] font-bold ${duenoDe(x) === "PROPIO" ? "text-emerald-700" : "text-violet-700"}`}>{etqDueno(x)}</div></td>
+                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" />{x.presupuesto && !expedienteRealDe(x) && /\d/.test(String(x.expediente || "")) ? <div className="text-[10px] text-amber-700">= presupuesto; EXP sin dato</div> : null}<div className={`text-[10px] font-bold ${duenoDe(x) === "PROPIO" ? "text-emerald-700" : "text-violet-700"}`}>{etqDueno(x)}</div></td>
                     <td className="pr-2">{x.ref || "—"}{x.habitacion ? <div className="text-[10px] text-slate-500">{x.habitacion}</div> : null}{x.descripcion ? <div className="text-[10px] text-slate-400 max-w-[200px] truncate" title={x.descripcion}>{x.descripcion}</div> : null}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
@@ -18876,7 +18909,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <option value="Eléctrica">Eléctrica</option>
                       </select>
                     </td>
-                    <td className="pr-2 text-slate-500">{[x.nombreObra, x.refObra || x.obraUx, x.presupuesto ? `Ppto ${x.presupuesto}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
+                    <td className="pr-2 text-slate-500">{[x.nombreObra, x.refObra || x.obraUx, pptoDe(x) ? `Ppto ${pptoDe(x)}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
                     <td className={`pr-2 text-[11px] font-semibold ${colorCristal(cristalDe(x))}`}>{textoCristal(cristalDe(x)) || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
