@@ -18628,9 +18628,16 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const resumenFilas = Object.keys(porCarro).sort((x, y) => x - y).map((n) => {
       const c = carros.find((q) => String(q.numero) === String(n)) || {};
       const xs = porCarro[n];
-      const exps = [...new Set(xs.map((o) => expTexto(o.x)))];
+      const porExp = {};
+      xs.forEach((o) => { const k = expTexto(o.x); (porExp[k] = porExp[k] || []).push(o.x); });
+      const lineasExp = Object.keys(porExp).map((k) => {
+        const ys = porExp[k];
+        const ppto = ys.map((y) => pptoDe(y)).find(Boolean) || "";
+        const cli = ys.map((y) => y.nombreObra || nombreObraDe(y) || "").find(Boolean) || "";
+        return `<b>${esc(/\d/.test(k) ? "EXP " + k : k)}</b> (${ys.length}) · Ppto ${esc(ppto || "sin dato")} · ${esc(cli || "cliente sin dato")}`;
+      });
       const pocas = xs.length <= 3;
-      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${esc(exps.join(", "))}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
+      return `<tr${pocas ? ' style="background:#fff3cd"' : ""}><td><b>Carro ${esc(n)}</b></td><td>${esc((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")}</td><td>${xs.length}</td><td>${lineasExp.join("<br>")}</td><td>${xs.filter((o) => duenoDe(o.x) === "PROPIO").length} propias · ${xs.filter((o) => duenoDe(o.x) !== "PROPIO").length} Uxcar${pocas ? " · pocas persianas" : ""}</td></tr>`;
     }).join("");
     const partidosImp = calcularReparto(borrador).partidos;
     const partidosHtml = partidosImp.length ? `<div style="border:2px solid #b45309;background:#fffbeb;padding:6px 10px;margin:0 0 10px;font-size:12px"><b>Expedientes que no caben enteros en un carro (quedan repartidos):</b><br>${partidosImp.map((t) => esc(t)).join("<br>")}</div>` : "";
