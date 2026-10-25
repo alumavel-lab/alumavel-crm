@@ -4243,6 +4243,24 @@ export default function App() {
   // del CRM: un pedido por expediente, unido al Proyecto de ese expediente. Se espera
   // a que el Proyecto exista (lo crea el efecto de arriba) y se "reserva" el pedido
   // con una transacción para que no se duplique si hay varios CRM abiertos.
+  // Resumen para Uxcar de lo que YA hay en tus almacenes de sus expedientes (solo los números de los suyos: caballetes de cristal y persianas).
+  // Se escribe en portalUxcar/enFabrica cuando cambia, para que su portal pueda decir "ya están los cristales".
+  const enFabricaUxRef = useRef("");
+  useEffect(() => {
+    if (!currentUser || loading || !toArray(uxExpedientes).length) return;
+    const res = {};
+    toArray(uxExpedientes).forEach((e) => {
+      const d = String(e.numero || "").replace(/\D/g, "");
+      if (d.length < 2) return;
+      const c = toArray(cristales).filter((x) => expedientesDeCaballete(x).has(d)).length;
+      const pe = toArray(persianasAlmacen).filter((x) => !x.entregada && String(x.expediente || "").replace(/\D/g, "") === d).length;
+      if (c || pe) res[d] = { c, p: pe };
+    });
+    const txt = JSON.stringify(res);
+    if (txt === enFabricaUxRef.current) return;
+    enFabricaUxRef.current = txt;
+    fbSet(ref(fbDb, "portalUxcar/enFabrica"), res).catch(() => { enFabricaUxRef.current = ""; });
+  }, [uxExpedientes, cristales, persianasAlmacen, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -4626,7 +4644,7 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
-  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen;
+  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null;
   useEffect(() => {
     if (recuentoStock !== null || !currentUser || !isAdmin) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -35290,11 +35308,12 @@ const uxLlevaPersiana = (exp) => {
   return r.some((l) => l.persiana);
 };
 // Lo que hay en los almacenes de la fábrica (lo rellena la oficina en cada pintado; en el portal de Uxcar queda vacío)
-const uxAlmacenGlobal = { cristales: [], persianas: [] };
+const uxAlmacenGlobal = { cristales: [], persianas: [], resumen: null };
 // ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
 const uxEnAlmacen = (exp, k) => {
   const d = String((exp && exp.numero) || "").replace(/\D/g, "");
   if (d.length < 2) return false;
+  if (uxAlmacenGlobal.resumen) { const r = uxAlmacenGlobal.resumen[d]; return !!r && (k === "vidrios" ? r.c > 0 : k === "compactos" ? r.p > 0 : false); } // portal de Uxcar: resumen escrito por la oficina
   if (k === "vidrios") return toArray(uxAlmacenGlobal.cristales).some((c) => expedientesDeCaballete(c).has(d));
   if (k === "compactos") return toArray(uxAlmacenGlobal.persianas).some((x) => !x.entregada && String(x.expediente || "").replace(/\D/g, "") === d);
   return false;
@@ -45797,6 +45816,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
   const [abiertoId, setAbiertoId] = useState(null);
   const [toast, setToastPortal] = useState("");
   useEffect(() => onValue(ref(fbDb, "portalUxcar"), (snap) => { setDatos(snap.val() || {}); setError(""); }, (err) => setError("No se pudieron cargar los datos: " + err.message)), []);
+  uxAlmacenGlobal.resumen = datos && datos.enFabrica ? datos.enFabrica : {}; // en el portal: lo que la oficina dice que ya está en fábrica
   const expedientes = datos ? toArray(datos.expedientes) : [];
   const tipos = datos && datos.config && datos.config.tipos ? toArray(datos.config.tipos) : [];
   const pedidosUx = datos ? toArray(datos.pedidos) : [];
