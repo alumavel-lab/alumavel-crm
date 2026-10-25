@@ -5889,7 +5889,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -16718,6 +16718,8 @@ function carrosPersianasPorDefecto() {
   });
 }
 const largoPersiana = (x) => parseFloat(x.largo) || parseFloat(x.ancho) || 0;
+// Clave para detectar la misma persiana cargada dos veces: expediente + referencia + largo. Sin referencia no se puede comparar.
+const claveDupPersiana = (x) => { const e = String(x.expediente || "").replace(/\D/g, ""); const r = String(x.ref || "").toLowerCase().replace(/[^a-z0-9]/g, ""); const l = Math.round(largoPersiana(x)); return e && r && l ? `${e}|${r}|${l}` : ""; };
 // "Parte" / vivienda de la obra (P1, P2…): sale del "EXP. 737 P1" del albarán o de la etiqueta ("P-8" → P8). Las persianas de una misma parte se colocan y se reparten juntas.
 const normParte = (t) => { const m = String(t || "").match(/(?:^|[^A-Za-z])P\s*-?\s*(\d{1,2})(?!\d)/i); return m ? `P${parseInt(m[1], 10)}` : ""; };
 // Si el pedido no trae "P1, P2…", la vivienda sale de la ubicación del pedido ("EXP 823 PORTAL 33E ESC 06 1A" → "1A"):
@@ -17849,10 +17851,101 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
 
   const [carroDestinoGlobal, setCarroDestinoGlobal] = useState("");
 
+  // Grupos de expedientes de lo que se está recibiendo que comparten caballete de cristal (para ponerlos en el mismo carro)
+  const gruposCaballete = (lista) => {
+    const cabs = toArray(ctxM.cristalesCaballetes);
+    if (!cabs.length || !Array.isArray(lista)) return [];
+    const expsLista = new Set(lista.map((x) => soloDigitos(x.expediente)).filter(Boolean));
+    const padre = {};
+    const raiz = (a) => { while (padre[a] && padre[a] !== a) a = padre[a]; return a; };
+    const info = {};
+    cabs.forEach((c) => {
+      const comunes = [...expedientesDeCaballete(c)].filter((e) => expsLista.has(e));
+      if (comunes.length < 2) return;
+      comunes.forEach((e) => { if (!padre[e]) padre[e] = e; (info[e] = info[e] || []).push(c); });
+      comunes.slice(1).forEach((e) => { padre[raiz(e)] = raiz(comunes[0]); });
+    });
+    const grupos = {};
+    Object.keys(padre).forEach((e) => { const r = raiz(e); (grupos[r] = grupos[r] || { exps: [], cabs: new Set() }); grupos[r].exps.push(e); (info[e] || []).forEach((c) => grupos[r].cabs.add(c)); });
+    return Object.values(grupos).map((g) => ({ exps: g.exps.sort(), cabs: [...g.cabs] }));
+  };
+  // ¿Caben TODAS las piezas de esos expedientes juntas en ese carro (contando lo que ya hay dentro)?
+  const cabenJuntas = (exps, numero) => {
+    const n = parseInt(numero, 10);
+    if (!n || !borrador) return false;
+    const set = new Set(exps);
+    const piezas = borrador.filter((x) => set.has(soloDigitos(x.expediente)));
+    if (!piezas.length) return false;
+    const estado = estadoOcupacionPersianas(items);
+    const destino = estantes.filter((e) => e.carro === n);
+    if (!destino.length) return false;
+    const porExp = {};
+    piezas.forEach((x) => { (porExp[x.expediente || "—"] = porExp[x.expediente || "—"] || []).push(x); });
+    return Object.entries(porExp).every(([exp, g]) => Object.keys(colocarGrupoPersianas(g, exp, destino, estado).res).length === g.length);
+  };
+  const primerCarroQueCabe = (exps) => { const c = ordenados.find((c) => cabenJuntas(exps, c.numero)); return c ? c.numero : null; };
+  const juntarEnCarro = (exps, numero, clave) => {
+    const n = parseInt(numero, 10);
+    if (!n || !borrador) return;
+    if (!cabenJuntas(exps, n)) {
+      const otro = primerCarroQueCabe(exps);
+      setAvisoGrupo({ ...avisoGrupo, [clave]: otro ? `No caben todas juntas en el carro ${n}. No he cambiado nada. Sí caben en el carro ${otro}.` : `No caben todas juntas en el carro ${n} ni en ningún otro. No he cambiado nada: se colocarán como siempre, expediente a expediente.` });
+      if (otro) setCarroGrupo({ ...carroGrupo, [clave]: String(otro) });
+      return;
+    }
+    const set = new Set(exps);
+    setBorrador(borrador.map((x) => (set.has(soloDigitos(x.expediente)) ? { ...x, carroDestino: n } : x)));
+    setAvisoGrupo({ ...avisoGrupo, [clave]: `Hecho: todas en el carro ${n}.` });
+  };
+  const [avisoGrupo, setAvisoGrupo] = useState({});
+  const [carroGrupo, setCarroGrupo] = useState({});
+
+  const todasPersianas = () => (ctxM.persianasAlmacen ? toArray(ctxM.persianasAlmacen) : items);
+  const repetidasEnAlmacen = (entrada) => {
+    const claves = new Set(todasPersianas().filter((y) => !y.entregada).map(claveDupPersiana).filter(Boolean));
+    return entrada.filter((x) => { const k = claveDupPersiana(x); return k && claves.has(k); });
+  };
+  const quitarYaExistentes = () => {
+    if (!borrador) return;
+    const ya = new Set(repetidasEnAlmacen(borrador).map((x) => x.id));
+    setBorrador(borrador.filter((x) => !ya.has(x.id)));
+    setAviso(`Quitadas ${ya.size} que ya estaban en el almacén. Revisa lo que queda y confirma.`);
+  };
+  // Repetidas ya guardadas dentro de este almacén (misma clave): se deja una y las demás se pueden quitar
+  const repetidasGuardadas = useMemo(() => {
+    const vistos = {}; const extra = [];
+    [...items].filter((x) => !x.entregada).sort((a, b) => (a.estante ? 0 : 1) - (b.estante ? 0 : 1) || String(a.fechaEntrada || "").localeCompare(String(b.fechaEntrada || ""))).forEach((x) => { const k = claveDupPersiana(x); if (!k) return; if (vistos[k]) extra.push(x); else vistos[k] = x; });
+    return extra;
+  }, [items]);
+  const quitarRepetidasGuardadas = () => {
+    const ids = new Set(repetidasGuardadas.map((x) => x.id));
+    if (!ids.size) return;
+    if (!window.confirm(`Voy a borrar ${ids.size} ${cosa} que tienen el mismo EXP, referencia y largo que otra ya guardada (me quedo con la que está colocada o la más antigua).\n\nOJO: si alguna vivienda lleva de verdad dos iguales, no pulses esto.\n\n¿Las borro?`)) return;
+    guardarItems(items.filter((x) => !ids.has(x.id)));
+    setAviso(`${ids.size} repetidas borradas.`);
+  };
+
   const confirmarEntrada = (lista) => {
     const entrada = Array.isArray(lista) ? lista : borrador.map((x) => ({ ...x, carroDestino: x.carroDestino || parseInt(carroDestinoGlobal, 10) || "" }));
-    const { sitio, fallan, desbordan } = colocar(entrada);
-    const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null }; });
+    // BLOQUEO 1: ya están en el almacén (mismo expediente, referencia y largo)
+    const repes = repetidasEnAlmacen(entrada);
+    if (repes.length) {
+      setAviso(`BLOQUEADO: ${repes.length} de ${entrada.length} ${cosa} ya están en el almacén (mismo EXP, referencia y largo), por ejemplo ${repes.slice(0, 3).map((x) => `EXP ${x.expediente} ${x.ref} ${largoPersiana(x)}`).join(" · ")}. No se ha guardado nada. Seguramente ya las habías subido. Si en el borrador hay otras nuevas, pulsa «Quitar las que ya están».`);
+      return;
+    }
+    // BLOQUEO 2: no caben en el carro elegido (no se reparten solas por otros carros)
+    const prueba = colocar(entrada);
+    if (prueba.desbordan > 0) {
+      setAviso(`BLOQUEADO: ${prueba.desbordan} ${cosa} no caben en el carro elegido. No se ha guardado nada. Elige otro carro (o «Automático») y vuelve a confirmar.`);
+      return;
+    }
+    // Aviso 3: el expediente ya tiene piezas dentro (puede ser una segunda entrega legítima)
+    const hoyEntrada = new Date().toISOString().slice(0, 10);
+    const expsNuevos = [...new Set(entrada.map((x) => String(x.expediente || "").replace(/\D/g, "")).filter(Boolean))];
+    const yaConPiezas = expsNuevos.filter((e) => todasPersianas().some((y) => !y.entregada && String(y.expediente || "").replace(/\D/g, "") === e));
+    if (yaConPiezas.length && !window.confirm(`El expediente ${yaConPiezas.slice(0, 5).join(", ")} ya tiene ${cosa} en el almacén. ¿Es una entrega distinta y quieres añadirlas igualmente?`)) { setAviso("Entrada cancelada: el expediente ya tenía piezas dentro."); return; }
+    const { sitio, fallan, desbordan } = prueba;
+    const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null, fechaEntrada: resto.fechaEntrada || hoyEntrada, ...(sitio[x.id] ? { fechaCarro: hoyEntrada } : {}) }; });
     guardarItems([...items, ...nuevas]);
     const recibidasPedido = conciliarPedidas(nuevas);
     if (!Array.isArray(lista)) { setBorrador(null); setCarroDestinoGlobal(""); }
@@ -17879,7 +17972,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       fallan += g.length - Object.keys(r.res).length;
     });
     if (fallan) { setAviso(`No caben ${fallan} de ${xs.length} ${cosa} en el carro ${n} (poco sitio, o miden menos que el mínimo de ese tipo de carro). No se ha movido nada.`); return; }
-    guardarItems(items.map((y) => (sitio[y.id] ? { ...y, estante: sitio[y.id], enPuesto: "" } : y)));
+    guardarItems(items.map((y) => (sitio[y.id] ? { ...y, estante: sitio[y.id], enPuesto: "", fechaCarro: new Date().toISOString().slice(0, 10) } : y)));
     setAviso(`${xs.length} ${cosa} movidas al carro ${n}.`);
   };
 
@@ -17958,7 +18051,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               })}
             </optgroup>
           ))}
-        </select></>)}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
+        </select></>)}{x.fechaEntrada && <span className="block text-[10px] text-slate-400">Entró {fmtDate(x.fechaEntrada)}{x.fechaCarro && x.fechaCarro !== x.fechaEntrada ? ` · en carro ${fmtDate(x.fechaCarro)}` : ""}</span>}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
@@ -18064,6 +18157,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <EtiquetasPersianasPorFotos onCerrar={() => setVerFotosEtiquetas(false)} opcionesCarro={opcionesCarro(null)} onColocar={(unidades, carro) => confirmarEntrada(carro ? unidades.map((u) => ({ ...u, carroDestino: carro })) : unidades)} />
       )}
       {aviso && <div className="text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">{aviso}</div>}
+      {repetidasGuardadas.length > 0 && (
+        <div className="text-sm px-4 py-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 flex flex-wrap items-center gap-2">
+          <span><b>{repetidasGuardadas.length} {cosa} parecen repetidas</b> (mismo EXP, referencia y largo): {[...new Set(repetidasGuardadas.map((x) => x.expediente))].slice(0, 6).map((e) => `EXP ${e}`).join(", ")}.</span>
+          <button onClick={quitarRepetidasGuardadas} className="px-2 py-1 rounded bg-rose-600 text-white text-xs font-semibold">Quitar repetidas</button>
+        </div>
+      )}
       {esRecepcion && borradorPedido && (() => {
         const { cab, filas } = borradorPedido;
         const cambiaCab = (k, v) => setBorradorPedido({ ...borradorPedido, cab: { ...cab, [k]: v } });
@@ -18192,8 +18291,25 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <option value="">Automático</option>
               {opcionesCarro(null)}
             </select>
-            <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se coloca solo en otro y te lo aviso.</span>
+            <span className="text-slate-500">Puedes cambiarlo persiana a persiana en la columna «Carro». Si algo no cabe en el carro elegido, se bloquea la entrada y no se guarda nada.</span>
+            {repetidasEnAlmacen(borrador).length > 0 && <button onClick={quitarYaExistentes} className="px-2 py-1 rounded bg-rose-600 text-white font-semibold">Quitar las {repetidasEnAlmacen(borrador).length} que ya están</button>}
           </div>
+          {gruposCaballete(borrador).map((g) => {
+            const k = g.exps.join("-");
+            const nombresCab = g.cabs.map((c) => c.codigo || c.nombre || c.numero || c.id).filter(Boolean).slice(0, 3).join(", ");
+            return (
+              <div key={k} className="mb-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs flex flex-wrap items-center gap-2">
+                <span className="text-amber-900">Los cristales de los expedientes <b>{g.exps.join(", ")}</b> vienen juntos{nombresCab ? ` (caballete ${nombresCab})` : ""}. ¿Las {cosa} en el mismo carro?</span>
+                <select value={carroGrupo[k] || ""} onChange={(e) => setCarroGrupo({ ...carroGrupo, [k]: e.target.value })} className="border border-slate-300 rounded px-1 py-0.5 bg-white">
+                  <option value="">Elegir carro…</option>
+                  {opcionesCarro(null)}
+                </select>
+                <button disabled={!carroGrupo[k]} onClick={() => juntarEnCarro(g.exps, carroGrupo[k], k)} className="px-2 py-1 rounded bg-amber-600 text-white font-semibold disabled:opacity-40">Poner juntas</button>
+                <button onClick={() => { const c = primerCarroQueCabe(g.exps); setAvisoGrupo({ ...avisoGrupo, [k]: c ? `Caben todas en el carro ${c}.` : "No caben todas juntas en ningún carro." }); if (c) setCarroGrupo({ ...carroGrupo, [k]: String(c) }); }} className="px-2 py-1 rounded border border-amber-600 text-amber-800 font-semibold">Buscar carro donde quepan</button>
+                {avisoGrupo[k] && <span className="basis-full font-semibold text-amber-900">{avisoGrupo[k]}</span>}
+              </div>
+            );
+          })}
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo (mm)</th><th className="pr-2">Alto (mm)</th><th className="pr-2">Lado</th><th className="pr-2">Ubicación / cliente</th><th className="pr-2">Carro</th><th></th></tr></thead>
@@ -18250,7 +18366,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const puesto = coinciden.filter((x) => x.enPuesto && !x.entregada).length;
             const fuera = coinciden.filter((x) => x.entregada).length;
             if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
-            return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">{coinciden.length} encontradas: {enCarro} en carros (resaltados){sin ? ` · ${sin} sin sitio` : ""}{puesto ? ` · ${puesto} en puesto` : ""}{fuera ? ` · ${fuera} ya salieron` : ""}.</div>;
+            return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">{coinciden.length} encontradas: {enCarro} en carros (resaltados){sin ? ` · ${sin} sin sitio` : ""}{puesto ? ` · ${puesto} en puesto` : ""}{fuera ? ` · ${fuera} ya salieron` : ""}.{new Set(coinciden.map((x) => soloDigitos(x.expediente))).size === 1 && (
+              <button onClick={() => { const e = soloDigitos(coinciden[0].expediente); if (!window.confirm(`¿Borrar las ${coinciden.length} ${cosa} del EXP ${e} de este almacén? Quedan fuera del CRM y podrás volver a meterlas. No se puede deshacer.`)) return; const ids = new Set(coinciden.map((x) => x.id)); guardarItems(items.filter((x) => !ids.has(x.id))); setQ(""); setAviso(`EXP ${e}: ${ids.size} ${cosa} borradas. Ya puedes volver a meterlas.`); }} className="ml-3 px-2 py-0.5 rounded bg-rose-600 text-white font-semibold">Borrar las {coinciden.length} del EXP {soloDigitos(coinciden[0].expediente)}</button>
+            )}</div>;
           })()}
           <div className="space-y-2 overflow-x-auto">
             {filas.map((fila, fi) => (
@@ -45879,7 +45997,12 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
-      {(onGuardarEtiquetasUx || onGuardarSinObra) && <UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} onGuardarSinObra={onGuardarSinObra} />}
+      {(onGuardarEtiquetasUx || onGuardarSinObra) && (
+        <details className="mb-4 text-sm">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-500 hover:text-slate-700 select-none">Solo si hay urgencia y faltan documentos: expediente urgente directo a la línea</summary>
+          <div className="mt-2"><UxRapidoArriba expedientes={expedientes} abierto={abierto} onGuardar={onGuardarEtiquetasUx} onGuardarSinObra={onGuardarSinObra} /></div>
+        </details>
+      )}
       {pendientesProduccion > 0 && vista === "lista" && (
         <div className="mb-4 px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm font-semibold">
           {pendientesProduccion} expediente{pendientesProduccion === 1 ? "" : "s"} con todo el material en fábrica, listo{pendientesProduccion === 1 ? "" : "s"} para pasar a producción.
