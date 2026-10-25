@@ -730,6 +730,7 @@ export default function App() {
   const [uxExpedientes, setUxExpedientes] = useState([]);
   const [uxConfig, setUxConfig] = useState({});
   const [uxPedidos, setUxPedidos] = useState([]);
+  uxRecibidoIds = new Set(uxPedidos.filter((q) => q && (q.recibido || (q.recepcion && q.recepcion.completo))).map((q) => q.id)); // lo leen discrepanciasPedido y «Listo para fabricar»
   const [uxPortalUsuarios, setUxPortalUsuarios] = useState([]);
   useEffect(() => onAuthStateChanged(fbAuth, (u) => setAuthUser(u || null)), []);
   const [clientes, setClientes] = useState([]);
@@ -4261,6 +4262,26 @@ export default function App() {
     enFabricaUxRef.current = txt;
     fbSet(ref(fbDb, "portalUxcar/enFabrica"), res).catch(() => { enFabricaUxRef.current = ""; });
   }, [uxExpedientes, cristales, persianasAlmacen, currentUser?.id, loading]);
+  // Lo que Uxcar tiene pendiente de confirmar (fábrica ya dio por llegado el pedido y ellos no han subido su albarán): se escribe en
+  // portalUxcar/pendienteUxcar y su portal les insiste con un aviso hasta que lo confirmen.
+  const pendienteUxRef = useRef("");
+  useEffect(() => {
+    if (!currentUser || loading || !toArray(uxPedidos).length) return;
+    const res = {};
+    toArray(pedidos).forEach((pd) => {
+      if (!pd.uxcarPedidoId) return;
+      const n = discrepanciasPedido(pd).filter((x) => x.tipo === "fabrica").length;
+      if (!n) return;
+      const px = toArray(uxPedidos).find((q) => q.id === pd.uxcarPedidoId);
+      if (!px || px.recibido) return;
+      const r = res[px.id] || (res[px.id] = { numero: px.numero || "", tipo: px.tipo || "", lineas: 0, desde: String(pd.fechaRecibido || pd.fechaRecepcion || pd.fechaCompra || "").slice(0, 10) });
+      r.lineas += n;
+    });
+    const txt = JSON.stringify(res);
+    if (txt === pendienteUxRef.current) return;
+    pendienteUxRef.current = txt;
+    fbSet(ref(fbDb, "portalUxcar/pendienteUxcar"), Object.keys(res).length ? res : null).catch(() => { pendienteUxRef.current = ""; });
+  }, [pedidos, uxPedidos, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -5323,7 +5344,7 @@ export default function App() {
           const aPedidos = tieneAcceso("pedidos");
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
-          const disc = discrepanciasTodas(pedidos).filter((x) => !soloUx || esPedidoUxcar(x.p, proyectos));
+          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
           if (!disc.length) return null;
           if (!aPedidos && !veFabrica && !soloUx) return null;
           return (
@@ -5341,7 +5362,7 @@ export default function App() {
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
           if (!aPedidos && !veFabrica && !soloUx) return null;
-          const disc = discrepanciasTodas(pedidos).filter((x) => !soloUx || esPedidoUxcar(x.p, proyectos));
+          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
@@ -19659,7 +19680,10 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [], modo = "alum
 // Una línea tiene discrepancia si una de las dos partes la da por llegada y la otra no:
 //  · «fabrica»: fábrica ha confirmado que ha llegado pero oficina aún no tiene el pedido/la línea como recibido
 //  · «oficina»: oficina lo tiene como recibido pero fábrica no lo ha confirmado
-const ofiRecibida = (p, l) => p.estado === "Recibido" || l.estado === "Recibido" || ((parseFloat(l.recibidoBien) || 0) > 0 && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
+// Pedidos de Uxcar (id del portal) que Uxcar ya ha dado por recibidos con su albarán. En esos pedidos NO existe «oficina»: confirman Uxcar y fábrica.
+let uxRecibidoIds = new Set();
+const uxDaPorRecibido = (p) => !!p && !!p.uxcarPedidoId && uxRecibidoIds.has(p.uxcarPedidoId);
+const ofiRecibida = (p, l) => uxDaPorRecibido(p) || p.estado === "Recibido" || l.estado === "Recibido" || ((parseFloat(l.recibidoBien) || 0) > 0 && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
 const discrepanciasPedido = (p) => {
   if (!p || p.estado === "Cancelado" || p.discrepanciaIgnorada) return [];
   if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return [];
@@ -19673,6 +19697,12 @@ const discrepanciasPedido = (p) => {
   }).filter(Boolean);
 };
 const esPedidoUxcar = (pd, proyectos) => !!pd && (pd.origen === "portalUxcar" || !!pd.uxcarExpedienteId || (((toArray(proyectos).find((x) => x.id === pd.proyectoId)) || {}).origen === "portalUxcar"));
+// Solo le toca a quien tiene la confirmación pendiente: fábrica cuando ya han confirmado oficina/Uxcar, y quien hizo el pedido (tu oficina en los tuyos, Uxcar en los suyos) cuando ya ha confirmado fábrica.
+const discrepanciasParaMi = (disc, { fabrica, oficina, uxcar }) => toArray(disc).map((x) => {
+  const ux = !!x.p.uxcarPedidoId || x.p.origen === "portalUxcar";
+  const items = x.items.filter((it) => (it.tipo === "oficina" ? fabrica : ux ? uxcar : oficina));
+  return { ...x, items };
+}).filter((x) => x.items.length > 0);
 const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items: discrepanciasPedido(p) })).filter((x) => x.items.length > 0);
 // Aviso que INSISTE: mientras haya un pedido que una parte da por llegado y la otra no, sale una ventana que pregunta por qué no se ha marcado
 // y vuelve a salir cada 15 minutos (y al entrar) hasta que se resuelva. «Más tarde» solo la aplaza.
@@ -19703,8 +19733,10 @@ function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor }) {
             return (
               <div key={p.id} className="border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 text-sm">
                 <div className="font-bold text-slate-800">Pedido #{p.numero} · {nombreProveedor(p)}{p.tipoUxcar ? ` · Uxcar (${p.tipoUxcar})` : ""}{d != null ? <span className="font-normal text-xs text-slate-500"> · {d} día{d === 1 ? "" : "s"}</span> : null}</div>
-                {faltaOficina > 0 && <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>}
-                {faltaFabrica > 0 && <div className="text-orange-800">Oficina lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
+                {faltaOficina > 0 && (p.uxcarPedidoId
+                  ? <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>Uxcar no ha subido su albarán</b>. Uxcar: ¿ha llegado o falta algo?</div>
+                  : <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>)}
+                {faltaFabrica > 0 && <div className="text-orange-800">{p.uxcarPedidoId ? "Uxcar" : "Oficina"} lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
               </div>
             );
           })}
@@ -19968,7 +20000,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
       const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-      const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
+      const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
       // Uxcar no rellena el checklist «Qué lleva la obra»: para sus obras basta con que todos sus pedidos de cristal/persiana hayan llegado (Uxcar) y fábrica los haya confirmado
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
@@ -36158,7 +36190,7 @@ function UxListadoExpediente({ exp, onGuardar }) {
   );
 }
 
-function UxControl3({ exp, pedidos, onAbrirPedido, onCambiarMaterial, onCambiarControlOtros, onGuardarListado }) {
+function UxControl3({ exp, pedidos, onAbrirPedido, onCambiarMaterial, onConfirmarLlegada, onCambiarControlOtros, onGuardarListado }) {
   const total = uxNum(exp.ventanas) + uxNum(exp.puertas) + uxNum(exp.osciloParalelas);
   const fila = (titulo, contenido, derecha) => (
     <div className="px-4 py-3 flex flex-wrap items-start gap-3">
@@ -36194,7 +36226,10 @@ function UxControl3({ exp, pedidos, onAbrirPedido, onCambiarMaterial, onCambiarC
                 <Select value={(exp.materiales && exp.materiales[clave] && exp.materiales[clave].estado) || "pendiente"} onChange={(ev) => onCambiarMaterial(exp, clave, ev.target.value)} className="max-w-[190px] text-xs">
                   {Object.entries(UX_MAT_ESTADOS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </Select>
-              ) : null
+              ) : (onConfirmarLlegada && uxEstadoMat(exp, clave) !== "no_lleva" && !(exp.materiales && exp.materiales[clave] && exp.materiales[clave].estado === "recibido") ? (
+                <button type="button" onClick={() => { if (window.confirm(`¿Confirmas que os ha llegado ${titulo.toLowerCase()} de este expediente? Quedará dado por recibido por Uxcar.`)) onConfirmarLlegada(exp, clave); }}
+                  className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-lg whitespace-nowrap">Confirmar llegada a mano</button>
+              ) : null)
             )}
           </React.Fragment>
         );
@@ -46902,6 +46937,40 @@ function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
     </div>
   );
 }
+// Aviso para Uxcar en su portal: fábrica ya ha confirmado un pedido suyo y ellos no. Vuelve a salir cada 15 min hasta que suban el albarán.
+function AvisoPendienteUxcar({ lista, onIr }) {
+  const [abierto, setAbierto] = useState(true);
+  const hay = lista.length > 0;
+  useEffect(() => {
+    if (!hay) { setAbierto(false); return undefined; }
+    const t = setInterval(() => setAbierto(true), 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [hay]);
+  useEffect(() => { if (hay) setAbierto(true); }, [lista.length]);
+  if (!hay || !abierto) return null;
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl w-full max-w-md max-h-[85vh] flex flex-col border-4 border-orange-500">
+        <div className="px-5 pt-4 pb-2">
+          <h3 className="font-bold text-orange-700 text-lg">⚠ Falta que confirméis la llegada</h3>
+          <p className="text-xs text-slate-500 mt-1">Fábrica ya ha dado por llegados estos pedidos y vosotros no. Subid el albarán o decid qué falta. El aviso no se quita hasta que lo confirméis.</p>
+        </div>
+        <div className="px-5 py-2 overflow-y-auto space-y-2">
+          {lista.map((x) => (
+            <div key={x.id} className="border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 text-sm">
+              <div className="font-bold text-slate-800">Pedido {x.numero}{x.tipo ? ` · ${x.tipo}` : ""}</div>
+              <div className="text-orange-800">{x.lineas} línea{x.lineas === 1 ? "" : "s"} confirmada{x.lineas === 1 ? "" : "s"} por fábrica. ¿Ha llegado todo o falta algo?</div>
+            </div>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap justify-end gap-2">
+          <button onClick={() => setAbierto(false)} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-lg hover:bg-slate-50">Más tarde (vuelve en 15 min)</button>
+          <button onClick={() => { setAbierto(false); onIr(); }} className="text-sm font-semibold text-white bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg">Ir a Pedidos →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function PortalUxcar({ authUser, perfil, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
@@ -47024,6 +47093,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           </div>
         </div>
       </header>
+      {datos && datos.pendienteUxcar && <AvisoPendienteUxcar lista={Object.entries(datos.pendienteUxcar).map(([id, v]) => ({ id, ...v }))} onIr={() => setVista("pedidos")} />}
       <main className="max-w-5xl mx-auto px-4 py-6">
         <h1 className="font-display text-2xl font-extrabold text-slate-900">Expedientes Uxcar</h1>
         <p className="text-sm text-slate-500 mb-4">Mete aquí cada expediente y sus pedidos de material, y sigue cómo va: material, producción y fecha de entrega.</p>
@@ -47119,6 +47189,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
               <button onClick={() => borrarExpedientePortal(abierto)} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">Borrar expediente</button>
             </div>
             <UxControl3 exp={abierto} pedidos={pedidosUx} onAbrirPedido={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }}
+              onConfirmarLlegada={async (exp, clave) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { [`materiales/${clave}/estado`]: "recibido" }); aviso("Llegada confirmada"); } catch (e) { aviso("No se pudo guardar: " + e.message); } }}
               onGuardarListado={async (exp, lis) => { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); aviso("Listado de materiales guardado"); }} />
             <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
             <div className="mt-4"><UxHistorial exp={abierto} pedidos={pedidosUx} /></div>
@@ -48586,7 +48657,7 @@ function calcListoParaFabricar(proyectos, pedidos) {
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
     const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido");
+    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
     const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
     const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
     return oficinaOk && fabricaOk && checklistOk;
