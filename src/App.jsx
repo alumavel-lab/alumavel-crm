@@ -18059,6 +18059,22 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Las persianas pedidas que ya han llegado a la fábrica: se pasan a la pantalla de revisión (con el aviso de «mismo carro que el caballete de cristal»),
   // se colocan en los carros y al confirmar quedan como recibidas.
+  // El EXP y el presupuesto son cosas distintas. Si el "expediente" de una pedida es en realidad el presupuesto (mismos dígitos), se busca el EXP real
+  // en los caballetes de cristal de ese presupuesto; si no se encuentra, se dice "sin dato" en vez de repetir el presupuesto.
+  const expedienteRealDe = (p) => {
+    const e = String(p.expediente || "").replace(/\D/g, "");
+    const pp = String(p.presupuesto || "").split(/[·,;\s]+/).map((t) => uxPptoDigitos(t)).filter((d) => d.length >= 3);
+    if (!e) return "";
+    if (!pp.includes(e)) return e;
+    const cuenta = {};
+    toArray(ctxM.cristalesCaballetes).forEach((c) => {
+      const cp = String(c.presupuesto || "").split(/[·,;\s]+/).map((t) => uxPptoDigitos(t));
+      if (!pp.some((d) => cp.includes(d))) return;
+      expedientesDeCaballete(c).forEach((x) => { if (x && x !== e && !pp.includes(x)) cuenta[x] = (cuenta[x] || 0) + 1; });
+    });
+    const mejor = Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0];
+    return mejor ? mejor[0] : "";
+  };
   // Nombre de la obra / cliente de una persiana pedida (para reconocerla): de la obra del CRM o del expediente de Uxcar
   const nombreObraDe = (p) => {
     try {
@@ -18606,7 +18622,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 {Object.entries(grupos).map(([k, ps]) => (
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
-                      <span>EXP {ps[0].expediente || "—"}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      <span>EXP {expedienteRealDe(ps[0]) || "sin dato"}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
                       {nombreObraDe(ps[0]) && <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-900 font-semibold">{nombreObraDe(ps[0])}</span>}
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
                       <button onClick={() => colocarDesdePedidas(ps)} className="ml-auto text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-0.5 rounded hover:bg-[#EEF7E4]">Han llegado: colocar</button>
@@ -18708,7 +18724,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <tbody>
                 {borrador.map((x, i) => (
                   <tr key={x.id} className={`border-b border-white ${!esMosq && largoPersiana(x) < 400 ? "bg-rose-50" : ""}`}>
-                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
+                    <td className="py-1 pr-2"><input value={x.expediente} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, expediente: e.target.value } : y)))} className="w-20 border border-slate-200 rounded px-1" />{x.presupuesto && !expedienteRealDe(x) ? <div className="text-[10px] text-amber-700">= presupuesto; EXP sin dato</div> : null}</td>
                     <td className="pr-2">{x.ref || "—"}{x.habitacion ? <div className="text-[10px] text-slate-500">{x.habitacion}</div> : null}{x.descripcion ? <div className="text-[10px] text-slate-400 max-w-[200px] truncate" title={x.descripcion}>{x.descripcion}</div> : null}</td>
                     <td className="pr-2"><input type="number" value={x.largo} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, largo: parseFloat(e.target.value) || 0 } : y)))} className="w-20 border border-slate-200 rounded px-1" /></td>
                     <td className="pr-2">{x.alto || "—"}</td>
