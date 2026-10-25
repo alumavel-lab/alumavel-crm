@@ -17577,6 +17577,15 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
   const totalUds = lista.reduce((t, f) => t + (f.uds || 0), 0);
   const totalHoras = lista.reduce((t, f) => t + ((f.h && f.h.horas) || 0), 0);
   const sinHoras = lista.filter((f) => !f.h || !f.h.horas).length;
+  const imprimirExpedientes = () => {
+    const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const hoy = new Date().toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+    const filasHtml = lista.map((f) => `<tr><td><b>${esc(f.exp)}</b></td><td>${esc(f.h ? f.h.obra : "")}</td><td style="text-align:right">${esc(f.uds)}</td></tr>`).join("");
+    const w = window.open("", "_blank");
+    if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para esta página."); return; }
+    w.document.write(`<html><head><title>Expedientes en el almacén</title><style>body{font-family:Arial,sans-serif;font-size:13px;margin:20px}h2{margin:0 0 4px}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{border:1px solid #999;padding:4px 8px;text-align:left}th{background:#eee}</style></head><body><h2>Expedientes en el almacén de ${esc(cosa)}</h2><div>${lista.length} expediente(s) · ${esc(totalUds)} ${esc(cosa)} · ${esc(hoy)}</div><table><thead><tr><th>Expediente</th><th>Obra</th><th style="text-align:right">${esc(cosa)}</th></tr></thead><tbody>${filasHtml}</tbody></table></body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+  };
   const chip = (valor, texto) => (
     <button key={valor || "todos"} onClick={() => setColorSel(valor)} className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${colorSel === valor ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}>{texto}</button>
   );
@@ -17584,7 +17593,8 @@ function ExpedientesConMaterial({ filas, proyectos, cosa }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-sm text-slate-600"><b>{lista.length}</b> expediente{lista.length === 1 ? "" : "s"} con {cosa} ahora mismo · {totalUds} en total{totalHoras > 0 ? ` · ${String(Math.round(totalHoras * 10) / 10).replace(".", ",")} h` : ""}</div>
-        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, obra, color o sitio…" className="ml-auto border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <button onClick={imprimirExpedientes} disabled={!lista.length} className="ml-auto text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 disabled:opacity-40 px-3.5 py-1.5 rounded-lg">Imprimir expedientes</button>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, obra, color o sitio…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
         <select value={orden} onChange={(e) => setOrden(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm">
           <option value="exp">Ordenar por expediente</option>
           <option value="color">Ordenar por color (blanco primero)</option>
