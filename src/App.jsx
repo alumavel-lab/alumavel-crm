@@ -18393,8 +18393,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const llegada = (id) => guardarPedidos(pedidosTodos.map((p) => (p.id === id ? { ...p, estado: "recibida", fechaRecibida: new Date().toISOString().slice(0, 10), notaRecibida: "Marcada a mano" } : p)));
             if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
             return (
+              <>
+              <button onClick={() => colocarDesdePedidas(pendientesPedido)} className="mt-2 text-sm font-semibold px-4 py-2 rounded-lg bg-[#2E8B57] text-white">Han llegado todas: colocar las {pendientesPedido.length} pendientes en carros</button>
               <div className="mt-2 space-y-3 max-h-80 overflow-y-auto">
-                <button onClick={() => colocarDesdePedidas(pendientesPedido)} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#2E8B57] text-white">Han llegado: colocar las {pendientesPedido.length} pendientes en carros</button>
                 {Object.entries(grupos).map(([k, ps]) => (
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
@@ -18421,6 +18422,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   </div>
                 ))}
               </div>
+              </>
             );
           })()}
         </div>
