@@ -4369,6 +4369,49 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxPedidos, uxExpedientes, persianasAlmacen, pedidosPersianas, currentUser?.id, loading]);
 
+  // Pedidos de persianas NUESTROS (los de las obras del CRM): cuando el pedido está Pendiente, Realizado o Reclamado (no En espera ni Cancelado), cada persiana con medidas
+  // pasa a "Pedidas, pendientes de llegar" del almacén de persianas. Se marca el pedido (persCreado) para no duplicar ni recrear lo que borres.
+  const propiasPersPedidasRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || propiasPersPedidasRef.current) return;
+    const listos = toArray(pedidos).filter((pd) => pd && pd.id && !pd.persCreado && (pd.estado === "Pendiente" || pd.estado === "Realizado" || pd.estado === "Reclamado") && !pd.tipoUxcar
+      && (!!pd.fechaCompra || !pd.fechaCreado || String(pd.fechaCreado) <= "2026-10-25")
+      && toArray(pd.lineas).some((l) => l && l.estado !== "Recibido" && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && tipoLineaRecepcion(l, pd) === "persiana"));
+    if (listos.length === 0) return;
+    propiasPersPedidasRef.current = true;
+    try {
+      const hoy = new Date().toISOString().slice(0, 10);
+      const nuevas = [];
+      const enAlmacen = toArray(persianasAlmacen);
+      const usadas = new Set();
+      listos.forEach((pd) => {
+        const pr = toArray(proyectos).find((x) => x.id === pd.proyectoId);
+        const exp = soloDigitos((pr && (pr.expediente || pr.numero)) || "");
+        const prov = toArray(proveedores).find((x) => x.id === pd.proveedorId);
+        const ppto = ((String((pr && pr.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
+        toArray(pd.lineas).forEach((l) => {
+          if (!l || l.estado === "Recibido" || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) || tipoLineaRecepcion(l, pd) !== "persiana") return;
+          const n = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
+          for (let k = 0; k < n; k++) {
+            const pl = parseLineaPersiana(l.referencia || "");
+            const q = { id: uid(), expediente: exp, parte: "", ref: pl.ref, largo: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, recogedor: pl.recogedor, habitacion: pl.habitacion,
+              descripcion: l.referencia || "", pedido: pd.numero || "", presupuesto: ppto, refObra: (pr && pr.numero) || "", cliente: (pr && pr.nombre) || "",
+              proveedor: (prov && prov.nombre) || "", fechaPedido: pd.fechaCompra || hoy, fechaEntrega: pd.fechaEntregaPrevista || "", fechaAlta: hoy, estado: "pedida", origen: "pedidoCRM", crmPedidoId: pd.id };
+            const y = enAlmacen.find((z) => !usadas.has(z.id) && casaPedidaConPersiana(q, z));
+            if (y) { usadas.add(y.id); nuevas.push({ ...q, estado: "recibida", fechaRecibida: hoy, recibidaId: y.id, notaRecibida: "Ya estaba en el almacén" }); } else nuevas.push(q);
+          }
+        });
+      });
+      const ids = new Set(listos.map((pd) => pd.id));
+      if (nuevas.length > 0) savePedidosPersianas([...toArray(pedidosPersianas), ...nuevas]);
+      savePedidos(toArray(pedidos).map((pd) => (ids.has(pd.id) ? { ...pd, persCreado: true } : pd)));
+      if (nuevas.length > 0) showToast(`Pedidos de persianas de nuestras obras: ${nuevas.filter((q) => q.estado === "pedida").length} pendientes de llegar en el almacén de persianas`);
+    } finally {
+      propiasPersPedidasRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedidos, proyectos, persianasAlmacen, currentUser?.id, loading]);
+
   // Ida y vuelta entre el portal y el CRM: cuando Uxcar marca el pedido como enviado al
   // proveedor, el pedido del CRM queda "enviado" (y ya se puede recibir); cuando el
   // equipo lo recibe en el CRM, Uxcar lo ve como recibido en su portal (y, si son
