@@ -44085,6 +44085,35 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
     return { pd, pr, dia: nn ? numsPlanif.get(String(nn)) : "" };
   }).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
   const nSinPlan = sinPlanificar.filter((x) => !x.dia).length;
+  // CONTROL POR OBRA de todo lo pedido (nuestro y de Uxcar): cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.
+  const ctrlObras = (() => {
+    const m = new Map();
+    toArray(ctx.pedidosCrm).forEach((pd) => {
+      if (!pd || pd.estado === "Cancelado") return;
+      const t = tipoMatPrep(pd);
+      if (t !== "cristal" && t !== "persianas") return;
+      const key = pd.proyectoId || "sin-obra";
+      const f = m.get(key) || { key, pr: toArray(ctx.proyectos).find((y) => y && y.id === pd.proyectoId) || null, ux: false, propio: false, cP: 0, cR: 0, pP: 0, pR: 0, abiertos: 0, entrega: "" };
+      toArray(pd.lineas).forEach((l) => {
+        if (!l) return;
+        const n = parseFloat(l.cantidad) || 1;
+        const rec = l.estado === "Recibido" || pd.estado === "Recibido" ? n : 0;
+        if (t === "cristal") { f.cP += n; f.cR += rec; } else { f.pP += n; f.pR += rec; }
+      });
+      if (pd.tipoUxcar) f.ux = true; else f.propio = true;
+      if (pd.estado !== "Recibido" && toArray(pd.lineas).some((l) => l && l.estado !== "Recibido")) {
+        f.abiertos += 1;
+        if (pd.fechaEntregaPrevista && (!f.entrega || pd.fechaEntregaPrevista < f.entrega)) f.entrega = pd.fechaEntregaPrevista;
+      }
+      m.set(key, f);
+    });
+    return [...m.values()].filter((f) => f.abiertos > 0).map((f) => {
+      const nums = f.pr ? numsExpediente(f.pr.numero || f.pr.expediente || "") : [];
+      const fake = { expNums: nums };
+      const dia = nums.map((n) => numsPlanif.get(String(n))).find(Boolean) || "";
+      return { ...f, cL: nums.length ? llegCris(fake) : 0, pL: nums.length ? llegPers(fake) : 0, dia };
+    }).sort((a, b) => ((a.dia ? 1 : 0) - (b.dia ? 1 : 0)) || String(a.entrega || "9999").localeCompare(String(b.entrega || "9999")));
+  })();
   const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqLleg: itemsObra(x.obra, "mosquitera").length, sitiosP: sitiosItems(itemsObra(x.obra, "persiana")), sitiosM: sitiosItems(itemsObra(x.obra, "mosquitera")), sitiosC: sitiosCris(x.obra), mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera") && !(itemsObra(x.obra, "mosquitera").length >= Math.max(1, (ac.mosq.uds || 1))), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
   const faltan = filasObra.filter((x) => x.pl < x.pe || x.cl < x.ce || x.mosqFalta || x.postFalta).length;
   // Cuando a una obra de este periodo le ha llegado TODO lo que lleva (compactos, cristales, mosquiteras y postigos), se marca sola como «Preparado»
@@ -44322,6 +44351,29 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA }) {
                         <td className="px-3 py-2 text-slate-600">{fmtDia(x.dia)}</td>
                         <td className={`px-3 py-2 ${x.pe && x.pl < x.pe ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.pe ? `${x.pl}/${x.pe}` : "—"}</td>
                         <td className={`px-3 py-2 ${x.ce && x.cl < x.ce ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{x.ce ? `${x.cl}/${x.ce}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
+            <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
+            <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
+            {ctrlObras.length === 0 ? <p className="text-sm text-slate-400">No hay pedidos abiertos de cristales ni compactos.</p> : (
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50"><tr><th className={th}>Obra</th><th className={th}>De</th><th className={th}>Cristales</th><th className={th}>Compactos</th><th className={th}>Llega</th><th className={th}>Planificada</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {ctrlObras.map((f) => (
+                      <tr key={f.key}>
+                        <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
+                        <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
+                        <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
+                        <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
+                        <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
+                        <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
                       </tr>
                     ))}
                   </tbody>
