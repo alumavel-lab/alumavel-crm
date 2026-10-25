@@ -17875,6 +17875,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [aviso, setAviso] = useState("");
   const [manual, setManual] = useState(null); // formulario «Añadir persiana a mano»
   const [borrador, setBorrador] = useState(null);
+  const refRevision = useRef(null);
+  const hayBorrador = !!borrador;
+  useEffect(() => { if (hayBorrador && refRevision.current) setTimeout(() => { try { refRevision.current.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) { /* nada */ } }, 150); }, [hayBorrador]);
   const [verFotosEtiquetas, setVerFotosEtiquetasRaw] = useState(() => { try { if (abrirFotosPersianas.actual && almacen.id === ALMACEN_PRINCIPAL_ID) return true; return !!localStorage.getItem(BORRADOR_PERSIANAS_FOTOS) && (localStorage.getItem(CLAVE_ALMACEN_BORRADOR_FOTOS) || ALMACEN_PRINCIPAL_ID) === almacen.id; } catch (e) { return false; } });
   useEffect(() => { abrirFotosPersianas.actual = false; }, []);
   const setVerFotosEtiquetas = (v) => { if (v) { try { localStorage.setItem(CLAVE_ALMACEN_BORRADOR_FOTOS, almacen.id); } catch (e) { /* nada */ } } setVerFotosEtiquetasRaw(v); };
@@ -18497,7 +18500,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       )}
 
       {borrador && (
-        <div className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
+        <div ref={refRevision} className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
           <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
           <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
