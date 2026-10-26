@@ -2696,20 +2696,84 @@ export default function App() {
   // No toca el estado de oficina (pedido.estado / línea.estado) ni el stock — es un
   // segundo control aparte, pensado para comparar luego contra lo que dice oficina.
   // "Ha llegado todo": confirma de una vez todas las líneas de un pedido (en un solo guardado)
-  const confirmarPedidoEnteroFabrica = (pedidoId) => {
+  // Persianas (compactos) de un pedido NUESTRO que llegan (llego = true) o que se desmarcan (llego = false): pasan a "han llegado, pendientes de ubicar"
+  // del almacén de persianas (campo llegadaFabrica en «pedidas»), donde el CRM propone el reparto en carros. NO se colocan solas.
+  // lineasPd = las líneas del pedido que se acaban de marcar. Los cajones con tela y las guías de mosquitera (líneas sin medidas) entran también, con el
+  // largo de la persiana más larga del pedido (o 2 m si no hay). Devuelve { n, acc, crearon } (crearon: se han dado de alta «pedidas» que no estaban).
+  const llegadaPersianasPedido = (pd, lineasPd, llego) => {
+    const vacio = { n: 0, acc: 0, crearon: false };
+    if (!pd || !esPedidoDePersianasCRM(pd)) return vacio;
+    const hoy = new Date().toISOString().slice(0, 10);
+    let todas = toArray(pedidosPersianas).slice();
+    const marcar = new Set(), desmarcar = new Set();
+    let n = 0, acc = 0, crearon = false;
+    const pr = toArray(proyectos).find((x) => x.id === pd.proyectoId);
+    const exp = soloDigitos((pr && (pr.expediente || pr.numero)) || "");
+    const prov = toArray(proveedores).find((x) => x.id === pd.proveedorId);
+    const ppto = String((pr && pr.presupuestoNumero) || "").trim() || ((String((pr && pr.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
+    const cliPr = pr ? toArray(clientes).find((c) => c && c.id === pr.clienteId) : null;
+    const nomCli = [pr && pr.nombre, cliPr && cliPr.nombre].filter(Boolean).join(" · ");
+    const comun = { expediente: exp, parte: "", presupuesto: ppto, refObra: (pr && pr.numero) || "", cliente: nomCli, pedido: pd.numero || "", proveedor: (prov && prov.nombre) || "",
+      fechaPedido: pd.fechaCompra || hoy, fechaEntrega: pd.fechaEntregaPrevista || "", fechaAlta: hoy, estado: "pedida", origen: "pedidoCRM", crmPedidoId: pd.id };
+    const lineasOk = toArray(lineasPd).filter((l) => l && l.estado !== "Recibido");
+    // 1) persianas con medidas
+    lineasOk.forEach((l) => {
+      if (esLineaAccesorioPersianas(l) || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) || tipoLineaRecepcion(l, pd) !== "persiana") return;
+      let ex = pedidasDeLineaCRM(todas, pd, l);
+      if (llego && !ex.length && !pd.persCreado) {
+        const cant = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
+        const pl = parseLineaPersiana(l.referencia || "");
+        ex = Array.from({ length: cant }, () => ({ ...comun, id: uid(), ref: pl.ref, largo: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, recogedor: pl.recogedor, habitacion: pl.habitacion, descripcion: l.referencia || "" }));
+        todas = [...todas, ...ex]; crearon = true;
+      }
+      ex.filter((q) => q.estado === "pedida").forEach((q) => { if (llego) { if (!q.llegadaFabrica) { marcar.add(q.id); n++; } } else if (q.llegadaFabrica) desmarcar.add(q.id); });
+    });
+    // 2) accesorios sin medidas (cajón con tela, guía de mosquitera)
+    const accs = lineasOk.filter(esLineaAccesorioPersianas);
+    if (accs.length) {
+      const largoMax = Math.max(0, ...todas.filter((q) => q && q.crmPedidoId === pd.id && !q.accesorio).map((q) => parseFloat(q.largo) || 0));
+      accs.forEach((l) => {
+        let ex = pedidasDeLineaCRM(todas, pd, l);
+        if (llego && !ex.length) {
+          const cant = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
+          ex = Array.from({ length: cant }, () => ({ ...comun, id: uid(), ref: refAccesorioPersianas(l.referencia), largo: largoMax || LARGO_ACCESORIO_DEFECTO_MM, alto: 0, recogedor: "", habitacion: "", descripcion: l.referencia || "", accesorio: true }));
+          todas = [...todas, ...ex]; crearon = true;
+        }
+        ex.filter((q) => q.estado === "pedida").forEach((q) => { if (llego) { if (!q.llegadaFabrica) { marcar.add(q.id); acc++; n++; } } else if (q.llegadaFabrica) desmarcar.add(q.id); });
+      });
+    }
+    if (!marcar.size && !desmarcar.size && !crearon) return vacio;
+    savePedidosPersianas(todas.map((q) => {
+      if (marcar.has(q.id)) return { ...q, llegadaFabrica: hoy };
+      if (desmarcar.has(q.id)) { const { llegadaFabrica, ...resto } = q; return resto; }
+      return q;
+    }));
+    return { n, acc, crearon };
+  };
+  const confirmarPedidoEnteroFabrica = (pedidoId, opts) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica";
+    // Solo el botón "Ha llegado todo" de Materiales pendientes manda las persianas al almacén; dar un pedido de baja o cerrarlo con el albarán no.
+    const pd0 = pedidos.find((p) => p.id === pedidoId);
+    const llegada = opts && opts.aAlmacen && pd0 ? llegadaPersianasPedido(pd0, toArray(pd0.lineas).filter((l) => !l.confirmadoFabrica), true) : { n: 0, acc: 0, crearon: false };
     savePedidos(pedidos.map((p) => (p.id !== pedidoId ? p : {
       ...p,
+      ...(llegada.crearon ? { persCreado: true } : {}),
       lineas: toArray(p.lineas).map((l) => (l.confirmadoFabrica ? l : { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: quien })),
     })));
-    showToast("Pedido confirmado: ha llegado todo");
+    showToast(llegada.n ? `Pedido confirmado: ha llegado todo · ${llegada.n - llegada.acc} persiana${llegada.n - llegada.acc === 1 ? "" : "s"}${llegada.acc ? ` y ${llegada.acc} accesorio${llegada.acc === 1 ? "" : "s"}` : ""} pendientes de ubicar en el almacén de persianas` : "Pedido confirmado: ha llegado todo");
+    return llegada.n;
   };
   const confirmarLineaFabrica = (pedidoId, lineaId, confirmado) => {
+    // Una persiana (o su cajón / guía) que llega pasa a «pendientes de ubicar»; si se desmarca, vuelve a «pedidas»
+    const pd0 = pedidos.find((p) => p.id === pedidoId);
+    const l0 = pd0 && toArray(pd0.lineas).find((l) => l.id === lineaId);
+    const llegada = l0 ? llegadaPersianasPedido(pd0, [l0], !!confirmado) : { n: 0, acc: 0, crearon: false };
     const next = pedidos.map((p) => {
       if (p.id !== pedidoId) return p;
       return {
         ...p,
+        ...(llegada.crearon ? { persCreado: true } : {}),
         lineas: p.lineas.map((l) => (l.id === lineaId ? {
           ...l,
           confirmadoFabrica: confirmado,
@@ -2719,6 +2783,7 @@ export default function App() {
       };
     });
     savePedidos(next);
+    if (llegada.n && confirmado) showToast(`${llegada.n} pendiente${llegada.n === 1 ? "" : "s"} de ubicar en el almacén de persianas`);
   };
 
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
@@ -17056,6 +17121,30 @@ const parteDeUbicacion = (t) => {
   return /^\d{1,2}[A-Z]{1,2}$/.test(ult) ? ult : u;
 };
 const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : (normParte(x && x.refObra) || parteDeUbicacion(x && x.refObra)));
+// Color de una persiana para repartirla en carros: "blanco", "otro" (nogal, roble, 7016…) o "" si no se sabe. Se mira el campo color y el texto de la línea;
+// manda la ÚLTIMA palabra de color que aparece (en los pedidos el color final va tras el "·": «Lama BLANCO … · Nogal» es nogal).
+const claseColorPersiana = (x) => {
+  const t = `${(x && x.color) || ""} ${(x && x.descripcion) || ""}`.toLowerCase();
+  const m = t.match(/blanc|nogal|roble|dorado|cerezo|antracit|negro|gris|marr[oó]n|verde|bronce|plata|inox|madera|wenge|ébano|ebano|envejec|irish|golden|\bral\s*\d{4}\b|\b7016\b/g);
+  if (!m) return "";
+  return /^blanc/.test(m[m.length - 1]) ? "blanco" : "otro";
+};
+// Clase de un grupo de persianas (las de un expediente): la que más pesa; "" si ninguna trae color.
+const claseColorGrupo = (piezas) => {
+  let b = 0, o = 0;
+  toArray(piezas).forEach((x) => { const c = claseColorPersiana(x); if (c === "blanco") b++; else if (c === "otro") o++; });
+  return !b && !o ? "" : b >= o ? "blanco" : "otro";
+};
+// Accesorios que vienen en el pedido de persianas pero sin medidas (cajón con tela, guía de mosquitera): entran en el almacén de persianas.
+const esLineaAccesorioPersianas = (l) => !!l && l.modo === "libre" && !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0)
+  && /caj[oó]n|mosquiter/i.test(String(l.referencia || "")) && !/persiana/i.test(String(l.referencia || ""));
+const refAccesorioPersianas = (texto) => (/mosquiter|gu[ií]a/i.test(String(texto || "")) ? "Guía mosq." : /tela/i.test(String(texto || "")) ? "Cajón tela" : "Cajón");
+const LARGO_ACCESORIO_DEFECTO_MM = 2000; // si el expediente no trae ninguna persiana de la que copiar el largo
+// Las «pedidas» (pedidosPersianas) de un pedido nuestro que corresponden a una línea de ese pedido
+const pedidasDeLineaCRM = (pedidas, pd, l) => toArray(pedidas).filter((q) => q && q.crmPedidoId === pd.id && (q.descripcion || "") === (l.referencia || "")
+  && (esLineaAccesorioPersianas(l) ? !!q.accesorio : (!q.accesorio && (parseFloat(q.largo) || 0) === (parseFloat(l.ancho) || 0) && (parseFloat(q.alto) || 0) === (parseFloat(l.alto) || 0))));
+// ¿Es un pedido de persianas (compactos)? Por su tipo o porque trae alguna persiana con medidas.
+const esPedidoDePersianasCRM = (pd) => !!pd && (tipoPedidoMaterial(pd) === "persianas" || toArray(pd.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && tipoLineaRecepcion(l, pd) === "persiana"));
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${e.fila ? ` · fila ${e.fila}` : ""}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
@@ -17888,6 +17977,8 @@ function AlmacenPersianas() {
   useEffect(() => {
     const f = focoAlmacen.actual;
     if (f && f.tipo === "persiana") { focoAlmacen.actual = null; setSelId(f.almacenId); setIrA({ almacenId: f.almacenId, carro: f.carro, t: Date.now() }); }
+    // Si han llegado persianas y están pendientes de ubicar, se abre el almacén que recibe los pedidos (ahí sale la propuesta de reparto)
+    else if (toArray(ctx.pedidosPersianas).some((q) => q && q.llegadaFabrica && q.estado !== "recibida")) setSelId(almacenRecepcionPersianas(almacenes));
   }, []);
   const almacen = almacenes.find((a) => a.id === selId) || almacenes[0];
   // Busca en TODOS los almacenes: expediente, referencia/vivienda, medidas, color, comentario, incidencia…
@@ -18250,20 +18341,56 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     } catch (er) { /* nada */ }
     return p.cliente && p.cliente !== "Uxcar" ? p.cliente : "";
   };
+  // De «pedidas» a las piezas de la pantalla de revisión. pedidaId liga cada una con su pedida, para darla por recibida al colocarla aunque se corrija el largo.
+  const itemsDesdePedidas = (ps) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    return ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), pedidaId: p.id, expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido", ...(p.accesorio ? { accesorio: true } : {}) }); });
+  };
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
-    const hoy = new Date().toISOString().slice(0, 10);
-    setBorrador(ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" }); }));
+    setBorrador(itemsDesdePedidas(ps));
     setVerPedidas(false);
     setAviso(`${ps.length} ${cosa} pedidas pasadas a revisión. Mira abajo, agrúpalas por caballete de cristal si sale el aviso, y confirma para colocarlas en carros.`);
   };
+  // Las que ya han llegado (marcadas en Fábrica → Materiales pendientes) y siguen sin colocar: se abren en la revisión CON la propuesta de carros ya calculada.
+  const llegadasPend = esMosq ? [] : pendientesPedido.filter((p) => p && p.llegadaFabrica);
+  const abrirLlegadas = (ps) => {
+    if (!ps.length) return;
+    const lista = itemsDesdePedidas(ps);
+    // Cajón con tela y guía de mosquitera: mismo largo que la persiana más larga de su expediente (si no hay ninguna, el que traían)
+    // (se mira lo que llega ahora, lo que ya está en el almacén y lo pedido de ese expediente: la más larga)
+    const largoExp = {};
+    const mirarLargo = (x) => { if (!x || x.accesorio) return; const e = soloDigitos(x.expediente); if (e) largoExp[e] = Math.max(largoExp[e] || 0, largoPersiana(x)); };
+    lista.forEach(mirarLargo);
+    toArray(ctxM.persianasAlmacen).filter((y) => y && !y.entregada).forEach(mirarLargo);
+    pedidosTodos.forEach(mirarLargo);
+    const conLargo = lista.map((x) => (x.accesorio && largoExp[soloDigitos(x.expediente)] ? { ...x, largo: largoExp[soloDigitos(x.expediente)] } : x));
+    const rr = calcularReparto(conLargo);
+    setBorrador(conLargo.map((x) => (rr.asig[x.id] ? { ...x, carroDestino: rr.asig[x.id] } : x)));
+    setVerPedidas(false);
+    resumirReparto(conLargo, rr);
+    setAviso(`${ps.length} ${cosa} han llegado y están pendientes de ubicar. Abajo tienes la propuesta de carros: revísala, imprímela si quieres y pulsa «Colocar en los carros». Hasta entonces no se ha guardado nada.`);
+  };
+  // Entra solo cuando llegan persianas nuevas (no se reabre sola si la cierras con «Cancelar»; vuelve a salir al reabrir la pantalla)
+  const refLlegadasAbiertas = useRef("");
+  useEffect(() => {
+    if (esMosq || !esRecepcion || borrador) return;
+    const ps = llegadasPend;
+    if (!ps.length) return;
+    const firma = ps.map((p) => p.id).sort().join(",");
+    if (refLlegadasAbiertas.current === firma) return;
+    refLlegadasAbiertas.current = firma;
+    abrirLlegadas(ps);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [llegadasPend.map((p) => p.id).join(","), esRecepcion]);
   // Al dar entrada a persianas (packing list, fotos o a mano) las que estaban pedidas pasan solas a "recibidas".
   const conciliarPedidas = (nuevas) => {
     if (esMosq || !pendientesPedido.length) return 0;
     const usadas = new Set();
     const marcadas = {};
     nuevas.forEach((x) => {
-      const p = pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
+      // Primero la que ya venía ligada (pedidaId); si no, por expediente, vivienda y largo
+      const p = (x.pedidaId && pendientesPedido.find((q) => !usadas.has(q.id) && q.id === x.pedidaId)) || pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
       if (p) { usadas.add(p.id); marcadas[p.id] = x.id; }
     });
     const n = Object.keys(marcadas).length;
@@ -18473,7 +18600,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const unidades = grupos.map((g) => ({ exps: g.exps.filter((e) => piezasDe[e]), g })).filter((u) => u.exps.length);
     Object.keys(piezasDe).filter((e) => !enGrupo.has(e)).forEach((e) => unidades.push({ exps: [e], g: null }));
     const tam = (u) => u.exps.reduce((t, e) => t + (piezasDe[e] || []).length, 0);
-    unidades.sort((a, b) => tam(b) - tam(a));
+    // a igual tamaño, los blancos primero (así los blancos quedan seguidos y se llenan carros de blancos antes de abrir los de color)
+    const claseUnidad = (u) => { const c = claseColorGrupo(u.exps.flatMap((e) => piezasDe[e])); return c === "blanco" ? 0 : c === "otro" ? 1 : 2; };
+    unidades.sort((a, b) => tam(b) - tam(a) || claseUnidad(a) - claseUnidad(b));
     const ordenVecindad = (u) => {
       if (!u.g) return u.exps;
       const enU = new Set(u.exps);
@@ -18502,19 +18631,28 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const asig = {};
       const abiertos = [];
       const sinSitioP = [];
-      const cands = () => [...abiertos, ...vacios.filter((c) => !abiertos.includes(c))];
+      // COLOR (solo desempate): entre los carros ya abiertos donde cabe, primero el que ya lleva el mismo color (blanco con blanco; el resto de colores se mezclan
+      // entre sí), luego el que aún no tiene color, y el que lleva el otro color el último. Nunca se abre un carro de más ni se parte un expediente por el color.
+      const clasesCarro = {};
+      const anotarClase = (c, piezas) => { const k = clasesCarro[c.numero] || (clasesCarro[c.numero] = { blanco: 0, otro: 0 }); piezas.forEach((x) => { const cl = claseColorPersiana(x); if (cl) k[cl] += 1; }); };
+      const claseDeCarro = (c) => { const k = clasesCarro[c.numero]; return !k || (!k.blanco && !k.otro) ? "" : k.blanco >= k.otro ? "blanco" : "otro"; };
+      const candsPara = (clase) => {
+        const ab = [...abiertos];
+        if (clase) { const pes = (c) => (claseDeCarro(c) === clase ? 0 : claseDeCarro(c) === "" ? 1 : 2); ab.sort((a, b) => pes(a) - pes(b)); }
+        return [...ab, ...vacios.filter((c) => !abiertos.includes(c))];
+      };
       const colTodas = (piezas) => {
-        for (const c of cands()) {
+        for (const c of candsPara(claseColorGrupo(piezas))) {
           const pr = clonarEst(est);
-          if (intenta(piezas, c, pr)) { est = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); if (!abiertos.includes(c)) abiertos.push(c); return true; }
+          if (intenta(piezas, c, pr)) { est = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); anotarClase(c, piezas); if (!abiertos.includes(c)) abiertos.push(c); return true; }
         }
         return false;
       };
       const colPieza = (piezas) => {
         [...piezas].sort((a, b) => largoPersiana(b) - largoPersiana(a)).forEach((x) => {
-          for (const c of cands()) {
+          for (const c of candsPara(claseColorPersiana(x))) {
             const pr = clonarEst(est);
-            if (intenta([x], c, pr)) { est = pr; asig[x.id] = c.numero; if (!abiertos.includes(c)) abiertos.push(c); return; }
+            if (intenta([x], c, pr)) { est = pr; asig[x.id] = c.numero; anotarClase(c, [x]); if (!abiertos.includes(c)) abiertos.push(c); return; }
           }
           sinSitioP.push(x);
         });
@@ -18522,19 +18660,22 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       if (modo === "ffd") {
         Object.keys(piezasDe).sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)).forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
       } else {
-        unidades.forEach((u) => {
+        const unidadesModo = modo === "col" ? [...unidades].sort((a, b) => claseUnidad(a) - claseUnidad(b) || tam(b) - tam(a)) : unidades;
+        unidadesModo.forEach((u) => {
           if (colTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
-          const ord = modo === "tam" ? [...u.exps].sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)) : ordenVecindad(u);
+          const ord = modo === "tam" || modo === "col" ? [...u.exps].sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)) : ordenVecindad(u);
           ord.forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
         });
       }
       const nPartidos = Object.values(piezasDe).filter((xs) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).length;
       let sepCab = 0;
       grupos.forEach((g) => g.cabs.forEach((c) => { const cs = new Set([...expedientesDeCaballete(c)].filter((e) => piezasDe[e]).flatMap((e) => piezasDe[e].map((x) => asig[x.id]).filter(Boolean))); if (cs.size > 1) sepCab += 1; }));
-      return { asig, abiertos, sinSitioP, puntos: sinSitioP.length * 100000 + nPartidos * 1000 + abiertos.length * 10 + sepCab };
+      // carros que mezclan blanco con otro color: pesa menos que separar un caballete (sepCab), que es una regla más importante
+      const mezcla = Object.values(clasesCarro).filter((k) => k.blanco > 0 && k.otro > 0).length;
+      return { asig, abiertos, sinSitioP, puntos: sinSitioP.length * 100000 + nPartidos * 1000 + abiertos.length * 10 + sepCab + mezcla * 0.1 };
     };
     let mejor = null;
-    ["vec", "tam", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
+    ["vec", "tam", "col", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
     const sinSitioP = mejor ? mejor.sinSitioP : [];
     // SEGUNDA FASE: si queda algún expediente partido, se prueba a meterlo ENTERO en otro carro sacando de ese carro a los expedientes que hagan falta
     // (como mucho 2) y recolocándolos enteros en otros carros con sitio (por ejemplo el hueco que deja el trozo que se mueve). Regla: un expediente siempre entero.
@@ -18621,17 +18762,53 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const r2 = calcularRepartoUno(uxcar, new Set(r1.usados));
     return { asig: { ...r1.asig, ...r2.asig }, partidos: [...r1.partidos, ...r2.partidos], usados: [...new Set([...r1.usados, ...r2.usados])].sort((x, y) => x - y), sinSitioP: [...r1.sinSitioP, ...r2.sinSitioP], expDe: r1.expDe || r2.expDe, usadosPropias: r1.usados, usadosUxcar: r2.usados };
   };
-  const repartoGlobal = () => {
-    if (!borrador || !borrador.length) return;
-    const rr = calcularReparto(borrador);
+  // Texto del reparto propuesto + oferta de crear carros si no hay vacíos para todo. lista = las piezas sobre las que se calculó rr.
+  const resumirReparto = (lista, rr) => {
     const { asig, partidos, usados, sinSitioP, expDe } = rr;
-    setBorrador(borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x)));
+    const porCarro = {};
+    lista.forEach((x) => { const c = asig[x.id]; const cl = claseColorPersiana(x); if (c && cl) (porCarro[c] = porCarro[c] || new Set()).add(cl); });
+    const mezclados = Object.values(porCarro).filter((s) => s.size > 1).length;
     setResumenSugerencias([
       `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos. Carros nuestros: ${rr.usadosPropias.join(", ") || "ninguno"} · carros de Uxcar: ${rr.usadosUxcar.join(", ") || "ninguno"}. Nada se ha guardado todavía.`,
       partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
-      sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): añade carros o dalas de baja.` : "",
+      mezclados ? `${mezclados} carro${mezclados === 1 ? "" : "s"} mezcla${mezclados === 1 ? "" : "n"} blancos con otros colores (era la única forma de llenar los carros sin partir expedientes).` : "Blancos y colores no se mezclan en ningún carro.",
+      sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): puedes crear carros nuevos aquí abajo.` : "",
     ].filter(Boolean).join(" "));
+    if (sinSitioP.length && !esMosq) {
+      const asignadas = Object.keys(asig).length;
+      const media = usados.length ? asignadas / usados.length : 12; // persianas por carro en este reparto (12 si todavía no se ha colocado nada)
+      setOfertaCarros({ faltan: sinSitioP.length, n: Math.max(1, Math.ceil(sinSitioP.length / Math.max(1, media))) });
+    } else if (partidos.length && !esMosq) {
+      // todo tiene carro, pero hay expedientes partidos por falta de carros vacíos: se ofrece un carro más (él decide)
+      setOfertaCarros({ faltan: 0, n: 1, partidos: partidos.length });
+    } else setOfertaCarros(null);
   };
+  const repartoGlobal = () => {
+    if (!borrador || !borrador.length) return;
+    const rr = calcularReparto(borrador);
+    const { asig } = rr;
+    setBorrador(borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x)));
+    resumirReparto(borrador, rr);
+  };
+  // Crea n carros nuevos de soporte largo (60 cm) con la misma configuración (estantes, largo) que el último de ese tipo, y repite el reparto cuando ya existen.
+  const [ofertaCarros, setOfertaCarros] = useState(null); // { faltan, n } cuando no hay carros vacíos para todo
+  const [esperandoCarros, setEsperandoCarros] = useState(0); // nº de carros que tendrá el almacén tras crear los nuevos; al llegar a él se repite el reparto
+  const crearCarrosNuevos = (n) => {
+    const base = [...carros].filter((c) => c.tipo === "gris").sort((a, b) => (parseInt(b.numero, 10) || 0) - (parseInt(a.numero, 10) || 0))[0];
+    const t = TIPOS_CARRO_PERSIANA.gris;
+    let numero = carros.reduce((m, c) => Math.max(m, parseInt(c.numero, 10) || 0), 0);
+    const nuevos = Array.from({ length: n }, () => {
+      numero += 1;
+      return { id: uid(), almacenId: almacen.id, numero, tipo: "gris", niveles: (base && base.niveles) || t.nivelesDefecto, largo: (base && base.largo) || LARGO_ESTANTE_MM,
+        ...(base && base.minimo != null && base.minimo !== "" ? { minimo: base.minimo } : {}), sitio: numero, movido: false, notaSitio: "" };
+    });
+    guardarCarros([...carros, ...nuevos]);
+    return nuevos;
+  };
+  useEffect(() => {
+    if (esperandoCarros && carros.length >= esperandoCarros) { setEsperandoCarros(0); repartoGlobal(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carros.length, esperandoCarros]);
   // Entrada tal como se colocaría: lo elegido a mano manda; lo que está en «Automático» usa el reparto en carros vacíos sin partir expedientes
   const entradaConReparto = () => {
     const r = calcularReparto(borrador);
@@ -19007,6 +19184,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
         );
       })()}
+      {esRecepcion && !borrador && llegadasPend.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-amber-900"><b>{llegadasPend.length}</b> {cosa} han llegado (marcadas en Fábrica) y siguen <b>pendientes de ubicar</b>.</span>
+          <button onClick={() => abrirLlegadas(llegadasPend)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Ver la propuesta de carros</button>
+        </div>
+      )}
       {esRecepcion && pedidosTodos.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl p-3">
           <button onClick={() => setVerPedidas(!verPedidas)} className="w-full flex items-center justify-between text-left">
@@ -19108,6 +19291,18 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="text-slate-500">Usa solo carros sin empezar, junta los expedientes que comparten caballete y gasta los menos carros posibles. Luego imprime el reparto previsto y cambia lo que quieras.</span>
             {gruposCaballete(borrador).length === 0 && resumenSugerencias && <span className="basis-full font-semibold text-slate-900">{resumenSugerencias}</span>}
           </div>
+          {ofertaCarros && !esMosq && (
+            <div className="mb-2 rounded-lg border border-rose-300 bg-rose-50 p-2 text-xs flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-rose-900">{ofertaCarros.faltan ? <>No hay carros vacíos para {ofertaCarros.faltan} persiana{ofertaCarros.faltan === 1 ? "" : "s"}.</> : <>Hay {ofertaCarros.partidos} expediente{ofertaCarros.partidos === 1 ? "" : "s"} partido{ofertaCarros.partidos === 1 ? "" : "s"} entre carros por falta de carros vacíos.</>}</span>
+              <button onClick={() => {
+                const n = ofertaCarros.n;
+                if (!window.confirm(`¿Tienes ${n} carro${n === 1 ? "" : "s"} libre${n === 1 ? "" : "s"} en la nave?\n\nSe crean ${n} carro${n === 1 ? "" : "s"} nuevo${n === 1 ? "" : "s"} de soporte largo (60 cm), con los mismos estantes que los que ya tienes, y se vuelve a repartir. Si luego hacen falta más, te lo ofrece otra vez.`)) return;
+                setEsperandoCarros(carros.length + n); setOfertaCarros(null); crearCarrosNuevos(n);
+              }} className="px-3 py-1.5 rounded bg-rose-700 text-white font-semibold">Crear {ofertaCarros.n} carro{ofertaCarros.n === 1 ? "" : "s"} más y repartir de nuevo</button>
+              <span className="text-slate-600">Te pregunta antes de crearlos: el CRM no sabe cuántos carros libres tienes físicamente.</span>
+            </div>
+          )}
+          {llegadasPend.length > 0 && borrador.some((x) => x.pedidaId) && <p className="mb-2 text-xs text-amber-800">Estas han llegado desde Fábrica → Materiales pendientes. Al colocarlas se dan por recibidas; si cierras sin colocar, siguen pendientes de ubicar.</p>}
           {gruposCaballete(borrador).length === 0 && toArray(ctxM.cristalesCaballetes).length === 0 && <p className="mb-2 text-xs text-slate-500">No hay caballetes de cristal en el CRM: si quieres agrupar estas {cosa} por caballete, importa antes el packing list de cristales.</p>}
           {gruposCaballete(borrador).length > 0 && (
             <div className="mb-2 rounded-lg border border-amber-400 bg-amber-100 p-2 text-xs flex flex-wrap items-center gap-2">
@@ -20018,6 +20213,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
   const nPanelesSinApuntar = panelesQueFaltan(cristales, ctxPaneles.paneles).length;
+  // Persianas que ya han llegado (marcadas en Materiales pendientes) y todavía no se han colocado en carros
+  const nLlegadasPersianas = toArray(ctxPaneles.pedidosPersianas).filter((q) => q && q.llegadaFabrica && q.estado !== "recibida").length;
   const nDiscrepancias = discrepanciasTodas(pedidos).reduce((t, x) => t + x.items.length, 0);
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
@@ -20449,6 +20646,12 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-6">
             Cuando llegue un material (cristal, persiana, aluminio, PVC...), márcalo aquí como "Ha llegado". Este control es tuyo, no depende de lo que oficina haya marcado — así luego se puede comparar y ver si todo cuadra.
           </div>
+          {nLlegadasPersianas > 0 && (
+            <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm mb-6 flex flex-wrap items-center gap-3">
+              <span><b>{nLlegadasPersianas}</b> persiana{nLlegadasPersianas === 1 ? "" : "s"} (con sus cajones y guías) han llegado y están <b>pendientes de ubicar</b>. El CRM propone en qué carro va cada expediente; no se coloca nada hasta que lo confirmes.</span>
+              <button type="button" onClick={() => setTab("persianasAlmacen")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Ver el reparto en carros</button>
+            </div>
+          )}
 
           {onRecibirConAlbaran && (
             <AlbaranFabrica pedidos={pedidos} materiales={materiales} proveedores={proveedores}
@@ -20487,7 +20690,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                       <span className="text-xs text-slate-500">Entrega prevista: {pedido.fechaEntregaPrevista ? fmtDate(pedido.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}</span>
                       {onConfirmarPedidoEntero && (pedido.lineas || []).some((l) => !l.confirmadoFabrica) && (
                         <button
-                          onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id); }}
+                          onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; const pers = esPedidoDePersianasCRM(pedido); if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.${pers ? "\n\nLas persianas (y sus cajones / guías) pasan al almacén de persianas como «pendientes de ubicar», con una propuesta de carros. No se colocan solas: tú confirmas." : ""}\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id, { aAlmacen: true }); }}
                           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
                           className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90"
                         >
