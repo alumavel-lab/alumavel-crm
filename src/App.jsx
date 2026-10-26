@@ -16814,6 +16814,29 @@ function huecoExpedienteNuevo(zona, estaOcupado) {
 // funciones sacan los expedientes de cada caballete y buscan un hueco libre en la fila
 // donde ya están los del mismo expediente, lo más cerca posible de ellos.
 const numsExpediente = (txt) => (String(txt || "").match(/\d{2,}/g) || []);
+// Reconoce una obra en los almacenes (caballetes de cristal, carros de persianas) por TODO lo que las une: nº de proyecto, expediente, nº de presupuesto (6.345 = 6345),
+// expedientes de Uxcar y nº de los pedidos de la obra. Un caballete/persiana casa si cualquiera de sus datos (expediente, presupuesto, refObra, pedido) coincide.
+const clavesObraControl = (pr, uxExpedientes, pedidosCrm) => {
+  const exps = new Set(), peds = new Set();
+  if (!pr) return { exps, peds };
+  const addTxt = (t) => { numsExpediente(t).forEach((n) => exps.add(n)); String(t || "").split(/[,;/]/).forEach((f) => { const d = soloDigitos(f); if (d.length >= 4) exps.add(d); }); };
+  addTxt(pr.numero); addTxt(pr.expediente); addTxt(pr.presupuestoNumero);
+  const mp = String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i);
+  if (mp) { const d = soloDigitos(mp[1]); if (d.length >= 4) exps.add(d); }
+  toArray(uxExpedientes).filter((e) => e && e.proyectoId === pr.id).forEach((e) => addTxt(e.numero));
+  toArray(pedidosCrm).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado").forEach((pd) => { const d = soloDigitos(pd.numero); if (d) peds.add(d); });
+  return { exps, peds };
+};
+const casaObraControl = (k, x) => {
+  if (!k || !x) return false;
+  const campos = [x.expediente, x.presupuesto, x.refObra];
+  for (const t of campos) {
+    if (!t) continue;
+    if (numsExpediente(t).some((n) => k.exps.has(n))) return true;
+    if (String(t).split(/[,;/]/).some((f) => { const d = soloDigitos(f); return d.length >= 4 && k.exps.has(d); })) return true;
+  }
+  return !!x.pedido && (String(x.pedido).match(/\d+/g) || []).some((n) => k.peds.has(n));
+};
 
 // Buscador de obras por nº de presupuesto / expediente / nombre / cliente (6633 ≈ 6.633 ≈ "Presupuesto 6633")
 const normBusca = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -44597,23 +44620,15 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       m.set(key, f);
     });
     return [...m.values()].filter((f) => f.abiertos > 0).map((f) => {
-      // Números por los que se reconoce la obra en los almacenes: el nº de proyecto/expediente, el nº de presupuesto pegado («6.345» → 6345 y 345) y los expedientes de Uxcar.
-      // Antes solo se miraba el primero, y si el cristal o la persiana estaba guardado con el nº de presupuesto no se relacionaba con su obra (salía «0 en caballetes»).
-      const nums = (() => {
-        if (!f.pr) return [];
-        const set = new Set(numsExpediente(f.pr.numero || f.pr.expediente || ""));
-        const ppto = String(f.pr.presupuestoNumero || "").trim() || ((String(f.pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
-        if (ppto) { numsExpediente(ppto).forEach((n) => set.add(n)); const d = soloDigitos(ppto); if (d.length >= 4) set.add(d); }
-        toArray(ctx.uxExpedientes).filter((e) => e && e.proyectoId === f.pr.id).forEach((e) => numsExpediente(e.numero).forEach((n) => set.add(n)));
-        return [...set];
-      })();
-      const casa = (exp) => numsExpediente(exp).some((n) => nums.includes(n)) || (soloDigitos(exp).length >= 4 && nums.includes(soloDigitos(exp)));
-      const cL = nums.length ? cristales.reduce((a, c) => {
-        const ps = toArray(c.piezas).filter((q) => casa(q.expediente || c.expediente));
+      // La obra se reconoce en los almacenes por todo lo que la une (ver clavesObraControl): proyecto, expediente, presupuesto, Uxcar y pedidos.
+      const claves = clavesObraControl(f.pr, ctx.uxExpedientes, ctx.pedidosCrm);
+      const nums = [...claves.exps];
+      const cL = !f.pr ? 0 : cristales.reduce((a, c) => {
+        const ps = toArray(c.piezas).filter((q) => casaObraControl(claves, { ...c, ...q, expediente: q.expediente || c.expediente }));
         if (ps.length) return a + ps.reduce((b, q) => b + (parseFloat(q.cantidad) || 1), 0);
-        return casa(c.expediente) ? a + (parseFloat(c.cantidad) || 0) : a;
-      }, 0) : 0;
-      const pL = nums.length ? itemsP.filter((x) => !x.entregada && tipoAlm(x) === "persiana" && casa(x.expediente)).length : 0;
+        return casaObraControl(claves, c) ? a + (parseFloat(c.cantidad) || 0) : a;
+      }, 0);
+      const pL = !f.pr ? 0 : itemsP.filter((x) => !x.entregada && tipoAlm(x) === "persiana" && casaObraControl(claves, x)).length;
       const dia = nums.map((n) => numsPlanif.get(String(n))).find(Boolean) || "";
       return { ...f, cL, pL, dia };
     }).sort((a, b) => ((a.dia ? 1 : 0) - (b.dia ? 1 : 0)) || String(a.entrega || "9999").localeCompare(String(b.entrega || "9999")));
