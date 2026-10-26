@@ -44794,7 +44794,13 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
           </div>
       <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
         <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
-        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
+        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.</p>
+        <div className="flex flex-wrap items-center gap-2 mb-2 text-[11px]">
+          <span className="font-semibold text-slate-500">Colores:</span>
+          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold border border-emerald-200">Verde = todo recibido y ya en su almacén</span>
+          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-bold border border-amber-200">Naranja = aún falta por llegar (o la obra sin planificar)</span>
+          <span className="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">Sin color = recibido, pero todavía no está colocado en el almacén</span>
+        </div>
         {(() => {
           const pend = ctx.persianasEnCarrosSinRecibir ? ctx.persianasEnCarrosSinRecibir() : [];
           if (!pend.length) return null;
