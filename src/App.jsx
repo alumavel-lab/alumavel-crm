@@ -44647,7 +44647,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       toArray(pd.lineas).forEach((l) => {
         if (!l) return;
         const n = parseFloat(l.cantidad) || 1;
-        const rec = l.estado === "Recibido" || pd.estado === "Recibido" ? n : 0;
+        const rec = l.estado === "Recibido" || pd.estado === "Recibido" || l.confirmadoFabrica ? n : 0; // también cuenta lo que fábrica ha dado por llegado
         if (t === "cristal") { f.cP += n; f.cR += rec; } else { f.pP += n; f.pR += rec; }
       });
       if (pd.tipoUxcar) f.ux = true; else f.propio = true;
