@@ -8370,7 +8370,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const waProv = (fecha) => telProv ? `https://wa.me/${telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}`)}` : "";
         const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
-          setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
+          setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || (tipoPedidoMaterial(p) ? "" : fechaEntregaPorProveedor(prov, p, materiales)) });
         };
         const { dias, enColor } = diasEntregaPedido(prov, p, materiales);
         return (
@@ -8408,11 +8408,17 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                     <option value="">Elige el proveedor para poder pedirlo…</option>
                     {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
                   </Select>
+                ) : confirmando && confirmando.id === p.id && confirmando.paso === "marcar" ? (
+                  <>
+                    <span className="text-xs font-semibold text-sky-900">¿Has enviado el pedido por {confirmando.metodo === "whatsapp" ? "WhatsApp" : "correo"}? Solo se marca como hecho si lo confirmas.</span>
+                    <button onClick={() => { onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Sí, lo he enviado</button>
+                    <button onClick={() => setConfirmando(null)} className="text-xs font-semibold text-slate-600 border border-slate-300 bg-white px-3 py-1.5 rounded-md hover:bg-slate-50">No, todavía no</button>
+                  </>
                 ) : confirmando && confirmando.id === p.id ? (
                   <>
                     <span className="text-xs text-slate-600 font-semibold">Fecha de llegada (obligatoria, va en el mensaje al proveedor):{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
                     <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-xs" />
-                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (!url && confirmando.metodo === "whatsapp") { alert(`No se puede abrir WhatsApp: el móvil de ${prov ? prov.nombre : "este proveedor"} ${prov && prov.movil ? `("${prov.movil}") no parece un número válido` : "no está guardado"}. Corrígelo en la ficha del proveedor.`); return; } if (!url && confirmando.metodo === "email") { alert("Este proveedor no tiene email guardado."); return; } if (url) { const w = window.open(url, "_blank"); if (!w && confirmando.metodo === "whatsapp") { alert("El navegador ha bloqueado la ventana de WhatsApp. Permite las ventanas emergentes para esta página (icono a la derecha de la barra de direcciones) y vuelve a pulsar. El pedido NO se ha marcado como hecho."); return; } } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (!url && confirmando.metodo === "whatsapp") { alert(`No se puede abrir WhatsApp: el móvil de ${prov ? prov.nombre : "este proveedor"} ${prov && prov.movil ? `("${prov.movil}") no parece un número válido` : "no está guardado"}. Corrígelo en la ficha del proveedor.`); return; } if (!url && confirmando.metodo === "email") { alert("Este proveedor no tiene email guardado."); return; } if (url) { const w = window.open(url, "_blank"); if (!w && confirmando.metodo === "whatsapp") { alert("El navegador ha bloqueado la ventana de WhatsApp. Permite las ventanas emergentes para esta página (icono a la derecha de la barra de direcciones) y vuelve a pulsar. El pedido NO se ha marcado como hecho."); return; } } if (url && tipoPedidoMaterial(p)) { setConfirmando({ ...confirmando, paso: "marcar" }); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
                     {!tipoPedidoMaterial(p) && (
                       <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
                         <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
@@ -12969,7 +12975,8 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
         throw new Error(data.error || "No se pudo enviar el correo.");
       }
       setEmailEnviadoOk(true);
-      onMarcarEnviado("email");
+      // Cristales y compactos: el pedido NO se da por hecho solo; se marca a mano cuando se confirma que está enviado
+      if (tipoPedidoMaterial(pedido)) setConfirmarEnvio("email"); else onMarcarEnviado("email");
     } catch (err) {
       console.error("Error enviando email automático:", err);
       setErrorEnvioEmail(err.message + " Puedes usar el botón de abajo para enviarlo desde tu propio correo mientras tanto.");
@@ -13109,7 +13116,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
 
       {confirmarEnvio && !pedido.envioConfirmado && (
         <div className="px-4 py-3 rounded-md bg-sky-50 border-2 border-sky-300 text-sky-900 text-sm mb-6">
-          <p className="font-semibold mb-2">¿Has enviado el pedido por {confirmarEnvio === "whatsapp" ? "WhatsApp" : "tu correo"}? Solo se marca como hecho si lo confirmas.</p>
+          <p className="font-semibold mb-2">¿Has enviado el pedido por {confirmarEnvio === "whatsapp" ? "WhatsApp" : "correo"}? Solo se marca como hecho si lo confirmas.</p>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => { onMarcarEnviado(confirmarEnvio); setConfirmarEnvio(null); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Sí, lo he enviado</button>
             <button onClick={() => setConfirmarEnvio(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-md hover:bg-slate-50">No, todavía no</button>
