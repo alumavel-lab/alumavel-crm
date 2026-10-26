@@ -15053,13 +15053,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         cristales.forEach((c) => (c.piezas || []).forEach((p) => {
           if (p.puesto) return; // ya colocado en la ventana: no está en el almacén
           const k = numsExpediente(p.expediente || c.expediente)[0] || String(p.expediente || c.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set() };
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
+          [p.presupuesto, c.presupuesto].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
+          [p.expediente, c.expediente].filter(Boolean).forEach((v) => g.exps.add(String(v)));
+          if (c.cliente) g.clis.add(String(c.cliente));
           const n = parseFloat(p.cantidad) || 1;
           g.uds += n;
           if (!c.ubicacion) g.aparte += n;
           g.cabs.add(`Cab. ${c.lote || c.numero || "?"}${c.ubicacion ? "" : " (pendiente)"}`);
         }));
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs] }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs], presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
         const mapaP = {};
         toArray(ctxFusion.persianasAlmacen).filter((x) => x && x.estante && !x.entregada).forEach((x) => { const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—"; mapaP[k] = (mapaP[k] || 0) + (parseFloat(x.cantidad) || 1); });
         return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" extra={{ label: "persianas", mapa: mapaP }} />;
@@ -17775,10 +17778,29 @@ const coloresPerfilDeObra = (p) => {
 };
 // Datos de la obra de un expediente: horas de fabricación (las puestas a mano o, si no, las del «Listado mano de obra»
 // al dar de alta la obra; si no hay ninguna, null: no se inventa nada) y color de perfil.
-const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning) => {
+// Obra de un expediente de los almacenes. SIEMPRE por el mismo camino y mirando todo lo que las une: 1) nº de proyecto, 2) expediente, nº de presupuesto, expedientes de Uxcar y pedidos
+// de la obra (clavesObraControl), con el expediente y los presupuestos que lleva el caballete/persiana, 3) último recurso: el nombre del cliente, solo si encaja con UNA obra.
+const normNombreObra = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+const proyectoDeExpediente = (exp, proyectos, uxExpedientes, extra) => {
+  const lista = toArray(proyectos);
+  const ex = extra || {};
   const nums = numsExpediente(exp);
-  if (!nums.length) return null;
-  const p = toArray(proyectos).find((x) => numsExpediente(x.numero).some((n) => nums.includes(n)));
+  const exacto = nums.length ? lista.find((x) => numsExpediente(x.numero).some((n) => nums.includes(n))) : null;
+  if (exacto) return exacto;
+  const pseudo = { expediente: [exp, ...toArray(ex.expedientes)].filter(Boolean).join(", "), presupuesto: toArray(ex.presus).filter(Boolean).join(", ") };
+  if (pseudo.expediente || pseudo.presupuesto) {
+    const hit = lista.find((x) => casaObraControl((ex.clavesMap && ex.clavesMap.get(x.id)) || clavesObraControl(x, uxExpedientes, ex.pedidos), pseudo));
+    if (hit) return hit;
+  }
+  const clis = toArray(ex.clientes).map(normNombreObra).filter((t) => t.length >= 5);
+  if (clis.length) {
+    const posibles = lista.filter((x) => { const n = normNombreObra(String(x.nombre || "").replace(/presupuesto\s*\d[\d.]*/i, "")); return n.length >= 5 && clis.some((c) => c.includes(n) || n.includes(c)); });
+    if (posibles.length === 1) return posibles[0];
+  }
+  return null;
+};
+const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning, extra) => {
+  const p = proyectoDeExpediente(exp, proyectos, uxExpedientes, extra);
   if (!p) return null;
   // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
   const v = ventanasDeObra(p, uxExpedientes);
@@ -17793,7 +17815,8 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const [buscar, setBuscar] = useState("");
   const [colorSel, setColorSel] = useState("");
   const SIN = "SIN COLOR";
-  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }) }));
+  const clavesMapEC = new Map(toArray(proyectos).map((pr) => [pr.id, clavesObraControl(pr, ctxH.uxExpedientes, ctxH.pedidosCrm)]));
+  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }, { presus: f.presus, expedientes: f.expedientes, clientes: f.clientes, pedidos: ctxH.pedidosCrm, clavesMap: clavesMapEC }) }));
   const colorDe = (f) => (f.h && f.h.color) || SIN;
   const cuentaColor = {};
   conHoras.forEach((f) => { cuentaColor[colorDe(f)] = (cuentaColor[colorDe(f)] || 0) + 1; });
@@ -17802,7 +17825,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const porExp = (x, y) => String(x.exp).localeCompare(String(y.exp), "es", { numeric: true });
   const q = buscar.trim().toLowerCase();
   const lista = conHoras
-    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
+    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${toArray(f.expedientes).join(" ")} ${toArray(f.presus).join(" ")} ${toArray(f.clientes).join(" ")} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
     .sort((x, y) => orden === "horas" ? ((y.h && y.h.horas) || 0) - ((x.h && x.h.horas) || 0) || porExp(x, y)
       : orden === "color" ? listaColores.indexOf(colorDe(x)) - listaColores.indexOf(colorDe(y)) || porExp(x, y)
       : porExp(x, y));
@@ -19524,11 +19547,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         const grupos = {};
         items.filter((x) => !x.entregada && x.estante).forEach((x) => {
           const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set() };
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
+          [x.presupuesto, x.refObra].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
+          if (x.expediente) g.exps.add(String(x.expediente));
+          if (x.cliente) g.clis.add(String(x.cliente));
           g.uds += parseFloat(x.cantidad) || 1;
           g.carros.add(x.estante.carro);
         });
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`) }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`), presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
         const mapaC = {};
         toArray(ctxM.cristalesCaballetes).forEach((c) => toArray(c.piezas).forEach((pz) => { if (pz.puesto) return; const k = numsExpediente(pz.expediente || c.expediente)[0] || String(pz.expediente || c.expediente || "").trim() || "—"; mapaC[k] = (mapaC[k] || 0) + (parseFloat(pz.cantidad) || 1); }));
         return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} extra={esMosq ? null : { label: "cristales", mapa: mapaC }} />;
