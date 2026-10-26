@@ -2212,7 +2212,7 @@ export default function App() {
   // de ventanas: el "Listado de vidrios" y el "Pedido compra". Cada tipo es un pedido INDEPENDIENTE
   // (para poder elegir su proveedor) y lo que se manda al proveedor es ese documento original, no un
   // PDF generado por el CRM. grupos: [{ tipo: "cristal"|"persianas"|"", proveedorId, lineas, documentos, adjuntosPdf }]
-  const crearPedidosDocProveedor = (proyecto, grupos) => {
+  const crearPedidosDocProveedor = (proyecto, grupos, opciones = {}) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
     const NOMBRE_TIPO = { cristal: "Cristales", persianas: "Compactos (persianas)", "": "Material a medida" };
@@ -2228,7 +2228,7 @@ export default function App() {
       const docs = toArray(g.documentos).map((d) => ({ id: d.id || uid(), nombre: d.nombre, url: d.url, tipo: d.tipo || "application/pdf", subidoEn: Date.now(), enviar: true, origenProveedor: true }));
       const adj = toArray(g.adjuntosPdf);
       return {
-        id: uid(), numero: String(num++), proveedorId: g.proveedorId || "", proyectoId: proyecto.id, estado: "Pendiente",
+        id: uid(), numero: String(num++), proveedorId: g.proveedorId || "", proyectoId: proyecto.id, estado: opciones.estado || "Pendiente",
         fechaCompra: hoy, fechaEntregaPrevista: "", lineas: g.lineas, adjuntosPdf: adj, documentos: docs,
         tipoPedido: g.tipo || "", soloDocumentoProveedor: docs.length > 0 || adj.length > 0, origenListado: `documento ${g.tipo || "medidas"}`,
         comentarios: `${NOMBRE_TIPO[g.tipo || ""]} de la obra #${proyecto.numero} — ${proyecto.nombre}. Al proveedor se le manda el documento original del programa de ventanas.${g.proveedorId ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
@@ -8448,6 +8448,9 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
   );
 }
 
+// De momento NO se crean pedidos en espera de perfiles/herraje al subir el análisis de materiales: el stock aún no está bien y saldrían pedidos de más.
+// El material se prepara desde «Preparación de material». Cuando el stock esté al día, poner esto en true para volver a crearlos solos.
+const CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS = false;
 function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas, onAnadirDocumentos }) {
   const hojasAuxObra = useObjetoFb("auxiliaresHojas");
   const [leyendo, setLeyendo] = useState(false);
@@ -8583,10 +8586,13 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (cr.cambios) { extraProyecto.recuento = cr.recuento; avisos.push(`Recuento de la obra corregido con la hoja de corte: ${cr.cambios} dato${cr.cambios > 1 ? "s" : ""}.`); }
       }
       // Un listado de cristales/persianas que ya se subió antes en esta obra (mismo nombre) no vuelve a sacar el pedido
+      // Solo se salta si de ese documento YA hay un pedido creado. Si se subió pero el pedido quedó sin confirmar
+      // (se salió de la pantalla antes de crearlo), se vuelve a proponer.
+      const pedidoYaCreadoDe = (nombre) => toArray(pedidosObra).some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && toArray(pd.documentos).some((d) => d.nombre === nombre));
       for (const m of [...medidas]) {
-        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name)))) {
+        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name))) && pedidoYaCreadoDe(m.f.name)) {
           medidas.splice(medidas.indexOf(m), 1);
-          avisos.push(`${m.f.name} ya estaba subido en esta obra: no he vuelto a sacar su pedido (para no pedirlo dos veces).`);
+          avisos.push(`${m.f.name} ya estaba subido en esta obra y su pedido ya está creado: no lo he vuelto a sacar (para no pedirlo dos veces).`);
         }
       }
       if (medidas.length && onMedidas) {
@@ -8624,7 +8630,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // ventanas (listado de vidrios y pedido compra), cada uno en su pedido, con su proveedor.
       const faltanAuto = compararListadoConStock(l, materiales, proyecto.id).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
-      if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
+      if (CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS && onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
         faltanAuto.forEach((f) => {
           // Sin proveedor conocido (p.ej. stock vacío o material sin dar de alta): se
@@ -8640,6 +8646,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       } else {
         onGuardarListado(proyecto.id, l, { ...extraProyecto, checklistMateriales: rellenarChecklistDesdeListado(proyecto.checklistMateriales, l.lineas, pedidosObra.filter((pd) => pd.proyectoId === proyecto.id)) });
         if (yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+        else if (!CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS && faltanAuto.length > 0) avisos.push(`Según el stock faltarían ${faltanAuto.length} línea${faltanAuto.length === 1 ? "" : "s"} de perfiles/herraje, pero de momento NO se crean pedidos al subir el análisis (el stock se está poniendo al día): el material se prepara desde Preparación de material.`);
       }
       if (avisos.length) setError(avisos.join(" "));
       setAbierto(true);
@@ -8837,7 +8844,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
 
   // Cada tipo (cristales, compactos) es un pedido independiente, con su proveedor, y lleva su
   // documento original del programa de ventanas (no un PDF hecho por el CRM).
-  const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
+  const dispararPedidoAuto = (lineasFinales, adjuntosFinales, opciones = {}) => {
     if (lineasFinales.length === 0) return;
     if (!onCrearPedidosDocProveedor) {
       // (por si este componente se usa sin la función nueva: como antes)
@@ -8852,10 +8859,17 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       documentos: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t).map((d) => ({ id: d.id, nombre: d.nombre, url: d.url })),
       adjuntosPdf: toArray(adjuntosFinales).filter((a) => (a.tipoPedido || "") === t && !docsPedidoAuto.some((d) => (d.tipoPedido || "") === t && d.nombre === a.nombre)).map(({ nombre, dataUrl }) => ({ nombre, dataUrl })),
     }));
-    onCrearPedidosDocProveedor(proyecto, grupos);
+    onCrearPedidosDocProveedor(proyecto, grupos, opciones);
     setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({});
     setTab("pedidos");
   };
+  // Los pedidos de cristales y compactos se crean SOLOS, en espera (como los de perfiles y herraje), poco después de leer los documentos.
+  // Se espera unos segundos por si se están subiendo varios a la vez; el proveedor se elige luego en Pedidos.
+  useEffect(() => {
+    if (!lineasPedidoAuto.length || leyendoPdfMedidas) return undefined;
+    const t = setTimeout(() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto, { estado: "En espera" }), 2500);
+    return () => clearTimeout(t);
+  }, [lineasPedidoAuto, adjuntosPedidoAuto, docsPedidoAuto, leyendoPdfMedidas]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // Documentos de la obra "al día": al subir varias hojas seguidas (cristales + persianas)
@@ -8921,7 +8935,8 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
         const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
         urlDocStorage = urlStorage;
         docMedidasId = uid();
-        guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
+        // Si ya había un documento con el mismo nombre (subido antes sin llegar a crear su pedido) se sustituye, no se duplica
+        guardarDocumentosObra([...documentosObraRef.current.lista.filter((d) => d.nombre !== file.name), { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
       } catch (errSubida) {
         console.error("No se pudo subir el documento a Storage:", errSubida);
         setErrorPdfMedidas("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
@@ -9231,7 +9246,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             const bloques = TIPOS.map(([t, nombre]) => ({ t, nombre, clave: t || "otros", n: lineasPedidoAuto.filter((l) => (l.seccionListado || "") === t).length, docs: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t) })).filter((b) => b.n > 0);
             return (
               <>
-                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Se crea un pedido aparte por tipo; puedes subir más documentos antes.</div>
+                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. En unos segundos se crea solo un pedido EN ESPERA por tipo (el proveedor lo eliges luego en Pedidos).</div>
                 {bloques.map((b) => {
                   const habitual = proveedorHabitualDeSeccion(b.t, proveedores);
                   return (
@@ -9246,7 +9261,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
                   );
                 })}
                 <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">
-                  {bloques.length > 1 ? `Crear ${bloques.length} pedidos independientes` : "Crear pedido"}
+                  {bloques.length > 1 ? `Crear ya ${bloques.length} pedidos en espera` : "Crear ya el pedido en espera"}
                 </button>
                 <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({}); }} className="text-sm font-semibold text-rose-600 hover:underline">
                   Cancelar
@@ -46645,17 +46660,17 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 8, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 10, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
 | PDF del programa | Qué hace el CRM con él | ¿Crea pedido? |
 | --- | --- | --- |
 | Presupuesto | Lo guarda en los documentos de la obra | No |
-| Análisis de materiales | Material de la obra, horas, "Qué lleva la obra" | Sí: **pedidos en espera** de lo que falta (perfiles, herraje…) |
+| Análisis de materiales | Material de la obra, horas, "Qué lleva la obra" | **De momento no**: no se crean pedidos de perfiles/herraje al subirlo (el stock se está poniendo al día); el material se prepara desde Preparación de material |
 | Carga de material (o listado de dibujos) | Tipo plano (va con el albarán) y recuento de ventanas. Trae un dibujo por modelo, con su Pos, medidas y uds | No |
-| Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
-| Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
+| Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: se crea **solo un pedido EN ESPERA** (el proveedor se elige luego en Pedidos) |
+| Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: se crea **solo un pedido EN ESPERA** (el proveedor se elige luego en Pedidos) |
 | Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Las crea oficina al hacer el lote** (cuando se les avisa) y tienen que estar **antes de que la obra entre en planificación**; si faltan, al confirmar el planning sale un aviso al administrador | No |
 | Hoja de corte (**se pide**: si falta, sale en «Faltan documentos») | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola. **De ella salen los Auxiliares** (al subirla con el resto, se guarda sola para Auxiliares) (guía, inversor, hoja de contra, lama de contra…): se lee tanto la hoja por modelos con «Pos» como la hoja por grupos (cabecera «Número»). La pegatina de cada pieza lleva el membrete de la hoja y el carro y la posición donde dejarla | No |
 | Listado de mano de obra | **Horas de fabricación exactas** para el planning. Si falta, el planning usa las horas calculadas con el recuento y sale el aviso "Faltan documentos" | No |
@@ -46686,7 +46701,7 @@ El planning reparte las obras por días según sus horas. Salen así, por este o
 3. Pulsa **"Subir documentos de la obra"** y elige **todos los PDF a la vez** (con Ctrl pulsado).
 4. Espera. Pone "Leyendo…" y puede tardar **un par de minutos**. No cierres ni cambies de pantalla.
 5. **Lee el aviso** que sale: dice qué ha hecho con cada PDF y si hay **versiones distintas** o un listado repetido que no ha usado.
-6. Arriba sale el **pedido de cristales** (y el de **persianas** si lleva). Revisa las líneas y **confírmalo**. Si cierras sin confirmar, el pedido no se crea.
+6. A los pocos segundos se crea **solo** el pedido de cristales (y el de **persianas** si lleva), **en espera**, como los de perfiles y herraje. Revisa sus líneas y elige el proveedor en la pestaña Pedidos.
 7. Si faltaba algún PDF, súbelo luego con el mismo botón. Mientras falte el análisis de materiales o el listado de mano de obra, sale arriba el aviso amarillo **"Faltan documentos"**.
 
 ## Qué revisar después
@@ -46718,7 +46733,7 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, version: 10, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 11, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
 Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; etiquetas y hoja de corte son opcionales por ahora), empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
@@ -46734,8 +46749,8 @@ Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; e
 | 8. Facturar y cobrar | Oficina | Facturas y Entrada de dinero | Factura emitida y dinero cobrado |
 
 ## 1. Pedir el material
-Al subir los documentos de la obra (con el botón único), el CRM crea solo los **pedidos en espera** de lo que falta (perfiles, herraje…) y deja preparados los de **cristales** y **persianas** para confirmar. No se sube nada aparte en Pedidos.
-1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra y comprueba que el de cristales (y persianas si lleva) está confirmado y **no hay ninguno repetido**.
+Al subir los documentos de la obra (con el botón único), el CRM crea solo, **en espera**, los pedidos de **cristales** y **persianas**. Los de perfiles y herraje **de momento no se crean solos** (el stock se está poniendo al día): ese material se prepara desde Preparación de material. No se sube nada aparte en Pedidos.
+1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra y comprueba que el de cristales (y persianas si lleva) está y **no hay ninguno repetido**.
 2. Los de la semana se juntan en un pedido por proveedor (se pide los miércoles o jueves).
 3. Al pedirlo, pon siempre **fecha del pedido** y **fecha aproximada de llegada**.
 4. Si se pide por otra vía (teléfono, web), márcalo como hecho por otra vía para que pase a Realizado.
