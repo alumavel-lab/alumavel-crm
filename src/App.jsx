@@ -20651,6 +20651,19 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                 <span><b>{marcadas.length}</b> obra{marcadas.length === 1 ? "" : "s"} marcada{marcadas.length === 1 ? "" : "s"} ({marcadas.map((p) => `#${p.numero}`).join(" · ")})</span>
                 <span><b>{fmtHoras(hSel)}</b> ≈ <b>{(hSel / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(hSel / hDia - 1) < 0.05 ? "" : "s"} con {fmtHoras(hDia)} al día</span>
                 {sinH > 0 && <span className="font-semibold text-amber-200">{sinH} sin horas (no suman)</span>}
+                {(() => {
+                  const sinS = marcadas.filter((p) => !salidaDefinida(p));
+                  if (!sinS.length) return null;
+                  return (
+                    <select value="" onChange={(e) => { const v = e.target.value; if (!v || !onActualizarProyecto) return; sinS.forEach((p) => onActualizarProyecto(p.id, v === "Instalación" ? { llevaInstalacion: true } : { estadoLogistica: v })); }}
+                      className="px-2 py-1.5 rounded-md text-xs font-semibold text-slate-900 bg-amber-200 border border-amber-400" title="Pone la misma salida a las marcadas que todavía no la tienen. No toca las que ya la tienen.">
+                      <option value="">Salida para las {sinS.length} que no la tienen…</option>
+                      <option value="Reparto (camión)">Todas: Reparto</option>
+                      <option value="Recogida en fábrica">Todas: Recogida</option>
+                      <option value="Instalación">Todas: Instalación</option>
+                    </select>
+                  );
+                })()}
                 <span className="ml-auto flex gap-2">
                   {TALLERES_FAB.map((t) => (
                     <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { const sinS = marcadas.filter((p) => !salidaDefinida(p)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`); return; } marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
