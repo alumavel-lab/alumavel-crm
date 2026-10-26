@@ -2789,6 +2789,41 @@ export default function App() {
     if (llegada.n && confirmado) showToast(`${llegada.n} pendiente${llegada.n === 1 ? "" : "s"} de ubicar en el almacén de persianas`);
   };
 
+  // «¿SE PUEDE PLANIFICAR?»: obras cuyo material pedido (cristales y/o compactos) ya está entero en sus almacenes (caballetes y carros). Se avisa para preguntarlo;
+  // si se contesta que sí, la obra pasa a «Listo para fabricar» (campo planificableOk) aunque algún pedido siga sin dar por recibido en oficina.
+  const obrasPlanificables = () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const noVale = ["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"];
+    const almsT = toArray(almacenesPersianas);
+    const itemsPers = toArray(persianasAlmacen).filter((x) => x && !x.entregada && ((almsT.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana") === "persiana");
+    const res = [];
+    toArray(proyectos).forEach((pr) => {
+      if (!pr || noVale.includes(pr.estadoTrabajo) || pr.planificableOk || (pr.planificableNoHasta && pr.planificableNoHasta >= hoy)) return;
+      let cP = 0, pP = 0;
+      toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado").forEach((pd) => {
+        const t = pd.tipoUxcar ? (/persian|compact/i.test(pd.tipoUxcar) ? "persianas" : /cristal|vidrio|panel/i.test(pd.tipoUxcar) ? "cristal" : "") : tipoPedidoMaterial(pd);
+        if (t !== "cristal" && t !== "persianas") return;
+        const n = toArray(pd.lineas).reduce((a, l) => a + (l ? (parseFloat(l.cantidad) || 1) : 0), 0);
+        if (t === "cristal") cP += n; else pP += n;
+      });
+      if (!cP && !pP) return;
+      const claves = clavesObraControl(pr, uxExpedientes, pedidos);
+      const cL = cP ? toArray(cristales).reduce((a, c) => {
+        const ps = toArray(c.piezas).filter((q) => !q.puesto && casaObraControl(claves, { ...c, ...q, expediente: q.expediente || c.expediente }));
+        if (ps.length) return a + ps.reduce((b, q) => b + (parseFloat(q.cantidad) || 1), 0);
+        return casaObraControl(claves, c) ? a + (parseFloat(c.cantidad) || 0) : a;
+      }, 0) : 0;
+      const pL = pP ? itemsPers.filter((x) => x.estante && casaObraControl(claves, x)).length : 0;
+      if ((cP && cL < cP) || (pP && pL < pP)) return;
+      res.push({ pr, cP, cL, pP, pL });
+    });
+    return res;
+  };
+  const responderPlanificable = (pr, si) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (si) { updateProyectoInline(pr.id, { planificableOk: hoy }); showToast(`#${pr.numero} pasa a «Listo para fabricar»`); }
+    else { updateProyectoInline(pr.id, { planificableNoHasta: hoy }); showToast("Vale, hoy no se vuelve a preguntar por esta obra"); }
+  };
   // Persianas que YA están en los carros pero cuyo pedido no se dio por llegado (se colocaron a mano sin pasar por «Ha llegado todo»).
   // Por cada obra con pedidos de persianas: si en los carros hay tantas persianas (no entregadas) como se pidieron en total, las líneas de persiana aún sin confirmar se dan por llegadas.
   // Cuentan también los cajones con tela y las guías (en los carros entran igual). Solo se aplica cuando el usuario pulsa el botón.
@@ -5487,6 +5522,20 @@ export default function App() {
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+        })()}
+        {(() => {
+          if (!currentUser || !veFabrica || modulo === "uxcar") return null;
+          const lista = obrasPlanificables();
+          if (!lista.length) return null;
+          const o = lista[0];
+          const txt = [o.cP ? `cristales ${o.cL}/${o.cP} en caballetes` : "", o.pP ? `persianas ${o.pL}/${o.pP} en carros` : ""].filter(Boolean).join(" y ");
+          return (
+            <div className="w-full flex flex-wrap items-center gap-2 px-6 py-2.5 text-sm bg-emerald-100 text-emerald-900">
+              <span className="font-semibold">✔ #{o.pr.numero} {o.pr.nombre || ""}: {txt}. ¿Se puede planificar?{lista.length > 1 ? ` (y ${lista.length - 1} obra${lista.length - 1 === 1 ? "" : "s"} más)` : ""}</span>
+              <button onClick={() => responderPlanificable(o.pr, true)} className="px-3 py-1 rounded bg-emerald-700 text-white font-semibold">Sí, llevar a Listo para fabricar</button>
+              <button onClick={() => responderPlanificable(o.pr, false)} className="px-3 py-1 rounded bg-white text-emerald-900 border border-emerald-300 font-semibold">Todavía no (hoy)</button>
+            </div>
+          );
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
@@ -15053,13 +15102,16 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         cristales.forEach((c) => (c.piezas || []).forEach((p) => {
           if (p.puesto) return; // ya colocado en la ventana: no está en el almacén
           const k = numsExpediente(p.expediente || c.expediente)[0] || String(p.expediente || c.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set() };
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
+          [p.presupuesto, c.presupuesto].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
+          [p.expediente, c.expediente].filter(Boolean).forEach((v) => g.exps.add(String(v)));
+          if (c.cliente) g.clis.add(String(c.cliente));
           const n = parseFloat(p.cantidad) || 1;
           g.uds += n;
           if (!c.ubicacion) g.aparte += n;
           g.cabs.add(`Cab. ${c.lote || c.numero || "?"}${c.ubicacion ? "" : " (pendiente)"}`);
         }));
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs] }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs], presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
         const mapaP = {};
         toArray(ctxFusion.persianasAlmacen).filter((x) => x && x.estante && !x.entregada).forEach((x) => { const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—"; mapaP[k] = (mapaP[k] || 0) + (parseFloat(x.cantidad) || 1); });
         return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" extra={{ label: "persianas", mapa: mapaP }} />;
@@ -17775,10 +17827,29 @@ const coloresPerfilDeObra = (p) => {
 };
 // Datos de la obra de un expediente: horas de fabricación (las puestas a mano o, si no, las del «Listado mano de obra»
 // al dar de alta la obra; si no hay ninguna, null: no se inventa nada) y color de perfil.
-const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning) => {
+// Obra de un expediente de los almacenes. SIEMPRE por el mismo camino y mirando todo lo que las une: 1) nº de proyecto, 2) expediente, nº de presupuesto, expedientes de Uxcar y pedidos
+// de la obra (clavesObraControl), con el expediente y los presupuestos que lleva el caballete/persiana, 3) último recurso: el nombre del cliente, solo si encaja con UNA obra.
+const normNombreObra = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+const proyectoDeExpediente = (exp, proyectos, uxExpedientes, extra) => {
+  const lista = toArray(proyectos);
+  const ex = extra || {};
   const nums = numsExpediente(exp);
-  if (!nums.length) return null;
-  const p = toArray(proyectos).find((x) => numsExpediente(x.numero).some((n) => nums.includes(n)));
+  const exacto = nums.length ? lista.find((x) => numsExpediente(x.numero).some((n) => nums.includes(n))) : null;
+  if (exacto) return exacto;
+  const pseudo = { expediente: [exp, ...toArray(ex.expedientes)].filter(Boolean).join(", "), presupuesto: toArray(ex.presus).filter(Boolean).join(", ") };
+  if (pseudo.expediente || pseudo.presupuesto) {
+    const hit = lista.find((x) => casaObraControl((ex.clavesMap && ex.clavesMap.get(x.id)) || clavesObraControl(x, uxExpedientes, ex.pedidos), pseudo));
+    if (hit) return hit;
+  }
+  const clis = toArray(ex.clientes).map(normNombreObra).filter((t) => t.length >= 5);
+  if (clis.length) {
+    const posibles = lista.filter((x) => { const n = normNombreObra(String(x.nombre || "").replace(/presupuesto\s*\d[\d.]*/i, "")); return n.length >= 5 && clis.some((c) => c.includes(n) || n.includes(c)); });
+    if (posibles.length === 1) return posibles[0];
+  }
+  return null;
+};
+const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning, extra) => {
+  const p = proyectoDeExpediente(exp, proyectos, uxExpedientes, extra);
   if (!p) return null;
   // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
   const v = ventanasDeObra(p, uxExpedientes);
@@ -17793,7 +17864,8 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const [buscar, setBuscar] = useState("");
   const [colorSel, setColorSel] = useState("");
   const SIN = "SIN COLOR";
-  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }) }));
+  const clavesMapEC = new Map(toArray(proyectos).map((pr) => [pr.id, clavesObraControl(pr, ctxH.uxExpedientes, ctxH.pedidosCrm)]));
+  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }, { presus: f.presus, expedientes: f.expedientes, clientes: f.clientes, pedidos: ctxH.pedidosCrm, clavesMap: clavesMapEC }) }));
   const colorDe = (f) => (f.h && f.h.color) || SIN;
   const cuentaColor = {};
   conHoras.forEach((f) => { cuentaColor[colorDe(f)] = (cuentaColor[colorDe(f)] || 0) + 1; });
@@ -17802,7 +17874,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const porExp = (x, y) => String(x.exp).localeCompare(String(y.exp), "es", { numeric: true });
   const q = buscar.trim().toLowerCase();
   const lista = conHoras
-    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
+    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${toArray(f.expedientes).join(" ")} ${toArray(f.presus).join(" ")} ${toArray(f.clientes).join(" ")} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
     .sort((x, y) => orden === "horas" ? ((y.h && y.h.horas) || 0) - ((x.h && x.h.horas) || 0) || porExp(x, y)
       : orden === "color" ? listaColores.indexOf(colorDe(x)) - listaColores.indexOf(colorDe(y)) || porExp(x, y)
       : porExp(x, y));
@@ -19524,11 +19596,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         const grupos = {};
         items.filter((x) => !x.entregada && x.estante).forEach((x) => {
           const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set() };
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
+          [x.presupuesto, x.refObra].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
+          if (x.expediente) g.exps.add(String(x.expediente));
+          if (x.cliente) g.clis.add(String(x.cliente));
           g.uds += parseFloat(x.cantidad) || 1;
           g.carros.add(x.estante.carro);
         });
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`) }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`), presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
         const mapaC = {};
         toArray(ctxM.cristalesCaballetes).forEach((c) => toArray(c.piezas).forEach((pz) => { if (pz.puesto) return; const k = numsExpediente(pz.expediente || c.expediente)[0] || String(pz.expediente || c.expediente || "").trim() || "—"; mapaC[k] = (mapaC[k] || 0) + (parseFloat(pz.cantidad) || 1); }));
         return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} extra={esMosq ? null : { label: "cristales", mapa: mapaC }} />;
@@ -20310,6 +20385,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+      if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -49011,6 +49087,7 @@ const tabInicialFabrica = { actual: null };
 function calcListoParaFabricar(proyectos, pedidos) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+    if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
