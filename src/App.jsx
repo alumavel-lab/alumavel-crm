@@ -8404,8 +8404,9 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                 ) : confirmando && confirmando.id === p.id ? (
                   <>
                     <span className="text-xs text-slate-600 font-semibold">Fecha de llegada (obligatoria, va en el mensaje al proveedor):{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
-                    <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-xs" />
-                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url) window.open(url, "_blank", "noopener"); onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value, falta: false })} className={`border rounded px-2 py-1 text-xs ${confirmando.falta ? "border-red-500 ring-2 ring-red-200" : "border-slate-300"}`} />
+                    {confirmando.falta && <span className="text-xs font-semibold text-red-600">Pon la fecha aproximada de llegada para poder pedirlo (luego se puede cambiar).</span>}
+                    <button onClick={() => { if (!confirmando.fecha) { setConfirmando({ ...confirmando, falta: true }); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url) window.open(url, "_blank", "noopener"); onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
                     {!tipoPedidoMaterial(p) && (
                       <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
                         <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
@@ -46157,10 +46158,15 @@ const tipoListadoPorLineas = (refs) => {
   return c === 0 && p === 0 ? "" : c >= p ? "cristales" : "persianas";
 };
 // La hoja de corte vale si está guardada para Auxiliares (por el nº de presupuesto de la obra) o ya aplicada a las ventanas de las etiquetas
+const candidatosPresuObra = (p) => {
+  const c = [p && p.presupuestoNumero, ((String((p && p.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]), p && p.numero, p && p.expediente, p && p.uxcarRef];
+  return c.map((x) => digitosPresu(x)).filter((x, i, a) => x && a.indexOf(x) === i);
+};
 const tieneHojaCorteObra = (p, hojas) => {
-  const ppto = digitosPresu(p && p.presupuestoNumero);
-  const h = ppto && hojas ? hojas[ppto] : null;
-  return !!(h && toArray(h.modelos).length) || lotesConCorte(p && p.etiquetasFab);
+  const cands = candidatosPresuObra(p);
+  const hs = hojas && typeof hojas === "object" ? hojas : {};
+  const ok = (h) => !!(h && toArray(h.modelos).length);
+  return cands.some((k) => ok(hs[k]) || Object.values(hs).some((h) => ok(h) && digitosPresu(h.presupuesto) === k)) || lotesConCorte(p && p.etiquetasFab);
 };
 const lotesConCorte = (lotes) => toArray(lotes).some((l) => toArray(l.ventanas).some((v) => v && v.corte));
 const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas" && !/mosquit|con tela|\btela\b/i.test(`${l.codigo || ""} ${l.descripcion || ""}`));
