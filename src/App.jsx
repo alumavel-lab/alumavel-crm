@@ -44815,8 +44815,8 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
                   <tr key={f.key}>
                     <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
                     <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
-                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
-                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : f.cP && f.cL >= f.cP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : f.pP && f.pL >= f.pP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
                     <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
                     <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
                   </tr>
