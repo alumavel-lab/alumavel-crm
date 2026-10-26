@@ -8368,7 +8368,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const telProv = telWhatsapp(prov && prov.movil);
         // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
         const waProv = (fecha) => telProv ? `https://wa.me/${telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}`)}` : "";
-        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nUn saludo,\nALUMAVEL`)}` : "";
+        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
           setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || (tipoPedidoMaterial(p) ? "" : fechaEntregaPorProveedor(prov, p, materiales)) });
         };
@@ -8977,7 +8977,15 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     }
   };
 
-  useEffect(() => () => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); }, []);
+  // Los pedidos de cristales y compactos se crean SOLOS (como los de perfiles y herraje): unos segundos después de leer el último
+  // documento, o al salir de la pantalla si todavía quedaban pendientes. Cada tipo, su pedido; si ya existe uno con ese documento no se repite.
+  const dispararAutoRef = useRef(null);
+  useEffect(() => { dispararAutoRef.current = () => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto); });
+  useEffect(() => {
+    clearTimeout(timerPedidoAutoRef.current);
+    if (lineasPedidoAuto.length > 0 && !leyendoPdfMedidas && onCrearPedidosDocProveedor) timerPedidoAutoRef.current = setTimeout(() => { if (dispararAutoRef.current) dispararAutoRef.current(); }, 6000);
+  }, [lineasPedidoAuto, leyendoPdfMedidas]);
+  useEffect(() => () => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); if (dispararAutoRef.current) dispararAutoRef.current(); }, []);
 
   const totalRecibido = (ingresos || []).reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
   const importePresupuesto = parseFloat(proyecto.importePresupuesto) || 0;
@@ -9228,7 +9236,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             const bloques = TIPOS.map(([t, nombre]) => ({ t, nombre, clave: t || "otros", n: lineasPedidoAuto.filter((l) => (l.seccionListado || "") === t).length, docs: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t) })).filter((b) => b.n > 0);
             return (
               <>
-                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Se crea un pedido aparte por tipo; puedes subir más documentos antes.</div>
+                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Se crea un pedido aparte por tipo, solo, en unos segundos (puedes subir más documentos antes o pulsar «Crear» ya).</div>
                 {bloques.map((b) => {
                   const habitual = proveedorHabitualDeSeccion(b.t, proveedores);
                   return (
@@ -11390,7 +11398,7 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
           <div className="flex flex-wrap gap-2">
             <button disabled={!elegidos.length} onClick={imprimir} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50"><Printer size={14} /> Imprimir / PDF</button>
             {tel && <a href={`https://wa.me/${tel.length === 9 ? "34" + tel : tel}?text=${encodeURIComponent(texto())}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><MessageCircle size={14} /> WhatsApp</a>}
-            {prov && prov.email && <a href={`mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
+            {prov && prov.email && <a href={`mailto:${prov.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
             <label className="ml-auto flex items-center gap-1.5 text-sm text-slate-600">Llegada prevista <span className="text-rose-600">*</span>
               <input type="date" value={llegada} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setLlegada(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
             </label>
@@ -12923,7 +12931,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
     const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
-    return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${proveedor.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const falta_fecha = () => {
@@ -27086,7 +27094,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
     if (!cliente?.email) return null;
     const asunto = `Incidencia #${incidencia.numero} — Ecowin PVC`;
     const cuerpo = `Hola ${cliente.nombre},\n\nLe escribimos respecto a la incidencia registrada${proyecto ? ` sobre el proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}.\n\n${incidencia.descripcion || ""}\n\nQuedamos a su disposición para cualquier duda.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${cliente.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${cliente.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const enlaceWhatsappCliente = () => {
@@ -35217,7 +35225,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
     if (!presupuesto.email) return null;
     const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
     const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${presupuesto.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   // Genera el PDF al momento y lo manda por email directamente desde el CRM
@@ -46146,7 +46154,9 @@ function estadoDocumentosObra(p) {
   return [
     { nombre: "Presupuesto", ok: !!p.presupuestoId || docs.some((d) => /presupuesto/i.test(d.nombre || "")) },
     { nombre: "Análisis de materiales", ok: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))), nota: lis && lis.archivo ? lis.archivo : "" },
-    { nombre: "Listado de dibujos (tipo plano)", ok: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length), nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" },
+    // El listado de dibujos ya no se sube: ahora va el fichero «carga material». Si aun así hay tipo plano o recuento se muestra como opcional.
+    { nombre: "Carga de material", ok: docs.some((d) => /carga[\s_.-]*material/i.test(d.nombre || "")), nota: (docs.find((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || {}).nombre || "" },
+    ...(((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length) ? [{ nombre: "Listado de dibujos (tipo plano)", ok: true, opcional: true, nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" }] : []),
     { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
     { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
     { nombre: "Etiquetas", ok: lotes.length > 0, opcional: true, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
