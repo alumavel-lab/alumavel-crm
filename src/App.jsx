@@ -2789,6 +2789,41 @@ export default function App() {
     if (llegada.n && confirmado) showToast(`${llegada.n} pendiente${llegada.n === 1 ? "" : "s"} de ubicar en el almacén de persianas`);
   };
 
+  // «¿SE PUEDE PLANIFICAR?»: obras cuyo material pedido (cristales y/o compactos) ya está entero en sus almacenes (caballetes y carros). Se avisa para preguntarlo;
+  // si se contesta que sí, la obra pasa a «Listo para fabricar» (campo planificableOk) aunque algún pedido siga sin dar por recibido en oficina.
+  const obrasPlanificables = () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const noVale = ["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"];
+    const almsT = toArray(almacenesPersianas);
+    const itemsPers = toArray(persianasAlmacen).filter((x) => x && !x.entregada && ((almsT.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana") === "persiana");
+    const res = [];
+    toArray(proyectos).forEach((pr) => {
+      if (!pr || noVale.includes(pr.estadoTrabajo) || pr.planificableOk || (pr.planificableNoHasta && pr.planificableNoHasta >= hoy)) return;
+      let cP = 0, pP = 0;
+      toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado").forEach((pd) => {
+        const t = pd.tipoUxcar ? (/persian|compact/i.test(pd.tipoUxcar) ? "persianas" : /cristal|vidrio|panel/i.test(pd.tipoUxcar) ? "cristal" : "") : tipoPedidoMaterial(pd);
+        if (t !== "cristal" && t !== "persianas") return;
+        const n = toArray(pd.lineas).reduce((a, l) => a + (l ? (parseFloat(l.cantidad) || 1) : 0), 0);
+        if (t === "cristal") cP += n; else pP += n;
+      });
+      if (!cP && !pP) return;
+      const claves = clavesObraControl(pr, uxExpedientes, pedidos);
+      const cL = cP ? toArray(cristales).reduce((a, c) => {
+        const ps = toArray(c.piezas).filter((q) => !q.puesto && casaObraControl(claves, { ...c, ...q, expediente: q.expediente || c.expediente }));
+        if (ps.length) return a + ps.reduce((b, q) => b + (parseFloat(q.cantidad) || 1), 0);
+        return casaObraControl(claves, c) ? a + (parseFloat(c.cantidad) || 0) : a;
+      }, 0) : 0;
+      const pL = pP ? itemsPers.filter((x) => x.estante && casaObraControl(claves, x)).length : 0;
+      if ((cP && cL < cP) || (pP && pL < pP)) return;
+      res.push({ pr, cP, cL, pP, pL });
+    });
+    return res;
+  };
+  const responderPlanificable = (pr, si) => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (si) { updateProyectoInline(pr.id, { planificableOk: hoy }); showToast(`#${pr.numero} pasa a «Listo para fabricar»`); }
+    else { updateProyectoInline(pr.id, { planificableNoHasta: hoy }); showToast("Vale, hoy no se vuelve a preguntar por esta obra"); }
+  };
   // Persianas que YA están en los carros pero cuyo pedido no se dio por llegado (se colocaron a mano sin pasar por «Ha llegado todo»).
   // Por cada obra con pedidos de persianas: si en los carros hay tantas persianas (no entregadas) como se pidieron en total, las líneas de persiana aún sin confirmar se dan por llegadas.
   // Cuentan también los cajones con tela y las guías (en los carros entran igual). Solo se aplica cuando el usuario pulsa el botón.
@@ -5487,6 +5522,20 @@ export default function App() {
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+        })()}
+        {(() => {
+          if (!currentUser || !veFabrica || modulo === "uxcar") return null;
+          const lista = obrasPlanificables();
+          if (!lista.length) return null;
+          const o = lista[0];
+          const txt = [o.cP ? `cristales ${o.cL}/${o.cP} en caballetes` : "", o.pP ? `persianas ${o.pL}/${o.pP} en carros` : ""].filter(Boolean).join(" y ");
+          return (
+            <div className="w-full flex flex-wrap items-center gap-2 px-6 py-2.5 text-sm bg-emerald-100 text-emerald-900">
+              <span className="font-semibold">✔ #{o.pr.numero} {o.pr.nombre || ""}: {txt}. ¿Se puede planificar?{lista.length > 1 ? ` (y ${lista.length - 1} obra${lista.length - 1 === 1 ? "" : "s"} más)` : ""}</span>
+              <button onClick={() => responderPlanificable(o.pr, true)} className="px-3 py-1 rounded bg-emerald-700 text-white font-semibold">Sí, llevar a Listo para fabricar</button>
+              <button onClick={() => responderPlanificable(o.pr, false)} className="px-3 py-1 rounded bg-white text-emerald-900 border border-emerald-300 font-semibold">Todavía no (hoy)</button>
+            </div>
+          );
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
@@ -20336,6 +20385,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+      if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -49037,6 +49087,7 @@ const tabInicialFabrica = { actual: null };
 function calcListoParaFabricar(proyectos, pedidos) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+    if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
