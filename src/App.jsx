@@ -6787,7 +6787,7 @@ const MANUALES = {
       "Si falta material, pulsa «Falta»: le llega un aviso urgente al responsable de pedidos. Si no hay pedido hecho, sale «SIN PEDIDO».",
       "Material suelto sin sitio: «Ubicar material suelto con una foto». Haz la foto con las etiquetas de frente y se coloca en un almacén de una vez.",
       "Cuando todo esté preparado, pulsa «Preparado» en la lista (o en la obra, en cristales y compactos).",
-      "DOCUMENTOS: si arriba sale un recuadro rojo «Faltan documentos», es que a una obra le falta el análisis de materiales o su hoja de corte. Sin ellos no sale qué material y qué auxiliares lleva. Avisa a oficina para que los suban. La hoja de corte solo existe cuando la obra ya está sacada a fabricar y tiene lote: antes no se puede subir.",
+      "DOCUMENTOS: si arriba sale un recuadro rojo «Faltan documentos», es que a una obra le falta el análisis de materiales o su hoja de corte. Sin ellos no sale qué material y qué auxiliares lleva. Avisa a oficina para que los suban. Las etiquetas de la línea las hace oficina con el lote, antes de planificar; los auxiliares salen de la hoja de corte y no dependen de ellas.",
       "Auxiliares: aquí salen las guías de persiana, solapes, inversores y demás perfiles que se cortan aparte. Salen de la hoja de corte: si una obra no sale, es que su hoja no está subida.",
     ],
   },
@@ -6795,7 +6795,7 @@ const MANUALES = {
     puntos: [
       "Aquí trabaja el puesto de la línea con la pistola: pasa la pistola por la etiqueta de una ventana y te dice qué es y dónde va.",
       "Incluye el almacén de ventanas (caballetes), las estanterías y el botón «Auxiliares» con las pegatinas de los perfiles que se cortan en la doble cabeza.",
-      "Para que la pistola reconozca una ventana hacen falta las etiquetas de la línea de esa obra, y para los auxiliares su hoja de corte. Las dos aparecen cuando la obra se saca a fabricar y se hace el lote: antes no se pueden subir.",
+      "Para que la pistola reconozca una ventana hacen falta las etiquetas de la línea de esa obra: las hace oficina al hacer el lote (cuando se les dice) y tienen que estar antes de planificar. Los auxiliares salen de la hoja de corte y no dependen de las etiquetas. Cada pegatina de auxiliar lleva el membrete de la hoja y, en la barra negra, el carro y la posición donde dejar la pieza.",
       "Si una ventana no se reconoce o falta algo, usa el botón rojo «Incidencia».",
     ],
   },
@@ -6830,7 +6830,7 @@ const MANUALES = {
     puntos: [
       "DOCUMENTOS DE UNA OBRA (se suben todos a la vez, con un solo botón, en la ficha del proyecto → Pedidos → «Subir documentos de la obra»):",
       "Al crear el proyecto: presupuesto · análisis de materiales (obligatorio) · listado de mano de obra (obligatorio; da las horas) · listado de dibujos / tipo plano · listado de cristales · listado de persianas (solo si lleva persiana).",
-      "Al sacar a fabricar y hacer el lote: hoja de corte (la usan los auxiliares y la pistola) y etiquetas de la línea. Antes de eso no se pueden subir.",
+      "Hoja de corte (de ella salen los auxiliares) y etiquetas de la línea. Las etiquetas las crea oficina al hacer el lote, cuando se les avisa, y tienen que estar antes de que la obra entre en planificación: si falta alguna, al confirmar el planning sale un aviso al administrador (no bloquea).",
       "Comprueba que todos los PDF tengan el mismo nº de presupuesto y la misma versión. Nunca subas lo mismo en dos sitios.",
       "Encima del botón está la lista «Documentos de la obra»: ✓ lo que está, ✗ lo que falta.",
     ],
@@ -45467,7 +45467,14 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const [publicando, setPublicando] = useState(false);
   const publicar = async () => {
     if (!cfg.emailFabrica) { alert("Pon primero el correo de fábrica (arriba, en los ajustes)."); return; }
-    if (!confirm(`¿Confirmar el planning desde el ${fmtDate(desde)} y mandarlo a ${cfg.emailFabrica}?`)) return;
+    // Aviso (no bloqueo): obras que entran en el planning sin etiquetas de la línea (el lote lo hace oficina cuando se le dice)
+    const sinEtiquetas = firmes.filter((o) => {
+      if (!(o.ventanas > 0)) return false;
+      const x = o.ref && o.ref.tipo === "uxcar" ? toArray(uxExpedientes).find((e) => e.id === o.ref.id) : proyectos.find((pr) => pr.id === (o.ref && o.ref.id));
+      return !!x && toArray(x.etiquetasFab).length === 0;
+    }).map((o) => o.nombre);
+    const avisoEtiq = sinEtiquetas.length ? `\n\n⚠ SIN ETIQUETAS DE LA LÍNEA (falta hacer el lote): ${sinEtiquetas.join(", ")}.\nPide a oficina que haga el lote antes de fabricar. Puedes confirmar igualmente.` : "";
+    if (!confirm(`¿Confirmar el planning desde el ${fmtDate(desde)} y mandarlo a ${cfg.emailFabrica}?${avisoEtiq}`)) return;
     setPublicando(true);
     try {
       const obrasSnap = {};
@@ -46613,7 +46620,7 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 6, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 7, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
@@ -46624,11 +46631,11 @@ Todos los documentos de una obra se suben **de una vez, con un solo botón**, de
 | Listado de dibujos | Tipo plano (va con el albarán) y recuento de ventanas | No |
 | Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
 | Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
-| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Opcional por ahora** (hasta que esté la línea con pistola) | No |
-| Hoja de corte (opcional por ahora) | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
+| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Las crea oficina al hacer el lote** (cuando se les avisa) y tienen que estar **antes de que la obra entre en planificación**; si faltan, al confirmar el planning sale un aviso al administrador | No |
+| Hoja de corte | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola. **De ella salen los Auxiliares** (guía, inversor, hoja de contra, lama de contra…): se lee tanto la hoja por modelos con «Pos» como la hoja por grupos (cabecera «Número»). La pegatina de cada pieza lleva el membrete de la hoja y el carro y la posición donde dejarla | No |
 | Listado de mano de obra | **Horas de fabricación exactas** para el planning. Si falta, el planning usa las horas calculadas con el recuento y sale el aviso "Faltan documentos" | No |
 
-**Obligatorio:** el análisis de materiales (de él salen cristales, persianas y el resto) y el **listado de mano de obra** (las horas de fabricación). Si falta el listado de mano de obra, la obra **no se bloquea**: el planning usa las horas calculadas con el recuento (las que están programadas en Fábrica → Planning). Pero el aviso amarillo "Faltan documentos" se queda para que lo tengáis controlado. Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola; entonces volverán a ser obligatorias.
+**Obligatorio:** el análisis de materiales (de él salen cristales, persianas y el resto) y el **listado de mano de obra** (las horas de fabricación). Si falta el listado de mano de obra, la obra **no se bloquea**: el planning usa las horas calculadas con el recuento (las que están programadas en Fábrica → Planning). Pero el aviso amarillo "Faltan documentos" se queda para que lo tengáis controlado. Las etiquetas de la línea deben estar antes de planificar: si una obra entra en el planning sin ellas, al confirmarlo sale un aviso al administrador (no se bloquea, se puede confirmar igualmente). Los Auxiliares no dependen de las etiquetas: salen de la hoja de corte.
 
 **Atajo:** si la obra solo tiene el listado de vidrios y la hoja de corte (por ejemplo un expediente de Uxcar ya pedido), no hace falta nada más: usa **"Expediente rápido"** (ver la guía "Expediente rápido") y no saldrá el aviso de documentos que faltan.
 
@@ -46686,7 +46693,7 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, version: 9, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 10, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
 Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; etiquetas y hoja de corte son opcionales por ahora), empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
@@ -46730,7 +46737,7 @@ La semana antes se eligen las obras a fabricar.
 2. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
 3. Elige las obras (tuyas y de Uxcar), cada una en su **taller**. Puedes cambiar el orden y las horas. Las horas salen del **listado de mano de obra** si se subió; si no, del recuento de ventanas. Las listas salen por color y se pueden ir marcando con tick.
 4. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
-5. Confirma el planning.
+5. Confirma el planning. Si alguna obra entra sin etiquetas de la línea (el lote lo hace oficina cuando se le avisa), sale un aviso con las obras afectadas: puedes confirmar igualmente, pero pide a oficina que haga el lote antes de fabricar.
 6. En **Preparación de material** ves el material de los días (o de la semana) que elijas, todo junto, sin separar por obras. Arriba hay **cuadrados**: Todo · Perfiles y herraje · Cristales · Compactos · Auxiliares. Pincha uno y solo ves lo de ese puesto. Cada persona ve solo los puestos que el administrador le haya dado (en Administración → Usuarios → «Puestos de Preparación de material»; sin ninguno marcado ve todo):
    - **Perfiles**: una lista; la misma referencia y el mismo color se suman (8830 blanco = una línea). Colores distintos, líneas distintas. **Ojo con la barra de margen**: por cada 10 barras de una referencia en una obra hay que sacar **una más** por roturas y cortes. La lista ya la suma y lo dice («20 + 2 de margen»): sácala siempre del almacén y métela para dentro con el resto.
    - **Perfiles de Uxcar**: lista aparte. Salen del **stock de Uxcar** (el de su portal), no del nuestro, y dice si les llega o no. El **herraje y los accesorios** de las obras de Uxcar sí son nuestros y van en la lista de herraje.
@@ -48920,9 +48927,64 @@ const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-ZÁÉÍÓÚ ]*|MARR[OÓ]N|BRONCE|ROBLE[A-Z ]*|NOGAL|CREMA|MARFIL|PLATA))/i;
 // Devuelve { presupuesto, version, referencia, cliente, modelos:[{modelo, uds, ancho, alto, filas:[{ref, desc, color, lCorte, lFinal, ud, tot, enMetros}]}] }
 // paginas = [[trozos de texto de pdf.js…], …] (igual que el resto de lectores de PDF del CRM). refs = referencias que se buscan.
+// Hoja de corte por GRUPOS (cabecera «Número : 6.994 Versión: 1», tabla «Modelo Ancho Alto Uds», sin «Presupuesto:» ni «Pos:»).
+// En las filas de PERFILES pdf.js entrega «ángulo descripción Ud COLOR L.Corte+ToT+Referencia» pegados: «…BATIENTE 64 MM 1 BLANCO 10541808088S» = 1054 + 1 + 808088S.
+function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  const cab = todo.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\.?\s*(\d+)/i);
+  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
+  const version = cab ? cab[2] : "";
+  if (!presupuesto) return null;
+  const referencia = ((todo.match(/Refer[eé]nc[ií]a\s*:[ \t]*([^\n]*)/i) || [])[1] || "").trim();
+  const cliente = ((todo.match(/Cliente\s*:[ \t]*([^\n]+)/i) || [])[1] || "").trim();
+  const fab = ((todo.match(/(\d{1,2}\.\d{3})\s*Cliente\s*:/i) || [])[1] || "").trim(); // nº del recuadro del membrete (junto a «Cliente»)
+  const fechaDoc = ((todo.match(/\b(\d{2}\/\d{2}\/\d{4})\b/) || [])[1] || "").trim();
+  const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean);
+  const bloques = [];
+  let actual = null;
+  paginas.forEach((it) => {
+    const lineas = it.join("").split("\n");
+    lineas.forEach((linea, i) => {
+      if (/^\s*Modelo\s+Ancho\s+Alto\s+Uds\s*$/i.test(linea)) {
+        const dato = (lineas[i + 1] || "").match(/^\s*(.+?)\s+(\d{2,4})\s+(\d{2,4})\s+(\d+)\s*$/);
+        actual = { nombre: dato ? dato[1].trim().toUpperCase() : "GRUPO", ancho: dato ? parseInt(dato[2], 10) : null, alto: dato ? parseInt(dato[3], 10) : null, uds: dato ? parseInt(dato[4], 10) || 1 : 1, lineas: [] };
+        bloques.push(actual);
+        return;
+      }
+      if (actual) actual.lineas.push(linea);
+    });
+  });
+  const vistos = {};
+  const modelos = bloques.map((b) => {
+    const n = (vistos[b.nombre] = (vistos[b.nombre] || 0) + 1);
+    const filas = [];
+    b.lineas.forEach((linea) => {
+      for (const ref of lista) {
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)\\s(\\d+)\\s+(?:${AUX_COLOR_RE.source}\\s*)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
+        if (!m) continue;
+        const ud = parseInt(m[2], 10);
+        const color = m[3] ? m[3].toUpperCase() : "";
+        const digitos = m[4];
+        const tot = String(ud * b.uds), totUd = String(ud);
+        const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
+        const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
+        const desc = m[1].replace(AUX_COLOR_RE, "").trim();
+        filas.push({ ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
+        return;
+      }
+    });
+    const texto = b.lineas.join("\n");
+    const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
+    return { modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas };
+  });
+  return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
+}
+
 function leerAuxiliaresHojaCorte(paginas, refs) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   if (!/HOJA DE CORTE/i.test(todo)) return null;
+  // Hoja de corte por GRUPOS (sin «Presupuesto:» ni «Pos:»): tiene su propio lector
+  if (!/Presupuesto\s*:\s*[\d.]+/i.test(todo) && /Modelo\s+Ancho\s+Alto\s+Uds/i.test(todo)) return leerAuxiliaresHojaCorteGrupos(paginas, refs);
   const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
   const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
   const version = cab && cab[2] ? cab[2] : "";
@@ -48985,6 +49047,9 @@ const AUX_CFG_DEFECTO = {
     { id: "r7", ref: "2304", nombre: "Esquinero 90", pasos: "", activo: false },
     { id: "r8", ref: "9022010", nombre: "Conector marcos", pasos: "", activo: false },
     { id: "r9", ref: "3178", nombre: "Junta ensanche marco", pasos: "", activo: false },
+    { id: "r10", ref: "808088S", nombre: "Inversor (batiente 64)", pasos: "", activo: true },
+    { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
+    { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40,
@@ -49070,6 +49135,7 @@ function auxExpandir(hojas, cfg, ventanas) {
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: f.ref, nombre: rc.nombre || f.desc || f.ref,
             lCorte: f.lCorte, color: f.color || "", k, n,
             ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
+            referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
         }
       }));
@@ -49101,16 +49167,18 @@ function imprimirAux(lista, cfg) {
     .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; align-items: center; }
     .r1 { width: 100%; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
     .med { width: 100%; font-size: 7.5mm; font-weight: bold; line-height: 1.05; white-space: nowrap; }
-    .r2 { width: 100%; font-size: 3.2mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
-    .sitio { width: 100%; font-size: 4mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
+    .r2 { width: 100%; font-size: 2.9mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
+    .sitio { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 2mm; font-size: 5.2mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
+    .sitio .lugar { flex: 0 0 auto; }
+    .sitio .pasos { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 3mm; font-weight: normal; }
     .bar { margin-top: 0.6mm; line-height: 0; }
     .dig { font-size: 3mm; letter-spacing: 0.5mm; line-height: 1.1; margin-top: 0.3mm; }
   </style></head><body><div class="et">
     <div class="r1"><span>${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span><span>${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
     <div class="med">${esc(auxMed(p.lCorte))} mm</div>
-    <div class="r2">${esc([p.grupo, p.cliente].filter(Boolean).join(" · ") || p.unidad)}</div>
-    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}`)}</div>
-    <div class="sitio">${esc(`${p.carroNombre || ""} · hueco ${p.hueco ?? ""}`)}${p.pasosTxt ? esc(` · ${p.pasosTxt}`) : ""}</div>
+    <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
+    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}${p.fab ? ` · Fab ${p.fab}` : ""}`)}</div>
+    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POSICIÓN ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 8, 0.5, ancho - 6)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
@@ -49260,7 +49328,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}`);
