@@ -494,6 +494,9 @@ const faltaQueLlevaObra = (p) => !!p && p.origen !== "portalUxcar"
   && normalizarChecklist(p.checklistMateriales).some((c) => !c.estado);
 const AVISO_QUE_LLEVA = 'Esta obra no tiene informe de materiales: súbelo, o contesta a mano "Qué lleva la obra" en la ficha del proyecto (Sí/No en todo).';
 
+// Un pedido cuenta como llegado para poder fabricar si oficina lo tiene recibido O fábrica ha confirmado TODAS sus líneas. Si solo lo ha confirmado fábrica, sigue saliendo el aviso
+// de discrepancia con oficina, pero ya no frena el proceso (pedido del usuario: con el aviso hay bastante).
+const pedidoLlegadoParaFabricar = (pd) => !!pd && (pd.estado === "Recibido" || (toArray(pd.lineas).length > 0 && toArray(pd.lineas).every((l) => l && l.confirmadoFabrica)));
 const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
   const faltan = [];
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
@@ -504,7 +507,7 @@ const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
     const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
     if (vinculados.length === 0) { faltan.push(`${nombre}: lleva, pero no tiene pedido vinculado`); return; }
     vinculados.forEach((pd) => {
-      if (pd.estado !== "Recibido") faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
+      if (!pedidoLlegadoParaFabricar(pd)) faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
       else if ((pd.lineas || []).some((l) => !l.confirmadoFabrica)) faltan.push(`${nombre}: el pedido #${pd.numero} está sin confirmar por fábrica`);
     });
   });
@@ -20250,7 +20253,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
       const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-      const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+      const oficinaOk = misPedidos.every((pd) => pedidoLlegadoParaFabricar(pd) || uxDaPorRecibido(pd));
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
       // Uxcar no rellena el checklist «Qué lleva la obra»: para sus obras basta con que todos sus pedidos de cristal/persiana hayan llegado (Uxcar) y fábrica los haya confirmado
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
@@ -20264,7 +20267,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (p.origen === "portalUxcar") return pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
     return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
   }).map((p) => ({ p, faltan: p.origen === "portalUxcar"
-    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => pd.estado !== "Recibido" ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => !pedidoLlegadoParaFabricar(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
     : condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
 
   const descargarWord = () => {
@@ -48927,7 +48930,7 @@ function calcListoParaFabricar(proyectos, pedidos) {
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
     const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+    const oficinaOk = misPedidos.every((pd) => pedidoLlegadoParaFabricar(pd) || uxDaPorRecibido(pd));
     const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
     const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
     return oficinaOk && fabricaOk && checklistOk;
