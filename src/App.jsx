@@ -2789,6 +2789,42 @@ export default function App() {
     if (llegada.n && confirmado) showToast(`${llegada.n} pendiente${llegada.n === 1 ? "" : "s"} de ubicar en el almacén de persianas`);
   };
 
+  // Persianas que YA están en los carros pero cuyo pedido no se dio por llegado (se colocaron a mano sin pasar por «Ha llegado todo»).
+  // Por cada obra con pedidos de persianas: si en los carros hay tantas persianas (no entregadas) como se pidieron en total, las líneas de persiana aún sin confirmar se dan por llegadas.
+  // Los cajones y las guías no se tocan (no hay forma de saber si han llegado). Solo se aplica cuando el usuario pulsa el botón.
+  const persianasEnCarrosSinRecibir = () => {
+    const res = [];
+    const almsT = toArray(almacenesPersianas);
+    const enAlm = toArray(persianasAlmacen).filter((x) => x && !x.entregada && ((almsT.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana") === "persiana");
+    toArray(proyectos).forEach((pr) => {
+      const pds = toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado" && esPedidoDePersianasCRM(pd));
+      if (!pds.length) return;
+      const esPers = (l) => !!l && !esLineaAccesorioPersianas(l) && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0;
+      const totalPedidas = pds.reduce((t, pd) => t + toArray(pd.lineas).filter(esPers).reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0), 0);
+      if (!totalPedidas) return;
+      const claves = clavesObraControl(pr, uxExpedientes, pedidos);
+      const nAlm = enAlm.filter((x) => casaObraControl(claves, x)).length;
+      if (nAlm < totalPedidas) return;
+      const lineas = [];
+      pds.forEach((pd) => toArray(pd.lineas).forEach((l) => { if (esPers(l) && !l.confirmadoFabrica) lineas.push({ pedidoId: pd.id, lineaId: l.id }); }));
+      if (lineas.length) res.push({ proyecto: pr, pedidas: totalPedidas, enCarros: nAlm, lineas });
+    });
+    return res;
+  };
+  const aplicarPersianasEnCarros = () => {
+    const lista = persianasEnCarrosSinRecibir();
+    if (!lista.length) { showToast("No hay nada que marcar"); return 0; }
+    const hoy = new Date().toISOString().slice(0, 10);
+    const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica";
+    const ids = new Set(lista.flatMap((x) => x.lineas.map((y) => `${y.pedidoId}|${y.lineaId}`)));
+    savePedidos(pedidos.map((pd) => (toArray(pd.lineas).some((l) => ids.has(`${pd.id}|${l.id}`))
+      ? { ...pd, lineas: toArray(pd.lineas).map((l) => (ids.has(`${pd.id}|${l.id}`) ? { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: `${quien} (ya estaban en carros)` } : l)) }
+      : pd)));
+    const n = ids.size;
+    showToast(`${n} línea${n === 1 ? "" : "s"} de persianas dadas por llegadas en ${lista.length} obra${lista.length === 1 ? "" : "s"}`);
+    return n;
+  };
+
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
   const saveCristales = (next) => { registrarMovimientosCaballetes(cristales, next, (fbAuth.currentUser && fbAuth.currentUser.email) || ""); setCristales(next); persist("cristales", next); };
   const saveConfirmacionesCristal = (next) => { setConfirmacionesCristal(next); persist("confirmacionesCristal", next); };
@@ -6156,6 +6192,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
+            persianasEnCarrosSinRecibir, aplicarPersianasEnCarros,
             pedidosCrm: pedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
@@ -44757,6 +44794,17 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
         <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
         <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
+        {(() => {
+          const pend = ctx.persianasEnCarrosSinRecibir ? ctx.persianasEnCarrosSinRecibir() : [];
+          if (!pend.length) return null;
+          const nl = pend.reduce((t, x) => t + x.lineas.length, 0);
+          return (
+            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-amber-900">{pend.length} obra{pend.length === 1 ? "" : "s"} con todas las persianas ya en carros ({pend.map((x) => `#${x.proyecto.numero}`).slice(0, 8).join(", ")}) pero el pedido sin dar por llegado.</span>
+              <button onClick={() => { if (window.confirm(`Se darán por llegadas ${nl} línea${nl === 1 ? "" : "s"} de persianas de ${pend.length} obra${pend.length === 1 ? "" : "s"}, porque en los carros hay tantas persianas como se pidieron.\n\nLos cajones y las guías NO se tocan.\n\n¿Seguro?`)) ctx.aplicarPersianasEnCarros(); }} className="px-3 py-1.5 rounded bg-amber-700 text-white font-semibold">Dar por llegadas las que ya están en carros</button>
+            </div>
+          );
+        })()}
         {ctrlObras.length === 0 ? <p className="text-sm text-slate-400">No hay pedidos abiertos de cristales ni compactos.</p> : (
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
