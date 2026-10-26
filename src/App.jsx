@@ -2791,7 +2791,7 @@ export default function App() {
 
   // Persianas que YA están en los carros pero cuyo pedido no se dio por llegado (se colocaron a mano sin pasar por «Ha llegado todo»).
   // Por cada obra con pedidos de persianas: si en los carros hay tantas persianas (no entregadas) como se pidieron en total, las líneas de persiana aún sin confirmar se dan por llegadas.
-  // Los cajones y las guías no se tocan (no hay forma de saber si han llegado). Solo se aplica cuando el usuario pulsa el botón.
+  // Cuentan también los cajones con tela y las guías (en los carros entran igual). Solo se aplica cuando el usuario pulsa el botón.
   const persianasEnCarrosSinRecibir = () => {
     const res = [];
     const almsT = toArray(almacenesPersianas);
@@ -2799,7 +2799,8 @@ export default function App() {
     toArray(proyectos).forEach((pr) => {
       const pds = toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado" && esPedidoDePersianasCRM(pd));
       if (!pds.length) return;
-      const esPers = (l) => !!l && !esLineaAccesorioPersianas(l) && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0;
+      // cuentan TODAS las líneas del pedido (persianas, cajones con tela y guías): en la tabla de control «pedidas» las suma todas, y en los carros entran todas
+      const esPers = (l) => !!l && (parseFloat(l.cantidad) || 0) >= 0;
       const totalPedidas = pds.reduce((t, pd) => t + toArray(pd.lineas).filter(esPers).reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0), 0);
       if (!totalPedidas) return;
       const claves = clavesObraControl(pr, uxExpedientes, pedidos);
@@ -44801,7 +44802,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
           return (
             <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs flex flex-wrap items-center gap-2">
               <span className="font-semibold text-amber-900">{pend.length} obra{pend.length === 1 ? "" : "s"} con todas las persianas ya en carros ({pend.map((x) => `#${x.proyecto.numero}`).slice(0, 8).join(", ")}) pero el pedido sin dar por llegado.</span>
-              <button onClick={() => { if (window.confirm(`Se darán por llegadas ${nl} línea${nl === 1 ? "" : "s"} de persianas de ${pend.length} obra${pend.length === 1 ? "" : "s"}, porque en los carros hay tantas persianas como se pidieron.\n\nLos cajones y las guías NO se tocan.\n\n¿Seguro?`)) ctx.aplicarPersianasEnCarros(); }} className="px-3 py-1.5 rounded bg-amber-700 text-white font-semibold">Dar por llegadas las que ya están en carros</button>
+              <button onClick={() => { if (window.confirm(`Se darán por llegadas ${nl} línea${nl === 1 ? "" : "s"} (persianas, cajones y guías) de ${pend.length} obra${pend.length === 1 ? "" : "s"}, porque en los carros hay tantas piezas como se pidieron.\n\n¿Seguro?`)) ctx.aplicarPersianasEnCarros(); }} className="px-3 py-1.5 rounded bg-amber-700 text-white font-semibold">Dar por llegadas las que ya están en carros</button>
             </div>
           );
         })()}
