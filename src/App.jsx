@@ -44647,7 +44647,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       toArray(pd.lineas).forEach((l) => {
         if (!l) return;
         const n = parseFloat(l.cantidad) || 1;
-        const rec = l.estado === "Recibido" || pd.estado === "Recibido" ? n : 0;
+        const rec = l.estado === "Recibido" || pd.estado === "Recibido" || l.confirmadoFabrica ? n : 0; // también cuenta lo que fábrica ha dado por llegado
         if (t === "cristal") { f.cP += n; f.cR += rec; } else { f.pP += n; f.pR += rec; }
       });
       if (pd.tipoUxcar) f.ux = true; else f.propio = true;
@@ -44794,7 +44794,13 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
           </div>
       <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
         <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
-        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
+        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.</p>
+        <div className="flex flex-wrap items-center gap-2 mb-2 text-[11px]">
+          <span className="font-semibold text-slate-500">Colores:</span>
+          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold border border-emerald-200">Verde = todo recibido y ya en su almacén</span>
+          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-bold border border-amber-200">Naranja = aún falta por llegar (o la obra sin planificar)</span>
+          <span className="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">Sin color = recibido, pero todavía no está colocado en el almacén</span>
+        </div>
         {(() => {
           const pend = ctx.persianasEnCarrosSinRecibir ? ctx.persianasEnCarrosSinRecibir() : [];
           if (!pend.length) return null;
@@ -44815,8 +44821,8 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
                   <tr key={f.key}>
                     <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
                     <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
-                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
-                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : f.cP && f.cL >= f.cP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : f.pP && f.pL >= f.pP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
                     <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
                     <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
                   </tr>
