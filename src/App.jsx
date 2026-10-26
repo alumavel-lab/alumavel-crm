@@ -44709,7 +44709,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
     const pr = toArray(ctx.proyectos).find((y) => y && y.id === pd.proyectoId);
     const nn = pr ? numsExpediente(pr.numero || pr.expediente || "").find((n) => numsPlanif.has(String(n))) : null;
     return { pd, pr, dia: nn ? numsPlanif.get(String(nn)) : "" };
-  }).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
+  }).filter((x) => !(x.pr && (x.pr.planificableOk || ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida", "Entregado", "Cancelado"].includes(x.pr.estadoTrabajo)))).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
   const nSinPlan = sinPlanificar.filter((x) => !x.dia).length;
   // CONTROL POR OBRA de todo lo pedido (nuestro y de Uxcar): cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.
   const ctrlObras = (() => {
