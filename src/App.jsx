@@ -3829,6 +3829,7 @@ export default function App() {
 
   // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
   const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
+  emailUsuarioActual = (currentUser && currentUser.email) || (authUser && authUser.email) || ""; // los correos a proveedores/clientes se mandan con copia a quien los genera
 
   // Caballetes de ventanas terminadas (almacén de fábrica). Se guardan uno a uno en
   // Firebase ("caballetesVentanas/<id>") y se leen en tiempo real.
@@ -12907,7 +12908,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     }).join("\n");
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
-    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+    const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
@@ -12929,13 +12930,13 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       if (tieneAdjuntos) {
         // Con PDF adjunto no hace falta repetir el desglose por escrito: el propio
         // documento ya trae las medidas, solo hace falta un texto breve dirigido al proveedor.
-        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido en el documento adjunto.\n\n${bloqueObra}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes adjuntamos el pedido en el documento adjunto.\n\n${bloqueObra}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
       } else {
         const lineasTexto = pedido.lineas.map((l) => {
           const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
           return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
         }).join("\n");
-        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nUn saludo,\nALUMAVEL`;
+        cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido (va también en el PDF adjunto):\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
       }
 
       const response = await fetch("/.netlify/functions/enviar-email", {
@@ -12946,6 +12947,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
           asunto: `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`,
           cuerpo,
           replyTo: currentUser?.email || "",
+          cc: currentUser?.email || emailUsuarioActual || "",
           adjuntos: [
             // Cristales y compactos: se manda el documento original del programa de ventanas, no un PDF hecho por el CRM
             ...(pedido.soloDocumentoProveedor ? [] : [{ nombre: `pedido-${pedido.numero}.pdf`, dataUrl: bytesADataUrlPdf(await pdfPedidoBytes(pedido, proveedor, proyecto, materiales, clienteObra)) }]),
@@ -19685,6 +19687,8 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [], modo = "alum
 // Una línea tiene discrepancia si una de las dos partes la da por llegada y la otra no:
 //  · «fabrica»: fábrica ha confirmado que ha llegado pero oficina aún no tiene el pedido/la línea como recibido
 //  · «oficina»: oficina lo tiene como recibido pero fábrica no lo ha confirmado
+// Correo de quien está usando el CRM: va en copia (cc) de todo correo que se manda a un proveedor o cliente.
+let emailUsuarioActual = "";
 // Pedidos de Uxcar (id del portal) que Uxcar ya ha dado por recibidos con su albarán. En esos pedidos NO existe «oficina»: confirman Uxcar y fábrica.
 let uxRecibidoIds = new Set();
 const uxDaPorRecibido = (p) => !!p && !!p.uxcarPedidoId && uxRecibidoIds.has(p.uxcarPedidoId);
@@ -21048,7 +21052,7 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
     try {
       const dataUrl = await aDataUrl(await obtenerPdf());
       const r = await fetch("/.netlify/functions/enviar-email", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ destinatario: email, asunto: `Albarán de salida ${envio.numeroAlbaran || ""} — Ecowin PVC`,
+        body: JSON.stringify({ cc: emailUsuarioActual, destinatario: email, asunto: `Albarán de salida ${envio.numeroAlbaran || ""} — Ecowin PVC`,
           cuerpo: `Buenos días,\n\nLe adjuntamos el albarán de salida ${envio.numeroAlbaran || ""} del ${fmtDate(envio.fechaSalida)}${envio.firmaChofer ? `, firmado por ${envio.firmaChofer.nombre}` : ""}.\n\nMaterial: ${envio.descripcion}${envio.cantidad ? ` (${envio.cantidad})` : ""}\n\nUn saludo,\nEcowin PVC`,
           adjuntos: [{ nombre: nombreArchivo, dataUrl }] }) });
       const j = await r.json().catch(() => ({}));
@@ -35231,6 +35235,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           destinatario: presupuesto.email,
+          cc: emailUsuarioActual,
           asunto,
           cuerpo,
           adjuntos: [{ nombre: nombreArchivo, dataUrl }],
@@ -45833,7 +45838,7 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
       const r = await fetch("/.netlify/functions/enviar-email", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          destinatario: email, asunto, cuerpo, replyTo: perfil.email || authUser.email || "", nombreRemitente: "Uxcar",
+          destinatario: email, asunto, cuerpo, replyTo: perfil.email || authUser.email || "", cc: perfil.email || authUser.email || "", nombreRemitente: "Uxcar",
           adjuntos: uxDocsPedido(pedido).map((d) => ({ nombre: d.nombre, url: d.url })),
         }),
       });

@@ -11,7 +11,7 @@ import nodemailer from "nodemailer";
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
-    const { destinatario, asunto, cuerpo, replyTo, adjuntos, nombreRemitente } = body;
+    const { destinatario, asunto, cuerpo, replyTo, adjuntos, nombreRemitente, cc } = body;
 
     if (!destinatario || !asunto || !cuerpo) {
       return { statusCode: 400, body: JSON.stringify({ error: "Faltan datos: destinatario, asunto o cuerpo." }) };
@@ -55,12 +55,19 @@ export const handler = async (event) => {
         };
       });
 
+    // cc: correo (o lista) de quien genera el envío; recibe copia. Solo se acepta si tiene forma de correo y no repite al destinatario.
+    const esCorreo = (x) => /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/.test(String(x || "").trim());
+    const dest = String(destinatario).split(/[;,]/).map((x) => x.trim().toLowerCase());
+    const copia = [...new Set((Array.isArray(cc) ? cc : String(cc || "").split(/[;,]/)).map((x) => String(x).trim()).filter(esCorreo))]
+      .filter((x) => !dest.includes(x.toLowerCase()));
+
     await transporter.sendMail({
       // nombreRemitente: p.ej. "Uxcar" cuando el pedido lo manda Uxcar desde su portal.
       // La dirección sigue siendo la de la empresa, pero se ve su nombre y las
       // respuestas le llegan a su correo (replyTo).
       from: `"${String(nombreRemitente || "ALUMAVEL").replace(/["\r\n]/g, "")}" <${user}>`,
       to: destinatario,
+      ...(copia.length > 0 ? { cc: copia } : {}),
       replyTo: replyTo || user,
       subject: asunto,
       text: cuerpo,
