@@ -44733,7 +44733,9 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       }
       m.set(key, f);
     });
-    return [...m.values()].filter((f) => f.abiertos > 0).map((f) => {
+    // «Lo que viene»: una obra que ya se ha dado por planificable (contestado «sí» al aviso) o que ya está en marcha deja de salir aquí
+    const yaNoViene = (pr) => !!pr && (!!pr.planificableOk || ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida", "Entregado", "Cancelado"].includes(pr.estadoTrabajo));
+    return [...m.values()].filter((f) => f.abiertos > 0 && !yaNoViene(f.pr)).map((f) => {
       // La obra se reconoce en los almacenes por todo lo que la une (ver clavesObraControl): proyecto, expediente, presupuesto, Uxcar y pedidos.
       const claves = clavesObraControl(f.pr, ctx.uxExpedientes, ctx.pedidosCrm);
       const nums = [...claves.exps];
