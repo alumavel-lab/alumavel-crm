@@ -1091,7 +1091,20 @@ export default function App() {
     }
     persistInFlight.current[key] = true;
     const payload = persistLatest.current[key];
-    const base = persistBase.current[key];
+    let base = persistBase.current[key];
+    // Si esta lista no se pudo leer al abrir el CRM (no hay "base"), antes se escribía entera y podía borrar lo que había en
+    // la base de datos. Ahora se trata todo lo de aquí como nuevo y se conserva lo que ya hubiera guardado.
+    if (Array.isArray(payload) && base === undefined && listaConIdsUnicos(payload)) base = [];
+    // FRENO de seguridad: en las listas importantes no se guarda un cambio que vacíe la lista o borre más de la mitad de golpe.
+    if (Array.isArray(payload) && Array.isArray(base) && ["proyectos", "presupuestos", "clientes", "pedidos", "facturas", "proveedores", "materiales", "usuarios", "incidencias", "instalaciones", "mediciones", "leads"].includes(key)) {
+      const n0 = base.length;
+      if ((payload.length === 0 && n0 >= 2) || (n0 >= 10 && payload.length < n0 * 0.5)) {
+        persistInFlight.current[key] = false;
+        delete persistLatest.current[key];
+        alert(`Por seguridad NO se ha guardado: este cambio iba a borrar ${n0 - payload.length} de ${n0} registros de «${key}». Recarga la página (Ctrl+F5). Si de verdad querías borrar tantos, avisa a quien lleva el CRM.`);
+        return;
+      }
+    }
     const fusionable = listaConIdsUnicos(payload) && listaConIdsUnicos(base);
     for (let intento = 1; intento <= 3; intento++) {
       try {
@@ -1618,6 +1631,7 @@ export default function App() {
   // Al empezar a fabricar una obra: se descuenta de nuestro stock lo que lleva su análisis de materiales (perfiles, herraje…).
   // En las obras de Uxcar solo el herraje y los accesorios (los perfiles son de su stock). Una sola vez por obra (stockDescontado).
   const descontarStockObra = (proyecto) => {
+    if (!STOCK_Y_PEDIDOS_PERFIL_ACTIVOS) return null;
     if (!proyecto || proyecto.stockDescontado || !proyecto.listadoMateriales) return null;
     const porId = {}; const porPerfil = {}; let sinMaterial = 0;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -1946,6 +1960,7 @@ export default function App() {
   };
 
   const deleteProyecto = (id) => {
+    if (currentUser?.rol !== "Administrador") { alert("Solo un administrador puede borrar proyectos."); return; }
     saveProyectos(proyectos.filter((p) => p.id !== id));
     setProyectoView("list");
     showToast("Proyecto eliminado");
@@ -3382,6 +3397,7 @@ export default function App() {
   };
 
   const deletePresupuesto = (id) => {
+    if (currentUser?.rol !== "Administrador") { alert("Solo un administrador puede borrar presupuestos."); return; }
     savePresupuestos(presupuestos.filter((p) => p.id !== id));
     setPresupuestoView("list");
     showToast("Presupuesto eliminado");
@@ -4228,7 +4244,7 @@ export default function App() {
           const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
           const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
           const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
-          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
+          const grupos = (yaHabia || !STOCK_Y_PEDIDOS_PERFIL_ACTIVOS) ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
           const extra = { listadoMateriales: l, listadoUxClave: t.k };
           if (Object.keys(grupos).length) crearPedidosEsperaListado(t.p, grupos, origen, extra);
           else crearPedidosEsperaListado(t.p, {}, origen, extra);
@@ -4590,7 +4606,7 @@ export default function App() {
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
     // Los perfiles del informe salen del stock de Uxcar al pasar a producción (con el mismo margen por roturas, sin avisar a Uxcar). Una vez por expediente.
     let descUx = null;
-    if (!exp.stockDescontado && exp.listadoMateriales) {
+    if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && !exp.stockDescontado && exp.listadoMateriales) {
       const lista = toArray(stockUxAuto);
       const por = {}, perf = {};
       toArray(exp.listadoMateriales.lineas).filter((l) => esLineaPerfil(l) && l.codigo).forEach((l) => {
@@ -8158,7 +8174,7 @@ function TipoPlanoObra({ proyecto, onInlineUpdate, sinBoton }) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Tipo plano y ventanas de la obra {toArray(proyecto.recuento).length > 0 && <span className="text-slate-500 font-normal">· {ventanasDeObra(proyecto).total} ventanas</span>}</div>
-          <div className="text-xs text-slate-500">{sinBoton ? (doc ? "Va detrás del albarán de entrega y cuenta las ventanas para el planning y los informes." : "Todavía no hay: sube el \"Listado dibujos\" con el botón de \"Documentación de la obra\" y aparecerá aquí con las ventanas contadas.") : "Se sube una vez: va detrás del albarán de entrega y cuenta las ventanas para los informes."}</div>
+          <div className="text-xs text-slate-500">{sinBoton ? (doc ? "Va detrás del albarán de entrega y cuenta las ventanas para el planning y los informes." : "Todavía no hay: sube la \"Carga de material\" con el botón de \"Documentación de la obra\" y aparecerá aquí con las ventanas contadas.") : "Se sube una vez: va detrás del albarán de entrega y cuenta las ventanas para los informes."}</div>
         </div>
         {doc && <a href={doc.url} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[#2E8B57] hover:underline">{doc.tipo === "tipo_plano" ? "Tipo plano" : "Documento"}: {doc.nombre}</a>}
         <input ref={inputRef} type="file" accept="application/pdf,image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
@@ -8621,7 +8637,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // ventanas (listado de vidrios y pedido compra), cada uno en su pedido, con su proveedor.
       const faltanAuto = compararListadoConStock(l, materiales, proyecto.id).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
-      if (onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
+      if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
         faltanAuto.forEach((f) => {
           // Sin proveedor conocido (p.ej. stock vacío o material sin dar de alta): se
@@ -8636,7 +8652,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         onCrearPedidosEspera(proyecto, gruposAuto, origen, JSON.parse(JSON.stringify({ listadoMateriales: listadoLimpio, ...extraProyecto })));
       } else {
         onGuardarListado(proyecto.id, l, { ...extraProyecto, checklistMateriales: rellenarChecklistDesdeListado(proyecto.checklistMateriales, l.lineas, pedidosObra.filter((pd) => pd.proyectoId === proyecto.id)) });
-        if (yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+        if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
       }
       if (avisos.length) setError(avisos.join(" "));
       setAbierto(true);
@@ -16136,6 +16152,10 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
+// De momento (hasta tener el Stock bien metido) NO se crean solos los pedidos de perfiles y herraje al subir el
+// análisis y NO se descuenta nada del Stock al empezar a fabricar: ese material va solo por "Preparación de material".
+// Solo se preparan solos los pedidos de cristales y de compactos (persianas). Poner a true para reactivarlo.
+const STOCK_Y_PEDIDOS_PERFIL_ACTIVOS = false;
 // Clave del grupo de pedido: cristales y persianas/compactos son pedidos distintos aunque vayan al mismo proveedor.
 // Aunque sea el mismo proveedor, cada familia es un pedido distinto: perfiles (con refuerzos), herrajes (con accesorios), persianas y cristales.
 const familiaPedidoSeccion = (seccion) => (seccion === "refuerzo" ? "perfiles" : seccion === "accesorios" ? "herraje" : seccion);
@@ -46072,6 +46092,7 @@ async function clasificarPdfObra(file) {
     const mv = T.match(/VERSION\s*:?\s*\.?\s*(\d+)/) || T.match(/PRES(?:UPUESTO)?\s*:?\s*[\d.]+-(\d+)/);
     clasificarPdfObra.version.set(file, mv ? mv[1] : "");
     if (/HOJA DE CORTE/.test(T)) return "corte";
+    if (/CARGA (DE )?MATERIAL/.test(T)) return "dibujos"; // la carga de material hace de tipo plano: cuenta las ventanas
     if (/TIPOLOGIA ?:/.test(T) && /FAB ?:/.test(T)) return "etiquetas";
     if (/V\d{2}\.\d+ ?- ?\d[\d.]* ?-FAB ?:/.test(T)) return "etiquetas";
     if (/ANALISIS (DE )?MATERIALES/.test(T)) return "analisis";
@@ -46120,7 +46141,7 @@ async function aplicarPdfEtiquetasObra(file, lotesPrevios, presupuestoNumero) {
     const fj = r.corte.modelos.filter((m) => m.tipo === "fijo").length, pu = r.corte.modelos.filter((m) => m.tipo === "puerta").length;
     return { lotes: ap.lotes, corte: r.corte, aviso: `Hoja de corte aplicada a ${ap.aplicadas} ventanas${fj || pu ? ` (${[fj ? `${fj} fijo${fj > 1 ? "s" : ""}` : "", pu ? `${pu} puerta${pu > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ")})` : ""}.${ap.modelosSinVentana.length ? ` Sin ventanas para: ${ap.modelosSinVentana.join(", ")}.` : ""}` };
   }
-  if (!r.lotes.length) return { lotes: null, aviso: `${file.name}: no he encontrado etiquetas de fabricación.` };
+  if (!r.lotes.length) return { lotes: null, aviso: /corte/i.test(file.name || "") ? `⚠ ${file.name}: NO he podido leer la hoja de corte (no he sacado ningún modelo). Los demás documentos no tienen nada que ver con este aviso.` : `${file.name}: no he encontrado etiquetas de fabricación.` };
   const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
   return { lotes: mezclarLotesFab(toArray(lotesPrevios), r, file.name), aviso: `Etiquetas: ${nv} ventanas/puertas (lote ${r.lotes.map((l) => l.fab).join(", ")}).` };
 }
@@ -46155,7 +46176,7 @@ function estadoDocumentosObra(p) {
     { nombre: "Presupuesto", ok: !!p.presupuestoId || docs.some((d) => /presupuesto/i.test(d.nombre || "")) },
     { nombre: "Análisis de materiales", ok: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))), nota: lis && lis.archivo ? lis.archivo : "" },
     // El listado de dibujos ya no se sube: ahora va el fichero «carga material». Si aun así hay tipo plano o recuento se muestra como opcional.
-    { nombre: "Carga de material", ok: docs.some((d) => /carga[\s_.-]*material/i.test(d.nombre || "")), nota: (docs.find((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || {}).nombre || "" },
+    { nombre: "Carga de material", ok: docs.some((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || !!(p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano"), nota: (docs.find((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || {}).nombre || (p.documentoEntrega && p.documentoEntrega.nombre) || "" },
     ...(((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length) ? [{ nombre: "Listado de dibujos (tipo plano)", ok: true, opcional: true, nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" }] : []),
     { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
     { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
@@ -48017,7 +48038,12 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
   const leer = async (file) => {
     setError(""); setElegidos([]);
     try {
-      const datos = JSON.parse(await file.text());
+      // Acepta el .json de la copia diaria por email y también el .json.gz que baja Firebase de sus copias de seguridad
+      let texto;
+      if (/\.gz$/i.test(file.name) || file.type === "application/gzip" || file.type === "application/x-gzip") {
+        texto = await new Response(file.stream().pipeThrough(new DecompressionStream("gzip"))).text();
+      } else texto = await file.text();
+      const datos = JSON.parse(texto);
       if (!datos || typeof datos !== "object") throw new Error("formato");
       setCopia(datos); setNombreArchivo(file.name);
     } catch (e) { setError("Ese archivo no es una copia de seguridad del CRM (tiene que ser el .json que llega por email)."); }
@@ -48039,7 +48065,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
       <p className="text-xs text-slate-500 mb-3">Sube el archivo .json de la copia que llega cada día por email. Te enseña lo que había en esa copia y ya no existe ahora (por ejemplo, una obra que ha desaparecido) y lo puedes recuperar tal cual estaba. No toca nada de lo que hay ahora.</p>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Upload size={14} /> {copia ? "Cambiar archivo" : "Subir copia de seguridad (.json)"}</button>
-        <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         {copia && <span className="text-xs text-emerald-700 font-semibold">✓ {nombreArchivo}</span>}
       </div>
       {error && <p className="text-xs text-rose-600 font-semibold mb-2">⚠ {error}</p>}
@@ -48055,6 +48081,11 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
             <p className="text-sm text-slate-400">En esta copia no hay nada de {def.label.toLowerCase()} que falte ahora{q ? " con esa búsqueda" : ""}.</p>
           ) : (
             <>
+              <div className="flex flex-wrap items-center gap-3 mb-1.5 text-xs">
+                <span className="text-slate-500 font-semibold">{faltan.length} para recuperar · {elegidos.length} marcado{elegidos.length === 1 ? "" : "s"}</span>
+                <button type="button" onClick={() => setElegidos(faltan.map((x) => x.id))} className="text-[#2E8B57] font-bold hover:underline">Marcar todos ({faltan.length})</button>
+                <button type="button" onClick={() => setElegidos([])} className="text-slate-500 hover:underline">Quitar marcas</button>
+              </div>
               <div className="max-h-64 overflow-y-auto border border-slate-100 rounded-md divide-y divide-slate-100 mb-2">
                 {faltan.map((x) => (
                   <label key={x.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
