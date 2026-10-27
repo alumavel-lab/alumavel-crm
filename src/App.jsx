@@ -5343,15 +5343,16 @@ export default function App() {
         })()}
         {(() => {
           if (!currentUser || modulo === "pedidos" || (modulo === "fabrica")) return null;
-          const aPedidos = tieneAcceso("pedidos") || !!currentUser.responsablePedidos; // el responsable de pedidos también resuelve las discrepancias
+          const aPedidos = tieneAcceso("pedidos");
+          const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
-          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
+          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
           if (!disc.length) return null;
-          if (!aPedidos && !veFabrica && !soloUx) return null;
+          if (!resp && !veFabrica && !soloUx) return null;
           return (
             <button
-              onClick={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
+              onClick={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
             >
               ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →
@@ -5360,13 +5361,14 @@ export default function App() {
         })()}
         {(() => {
           if (!currentUser || modulo === "pedidos") return null;
-          const aPedidos = tieneAcceso("pedidos") || !!currentUser.responsablePedidos;
+          const aPedidos = tieneAcceso("pedidos");
+          const resp = isAdmin || !!currentUser.responsablePedidos; // la alarma de oficina solo le sale al administrador y al responsable de pedidos (no a toda la oficina)
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
-          if (!aPedidos && !veFabrica && !soloUx) return null;
-          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
+          if (!resp && !veFabrica && !soloUx) return null;
+          const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
-          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
