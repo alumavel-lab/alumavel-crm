@@ -1626,7 +1626,7 @@ export default function App() {
   // Al empezar a fabricar una obra: se descuenta de nuestro stock lo que lleva su análisis de materiales (perfiles, herraje…).
   // En las obras de Uxcar solo el herraje y los accesorios (los perfiles son de su stock). Una sola vez por obra (stockDescontado).
   const descontarStockObra = (proyecto) => {
-    if (!proyecto || proyecto.stockDescontado || !proyecto.listadoMateriales) return null;
+    if (!CONTROL_STOCK_ACTIVO || !proyecto || proyecto.stockDescontado || !proyecto.listadoMateriales) return null;
     const porId = {}; const porPerfil = {}; let sinMaterial = 0;
     const hoy = new Date().toISOString().slice(0, 10);
     const nuevos = new Map(); // lo que el análisis pide y no está en Stock: se da de alta solo, con la referencia del análisis, y queda a cero o en negativo
@@ -4249,7 +4249,7 @@ export default function App() {
           const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
           const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
           const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
-          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
+          const grupos = yaHabia || !CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id); // mismo criterio que en las obras propias: de momento no se crean pedidos de perfiles/herraje al subir el análisis
           const extra = { listadoMateriales: l, listadoUxClave: t.k };
           if (Object.keys(grupos).length) crearPedidosEsperaListado(t.p, grupos, origen, extra);
           else crearPedidosEsperaListado(t.p, {}, origen, extra);
@@ -4338,6 +4338,27 @@ export default function App() {
     vistaFabUxRef.current = txt;
     fbSet(ref(fbDb, "portalUxcar/vistaFabrica"), JSON.parse(txt)).catch(() => { vistaFabUxRef.current = ""; });
   }, [uxExpedientes, proyectos, pedidos, cristales, persianasAlmacen, carrosPersianas, currentUser?.id, loading]);
+  // Almacenes de cristales (caballetes) y de persianas (carros) de fábrica, completos, para consulta de Uxcar (los comparten): portalUxcar/almacenCompartido
+  const almCompUxRef = useRef("");
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const Ks = toArray(uxExpedientes).map((e) => uxClaves(e));
+    const esUx = (f) => Ks.some((K) => f(K));
+    const res = {
+      cristales: toArray(cristales).filter((c) => c.estado !== "Retirado").map((c) => ({
+        ubic: c.ubicacion ? `${c.ubicacion.zona || ""} · fila ${c.ubicacion.fila ?? ""} · hueco ${c.ubicacion.hueco ?? ""}` : "Sin colocar",
+        exps: [...expedientesDeCaballete(c)].join(" · "), piezas: toArray(c.piezas).reduce((a, p) => a + (parseFloat(p.cantidad) || 1), 0), ux: esUx((K) => uxCaballeteEs(c, K)),
+      })),
+      persianas: toArray(persianasAlmacen).filter((x) => !x.entregada).map((x) => ({
+        exp: String(x.expediente || ""), parte: x.parte || "", ref: x.refObra || x.ref || "", medida: `${x.ancho || x.largo || ""}${x.alto ? ` × ${x.alto}` : ""}`,
+        carro: (toArray(carrosPersianas).find((c) => c.id === x.carro) || {}).nombre || "Sin carro", ux: esUx((K) => uxPersianaEs(x, K)),
+      })),
+    };
+    const txt = JSON.stringify(res);
+    if (txt === almCompUxRef.current) return;
+    almCompUxRef.current = txt;
+    fbSet(ref(fbDb, "portalUxcar/almacenCompartido"), JSON.parse(txt)).catch(() => { almCompUxRef.current = ""; });
+  }, [uxExpedientes, cristales, persianasAlmacen, carrosPersianas, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -4645,7 +4666,7 @@ export default function App() {
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
     // Los perfiles del informe salen del stock de Uxcar al pasar a producción (con el mismo margen por roturas, sin avisar a Uxcar). Una vez por expediente.
     let descUx = null;
-    if (!exp.stockDescontado && exp.listadoMateriales) {
+    if (CONTROL_STOCK_ACTIVO && !exp.stockDescontado && exp.listadoMateriales) {
       const lista = toArray(stockUxAuto);
       const por = {}, perf = {};
       toArray(exp.listadoMateriales.lineas).filter((l) => esLineaPerfil(l) && l.codigo).forEach((l) => {
@@ -5550,7 +5571,7 @@ export default function App() {
         {(() => {
           // Material que falta en el stock de las obras que ya están en el programa y aún no han empezado a fabricar
           // (descontando lo que ya tienen apartado las demás obras). Se ve desde que se sube el análisis de materiales.
-          if (!currentUser || !(isAdmin || tieneAcceso("proyectos") || tieneAcceso("pedidos"))) return null;
+          if (!CONTROL_STOCK_ACTIVO || !currentUser || !(isAdmin || tieneAcceso("proyectos") || tieneAcceso("pedidos"))) return null;
           const filas = proyectos.filter((p) => p.listadoMateriales && !ESTADOS_OBRA_EMPEZADA.includes(p.estadoTrabajo || "Pendiente de aceptación") && !p.stockDescontado)
             .map((p) => {
               const propias = p.origen === "portalUxcar" ? UX_SECCIONES_PROPIAS : SECCIONES_A_MEDIDA;
@@ -8527,6 +8548,9 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
 // De momento NO se crean pedidos en espera de perfiles/herraje al subir el análisis de materiales: el stock aún no está bien y saldrían pedidos de más.
 // El material se prepara desde «Preparación de material». Cuando el stock esté al día, poner esto en true para volver a crearlos solos.
 const CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS = false;
+// Mientras el stock no esté al día: el CRM NO descuenta stock al fabricar (obras propias ni de Uxcar), NO compara el análisis con el stock y NO avisa de «falta material».
+// Las listas de material a preparar siguen saliendo. Cuando el stock esté actualizado, ponerlo a true.
+const CONTROL_STOCK_ACTIVO = false;
 function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas, onAnadirDocumentos }) {
   const hojasAuxObra = useObjetoFb("auxiliaresHojas");
   const [leyendo, setLeyendo] = useState(false);
@@ -8733,7 +8757,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
     finally { setLeyendo(false); }
   };
   const filas = listado ? compararListadoConStock(listado, materiales, proyecto.id) : [];
-  const faltan = filas.filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
+  const faltan = CONTROL_STOCK_ACTIVO ? filas.filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion)) : [];
   const sinAlta = filas.filter((f) => !f.mat && !f.aMedida);
   const yaCreados = pedidosObra.filter((pd) => pd.origenListado && listado && pd.origenListado === (listado.numero || listado.archivo));
   const crear = () => {
@@ -8782,9 +8806,10 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       {listado && abierto && (
         <>
           <div className="flex flex-wrap gap-2 text-xs">
-            <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-800 font-semibold">✓ {filas.length - faltan.length} en stock</span>
-            <span className="px-2 py-1 rounded bg-rose-50 text-rose-700 font-semibold">✗ Faltan {faltan.length}</span>
-            {sinAlta.length > 0 && <span className="px-2 py-1 rounded bg-amber-50 text-amber-800 font-semibold">⚠ {sinAlta.length} sin dar de alta en Stock</span>}
+            {CONTROL_STOCK_ACTIVO && <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-800 font-semibold">✓ {filas.length - faltan.length} en stock</span>}
+            {CONTROL_STOCK_ACTIVO && <span className="px-2 py-1 rounded bg-rose-50 text-rose-700 font-semibold">✗ Faltan {faltan.length}</span>}
+            <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 font-semibold">{filas.length} líneas de material a preparar</span>
+            {CONTROL_STOCK_ACTIVO && sinAlta.length > 0 && <span className="px-2 py-1 rounded bg-amber-50 text-amber-800 font-semibold">⚠ {sinAlta.length} sin dar de alta en Stock</span>}
             {filas.some((f) => f.difPrecio) && <span className="px-2 py-1 rounded bg-orange-50 text-orange-800 font-semibold">€ {filas.filter((f) => f.difPrecio).length} con precio distinto al de Stock</span>}
             {listado.superficies && listado.superficies.m2 > 0 && <span className="px-2 py-1 rounded bg-slate-100 text-slate-600">Cristales y paneles: {listado.superficies.m2} m²</span>}
             {listado.horas > 0 && <span className="px-2 py-1 rounded bg-violet-50 text-violet-800 font-semibold">⏱ {String(listado.horas).replace(".", ",")} h de fabricación</span>}
@@ -8801,7 +8826,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
                       <td className="px-2 py-1">{f.descripcion}{f.color ? <span className="text-slate-400"> · {f.color}</span> : null}</td>
                       <td className="px-2 py-1 text-right">{f.uds}</td>
                       <td className="px-2 py-1 text-right">{f.aMedida ? <span className="text-slate-400">{f.ancho && f.alto ? `${f.ancho}×${f.alto}` : "a medida"}</span> : f.mat ? <span title={f.reservado > 0 ? `En stock ${f.stockFisico}, de los cuales ${f.reservado} ya están apartados para otras obras` : ""}>{f.stock}{f.reservado > 0 && <span className="text-[10px] text-amber-600"> (−{f.reservado} otras obras)</span>}</span> : <span className="text-amber-700">no dado de alta</span>}</td>
-                      <td className={`px-2 py-1 text-right font-semibold ${f.falta > 0 ? "text-rose-600" : "text-emerald-700"}`}>{f.falta > 0 ? f.falta : "✓"}</td>
+                      <td className={`px-2 py-1 text-right font-semibold ${f.falta > 0 ? "text-rose-600" : "text-emerald-700"}`}>{!CONTROL_STOCK_ACTIVO ? "" : f.falta > 0 ? f.falta : "✓"}</td>
                       <td className="px-2 py-1 text-right whitespace-nowrap">{f.precioUd ? money(f.precioUd) : "—"}</td>
                       <td className={`px-2 py-1 text-right whitespace-nowrap ${f.difPrecio ? "text-orange-700 font-semibold" : "text-slate-400"}`}>{f.precioStock ? money(f.precioStock) : "—"}</td>
                     </tr>
@@ -47116,7 +47141,17 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 // Portal Uxcar: UN SOLO BOTÓN con todos los documentos del expediente (lo mismo que en las obras propias, menos el presupuesto).
 // Cada PDF se reconoce por su contenido y va a su sitio: análisis/mano de obra → listado de materiales; carga de material → tipo plano;
 // hoja de corte → recuento (ventanas, puertas, persianas, mosquiteras) + Auxiliares + etiquetas; listado de cristales / pedido compra persianas → pedido.
-async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx }) {
+async function uxNumeroDePdf(f) {
+    try {
+      const lib = await cargarPdfJs();
+      const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
+      const tc = await (await doc.getPage(1)).getTextContent();
+      const T = tc.items.map((i) => i.str).join(" ").replace(/\s+/g, " ");
+      const m = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i) || T.match(/N[UÚ]MERO\s*:\s*([\d.]+)/i);
+      return m ? m[1].replace(/\.$/, "") : "";
+    } catch (e) { return ""; }
+}
+async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr }) {
   const avisos = [];
   const lista = [], vistos = new Set();
   for (const f of files) { const k = `${f.name}|${f.size}`; if (vistos.has(k)) continue; vistos.add(k); lista.push(f); }
@@ -47135,16 +47170,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     else grupos.materiales.push({ f, t: "" });
   }
   // Nº de expediente: el del que ya está abierto o el que pone el PDF (NUMERO : 6.994 / PRESUPUESTO:6.994-1)
-  const numeroDePdf = async (f) => {
-    try {
-      const lib = await cargarPdfJs();
-      const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
-      const tc = await (await doc.getPage(1)).getTextContent();
-      const T = tc.items.map((i) => i.str).join(" ").replace(/\s+/g, " ");
-      const m = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i) || T.match(/N[UÚ]MERO\s*:\s*([\d.]+)/i);
-      return m ? m[1].replace(/\.$/, "") : "";
-    } catch (e) { return ""; }
-  };
+  const numeroDePdf = uxNumeroDePdf;
   const todos = [...grupos.dibujos, ...grupos.corte, ...grupos.etiquetas, ...grupos.materiales.map((x) => x.f), ...grupos.cristales, ...grupos.persianas];
   if (!todos.length) return { avisos: [...avisos, "No hay ningún documento válido."], expId: null };
   let numero = "";
@@ -47216,7 +47242,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const ahora = Date.now();
   const hoy = uxHoy();
   const nums = toArray(pedidosUx).map((p) => parseInt(String(p.numero || "").replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
-  let sig = nums.length ? Math.max(...nums) : 0;
+  let sig = Math.max(nums.length ? Math.max(...nums) : 0, (ctr && ctr.n) || 0);
   const matsPatch = {};
   for (const [tipoPed, fs] of [["Cristales", grupos.cristales], ["Persianas", grupos.persianas]]) {
     for (const f of fs) {
@@ -47250,13 +47276,15 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     Object.keys(matsPatch).forEach((k) => { patch[`expedientes/${id}/materiales/${k}/estado`] = matsPatch[k].estado; });
   }
   if (Object.keys(patch).length) await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+  if (ctr) ctr.n = sig;
   avisos.unshift(nuevo ? `Expediente ${base.numero} creado.` : `Guardado en el expediente ${base.numero}.`);
   return { avisos, expId: id };
 }
 function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, aviso, expFijo, onHecho }) {
-  const [sel, setSel] = useState(expFijo ? expFijo.id : "__auto");
+  const sel = expFijo ? expFijo.id : "__auto"; // en el portal no se elige ni se crea nada a mano: el número del PDF decide
   const [leyendo, setLeyendo] = useState(false);
   const [msgs, setMsgs] = useState([]);
+  const [prog, setProg] = useState("");
   const inputRef = useRef(null);
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
   const subir = async (fl) => {
@@ -47265,27 +47293,41 @@ function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx
     setLeyendo(true); setMsgs([]);
     try {
       const exp = expFijo || (sel === "__auto" ? null : lista.find((x) => x.id === sel) || null);
-      const r = await uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx });
-      setMsgs(r.avisos);
-      if (r.expId && onHecho) onHecho(r.expId);
+      const base = { tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr: { n: 0 } };
+      if (exp) {
+        const r = await uxSubirDocumentosExpediente({ ...base, files, exp, expedientes });
+        setMsgs(r.avisos);
+        if (r.expId && onHecho) onHecho(r.expId);
+      } else {
+        // Varios expedientes a la vez (20, 30…): se agrupan los PDF por su número y se procesa cada grupo
+        const porNum = new Map(), sinNum = [];
+        for (const f of files) { const n = (await uxNumeroDePdf(f)).replace(/\D/g, ""); if (!n) { sinNum.push(f.name); continue; } porNum.set(n, [...(porNum.get(n) || []), f]); }
+        const todos = [];
+        if (sinNum.length) todos.push(`⚠ Sin número de expediente (no subidos): ${sinNum.join(", ")}`);
+        let hechos = 0, k = 0, ultimo = null;
+        let conocidos = expedientes;
+        for (const [num, fs] of porNum) {
+          k++; setProg(`Expediente ${k} de ${porNum.size} (${num})…`);
+          try {
+            const r = await uxSubirDocumentosExpediente({ ...base, files: fs, exp: null, expedientes: conocidos });
+            todos.push(`— ${num}: ${r.avisos.join(" ")}`);
+            if (r.expId) { hechos++; ultimo = r.expId; }
+          } catch (er) { todos.push(`— ${num}: no se pudo guardar (${er.message})`); }
+        }
+        todos.unshift(`${hechos} de ${porNum.size} expedientes guardados.`);
+        setMsgs(todos); setProg("");
+        if (porNum.size === 1 && ultimo && onHecho) onHecho(ultimo);
+      }
     } catch (er) { setMsgs(["No se pudo guardar: " + er.message]); }
     setLeyendo(false);
   };
   return (
     <div className="mb-5 p-3 rounded-lg border border-emerald-200 bg-emerald-50/60">
-      <div className="text-xs text-slate-600 mb-2"><b>Subir documentos del expediente</b> (todos a la vez, con Ctrl pulsado): análisis de materiales, mano de obra, carga de material, hoja de corte, listado de cristales y pedido de persianas/compactos. Sin presupuesto. Cada uno se reconoce solo y va a su sitio, como en Ecowin PVC.</div>
+      <div className="text-xs text-slate-600 mb-2"><b>Subir documentos del expediente</b> (todos a la vez, con Ctrl pulsado; puedes meter 20 o 30 expedientes de golpe y se separan por su número): análisis de materiales, mano de obra, carga de material, hoja de corte, listado de cristales y pedido de persianas/compactos. Sin presupuesto. Cada uno se reconoce solo y va a su sitio, como en Ecowin PVC.</div>
       <div className="flex flex-wrap items-center gap-2">
-        {!expFijo && (
-          <label className="text-xs text-slate-700 flex items-center gap-1.5">Guardar en:
-            <select value={sel} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
-              <option value="__auto">Detectar por el número del PDF (crea el expediente si no existe)</option>
-              {lista.map((x) => <option key={x.id} value={x.id}>Expediente {x.numero}</option>)}
-            </select>
-          </label>
-        )}
         <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
         <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
-          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo (puede tardar un par de minutos)…" : "Subir documentos"}
+          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? (prog || "Leyendo (puede tardar un par de minutos)…") : "Subir documentos"}
         </button>
       </div>
       {msgs.length > 0 && <ul className="mt-2 text-xs text-slate-700 space-y-0.5 list-disc pl-4">{msgs.map((m, i) => <li key={i}>{m}</li>)}</ul>}
@@ -47293,7 +47335,7 @@ function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx
   );
 }
 // Pestaña «Fábrica» del portal de Uxcar: solo consulta y solo sus expedientes (lo escribe el CRM de Ecowin PVC en portalUxcar/vistaFabrica).
-function UxVistaFabrica({ vista, expedientes, pedidos }) {
+function UxVistaFabrica({ vista, expedientes, pedidos, almacen }) {
   const [q, setQ] = useState("");
   const lista = expedientes.map((e) => ({ e, v: (vista && vista[e.id]) || null })).sort((a, b) => String(b.e.numero).localeCompare(String(a.e.numero), "es", { numeric: true }));
   const color = (s) => (s === "Listo para fabricar" ? "bg-emerald-100 text-emerald-800" : s === "En fabricación" ? "bg-sky-100 text-sky-800" : s === "Esperando material" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600");
@@ -47338,14 +47380,26 @@ function UxVistaFabrica({ vista, expedientes, pedidos }) {
         ))}
       </div>
       <div className="bg-white border border-slate-200 rounded-lg p-4">
-        <div className="font-bold text-slate-800 mb-2">Almacén de cristales y de persianas (solo tus expedientes)</div>
-        {conAlm.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay cristales ni persianas tuyos en el almacén de fábrica.</p> : conAlm.map(({ e, v }) => (
-          <div key={e.id} className="text-sm py-1.5 border-b border-slate-50 last:border-0">
-            <b>{e.numero}</b>
-            {toArray(v.cristales).length > 0 && <div className="text-slate-700">Cristales: {v.cristales.join(" · ")}</div>}
-            {toArray(v.persianas).length > 0 && <div className="text-slate-700">Persianas: {v.persianas.length} → {[...new Set(v.persianas)].join(" · ")}</div>}
-          </div>
-        ))}
+        <div className="font-bold text-slate-800 mb-1">Almacén de cristales (caballetes)</div>
+        <p className="text-xs text-slate-500 mb-2">Es de fábrica y lo compartís. Tus expedientes salen marcados en verde. Solo consulta.</p>
+        {toArray(almacen && almacen.cristales).length === 0 ? <p className="text-sm text-slate-500">No hay caballetes ahora mismo.</p> : (
+          <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1">Sitio</th><th>Expedientes</th><th>Cristales</th></tr></thead><tbody>
+            {[...toArray(almacen.cristales)].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0)).map((c, i) => (
+              <tr key={i} className={`border-b border-slate-50 ${c.ux ? "bg-emerald-50 font-semibold" : ""}`}><td className="py-1">{c.ubic}</td><td>{c.exps || "—"}</td><td>{c.piezas || "—"}</td></tr>
+            ))}
+          </tbody></table>
+        )}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="font-bold text-slate-800 mb-1">Almacén de persianas (carros)</div>
+        <p className="text-xs text-slate-500 mb-2">Compartido con fábrica. Tus expedientes salen marcados en verde. Solo consulta.</p>
+        {toArray(almacen && almacen.persianas).length === 0 ? <p className="text-sm text-slate-500">No hay persianas en el almacén ahora mismo.</p> : (
+          <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1">Carro</th><th>Expediente</th><th>Persiana</th><th>Medida</th></tr></thead><tbody>
+            {[...toArray(almacen.persianas)].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0) || String(a.carro).localeCompare(String(b.carro))).map((x, i) => (
+              <tr key={i} className={`border-b border-slate-50 ${x.ux ? "bg-emerald-50 font-semibold" : ""}`}><td className="py-1">{x.carro}</td><td>{x.exp || "—"}</td><td>{[x.ref, x.parte].filter(Boolean).join(" · ") || "—"}</td><td>{x.medida || "—"}</td></tr>
+            ))}
+          </tbody></table>
+        )}
       </div>
     </div>
   );
@@ -47551,7 +47605,6 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         <p className="text-sm text-slate-500 mb-4">Mete aquí cada expediente y sus pedidos de material, y sigue cómo va: material, producción y fecha de entrega.</p>
         <div className="flex flex-wrap gap-1 mb-5">
           {tab("lista", "Mis expedientes")}
-          {tab("nuevo", "+ Nuevo expediente")}
           {tab("pedidos", "Pedidos")}
           {tab("materiales", "Informe de materiales")}
           {tab("stock", "Mi stock de perfiles")}
@@ -47586,7 +47639,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           tipos.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay tipos de expediente configurados. Avisa a Ecowin PVC.</p>
             : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
         ) : vista === "fabrica" ? (
-          <UxVistaFabrica vista={datos.vistaFabrica} expedientes={expedientes} pedidos={pedidosUx} />
+          <UxVistaFabrica vista={datos.vistaFabrica} almacen={datos.almacenCompartido} expedientes={expedientes} pedidos={pedidosUx} />
         ) : vista === "condiciones" ? (
           <UxCondiciones docs={datos.condiciones} />
         ) : vista === "resumen" ? (
