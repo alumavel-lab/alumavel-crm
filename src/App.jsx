@@ -1999,6 +1999,27 @@ export default function App() {
     setProyectoView("list");
     showToast("Proyecto eliminado");
   };
+  // Pedidos de Uxcar «sueltos»: todos sus expedientes ya no existen (se borró el expediente sin borrar sus pedidos). Se quitan del portal y de tu CRM.
+  const uxPedidosHuerfanos = useMemo(() => {
+    const ids = new Set(toArray(uxExpedientes).map((e) => e.id));
+    return toArray(uxPedidos).filter((p) => p && p.id && toArray(p.expedientes).length > 0 && toArray(p.expedientes).every((e) => e.expedienteId && !ids.has(e.expedienteId)));
+  }, [uxPedidos, uxExpedientes]);
+  const uxPurgarHuerfanos = async () => {
+    const lista = uxPedidosHuerfanos;
+    if (!lista.length) return;
+    const idsP = new Set(lista.map((p) => p.id));
+    const crm = toArray(pedidos).filter((pd) => idsP.has(pd.uxcarPedidoId));
+    const pers = toArray(pedidosPersianas).filter((q) => q && idsP.has(q.uxcarPedidoId));
+    if (!window.confirm(`Pedidos de Uxcar sin expediente: ${lista.map((p) => p.numero).join(", ")}.\n\nSe borran del portal, ${crm.length} copia(s) en Pedidos del CRM y ${pers.length} persiana(s) pedida(s). No se tocan los cristales ni las persianas que ya están colocados en los almacenes.\n\nNo se puede deshacer. ¿Borrar?`)) return;
+    try {
+      const patch = {};
+      lista.forEach((p) => { patch[`pedidos/${p.id}`] = null; patch[`pendienteUxcar/${p.id}`] = null; });
+      await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+      if (crm.length) { const q = new Set(crm.map((x) => x.id)); savePedidos(toArray(pedidos).filter((x) => !q.has(x.id))); }
+      if (pers.length) { const q = new Set(pers.map((x) => x.id)); savePedidosPersianas(toArray(pedidosPersianas).filter((x) => !q.has(x.id))); }
+      showToast(`${lista.length} pedido(s) de Uxcar sin expediente borrados`);
+    } catch (e) { showToast("No se pudo borrar: " + e.message, "error"); }
+  };
 
   const updateProyectoInline = (id, patch) => {
     const hoyISO = new Date().toISOString().slice(0, 10);
@@ -4871,8 +4892,10 @@ export default function App() {
   };
 
   const uxBorrar = async (exp) => {
-    try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), null); showToast(`Expediente ${exp.numero} borrado`); }
-    catch (e) { showToast("No se pudo borrar: " + e.message, "error"); }
+    // Borra el expediente con todo lo suyo (pedidos del portal y del CRM, persianas pedidas, Auxiliares) y su proyecto si lo tiene
+    const pr = toArray(proyectos).find((x) => x.id === exp.proyectoId || x.uxcarExpedienteId === exp.id);
+    if (pr) { await deleteProyecto(pr.id); return; }
+    if (await limpiarUxcarDeProyecto({ id: "", uxcarExpedienteId: exp.id })) showToast(`Expediente ${exp.numero} borrado`);
   };
   // Alta de un usuario del portal: cuenta de acceso + ficha en portalUsuarios (lo que
   // le deja ver SOLO la zona de Uxcar). Nunca se le mete en "equipo".
@@ -6489,6 +6512,8 @@ export default function App() {
             onAltaPortal={uxAltaPortal}
             onBajaPortal={uxBajaPortal}
             onBorrar={uxBorrar}
+            nHuerfanos={uxPedidosHuerfanos.length}
+            onPurgarHuerfanos={uxPurgarHuerfanos}
             onVerProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
           />
         )}
@@ -47757,7 +47782,16 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     const yaSacados = toArray(e.etiquetasFab).some((l) => l && l.control && !l.control.pendiente && (toArray(l.control.cristales).length || toArray(l.control.persianas).length));
     if (yaSacados) { aviso("No se puede borrar: Ecowin PVC ya ha sacado sus cristales del almacén. Pídele que lo deshaga primero."); return; }
     if (!window.confirm(`¿Borrar el expediente ${e.numero}? Desaparece de tu lista y no se puede recuperar.`)) return;
-    try { await fbSet(ref(fbDb, `portalUxcar/expedientes/${e.id}`), null); aviso(`Expediente ${e.numero} borrado`); setVista("lista"); setAbiertoId(null); } catch (er) { aviso("No se pudo borrar: " + er.message); }
+    try {
+      // También se van sus pedidos (si un pedido era de varios expedientes, solo se le quita este)
+      const patch = { [`expedientes/${e.id}`]: null, [`vistaFabrica/${e.id}`]: null };
+      toArray(pedidosUx).filter((p) => toArray(p.expedientes).some((x) => x.expedienteId === e.id)).forEach((p) => {
+        const otros = toArray(p.expedientes).filter((x) => x.expedienteId !== e.id);
+        if (otros.length) patch[`pedidos/${p.id}/expedientes`] = otros; else patch[`pedidos/${p.id}`] = null;
+      });
+      await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+      aviso(`Expediente ${e.numero} borrado con sus pedidos`); setVista("lista"); setAbiertoId(null);
+    } catch (er) { aviso("No se pudo borrar: " + er.message); }
   };
   const guardarNuevo = async (f) => {
     const id = uid();
@@ -48009,7 +48043,7 @@ function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
   );
 }
 
-function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar }) {
+function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos }) {
   const [vista, setVista] = useState(() => { if (uxcNav.discrepancias) { uxcNav.discrepancias = false; return "discrepancias"; } return "lista"; });
   const [abiertoId, setAbiertoId] = useState(null);
   const [avisoStockUx, setAvisoStockUx] = useState("");
@@ -48041,6 +48075,12 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
+      {isAdmin && nHuerfanos > 0 && onPurgarHuerfanos && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm flex flex-wrap items-center gap-3">
+          <span>⚠ Hay <b>{nHuerfanos}</b> pedido{nHuerfanos === 1 ? "" : "s"} de Uxcar sin expediente (se borró el expediente pero no sus pedidos).</span>
+          <button onClick={onPurgarHuerfanos} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:bg-amber-700">Borrarlos</button>
+        </div>
+      )}
       {(onGuardarEtiquetasUx || onGuardarSinObra) && (
         <details className="mb-4 text-sm">
           <summary className="cursor-pointer text-xs font-semibold text-slate-500 hover:text-slate-700 select-none">Solo si hay urgencia y faltan documentos: expediente urgente directo a la línea</summary>
