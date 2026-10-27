@@ -17496,7 +17496,7 @@ async function leerPackingPersianas(file) {
 // ---- Pedidos de compra de persianas (lo que se ha pedido al proveedor y todavía no ha llegado) ----
 // Se guardan APARTE (pedidosPersianas), no en persianasAlmacen: así no cuentan como "dentro", no salen en "Sin sitio"
 // y no entran en los cruces con ventanas ni en los puestos. Al llegar (packing list, fotos o a mano) se marcan solas como recibidas.
-const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"recogedor":"","descripcion":""}]}. "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = tipo en pocas palabras (p. ej. "decorativa 185 mm blanco, sin guías"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"recogedor":"","color":"","descripcion":""}]}. "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = tipo en pocas palabras (p. ej. "decorativa 185 mm blanco, sin guías"). Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres. SI EL DOCUMENTO ES UN "LISTADO CAJAS" (columnas Modelo, Codigo, Ancho, Alto, Color, Uds): "presupuesto" = el valor de "Número" más la "Versión" con guion (Número 6.673 y Versión 3 = 6.673-3); "pedido" = el número suelto del recuadro de la cabecera (p. ej. 5.266); "referencia" = el texto tras "Referencia:" (p. ej. Puente Prato) aunque no lleve EXP, y entonces deja "expediente" vacío; "cliente" = el texto tras "Cliente:" sin el código numérico inicial (187-Amador Torrente Teruel S.L = Amador Torrente Teruel S.L); "ref" = la columna Modelo (AT1, AT2…); "ancho" y "alto" son las columnas Ancho y Alto (el punto es separador de miles); "cantidad" = la columna Uds; "color" = la columna Color; "descripcion" = la columna Codigo con su descripción. En cualquier pedido, si hay columna de color, ponlo en "color".';
 const normRefPers = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 // De la línea de un pedido de persianas (la descripción trae algo como "V01.002 · Persiana decorativa 155mm · … Rec. Emp Izquierda · BLANCO")
 // saca la vivienda, el lado del recogedor (la "mano") y, si lo dice, la habitación.
@@ -17529,7 +17529,7 @@ async function leerPedidoPersianas(file) {
   const refObra = String(o.referencia || "").trim();
   const cab = {
     pedido: String(o.pedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
-    expediente: expDigitosPers(o.expediente || refObra), refObra, cliente: String(o.cliente || "").trim(),
+    expediente: expDigitosPers(o.expediente || refObra), refObra, cliente: String(o.cliente || "").replace(/^\s*\d+\s*-\s*/, "").trim(),
     proveedor: String(o.proveedor || "").trim(), fechaPedido: fechaIsoPedido(o.fechaPedido), fechaEntrega: fechaIsoPedido(o.fechaEntrega),
   };
   const filas = [];
@@ -17537,7 +17537,7 @@ async function leerPedidoPersianas(file) {
     const n = Math.max(1, Math.min(60, parseInt(f.cantidad, 10) || 1));
     for (let k = 0; k < n; k++) {
       filas.push({ id: uid(), ref: String(f.ref || "").trim(), largo: parseFloat(f.ancho) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: /el[eé]ctric|motor/i.test(`${f.recogedor || ""} ${f.descripcion || ""}`) ? "Eléctrica" : /doble/i.test(f.recogedor || "") ? "Doble" : /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
+        color: String(f.color || "").trim(), recogedor: /el[eé]ctric|motor/i.test(`${f.recogedor || ""} ${f.descripcion || ""}`) ? "Eléctrica" : /doble/i.test(f.recogedor || "") ? "Doble" : /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
     }
   });
   return { cab, filas };
@@ -18374,6 +18374,18 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     try {
       const b = await leerPedidoPersianas(file);
       if (!b.filas.length) throw new Error("No he encontrado persianas con medidas en el pedido.");
+      // Sin "EXP" en la referencia (p. ej. un LISTADO CAJAS de "Puente Prato"): se busca la obra por presupuesto, nombre o cliente
+      if (!String(b.cab.expediente || "").trim()) {
+        const dig = (t) => String(t || "").replace(/\D/g, "");
+        const pp = dig(String(b.cab.presupuesto || "").split("-")[0]);
+        const nm = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+        const nObra = nm(b.cab.refObra), nCli = nm(b.cab.cliente);
+        const prs = toArray(ctxM.proyectos).filter((y) => y);
+        let c = pp.length >= 3 ? prs.filter((y) => dig(y.presupuestoNumero).startsWith(pp) || new RegExp(`presupuesto\\s*${pp}`, "i").test(String(y.nombre || "").replace(/\./g, ""))) : [];
+        if (c.length !== 1 && nObra.length >= 4) c = prs.filter((y) => nm(y.nombre).includes(nObra) || nObra.includes(nm(y.nombre)) && nm(y.nombre).length >= 4);
+        if (c.length !== 1 && nCli.length >= 5) c = prs.filter((y) => nm(y.nombre).includes(nCli));
+        if (c.length === 1) { const e = dig(c[0].expediente || c[0].numero); if (e) { b.cab.expediente = e; setAviso(`No traía EXP: lo he relacionado con la obra «${c[0].nombre}» (EXP ${e}). Compruébalo antes de guardar.`); } }
+      }
       setBorradorPedido(b);
     } catch (e) { setAviso(e.message || "No he podido leer el pedido."); }
     finally { setLeyendoPedido(false); }
@@ -18391,7 +18403,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     let yaLlegadas = 0;
     const nuevas = lista.map((f) => {
       const p = { id: uid(), expediente: expDigitosPers(cab.expediente), parte: normParte(cab.refObra), ref: String(f.ref || "").trim(), largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: f.recogedor || "", descripcion: f.descripcion || "", pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
+        recogedor: f.recogedor || "", color: f.color || "", descripcion: f.descripcion || "", pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
         proveedor: cab.proveedor, fechaPedido: cab.fechaPedido, fechaEntrega: cab.fechaEntrega, fechaAlta: hoy, estado: "pedida" };
       // Si esa persiana ya está en algún almacén (llegó antes de subir el pedido), no se queda "pendiente" para siempre
       const x = enAlmacen.find((y) => !usadas.has(y.id) && casaPedidaConPersiana(p, y));
@@ -18480,7 +18492,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // De «pedidas» a las piezas de la pantalla de revisión. pedidaId liga cada una con su pedida, para darla por recibida al colocarla aunque se corrija el largo.
   const itemsDesdePedidas = (ps) => {
     const hoy = new Date().toISOString().slice(0, 10);
-    return ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), pedidaId: p.id, expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido", ...(p.accesorio ? { accesorio: true } : {}) }); });
+    return ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), pedidaId: p.id, expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", color: p.color || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido", ...(p.accesorio ? { accesorio: true } : {}) }); });
   };
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
