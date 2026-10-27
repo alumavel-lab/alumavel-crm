@@ -4644,12 +4644,18 @@ export default function App() {
     if (!currentUser || loading) return;
     const porId = new Map(uxPedidos.map((p) => [p.id, p]));
     const aEnviar = pedidos.filter((pd) => pd.uxcarPedidoId && !pd.envioConfirmado && (() => { const p = porId.get(pd.uxcarPedidoId); return p && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual); })());
-    if (aEnviar.length > 0) {
+    // Si Uxcar cambia el proveedor del pedido en su portal, la copia de tu CRM lo refleja («Dealum (de Uxcar)»)
+    const nombreProv = (pd) => { const p = pd.uxcarPedidoId ? porId.get(pd.uxcarPedidoId) : null; return p && p.proveedorNombre ? `${p.proveedorNombre} (de Uxcar)` : ""; };
+    const cambiaProv = pedidos.filter((pd) => pd.origen === "portalUxcar" && nombreProv(pd) && pd.proveedorExterno !== nombreProv(pd));
+    if (aEnviar.length > 0 || cambiaProv.length > 0) {
       const ids = new Set(aEnviar.map((x) => x.id));
+      const idsProv = new Set(cambiaProv.map((x) => x.id));
       savePedidos(pedidos.map((pd) => {
-        if (!ids.has(pd.id)) return pd;
+        let r = pd;
+        if (idsProv.has(pd.id)) r = { ...r, proveedorExterno: nombreProv(pd) };
+        if (!ids.has(pd.id)) return r;
         const p = porId.get(pd.uxcarPedidoId);
-        return { ...pd, envioConfirmado: true, envioMetodo: p.enviadoEmail ? "email" : p.enviadoWhatsapp ? "whatsapp" : "manual", fechaEnvioConfirmado: new Date().toISOString() };
+        return { ...r, envioConfirmado: true, envioMetodo: p.enviadoEmail ? "email" : p.enviadoWhatsapp ? "whatsapp" : "manual", fechaEnvioConfirmado: new Date().toISOString() };
       }));
     }
     uxPedidos.forEach((p) => {
@@ -37308,15 +37314,24 @@ const uxVentanasDeLineas = (lineas) => {
 };
 
 function UxProveedorForm({ initial, onCancel, onSave }) {
-  const [f, setF] = useState(initial || { nombre: "", email: "", movil: "" });
+  const [f, setF] = useState(initial || { nombre: "", email: "", movil: "", suministra: [] });
   const [error, setError] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const suministra = toArray(f.suministra);
+  const alternar = (t) => setF({ ...f, suministra: suministra.includes(t) ? suministra.filter((x) => x !== t) : [...suministra, t] });
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Field label="Nombre" required><TextInput value={f.nombre} onChange={set("nombre")} autoFocus /></Field>
         <Field label="Correo"><TextInput type="email" value={f.email} onChange={set("email")} placeholder="Para mandarle el pedido" /></Field>
         <Field label="Móvil / WhatsApp"><TextInput value={f.movil} onChange={set("movil")} placeholder="Ej: 600123456" /></Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-4 text-sm">
+        <span className="text-slate-600 font-semibold">Les pedís:</span>
+        {["Cristales", "Persianas"].map((t) => (
+          <label key={t} className="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={suministra.includes(t)} onChange={() => alternar(t)} /> {t === "Persianas" ? "Persianas / compactos" : t}</label>
+        ))}
+        <span className="text-xs text-slate-400">Así los pedidos nuevos llevan este proveedor puesto solos.</span>
       </div>
       {error && <p className="text-sm text-rose-600 font-semibold">{error}</p>}
       <div className="flex justify-end gap-2">
@@ -46282,7 +46297,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   );
 }
 
-function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar, onRecepcion, onBorrar }) {
+function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor, perfil, authUser, onVolver, onMarcar, onRecepcion, onBorrar }) {
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -46326,7 +46341,15 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
         <div><div className="text-xs text-slate-400">Qué</div><div className="font-semibold">{pedido.tipo}</div></div>
-        <div><div className="text-xs text-slate-400">Proveedor</div><div className="font-semibold">{pedido.proveedorNombre}</div></div>
+        <div>
+          <div className="text-xs text-slate-400">Proveedor</div>
+          {onCambiarProveedor && proveedores.length > 0 && !(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual || pedido.recepcion) ? (
+            <select value={pedido.proveedorId || ""} onChange={(ev) => onCambiarProveedor(proveedores.find((x) => x.id === ev.target.value) || null)} className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white">
+              <option value="">— Elige proveedor —</option>
+              {proveedores.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+            </select>
+          ) : <div className="font-semibold">{pedido.proveedorNombre || "—"}</div>}
+        </div>
         <div><div className="text-xs text-slate-400">Fecha</div><div className="font-semibold">{uxFecha(pedido.fecha)}</div></div>
         <div><div className="text-xs text-slate-400">Hecho por</div><div className="font-semibold">{pedido.creadoPor || "—"}</div></div>
       </div>
@@ -47520,7 +47543,8 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       try { url = await subirArchivoAStorage(f, "uxcar-pedidos"); } catch (er) { avisos.push(`⚠ No se pudo guardar ${f.name}: ${er.message}`); continue; }
       sig++;
       const pid = uid();
-      const prov = toArray(proveedoresUx).find((x) => new RegExp(tipoPed === "Cristales" ? "cristal|vidrio" : "persian|compact", "i").test(x.nombre || "")) || {};
+      const porTipo = toArray(proveedoresUx).filter((x) => toArray(x.suministra).includes(tipoPed));
+      const prov = (porTipo.length === 1 ? porTipo[0] : null) || toArray(proveedoresUx).find((x) => new RegExp(tipoPed === "Cristales" ? "cristal|vidrio" : "persian|compact", "i").test(x.nombre || "")) || {};
       patch[`pedidos/${pid}`] = JSON.parse(JSON.stringify({
         id: pid, numero: "UX-" + sig, tipo: tipoPed, proveedorId: prov.id || "", proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
         documento: { nombre: f.name, url }, documentos: [{ nombre: f.name, url }], expedientes: [{ expedienteId: id, numero: base.numero, nombre: "", lineas }], comentarios: "",
@@ -47787,7 +47811,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
 
   const guardarProveedor = async (f) => {
     const id = f.id || uid();
-    try { await fbSet(ref(fbDb, `portalUxcar/proveedores/${id}`), { id, nombre: f.nombre, email: f.email || "", movil: f.movil || "" }); } catch (e) { return false; }
+    try { await fbSet(ref(fbDb, `portalUxcar/proveedores/${id}`), { id, nombre: f.nombre, email: f.email || "", movil: f.movil || "", suministra: toArray(f.suministra) }); } catch (e) { return false; }
     aviso(`Proveedor ${f.nombre} guardado`);
     return id;
   };
@@ -47962,6 +47986,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             pedido={pedidosUx.find((p) => p.id === pedidoAbiertoId)}
             proveedor={proveedoresUx.find((x) => x.id === (pedidosUx.find((p) => p.id === pedidoAbiertoId) || {}).proveedorId)}
             perfil={perfil} authUser={authUser}
+            proveedores={proveedoresUx}
+            onCambiarProveedor={(pr) => marcarPedido(pedidoAbiertoId, { proveedorId: pr ? pr.id : "", proveedorNombre: pr ? pr.nombre : "", proveedorEmail: pr ? pr.email || "" : "", proveedorMovil: pr ? pr.movil || "" : "" })}
             onVolver={() => setVista("pedidos")}
             onMarcar={(d) => marcarPedido(pedidoAbiertoId, d)}
             onBorrar={async () => {
