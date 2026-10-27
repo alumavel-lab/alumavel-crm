@@ -19718,12 +19718,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       <div key={e.key} className="mb-1.5">
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
-                        <div key={fi} className="flex h-6 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
+                        <div key={fi} className="flex bg-slate-100 rounded overflow-hidden mb-0.5" style={{ minHeight: "2.6rem" }} title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
                           {fila.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
-                              className="h-6 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
-                              style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
-                              {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
+                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""}${x.presupuesto ? ` · Presupuesto ${x.presupuesto}` : ""}${x.pedido ? ` · Pedido ${x.pedido}` : ""} · ${x.ref || "sin referencia"}${x.habitacion ? ` · ${x.habitacion}` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${x.alto}` : ""} mm${x.color ? ` · ${x.color}` : ""}${x.descripcion ? ` · ${x.descripcion}` : ""}`}
+                              className="border-r-2 border-white bg-[#86D325] text-slate-900 flex flex-col items-center justify-center overflow-hidden leading-tight py-0.5"
+                              style={{ height: "2.6rem", width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
+                              <span className="font-bold text-[9px] text-slate-800 truncate max-w-full">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}{x.cliente ? ` · ${String(x.cliente).split("·")[0].trim()}` : ""}</span>
+                              <span className="text-[10px] font-semibold truncate max-w-full">{x.ref || x.habitacion || "sin ref."}{x.ref && x.habitacion ? ` · ${x.habitacion}` : ""}</span>
+                              <span className="text-[9px] text-slate-700 truncate max-w-full">{largoPersiana(x)}{x.alto ? `×${x.alto}` : ""}{x.color ? ` · ${x.color}` : ""}</span>
                             </div>
                           ))}
                         </div>
