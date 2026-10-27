@@ -1961,15 +1961,11 @@ export default function App() {
     const K = exp ? uxClaves(exp) : null;
     const cr = K ? toArray(cristales).filter((c) => c.estado !== "Retirado" && uxCaballeteEs(c, K)) : [];
     const pe = K ? toArray(persianasAlmacen).filter((x) => uxPersianaEs(x, K)) : [];
-    if (cr.length || pe.length) {
-      alert(`No se puede borrar este proyecto de Uxcar todavía: tiene ${cr.length} caballete(s) de cristales y ${pe.length} persiana(s) colocados en el almacén. Sácalos o bórralos antes y vuelve a borrar.`);
-      return false;
-    }
     const pedUx = toArray(uxPedidos).filter((p) => expId && toArray(p.expedientes).some((e) => e.expedienteId === expId));
     const idsUx = new Set(pedUx.map((p) => p.id));
     const delCrm = toArray(pedidos).filter((pd) => (pd.proyectoId === pr.id && pd.origen === "portalUxcar") || (expId && pd.uxcarExpedienteId === expId));
     const delPers = toArray(pedidosPersianas).filter((q) => q && q.origen === "portalUxcar" && idsUx.has(q.uxcarPedidoId) && exp && String(q.refObra) === String(exp.numero));
-    if (!window.confirm(`Este proyecto es de Uxcar. Al borrarlo se borra también: el expediente en su portal, ${pedUx.length} pedido(s) del portal, ${delCrm.length} pedido(s) del CRM, ${delPers.length} persiana(s) pedida(s) y su hoja de Auxiliares. No se puede deshacer. ¿Seguir?`)) return false;
+    if (!window.confirm(`Este proyecto es de Uxcar. Al borrarlo se borra también: el expediente en su portal, ${pedUx.length} pedido(s) del portal, ${delCrm.length} pedido(s) del CRM, ${delPers.length} persiana(s) pedida(s) y su hoja de Auxiliares.${cr.length || pe.length ? `\n\nOJO: en los almacenes hay ${cr.length} caballete(s) de cristales y ${pe.length} persiana(s) que coinciden con este número. NO se tocan (pueden ser de otro proyecto con el mismo número): bórralos tú en el almacén si son de este.` : ""}\n\nNo se puede deshacer. ¿Seguir?`)) return false;
     try {
       const patch = {};
       if (expId) { patch[`expedientes/${expId}`] = null; patch[`vistaFabrica/${expId}`] = null; }
@@ -4447,6 +4443,15 @@ export default function App() {
       });
     });
   }, [uxExpedientes, hojasAuxApp, currentUser?.id, loading]);
+  // Si un pedido de Uxcar sin enviar desaparece del portal (se sustituyó o se borró), su copia en Pedidos del CRM también: no quedan pedidos fantasma
+  useEffect(() => {
+    if (!currentUser || loading || !toArray(uxPedidos).length) return;
+    const ids = new Set(toArray(uxPedidos).map((p) => p && p.id));
+    const huerfanos = toArray(pedidos).filter((pd) => pd.origen === "portalUxcar" && pd.uxcarPedidoId && !ids.has(pd.uxcarPedidoId) && !pd.envioConfirmado && pd.estado === "Pendiente");
+    if (!huerfanos.length) return;
+    const quitar = new Set(huerfanos.map((x) => x.id));
+    savePedidos(toArray(pedidos).filter((x) => !quitar.has(x.id)));
+  }, [uxPedidos, pedidos, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -20288,7 +20293,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     const base = provFiltroFab ? pedidosEnCurso.filter((p) => p.proveedorId === provFiltroFab) : pedidosEnCurso;
     if (!q) return base;
     return base.filter((p) => {
-      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
+      const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
       return s.includes(q.toLowerCase());
     });
   }, [pedidosEnCurso, q, provFiltroFab]);
@@ -47312,8 +47317,13 @@ async function uxNumeroDePdf(f) {
       const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
       const tc = await (await doc.getPage(1)).getTextContent();
       const T = tc.items.map((i) => i.str).join(" ").replace(/\s+/g, " ");
-      const m = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i) || T.match(/N[UÚ]MERO\s*:\s*([\d.]+)/i);
-      return m ? m[1].replace(/\.$/, "") : "";
+      // El expediente es número + versión: «Presupuesto:6.994-1» (pedidos) y «Número : 6.994 Versión:. 3» (hoja de corte, análisis…) → «6.994-1» y «6.994-3». Otra versión = otro expediente.
+      const m1 = T.match(/PRESUPUESTO\s*:\s*([\d.]+?)\.?\s*-\s*(\d+)/i);
+      if (m1) return `${m1[1]}-${m1[2]}`;
+      const m2 = T.match(/N[UÚ]MERO\s*:\s*([\d.]+?)\.?(?:\s+VERSI[OÓ]N\s*:?\.?\s*(\d+))?(?=\s|$)/i);
+      if (m2) return m2[2] ? `${m2[1]}-${m2[2]}` : m2[1];
+      const m3 = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i);
+      return m3 ? m3[1].replace(/\.$/, "") : "";
     } catch (e) { return ""; }
 }
 async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr }) {
@@ -47421,9 +47431,11 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const matsPatch = {};
   for (const [tipoPed, fs] of [["Cristales", grupos.cristales], ["Persianas", grupos.persianas]]) {
     for (const f of fs) {
-      const yaHay = toArray(pedidosUx).find((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && uxDocsPedido(p).some((d) => d.nombre === f.name));
-      if (yaHay && !window.confirm(`Este expediente ya tiene el pedido ${yaHay.numero} con ${f.name}. ¿Lo elimino y creo uno nuevo con este documento?`)) { avisos.push(`${f.name}: ya estaba en el pedido ${yaHay.numero}; no he creado otro.`); continue; }
-      if (yaHay) patch[`pedidos/${yaHay.id}`] = null;
+      // Un solo pedido de cada tipo por expediente: si ya hay uno ENVIADO al proveedor o recibido no se crea otro; si hay uno sin enviar, se sustituye por este documento
+      const previos = toArray(pedidosUx).filter((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && patch[`pedidos/${p.id}`] !== null);
+      const cerrado = previos.find((p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recibido || p.recepcion);
+      if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
+      previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
       let lineas = [];
       try { const gs = await uxLeerPedidoConClaude(await uxLeerComoDataUrl(f), f.type || "application/pdf"); lineas = toArray(gs).flatMap((g) => toArray(g.lineas)); } catch (er) { avisos.push(`⚠ ${f.name}: no he podido sacar las líneas; el pedido queda con el documento adjunto.`); }
       let url;
