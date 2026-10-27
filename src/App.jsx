@@ -4146,7 +4146,7 @@ export default function App() {
             id: nuevoId, numero: String(numero++), nombre: `Uxcar · ${exp.numero}${piezas ? " · " + piezas : ""}`,
             clienteId: cliente.id, tipoVenta: "Venta", especificaciones: `Expediente ${exp.numero} (${exp.tipo || "sin tipo"}) metido por Uxcar desde su portal.${exp.observaciones ? "\n" + exp.observaciones : ""}`,
             estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
-            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: "", fechaEntregado: "",
+            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: uxSumarDias(uxHoy(), UX_DIAS_ENTREGA), fechaEntregado: "",
             provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
             gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
             origen: "portalUxcar", uxcarExpedienteId: exp.id,
@@ -7301,6 +7301,22 @@ function InfoRow({ icon, label, value }) {
 
 /* ================= PROYECTOS ================= */
 
+// En qué punto va una obra, de un vistazo (para la lista de Proyectos): material → listo para fabricar → en fábrica → listo para salir → entregado
+function faseObra(p, pedidos) {
+  const et = p.estadoTrabajo || "";
+  if (et === "Cancelado") return { txt: "Cancelado", cls: "bg-slate-100 text-slate-500" };
+  if (et === "Entregado") return { txt: "Entregado", cls: "bg-emerald-100 text-emerald-800" };
+  if (et === "Albarán de carga firmado" || et === "Listo para reparto/recogida") return { txt: "Fabricada · lista para salir", cls: "bg-teal-100 text-teal-800" };
+  if (et === "En proceso") return { txt: "EN FÁBRICA · fabricando", cls: "bg-sky-100 text-sky-800" };
+  if (p.estadoPresupuesto !== "Presupuesto aceptado") return { txt: "Aún sin aceptar", cls: "bg-slate-100 text-slate-500" };
+  const cp = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
+  if (!cp.length) return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
+  const llegado = cp.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+  if (llegado && cp.every((pd) => toArray(pd.lineas).every((l) => l.confirmadoFabrica))) return { txt: "LISTA PARA FABRICAR", cls: "bg-emerald-100 text-emerald-800" };
+  if (llegado) return { txt: "Material llegado · falta confirmar en fábrica", cls: "bg-amber-100 text-amber-800" };
+  if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
+  return { txt: "Pedido en espera · sin enviar", cls: "bg-amber-100 text-amber-800" };
+}
 function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
@@ -7491,6 +7507,25 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
         <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
       )}
+      <details className="mb-3 bg-white border border-slate-200 rounded-lg">
+        <summary className="cursor-pointer px-4 py-2 text-sm font-semibold text-slate-700">🎨 Chuleta: qué significa cada color de «¿En qué punto va?»</summary>
+        <div className="px-4 pb-3 grid sm:grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+          {[
+            ["bg-slate-100 text-slate-500", "Aún sin aceptar", "El presupuesto todavía no está aceptado."],
+            ["bg-rose-100 text-rose-800", "Aceptada · material sin pedir", "Hay que pedir los cristales y/o las persianas. Es lo urgente."],
+            ["bg-amber-100 text-amber-800", "Pedido en espera · sin enviar", "El pedido está creado pero no se ha mandado al proveedor."],
+            ["bg-blue-100 text-blue-800", "Material pedido · esperando que llegue", "Ya se ha enviado al proveedor; falta que llegue."],
+            ["bg-amber-100 text-amber-800", "Material llegado · falta confirmar en fábrica", "Oficina lo da por llegado; fábrica aún no lo ha confirmado."],
+            ["bg-emerald-100 text-emerald-800", "LISTA PARA FABRICAR", "Ha llegado todo y fábrica lo ha confirmado. Se puede empezar."],
+            ["bg-sky-100 text-sky-800", "EN FÁBRICA · fabricando", "Ya está en máquina."],
+            ["bg-teal-100 text-teal-800", "Fabricada · lista para salir", "Terminada; falta repartirla, recogerla o instalarla."],
+            ["bg-emerald-100 text-emerald-800", "Entregado", "Cerrada."],
+          ].map(([cls, t, d]) => (
+            <div key={t} className="flex items-start gap-2"><span className={`shrink-0 text-[11px] font-bold px-2 py-0.5 rounded whitespace-nowrap ${cls}`}>{t}</span><span className="text-slate-500">{d}</span></div>
+          ))}
+          <div className="sm:col-span-2 text-slate-500 pt-1"><b className="text-rose-600">⚠ Sin fecha</b> = falta la entrega prevista (ponla aproximada). <b className="text-rose-600">⚠ Sin salida</b> = falta elegir reparto, recogida o instalación. En la columna de material: <b className="text-rose-600">rojo</b> sin pedir · <b className="text-amber-700">naranja</b> en espera · <b className="text-sky-700">azul</b> pedido · <b className="text-emerald-700">verde</b> llegó.</div>
+        </div>
+      </details>
       <div className="bg-white rounded-lg border border-slate-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -7501,7 +7536,9 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
               <th className="px-4 py-3 font-semibold">Presupuesto</th>
               <th className="px-4 py-3 font-semibold">Aceptado el</th>
               <th className="px-4 py-3 font-semibold">Estado trabajo</th>
-              <th className="px-4 py-3 font-semibold">Ciudad reparto</th>
+              <th className="px-4 py-3 font-semibold">¿En qué punto va?</th>
+              <th className="px-4 py-3 font-semibold">Material (pedido · llegada)</th>
+              <th className="px-4 py-3 font-semibold">Salida</th>
               <th className="px-4 py-3 font-semibold text-right">Importe</th>
               <th className="px-4 py-3 font-semibold">Entrega prevista</th>
               <th className="px-4 py-3 font-semibold">Diferencia</th>
@@ -7510,7 +7547,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
+              <tr><td colSpan={13} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
@@ -7547,9 +7584,31 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                       {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e}</option>)}
                     </select>
                   </td>
-                  <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : "—")}</td>
+                  <td className="px-4 py-3">{(() => { const fs = faseObra(p, pedidos); return <span className={`text-[11px] font-bold px-2 py-1 rounded whitespace-nowrap ${fs.cls}`}>{fs.txt}</span>; })()}</td>
+                  <td className="px-4 py-3 text-xs">
+                    {(() => {
+                      const f = (d) => (d ? fmtDate(String(d).slice(0, 10)) : "");
+                      const mios = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
+                      const fila = (tipo, et) => {
+                        const ps = mios.filter((pd) => tipoPedidoMaterial(pd) === tipo);
+                        if (!ps.length) return <div className="text-rose-600 font-semibold">{et}: sin pedir</div>;
+                        const ok = ps.every((pd) => pd.estado === "Recibido");
+                        const enviado = ps.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado));
+                        const fp = ps.map((pd) => pd.fechaCompra).filter(Boolean).sort()[0];
+                        const fl = ps.map((pd) => pd.fechaRecibido || pd.fechaRecepcion).filter(Boolean).sort().slice(-1)[0];
+                        const fe = ps.map((pd) => pd.fechaEntregaPrevista).filter(Boolean).sort()[0];
+                        return (
+                          <div className={ok ? "text-emerald-700" : enviado ? "text-sky-700" : "text-amber-700"}>
+                            <b>{et}:</b> {ok ? `llegó${fl ? " " + f(fl) : ""}` : enviado ? `pedido${fp ? " " + f(fp) : ""}${fe ? " · llega " + f(fe) : " · sin fecha de llegada"}` : "en espera, sin enviar"}
+                          </div>
+                        );
+                      };
+                      return <>{fila("cristal", "Cristal")}{fila("persianas", "Persiana")}</>;
+                    })()}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{ciudadRepartoDe(p) || (p.estadoLogistica === "Recogida en fábrica" ? "Recogida" : p.estadoLogistica ? p.estadoLogistica : <span className="text-[11px] font-semibold text-rose-600" title="Falta elegir la salida (reparto, recogida o instalación): ábrelo y elige">⚠ Sin salida</span>)}</td>
                   <td className="px-4 py-3 text-right font-mono-num">{money(p.importePresupuesto)}</td>
-                  <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{fmtDate(p.fechaEntregaPrevista)}</td>
+                  <td className={`px-4 py-3 ${previstaVencida ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : (["Entregado", "Cancelado"].includes(p.estadoTrabajo) ? "—" : <span className="text-[11px] font-semibold text-rose-600" title="Pon una fecha prevista (luego se puede cambiar)">⚠ Sin fecha</span>)}</td>
                   <td className="px-4 py-3">
                     {diff === null ? <span className="text-slate-300">—</span> : diff === 0 ? (
                       <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">A tiempo</Badge>
@@ -7604,6 +7663,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
     if (f.estadoPresupuesto === "Presupuesto aceptado" && !f.fechaAceptado) {
       setErrorMsg("Falta la fecha de aceptación del presupuesto (es obligatoria cuando el presupuesto está aceptado).");
       alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
+      return;
+    }
+    if (!f.fechaEntregaPrevista) {
+      setErrorMsg("Pon la fecha de entrega prevista. Es obligatoria: pon una aproximada y luego la cambias si hace falta.");
+      alert("Pon la fecha de entrega prevista (es obligatoria; puede ser aproximada y luego se cambia).");
       return;
     }
     setErrorMsg("");
