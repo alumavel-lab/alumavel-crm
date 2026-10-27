@@ -4146,7 +4146,7 @@ export default function App() {
             id: nuevoId, numero: String(numero++), nombre: `Uxcar · ${exp.numero}${piezas ? " · " + piezas : ""}`,
             clienteId: cliente.id, tipoVenta: "Venta", especificaciones: `Expediente ${exp.numero} (${exp.tipo || "sin tipo"}) metido por Uxcar desde su portal.${exp.observaciones ? "\n" + exp.observaciones : ""}`,
             estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
-            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: uxSumarDias(uxHoy(), UX_DIAS_ENTREGA), fechaEntregado: "",
+            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: exp.fechaEntrega || uxSumarDias(exp.fechaAlta || uxHoy(), UX_DIAS_ENTREGA_PEDIDO), fechaEntregado: "",
             provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
             gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
             origen: "portalUxcar", uxcarExpedienteId: exp.id,
@@ -4360,6 +4360,16 @@ export default function App() {
     fbSet(ref(fbDb, "portalUxcar/almacenCompartido"), JSON.parse(txt)).catch(() => { almCompUxRef.current = ""; });
   }, [uxExpedientes, cristales, persianasAlmacen, carrosPersianas, currentUser?.id, loading]);
   // Hojas de corte que Uxcar sube desde su portal: el portal no puede escribir en Auxiliares, así que las deja en su expediente y aquí se pasan a auxiliaresHojas.
+  // Si Uxcar cambia la fecha de entrega desde su portal, se pasa al proyecto una sola vez por cambio (así no pisa lo que se cambie luego aquí)
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    toArray(uxExpedientes).forEach((e) => {
+      if (!e.fechaEntregaPortalAt || !e.fechaEntrega || !e.proyectoId) return;
+      const pr = toArray(proyectos).find((x) => x.id === e.proyectoId);
+      if (!pr || pr.uxFechaVista === e.fechaEntregaPortalAt) return;
+      updateProyectoInline(pr.id, { fechaEntregaPrevista: e.fechaEntrega, uxFechaVista: e.fechaEntregaPortalAt });
+    });
+  }, [uxExpedientes, proyectos, currentUser?.id, loading]);
   const hojasUxPasadasRef = useRef(new Set());
   useEffect(() => {
     if (!currentUser || loading) return;
@@ -4697,7 +4707,7 @@ export default function App() {
         return { ...it, cantidad: (parseFloat(it.cantidad) || 0) - cant, movimientos: [...toArray(it.movimientos), { id: uid(), fecha: hoy, tipo: "salida", cantidad: cant, nota: `Expediente ${exp.numero}`, por: "CRM" }].slice(-60) };
       });
     }
-    if (!(await uxActualizar(exp, { estado: "produccion", fechaProduccion: hoy, fechaEntrega: entrega, ...(descUx ? { stockDescontado: true } : {}) }))) return;
+    if (!(await uxActualizar(exp, { estado: "produccion", fechaProduccion: hoy, fechaEntrega: exp.fechaEntrega || entrega, ...(descUx ? { stockDescontado: true } : {}) }))) return;
     if (descUx && descUx.length) { try { for (const it of descUx) await fbSet(ref(fbDb, `portalUxcar/stock/${it.id}`), it); } catch (e) { /* el stock de Uxcar se corrige a mano */ } }
     if (exp.proyectoId && proyectos.some((p) => p.id === exp.proyectoId)) {
       const desc = descontarStockObra(proyectos.find((p) => p.id === exp.proyectoId));
@@ -36299,6 +36309,7 @@ const UX_ESTADOS = {
 const UX_MATERIALES = [["pvc", "PVC"], ["herrajes", "Herrajes"], ["refuerzos", "Refuerzos"], ["accesorios", "Accesorios"], ["vidrios", "Vidrios"], ["compactos", "Compactos"]];
 const UX_MAT_ESTADOS = { no_lleva: "No lleva", pendiente: "Pendiente de pedir", pedido: "Pedido", recibido: "Recibido en fábrica" };
 const UX_DIAS_ENTREGA = 6;
+const UX_DIAS_ENTREGA_PEDIDO = 7; // fecha de entrega por defecto: una semana después de que Uxcar suba/envíe el pedido (ellos pueden cambiarla)
 const uxHoy = () => new Date().toISOString().slice(0, 10);
 const uxSumarDias = (fecha, n) => { const d = new Date((fecha || uxHoy()) + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
@@ -37068,7 +37079,8 @@ function UxHistorial({ exp, pedidos }) {
   );
 }
 
-function UxFichaDatos({ exp }) {
+function UxFichaDatos({ exp, onCambiarEntrega }) {
+  const entregaDef = !exp.fechaEntrega && exp.fechaAlta ? uxSumarDias(exp.fechaAlta, UX_DIAS_ENTREGA_PEDIDO) : "";
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -37078,7 +37090,10 @@ function UxFichaDatos({ exp }) {
         <div><div className="text-xs text-slate-400">Oscilo-paralelas</div><div className="font-semibold">{uxNum(exp.osciloParalelas)}</div></div>
         <div><div className="text-xs text-slate-400">Alta</div><div className="font-semibold">{uxFecha(exp.fechaAlta)}</div></div>
         <div><div className="text-xs text-slate-400">Entra en producción</div><div className="font-semibold">{uxFecha(exp.fechaProduccion)}</div></div>
-        <div><div className="text-xs text-slate-400">Entrega prevista</div><div className="font-semibold">{uxFecha(exp.fechaEntrega)}</div></div>
+        <div><div className="text-xs text-slate-400">Entrega prevista</div>
+          {onCambiarEntrega ? <input type="date" value={exp.fechaEntrega || entregaDef || ""} onChange={(e) => e.target.value && onCambiarEntrega(exp, e.target.value)} className="border border-slate-300 rounded px-1.5 py-0.5 text-sm font-semibold" />
+            : <div className="font-semibold">{uxFecha(exp.fechaEntrega || entregaDef)}</div>}
+          {!exp.fechaEntrega && entregaDef && <div className="text-[11px] text-slate-400">por defecto (1 semana tras el pedido)</div>}</div>
         <div><div className="text-xs text-slate-400">Metido por</div><div className="font-semibold">{exp.creadoPor || "—"}</div></div>
       </div>
       {toArray(exp.recuento).length > 0 && (
@@ -47234,6 +47249,15 @@ async function uxNumeroDePdf(f) {
       return m ? m[1].replace(/\.$/, "") : "";
     } catch (e) { return ""; }
 }
+async function uxEsListadoVidrios(f) {
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
+    const tc = await (await doc.getPage(1)).getTextContent();
+    const T = tc.items.map((i) => i.str).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ");
+    return /LISTADO (DE )?(VIDRIOS|CRISTALES)/.test(T) && !/PEDIDO COMPRA/.test(T);
+  } catch (e) { return false; }
+}
 async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr }) {
   const avisos = [];
   const lista = [], vistos = new Set();
@@ -47246,7 +47270,11 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     if (t === "dibujos") grupos.dibujos.push(f);
     else if (t === "corte") grupos.corte.push(f);
     else if (t === "etiquetas") grupos.etiquetas.push(f);
-    else if (t === "cristales") grupos.cristales.push(f);
+    else if (t === "cristales") {
+      // El LISTADO de vidrios no es un pedido: solo el pedido de compra crea el pedido de cristales (si no, salen dos pedidos)
+      if (await uxEsListadoVidrios(f)) { avisos.push(`${f.name}: es el listado de vidrios, no el pedido de cristales; no crea pedido.`); continue; }
+      grupos.cristales.push(f);
+    }
     else if (t === "persianas") grupos.persianas.push(f);
     else if (["analisis", "mano_obra", "cajas"].includes(t)) grupos.materiales.push({ f, t });
     else if (/dibujo|tipo[\s_-]*plano/i.test(f.name || "")) grupos.dibujos.push(f);
@@ -47267,7 +47295,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const id = e ? e.id : uid();
   const base = e || {
     id, numero: numero.toUpperCase(), presupuesto: numero, tipo: (tipos && tipos[0]) || "", ventanas: 0, puertas: 0, osciloParalelas: 0, recuento: [], controlOtros: false,
-    observaciones: "", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
+    observaciones: "", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), fechaEntrega: uxSumarDias(uxHoy(), UX_DIAS_ENTREGA_PEDIDO), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
   };
   const sets = {};
   // 1) Hoja de corte: recuento + Auxiliares
@@ -47425,6 +47453,14 @@ function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx
 // Pestaña «Fábrica» del portal de Uxcar: solo consulta y solo sus expedientes (lo escribe el CRM de Ecowin PVC en portalUxcar/vistaFabrica).
 function UxVistaFabrica({ vista, expedientes, pedidos, almacen }) {
   const [q, setQ] = useState("");
+  const [qCri, setQCri] = useState("");
+  const [qPer, setQPer] = useState("");
+  const coincide = (txt, busca) => { const b = String(busca || "").trim().toLowerCase(); return !b || String(txt || "").toLowerCase().includes(b); };
+  const criTodos = toArray(almacen && almacen.cristales);
+  const criVis = criTodos.filter((c) => coincide(`${c.exps} ${c.ubic}`, qCri));
+  const perTodas = toArray(almacen && almacen.persianas);
+  const perVis = perTodas.filter((x) => coincide(`${x.exp} ${x.ref} ${x.parte} ${x.carro}`, qPer));
+  const sumaCri = (ls) => ls.reduce((a, c) => a + (parseFloat(c.piezas) || 0), 0);
   const lista = expedientes.map((e) => ({ e, v: (vista && vista[e.id]) || null })).sort((a, b) => String(b.e.numero).localeCompare(String(a.e.numero), "es", { numeric: true }));
   const color = (s) => (s === "Listo para fabricar" ? "bg-emerald-100 text-emerald-800" : s === "En fabricación" ? "bg-sky-100 text-sky-800" : s === "Esperando material" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600");
   const qd = q.replace(/\D/g, "");
@@ -47470,22 +47506,26 @@ function UxVistaFabrica({ vista, expedientes, pedidos, almacen }) {
       <div className="bg-white border border-slate-200 rounded-lg p-4">
         <div className="font-bold text-slate-800 mb-1">Almacén de cristales (caballetes)</div>
         <p className="text-xs text-slate-500 mb-2">Es de fábrica y lo compartís. Tus expedientes salen marcados en verde. Solo consulta.</p>
-        {toArray(almacen && almacen.cristales).length === 0 ? <p className="text-sm text-slate-500">No hay caballetes ahora mismo.</p> : (
+        <input value={qCri} onChange={(e) => setQCri(e.target.value)} placeholder="Buscar por expediente o sitio…" className="border border-slate-300 rounded px-2 py-1 text-sm w-full max-w-xs mb-2" />
+        {criTodos.length === 0 ? <p className="text-sm text-slate-500">No hay caballetes ahora mismo.</p> : criVis.length === 0 ? <p className="text-sm text-slate-500">Ningún caballete coincide con «{qCri}».</p> : (
           <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1">Sitio</th><th>Expedientes</th><th>Cristales</th></tr></thead><tbody>
-            {[...toArray(almacen.cristales)].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0)).map((c, i) => (
+            {[...criVis].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0)).map((c, i) => (
               <tr key={i} className={`border-b border-slate-50 ${c.ux ? "bg-emerald-50 font-semibold" : ""}`}><td className="py-1">{c.ubic}</td><td>{c.exps || "—"}</td><td>{c.piezas || "—"}</td></tr>
             ))}
+            <tr className="font-bold text-slate-800"><td className="py-1.5" colSpan={2}>Total{qCri.trim() ? ` (de lo buscado · en el almacén hay ${sumaCri(criTodos)} cristales en ${criTodos.length} caballetes)` : ` · ${criVis.length} caballetes`}</td><td>{sumaCri(criVis)}</td></tr>
           </tbody></table>
         )}
       </div>
       <div className="bg-white border border-slate-200 rounded-lg p-4">
         <div className="font-bold text-slate-800 mb-1">Almacén de persianas (carros)</div>
         <p className="text-xs text-slate-500 mb-2">Compartido con fábrica. Tus expedientes salen marcados en verde. Solo consulta.</p>
-        {toArray(almacen && almacen.persianas).length === 0 ? <p className="text-sm text-slate-500">No hay persianas en el almacén ahora mismo.</p> : (
+        <input value={qPer} onChange={(e) => setQPer(e.target.value)} placeholder="Buscar por expediente, carro o referencia…" className="border border-slate-300 rounded px-2 py-1 text-sm w-full max-w-xs mb-2" />
+        {perTodas.length === 0 ? <p className="text-sm text-slate-500">No hay persianas en el almacén ahora mismo.</p> : perVis.length === 0 ? <p className="text-sm text-slate-500">Ninguna persiana coincide con «{qPer}».</p> : (
           <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1">Carro</th><th>Expediente</th><th>Persiana</th><th>Medida</th></tr></thead><tbody>
-            {[...toArray(almacen.persianas)].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0) || String(a.carro).localeCompare(String(b.carro))).map((x, i) => (
+            {[...perVis].sort((a, b) => (b.ux ? 1 : 0) - (a.ux ? 1 : 0) || String(a.carro).localeCompare(String(b.carro))).map((x, i) => (
               <tr key={i} className={`border-b border-slate-50 ${x.ux ? "bg-emerald-50 font-semibold" : ""}`}><td className="py-1">{x.carro}</td><td>{x.exp || "—"}</td><td>{[x.ref, x.parte].filter(Boolean).join(" · ") || "—"}</td><td>{x.medida || "—"}</td></tr>
             ))}
+            <tr className="font-bold text-slate-800"><td className="py-1.5" colSpan={4}>Total: {perVis.length} persianas{qPer.trim() ? ` (de lo buscado · en el almacén hay ${perTodas.length})` : ""}</td></tr>
           </tbody></table>
         )}
       </div>
@@ -47789,7 +47829,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
               onConfirmarLlegada={async (exp, clave) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { [`materiales/${clave}/estado`]: "recibido" }); aviso("Llegada confirmada"); } catch (e) { aviso("No se pudo guardar: " + e.message); } }}
               onGuardarListado={async (exp, lis) => { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); aviso("Listado de materiales guardado"); }} />
             <PortalSubirDocumentos expFijo={abierto} expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} pedidosUx={pedidosUx} proveedoresUx={proveedoresUx} aviso={aviso} />
-            <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
+            <div className="mt-4"><UxFichaDatos exp={abierto} onCambiarEntrega={async (exp, f) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { fechaEntrega: f, fechaEntregaPortalAt: Date.now() }); aviso("Fecha de entrega cambiada."); } catch (er) { aviso("No se pudo cambiar: " + er.message); } }} /></div>
             <div className="mt-4"><UxHistorial exp={abierto} pedidos={pedidosUx} /></div>
             <div className="mt-4"><EtiquetasFabricacionObra portal lotes={abierto.etiquetasFab} onGuardar={async (l) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${abierto.id}`), { etiquetasFab: JSON.parse(JSON.stringify(l)) }); aviso("Etiquetas guardadas"); } catch (e) { aviso("No se pudieron guardar las etiquetas: " + e.message); } }} /></div>
             {abierto.estado === "virtual" ? (
