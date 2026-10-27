@@ -4304,6 +4304,40 @@ export default function App() {
     pendienteUxRef.current = txt;
     fbSet(ref(fbDb, "portalUxcar/pendienteUxcar"), Object.keys(res).length ? res : null).catch(() => { pendienteUxRef.current = ""; });
   }, [pedidos, uxPedidos, currentUser?.id, loading]);
+  // Vista para Uxcar (solo de SUS expedientes, solo consulta): estado en Fábrica, dónde están sus cristales y persianas y sus discrepancias.
+  // Se escribe en portalUxcar/vistaFabrica/{expedienteId} cuando cambia; el portal solo la lee.
+  const vistaFabUxRef = useRef("");
+  useEffect(() => {
+    if (!currentUser || loading || !toArray(uxExpedientes).length) return;
+    const res = {};
+    toArray(uxExpedientes).forEach((e) => {
+      const pr = toArray(proyectos).find((x) => x.id === e.proyectoId);
+      const K = uxClaves(e);
+      const mios = toArray(pedidos).filter((pd) => pd.estado !== "Cancelado" && ((pr && pd.proyectoId === pr.id) || pd.uxcarExpedienteId === e.id));
+      const cp = mios.filter(esPedidoCristalOCompacto);
+      let estado = "Sin pasar a fábrica";
+      if (pr) {
+        const et = pr.estadoTrabajo || "";
+        if (["Entregado", "Cancelado"].includes(et)) estado = et;
+        else if (["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(et)) estado = et === "En proceso" ? "En fabricación" : et;
+        else if (cp.length && cp.every((pd) => (pd.estado === "Recibido" || uxDaPorRecibido(pd)) && toArray(pd.lineas).every((l) => l.confirmadoFabrica))) estado = "Listo para fabricar";
+        else estado = "Esperando material";
+      }
+      const cr = K.d.length >= 2 || K.pptos.size ? toArray(cristales).filter((x) => uxCaballeteEs(x, K)) : [];
+      const pe = K.d.length >= 2 || K.pptos.size ? toArray(persianasAlmacen).filter((x) => uxPersianaEs(x, K)) : [];
+      const disc = discrepanciasTodas(mios).map((x) => ({ pedido: x.p.numero || "", tipo: x.items[0].tipo, lineas: x.items.length }));
+      res[e.id] = {
+        numero: e.numero || "", estado, fechaEntrega: (pr && pr.fechaEntrega) || "",
+        cristales: cr.map((x) => (x.ubicacion ? `${x.ubicacion.zona || ""} fila ${x.ubicacion.fila ?? ""} hueco ${x.ubicacion.hueco ?? ""}` : "Sin colocar")),
+        persianas: pe.map((x) => (toArray(carrosPersianas).find((c) => c.id === x.carro) || {}).nombre || "Sin carro"),
+        discrepancias: disc,
+      };
+    });
+    const txt = JSON.stringify(res);
+    if (txt === vistaFabUxRef.current) return;
+    vistaFabUxRef.current = txt;
+    fbSet(ref(fbDb, "portalUxcar/vistaFabrica"), JSON.parse(txt)).catch(() => { vistaFabUxRef.current = ""; });
+  }, [uxExpedientes, proyectos, pedidos, cristales, persianasAlmacen, carrosPersianas, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -8607,12 +8641,20 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         else extraProyecto.documentos = [...toArray(proyecto.documentos), ...nuevosDocs];
         avisos.push(`Presupuesto guardado en los documentos de la obra (${presupuestos.map((f) => f.name).join(", ")}).`);
       }
+      // El recuento de ventanas sale de la HOJA DE CORTE si viene en la subida (siempre igual, sin IA)
+      let recuentoHoja = null;
+      for (const fc of cortes) { const h = await contarVentanasDesdeHojaCorteFile(fc); if (h && h.length) { recuentoHoja = [...(recuentoHoja || []), ...h]; } }
+      if (recuentoHoja && recuentoHoja.length && !dibujos.length) {
+        extraProyecto.recuento = recuentoHoja;
+        avisos.push(`Ventanas contadas desde la hoja de corte (${recuentoHoja.filter((l) => l.tipo !== "mosquitera").reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas). Revísalas en "Tipo plano".`);
+      }
       if (dibujos.length) {
         const fd = dibujos[0];
         const url = await subirArchivoAStorage(fd, `documentos-entrega/${proyecto.id}`);
         let recuento = null;
         const mediaType = fd.type || (fd.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
-        if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
+        if (recuentoHoja && recuentoHoja.length) { recuento = recuentoHoja; corteParaRecuento = null; avisos.push("Ventanas contadas desde la hoja de corte (no desde el dibujo)."); }
+        else if (mediaType === "application/pdf" || mediaType.startsWith("image/")) {
           try { recuento = await uxContarVentanasConClaude(await uxLeerComoDataUrl(fd), mediaType); } catch (e) { recuento = null; }
         }
         if (recuento && recuento.length && corteParaRecuento) {
@@ -36576,6 +36618,14 @@ const uxPrecioExpediente = (exp, tarifa) => {
 
 async function uxContarVentanasConClaude(dataUrl, mediaType) {
   const base64 = String(dataUrl).split(",")[1];
+  // Si el PDF es una hoja de corte, el recuento sale de ella (siempre igual, sin IA)
+  if (mediaType === "application/pdf") {
+    try {
+      const bytesH = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const deHoja = await contarVentanasDesdeHojaCorteFile(new File([bytesH], "hoja-corte.pdf", { type: mediaType }));
+      if (deHoja && deHoja.length) return deHoja;
+    } catch (e) { /* no es una hoja de corte: se lee con IA como siempre */ }
+  }
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
@@ -36687,6 +36737,20 @@ function UxRecuentoEditor({ lineas, onChange }) {
     setLeyendo(true); setAviso("");
     const nuevas = [];
     const fallos = [];
+    // Si entre los archivos hay una hoja de corte, el recuento sale SOLO de ella (los dibujos no se leen con IA)
+    const lineasHoja = [];
+    const archivosHoja = new Set();
+    for (const file of files) {
+      if (!(file.type === "application/pdf" || /\.pdf$/i.test(file.name))) continue;
+      const h = await contarVentanasDesdeHojaCorteFile(file);
+      if (h && h.length) { lineasHoja.push(...h); archivosHoja.add(file); }
+    }
+    if (lineasHoja.length) {
+      onChange([...lista.filter((l) => !/\(mosquitera\)$/.test(String(l.modelo || ""))), ...lineasHoja]);
+      setAviso("Recuento sacado de la hoja de corte. Revisa que cada línea está bien.");
+      setLeyendo(false);
+      return;
+    }
     for (const file of files) {
       const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
       if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) { fallos.push(file.name); continue; }
@@ -38368,21 +38432,7 @@ function tipoHojaDePerfil(texto) {
   const [[tipo, codigo]] = [...hallados];
   return { tipo, codigo, varios: [] };
 }
-function agruparHojaCorte(paginas) {
-  const todo = paginas.map((it) => it.join("")).join("\n");
-  if (!/HOJA DE CORTE/i.test(todo)) return { modelos: [], presupuesto: "", version: "" };
-  const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
-  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
-  const version = cab && cab[2] ? cab[2] : "";
-  const ref = ((todo.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
-  const cliente = ((todo.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
-  const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
-  const modelos = [];
-  partes.forEach((b) => {
-    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
-    if (!mm) return;
-    const modelo = mm[1];
-    const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 0;
+function analizarBloqueCorte(b, modelo, uds) {
     // Nº de hojas = barras del perfil de HOJA / 4 (cada hoja tiene 4 lados). Es lo más fiable: "OB 1H / OB 2H"
     // sale una sola vez aunque haya varias ventanas iguales en el modelo.
     const barrasHoja = b.split("\n").reduce((a, l) => { const mb = l.match(/HOJA\s+\d{2,3}\s*MM.*?\d{4,5}\s+(\d+)\s*$/i); return a + (mb ? parseInt(mb[1], 10) : 0); }, 0);
@@ -38409,7 +38459,7 @@ function agruparHojaCorte(paginas) {
     const vidrios = b.split("\n").reduce((a, l) => { const mv = l.match(/^\s*[\d.+]+\/[\d.]+\/[\d.+]+\b.*?\s(\d+)\s+[\d.]+,\d\d/); return a + (mv ? parseInt(mv[1], 10) : 0); }, 0);
     // Persiana: con señal clara (cajón / compacto / sección PERSIANA) = lleva; si el campo "Persiana:" está y no hay ninguna señal = no lleva; si no se sabe = null
     // El cajón de la mosquitera enrollable ("PLX-42 Cajón con Tela") NO es persiana
-    const señal = b.split("\n").some((l) => /CAJ[OÓ]N|CJ_|Compacto|\bLAMAS?\b/i.test(l) && !/TELA|MOSQUIT/i.test(l));
+    const señal = b.split("\n").some((l) => /CAJ[OÓ]N|CJ_|Compacto|\bLAMAS?\b/i.test(l) && !/TELA|MOSQUIT|SOPORTE\s+CAJ|LAMAS?\s+CONTRA/i.test(l));
     const persiana = señal ? true : (/Persiana\s*:/i.test(b) ? false : null);
     // Mosquiteras: "SOLO 4 LLEVAN MOSQUITERA" / "4 mosquiteras" → ese nº para ese modelo; si lo dice sin número → todas
     let mosq = null;
@@ -38418,10 +38468,74 @@ function agruparHojaCorte(paginas) {
     else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
     const huecos = tipo === "fijo" && vidrios ? vidrios : null;
     const fijosUnidos = (tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null;
-    modelos.push({ modelo, uds, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo });
+  const postigo = /HOJA\s+DE\s+CONTRA\b|LAMAS?\s+CONTRA\s+DE\s+VENTANA|CONTRAVENTANA|POSTIGO/i.test(b);
+  return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo };
+}
+function agruparHojaCorte(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  if (!/HOJA DE CORTE/i.test(todo)) return { modelos: [], presupuesto: "", version: "" };
+  const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
+  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
+  const version = cab && cab[2] ? cab[2] : "";
+  const ref = ((todo.match(/Referencia\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const cliente = ((todo.match(/Cliente\s*:\s*([^\n]+)/i) || [])[1] || "").trim();
+  const partes = todo.split(/(?=Presupuesto\s*:\s*[\d.]+)/i).filter((b) => /Pos\s*:\s*[A-Za-z]/.test(b));
+  const modelos = [];
+  partes.forEach((b) => {
+    const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
+    if (!mm) return;
+    modelos.push(analizarBloqueCorte(b, modelo, uds));
   });
   return { modelos, presupuesto, version, referencia: ref, cliente };
 }
+// Hoja de corte «por GRUPOS» (sin «Pos»): cada bloque empieza en «Modelo Ancho Alto Uds» y trae su accionamiento, perfiles y accesorios.
+// Se analiza con las mismas reglas que la otra (OB 2H = 2 hojas, cajón/compacto = persiana, el cajón con tela es mosquitera…).
+function agruparHojaCorteGrupos(paginas) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  if (!/HOJA DE CORTE/i.test(todo) || !/Modelo\s+Ancho\s+Alto\s+Uds/i.test(todo)) return { modelos: [] };
+  const bloques = [];
+  let actual = null;
+  paginas.forEach((it) => {
+    const lineas = it.join("").split("\n");
+    lineas.forEach((linea, k) => {
+      if (/^\s*Modelo\s+Ancho\s+Alto\s+Uds\s*$/i.test(linea)) {
+        const dato = (lineas[k + 1] || "").match(/^\s*(.+?)\s+(\d{2,4})\s+(\d{2,4})\s+(\d+)\s*$/);
+        actual = { nombre: dato ? dato[1].trim() : "GRUPO", uds: dato ? parseInt(dato[4], 10) || 1 : 1, lineas: [] };
+        bloques.push(actual);
+        return;
+      }
+      if (actual) actual.lineas.push(linea);
+    });
+  });
+  return { modelos: bloques.map((bl) => analizarBloqueCorte(bl.lineas.join("\n"), bl.nombre, bl.uds)) };
+}
+// De la hoja de corte al recuento de ventanas (mismas columnas que el que se saca de los dibujos). La mosquiteras van en su propia línea.
+function recuentoDesdeHojaGrupos(paginas) {
+  const lineas = [];
+  agruparHojaCorteGrupos(paginas).modelos.forEach((m) => {
+    const tipo = m.tipo || "ventana";
+    const hojas = m.hojas != null ? m.hojas : (tipo === "fijo" ? 0 : 1);
+    lineas.push({ id: uid(), modelo: String(m.modelo || "").trim(), uds: m.uds || 1, tipo, hojas, persiana: !!m.persiana, cerradura: !!m.cerradura, juntas: Math.max(1, m.juntas || 1), fijos: Math.max(0, m.fijosUnidos || 0) });
+    if (m.postigo) lineas.push({ id: uid(), modelo: `${String(m.modelo || "").trim()} (postigo)`, uds: m.uds || 1, tipo: "otro", hojas: 0, persiana: false, cerradura: false, juntas: 1, fijos: 0 });
+    if (m.mosq) lineas.push({ id: uid(), modelo: `${String(m.modelo || "").trim()} (mosquitera)`, uds: m.mosq.n || m.uds || 1, tipo: "mosquitera", hojas: 0, persiana: false, cerradura: false, juntas: 1, fijos: 0 });
+  });
+  return lineas;
+}
+// Devuelve las líneas del recuento si el PDF es una hoja de corte por grupos; si no, null (se sigue como antes).
+async function contarVentanasDesdeHojaCorteFile(file) {
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const paginas = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      paginas.push(tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")));
+    }
+    const r = recuentoDesdeHojaGrupos(paginas);
+    return r.length ? r : null;
+  } catch (e) { return null; }
+}
+
 // Aplica la hoja de corte a los lotes de una obra: por nombre de modelo EXACTO (CS2 y CS02 son modelos distintos). Devuelve { lotes, aplicadas, modelosSinVentana }.
 function aplicarCorteALotes(lotes, corte) {
   const porModelo = new Map(corte.modelos.map((m) => [m.modelo.toUpperCase(), m]));
@@ -46999,6 +47113,243 @@ Posición, presupuesto y versión, lote (FAB), referencia, cliente, color, medid
 
 // Botón naranja de arriba del portal: Uxcar mete sus expedientes urgentes (listado de vidrios + hoja de corte) sin rellenar el formulario de expediente.
 // Si el expediente no existe se crea solo con el número del PDF. Los cristales y persianas los saca Ecowin del almacén después (el portal no ve los almacenes).
+// Portal Uxcar: UN SOLO BOTÓN con todos los documentos del expediente (lo mismo que en las obras propias, menos el presupuesto).
+// Cada PDF se reconoce por su contenido y va a su sitio: análisis/mano de obra → listado de materiales; carga de material → tipo plano;
+// hoja de corte → recuento (ventanas, puertas, persianas, mosquiteras) + Auxiliares + etiquetas; listado de cristales / pedido compra persianas → pedido.
+async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx }) {
+  const avisos = [];
+  const lista = [], vistos = new Set();
+  for (const f of files) { const k = `${f.name}|${f.size}`; if (vistos.has(k)) continue; vistos.add(k); lista.push(f); }
+  if (lista.length < files.length) avisos.push("Había archivos repetidos: los he usado una sola vez.");
+  const grupos = { dibujos: [], corte: [], etiquetas: [], materiales: [], cristales: [], persianas: [] };
+  for (const f of lista) {
+    const t = await clasificarPdfObra(f);
+    if (t === "presupuesto") { avisos.push(`${f.name}: es un presupuesto; aquí no se sube.`); continue; }
+    if (t === "dibujos") grupos.dibujos.push(f);
+    else if (t === "corte") grupos.corte.push(f);
+    else if (t === "etiquetas") grupos.etiquetas.push(f);
+    else if (t === "cristales") grupos.cristales.push(f);
+    else if (t === "persianas") grupos.persianas.push(f);
+    else if (["analisis", "mano_obra", "cajas"].includes(t)) grupos.materiales.push({ f, t });
+    else if (/dibujo|tipo[\s_-]*plano/i.test(f.name || "")) grupos.dibujos.push(f);
+    else grupos.materiales.push({ f, t: "" });
+  }
+  // Nº de expediente: el del que ya está abierto o el que pone el PDF (NUMERO : 6.994 / PRESUPUESTO:6.994-1)
+  const numeroDePdf = async (f) => {
+    try {
+      const lib = await cargarPdfJs();
+      const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
+      const tc = await (await doc.getPage(1)).getTextContent();
+      const T = tc.items.map((i) => i.str).join(" ").replace(/\s+/g, " ");
+      const m = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i) || T.match(/N[UÚ]MERO\s*:\s*([\d.]+)/i);
+      return m ? m[1].replace(/\.$/, "") : "";
+    } catch (e) { return ""; }
+  };
+  const todos = [...grupos.dibujos, ...grupos.corte, ...grupos.etiquetas, ...grupos.materiales.map((x) => x.f), ...grupos.cristales, ...grupos.persianas];
+  if (!todos.length) return { avisos: [...avisos, "No hay ningún documento válido."], expId: null };
+  let numero = "";
+  for (const f of todos) { numero = await numeroDePdf(f); if (numero) break; }
+  const digitos = (s) => String(s || "").replace(/\D/g, "");
+  let e = exp || (numero ? expedientes.find((x) => digitos(x.numero) === digitos(numero) || digitos(x.presupuesto) === digitos(numero)) : null) || null;
+  if (!e && !numero) return { avisos: [...avisos, "No he encontrado el número del expediente en los PDF. Elige un expediente de la lista y vuelve a subirlos."], expId: null };
+  if (exp && numero && digitos(exp.numero) !== digitos(numero) && digitos(exp.presupuesto) !== digitos(numero)) avisos.push(`⚠ Los documentos son del ${numero} y este expediente es el ${exp.numero}. Revisa que no sean de otro.`);
+  const patch = {};
+  const nuevo = !e;
+  const id = e ? e.id : uid();
+  const base = e || {
+    id, numero: numero.toUpperCase(), presupuesto: numero, tipo: (tipos && tipos[0]) || "", ventanas: 0, puertas: 0, osciloParalelas: 0, recuento: [], controlOtros: false,
+    observaciones: "", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
+  };
+  const sets = {};
+  // 1) Hoja de corte: recuento + Auxiliares
+  let recuentoHoja = null;
+  for (const fc of grupos.corte) { const h = await contarVentanasDesdeHojaCorteFile(fc); if (h && h.length) recuentoHoja = [...(recuentoHoja || []), ...h]; }
+  if (grupos.corte.length) {
+    try {
+      const hechas = await guardarHojasCorteAux(grupos.corte);
+      avisos.push(hechas.length ? `Hoja de corte del presupuesto ${hechas.join(", ")} guardada: ya sale en Auxiliares.` : "⚠ No he podido leer la hoja de corte para Auxiliares (formato no reconocido).");
+    } catch (er) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(er && er.message) || "error"}).`); }
+  }
+  // 2) Carga de material (tipo plano): se guarda y, si no hay hoja de corte, se cuenta con IA
+  let recuento = recuentoHoja;
+  if (grupos.dibujos.length) {
+    const fd = grupos.dibujos[0];
+    try { sets.documentoEntrega = { nombre: fd.name, url: await subirArchivoAStorage(fd, `uxcar-docs/${id}`), tipo: "tipo_plano", fecha: uxHoy() }; } catch (er) { avisos.push(`⚠ No se pudo guardar ${fd.name}: ${er.message}`); }
+    if (!recuento) {
+      const mt = fd.type || (fd.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+      try { recuento = await uxContarVentanasConClaude(await uxLeerComoDataUrl(fd), mt); } catch (er) { recuento = null; }
+      avisos.push(recuento && recuento.length ? "Ventanas contadas desde la carga de material (revísalas)." : "No he podido contar las ventanas: añádelas a mano en Editar.");
+    } else avisos.push("Carga de material guardada como tipo plano.");
+  }
+  if (recuentoHoja) avisos.push(`Ventanas contadas desde la hoja de corte: ${recuentoHoja.filter((l) => l.tipo !== "mosquitera").reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas. Revísalas en Editar.`);
+  if (recuento && recuento.length) {
+    const t = uxTotalesRecuento(recuento);
+    sets.recuento = JSON.parse(JSON.stringify(recuento)); sets.ventanas = t.ventanas; sets.puertas = t.puertas; sets.osciloParalelas = t.osciloParalelas;
+  }
+  // 3) Etiquetas y hoja de corte sobre las etiquetas de fábrica
+  let lotes = toArray(base.etiquetasFab), lotesCambian = false;
+  for (const f of [...grupos.etiquetas, ...grupos.corte]) {
+    try {
+      const r = await aplicarPdfEtiquetasObra(f, lotes, base.presupuesto || base.numero || "");
+      if (r.lotes) { lotes = r.lotes; lotesCambian = true; }
+      if (grupos.etiquetas.includes(f) || (r.aviso && !/no he encontrado etiquetas|no hay etiquetas/i.test(r.aviso))) avisos.push(r.aviso);
+    } catch (er) { avisos.push(`${f.name}: no se pudo leer (${er.message}).`); }
+  }
+  if (lotesCambian) sets.etiquetasFab = JSON.parse(JSON.stringify(lotes));
+  // 4) Análisis de materiales / mano de obra
+  if (grupos.materiales.length) {
+    const leidos = [];
+    for (const { f } of grupos.materiales) {
+      try { const r = await leerListadoMateriales(f); if (["presupuesto", "medidas", "otro"].includes(r.tipo)) avisos.push(`${f.name}: no es un informe de materiales.`); else if (r.tipo === "dibujos") avisos.push(`${f.name}: parece un listado de dibujos; no lo he usado como materiales.`); else leidos.push({ ...r, nombre: f.name }); }
+      catch (er) { avisos.push(`⚠ ${f.name}: no he podido leerlo (${er.message}).`); }
+    }
+    const conLineas = leidos.filter((x) => x.lineas && x.lineas.length);
+    const horas = Math.max(0, ...leidos.map((x) => x.horas || 0));
+    if (conLineas.length) {
+      const b = conLineas[0];
+      sets.listadoMateriales = JSON.parse(JSON.stringify({ ...b, horas: horas || b.horas || 0, lineas: conLineas.flatMap((x) => x.lineas), archivo: leidos.map((x) => x.nombre).join(" + "), superficies: (leidos.find((x) => x.superficies && x.superficies.m2 > 0) || b).superficies, fecha: new Date().toISOString() }));
+      avisos.push(`Análisis de materiales guardado (${sets.listadoMateriales.lineas.length} líneas${sets.listadoMateriales.horas ? ` · ${sets.listadoMateriales.horas} h` : ""}).`);
+    } else if (horas > 0 && base.listadoMateriales) { sets.listadoMateriales = { ...base.listadoMateriales, horas }; avisos.push(`Mano de obra guardada (${horas} h).`); }
+    else if (horas > 0) avisos.push("Solo trae horas: sube también el análisis de materiales.");
+  }
+  // 5) Cristales y persianas: pedido con su documento
+  const ahora = Date.now();
+  const hoy = uxHoy();
+  const nums = toArray(pedidosUx).map((p) => parseInt(String(p.numero || "").replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
+  let sig = nums.length ? Math.max(...nums) : 0;
+  const matsPatch = {};
+  for (const [tipoPed, fs] of [["Cristales", grupos.cristales], ["Persianas", grupos.persianas]]) {
+    for (const f of fs) {
+      const yaHay = toArray(pedidosUx).find((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && uxDocsPedido(p).some((d) => d.nombre === f.name));
+      if (yaHay && !window.confirm(`Este expediente ya tiene el pedido ${yaHay.numero} con ${f.name}. ¿Lo elimino y creo uno nuevo con este documento?`)) { avisos.push(`${f.name}: ya estaba en el pedido ${yaHay.numero}; no he creado otro.`); continue; }
+      if (yaHay) patch[`pedidos/${yaHay.id}`] = null;
+      let lineas = [];
+      try { const gs = await uxLeerPedidoConClaude(await uxLeerComoDataUrl(f), f.type || "application/pdf"); lineas = toArray(gs).flatMap((g) => toArray(g.lineas)); } catch (er) { avisos.push(`⚠ ${f.name}: no he podido sacar las líneas; el pedido queda con el documento adjunto.`); }
+      let url;
+      try { url = await subirArchivoAStorage(f, "uxcar-pedidos"); } catch (er) { avisos.push(`⚠ No se pudo guardar ${f.name}: ${er.message}`); continue; }
+      sig++;
+      const pid = uid();
+      const prov = toArray(proveedoresUx).find((x) => new RegExp(tipoPed === "Cristales" ? "cristal|vidrio" : "persian|compact", "i").test(x.nombre || "")) || {};
+      patch[`pedidos/${pid}`] = JSON.parse(JSON.stringify({
+        id: pid, numero: "UX-" + sig, tipo: tipoPed, proveedorId: prov.id || "", proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
+        documento: { nombre: f.name, url }, documentos: [{ nombre: f.name, url }], expedientes: [{ expedienteId: id, numero: base.numero, nombre: "", lineas }], comentarios: "",
+        fecha: hoy, llegadaPrevista: "", creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
+      }));
+      const mk = uxMatAlbaran(tipoPed);
+      if (mk) matsPatch[mk] = { estado: ((base.materiales || {})[mk] || {}).estado === "recibido" ? "recibido" : "pedido" };
+      avisos.push(`${tipoPed === "Cristales" ? "Listado de cristales" : "Pedido de persianas/compactos"} leído: pedido UX-${sig} creado${lineas.length ? ` (${lineas.length} líneas)` : ""}. Elige el proveedor y mándalo en Pedidos.`);
+    }
+  }
+  // Guardado
+  const mats = { ...(base.materiales || {}) };
+  UX_MATERIALES.forEach(([k]) => { if (!mats[k]) mats[k] = { estado: "pendiente" }; });
+  Object.keys(matsPatch).forEach((k) => { mats[k] = matsPatch[k]; });
+  if (nuevo) patch[`expedientes/${id}`] = JSON.parse(JSON.stringify({ ...base, ...sets, materiales: mats, observaciones: "Subido con «Subir documentos» desde el portal" }));
+  else {
+    Object.entries(sets).forEach(([k, v]) => { patch[`expedientes/${id}/${k}`] = v; });
+    Object.keys(matsPatch).forEach((k) => { patch[`expedientes/${id}/materiales/${k}/estado`] = matsPatch[k].estado; });
+  }
+  if (Object.keys(patch).length) await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+  avisos.unshift(nuevo ? `Expediente ${base.numero} creado.` : `Guardado en el expediente ${base.numero}.`);
+  return { avisos, expId: id };
+}
+function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, aviso, expFijo, onHecho }) {
+  const [sel, setSel] = useState(expFijo ? expFijo.id : "__auto");
+  const [leyendo, setLeyendo] = useState(false);
+  const [msgs, setMsgs] = useState([]);
+  const inputRef = useRef(null);
+  const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
+  const subir = async (fl) => {
+    const files = Array.from(fl || []);
+    if (!files.length) return;
+    setLeyendo(true); setMsgs([]);
+    try {
+      const exp = expFijo || (sel === "__auto" ? null : lista.find((x) => x.id === sel) || null);
+      const r = await uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx });
+      setMsgs(r.avisos);
+      if (r.expId && onHecho) onHecho(r.expId);
+    } catch (er) { setMsgs(["No se pudo guardar: " + er.message]); }
+    setLeyendo(false);
+  };
+  return (
+    <div className="mb-5 p-3 rounded-lg border border-emerald-200 bg-emerald-50/60">
+      <div className="text-xs text-slate-600 mb-2"><b>Subir documentos del expediente</b> (todos a la vez, con Ctrl pulsado): análisis de materiales, mano de obra, carga de material, hoja de corte, listado de cristales y pedido de persianas/compactos. Sin presupuesto. Cada uno se reconoce solo y va a su sitio, como en Ecowin PVC.</div>
+      <div className="flex flex-wrap items-center gap-2">
+        {!expFijo && (
+          <label className="text-xs text-slate-700 flex items-center gap-1.5">Guardar en:
+            <select value={sel} onChange={(e) => setSel(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white">
+              <option value="__auto">Detectar por el número del PDF (crea el expediente si no existe)</option>
+              {lista.map((x) => <option key={x.id} value={x.id}>Expediente {x.numero}</option>)}
+            </select>
+          </label>
+        )}
+        <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
+        <button type="button" disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
+          {leyendo ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {leyendo ? "Leyendo (puede tardar un par de minutos)…" : "Subir documentos"}
+        </button>
+      </div>
+      {msgs.length > 0 && <ul className="mt-2 text-xs text-slate-700 space-y-0.5 list-disc pl-4">{msgs.map((m, i) => <li key={i}>{m}</li>)}</ul>}
+    </div>
+  );
+}
+// Pestaña «Fábrica» del portal de Uxcar: solo consulta y solo sus expedientes (lo escribe el CRM de Ecowin PVC en portalUxcar/vistaFabrica).
+function UxVistaFabrica({ vista, expedientes, pedidos }) {
+  const [q, setQ] = useState("");
+  const lista = expedientes.map((e) => ({ e, v: (vista && vista[e.id]) || null })).sort((a, b) => String(b.e.numero).localeCompare(String(a.e.numero), "es", { numeric: true }));
+  const color = (s) => (s === "Listo para fabricar" ? "bg-emerald-100 text-emerald-800" : s === "En fabricación" ? "bg-sky-100 text-sky-800" : s === "Esperando material" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600");
+  const qd = q.replace(/\D/g, "");
+  const hall = qd.length >= 2 ? lista.filter(({ e }) => String(e.numero).replace(/\D/g, "").includes(qd) || String(e.presupuesto || "").replace(/\D/g, "").includes(qd)) : [];
+  const conDisc = lista.filter(({ v }) => v && toArray(v.discrepancias).length);
+  const conAlm = lista.filter(({ v }) => v && (toArray(v.cristales).length || toArray(v.persianas).length));
+  return (
+    <div className="space-y-5 max-w-4xl">
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="font-bold text-slate-800 mb-2">Listo para fabricar</div>
+        {lista.length === 0 && <p className="text-sm text-slate-400">Todavía no tienes expedientes.</p>}
+        {lista.map(({ e, v }) => (
+          <div key={e.id} className="flex flex-wrap items-center gap-3 py-1.5 border-b border-slate-50 last:border-0 text-sm">
+            <span className="font-semibold w-28">{e.numero}</span>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${color(v ? v.estado : "")}`}>{v ? v.estado : "Sin pasar a fábrica"}</span>
+            {v && v.fechaEntrega && <span className="text-xs text-slate-500">Entrega prevista: {uxFecha(v.fechaEntrega)}</span>}
+          </div>
+        ))}
+        <p className="text-xs text-slate-400 mt-2">Solo consulta. Si algo no cuadra, avisa a Ecowin PVC.</p>
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="font-bold text-slate-800 mb-2">Comprobar expediente</div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Nº de expediente o de presupuesto" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-full max-w-xs" />
+        {qd.length >= 2 && hall.length === 0 && <p className="text-sm text-slate-500 mt-2">No encuentro ningún expediente tuyo con ese número.</p>}
+        {hall.map(({ e, v }) => {
+          const falta = documentosQueFaltanUx(e, pedidos);
+          return (
+            <div key={e.id} className="mt-3 text-sm border border-slate-200 rounded-md p-3 space-y-1">
+              <div><b>{e.numero}</b> · {v ? v.estado : "Sin pasar a fábrica"}</div>
+              <div>Cristales: {toArray(v && v.cristales).length ? `✓ ${v.cristales.length} en el almacén (${v.cristales.join(" · ")})` : (e.materiales && e.materiales.vidrios && e.materiales.vidrios.estado === "recibido" ? "✓ Recibidos" : "✗ Aún no están")}</div>
+              <div>Persianas: {toArray(v && v.persianas).length ? `✓ ${v.persianas.length} en el almacén (${[...new Set(v.persianas)].join(" · ")})` : (e.materiales && e.materiales.compactos && e.materiales.compactos.estado === "recibido" ? "✓ Recibidas" : "✗ Aún no están")}</div>
+              <div>Documentos: {falta.length ? <span className="text-rose-700 font-semibold">falta {falta.join(" · ")}</span> : "✓ Completos"}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="font-bold text-slate-800 mb-2">Discrepancias</div>
+        {conDisc.length === 0 ? <p className="text-sm text-slate-500">Ahora mismo no hay ninguna.</p> : conDisc.map(({ e, v }) => (
+          <div key={e.id} className="text-sm py-1 border-b border-slate-50 last:border-0"><b>{e.numero}</b>: {v.discrepancias.map((d) => `pedido ${d.pedido} (${d.lineas} línea${d.lineas === 1 ? "" : "s"}: ${d.tipo === "fabrica" ? "tu confirmación o la de fábrica no coinciden — fábrica ya lo dio por llegado" : "vosotros lo dais por llegado y fábrica no"})`).join(" · ")}</div>
+        ))}
+      </div>
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="font-bold text-slate-800 mb-2">Almacén de cristales y de persianas (solo tus expedientes)</div>
+        {conAlm.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay cristales ni persianas tuyos en el almacén de fábrica.</p> : conAlm.map(({ e, v }) => (
+          <div key={e.id} className="text-sm py-1.5 border-b border-slate-50 last:border-0">
+            <b>{e.numero}</b>
+            {toArray(v.cristales).length > 0 && <div className="text-slate-700">Cristales: {v.cristales.join(" · ")}</div>}
+            {toArray(v.persianas).length > 0 && <div className="text-slate-700">Persianas: {v.persianas.length} → {[...new Set(v.persianas)].join(" · ")}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
   const [sel, setSel] = useState("__nuevo");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
@@ -47207,9 +47558,11 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
           {tab("almacenv", "Mis almacenes de ventanas")}
           {tab("incidencias", "Incidencias")}
           {tab("proveedores", "Proveedores")}
+          {tab("fabrica", "Fábrica")}
           {tab("resumen", "Resumen")}
           {tab("condiciones", "Condiciones")}
         </div>
+        {datos && vista === "lista" && <PortalSubirDocumentos expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} pedidosUx={pedidosUx} proveedoresUx={proveedoresUx} aviso={aviso} onHecho={(i) => { setAbiertoId(i); }} />}
         {datos && vista === "lista" && <PortalRapidoArriba expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} aviso={aviso} />}
         {datos && vista === "lista" && (() => {
           const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado)).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
@@ -47232,6 +47585,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         ) : vista === "nuevo" ? (
           tipos.length === 0 ? <p className="text-sm text-slate-500">Todavía no hay tipos de expediente configurados. Avisa a Ecowin PVC.</p>
             : <UxFormExpediente tipos={tipos} expedientes={expedientes} onCancel={() => setVista("lista")} onSave={guardarNuevo} />
+        ) : vista === "fabrica" ? (
+          <UxVistaFabrica vista={datos.vistaFabrica} expedientes={expedientes} pedidos={pedidosUx} />
         ) : vista === "condiciones" ? (
           <UxCondiciones docs={datos.condiciones} />
         ) : vista === "resumen" ? (
@@ -47292,6 +47647,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             <UxControl3 exp={abierto} pedidos={pedidosUx} onAbrirPedido={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }}
               onConfirmarLlegada={async (exp, clave) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { [`materiales/${clave}/estado`]: "recibido" }); aviso("Llegada confirmada"); } catch (e) { aviso("No se pudo guardar: " + e.message); } }}
               onGuardarListado={async (exp, lis) => { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${exp.id}`), { listadoMateriales: JSON.parse(JSON.stringify(lis)) }); aviso("Listado de materiales guardado"); }} />
+            <PortalSubirDocumentos expFijo={abierto} expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} pedidosUx={pedidosUx} proveedoresUx={proveedoresUx} aviso={aviso} />
             <div className="mt-4"><UxFichaDatos exp={abierto} /></div>
             <div className="mt-4"><UxHistorial exp={abierto} pedidos={pedidosUx} /></div>
             <div className="mt-4"><EtiquetasFabricacionObra portal lotes={abierto.etiquetasFab} onGuardar={async (l) => { try { await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${abierto.id}`), { etiquetasFab: JSON.parse(JSON.stringify(l)) }); aviso("Etiquetas guardadas"); } catch (e) { aviso("No se pudieron guardar las etiquetas: " + e.message); } }} /></div>
