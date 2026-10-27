@@ -1006,16 +1006,21 @@ export default function App() {
   // página. Mientras el módulo de Proyectos esté abierto, se refresca solo cada 10s
   // para que dos pestañas/dispositivos viendo el mismo proyecto se mantengan al día.
   useEffect(() => {
-    if (modulo !== "proyectos") return;
-    let activo = true;
-    const refrescar = async () => {
+    if (modulo !== "proyectos") return undefined;
+    // En vivo: cuando otro usuario cambia algo, aquí se actualiza solo (sin pulsar "actualizar").
+    // Si hay un cambio nuestro todavía sin guardar, se espera: al terminar de guardarse, Firebase avisa de nuevo y se sincroniza.
+    const quitar = onValue(ref(fbDb, "proyectos"), (snap) => {
       try {
-        const snap = await fbGet(ref(fbDb, "proyectos"));
-        if (activo && snap.exists()) setProyectos(toArray(snap.val()));
-      } catch (e) { /* sin conexión momentánea, se reintenta en el siguiente sondeo */ }
-    };
-    const intervalo = setInterval(refrescar, 10000);
-    return () => { activo = false; clearInterval(intervalo); };
+        if (persistPendiente.current.proyectos || persistInFlight.current.proyectos) return;
+        if (!snap.exists()) return;
+        const lista = toArray(snap.val());
+        if (JSON.stringify(lista) === JSON.stringify(proyectosRef.current)) return;
+        proyectosRef.current = lista;
+        setProyectos(lista);
+        if (listaConIdsUnicos(lista)) persistBase.current.proyectos = lista;
+      } catch (e) { /* se reintenta con el siguiente cambio */ }
+    }, () => { /* sin conexión momentánea */ });
+    return () => { try { quitar(); } catch (e) { /* nada */ } };
   }, [modulo]);
 
   // Abrir documentos en el móvil. Chrome (sobre todo en Android) no abre los documentos
@@ -1083,6 +1088,7 @@ export default function App() {
   // Última versión de cada lista tal como la tenía ESTE navegador (al cargar o al guardar).
   // Sirve para saber qué ha cambiado aquí y no pisar lo que otros usuarios hayan añadido.
   const persistBase = useRef({});
+  const persistPendiente = useRef({}); // hay un cambio local de esta lista aún sin guardar (no se pisa con lo que llegue de la base de datos)
 
   const writeToStorage = useCallback(async (key) => {
     if (persistInFlight.current[key]) {
@@ -1103,6 +1109,7 @@ export default function App() {
           await fbSet(ref(fbDb, key), payload);
         }
         if (Array.isArray(payload)) persistBase.current[key] = payload;
+        if (persistLatest.current[key] === payload) persistPendiente.current[key] = false;
         persistInFlight.current[key] = false;
         return;
       } catch (e) {
@@ -1118,6 +1125,7 @@ export default function App() {
 
   const persist = useCallback((key, value) => {
     persistLatest.current[key] = value;
+    persistPendiente.current[key] = true;
     if (persistTimers.current[key]) clearTimeout(persistTimers.current[key]);
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 350);
   }, [writeToStorage]);
@@ -8240,14 +8248,32 @@ const fusionarListaGuardado = (actual, base, local) => {
   if (!listaConIdsUnicos(servidor)) return local;
   const limpio = (x) => JSON.stringify(JSON.parse(JSON.stringify(x)));
   const baseMap = new Map(base.map((x) => [x.id, limpio(x)]));
+  const baseObj = new Map(base.map((x) => [x.id, x]));
   const servMap = new Map(servidor.map((x) => [x.id, x]));
   const localIds = new Set(local.map((x) => x.id));
   const borradosAqui = new Set(base.filter((x) => !localIds.has(x.id)).map((x) => x.id));
+  // Un elemento cambiado aquí se fusiona CAMPO A CAMPO con el de la base de datos: lo que se tocó aquí manda,
+  // y lo que otro usuario haya guardado en otros campos (p. ej. documentos subidos mientras tanto) se conserva.
+  const fusionarElemento = (x, serv, antesObj) => {
+    const res = { ...serv };
+    const claves = new Set([...Object.keys(x), ...Object.keys(antesObj || {})]);
+    claves.forEach((k) => {
+      const nuevo = x[k], viejo = antesObj ? antesObj[k] : undefined;
+      let igual = false;
+      try { igual = JSON.stringify(nuevo === undefined ? null : nuevo) === JSON.stringify(viejo === undefined ? null : viejo); } catch (e) { igual = false; }
+      if (igual) return; // sin tocar aquí: vale lo de la base de datos
+      if (nuevo === undefined) { delete res[k]; return; }
+      const la = toArray(nuevo), ba = toArray(viejo), sa = toArray(serv[k]);
+      if (Array.isArray(nuevo) && listaConIdsUnicos(la) && listaConIdsUnicos(ba) && listaConIdsUnicos(sa)) res[k] = fusionarListaGuardado(sa, ba, la);
+      else res[k] = nuevo;
+    });
+    return res;
+  };
   const resultado = [];
   local.forEach((x) => {
     const antes = baseMap.get(x.id);
     const cambiadoAqui = antes === undefined || antes !== limpio(x);
-    if (cambiadoAqui) resultado.push(x);
+    if (cambiadoAqui) resultado.push(antes !== undefined && servMap.has(x.id) ? fusionarElemento(x, servMap.get(x.id), baseObj.get(x.id)) : x);
     else if (servMap.has(x.id)) resultado.push(servMap.get(x.id)); // sin tocar aquí: vale lo último de la base de datos
     // sin tocar aquí y borrado por otro usuario: se queda borrado
   });
