@@ -476,6 +476,8 @@ const esItemChecklistExigido = (c) => /^cristal|^persiana|compacto/i.test(String
 const tipoPedidoMaterial = (pd) => {
   if (!pd) return "";
   if (pd.tipoPedido === "cristal" || pd.tipoPedido === "persianas") return pd.tipoPedido;
+  if (pd.tipoUxcar === "Cristales") return "cristal"; // pedidos que llegan del portal de Uxcar: el tipo ya viene dicho, no se adivina por el texto
+  if (pd.tipoUxcar === "Persianas") return "persianas";
   const lineas = toArray(pd.lineas);
   const secs = lineas.map((l) => l.seccionListado).filter(Boolean);
   if (secs.length && secs.every((s) => s === "cristal")) return "cristal";
@@ -20319,7 +20321,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (!q) return base;
     return base.filter((p) => {
       const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
-      return s.includes(q.toLowerCase());
+      const ql = q.toLowerCase().trim();
+      return s.includes(ql) || s.replace(/[.\s]/g, "").includes(ql.replace(/[.\s]/g, "")); // «6994» encuentra «6.994-1»
     });
   }, [pedidosEnCurso, q, provFiltroFab]);
 
