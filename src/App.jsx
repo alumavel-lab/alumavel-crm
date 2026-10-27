@@ -36436,10 +36436,16 @@ const uxClaves = (exp) => {
   const pptos = new Set();
   if (/^\s*[\d.]+\s*-\s*\d+\s*$/.test(num)) pptos.add(uxPptoDigitos(num));
   String((exp && exp.presupuesto) || "").split(/[·,]/).forEach((x) => { const d = uxPptoDigitos(x); if (d.length >= 3) pptos.add(d); });
-  return { d: num.replace(/\D/g, ""), pptos };
+  return { d: num.replace(/\D/g, ""), pptos, ver: (num.match(/-\s*(\d+)\s*$/) || [])[1] || "" };
 };
-const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || String(c.presupuesto || "").split(/[·,]/).some((x) => K.pptos.has(uxPptoDigitos(x)));
-const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => K.pptos.has(uxPptoDigitos(y)))));
+// ¿Este presupuesto del almacén es el de la obra? Si los dos llevan versión (6.994-1 / 6.994-3) tiene que ser la misma: son expedientes distintos.
+const uxPptoCasa = (y, K) => {
+  if (!K.pptos.has(uxPptoDigitos(y))) return false;
+  const vy = (String(y).match(/-\s*(\d+)\s*$/) || [])[1];
+  return !(vy && K.ver && vy !== K.ver);
+};
+const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || String(c.presupuesto || "").split(/[·,]/).some((x) => uxPptoCasa(x, K));
+const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => uxPptoCasa(y, K))));
 // ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
 const uxEnAlmacen = (exp, k) => {
   const K = uxClaves(exp);
@@ -36452,14 +36458,14 @@ const uxEnAlmacen = (exp, k) => {
 const uxEstadoMat = (exp, k) => {
   if (k === "compactos" && uxLlevaPersiana(exp) === false) return "no_lleva";
   const e = (exp.materiales && exp.materiales[k] && exp.materiales[k].estado) || "pendiente";
-  // Cristales y persianas necesitan DOS confirmaciones: la de Uxcar (con su albarán, estado "recibido" del expediente)
-  // y la de fábrica (con su albarán: ya está colocado en tus almacenes). Solo con las dos está "recibido" (verde).
+  // Cristales y persianas necesitan DOS confirmaciones: la de Uxcar (a mano o con su albarán; estado "recibido" del expediente)
+  // y la de fábrica (ya está colocado en tus almacenes). Solo con las dos está "recibido" (verde). La fábrica puede seguir trabajando sin esperar a Uxcar.
   if (k === "vidrios" || k === "compactos") {
     const ux = e === "recibido";
     const fab = uxEnAlmacen(exp, k);
     if (ux && fab) return "recibido";
     if (ux) return "llegado_ux";
-    if (fab) return "en_fabrica";
+    if (fab) return "en_fabrica"; // la fábrica ya lo tiene (puede seguir trabajando), pero hasta que Uxcar lo confirme (a mano o con albarán) no queda verde
   }
   return e;
 };
@@ -36746,6 +36752,18 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
       <div className="flex flex-wrap gap-4 mt-2 text-xs text-slate-500">
         {Object.entries(UX_SEMAFORO).map(([k, v]) => <span key={k} className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: v.color }} />{v.label}</span>)}
       </div>
+      <details className="mt-2 text-xs text-slate-600">
+        <summary className="cursor-pointer font-semibold text-slate-700">¿Qué significa cada cosa en Persianas y Cristales?</summary>
+        <div className="mt-2 bg-slate-50 border border-slate-200 rounded-md p-3 space-y-1.5 leading-relaxed">
+          <p><b className="text-rose-600">✗ Sin pedir</b> — Uxcar todavía no ha hecho el pedido de ese material.</p>
+          <p><b className="text-sky-700">Pedido</b> — el pedido ya está hecho en el portal, pero el material todavía no ha llegado a ninguna parte.</p>
+          <p><b className="text-amber-700">Uxcar ✓ · falta fábrica</b> — Uxcar dice que lo ha recibido, pero Ecowin PVC aún no lo ha recibido en su almacén.</p>
+          <p><b className="text-amber-700">Fábrica ✓ · falta Uxcar</b> — ya está en el almacén de la fábrica y se puede trabajar con ello; falta que Uxcar lo confirme, a mano con su botón o subiendo el albarán. Es el cruce entre las dos partes.</p>
+          <p><b className="text-emerald-700">✓ Llegado</b> — confirmado por las dos partes: Uxcar y la fábrica. Solo entonces queda verde.</p>
+          <p><b className="text-slate-500">No lleva</b> — el expediente no tiene persianas.</p>
+          <p className="text-slate-500">El punto de la columna Material resume ambos: rojo = falta todo, amarillo = falta algo, verde = persianas y cristales llegados.</p>
+        </div>
+      </details>
     </div>
   );
 }
@@ -37153,6 +37171,25 @@ function UxHistorial({ exp, pedidos }) {
   const sinFecha = ev.filter((e) => !e.f);
   return (
     <div className="space-y-3">
+      {toArray(exp.documentos).length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-slate-500 mb-1.5">Documentos del expediente</div>
+          <ul className="space-y-1">
+            {toArray(exp.documentos).map((d, i) => (
+              <li key={i} className="text-xs border border-slate-200 rounded-md px-3 py-1.5"><span className="text-slate-500">{d.tipo || "Documento"}:</span> {portalUrlOk(d.url) ? <a href={d.url} target="_blank" rel="noreferrer" className="text-[#2E8B57] underline">{d.nombre}</a> : d.nombre}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {exp.ultimaSubida && (
+        <details className="text-xs">
+          <summary className="cursor-pointer font-semibold text-slate-500">Qué reconoció el programa en la última subida ({toArray(exp.ultimaSubida.archivos).length} archivos)</summary>
+          <ul className="mt-1.5 space-y-0.5">
+            {toArray(exp.ultimaSubida.archivos).map((a, i) => <li key={i} className={a.tipo === "NO RECONOCIDO" ? "text-rose-600 font-semibold" : "text-slate-600"}>{a.nombre} → {a.tipo}</li>)}
+          </ul>
+          {toArray(exp.ultimaSubida.avisos).length > 0 && <ul className="mt-1.5 space-y-0.5 text-slate-500 list-disc pl-4">{toArray(exp.ultimaSubida.avisos).map((a, i) => <li key={i}>{a}</li>)}</ul>}
+        </details>
+      )}
       <div>
         <div className="text-xs font-semibold text-slate-500 mb-1.5">Pedidos guardados de este expediente</div>
         {peds.length === 0 ? <p className="text-xs text-slate-400">Todavía no hay ningún pedido guardado.</p> : (
@@ -47360,8 +47397,10 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   for (const f of files) { const k = `${f.name}|${f.size}`; if (vistos.has(k)) continue; vistos.add(k); lista.push(f); }
   if (lista.length < files.length) avisos.push("Había archivos repetidos: los he usado una sola vez.");
   const grupos = { dibujos: [], corte: [], etiquetas: [], materiales: [], cristales: [], persianas: [] };
+  const clasif = []; // qué ha reconocido el programa de cada archivo (se guarda en el expediente para poder verlo después)
   for (const f of lista) {
     const t = await clasificarPdfObra(f);
+    clasif.push({ f, t });
     if (t === "presupuesto") { avisos.push(`${f.name}: es un presupuesto; aquí no se sube.`); continue; }
     if (t === "dibujos") grupos.dibujos.push(f);
     else if (t === "corte") grupos.corte.push(f);
@@ -47480,6 +47519,18 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       if (mk) matsPatch[mk] = { estado: ((base.materiales || {})[mk] || {}).estado === "recibido" ? "recibido" : "pedido" };
       avisos.push(`${tipoPed === "Cristales" ? "Listado de cristales" : "Pedido de persianas/compactos"} leído: pedido UX-${sig} creado${lineas.length ? ` (${lineas.length} líneas)` : ""}. Elige el proveedor y mándalo en Pedidos.`);
     }
+  }
+  // Documentos: cada archivo subido se queda guardado en el expediente (los pedidos de cristales/persianas ya guardan el suyo en el pedido)
+  {
+    const ETQ = { dibujos: "Carga de material / dibujos", corte: "Hoja de corte", etiquetas: "Etiquetas", analisis: "Análisis de materiales", mano_obra: "Listado de mano de obra", cajas: "Listado de cajas", cristales: "Listado de vidrios (pedido de cristales)", persianas: "Pedido de persianas/compactos", presupuesto: "Presupuesto (no se usa)", "": "NO RECONOCIDO" };
+    const docsNuevos = [];
+    for (const { f, t } of clasif) {
+      if (["cristales", "persianas", "presupuesto"].includes(t)) continue;
+      try { docsNuevos.push({ nombre: f.name, url: await subirArchivoAStorage(f, `uxcar-docs/${id}`), tipo: ETQ[t] || "Otro", fecha: hoy }); }
+      catch (er) { avisos.push(`⚠ No se pudo guardar ${f.name} en el expediente: ${er.message}`); }
+    }
+    if (docsNuevos.length) { const nombres = new Set(docsNuevos.map((d) => d.nombre)); sets.documentos = [...toArray(base.documentos).filter((d) => d && !nombres.has(d.nombre)), ...docsNuevos]; }
+    sets.ultimaSubida = JSON.parse(JSON.stringify({ fecha: ahora, por: nombre, archivos: clasif.map(({ f, t }) => ({ nombre: f.name, tipo: ETQ[t] || "Otro" })), avisos: avisos.slice(0, 30) }));
   }
   // Guardado
   const mats = { ...(base.materiales || {}) };
