@@ -1953,7 +1953,52 @@ export default function App() {
     setProyectoView("list");
   };
 
-  const deleteProyecto = (id) => {
+  // Borrar un proyecto de Uxcar lo borra de todos lados: su expediente del portal, sus pedidos (portal y CRM), las persianas pedidas, la hoja de Auxiliares y lo que Uxcar veía.
+  // Las discrepancias salen de los pedidos, así que desaparecen con ellos. Si ya hay cristales o persianas suyos colocados en el almacén, no se borra (hay que sacarlos antes).
+  const limpiarUxcarDeProyecto = async (pr) => {
+    const expId = pr.uxcarExpedienteId || "";
+    const exp = expId ? toArray(uxExpedientes).find((e) => e.id === expId) : null;
+    const K = exp ? uxClaves(exp) : null;
+    const cr = K ? toArray(cristales).filter((c) => c.estado !== "Retirado" && uxCaballeteEs(c, K)) : [];
+    const pe = K ? toArray(persianasAlmacen).filter((x) => uxPersianaEs(x, K)) : [];
+    if (cr.length || pe.length) {
+      alert(`No se puede borrar este proyecto de Uxcar todavía: tiene ${cr.length} caballete(s) de cristales y ${pe.length} persiana(s) colocados en el almacén. Sácalos o bórralos antes y vuelve a borrar.`);
+      return false;
+    }
+    const pedUx = toArray(uxPedidos).filter((p) => expId && toArray(p.expedientes).some((e) => e.expedienteId === expId));
+    const idsUx = new Set(pedUx.map((p) => p.id));
+    const delCrm = toArray(pedidos).filter((pd) => (pd.proyectoId === pr.id && pd.origen === "portalUxcar") || (expId && pd.uxcarExpedienteId === expId));
+    const delPers = toArray(pedidosPersianas).filter((q) => q && q.origen === "portalUxcar" && idsUx.has(q.uxcarPedidoId) && exp && String(q.refObra) === String(exp.numero));
+    if (!window.confirm(`Este proyecto es de Uxcar. Al borrarlo se borra también: el expediente en su portal, ${pedUx.length} pedido(s) del portal, ${delCrm.length} pedido(s) del CRM, ${delPers.length} persiana(s) pedida(s) y su hoja de Auxiliares. No se puede deshacer. ¿Seguir?`)) return false;
+    try {
+      const patch = {};
+      if (expId) { patch[`expedientes/${expId}`] = null; patch[`vistaFabrica/${expId}`] = null; }
+      pedUx.forEach((p) => {
+        const otros = toArray(p.expedientes).filter((e) => e.expedienteId !== expId);
+        if (otros.length) patch[`pedidos/${p.id}/expedientes`] = otros; else patch[`pedidos/${p.id}`] = null;
+        patch[`pendienteUxcar/${p.id}`] = null;
+      });
+      if (Object.keys(patch).length) await fbUpdate(ref(fbDb, "portalUxcar"), patch);
+      if (delCrm.length) { const ids = new Set(delCrm.map((x) => x.id)); savePedidos(toArray(pedidos).filter((x) => !ids.has(x.id))); }
+      if (delPers.length) { const ids = new Set(delPers.map((x) => x.id)); savePedidosPersianas(toArray(pedidosPersianas).filter((x) => !ids.has(x.id))); }
+      const pptos = exp && exp.hojasCorteAux ? Object.keys(exp.hojasCorteAux) : [];
+      if (pptos.length) {
+        const aux = {};
+        pptos.forEach((k) => { aux[`auxiliaresHojas/${k}`] = null; });
+        const snap = await fbGet(ref(fbDb, "auxiliaresPiezas")).catch(() => null);
+        const todas = snap && snap.val ? snap.val() || {} : {};
+        Object.entries(todas).forEach(([k, v]) => { if (v && pptos.includes(String(v.ppto || "").replace(/\D/g, ""))) aux[`auxiliaresPiezas/${k}`] = null; });
+        await fbUpdate(ref(fbDb), aux);
+      }
+      return true;
+    } catch (e) {
+      alert("El borrado de lo de Uxcar se ha cortado a medias: " + e.message + ". El proyecto NO se ha borrado; vuelve a intentarlo.");
+      return false;
+    }
+  };
+  const deleteProyecto = async (id) => {
+    const pr = proyectos.find((p) => p.id === id);
+    if (pr && (pr.origen === "portalUxcar" || pr.uxcarExpedienteId)) { if (!(await limpiarUxcarDeProyecto(pr))) return; }
     saveProyectos(proyectos.filter((p) => p.id !== id));
     setProyectoView("list");
     showToast("Proyecto eliminado");
@@ -4312,7 +4357,7 @@ export default function App() {
       if (!pr || (pr.estadoTrabajo || "Pendiente de aceptación") !== "Pendiente de aceptación") return;
       const cp = toArray(pedidos).filter((pd) => pd.estado !== "Cancelado" && ((pd.proyectoId === pr.id) || pd.uxcarExpedienteId === e.id) && esPedidoCristalOCompacto(pd));
       const matPend = Object.values(e.materiales || {}).some((m) => m && m.estado === "pedido");
-      const todo = cp.length > 0 && !matPend && cp.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+      const todo = cp.length > 0 && !matPend && cp.every((pd) => toArray(pd.lineas).length > 0 && toArray(pd.lineas).every((l) => l.confirmadoFabrica));
       if (todo && !pr.listoParaAceptar) {
         updateProyectoInline(pr.id, { listoParaAceptar: true, listoParaAceptarFecha: new Date().toISOString().slice(0, 10) });
         showToast(`Uxcar ${e.numero}: ha llegado todo. Listo para aceptar y planificar.`);
@@ -4588,7 +4633,8 @@ export default function App() {
   }, [uxPedidos, pedidos, currentUser?.id, loading]);
 
   // Entrada de material de un pedido de Uxcar hecha desde Fábrica
-  const uxGuardarRecepcion = async (pedidoUx, recepcion) => {
+  const uxGuardarRecepcion = async (pedidoUx, recepcion0) => {
+    const recepcion = { ...recepcion0, origen: "fabrica" }; // «fabrica» = la entrada la ha hecho Ecowin PVC desde el CRM; solo esa confirma las líneas (la albarán que da Uxcar en su portal no)
     try { await fbUpdate(ref(fbDb, "portalUxcar"), uxPatchRecepcion(pedidoUx, recepcion, uxExpedientes)); }
     catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
     showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
@@ -4604,6 +4650,8 @@ export default function App() {
       if (!pd.uxcarPedidoId || pd.estado === "Cancelado") return pd;
       const p = uxPedidos.find((x) => x.id === pd.uxcarPedidoId);
       if (!p || !p.recepcion) return pd;
+      // Si Uxcar da la llegada en su portal, NO se confirma en fábrica: el pedido queda en Materiales pendientes hasta que fábrica lo reciba (cristales a su sitio, persianas a su carro)
+      if (p.recepcion.origen !== "fabrica") return pd;
       const grupos = toArray(p.expedientes);
       let gi = grupos.findIndex((e) => (e.expedienteId || "") === (pd.uxcarExpedienteId || ""));
       if (gi < 0) gi = 0;
