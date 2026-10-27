@@ -730,6 +730,7 @@ export default function App() {
   // Si quien entra es un CLIENTE con acceso al portal, aquí va su ficha (y solo ve sus trabajos, facturas e incidencias)
   const [portalCliente, setPortalCliente] = useState(null);
   const [uxExpedientes, setUxExpedientes] = useState([]);
+  const [uxCargado, setUxCargado] = useState(false); // ya han llegado los datos del portal (para no dar por «sueltos» proyectos mientras carga)
   const [uxConfig, setUxConfig] = useState({});
   const [uxPedidos, setUxPedidos] = useState([]);
   uxRecibidoIds = new Set(uxPedidos.filter((q) => q && (q.recibido || (q.recepcion && q.recepcion.completo))).map((q) => q.id)); // lo leen discrepanciasPedido y «Listo para fabricar»
@@ -2001,6 +2002,12 @@ export default function App() {
     setProyectoView("list");
     showToast("Proyecto eliminado");
   };
+  // Proyectos de Uxcar «sueltos»: su expediente ya no existe (lo borraron en el portal) y el proyecto sigue sin tocar en «Pendiente de aceptación».
+  const uxProyectosHuerfanos = useMemo(() => {
+    if (!uxCargado) return [];
+    const ids = new Set(toArray(uxExpedientes).map((e) => e && e.id));
+    return toArray(proyectos).filter((pr) => pr && pr.origen === "portalUxcar" && pr.uxcarExpedienteId && !ids.has(pr.uxcarExpedienteId) && pr.estadoTrabajo === "Pendiente de aceptación");
+  }, [proyectos, uxExpedientes, uxCargado]);
   // Pedidos de Uxcar «sueltos»: todos sus expedientes ya no existen (se borró el expediente sin borrar sus pedidos). Se quitan del portal y de tu CRM.
   const uxPedidosHuerfanos = useMemo(() => {
     const ids = new Set(toArray(uxExpedientes).map((e) => e.id));
@@ -4172,6 +4179,7 @@ export default function App() {
     const off1 = onValue(ref(fbDb, "portalUxcar"), (snap) => {
       const v = snap.val() || {};
       setUxExpedientes(toArray(v.expedientes));
+      setUxCargado(true);
       setUxConfig(v.config || {});
       setUxPedidos(toArray(v.pedidos));
     }, () => {});
@@ -6514,6 +6522,8 @@ export default function App() {
             onAltaPortal={uxAltaPortal}
             onBajaPortal={uxBajaPortal}
             onBorrar={uxBorrar}
+            proyectosHuerfanos={uxProyectosHuerfanos}
+            onBorrarProyectoHuerfano={(id) => deleteProyecto(id)}
             nHuerfanos={uxPedidosHuerfanos.length}
             onPurgarHuerfanos={uxPurgarHuerfanos}
             onVerProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
@@ -18179,7 +18189,8 @@ function AlmacenPersianas() {
     return todosItems.filter((x) => {
       const texto = [largoPersiana(x), ...Object.entries(x).filter(([k, v]) => !["id", "almacenId", "estante"].includes(k) && (typeof v === "string" || typeof v === "number")).map(([, v]) => v)]
         .join(" ").toLowerCase();
-      return trozos.every((t) => texto.includes(t));
+      const textoSP = texto.replace(/\./g, ""); // «6994» también encuentra «6.994-1»
+      return trozos.every((t) => texto.includes(t) || textoSP.includes(t.replace(/\./g, "")));
     }).sort((a, b) => (a.entregada ? 1 : 0) - (b.entregada ? 1 : 0) || String(a.expediente).localeCompare(String(b.expediente)));
   }, [busca, todosItems]);
   const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén";
@@ -48097,7 +48108,7 @@ function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
   );
 }
 
-function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos }) {
+function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos, proyectosHuerfanos = [], onBorrarProyectoHuerfano }) {
   const [vista, setVista] = useState(() => { if (uxcNav.discrepancias) { uxcNav.discrepancias = false; return "discrepancias"; } return "lista"; });
   const [abiertoId, setAbiertoId] = useState(null);
   const [avisoStockUx, setAvisoStockUx] = useState("");
@@ -48129,6 +48140,17 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
         {isAdmin && tab("precios", "Precios")}
         {isAdmin && tab("usuarios", "Usuarios del portal")}
       </div>
+      {isAdmin && proyectosHuerfanos.length > 0 && onBorrarProyectoHuerfano && (
+        <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm space-y-2">
+          <div>⚠ Proyectos de Uxcar sin expediente (el expediente se borró y el proyecto sigue sin aceptar). Al borrarlos se va todo lo suyo.</div>
+          {proyectosHuerfanos.map((pr) => (
+            <div key={pr.id} className="flex flex-wrap items-center gap-3">
+              <span className="font-semibold">#{pr.numero} · {pr.nombre}</span>
+              <button onClick={() => onBorrarProyectoHuerfano(pr.id)} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:bg-amber-700">Borrar</button>
+            </div>
+          ))}
+        </div>
+      )}
       {isAdmin && nHuerfanos > 0 && onPurgarHuerfanos && (
         <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm flex flex-wrap items-center gap-3">
           <span>⚠ Hay <b>{nHuerfanos}</b> pedido{nHuerfanos === 1 ? "" : "s"} de Uxcar sin expediente (se borró el expediente pero no sus pedidos).</span>
