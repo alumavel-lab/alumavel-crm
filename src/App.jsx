@@ -4304,6 +4304,23 @@ export default function App() {
     pendienteUxRef.current = txt;
     fbSet(ref(fbDb, "portalUxcar/pendienteUxcar"), Object.keys(res).length ? res : null).catch(() => { pendienteUxRef.current = ""; });
   }, [pedidos, uxPedidos, currentUser?.id, loading]);
+  // Cuando ha llegado TODO lo de un expediente de Uxcar (cristales, compactos/persianas y material), su proyecto se marca «listo para aceptar» y avisa: lo aceptas tú y entra a planificar
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    toArray(uxExpedientes).forEach((e) => {
+      const pr = toArray(proyectos).find((x) => x.id === e.proyectoId);
+      if (!pr || (pr.estadoTrabajo || "Pendiente de aceptación") !== "Pendiente de aceptación") return;
+      const cp = toArray(pedidos).filter((pd) => pd.estado !== "Cancelado" && ((pd.proyectoId === pr.id) || pd.uxcarExpedienteId === e.id) && esPedidoCristalOCompacto(pd));
+      const matPend = Object.values(e.materiales || {}).some((m) => m && m.estado === "pedido");
+      const todo = cp.length > 0 && !matPend && cp.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+      if (todo && !pr.listoParaAceptar) {
+        updateProyectoInline(pr.id, { listoParaAceptar: true, listoParaAceptarFecha: new Date().toISOString().slice(0, 10) });
+        showToast(`Uxcar ${e.numero}: ha llegado todo. Listo para aceptar y planificar.`);
+      } else if (!todo && pr.listoParaAceptar) {
+        updateProyectoInline(pr.id, { listoParaAceptar: false });
+      }
+    });
+  }, [uxExpedientes, proyectos, pedidos, currentUser?.id, loading]);
   // Vista para Uxcar (solo de SUS expedientes, solo consulta): estado en Fábrica, dónde están sus cristales y persianas y sus discrepancias.
   // Se escribe en portalUxcar/vistaFabrica/{expedienteId} cuando cambia; el portal solo la lee.
   const vistaFabUxRef = useRef("");
@@ -4327,7 +4344,7 @@ export default function App() {
       const pe = K.d.length >= 2 || K.pptos.size ? toArray(persianasAlmacen).filter((x) => uxPersianaEs(x, K)) : [];
       const disc = discrepanciasTodas(mios).map((x) => ({ pedido: x.p.numero || "", tipo: x.items[0].tipo, lineas: x.items.length }));
       res[e.id] = {
-        numero: e.numero || "", estado, fechaEntrega: (pr && pr.fechaEntrega) || "",
+        numero: e.numero || "", estado, fechaEntrega: (pr && (pr.fechaEntregaPrevista || pr.fechaEntrega)) || e.fechaEntrega || "",
         cristales: cr.map((x) => (x.ubicacion ? `${x.ubicacion.zona || ""} fila ${x.ubicacion.fila ?? ""} hueco ${x.ubicacion.hueco ?? ""}` : "Sin colocar")),
         persianas: pe.map((x) => (toArray(carrosPersianas).find((c) => c.id === x.carro) || {}).nombre || "Sin carro"),
         discrepancias: disc,
@@ -7334,6 +7351,7 @@ function faseObra(p, pedidos) {
   if (et === "Entregado") return { txt: "Entregado", cls: "bg-emerald-100 text-emerald-800" };
   if (et === "Albarán de carga firmado" || et === "Listo para reparto/recogida") return { txt: "Fabricada · lista para salir", cls: "bg-teal-100 text-teal-800" };
   if (et === "En proceso") return { txt: "EN FÁBRICA · fabricando", cls: "bg-sky-100 text-sky-800" };
+  if (p.listoParaAceptar && (!et || et === "Pendiente de aceptación")) return { txt: "✅ HA LLEGADO TODO · listo para aceptar", cls: "bg-violet-100 text-violet-800 font-bold" };
   if (p.estadoPresupuesto !== "Presupuesto aceptado") return { txt: "Aún sin aceptar", cls: "bg-slate-100 text-slate-500" };
   const cp = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
   if (!cp.length) return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
@@ -7542,6 +7560,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             ["bg-amber-100 text-amber-800", "Pedido en espera · sin enviar", "El pedido está creado pero no se ha mandado al proveedor."],
             ["bg-blue-100 text-blue-800", "Material pedido · esperando que llegue", "Ya se ha enviado al proveedor; falta que llegue."],
             ["bg-amber-100 text-amber-800", "Material llegado · falta confirmar en fábrica", "Oficina lo da por llegado; fábrica aún no lo ha confirmado."],
+            ["bg-violet-100 text-violet-800", "HA LLEGADO TODO · listo para aceptar", "(Uxcar) Han llegado cristales, compactos y material. Lo aceptas tú y entra a planificar."],
             ["bg-emerald-100 text-emerald-800", "LISTA PARA FABRICAR", "Ha llegado todo y fábrica lo ha confirmado. Se puede empezar."],
             ["bg-sky-100 text-sky-800", "EN FÁBRICA · fabricando", "Ya está en máquina."],
             ["bg-teal-100 text-teal-800", "Fabricada · lista para salir", "Terminada; falta repartirla, recogerla o instalarla."],
@@ -47249,15 +47268,6 @@ async function uxNumeroDePdf(f) {
       return m ? m[1].replace(/\.$/, "") : "";
     } catch (e) { return ""; }
 }
-async function uxEsListadoVidrios(f) {
-  try {
-    const lib = await cargarPdfJs();
-    const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
-    const tc = await (await doc.getPage(1)).getTextContent();
-    const T = tc.items.map((i) => i.str).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ");
-    return /LISTADO (DE )?(VIDRIOS|CRISTALES)/.test(T) && !/PEDIDO COMPRA/.test(T);
-  } catch (e) { return false; }
-}
 async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr }) {
   const avisos = [];
   const lista = [], vistos = new Set();
@@ -47270,15 +47280,19 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     if (t === "dibujos") grupos.dibujos.push(f);
     else if (t === "corte") grupos.corte.push(f);
     else if (t === "etiquetas") grupos.etiquetas.push(f);
-    else if (t === "cristales") {
-      // El LISTADO de vidrios no es un pedido: solo el pedido de compra crea el pedido de cristales (si no, salen dos pedidos)
-      if (await uxEsListadoVidrios(f)) { avisos.push(`${f.name}: es el listado de vidrios, no el pedido de cristales; no crea pedido.`); continue; }
-      grupos.cristales.push(f);
-    }
+    else if (t === "cristales") grupos.cristales.push(f);
     else if (t === "persianas") grupos.persianas.push(f);
     else if (["analisis", "mano_obra", "cajas"].includes(t)) grupos.materiales.push({ f, t });
     else if (/dibujo|tipo[\s_-]*plano/i.test(f.name || "")) grupos.dibujos.push(f);
     else grupos.materiales.push({ f, t: "" });
+  }
+  // El pedido de cristales ES el listado de vidrios gráfico: si vienen varios (p. ej. dos versiones del mismo presupuesto) solo vale uno, el de versión más alta, para no crear dos pedidos
+  if (grupos.cristales.length > 1) {
+    const ver = (f) => parseInt((clasificarPdfObra.version.get(f) || "0"), 10) || 0;
+    const orden = [...grupos.cristales].sort((a, b2) => ver(b2) - ver(a));
+    const elegido = orden[0];
+    orden.slice(1).forEach((f) => avisos.push(`${f.name}: había ${grupos.cristales.length} listados de vidrios; solo he usado ${elegido.name} (versión más alta) para no crear dos pedidos.`));
+    grupos.cristales = [elegido];
   }
   // Nº de expediente: el del que ya está abierto o el que pone el PDF (NUMERO : 6.994 / PRESUPUESTO:6.994-1)
   const numeroDePdf = uxNumeroDePdf;
