@@ -4359,6 +4359,22 @@ export default function App() {
     almCompUxRef.current = txt;
     fbSet(ref(fbDb, "portalUxcar/almacenCompartido"), JSON.parse(txt)).catch(() => { almCompUxRef.current = ""; });
   }, [uxExpedientes, cristales, persianasAlmacen, carrosPersianas, currentUser?.id, loading]);
+  // Hojas de corte que Uxcar sube desde su portal: el portal no puede escribir en Auxiliares, así que las deja en su expediente y aquí se pasan a auxiliaresHojas.
+  const hojasUxPasadasRef = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    toArray(uxExpedientes).forEach((e) => {
+      Object.entries(e.hojasCorteAux || {}).forEach(([ppto, h]) => {
+        if (!h || !h.presupuesto) return;
+        const clave = `${e.id}|${ppto}|${h.archivo}|${h.fecha}`;
+        if (hojasUxPasadasRef.current.has(clave)) return;
+        const ya = hojasAuxApp && hojasAuxApp[ppto];
+        hojasUxPasadasRef.current.add(clave);
+        if (ya && ya.archivo === h.archivo && ya.fecha === h.fecha) return;
+        fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), h).catch(() => { hojasUxPasadasRef.current.delete(clave); });
+      });
+    });
+  }, [uxExpedientes, hojasAuxApp, currentUser?.id, loading]);
   const uxPedidosCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxPedidosCreandoRef.current) return;
@@ -8696,9 +8712,9 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
             const hechas = await guardarHojasCorteAux(cortes);
             hojaAuxGuardada = hechas.length > 0;
             if (hechas.length) avisos.push(`Hoja de corte del presupuesto ${hechas.map((x) => pptoBonito(x)).join(", ")} guardada: ya sale en Auxiliares.`);
-            else avisos.push("⚠ No he podido leer la hoja de corte para Auxiliares (formato no reconocido). Avisa para revisarla.");
+            else avisos.push(`⚠ No he podido guardar la hoja de corte para Auxiliares: ${hechas.errores.join(" · ") || "motivo desconocido"}.`);
             const mio = digitosPresu(proyecto.presupuestoNumero);
-            if (mio && hechas.length && !hechas.includes(mio)) avisos.push(`⚠ La hoja de corte es del presupuesto ${hechas.map((x) => pptoBonito(x)).join(", ")} y esta obra es del ${pptoBonito(mio)}. Revisa que no sea de otra obra.`);
+            if (mio && hechas.length && !hechas.map((x) => digitosPresu(x)).includes(mio)) avisos.push(`⚠ La hoja de corte es del presupuesto ${hechas.map((x) => pptoBonito(x)).join(", ")} y esta obra es del ${pptoBonito(mio)}. Revisa que no sea de otra obra.`);
           } catch (e) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(e && e.message) || "error"}).`); }
         }
         let lotes = toArray(proyecto.etiquetasFab);
@@ -8734,7 +8750,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       for (const fc of cortes) { const h = await contarVentanasDesdeHojaCorteFile(fc); if (h && h.length) { recuentoHoja = [...(recuentoHoja || []), ...h]; } }
       if (recuentoHoja && recuentoHoja.length && !dibujos.length) {
         extraProyecto.recuento = recuentoHoja;
-        avisos.push(`Ventanas contadas desde la hoja de corte (${recuentoHoja.filter((l) => l.tipo !== "mosquitera").reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas). Revísalas en "Tipo plano".`);
+        avisos.push(`Ventanas contadas desde la hoja de corte (${recuentoHoja.filter((l) => !["mosquitera", "otro"].includes(l.tipo)).reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas). Revísalas en "Tipo plano".`);
       }
       if (dibujos.length) {
         const fd = dibujos[0];
@@ -36668,8 +36684,8 @@ const uxTotalesRecuento = (lineas) => {
 // tienen su precio; la persiana suma; dos ventanas juntas valen el doble; un fijo unido a
 // la ventana suma; las mosquiteras aparte. Las puertas sin cerradura (balconeras),
 // correderas y oscilo-paralelas se cobran como ventana.
-const UX_TARIFA_DEF = { ventana: 76, puerta: 125, persiana: 10, fijoUnido: 10, fijoSuelto: 76, mosquitera: 10 };
-const UX_TARIFA_ETIQ = { ventana: "Ventana (1 o 2 hojas)", puerta: "Puerta con cerradura", persiana: "+ si lleva persiana (por ventana)", fijoUnido: "+ fijo unido a la ventana", fijoSuelto: "Fijo suelto", mosquitera: "Mosquitera" };
+const UX_TARIFA_DEF = { ventana: 76, puerta: 125, persiana: 10, fijoUnido: 10, fijoSuelto: 76, mosquitera: 10, postigo: 50 };
+const UX_TARIFA_ETIQ = { ventana: "Ventana (1 o 2 hojas)", puerta: "Puerta con cerradura", persiana: "+ si lleva persiana (por ventana)", fijoUnido: "+ por cada fijo unido (a ventana o a puerta)", fijoSuelto: "Fijo suelto", mosquitera: "Mosquitera", postigo: "Postigo (contraventana)" };
 const uxTarifa = (configVentanas) => ({ ...UX_TARIFA_DEF, ...((configVentanas && configVentanas.tarifaUxcar) || {}) });
 const uxPrecioExpediente = (exp, tarifa) => {
   const t = tarifa || UX_TARIFA_DEF;
@@ -36689,11 +36705,12 @@ const uxPrecioExpediente = (exp, tarifa) => {
       const juntas = Math.max(1, parseInt(l.juntas, 10) || 1);
       const fijos = Math.max(0, parseInt(l.fijos, 10) || 0);
       if (l.tipo === "mosquitera") { add("Mosquitera", u, t.mosquitera); return; }
+      if (l.tipo === "otro" && /\(postigo\)\s*$/i.test(String(l.modelo || ""))) { add("Postigo", u, t.postigo); return; }
       if (l.tipo === "otro") { sinPrecio += u; return; }
       if (l.tipo === "fijo") add("Fijo suelto", u, t.fijoSuelto);
       else if (l.tipo === "puerta" && l.cerradura) add("Puerta con cerradura", u * juntas, t.puerta);
       else add("Ventana", u * juntas, t.ventana);
-      if (fijos && l.tipo !== "fijo") add("Fijo unido a ventana", u * fijos, t.fijoUnido);
+      if (fijos && l.tipo !== "fijo") add("Fijo unido (a ventana o puerta)", u * fijos, t.fijoUnido);
       if (l.persiana && l.tipo !== "fijo") add("Persiana", u * juntas, t.persiana);
     });
   } else {
@@ -38539,7 +38556,7 @@ function analizarBloqueCorte(b, modelo, uds) {
     const th = tipoHojaDePerfil(b); // si la hoja de corte dice qué hoja lleva, manda eso; si no, las señales de antes
     const esPuerta = th.tipo ? hojaEsPuerta(th.tipo) : (!!mp || /KOMBISCHWELLE|UMBRAL/i.test(b));
     const esCorredera = /CORREDER/i.test(b);
-    const perfilHoja = /HOJA\s+\d{2,3}\s*MM/i.test(b);
+    const perfilHoja = /HOJA\s+\d{2,3}\s*MM/i.test(b) || /HOJA\s+VENTANA\b/i.test(b);
     const hojas = mh ? parseInt(mh[1], 10) : mp ? parseInt(mp[1], 10) : (!perfilHoja && !esPuerta && !esCorredera ? 0 : null);
     const tipo = esPuerta ? "puerta" : esCorredera ? "corredera" : hojas === 0 ? "fijo" : perfilHoja ? "ventana" : null;
     const cerradura = /BOMBILLO|CERRADURA|CILINDRO/i.test(b);
@@ -38548,7 +38565,7 @@ function analizarBloqueCorte(b, modelo, uds) {
     const vidrios = b.split("\n").reduce((a, l) => { const mv = l.match(/^\s*[\d.+]+\/[\d.]+\/[\d.+]+\b.*?\s(\d+)\s+[\d.]+,\d\d/); return a + (mv ? parseInt(mv[1], 10) : 0); }, 0);
     // Persiana: con señal clara (cajón / compacto / sección PERSIANA) = lleva; si el campo "Persiana:" está y no hay ninguna señal = no lleva; si no se sabe = null
     // El cajón de la mosquitera enrollable ("PLX-42 Cajón con Tela") NO es persiana
-    const señal = b.split("\n").some((l) => /CAJ[OÓ]N|CJ_|Compacto|\bLAMAS?\b/i.test(l) && !/TELA|MOSQUIT|SOPORTE\s+CAJ|LAMAS?\s+CONTRA/i.test(l));
+    const señal = b.split("\n").some((l) => /CAJ[OÓ]N|CJ_|Compacto|\bLAMAS?\b/i.test(l) && !/TELA|MOSQUIT|SOPORTE\s+CAJ|LAMAS?\s+CONTRA|SIN\s+CAJ[OÓ]N/i.test(l));
     const persiana = señal ? true : (/Persiana\s*:/i.test(b) ? false : null);
     // Mosquiteras: "SOLO 4 LLEVAN MOSQUITERA" / "4 mosquiteras" → ese nº para ese modelo; si lo dice sin número → todas
     let mosq = null;
@@ -38556,7 +38573,9 @@ function analizarBloqueCorte(b, modelo, uds) {
     if (m1) { const n = /^\d+$/.test(m1[1]) ? parseInt(m1[1], 10) : NUM_PALABRAS[m1[1].toLowerCase()]; mosq = { n: n || null, texto: m1[0].replace(/\s+/g, " ").trim() }; }
     else if (/MOSQUITERA/i.test(b)) mosq = { n: null, texto: "lleva mosquitera" };
     const huecos = tipo === "fijo" && vidrios ? vidrios : null;
-    const fijosUnidos = (tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null;
+    // Fijos unidos (a ventana o a puerta): cada TRAVESAÑO del modelo separa un fijo. Se cuentan las piezas de travesaño del perfil (columna Ud, por unidad del modelo).
+    const travesanos = b.split("\n").reduce((acc, l) => { if (/REFUERZO/i.test(l)) return acc; const mt = l.match(/TRAVESA[ÑN]O(?:\s+\d+\s*MM)?\s+(\d{1,2})\b/i); return acc + (mt ? parseInt(mt[1], 10) : 0); }, 0);
+    const fijosUnidos = (tipo === "puerta" || tipo === "ventana" || tipo === "corredera") && travesanos > 0 ? travesanos : ((tipo === "puerta" || tipo === "ventana") && hojas != null && vidrios ? Math.max(0, vidrios - hojas) : null);
   const postigo = /HOJA\s+DE\s+CONTRA\b|LAMAS?\s+CONTRA\s+DE\s+VENTANA|CONTRAVENTANA|POSTIGO/i.test(b);
   return { modelo, uds, postigo, hojas, persiana, mosq, tipo, cerradura, juntas, vidrios, huecos, fijosUnidos, tipoHoja: th.tipo, perfilCodigo: th.codigo };
 }
@@ -38605,7 +38624,7 @@ function recuentoDesdeHojaGrupos(paginas) {
     const tipo = m.tipo || "ventana";
     const hojas = m.hojas != null ? m.hojas : (tipo === "fijo" ? 0 : 1);
     lineas.push({ id: uid(), modelo: String(m.modelo || "").trim(), uds: m.uds || 1, tipo, hojas, persiana: !!m.persiana, cerradura: !!m.cerradura, juntas: Math.max(1, m.juntas || 1), fijos: Math.max(0, m.fijosUnidos || 0) });
-    if (m.postigo) lineas.push({ id: uid(), modelo: `${String(m.modelo || "").trim()} (postigo)`, uds: m.uds || 1, tipo: "otro", hojas: 0, persiana: false, cerradura: false, juntas: 1, fijos: 0 });
+    if (m.postigo) lineas.push({ id: uid(), modelo: `${String(m.modelo || "").trim()} (postigo)`, uds: (m.uds || 1) * Math.max(1, m.hojas || 1), tipo: "otro", hojas: 0, persiana: false, cerradura: false, juntas: 1, fijos: 0 });
     if (m.mosq) lineas.push({ id: uid(), modelo: `${String(m.modelo || "").trim()} (mosquitera)`, uds: m.mosq.n || m.uds || 1, tipo: "mosquitera", hojas: 0, persiana: false, cerradura: false, juntas: 1, fijos: 0 });
   });
   return lineas;
@@ -47256,8 +47275,10 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   for (const fc of grupos.corte) { const h = await contarVentanasDesdeHojaCorteFile(fc); if (h && h.length) recuentoHoja = [...(recuentoHoja || []), ...h]; }
   if (grupos.corte.length) {
     try {
-      const hechas = await guardarHojasCorteAux(grupos.corte);
-      avisos.push(hechas.length ? `Hoja de corte del presupuesto ${hechas.join(", ")} guardada: ya sale en Auxiliares.` : "⚠ No he podido leer la hoja de corte para Auxiliares (formato no reconocido).");
+      // El portal solo lee la hoja y la deja en el expediente; el CRM de Ecowin PVC la pasa a Auxiliares (el portal no escribe ahí)
+      const hechas = await guardarHojasCorteAux(grupos.corte, { sinGuardar: true });
+      hechas.hojas.forEach((h) => { sets[`hojasCorteAux/${h.presupuesto}`] = h; });
+      avisos.push(hechas.hojas.length ? `Hoja de corte del presupuesto ${hechas.join(", ")} leída: pasa a Auxiliares en cuanto se abra el CRM de Ecowin PVC.` : `⚠ No he podido leer la hoja de corte para Auxiliares: ${hechas.errores.join(" · ") || "motivo desconocido"}.`);
     } catch (er) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(er && er.message) || "error"}).`); }
   }
   // 2) Carga de material (tipo plano): se guarda y, si no hay hoja de corte, se cuenta con IA
@@ -47271,7 +47292,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       avisos.push(recuento && recuento.length ? "Ventanas contadas desde la carga de material (revísalas)." : "No he podido contar las ventanas: añádelas a mano en Editar.");
     } else avisos.push("Carga de material guardada como tipo plano.");
   }
-  if (recuentoHoja) avisos.push(`Ventanas contadas desde la hoja de corte: ${recuentoHoja.filter((l) => l.tipo !== "mosquitera").reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas. Revísalas en Editar.`);
+  if (recuentoHoja) avisos.push(`Ventanas contadas desde la hoja de corte: ${recuentoHoja.filter((l) => !["mosquitera", "otro"].includes(l.tipo)).reduce((a, l) => a + (l.uds || 0), 0)} ventanas/puertas. Revísalas en Editar.`);
   if (recuento && recuento.length) {
     const t = uxTotalesRecuento(recuento);
     sets.recuento = JSON.parse(JSON.stringify(recuento)); sets.ventanas = t.ventanas; sets.puertas = t.puertas; sets.osciloParalelas = t.osciloParalelas;
@@ -47334,6 +47355,9 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const mats = { ...(base.materiales || {}) };
   UX_MATERIALES.forEach(([k]) => { if (!mats[k]) mats[k] = { estado: "pendiente" }; });
   Object.keys(matsPatch).forEach((k) => { mats[k] = matsPatch[k]; });
+  const hojasAux = {};
+  Object.keys(sets).filter((k) => k.startsWith("hojasCorteAux/")).forEach((k) => { hojasAux[k.slice(14)] = sets[k]; delete sets[k]; });
+  if (Object.keys(hojasAux).length) sets.hojasCorteAux = hojasAux;
   if (nuevo) patch[`expedientes/${id}`] = JSON.parse(JSON.stringify({ ...base, ...sets, materiales: mats, observaciones: "Subido con «Subir documentos» desde el portal" }));
   else {
     Object.entries(sets).forEach(([k, v]) => { patch[`expedientes/${id}/${k}`] = v; });
@@ -49517,7 +49541,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const filas = [];
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)\\s(\\d+)\\s+(?:${AUX_COLOR_RE.source}\\s*)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:${AUX_COLOR_RE.source}\\s*)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
         if (!m) continue;
         const ud = parseInt(m[2], 10);
         const color = m[3] ? m[3].toUpperCase() : "";
@@ -49607,14 +49631,18 @@ const AUX_CFG_DEFECTO = {
     { id: "r10", ref: "808088S", nombre: "Inversor (batiente 64)", pasos: "", activo: true },
     { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
     { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
+    { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40,
 };
+// Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
+  const refsEd = toArray(x.refs);
   return {
-    refs: x.editado ? toArray(x.refs) : AUX_CFG_DEFECTO.refs,
+    refs: x.editado ? [...refsEd, ...AUX_REFS_NUEVAS.filter((n) => !toArray(x.vistas).includes(n.id) && !refsEd.some((r) => String(r.ref || "").trim() === n.ref))] : AUX_CFG_DEFECTO.refs,
     carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
     bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
@@ -49626,17 +49654,25 @@ const auxPasosDe = (rc, reg) => String((rc && rc.pasos) || "").split(",").map((s
 const auxLista = (rc, reg) => !!(reg && reg.cortada) && auxPasosDe(rc, reg).every((n) => reg.pasos && reg.pasos[auxSlug(n)]);
 const auxCmp = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { numeric: true });
 // Guarda para Auxiliares las hojas de corte que vengan entre los PDF del Expediente rápido (los demás PDF se saltan). Devuelve los presupuestos guardados.
-async function guardarHojasCorteAux(ficheros) {
+async function guardarHojasCorteAux(ficheros, opciones) {
+  const sinGuardar = !!(opciones && opciones.sinGuardar); // true = solo leer (lo usa el portal de Uxcar: el CRM la copia a Auxiliares)
   const cfgSnap = await fbGet(ref(fbDb, "auxiliaresConfig")).catch(() => null);
   const refs = auxCfgDe(cfgSnap && cfgSnap.val ? cfgSnap.val() : null).refs.map((x) => String(x.ref || "").trim()).filter(Boolean);
   const hechas = [];
+  hechas.errores = [];   // por qué no se pudo guardar cada hoja (se enseña al usuario)
+  hechas.hojas = [];     // lo leído (para guardarlo en otro sitio)
   for (const f of toArray(ficheros)) {
     try {
       const { sinTexto, r: h } = await leerHojaAuxPdf(f, refs);
-      if (sinTexto || !h || !h.presupuesto || !h.modelos.length) continue;
-      await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), JSON.parse(JSON.stringify({ ...h, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+      if (sinTexto) { hechas.errores.push(`${f.name}: el PDF no tiene texto (¿es una foto?)`); continue; }
+      if (!h) { hechas.errores.push(`${f.name}: no parece una hoja de corte`); continue; }
+      if (!h.presupuesto) { hechas.errores.push(`${f.name}: no encuentro el número de presupuesto en la cabecera`); continue; }
+      if (!h.modelos.length) { hechas.errores.push(`${f.name}: no encuentro ningún modelo`); continue; }
+      const dato = JSON.parse(JSON.stringify({ ...h, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) }));
+      hechas.hojas.push(dato);
+      if (!sinGuardar) await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), dato);
       hechas.push(pptoBonito(h.presupuesto));
-    } catch (e) { /* un PDF que no es hoja de corte (el listado de vidrios o el de dibujos) se salta */ }
+    } catch (e) { hechas.errores.push(`${f.name}: ${(e && e.message) || "error al leerla o guardarla"}`); }
   }
   return hechas;
 }
@@ -49905,7 +49941,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const guardarCfg = (b) => guardarLinea("auxiliaresConfig", JSON.parse(JSON.stringify({
     refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
-    bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40, editado: true,
+    bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
   }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); });
   // ---- COMPROBAR: revisar por obra que todas las piezas están y ticarlas (a mano o con la pistola) ----
   const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(Boolean).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
