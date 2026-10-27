@@ -2217,11 +2217,22 @@ export default function App() {
     const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
     const NOMBRE_TIPO = { cristal: "Cristales", persianas: "Compactos (persianas)", "": "Material a medida" };
     const yaPedidos = pedidos.filter((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado");
-    const repetido = (g) => toArray(g.documentos).length > 0 && toArray(g.documentos).every((d) => yaPedidos.some((pd) => toArray(pd.documentos).some((x) => x.nombre === d.nombre)));
+    // Huella de las líneas: si el listado trae lo mismo que un pedido ya hecho de esa obra y tipo, no se vuelve a pedir aunque el fichero tenga otro nombre
+    const huella = (ls) => toArray(ls).map((l) => [l.materialId || l.codigo || l.referencia || l.descripcion || "", l.ancho || "", l.alto || "", l.cantidad || ""].join("|").toLowerCase()).sort().join("#");
+    const pedidoIgual = (g) => yaPedidos.find((pd) => (toArray(g.documentos).length > 0 && toArray(g.documentos).every((d) => toArray(pd.documentos).some((x) => x.nombre === d.nombre)))
+      || (toArray(g.lineas).length > 0 && (pd.tipoPedido || "") === (g.tipo || "") && toArray(pd.lineas).length === toArray(g.lineas).length && huella(pd.lineas) === huella(g.lineas)));
     const validos = toArray(grupos).filter((g) => toArray(g.lineas).length > 0);
-    const omitidos = validos.filter(repetido);
-    const aCrear = validos.filter((g) => !repetido(g));
-    if (omitidos.length) showToast(`Ya había un pedido con ${omitidos.map((g) => (toArray(g.documentos)[0] || {}).nombre).join(", ")}: no lo he vuelto a crear.`, "error");
+    const omitidos = [];
+    const aCrear = [];
+    const eliminar = new Set();
+    validos.forEach((g) => {
+      const igual = pedidoIgual(g);
+      if (!igual) { aCrear.push(g); return; }
+      const sinEnviar = !igual.envioConfirmado && (igual.estado === "En espera" || igual.estado === "Pendiente" || !igual.estado);
+      if (sinEnviar && window.confirm(`Esta obra ya tiene el pedido #${igual.numero} (${NOMBRE_TIPO[g.tipo || ""]}, ${toArray(igual.lineas).length} líneas) con lo mismo y aún sin enviar.\n\n¿Lo elimino y creo uno nuevo con este listado?\n\nAceptar = elimina el #${igual.numero} y crea el nuevo.\nCancelar = lo dejo como está y no creo otro.`)) { eliminar.add(igual.id); aCrear.push(g); }
+      else omitidos.push({ g, igual, sinEnviar });
+    });
+    if (omitidos.length) showToast(omitidos.map(({ g, igual, sinEnviar }) => `Ya existe el pedido #${igual.numero} (${NOMBRE_TIPO[g.tipo || ""]})${sinEnviar ? "" : ` y está ${igual.estado || "hecho"}, así que no lo toco`}: no he creado otro.${sinEnviar ? "" : " Si de verdad hay que repetirlo, cancélalo antes."}`).join(" "), "error");
     if (aCrear.length === 0) return 0;
     let num = parseInt(nextNumeroPedido(), 10);
     const nuevos = aCrear.map((g) => {
@@ -2235,7 +2246,7 @@ export default function App() {
         creadoPor: creador, fechaCreado: hoy,
       };
     });
-    savePedidos([...nuevos, ...pedidos]);
+    savePedidos([...nuevos, ...pedidos.filter((pd) => !eliminar.has(pd.id))]);
     // "Qué lleva la obra": cristales y persianas quedan enlazados a sus pedidos
     const pr = proyectosRef.current.find((x) => x.id === proyecto.id) || proyecto;
     let cl = normalizarChecklist(pr.checklistMateriales);
@@ -8594,12 +8605,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // Solo se salta si de ese documento YA hay un pedido creado. Si se subió pero el pedido quedó sin confirmar
       // (se salió de la pantalla antes de crearlo), se vuelve a proponer.
       const pedidoYaCreadoDe = (nombre) => toArray(pedidosObra).some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && toArray(pd.documentos).some((d) => d.nombre === nombre));
-      for (const m of [...medidas]) {
-        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name))) && pedidoYaCreadoDe(m.f.name)) {
-          medidas.splice(medidas.indexOf(m), 1);
-          avisos.push(`${m.f.name} ya estaba subido en esta obra y su pedido ya está creado: no lo he vuelto a sacar (para no pedirlo dos veces).`);
-        }
-      }
+      // (si de este documento ya hay un pedido, al crearlo el CRM pregunta si se elimina el anterior; ya no se salta en silencio)
       if (medidas.length && onMedidas) {
         for (const m of medidas) await onMedidas(m.f, m.tipo);
         const nombres = medidas.map((m) => (m.tipo === "cristales" ? "listado de cristales" : m.tipo === "persianas" ? "listado de persianas" : "hoja de medidas"));
