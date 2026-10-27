@@ -494,9 +494,6 @@ const faltaQueLlevaObra = (p) => !!p && p.origen !== "portalUxcar"
   && normalizarChecklist(p.checklistMateriales).some((c) => !c.estado);
 const AVISO_QUE_LLEVA = 'Esta obra no tiene informe de materiales: súbelo, o contesta a mano "Qué lleva la obra" en la ficha del proyecto (Sí/No en todo).';
 
-// Un pedido cuenta como llegado para poder fabricar si oficina lo tiene recibido O fábrica ha confirmado TODAS sus líneas. Si solo lo ha confirmado fábrica, sigue saliendo el aviso
-// de discrepancia con oficina, pero ya no frena el proceso (pedido del usuario: con el aviso hay bastante).
-const pedidoLlegadoParaFabricar = (pd) => !!pd && (pd.estado === "Recibido" || (toArray(pd.lineas).length > 0 && toArray(pd.lineas).every((l) => l && l.confirmadoFabrica)));
 const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
   const faltan = [];
   normalizarChecklist(proyecto && proyecto.checklistMateriales).forEach((c) => {
@@ -507,7 +504,7 @@ const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
     const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
     if (vinculados.length === 0) { faltan.push(`${nombre}: lleva, pero no tiene pedido vinculado`); return; }
     vinculados.forEach((pd) => {
-      if (!pedidoLlegadoParaFabricar(pd)) faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
+      if (pd.estado !== "Recibido") faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
       else if ((pd.lineas || []).some((l) => !l.confirmadoFabrica)) faltan.push(`${nombre}: el pedido #${pd.numero} está sin confirmar por fábrica`);
     });
   });
@@ -1094,20 +1091,7 @@ export default function App() {
     }
     persistInFlight.current[key] = true;
     const payload = persistLatest.current[key];
-    let base = persistBase.current[key];
-    // Si esta lista no se pudo leer al abrir el CRM (no hay "base"), antes se escribía entera y podía borrar lo que había en
-    // la base de datos. Ahora se trata todo lo de aquí como nuevo y se conserva lo que ya hubiera guardado.
-    if (Array.isArray(payload) && base === undefined && listaConIdsUnicos(payload)) base = [];
-    // FRENO de seguridad: en las listas importantes no se guarda un cambio que vacíe la lista o borre más de la mitad de golpe.
-    if (Array.isArray(payload) && Array.isArray(base) && ["proyectos", "presupuestos", "clientes", "pedidos", "facturas", "proveedores", "materiales", "usuarios", "incidencias", "instalaciones", "mediciones", "leads"].includes(key)) {
-      const n0 = base.length;
-      if ((payload.length === 0 && n0 >= 2) || (n0 >= 10 && payload.length < n0 * 0.5)) {
-        persistInFlight.current[key] = false;
-        delete persistLatest.current[key];
-        alert(`Por seguridad NO se ha guardado: este cambio iba a borrar ${n0 - payload.length} de ${n0} registros de «${key}». Recarga la página (Ctrl+F5). Si de verdad querías borrar tantos, avisa a quien lleva el CRM.`);
-        return;
-      }
-    }
+    const base = persistBase.current[key];
     const fusionable = listaConIdsUnicos(payload) && listaConIdsUnicos(base);
     for (let intento = 1; intento <= 3; intento++) {
       try {
@@ -1634,7 +1618,6 @@ export default function App() {
   // Al empezar a fabricar una obra: se descuenta de nuestro stock lo que lleva su análisis de materiales (perfiles, herraje…).
   // En las obras de Uxcar solo el herraje y los accesorios (los perfiles son de su stock). Una sola vez por obra (stockDescontado).
   const descontarStockObra = (proyecto) => {
-    if (!STOCK_Y_PEDIDOS_PERFIL_ACTIVOS) return null;
     if (!proyecto || proyecto.stockDescontado || !proyecto.listadoMateriales) return null;
     const porId = {}; const porPerfil = {}; let sinMaterial = 0;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -1963,7 +1946,6 @@ export default function App() {
   };
 
   const deleteProyecto = (id) => {
-    if (currentUser?.rol !== "Administrador") { alert("Solo un administrador puede borrar proyectos."); return; }
     saveProyectos(proyectos.filter((p) => p.id !== id));
     setProyectoView("list");
     showToast("Proyecto eliminado");
@@ -2230,7 +2212,7 @@ export default function App() {
   // de ventanas: el "Listado de vidrios" y el "Pedido compra". Cada tipo es un pedido INDEPENDIENTE
   // (para poder elegir su proveedor) y lo que se manda al proveedor es ese documento original, no un
   // PDF generado por el CRM. grupos: [{ tipo: "cristal"|"persianas"|"", proveedorId, lineas, documentos, adjuntosPdf }]
-  const crearPedidosDocProveedor = (proyecto, grupos) => {
+  const crearPedidosDocProveedor = (proyecto, grupos, opciones = {}) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const creador = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "";
     const NOMBRE_TIPO = { cristal: "Cristales", persianas: "Compactos (persianas)", "": "Material a medida" };
@@ -2246,7 +2228,7 @@ export default function App() {
       const docs = toArray(g.documentos).map((d) => ({ id: d.id || uid(), nombre: d.nombre, url: d.url, tipo: d.tipo || "application/pdf", subidoEn: Date.now(), enviar: true, origenProveedor: true }));
       const adj = toArray(g.adjuntosPdf);
       return {
-        id: uid(), numero: String(num++), proveedorId: g.proveedorId || "", proyectoId: proyecto.id, estado: "Pendiente",
+        id: uid(), numero: String(num++), proveedorId: g.proveedorId || "", proyectoId: proyecto.id, estado: opciones.estado || "Pendiente",
         fechaCompra: hoy, fechaEntregaPrevista: "", lineas: g.lineas, adjuntosPdf: adj, documentos: docs,
         tipoPedido: g.tipo || "", soloDocumentoProveedor: docs.length > 0 || adj.length > 0, origenListado: `documento ${g.tipo || "medidas"}`,
         comentarios: `${NOMBRE_TIPO[g.tipo || ""]} de la obra #${proyecto.numero} — ${proyecto.nombre}. Al proveedor se le manda el documento original del programa de ventanas.${g.proveedorId ? "" : " FALTA ELEGIR EL PROVEEDOR."}`,
@@ -2699,84 +2681,20 @@ export default function App() {
   // No toca el estado de oficina (pedido.estado / línea.estado) ni el stock — es un
   // segundo control aparte, pensado para comparar luego contra lo que dice oficina.
   // "Ha llegado todo": confirma de una vez todas las líneas de un pedido (en un solo guardado)
-  // Persianas (compactos) de un pedido NUESTRO que llegan (llego = true) o que se desmarcan (llego = false): pasan a "han llegado, pendientes de ubicar"
-  // del almacén de persianas (campo llegadaFabrica en «pedidas»), donde el CRM propone el reparto en carros. NO se colocan solas.
-  // lineasPd = las líneas del pedido que se acaban de marcar. Los cajones con tela y las guías de mosquitera (líneas sin medidas) entran también, con el
-  // largo de la persiana más larga del pedido (o 2 m si no hay). Devuelve { n, acc, crearon } (crearon: se han dado de alta «pedidas» que no estaban).
-  const llegadaPersianasPedido = (pd, lineasPd, llego) => {
-    const vacio = { n: 0, acc: 0, crearon: false };
-    if (!pd || !esPedidoDePersianasCRM(pd)) return vacio;
-    const hoy = new Date().toISOString().slice(0, 10);
-    let todas = toArray(pedidosPersianas).slice();
-    const marcar = new Set(), desmarcar = new Set();
-    let n = 0, acc = 0, crearon = false;
-    const pr = toArray(proyectos).find((x) => x.id === pd.proyectoId);
-    const exp = soloDigitos((pr && (pr.expediente || pr.numero)) || "");
-    const prov = toArray(proveedores).find((x) => x.id === pd.proveedorId);
-    const ppto = String((pr && pr.presupuestoNumero) || "").trim() || ((String((pr && pr.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]) || "";
-    const cliPr = pr ? toArray(clientes).find((c) => c && c.id === pr.clienteId) : null;
-    const nomCli = [pr && pr.nombre, cliPr && cliPr.nombre].filter(Boolean).join(" · ");
-    const comun = { expediente: exp, parte: "", presupuesto: ppto, refObra: (pr && pr.numero) || "", cliente: nomCli, pedido: pd.numero || "", proveedor: (prov && prov.nombre) || "",
-      fechaPedido: pd.fechaCompra || hoy, fechaEntrega: pd.fechaEntregaPrevista || "", fechaAlta: hoy, estado: "pedida", origen: "pedidoCRM", crmPedidoId: pd.id };
-    const lineasOk = toArray(lineasPd).filter((l) => l && l.estado !== "Recibido");
-    // 1) persianas con medidas
-    lineasOk.forEach((l) => {
-      if (esLineaAccesorioPersianas(l) || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0) || tipoLineaRecepcion(l, pd) !== "persiana") return;
-      let ex = pedidasDeLineaCRM(todas, pd, l);
-      if (llego && !ex.length && !pd.persCreado) {
-        const cant = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
-        const pl = parseLineaPersiana(l.referencia || "");
-        ex = Array.from({ length: cant }, () => ({ ...comun, id: uid(), ref: pl.ref, largo: parseFloat(l.ancho) || 0, alto: parseFloat(l.alto) || 0, recogedor: pl.recogedor, habitacion: pl.habitacion, descripcion: l.referencia || "" }));
-        todas = [...todas, ...ex]; crearon = true;
-      }
-      ex.filter((q) => q.estado === "pedida").forEach((q) => { if (llego) { if (!q.llegadaFabrica) { marcar.add(q.id); n++; } } else if (q.llegadaFabrica) desmarcar.add(q.id); });
-    });
-    // 2) accesorios sin medidas (cajón con tela, guía de mosquitera)
-    const accs = lineasOk.filter(esLineaAccesorioPersianas);
-    if (accs.length) {
-      const largoMax = Math.max(0, ...todas.filter((q) => q && q.crmPedidoId === pd.id && !q.accesorio).map((q) => parseFloat(q.largo) || 0));
-      accs.forEach((l) => {
-        let ex = pedidasDeLineaCRM(todas, pd, l);
-        if (llego && !ex.length) {
-          const cant = Math.max(1, Math.min(60, parseInt(l.cantidad, 10) || 1));
-          ex = Array.from({ length: cant }, () => ({ ...comun, id: uid(), ref: refAccesorioPersianas(l.referencia), largo: largoMax || LARGO_ACCESORIO_DEFECTO_MM, alto: 0, recogedor: "", habitacion: "", descripcion: l.referencia || "", accesorio: true }));
-          todas = [...todas, ...ex]; crearon = true;
-        }
-        ex.filter((q) => q.estado === "pedida").forEach((q) => { if (llego) { if (!q.llegadaFabrica) { marcar.add(q.id); acc++; n++; } } else if (q.llegadaFabrica) desmarcar.add(q.id); });
-      });
-    }
-    if (!marcar.size && !desmarcar.size && !crearon) return vacio;
-    savePedidosPersianas(todas.map((q) => {
-      if (marcar.has(q.id)) return { ...q, llegadaFabrica: hoy };
-      if (desmarcar.has(q.id)) { const { llegadaFabrica, ...resto } = q; return resto; }
-      return q;
-    }));
-    return { n, acc, crearon };
-  };
-  const confirmarPedidoEnteroFabrica = (pedidoId, opts) => {
+  const confirmarPedidoEnteroFabrica = (pedidoId) => {
     const hoy = new Date().toISOString().slice(0, 10);
     const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica";
-    // Solo el botón "Ha llegado todo" de Materiales pendientes manda las persianas al almacén; dar un pedido de baja o cerrarlo con el albarán no.
-    const pd0 = pedidos.find((p) => p.id === pedidoId);
-    const llegada = opts && opts.aAlmacen && pd0 ? llegadaPersianasPedido(pd0, toArray(pd0.lineas).filter((l) => !l.confirmadoFabrica), true) : { n: 0, acc: 0, crearon: false };
     savePedidos(pedidos.map((p) => (p.id !== pedidoId ? p : {
       ...p,
-      ...(llegada.crearon ? { persCreado: true } : {}),
       lineas: toArray(p.lineas).map((l) => (l.confirmadoFabrica ? l : { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: quien })),
     })));
-    showToast(llegada.n ? `Pedido confirmado: ha llegado todo · ${llegada.n - llegada.acc} persiana${llegada.n - llegada.acc === 1 ? "" : "s"}${llegada.acc ? ` y ${llegada.acc} accesorio${llegada.acc === 1 ? "" : "s"}` : ""} pendientes de ubicar en el almacén de persianas` : "Pedido confirmado: ha llegado todo");
-    return llegada.n;
+    showToast("Pedido confirmado: ha llegado todo");
   };
   const confirmarLineaFabrica = (pedidoId, lineaId, confirmado) => {
-    // Una persiana (o su cajón / guía) que llega pasa a «pendientes de ubicar»; si se desmarca, vuelve a «pedidas»
-    const pd0 = pedidos.find((p) => p.id === pedidoId);
-    const l0 = pd0 && toArray(pd0.lineas).find((l) => l.id === lineaId);
-    const llegada = l0 ? llegadaPersianasPedido(pd0, [l0], !!confirmado) : { n: 0, acc: 0, crearon: false };
     const next = pedidos.map((p) => {
       if (p.id !== pedidoId) return p;
       return {
         ...p,
-        ...(llegada.crearon ? { persCreado: true } : {}),
         lineas: p.lineas.map((l) => (l.id === lineaId ? {
           ...l,
           confirmadoFabrica: confirmado,
@@ -2786,79 +2704,6 @@ export default function App() {
       };
     });
     savePedidos(next);
-    if (llegada.n && confirmado) showToast(`${llegada.n} pendiente${llegada.n === 1 ? "" : "s"} de ubicar en el almacén de persianas`);
-  };
-
-  // «¿SE PUEDE PLANIFICAR?»: obras cuyo material pedido (cristales y/o compactos) ya está entero en sus almacenes (caballetes y carros). Se avisa para preguntarlo;
-  // si se contesta que sí, la obra pasa a «Listo para fabricar» (campo planificableOk) aunque algún pedido siga sin dar por recibido en oficina.
-  const obrasPlanificables = () => {
-    const hoy = new Date().toISOString().slice(0, 10);
-    const noVale = ["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"];
-    const almsT = toArray(almacenesPersianas);
-    const itemsPers = toArray(persianasAlmacen).filter((x) => x && !x.entregada && ((almsT.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana") === "persiana");
-    const res = [];
-    toArray(proyectos).forEach((pr) => {
-      if (!pr || noVale.includes(pr.estadoTrabajo) || pr.planificableOk || (pr.planificableNoHasta && pr.planificableNoHasta >= hoy)) return;
-      let cP = 0, pP = 0;
-      toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado").forEach((pd) => {
-        const t = pd.tipoUxcar ? (/persian|compact/i.test(pd.tipoUxcar) ? "persianas" : /cristal|vidrio|panel/i.test(pd.tipoUxcar) ? "cristal" : "") : tipoPedidoMaterial(pd);
-        if (t !== "cristal" && t !== "persianas") return;
-        const n = toArray(pd.lineas).reduce((a, l) => a + (l ? (parseFloat(l.cantidad) || 1) : 0), 0);
-        if (t === "cristal") cP += n; else pP += n;
-      });
-      if (!cP && !pP) return;
-      const claves = clavesObraControl(pr, uxExpedientes, pedidos);
-      const cL = cP ? toArray(cristales).reduce((a, c) => {
-        const ps = toArray(c.piezas).filter((q) => !q.puesto && casaObraControl(claves, { ...c, ...q, expediente: q.expediente || c.expediente }));
-        if (ps.length) return a + ps.reduce((b, q) => b + (parseFloat(q.cantidad) || 1), 0);
-        return casaObraControl(claves, c) ? a + (parseFloat(c.cantidad) || 0) : a;
-      }, 0) : 0;
-      const pL = pP ? itemsPers.filter((x) => x.estante && casaObraControl(claves, x)).length : 0;
-      if ((cP && cL < cP) || (pP && pL < pP)) return;
-      res.push({ pr, cP, cL, pP, pL });
-    });
-    return res;
-  };
-  const responderPlanificable = (pr, si) => {
-    const hoy = new Date().toISOString().slice(0, 10);
-    if (si) { updateProyectoInline(pr.id, { planificableOk: hoy }); showToast(`#${pr.numero} pasa a «Listo para fabricar»`); }
-    else { updateProyectoInline(pr.id, { planificableNoHasta: hoy }); showToast("Vale, hoy no se vuelve a preguntar por esta obra"); }
-  };
-  // Persianas que YA están en los carros pero cuyo pedido no se dio por llegado (se colocaron a mano sin pasar por «Ha llegado todo»).
-  // Por cada obra con pedidos de persianas: si en los carros hay tantas persianas (no entregadas) como se pidieron en total, las líneas de persiana aún sin confirmar se dan por llegadas.
-  // Cuentan también los cajones con tela y las guías (en los carros entran igual). Solo se aplica cuando el usuario pulsa el botón.
-  const persianasEnCarrosSinRecibir = () => {
-    const res = [];
-    const almsT = toArray(almacenesPersianas);
-    const enAlm = toArray(persianasAlmacen).filter((x) => x && !x.entregada && ((almsT.find((a) => a.id === almacenDe(x)) || { tipo: "persiana" }).tipo || "persiana") === "persiana");
-    toArray(proyectos).forEach((pr) => {
-      const pds = toArray(pedidos).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado" && esPedidoDePersianasCRM(pd));
-      if (!pds.length) return;
-      // cuentan TODAS las líneas del pedido (persianas, cajones con tela y guías): en la tabla de control «pedidas» las suma todas, y en los carros entran todas
-      const esPers = (l) => !!l && (parseFloat(l.cantidad) || 0) >= 0;
-      const totalPedidas = pds.reduce((t, pd) => t + toArray(pd.lineas).filter(esPers).reduce((a, l) => a + (parseFloat(l.cantidad) || 1), 0), 0);
-      if (!totalPedidas) return;
-      const claves = clavesObraControl(pr, uxExpedientes, pedidos);
-      const nAlm = enAlm.filter((x) => casaObraControl(claves, x)).length;
-      if (nAlm < totalPedidas) return;
-      const lineas = [];
-      pds.forEach((pd) => toArray(pd.lineas).forEach((l) => { if (esPers(l) && !l.confirmadoFabrica) lineas.push({ pedidoId: pd.id, lineaId: l.id }); }));
-      if (lineas.length) res.push({ proyecto: pr, pedidas: totalPedidas, enCarros: nAlm, lineas });
-    });
-    return res;
-  };
-  const aplicarPersianasEnCarros = () => {
-    const lista = persianasEnCarrosSinRecibir();
-    if (!lista.length) { showToast("No hay nada que marcar"); return 0; }
-    const hoy = new Date().toISOString().slice(0, 10);
-    const quien = currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica";
-    const ids = new Set(lista.flatMap((x) => x.lineas.map((y) => `${y.pedidoId}|${y.lineaId}`)));
-    savePedidos(pedidos.map((pd) => (toArray(pd.lineas).some((l) => ids.has(`${pd.id}|${l.id}`))
-      ? { ...pd, lineas: toArray(pd.lineas).map((l) => (ids.has(`${pd.id}|${l.id}`) ? { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: `${quien} (ya estaban en carros)` } : l)) }
-      : pd)));
-    const n = ids.size;
-    showToast(`${n} línea${n === 1 ? "" : "s"} de persianas dadas por llegadas en ${lista.length} obra${lista.length === 1 ? "" : "s"}`);
-    return n;
   };
 
   // ---------- Cristales (almacén de vidrio dentro de Fábrica) ----------
@@ -3537,7 +3382,6 @@ export default function App() {
   };
 
   const deletePresupuesto = (id) => {
-    if (currentUser?.rol !== "Administrador") { alert("Solo un administrador puede borrar presupuestos."); return; }
     savePresupuestos(presupuestos.filter((p) => p.id !== id));
     setPresupuestoView("list");
     showToast("Presupuesto eliminado");
@@ -4075,6 +3919,7 @@ export default function App() {
   // Recordatorio de recuento de stock: a los 45 días de activarlo (y luego cada 45 días) sale un aviso fijo hasta que se marque como hecho
   const [recuentoStock, setRecuentoStock] = useState(undefined);
   useEffect(() => onValue(ref(fbDb, "recordatorios/recuentoStock"), (snap) => setRecuentoStock(snap.val() || null), () => setRecuentoStock(null)), []);
+  const hojasAuxApp = useObjetoFb("auxiliaresHojas"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
   useEffect(() => {
@@ -4384,7 +4229,7 @@ export default function App() {
           const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
           const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
           const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
-          const grupos = (yaHabia || !STOCK_Y_PEDIDOS_PERFIL_ACTIVOS) ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
+          const grupos = yaHabia ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id);
           const extra = { listadoMateriales: l, listadoUxClave: t.k };
           if (Object.keys(grupos).length) crearPedidosEsperaListado(t.p, grupos, origen, extra);
           else crearPedidosEsperaListado(t.p, {}, origen, extra);
@@ -4746,7 +4591,7 @@ export default function App() {
     const entrega = uxSumarDias(hoy, UX_DIAS_ENTREGA);
     // Los perfiles del informe salen del stock de Uxcar al pasar a producción (con el mismo margen por roturas, sin avisar a Uxcar). Una vez por expediente.
     let descUx = null;
-    if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && !exp.stockDescontado && exp.listadoMateriales) {
+    if (!exp.stockDescontado && exp.listadoMateriales) {
       const lista = toArray(stockUxAuto);
       const por = {}, perf = {};
       toArray(exp.listadoMateriales.lineas).filter((l) => esLineaPerfil(l) && l.codigo).forEach((l) => {
@@ -5498,7 +5343,7 @@ export default function App() {
         })()}
         {(() => {
           if (!currentUser || modulo === "pedidos" || (modulo === "fabrica")) return null;
-          const aPedidos = tieneAcceso("pedidos");
+          const aPedidos = tieneAcceso("pedidos") || !!currentUser.responsablePedidos; // el responsable de pedidos también resuelve las discrepancias
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
@@ -5515,27 +5360,13 @@ export default function App() {
         })()}
         {(() => {
           if (!currentUser || modulo === "pedidos") return null;
-          const aPedidos = tieneAcceso("pedidos");
+          const aPedidos = tieneAcceso("pedidos") || !!currentUser.responsablePedidos;
           const soloUx = !isAdmin && !aPedidos && tieneAcceso("uxcar");
           if (modulo === "uxcar" && soloUx) return null;
           if (!aPedidos && !veFabrica && !soloUx) return null;
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: aPedidos, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (aPedidos) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
-        })()}
-        {(() => {
-          if (!currentUser || !veFabrica || modulo === "uxcar") return null;
-          const lista = obrasPlanificables();
-          if (!lista.length) return null;
-          const o = lista[0];
-          const txt = [o.cP ? `cristales ${o.cL}/${o.cP} en caballetes` : "", o.pP ? `persianas ${o.pL}/${o.pP} en carros` : ""].filter(Boolean).join(" y ");
-          return (
-            <div className="w-full flex flex-wrap items-center gap-2 px-6 py-2.5 text-sm bg-emerald-100 text-emerald-900">
-              <span className="font-semibold">✔ #{o.pr.numero} {o.pr.nombre || ""}: {txt}. ¿Se puede planificar?{lista.length > 1 ? ` (y ${lista.length - 1} obra${lista.length - 1 === 1 ? "" : "s"} más)` : ""}</span>
-              <button onClick={() => responderPlanificable(o.pr, true)} className="px-3 py-1 rounded bg-emerald-700 text-white font-semibold">Sí, llevar a Listo para fabricar</button>
-              <button onClick={() => responderPlanificable(o.pr, false)} className="px-3 py-1 rounded bg-white text-emerald-900 border border-emerald-300 font-semibold">Todavía no (hoy)</button>
-            </div>
-          );
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
@@ -5707,7 +5538,7 @@ export default function App() {
           const activos = ["Pendiente de aceptación", "En proceso"];
           // Todas las obras activas (también las de antes): Miguel quiere que se les suban los documentos
           const obras = proyectos.filter((p) => p.origen !== "portalUxcar" && activos.includes(p.estadoTrabajo || "Pendiente de aceptación"))
-            .map((p) => ({ p, faltan: documentosQueFaltanObra(p) })).filter((x) => x.faltan && x.faltan.length);
+            .map((p) => ({ p, faltan: documentosQueFaltanObra(p, hojasAuxApp) })).filter((x) => x.faltan && x.faltan.length);
           const exps = tieneAcceso("uxcar") ? uxExpedientes.filter((e) => ["virtual", "produccion"].includes(e.estado))
             .map((e) => ({ e, faltan: documentosQueFaltanUx(e, uxPedidos) })).filter((x) => x.faltan.length) : [];
           if (!obras.length && !exps.length) return null;
@@ -6242,7 +6073,6 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            persianasEnCarrosSinRecibir, aplicarPersianasEnCarros,
             pedidosCrm: pedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
@@ -6781,7 +6611,7 @@ const MANUALES = {
       "Un proyecto normalmente nace de un presupuesto aceptado (desde la pestaña Presupuestos), pero también puedes crear uno directamente con el botón de nuevo proyecto.",
       "Dentro de la ficha de un proyecto tienes varias pestañas: Datos, Artículos usados, Presupuesto vs Real (compara lo presupuestado con lo gastado), Gastos asociados, Registro horario, Pagos/Facturas, Pedidos de materiales, \"Qué lleva la obra\" (checklist), \"Despiece de techos\" (si la obra tiene techos calculados), \"Control de persianas\" (si tiene persianas) e Historial.",
       "Desde aquí también puedes generar el pedido de materiales de un proyecto directamente hacia Pedidos.",
-      "DOCUMENTOS: dentro de la obra, en Pedidos → «Subir documentos de la obra», se suben todos a la vez. Al crear el proyecto: presupuesto, análisis de materiales (obligatorio), listado de mano de obra (obligatorio), listado de dibujos, cristales y persianas. Al sacar a fabricar y hacer el lote: hoja de corte y etiquetas de la línea (antes no existen). Mismo nº de presupuesto y versión en todos, y nunca el mismo documento en dos sitios.",
+      "DOCUMENTOS: dentro de la obra, en Pedidos → «Subir documentos de la obra», se suben todos a la vez. Al crear el proyecto: presupuesto, análisis de materiales (obligatorio), listado de mano de obra (obligatorio), carga de material (hace de tipo plano), hoja de corte, cristales y persianas. Al sacar a fabricar y hacer el lote: hoja de corte y etiquetas de la línea (antes no existen). Mismo nº de presupuesto y versión en todos, y nunca el mismo documento en dos sitios.",
     ],
   },
   proveedores: {
@@ -6958,7 +6788,7 @@ const MANUALES = {
       "Si falta material, pulsa «Falta»: le llega un aviso urgente al responsable de pedidos. Si no hay pedido hecho, sale «SIN PEDIDO».",
       "Material suelto sin sitio: «Ubicar material suelto con una foto». Haz la foto con las etiquetas de frente y se coloca en un almacén de una vez.",
       "Cuando todo esté preparado, pulsa «Preparado» en la lista (o en la obra, en cristales y compactos).",
-      "DOCUMENTOS: si arriba sale un recuadro rojo «Faltan documentos», es que a una obra le falta el análisis de materiales o su hoja de corte. Sin ellos no sale qué material y qué auxiliares lleva. Avisa a oficina para que los suban. La hoja de corte solo existe cuando la obra ya está sacada a fabricar y tiene lote: antes no se puede subir.",
+      "DOCUMENTOS: si arriba sale un recuadro rojo «Faltan documentos», es que a una obra le falta el análisis de materiales o su hoja de corte. Sin ellos no sale qué material y qué auxiliares lleva. Avisa a oficina para que los suban. Las etiquetas de la línea las hace oficina con el lote, antes de planificar; los auxiliares salen de la hoja de corte y no dependen de ellas.",
       "Auxiliares: aquí salen las guías de persiana, solapes, inversores y demás perfiles que se cortan aparte. Salen de la hoja de corte: si una obra no sale, es que su hoja no está subida.",
     ],
   },
@@ -6966,7 +6796,7 @@ const MANUALES = {
     puntos: [
       "Aquí trabaja el puesto de la línea con la pistola: pasa la pistola por la etiqueta de una ventana y te dice qué es y dónde va.",
       "Incluye el almacén de ventanas (caballetes), las estanterías y el botón «Auxiliares» con las pegatinas de los perfiles que se cortan en la doble cabeza.",
-      "Para que la pistola reconozca una ventana hacen falta las etiquetas de la línea de esa obra, y para los auxiliares su hoja de corte. Las dos aparecen cuando la obra se saca a fabricar y se hace el lote: antes no se pueden subir.",
+      "Para que la pistola reconozca una ventana hacen falta las etiquetas de la línea de esa obra: las hace oficina al hacer el lote (cuando se les dice) y tienen que estar antes de planificar. Los auxiliares salen de la hoja de corte y no dependen de las etiquetas. Cada pegatina de auxiliar lleva el membrete de la hoja y, en la barra negra, el carro y la posición donde dejar la pieza.",
       "Si una ventana no se reconoce o falta algo, usa el botón rojo «Incidencia».",
     ],
   },
@@ -6975,7 +6805,7 @@ const MANUALES = {
       "Aquí están todos los albaranes de fábrica para firmar desde el móvil: reparto, recogida y salidas.",
       "El chófer firma al cargar y el cliente al recibir. En las firmas el DNI es obligatorio (el nombre no).",
       "El albarán de entrega lleva el tipo plano (dibujos de las ventanas). Si no se puede adjuntar, el CRM avisa pero deja firmar.",
-      "Si no sale el tipo plano, falta subir el listado de dibujos de la obra: se sube con el resto de documentos de la obra.",
+      "Si no sale el tipo plano, falta subir la carga de material de la obra: se sube con el resto de documentos de la obra.",
     ],
   },
   planningMontajes: {
@@ -7000,8 +6830,8 @@ const MANUALES = {
   documentosObra: {
     puntos: [
       "DOCUMENTOS DE UNA OBRA (se suben todos a la vez, con un solo botón, en la ficha del proyecto → Pedidos → «Subir documentos de la obra»):",
-      "Al crear el proyecto: presupuesto · análisis de materiales (obligatorio) · listado de mano de obra (obligatorio; da las horas) · listado de dibujos / tipo plano · listado de cristales · listado de persianas (solo si lleva persiana).",
-      "Al sacar a fabricar y hacer el lote: hoja de corte (la usan los auxiliares y la pistola) y etiquetas de la línea. Antes de eso no se pueden subir.",
+      "Al crear el proyecto: presupuesto · análisis de materiales (obligatorio) · listado de mano de obra (obligatorio; da las horas) · carga de material (hace de tipo plano) · hoja de corte (de ella salen los Auxiliares) · listado de cristales · listado de persianas (solo si lleva persiana).",
+      "Hoja de corte (de ella salen los auxiliares) y etiquetas de la línea. Las etiquetas las crea oficina al hacer el lote, cuando se les avisa, y tienen que estar antes de que la obra entre en planificación: si falta alguna, al confirmar el planning sale un aviso al administrador (no bloquea).",
       "Comprueba que todos los PDF tengan el mismo nº de presupuesto y la misma versión. Nunca subas lo mismo en dos sitios.",
       "Encima del botón está la lista «Documentos de la obra»: ✓ lo que está, ✗ lo que falta.",
     ],
@@ -7481,6 +7311,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         onEdit={() => { setEditId(proyecto.id); setView("form"); }}
         onDelete={() => onDelete(proyecto.id)}
         isAdmin={isAdmin}
+        puedeEliminar={isAdmin && !(toArray(pedidos).some((pd) => pd.proyectoId === proyecto.id) || toArray(facturas).some((f) => (f.proyectosIds || []).includes(proyecto.id)) || toArray(ingresos).some((i) => i.proyectoId === proyecto.id) || toArray(proyecto.pagos).length || toArray(proyecto.etiquetasFab).length || (proyecto.listadoMateriales && toArray(proyecto.listadoMateriales.lineas).length))}
         onInlineUpdate={onInlineUpdate}
         onRegistrarPago={(data) => onRegistrarPago(proyecto.id, data)}
         onRemovePago={onRemovePago}
@@ -8499,19 +8330,11 @@ async function abrirPdfPedido(pedido, proveedor, proyecto, materiales, cliente) 
 
 // Frase que va en todos los mensajes de pedido al proveedor: fecha prevista y petición de aviso.
 const fraseLlegadaProveedor = (fecha) => `Tenemos previsto que nos llegue el día ${fmtDate(fecha)}. Si por cualquier motivo no pueden entregarlo en la fecha indicada, les agradeceríamos que nos avisen con tiempo para poder organizarnos.`;
-// Petición de acuse de recibo que va en todo pedido al proveedor
-const fraseConfirmarRecepcion = "Por favor, respondan a este mensaje confirmándonos que han recibido el pedido.";
-// Número de móvil listo para wa.me: solo dígitos, con prefijo de país (España 34 si no lo trae). Devuelve "" si no sirve.
-const telWhatsapp = (t) => {
-  let d = String(t || "").replace(/[^\d+]/g, "");
-  if (d.startsWith("+")) d = d.slice(1); else if (d.startsWith("00")) d = d.slice(2); else if (d.length === 9) d = "34" + d;
-  return /^\d{10,15}$/.test(d) ? d : "";
-};
 // Texto del pedido para mandarlo al proveedor (WhatsApp o email)
 const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
   if (pedido && pedido.soloDocumentoProveedor) {
     const docs = toArray(pedido.documentos).filter((d) => d && d.url && d.enviar !== false);
-    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}\n\n${fraseConfirmarRecepcion}`;
+    return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}${docs.length ? `\n\nDocumento del pedido:\n${docs.map((d) => `- ${d.nombre}: ${d.url}`).join("\n")}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
   }
   const lineas = toArray(pedido.lineas).map((l) => {
     const mat = l.modo === "libre" ? null : toArray(materiales).find((m) => m.id === l.materialId);
@@ -8519,7 +8342,7 @@ const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
     const medidas = l.ancho || l.alto ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
     return `- ${nombre}${medidas}: ${l.cantidad} ud.`;
   }).join("\n");
-  return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}\n\n${fraseConfirmarRecepcion}`;
+  return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
 };
 
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
@@ -8536,12 +8359,12 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
       {lista.map((p) => {
         const prov = proveedores.find((pr) => pr.id === p.proveedorId);
         const sinPedir = !p.envioConfirmado && (p.estado === "En espera" || p.estado === "Pendiente" || !p.estado);
-        const telProv = telWhatsapp(prov && prov.movil);
+        const telProv = String((prov && prov.movil) || "").replace(/[^\d+]/g, "");
         // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
-        const waProv = (fecha) => telProv ? `https://wa.me/${telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}`)}` : "";
-        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nUn saludo,\nALUMAVEL`)}` : "";
+        const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, confírmennos que han recibido el pedido.`)}` : "";
+        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
-          setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || (tipoPedidoMaterial(p) ? "" : fechaEntregaPorProveedor(prov, p, materiales)) });
+          setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
         };
         const { dias, enColor } = diasEntregaPedido(prov, p, materiales);
         return (
@@ -8579,17 +8402,12 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                     <option value="">Elige el proveedor para poder pedirlo…</option>
                     {proveedores.map((pr) => <option key={pr.id} value={pr.id}>{pr.nombre}</option>)}
                   </Select>
-                ) : confirmando && confirmando.id === p.id && confirmando.paso === "marcar" ? (
-                  <>
-                    <span className="text-xs font-semibold text-sky-900">¿Has enviado el pedido por {confirmando.metodo === "whatsapp" ? "WhatsApp" : "correo"}? Solo se marca como hecho si lo confirmas.</span>
-                    <button onClick={() => { onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Sí, lo he enviado</button>
-                    <button onClick={() => setConfirmando(null)} className="text-xs font-semibold text-slate-600 border border-slate-300 bg-white px-3 py-1.5 rounded-md hover:bg-slate-50">No, todavía no</button>
-                  </>
                 ) : confirmando && confirmando.id === p.id ? (
                   <>
                     <span className="text-xs text-slate-600 font-semibold">Fecha de llegada (obligatoria, va en el mensaje al proveedor):{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
-                    <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value })} className="border border-slate-300 rounded px-2 py-1 text-xs" />
-                    <button onClick={() => { if (!confirmando.fecha) { alert("Pon la fecha aproximada de llegada (luego se puede cambiar)."); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (!url && confirmando.metodo === "whatsapp") { alert(`No se puede abrir WhatsApp: el móvil de ${prov ? prov.nombre : "este proveedor"} ${prov && prov.movil ? `("${prov.movil}") no parece un número válido` : "no está guardado"}. Corrígelo en la ficha del proveedor.`); return; } if (!url && confirmando.metodo === "email") { alert("Este proveedor no tiene email guardado."); return; } if (url) { const w = window.open(url, "_blank"); if (!w && confirmando.metodo === "whatsapp") { alert("El navegador ha bloqueado la ventana de WhatsApp. Permite las ventanas emergentes para esta página (icono a la derecha de la barra de direcciones) y vuelve a pulsar. El pedido NO se ha marcado como hecho."); return; } } if (url && tipoPedidoMaterial(p)) { setConfirmando({ ...confirmando, paso: "marcar" }); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value, falta: false })} className={`border rounded px-2 py-1 text-xs ${confirmando.falta ? "border-red-500 ring-2 ring-red-200" : "border-slate-300"}`} />
+                    {confirmando.falta && <span className="text-xs font-semibold text-red-600">Pon la fecha aproximada de llegada para poder pedirlo (luego se puede cambiar).</span>}
+                    <button onClick={() => { if (!confirmando.fecha) { setConfirmando({ ...confirmando, falta: true }); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url) window.open(url, "_blank", "noopener"); onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
                     {!tipoPedidoMaterial(p) && (
                       <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
                         <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
@@ -8632,7 +8450,11 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
   );
 }
 
+// De momento NO se crean pedidos en espera de perfiles/herraje al subir el análisis de materiales: el stock aún no está bien y saldrían pedidos de más.
+// El material se prepara desde «Preparación de material». Cuando el stock esté al día, poner esto en true para volver a crearlos solos.
+const CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS = false;
 function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra, onGuardarListado, onCrearPedidosEspera, onMedidas, onAnadirDocumentos }) {
+  const hojasAuxObra = useObjetoFb("auxiliaresHojas");
   const [leyendo, setLeyendo] = useState(false);
   const [error, setError] = useState("");
   const [provSinStock, setProvSinStock] = useState("");
@@ -8706,15 +8528,30 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       if ((etiquetas.length || cortes.length) && proyecto.origen === "portalUxcar") {
         avisos.push("Las etiquetas y la hoja de corte de Uxcar van en su expediente (módulo Uxcar), no aquí. No las he subido.");
       } else if (etiquetas.length || cortes.length) {
+        let hojaAuxGuardada = false;
+        if (cortes.length) {
+          try {
+            const hechas = await guardarHojasCorteAux(cortes);
+            hojaAuxGuardada = hechas.length > 0;
+            if (hechas.length) avisos.push(`Hoja de corte del presupuesto ${hechas.map((x) => pptoBonito(x)).join(", ")} guardada: ya sale en Auxiliares.`);
+            else avisos.push("⚠ No he podido leer la hoja de corte para Auxiliares (formato no reconocido). Avisa para revisarla.");
+            const mio = digitosPresu(proyecto.presupuestoNumero);
+            if (mio && hechas.length && !hechas.includes(mio)) avisos.push(`⚠ La hoja de corte es del presupuesto ${hechas.map((x) => pptoBonito(x)).join(", ")} y esta obra es del ${pptoBonito(mio)}. Revisa que no sea de otra obra.`);
+          } catch (e) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(e && e.message) || "error"}).`); }
+        }
         let lotes = toArray(proyecto.etiquetasFab);
         let cambiado = false;
         let corteLeido = null;
         for (const f of [...etiquetas, ...cortes]) {
           try {
+            const esCorte = cortes.includes(f);
+            // Hoja de corte ya guardada para Auxiliares y todavía sin etiquetas: no hay ventanas a las que aplicarla
+            if (esCorte && hojaAuxGuardada && !etiquetas.length && !toArray(lotes).length) continue;
             const r = await aplicarPdfEtiquetasObra(f, lotes, proyecto.presupuestoNumero || "");
             if (r.lotes) { lotes = r.lotes; cambiado = true; }
             if (r.corte) corteLeido = r.corte;
-            avisos.push(r.aviso);
+            // La hoja «por grupos» no trae «Pos»: el lector antiguo no la entiende y dice que no hay etiquetas; Auxiliares ya la ha leído
+            if (!(esCorte && hojaAuxGuardada && /no he encontrado etiquetas de fabricaci/i.test(r.aviso || ""))) avisos.push(r.aviso);
           } catch (e) { avisos.push(`${f.name}: no se pudo leer (${e.message}).`); }
         }
         if (cambiado) onGuardarListado(proyecto.id, null, JSON.parse(JSON.stringify({ etiquetasFab: lotes })));
@@ -8751,10 +8588,13 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (cr.cambios) { extraProyecto.recuento = cr.recuento; avisos.push(`Recuento de la obra corregido con la hoja de corte: ${cr.cambios} dato${cr.cambios > 1 ? "s" : ""}.`); }
       }
       // Un listado de cristales/persianas que ya se subió antes en esta obra (mismo nombre) no vuelve a sacar el pedido
+      // Solo se salta si de ese documento YA hay un pedido creado. Si se subió pero el pedido quedó sin confirmar
+      // (se salió de la pantalla antes de crearlo), se vuelve a proponer.
+      const pedidoYaCreadoDe = (nombre) => toArray(pedidosObra).some((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && toArray(pd.documentos).some((d) => d.nombre === nombre));
       for (const m of [...medidas]) {
-        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name)))) {
+        if (toArray(proyecto.documentos).some((d) => d.nombre === m.f.name && (d.tipoListado || tipoListadoPorNombre(d.nombre)) === (m.tipo || tipoListadoPorNombre(m.f.name))) && pedidoYaCreadoDe(m.f.name)) {
           medidas.splice(medidas.indexOf(m), 1);
-          avisos.push(`${m.f.name} ya estaba subido en esta obra: no he vuelto a sacar su pedido (para no pedirlo dos veces).`);
+          avisos.push(`${m.f.name} ya estaba subido en esta obra y su pedido ya está creado: no lo he vuelto a sacar (para no pedirlo dos veces).`);
         }
       }
       if (medidas.length && onMedidas) {
@@ -8792,7 +8632,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       // ventanas (listado de vidrios y pedido compra), cada uno en su pedido, con su proveedor.
       const faltanAuto = compararListadoConStock(l, materiales, proyecto.id).filter((f) => f.falta > 0 && !SECCIONES_A_MEDIDA.includes(f.seccion));
       const listadoLimpio = JSON.parse(JSON.stringify(l));
-      if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
+      if (CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS && onCrearPedidosEspera && !yaHabia && faltanAuto.length > 0) {
         const gruposAuto = {};
         faltanAuto.forEach((f) => {
           // Sin proveedor conocido (p.ej. stock vacío o material sin dar de alta): se
@@ -8807,7 +8647,8 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         onCrearPedidosEspera(proyecto, gruposAuto, origen, JSON.parse(JSON.stringify({ listadoMateriales: listadoLimpio, ...extraProyecto })));
       } else {
         onGuardarListado(proyecto.id, l, { ...extraProyecto, checklistMateriales: rellenarChecklistDesdeListado(proyecto.checklistMateriales, l.lineas, pedidosObra.filter((pd) => pd.proyectoId === proyecto.id)) });
-        if (STOCK_Y_PEDIDOS_PERFIL_ACTIVOS && yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+        if (yaHabia) avisos.push("Con este mismo listado ya se habían creado pedidos, así que no se han vuelto a crear.");
+        else if (!CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS && faltanAuto.length > 0) avisos.push(`Según el stock faltarían ${faltanAuto.length} línea${faltanAuto.length === 1 ? "" : "s"} de perfiles/herraje, pero de momento NO se crean pedidos al subir el análisis (el stock se está poniendo al día): el material se prepara desde Preparación de material.`);
       }
       if (avisos.length) setError(avisos.join(" "));
       setAbierto(true);
@@ -8838,7 +8679,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       {/* Qué documentos tiene la obra y cuáles faltan (justo encima de "Documentación de la obra") */}
       {proyecto.origen !== "portalUxcar" && (
         <div className="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs border border-slate-200 rounded-md p-2.5 bg-slate-50"><div className="sm:col-span-2 font-semibold text-slate-700 text-xs mb-0.5">Documentos de la obra</div>
-          {estadoDocumentosObra(proyecto).map((d) => (
+          {estadoDocumentosObra(proyecto, hojasAuxObra).map((d) => (
             <div key={d.nombre} className="flex items-start gap-1.5">
               <span className={`font-bold ${d.ok ? "text-emerald-600" : d.noHace || d.opcional ? "text-slate-400" : "text-rose-600"}`}>{d.ok ? "✓" : d.noHace || d.opcional ? "–" : "✗"}</span>
               <span className={d.ok ? "text-slate-700" : d.noHace || d.opcional ? "text-slate-400" : "text-rose-700 font-semibold"}>
@@ -8852,7 +8693,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <div className="font-semibold text-slate-800 text-sm">Documentación de la obra</div>
-          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube aquí TODO lo de la obra a la vez (con Ctrl pulsado): presupuesto, análisis de materiales, listado de dibujos, listado de cristales, listado de persianas, etiquetas y hoja de corte (también mano de obra u hojas de medidas). Cada documento se reconoce solo y va a su sitio: pedidos en espera de lo que falta, horas para el planning, ventanas contadas y \"Qué lleva la obra\"."}</div>
+          <div className="text-xs text-slate-500">{listado ? `Nº ${listado.numero || "—"} · ${listado.referencia || ""} · subido el ${fmtDate(listado.fecha)}` : "Sube aquí TODO lo de la obra a la vez (con Ctrl pulsado): presupuesto, análisis de materiales, carga de material, listado de cristales, listado de persianas, etiquetas y hoja de corte (también mano de obra u hojas de medidas). Cada documento se reconoce solo y va a su sitio: pedidos en espera de lo que falta, horas para el planning, ventanas contadas y \"Qué lleva la obra\"."}</div>
         </div>
         <input ref={inputRef} type="file" multiple accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { subir(e.target.files); e.target.value = ""; }} />
         <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
@@ -8914,7 +8755,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
   );
 }
 
-function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onCrearPedidosDocProveedor, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
+function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustificantesIngreso, proyecto, cliente, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, onCrearPedidosEspera, onCrearPedidosDocProveedor, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onGuardarLlamada, onBack, onEdit, onDelete, onInlineUpdate, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalacion, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidencia }) {
   const [tab, setTab] = useState("datos");
   const gastos = proyecto.gastos || [];
   const horas = proyecto.registroHorario || [];
@@ -9005,7 +8846,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
 
   // Cada tipo (cristales, compactos) es un pedido independiente, con su proveedor, y lleva su
   // documento original del programa de ventanas (no un PDF hecho por el CRM).
-  const dispararPedidoAuto = (lineasFinales, adjuntosFinales) => {
+  const dispararPedidoAuto = (lineasFinales, adjuntosFinales, opciones = {}) => {
     if (lineasFinales.length === 0) return;
     if (!onCrearPedidosDocProveedor) {
       // (por si este componente se usa sin la función nueva: como antes)
@@ -9020,10 +8861,17 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
       documentos: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t).map((d) => ({ id: d.id, nombre: d.nombre, url: d.url })),
       adjuntosPdf: toArray(adjuntosFinales).filter((a) => (a.tipoPedido || "") === t && !docsPedidoAuto.some((d) => (d.tipoPedido || "") === t && d.nombre === a.nombre)).map(({ nombre, dataUrl }) => ({ nombre, dataUrl })),
     }));
-    onCrearPedidosDocProveedor(proyecto, grupos);
+    onCrearPedidosDocProveedor(proyecto, grupos, opciones);
     setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({});
     setTab("pedidos");
   };
+  // Los pedidos de cristales y compactos se crean SOLOS, en espera (como los de perfiles y herraje), poco después de leer los documentos.
+  // Se espera unos segundos por si se están subiendo varios a la vez; el proveedor se elige luego en Pedidos.
+  useEffect(() => {
+    if (!lineasPedidoAuto.length || leyendoPdfMedidas) return undefined;
+    const t = setTimeout(() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto, { estado: "En espera" }), 2500);
+    return () => clearTimeout(t);
+  }, [lineasPedidoAuto, adjuntosPedidoAuto, docsPedidoAuto, leyendoPdfMedidas]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // Documentos de la obra "al día": al subir varias hojas seguidas (cristales + persianas)
@@ -9089,7 +8937,8 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
         const urlStorage = await subirArchivoAStorage(file, `documentos-proyectos/${proyecto.id}`);
         urlDocStorage = urlStorage;
         docMedidasId = uid();
-        guardarDocumentosObra([...documentosObraRef.current.lista, { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
+        // Si ya había un documento con el mismo nombre (subido antes sin llegar a crear su pedido) se sustituye, no se duplica
+        guardarDocumentosObra([...documentosObraRef.current.lista.filter((d) => d.nombre !== file.name), { id: docMedidasId, nombre: file.name, url: urlStorage, subidoEn: Date.now(), tipoListado: tipoSabido || tipoListadoPorNombre(file.name) }]);
       } catch (errSubida) {
         console.error("No se pudo subir el documento a Storage:", errSubida);
         setErrorPdfMedidas("No se pudo guardar el documento (fallo al subirlo). Las líneas de medidas se leerán igualmente si es posible.");
@@ -9148,15 +8997,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
     }
   };
 
-  // Los pedidos de cristales y compactos se crean SOLOS (como los de perfiles y herraje): unos segundos después de leer el último
-  // documento, o al salir de la pantalla si todavía quedaban pendientes. Cada tipo, su pedido; si ya existe uno con ese documento no se repite.
-  const dispararAutoRef = useRef(null);
-  useEffect(() => { dispararAutoRef.current = () => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto); });
-  useEffect(() => {
-    clearTimeout(timerPedidoAutoRef.current);
-    if (lineasPedidoAuto.length > 0 && !leyendoPdfMedidas && onCrearPedidosDocProveedor) timerPedidoAutoRef.current = setTimeout(() => { if (dispararAutoRef.current) dispararAutoRef.current(); }, 6000);
-  }, [lineasPedidoAuto, leyendoPdfMedidas]);
-  useEffect(() => () => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); if (dispararAutoRef.current) dispararAutoRef.current(); }, []);
+  useEffect(() => () => { clearTimeout(timerPedidoAutoRef.current); clearInterval(intervaloCuentaRef.current); }, []);
 
   const totalRecibido = (ingresos || []).reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
   const importePresupuesto = parseFloat(proyecto.importePresupuesto) || 0;
@@ -9266,7 +9107,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
               </button>
             )}
             {isAdmin && (
-              <button onClick={onDelete} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
+              <button onClick={() => { if (confirm(`¿Eliminar el proyecto #${proyecto.numero} ${proyecto.nombre || ""}?\n\nSe borra del todo y no se puede deshacer. Si solo quieres dejarlo de lado, usa "Anular proyecto".`)) onDelete(); }} className="flex items-center gap-1.5 text-sm font-semibold text-rose-600 border border-rose-200 px-3.5 py-2 rounded-lg hover:bg-rose-50">
                 <Trash2 size={14} /> Eliminar
               </button>
             )}
@@ -9407,7 +9248,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
             const bloques = TIPOS.map(([t, nombre]) => ({ t, nombre, clave: t || "otros", n: lineasPedidoAuto.filter((l) => (l.seccionListado || "") === t).length, docs: docsPedidoAuto.filter((d) => (d.tipoPedido || "") === t) })).filter((b) => b.n > 0);
             return (
               <>
-                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. Se crea un pedido aparte por tipo, solo, en unos segundos (puedes subir más documentos antes o pulsar «Crear» ya).</div>
+                <div className="w-full font-semibold text-slate-800">{lineasPedidoAuto.length} línea(s) de medidas leídas. En unos segundos se crea solo un pedido EN ESPERA por tipo (el proveedor lo eliges luego en Pedidos).</div>
                 {bloques.map((b) => {
                   const habitual = proveedorHabitualDeSeccion(b.t, proveedores);
                   return (
@@ -9422,7 +9263,7 @@ function ProyectoDetail({ currentUser, onRecibirPedido, onJustificantesIngreso, 
                   );
                 })}
                 <button type="button" onClick={() => dispararPedidoAuto(lineasPedidoAuto, adjuntosPedidoAuto)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">
-                  {bloques.length > 1 ? `Crear ${bloques.length} pedidos independientes` : "Crear pedido"}
+                  {bloques.length > 1 ? `Crear ya ${bloques.length} pedidos en espera` : "Crear ya el pedido en espera"}
                 </button>
                 <button type="button" onClick={() => { setLineasPedidoAuto([]); setAdjuntosPedidoAuto([]); setDocsPedidoAuto([]); setProvPedidoAuto({}); }} className="text-sm font-semibold text-rose-600 hover:underline">
                   Cancelar
@@ -11569,7 +11410,7 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
           <div className="flex flex-wrap gap-2">
             <button disabled={!elegidos.length} onClick={imprimir} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50"><Printer size={14} /> Imprimir / PDF</button>
             {tel && <a href={`https://wa.me/${tel.length === 9 ? "34" + tel : tel}?text=${encodeURIComponent(texto())}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><MessageCircle size={14} /> WhatsApp</a>}
-            {prov && prov.email && <a href={`mailto:${prov.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
+            {prov && prov.email && <a href={`mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
             <label className="ml-auto flex items-center gap-1.5 text-sm text-slate-600">Llegada prevista <span className="text-rose-600">*</span>
               <input type="date" value={llegada} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setLlegada(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
             </label>
@@ -13102,7 +12943,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
     const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
-    return `mailto:${proveedor.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const falta_fecha = () => {
@@ -13154,8 +12995,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
         throw new Error(data.error || "No se pudo enviar el correo.");
       }
       setEmailEnviadoOk(true);
-      // Cristales y compactos: el pedido NO se da por hecho solo; se marca a mano cuando se confirma que está enviado
-      if (tipoPedidoMaterial(pedido)) setConfirmarEnvio("email"); else onMarcarEnviado("email");
+      onMarcarEnviado("email");
     } catch (err) {
       console.error("Error enviando email automático:", err);
       setErrorEnvioEmail(err.message + " Puedes usar el botón de abajo para enviarlo desde tu propio correo mientras tanto.");
@@ -13173,9 +13013,8 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     // WhatsApp no deja adjuntar ficheros desde un enlace: los documentos del pedido marcados
     // "enviar al proveedor" van como enlace de descarga dentro del mensaje.
     const enlacesDocs = toArray(pedido.documentos).filter((d) => d.enviar !== false && d.url).map((d) => `- ${d.nombre}: ${d.url}`).join("\n");
-    const texto = `Buenos días,\n\nPedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}\n\n${fraseConfirmarRecepcion}`;
-    const tel = telWhatsapp(proveedor.movil);
-    if (!tel) return null;
+    const texto = `Buenos días,\n\nPedido ${pedido.numero} — ALUMAVEL\n${bloqueObra}${lineasTexto ? `\n\n${lineasTexto}` : ""}${enlacesDocs ? `\n\nDocumentos del pedido:\n${enlacesDocs}` : ""}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}${pedido.comentarios ? `\n\nComentarios: ${pedido.comentarios}` : ""}`;
+    const tel = proveedor.movil.replace(/[^\d+]/g, "");
     return `https://wa.me/${tel}?text=${encodeURIComponent(texto)}`;
   };
 
@@ -13295,7 +13134,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
 
       {confirmarEnvio && !pedido.envioConfirmado && (
         <div className="px-4 py-3 rounded-md bg-sky-50 border-2 border-sky-300 text-sky-900 text-sm mb-6">
-          <p className="font-semibold mb-2">¿Has enviado el pedido por {confirmarEnvio === "whatsapp" ? "WhatsApp" : "correo"}? Solo se marca como hecho si lo confirmas.</p>
+          <p className="font-semibold mb-2">¿Has enviado el pedido por {confirmarEnvio === "whatsapp" ? "WhatsApp" : "tu correo"}? Solo se marca como hecho si lo confirmas.</p>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => { onMarcarEnviado(confirmarEnvio); setConfirmarEnvio(null); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Sí, lo he enviado</button>
             <button onClick={() => setConfirmarEnvio(null)} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-md hover:bg-slate-50">No, todavía no</button>
@@ -15102,16 +14941,13 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         cristales.forEach((c) => (c.piezas || []).forEach((p) => {
           if (p.puesto) return; // ya colocado en la ventana: no está en el almacén
           const k = numsExpediente(p.expediente || c.expediente)[0] || String(p.expediente || c.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
-          [p.presupuesto, c.presupuesto].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
-          [p.expediente, c.expediente].filter(Boolean).forEach((v) => g.exps.add(String(v)));
-          if (c.cliente) g.clis.add(String(c.cliente));
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, aparte: 0, cabs: new Set() };
           const n = parseFloat(p.cantidad) || 1;
           g.uds += n;
           if (!c.ubicacion) g.aparte += n;
           g.cabs.add(`Cab. ${c.lote || c.numero || "?"}${c.ubicacion ? "" : " (pendiente)"}`);
         }));
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs], presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, aparte: g.aparte, sitios: [...g.cabs] }));
         const mapaP = {};
         toArray(ctxFusion.persianasAlmacen).filter((x) => x && x.estante && !x.entregada).forEach((x) => { const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—"; mapaP[k] = (mapaP[k] || 0) + (parseFloat(x.cantidad) || 1); });
         return <ExpedientesConMaterial filas={filas} proyectos={proyectos} cosa="cristales" extra={{ label: "persianas", mapa: mapaP }} />;
@@ -16310,10 +16146,6 @@ function repararJsonIA(txt) {
 const LISTADO_SECCIONES = { perfiles: "Perfiles y juntas", refuerzo: "Refuerzos", herraje: "Herrajes", accesorios: "Accesorios", persianas: "Persianas / cajones (a medida)", cristal: "Cristales (a medida)" };
 // Secciones que se hacen a medida para cada obra: no se miran en stock, se piden enteras.
 const SECCIONES_A_MEDIDA = ["persianas", "cristal"];
-// De momento (hasta tener el Stock bien metido) NO se crean solos los pedidos de perfiles y herraje al subir el
-// análisis y NO se descuenta nada del Stock al empezar a fabricar: ese material va solo por "Preparación de material".
-// Solo se preparan solos los pedidos de cristales y de compactos (persianas). Poner a true para reactivarlo.
-const STOCK_Y_PEDIDOS_PERFIL_ACTIVOS = false;
 // Clave del grupo de pedido: cristales y persianas/compactos son pedidos distintos aunque vayan al mismo proveedor.
 // Aunque sea el mismo proveedor, cada familia es un pedido distinto: perfiles (con refuerzos), herrajes (con accesorios), persianas y cristales.
 const familiaPedidoSeccion = (seccion) => (seccion === "refuerzo" ? "perfiles" : seccion === "accesorios" ? "herraje" : seccion);
@@ -16904,29 +16736,6 @@ function huecoExpedienteNuevo(zona, estaOcupado) {
 // funciones sacan los expedientes de cada caballete y buscan un hueco libre en la fila
 // donde ya están los del mismo expediente, lo más cerca posible de ellos.
 const numsExpediente = (txt) => (String(txt || "").match(/\d{2,}/g) || []);
-// Reconoce una obra en los almacenes (caballetes de cristal, carros de persianas) por TODO lo que las une: nº de proyecto, expediente, nº de presupuesto (6.345 = 6345),
-// expedientes de Uxcar y nº de los pedidos de la obra. Un caballete/persiana casa si cualquiera de sus datos (expediente, presupuesto, refObra, pedido) coincide.
-const clavesObraControl = (pr, uxExpedientes, pedidosCrm) => {
-  const exps = new Set(), peds = new Set();
-  if (!pr) return { exps, peds };
-  const addTxt = (t) => { numsExpediente(t).forEach((n) => exps.add(n)); String(t || "").split(/[,;/]/).forEach((f) => { const d = soloDigitos(f); if (d.length >= 4) exps.add(d); }); };
-  addTxt(pr.numero); addTxt(pr.expediente); addTxt(pr.presupuestoNumero);
-  const mp = String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i);
-  if (mp) { const d = soloDigitos(mp[1]); if (d.length >= 4) exps.add(d); }
-  toArray(uxExpedientes).filter((e) => e && e.proyectoId === pr.id).forEach((e) => addTxt(e.numero));
-  toArray(pedidosCrm).filter((pd) => pd && pd.proyectoId === pr.id && pd.estado !== "Cancelado").forEach((pd) => { const d = soloDigitos(pd.numero); if (d) peds.add(d); });
-  return { exps, peds };
-};
-const casaObraControl = (k, x) => {
-  if (!k || !x) return false;
-  const campos = [x.expediente, x.presupuesto, x.refObra];
-  for (const t of campos) {
-    if (!t) continue;
-    if (numsExpediente(t).some((n) => k.exps.has(n))) return true;
-    if (String(t).split(/[,;/]/).some((f) => { const d = soloDigitos(f); return d.length >= 4 && k.exps.has(d); })) return true;
-  }
-  return !!x.pedido && (String(x.pedido).match(/\d+/g) || []).some((n) => k.peds.has(n));
-};
 
 // Buscador de obras por nº de presupuesto / expediente / nombre / cliente (6633 ≈ 6.633 ≈ "Presupuesto 6633")
 const normBusca = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -17237,30 +17046,6 @@ const parteDeUbicacion = (t) => {
   return /^\d{1,2}[A-Z]{1,2}$/.test(ult) ? ult : u;
 };
 const partePersiana = (x) => (x && x.parte ? (normParte(x.parte) || String(x.parte).trim()) : (normParte(x && x.refObra) || parteDeUbicacion(x && x.refObra)));
-// Color de una persiana para repartirla en carros: "blanco", "otro" (nogal, roble, 7016…) o "" si no se sabe. Se mira el campo color y el texto de la línea;
-// manda la ÚLTIMA palabra de color que aparece (en los pedidos el color final va tras el "·": «Lama BLANCO … · Nogal» es nogal).
-const claseColorPersiana = (x) => {
-  const t = `${(x && x.color) || ""} ${(x && x.descripcion) || ""}`.toLowerCase();
-  const m = t.match(/blanc|nogal|roble|dorado|cerezo|antracit|negro|gris|marr[oó]n|verde|bronce|plata|inox|madera|wenge|ébano|ebano|envejec|irish|golden|\bral\s*\d{4}\b|\b7016\b/g);
-  if (!m) return "";
-  return /^blanc/.test(m[m.length - 1]) ? "blanco" : "otro";
-};
-// Clase de un grupo de persianas (las de un expediente): la que más pesa; "" si ninguna trae color.
-const claseColorGrupo = (piezas) => {
-  let b = 0, o = 0;
-  toArray(piezas).forEach((x) => { const c = claseColorPersiana(x); if (c === "blanco") b++; else if (c === "otro") o++; });
-  return !b && !o ? "" : b >= o ? "blanco" : "otro";
-};
-// Accesorios que vienen en el pedido de persianas pero sin medidas (cajón con tela, guía de mosquitera): entran en el almacén de persianas.
-const esLineaAccesorioPersianas = (l) => !!l && l.modo === "libre" && !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0)
-  && /caj[oó]n|mosquiter/i.test(String(l.referencia || "")) && !/persiana/i.test(String(l.referencia || ""));
-const refAccesorioPersianas = (texto) => (/mosquiter|gu[ií]a/i.test(String(texto || "")) ? "Guía mosq." : /tela/i.test(String(texto || "")) ? "Cajón tela" : "Cajón");
-const LARGO_ACCESORIO_DEFECTO_MM = 2000; // si el expediente no trae ninguna persiana de la que copiar el largo
-// Las «pedidas» (pedidosPersianas) de un pedido nuestro que corresponden a una línea de ese pedido
-const pedidasDeLineaCRM = (pedidas, pd, l) => toArray(pedidas).filter((q) => q && q.crmPedidoId === pd.id && (q.descripcion || "") === (l.referencia || "")
-  && (esLineaAccesorioPersianas(l) ? !!q.accesorio : (!q.accesorio && (parseFloat(q.largo) || 0) === (parseFloat(l.ancho) || 0) && (parseFloat(q.alto) || 0) === (parseFloat(l.alto) || 0))));
-// ¿Es un pedido de persianas (compactos)? Por su tipo o porque trae alguna persiana con medidas.
-const esPedidoDePersianasCRM = (pd) => !!pd && (tipoPedidoMaterial(pd) === "persianas" || toArray(pd.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && tipoLineaRecepcion(l, pd) === "persiana"));
 const textoEstante = (e) => (e ? `Carro ${e.carro} · lado ${e.lado} · estante ${e.nivel}${e.fila ? ` · fila ${e.fila}` : ""}` : "Sin sitio");
 
 // Estantes de todos los carros, en el orden de la nave (carro, lado A, lado B, estante 1…).
@@ -17827,29 +17612,10 @@ const coloresPerfilDeObra = (p) => {
 };
 // Datos de la obra de un expediente: horas de fabricación (las puestas a mano o, si no, las del «Listado mano de obra»
 // al dar de alta la obra; si no hay ninguna, null: no se inventa nada) y color de perfil.
-// Obra de un expediente de los almacenes. SIEMPRE por el mismo camino y mirando todo lo que las une: 1) nº de proyecto, 2) expediente, nº de presupuesto, expedientes de Uxcar y pedidos
-// de la obra (clavesObraControl), con el expediente y los presupuestos que lleva el caballete/persiana, 3) último recurso: el nombre del cliente, solo si encaja con UNA obra.
-const normNombreObra = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
-const proyectoDeExpediente = (exp, proyectos, uxExpedientes, extra) => {
-  const lista = toArray(proyectos);
-  const ex = extra || {};
+const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning) => {
   const nums = numsExpediente(exp);
-  const exacto = nums.length ? lista.find((x) => numsExpediente(x.numero).some((n) => nums.includes(n))) : null;
-  if (exacto) return exacto;
-  const pseudo = { expediente: [exp, ...toArray(ex.expedientes)].filter(Boolean).join(", "), presupuesto: toArray(ex.presus).filter(Boolean).join(", ") };
-  if (pseudo.expediente || pseudo.presupuesto) {
-    const hit = lista.find((x) => casaObraControl((ex.clavesMap && ex.clavesMap.get(x.id)) || clavesObraControl(x, uxExpedientes, ex.pedidos), pseudo));
-    if (hit) return hit;
-  }
-  const clis = toArray(ex.clientes).map(normNombreObra).filter((t) => t.length >= 5);
-  if (clis.length) {
-    const posibles = lista.filter((x) => { const n = normNombreObra(String(x.nombre || "").replace(/presupuesto\s*\d[\d.]*/i, "")); return n.length >= 5 && clis.some((c) => c.includes(n) || n.includes(c)); });
-    if (posibles.length === 1) return posibles[0];
-  }
-  return null;
-};
-const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlanning, extra) => {
-  const p = proyectoDeExpediente(exp, proyectos, uxExpedientes, extra);
+  if (!nums.length) return null;
+  const p = toArray(proyectos).find((x) => numsExpediente(x.numero).some((n) => nums.includes(n)));
   if (!p) return null;
   // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
   const v = ventanasDeObra(p, uxExpedientes);
@@ -17864,8 +17630,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const [buscar, setBuscar] = useState("");
   const [colorSel, setColorSel] = useState("");
   const SIN = "SIN COLOR";
-  const clavesMapEC = new Map(toArray(proyectos).map((pr) => [pr.id, clavesObraControl(pr, ctxH.uxExpedientes, ctxH.pedidosCrm)]));
-  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }, { presus: f.presus, expedientes: f.expedientes, clientes: f.clientes, pedidos: ctxH.pedidosCrm, clavesMap: clavesMapEC }) }));
+  const conHoras = toArray(filas).map((f) => ({ ...f, h: horasFabricacionDeExpediente(f.exp, proyectos, ctxH.uxExpedientes, { ...PLANNING_TIEMPOS_DEF, ...((ctxH.configPlanning && ctxH.configPlanning.tiempos) || {}) }) }));
   const colorDe = (f) => (f.h && f.h.color) || SIN;
   const cuentaColor = {};
   conHoras.forEach((f) => { cuentaColor[colorDe(f)] = (cuentaColor[colorDe(f)] || 0) + 1; });
@@ -17874,7 +17639,7 @@ function ExpedientesConMaterial({ filas, proyectos, cosa, extra }) {
   const porExp = (x, y) => String(x.exp).localeCompare(String(y.exp), "es", { numeric: true });
   const q = buscar.trim().toLowerCase();
   const lista = conHoras
-    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${toArray(f.expedientes).join(" ")} ${toArray(f.presus).join(" ")} ${toArray(f.clientes).join(" ")} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
+    .filter((f) => (!colorSel || colorDe(f) === colorSel) && (!q || `${f.exp} ${f.h ? f.h.obra : ""} ${toArray(f.sitios).join(" ")} ${colorDe(f)}`.toLowerCase().includes(q)))
     .sort((x, y) => orden === "horas" ? ((y.h && y.h.horas) || 0) - ((x.h && x.h.horas) || 0) || porExp(x, y)
       : orden === "color" ? listaColores.indexOf(colorDe(x)) - listaColores.indexOf(colorDe(y)) || porExp(x, y)
       : porExp(x, y));
@@ -18113,8 +17878,6 @@ function AlmacenPersianas() {
   useEffect(() => {
     const f = focoAlmacen.actual;
     if (f && f.tipo === "persiana") { focoAlmacen.actual = null; setSelId(f.almacenId); setIrA({ almacenId: f.almacenId, carro: f.carro, t: Date.now() }); }
-    // Si han llegado persianas y están pendientes de ubicar, se abre el almacén que recibe los pedidos (ahí sale la propuesta de reparto)
-    else if (toArray(ctx.pedidosPersianas).some((q) => q && q.llegadaFabrica && q.estado !== "recibida")) setSelId(almacenRecepcionPersianas(almacenes));
   }, []);
   const almacen = almacenes.find((a) => a.id === selId) || almacenes[0];
   // Busca en TODOS los almacenes: expediente, referencia/vivienda, medidas, color, comentario, incidencia…
@@ -18477,56 +18240,20 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     } catch (er) { /* nada */ }
     return p.cliente && p.cliente !== "Uxcar" ? p.cliente : "";
   };
-  // De «pedidas» a las piezas de la pantalla de revisión. pedidaId liga cada una con su pedida, para darla por recibida al colocarla aunque se corrija el largo.
-  const itemsDesdePedidas = (ps) => {
-    const hoy = new Date().toISOString().slice(0, 10);
-    return ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), pedidaId: p.id, expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido", ...(p.accesorio ? { accesorio: true } : {}) }); });
-  };
   const colocarDesdePedidas = (ps) => {
     if (!ps.length) return;
-    setBorrador(itemsDesdePedidas(ps));
+    const hoy = new Date().toISOString().slice(0, 10);
+    setBorrador(ps.map((p) => { const pl = parseLineaPersiana(p.descripcion); return ({ id: uid(), expediente: p.expediente, parte: p.parte || "", ref: p.ref || pl.ref, largo: p.largo, alto: p.alto || 0, recogedor: p.recogedor || pl.recogedor, descripcion: p.descripcion || "", habitacion: p.habitacion || pl.habitacion, obraUx: p.refObra || "", nombreObra: nombreObraDe(p), dueno: p.origen === "portalUxcar" ? "uxcar" : p.origen === "pedidoCRM" ? "propio" : "", cliente: p.cliente || "", pedido: p.pedido || "", proveedor: p.proveedor || "", presupuesto: p.presupuesto || "", fechaEntrada: hoy, estante: null, entregada: false, origen: "pedido" }); }));
     setVerPedidas(false);
     setAviso(`${ps.length} ${cosa} pedidas pasadas a revisión. Mira abajo, agrúpalas por caballete de cristal si sale el aviso, y confirma para colocarlas en carros.`);
   };
-  // Las que ya han llegado (marcadas en Fábrica → Materiales pendientes) y siguen sin colocar: se abren en la revisión CON la propuesta de carros ya calculada.
-  const llegadasPend = esMosq ? [] : pendientesPedido.filter((p) => p && p.llegadaFabrica);
-  const abrirLlegadas = (ps) => {
-    if (!ps.length) return;
-    const lista = itemsDesdePedidas(ps);
-    // Cajón con tela y guía de mosquitera: mismo largo que la persiana más larga de su expediente (si no hay ninguna, el que traían)
-    // (se mira lo que llega ahora, lo que ya está en el almacén y lo pedido de ese expediente: la más larga)
-    const largoExp = {};
-    const mirarLargo = (x) => { if (!x || x.accesorio) return; const e = soloDigitos(x.expediente); if (e) largoExp[e] = Math.max(largoExp[e] || 0, largoPersiana(x)); };
-    lista.forEach(mirarLargo);
-    toArray(ctxM.persianasAlmacen).filter((y) => y && !y.entregada).forEach(mirarLargo);
-    pedidosTodos.forEach(mirarLargo);
-    const conLargo = lista.map((x) => (x.accesorio && largoExp[soloDigitos(x.expediente)] ? { ...x, largo: largoExp[soloDigitos(x.expediente)] } : x));
-    const rr = calcularReparto(conLargo);
-    setBorrador(conLargo.map((x) => (rr.asig[x.id] ? { ...x, carroDestino: rr.asig[x.id] } : x)));
-    setVerPedidas(false);
-    resumirReparto(conLargo, rr);
-    setAviso(`${ps.length} ${cosa} han llegado y están pendientes de ubicar. Abajo tienes la propuesta de carros: revísala, imprímela si quieres y pulsa «Colocar en los carros». Hasta entonces no se ha guardado nada.`);
-  };
-  // Entra solo cuando llegan persianas nuevas (no se reabre sola si la cierras con «Cancelar»; vuelve a salir al reabrir la pantalla)
-  const refLlegadasAbiertas = useRef("");
-  useEffect(() => {
-    if (esMosq || !esRecepcion || borrador) return;
-    const ps = llegadasPend;
-    if (!ps.length) return;
-    const firma = ps.map((p) => p.id).sort().join(",");
-    if (refLlegadasAbiertas.current === firma) return;
-    refLlegadasAbiertas.current = firma;
-    abrirLlegadas(ps);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llegadasPend.map((p) => p.id).join(","), esRecepcion]);
   // Al dar entrada a persianas (packing list, fotos o a mano) las que estaban pedidas pasan solas a "recibidas".
   const conciliarPedidas = (nuevas) => {
     if (esMosq || !pendientesPedido.length) return 0;
     const usadas = new Set();
     const marcadas = {};
     nuevas.forEach((x) => {
-      // Primero la que ya venía ligada (pedidaId); si no, por expediente, vivienda y largo
-      const p = (x.pedidaId && pendientesPedido.find((q) => !usadas.has(q.id) && q.id === x.pedidaId)) || pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
+      const p = pendientesPedido.find((q) => !usadas.has(q.id) && casaPedidaConPersiana(q, x));
       if (p) { usadas.add(p.id); marcadas[p.id] = x.id; }
     });
     const n = Object.keys(marcadas).length;
@@ -18568,34 +18295,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // Búsqueda tolerante: ignora "EXP", espacios, guiones y puntos ("EXP 852", "exp-852" y "852" son lo mismo)
   const limpiaExp = (t) => String(t || "").toLowerCase().replace(/exp(ediente)?/g, "").replace(/[^a-z0-9]/g, "");
   const coincideExp = (exp, qq) => { const b = limpiaExp(qq); return !!b && limpiaExp(exp).includes(b); };
-  // El buscador del mapa también encuentra por nombre de cliente, nº de presupuesto, referencia, habitación o color
-  const sinAcentos = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-  const coincideItem = (x, qq) => {
-    if (coincideExp(x.expediente, qq)) return true;
-    const t = sinAcentos(qq).trim();
-    if (!t) return false;
-    if (sinAcentos(`${x.cliente || ""} ${x.ref || ""} ${x.habitacion || ""} ${x.color || ""} ${x.descripcion || ""}`).includes(t)) return true;
-    const d = limpiaExp(qq);
-    return d.length >= 3 && [x.presupuesto, x.refObra, x.pedido].some((v) => v && limpiaExp(v).includes(d));
-  };
-  const nombreCorto = (c) => String(c || "").split("·")[0].trim();
-  // Qué hay en un carro, expediente a expediente: cliente, presupuesto, cuántas, referencias con medida y colores
-  const detalleCarro = (num) => {
-    const m = new Map();
-    activos.filter((x) => x.estante && x.estante.carro === num).forEach((x) => {
-      const k = soloDigitos(x.expediente) || String(x.expediente || "?");
-      if (!m.has(k)) m.set(k, { exp: k, cliente: "", ppto: "", n: 0, refs: new Map(), colores: new Set() });
-      const g = m.get(k);
-      g.n += 1;
-      if (!g.cliente && x.cliente) g.cliente = nombreCorto(x.cliente);
-      if (!g.ppto && (x.presupuesto || x.refObra)) g.ppto = String(x.presupuesto || x.refObra);
-      const medida = `${largoPersiana(x)}${x.alto ? `×${x.alto}` : ""}`;
-      const rf = `${x.ref || x.habitacion || "sin ref."} ${medida}`.trim();
-      g.refs.set(rf, (g.refs.get(rf) || 0) + 1);
-      if (x.color) g.colores.add(String(x.color));
-    });
-    return [...m.values()];
-  };
 
   const subir = async (file) => {
     setLeyendo(true); setAviso("");
@@ -18764,9 +18463,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const unidades = grupos.map((g) => ({ exps: g.exps.filter((e) => piezasDe[e]), g })).filter((u) => u.exps.length);
     Object.keys(piezasDe).filter((e) => !enGrupo.has(e)).forEach((e) => unidades.push({ exps: [e], g: null }));
     const tam = (u) => u.exps.reduce((t, e) => t + (piezasDe[e] || []).length, 0);
-    // a igual tamaño, los blancos primero (así los blancos quedan seguidos y se llenan carros de blancos antes de abrir los de color)
-    const claseUnidad = (u) => { const c = claseColorGrupo(u.exps.flatMap((e) => piezasDe[e])); return c === "blanco" ? 0 : c === "otro" ? 1 : 2; };
-    unidades.sort((a, b) => tam(b) - tam(a) || claseUnidad(a) - claseUnidad(b));
+    unidades.sort((a, b) => tam(b) - tam(a));
     const ordenVecindad = (u) => {
       if (!u.g) return u.exps;
       const enU = new Set(u.exps);
@@ -18795,28 +18492,19 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       const asig = {};
       const abiertos = [];
       const sinSitioP = [];
-      // COLOR (solo desempate): entre los carros ya abiertos donde cabe, primero el que ya lleva el mismo color (blanco con blanco; el resto de colores se mezclan
-      // entre sí), luego el que aún no tiene color, y el que lleva el otro color el último. Nunca se abre un carro de más ni se parte un expediente por el color.
-      const clasesCarro = {};
-      const anotarClase = (c, piezas) => { const k = clasesCarro[c.numero] || (clasesCarro[c.numero] = { blanco: 0, otro: 0 }); piezas.forEach((x) => { const cl = claseColorPersiana(x); if (cl) k[cl] += 1; }); };
-      const claseDeCarro = (c) => { const k = clasesCarro[c.numero]; return !k || (!k.blanco && !k.otro) ? "" : k.blanco >= k.otro ? "blanco" : "otro"; };
-      const candsPara = (clase) => {
-        const ab = [...abiertos];
-        if (clase) { const pes = (c) => (claseDeCarro(c) === clase ? 0 : claseDeCarro(c) === "" ? 1 : 2); ab.sort((a, b) => pes(a) - pes(b)); }
-        return [...ab, ...vacios.filter((c) => !abiertos.includes(c))];
-      };
+      const cands = () => [...abiertos, ...vacios.filter((c) => !abiertos.includes(c))];
       const colTodas = (piezas) => {
-        for (const c of candsPara(claseColorGrupo(piezas))) {
+        for (const c of cands()) {
           const pr = clonarEst(est);
-          if (intenta(piezas, c, pr)) { est = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); anotarClase(c, piezas); if (!abiertos.includes(c)) abiertos.push(c); return true; }
+          if (intenta(piezas, c, pr)) { est = pr; piezas.forEach((x) => { asig[x.id] = c.numero; }); if (!abiertos.includes(c)) abiertos.push(c); return true; }
         }
         return false;
       };
       const colPieza = (piezas) => {
         [...piezas].sort((a, b) => largoPersiana(b) - largoPersiana(a)).forEach((x) => {
-          for (const c of candsPara(claseColorPersiana(x))) {
+          for (const c of cands()) {
             const pr = clonarEst(est);
-            if (intenta([x], c, pr)) { est = pr; asig[x.id] = c.numero; anotarClase(c, [x]); if (!abiertos.includes(c)) abiertos.push(c); return; }
+            if (intenta([x], c, pr)) { est = pr; asig[x.id] = c.numero; if (!abiertos.includes(c)) abiertos.push(c); return; }
           }
           sinSitioP.push(x);
         });
@@ -18824,22 +18512,19 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       if (modo === "ffd") {
         Object.keys(piezasDe).sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)).forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
       } else {
-        const unidadesModo = modo === "col" ? [...unidades].sort((a, b) => claseUnidad(a) - claseUnidad(b) || tam(b) - tam(a)) : unidades;
-        unidadesModo.forEach((u) => {
+        unidades.forEach((u) => {
           if (colTodas(u.exps.flatMap((e) => piezasDe[e]))) return;
-          const ord = modo === "tam" || modo === "col" ? [...u.exps].sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)) : ordenVecindad(u);
+          const ord = modo === "tam" ? [...u.exps].sort((a, b) => piezasDe[b].length - piezasDe[a].length || a.localeCompare(b)) : ordenVecindad(u);
           ord.forEach((e) => { if (!colTodas(piezasDe[e])) colPieza(piezasDe[e]); });
         });
       }
       const nPartidos = Object.values(piezasDe).filter((xs) => new Set(xs.map((x) => asig[x.id]).filter(Boolean)).size > 1).length;
       let sepCab = 0;
       grupos.forEach((g) => g.cabs.forEach((c) => { const cs = new Set([...expedientesDeCaballete(c)].filter((e) => piezasDe[e]).flatMap((e) => piezasDe[e].map((x) => asig[x.id]).filter(Boolean))); if (cs.size > 1) sepCab += 1; }));
-      // carros que mezclan blanco con otro color: pesa menos que separar un caballete (sepCab), que es una regla más importante
-      const mezcla = Object.values(clasesCarro).filter((k) => k.blanco > 0 && k.otro > 0).length;
-      return { asig, abiertos, sinSitioP, puntos: sinSitioP.length * 100000 + nPartidos * 1000 + abiertos.length * 10 + sepCab + mezcla * 0.1 };
+      return { asig, abiertos, sinSitioP, puntos: sinSitioP.length * 100000 + nPartidos * 1000 + abiertos.length * 10 + sepCab };
     };
     let mejor = null;
-    ["vec", "tam", "col", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
+    ["vec", "tam", "ffd"].forEach((m) => { try { const r = ejecutar(m); if (!mejor || r.puntos < mejor.puntos) mejor = r; } catch (er) { /* se prueba con otra forma */ } });
     const sinSitioP = mejor ? mejor.sinSitioP : [];
     // SEGUNDA FASE: si queda algún expediente partido, se prueba a meterlo ENTERO en otro carro sacando de ese carro a los expedientes que hagan falta
     // (como mucho 2) y recolocándolos enteros en otros carros con sitio (por ejemplo el hueco que deja el trozo que se mueve). Regla: un expediente siempre entero.
@@ -18926,53 +18611,17 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const r2 = calcularRepartoUno(uxcar, new Set(r1.usados));
     return { asig: { ...r1.asig, ...r2.asig }, partidos: [...r1.partidos, ...r2.partidos], usados: [...new Set([...r1.usados, ...r2.usados])].sort((x, y) => x - y), sinSitioP: [...r1.sinSitioP, ...r2.sinSitioP], expDe: r1.expDe || r2.expDe, usadosPropias: r1.usados, usadosUxcar: r2.usados };
   };
-  // Texto del reparto propuesto + oferta de crear carros si no hay vacíos para todo. lista = las piezas sobre las que se calculó rr.
-  const resumirReparto = (lista, rr) => {
-    const { asig, partidos, usados, sinSitioP, expDe } = rr;
-    const porCarro = {};
-    lista.forEach((x) => { const c = asig[x.id]; const cl = claseColorPersiana(x); if (c && cl) (porCarro[c] = porCarro[c] || new Set()).add(cl); });
-    const mezclados = Object.values(porCarro).filter((s) => s.size > 1).length;
-    setResumenSugerencias([
-      `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos. Carros nuestros: ${rr.usadosPropias.join(", ") || "ninguno"} · carros de Uxcar: ${rr.usadosUxcar.join(", ") || "ninguno"}. Nada se ha guardado todavía.`,
-      partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
-      mezclados ? `${mezclados} carro${mezclados === 1 ? "" : "s"} mezcla${mezclados === 1 ? "" : "n"} blancos con otros colores (era la única forma de llenar los carros sin partir expedientes).` : "Blancos y colores no se mezclan en ningún carro.",
-      sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): puedes crear carros nuevos aquí abajo.` : "",
-    ].filter(Boolean).join(" "));
-    if (sinSitioP.length && !esMosq) {
-      const asignadas = Object.keys(asig).length;
-      const media = usados.length ? asignadas / usados.length : 12; // persianas por carro en este reparto (12 si todavía no se ha colocado nada)
-      setOfertaCarros({ faltan: sinSitioP.length, n: Math.max(1, Math.ceil(sinSitioP.length / Math.max(1, media))) });
-    } else if (partidos.length && !esMosq) {
-      // todo tiene carro, pero hay expedientes partidos por falta de carros vacíos: se ofrece un carro más (él decide)
-      setOfertaCarros({ faltan: 0, n: 1, partidos: partidos.length });
-    } else setOfertaCarros(null);
-  };
   const repartoGlobal = () => {
     if (!borrador || !borrador.length) return;
     const rr = calcularReparto(borrador);
-    const { asig } = rr;
+    const { asig, partidos, usados, sinSitioP, expDe } = rr;
     setBorrador(borrador.map((x) => (asig[x.id] ? { ...x, carroDestino: asig[x.id] } : x)));
-    resumirReparto(borrador, rr);
+    setResumenSugerencias([
+      `Hecho: ${Object.keys(asig).length} persianas en ${usados.length} carros vacíos. Carros nuestros: ${rr.usadosPropias.join(", ") || "ninguno"} · carros de Uxcar: ${rr.usadosUxcar.join(", ") || "ninguno"}. Nada se ha guardado todavía.`,
+      partidos.length ? `Expedientes que no cabían enteros en un carro y quedan partidos: ${partidos.slice(0, 8).join("; ")}.` : "Ningún expediente partido.",
+      sinSitioP.length ? `${sinSitioP.length} persianas sin sitio en carros vacíos (${[...new Set(sinSitioP.map(expDe))].slice(0, 8).join(", ")}): añade carros o dalas de baja.` : "",
+    ].filter(Boolean).join(" "));
   };
-  // Crea n carros nuevos de soporte largo (60 cm) con la misma configuración (estantes, largo) que el último de ese tipo, y repite el reparto cuando ya existen.
-  const [ofertaCarros, setOfertaCarros] = useState(null); // { faltan, n } cuando no hay carros vacíos para todo
-  const [esperandoCarros, setEsperandoCarros] = useState(0); // nº de carros que tendrá el almacén tras crear los nuevos; al llegar a él se repite el reparto
-  const crearCarrosNuevos = (n) => {
-    const base = [...carros].filter((c) => c.tipo === "gris").sort((a, b) => (parseInt(b.numero, 10) || 0) - (parseInt(a.numero, 10) || 0))[0];
-    const t = TIPOS_CARRO_PERSIANA.gris;
-    let numero = carros.reduce((m, c) => Math.max(m, parseInt(c.numero, 10) || 0), 0);
-    const nuevos = Array.from({ length: n }, () => {
-      numero += 1;
-      return { id: uid(), almacenId: almacen.id, numero, tipo: "gris", niveles: (base && base.niveles) || t.nivelesDefecto, largo: (base && base.largo) || LARGO_ESTANTE_MM,
-        ...(base && base.minimo != null && base.minimo !== "" ? { minimo: base.minimo } : {}), sitio: numero, movido: false, notaSitio: "" };
-    });
-    guardarCarros([...carros, ...nuevos]);
-    return nuevos;
-  };
-  useEffect(() => {
-    if (esperandoCarros && carros.length >= esperandoCarros) { setEsperandoCarros(0); repartoGlobal(); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carros.length, esperandoCarros]);
   // Entrada tal como se colocaría: lo elegido a mano manda; lo que está en «Automático» usa el reparto en carros vacíos sin partir expedientes
   const entradaConReparto = () => {
     const r = calcularReparto(borrador);
@@ -19348,12 +18997,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
         );
       })()}
-      {esRecepcion && !borrador && llegadasPend.length > 0 && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 flex flex-wrap items-center gap-3 text-sm">
-          <span className="text-amber-900"><b>{llegadasPend.length}</b> {cosa} han llegado (marcadas en Fábrica) y siguen <b>pendientes de ubicar</b>.</span>
-          <button onClick={() => abrirLlegadas(llegadasPend)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Ver la propuesta de carros</button>
-        </div>
-      )}
       {esRecepcion && pedidosTodos.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl p-3">
           <button onClick={() => setVerPedidas(!verPedidas)} className="w-full flex items-center justify-between text-left">
@@ -19455,18 +19098,6 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="text-slate-500">Usa solo carros sin empezar, junta los expedientes que comparten caballete y gasta los menos carros posibles. Luego imprime el reparto previsto y cambia lo que quieras.</span>
             {gruposCaballete(borrador).length === 0 && resumenSugerencias && <span className="basis-full font-semibold text-slate-900">{resumenSugerencias}</span>}
           </div>
-          {ofertaCarros && !esMosq && (
-            <div className="mb-2 rounded-lg border border-rose-300 bg-rose-50 p-2 text-xs flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-rose-900">{ofertaCarros.faltan ? <>No hay carros vacíos para {ofertaCarros.faltan} persiana{ofertaCarros.faltan === 1 ? "" : "s"}.</> : <>Hay {ofertaCarros.partidos} expediente{ofertaCarros.partidos === 1 ? "" : "s"} partido{ofertaCarros.partidos === 1 ? "" : "s"} entre carros por falta de carros vacíos.</>}</span>
-              <button onClick={() => {
-                const n = ofertaCarros.n;
-                if (!window.confirm(`¿Tienes ${n} carro${n === 1 ? "" : "s"} libre${n === 1 ? "" : "s"} en la nave?\n\nSe crean ${n} carro${n === 1 ? "" : "s"} nuevo${n === 1 ? "" : "s"} de soporte largo (60 cm), con los mismos estantes que los que ya tienes, y se vuelve a repartir. Si luego hacen falta más, te lo ofrece otra vez.`)) return;
-                setEsperandoCarros(carros.length + n); setOfertaCarros(null); crearCarrosNuevos(n);
-              }} className="px-3 py-1.5 rounded bg-rose-700 text-white font-semibold">Crear {ofertaCarros.n} carro{ofertaCarros.n === 1 ? "" : "s"} más y repartir de nuevo</button>
-              <span className="text-slate-600">Te pregunta antes de crearlos: el CRM no sabe cuántos carros libres tienes físicamente.</span>
-            </div>
-          )}
-          {llegadasPend.length > 0 && borrador.some((x) => x.pedidaId) && <p className="mb-2 text-xs text-amber-800">Estas han llegado desde Fábrica → Materiales pendientes. Al colocarlas se dan por recibidas; si cierras sin colocar, siguen pendientes de ubicar.</p>}
           {gruposCaballete(borrador).length === 0 && toArray(ctxM.cristalesCaballetes).length === 0 && <p className="mb-2 text-xs text-slate-500">No hay caballetes de cristal en el CRM: si quieres agrupar estas {cosa} por caballete, importa antes el packing list de cristales.</p>}
           {gruposCaballete(borrador).length > 0 && (
             <div className="mb-2 rounded-lg border border-amber-400 bg-amber-100 p-2 text-xs flex flex-wrap items-center gap-2">
@@ -19543,15 +19174,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> VACÍO (sin persianas)</span>
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <button onClick={() => { const ll = ordenados.filter((c) => activos.some((x) => x.estante && x.estante.carro === c.numero)); if (!ll.length) { alert("No hay carros con " + cosa + " dentro."); return; } imprimirCarros(ll); }} className="flex items-center gap-1 font-semibold text-slate-700 border border-slate-400 px-2.5 py-1 rounded-lg hover:bg-slate-50">🖨 Imprimir todos los carros</button>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, nombre, presupuesto…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[250px]" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
           </div>
           {nq && (() => {
-            const coinciden = items.filter((x) => coincideItem(x, nq));
+            const coinciden = items.filter((x) => coincideExp(x.expediente, nq));
             const enCarro = coinciden.filter((x) => x.estante && !x.entregada).length;
             const sin = coinciden.filter((x) => !x.estante && !x.enPuesto && !x.entregada).length;
             const puesto = coinciden.filter((x) => x.enPuesto && !x.entregada).length;
             const fuera = coinciden.filter((x) => x.entregada).length;
-            if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente, nombre o presupuesto en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
+            if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
             return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">{coinciden.length} encontradas: {enCarro} en carros (resaltados){sin ? ` · ${sin} sin sitio` : ""}{puesto ? ` · ${puesto} en puesto` : ""}{fuera ? ` · ${fuera} ya salieron` : ""}.{new Set(coinciden.map((x) => soloDigitos(x.expediente))).size === 1 && (
               <button onClick={() => { const e = soloDigitos(coinciden[0].expediente); if (!window.confirm(`¿Borrar las ${coinciden.length} ${cosa} del EXP ${e} de este almacén? Quedan fuera del CRM y podrás volver a meterlas. No se puede deshacer.`)) return; const ids = new Set(coinciden.map((x) => x.id)); guardarItems(items.filter((x) => !ids.has(x.id))); setQ(""); setAviso(`EXP ${e}: ${ids.size} ${cosa} borradas. Ya puedes volver a meterlas.`); }} className="ml-3 px-2 py-0.5 rounded bg-rose-600 text-white font-semibold">Borrar las {coinciden.length} del EXP {soloDigitos(coinciden[0].expediente)}</button>
             )}</div>;
@@ -19563,12 +19194,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 {fila.map((c) => {
                   const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
                   const r = resumenCarro(c);
-                  const resaltado = nq && activos.some((x) => x.estante && x.estante.carro === c.numero && coincideItem(x, nq));
-                  const det = detalleCarro(c.numero);
+                  const resaltado = nq && r.exps.some((e) => coincideExp(e, nq));
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
-                      className={`${det.length ? "w-[250px]" : "w-[150px]"} shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
+                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -19577,18 +19207,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, r.pct * 100)}%`, background: r.pct >= 0.95 ? "#E11D48" : "#86D325" }} />
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">{r.n} {cosa} · {Math.round(r.pct * 100)} %</div>
-                      <div className="mt-0.5 space-y-1">
-                        {det.length ? det.slice(0, 4).map((g) => {
-                          const refs = [...g.refs.entries()];
-                          return (
-                            <div key={g.exp} className="text-[11px] leading-tight border-t border-slate-100 pt-0.5" title={`EXP ${g.exp}${g.cliente ? ` · ${g.cliente}` : ""}${g.ppto ? ` · Ppto ${g.ppto}` : ""} · ${g.n} ${cosa}\n${refs.map(([k, v]) => `${v} × ${k}`).join("\n")}${g.colores.size ? `\nColor: ${[...g.colores].join(", ")}` : ""}`}>
-                              <div className="font-bold text-slate-800 truncate">EXP {g.exp}{g.cliente ? ` · ${g.cliente}` : ""}</div>
-                              <div className="text-slate-600 truncate">{g.ppto ? `Ppto ${g.ppto} · ` : ""}<b>{g.n}</b> {g.n === 1 ? cosa.replace(/s$/, "") : cosa}</div>
-                              <div className="text-slate-500 truncate">{refs.slice(0, 2).map(([k, v]) => (v > 1 ? `${v}× ` : "") + k).join(" · ")}{refs.length > 2 ? ` +${refs.length - 2}` : ""}{g.colores.size ? ` · ${[...g.colores].slice(0, 2).join("/")}` : ""}</div>
-                            </div>
-                          );
-                        }) : <span className="text-[11px] text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
-                        {det.length > 4 && <div className="text-[10px] font-semibold text-slate-500">+{det.length - 4} expedientes más</div>}
+                      <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
+                        {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                       </div>
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
                     </button>
@@ -19635,14 +19255,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         const grupos = {};
         items.filter((x) => !x.entregada && x.estante).forEach((x) => {
           const k = numsExpediente(x.expediente)[0] || String(x.expediente || "").trim() || "—";
-          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set(), presus: new Set(), exps: new Set(), clis: new Set() };
-          [x.presupuesto, x.refObra].filter(Boolean).forEach((v) => String(v).split(/[,;/]/).forEach((t) => { if (t.trim()) g.presus.add(t.trim()); }));
-          if (x.expediente) g.exps.add(String(x.expediente));
-          if (x.cliente) g.clis.add(String(x.cliente));
+          const g = grupos[k] = grupos[k] || { exp: k, uds: 0, carros: new Set() };
           g.uds += parseFloat(x.cantidad) || 1;
           g.carros.add(x.estante.carro);
         });
-        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`), presus: [...g.presus], expedientes: [...g.exps], clientes: [...g.clis] }));
+        const filas = Object.values(grupos).map((g) => ({ exp: g.exp, uds: g.uds, sitios: [...g.carros].sort((a, b) => a - b).map((n) => `Carro ${n}`) }));
         const mapaC = {};
         toArray(ctxM.cristalesCaballetes).forEach((c) => toArray(c.piezas).forEach((pz) => { if (pz.puesto) return; const k = numsExpediente(pz.expediente || c.expediente)[0] || String(pz.expediente || c.expediente || "").trim() || "—"; mapaC[k] = (mapaC[k] || 0) + (parseFloat(pz.cantidad) || 1); }));
         return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} extra={esMosq ? null : { label: "cristales", mapa: mapaC }} />;
@@ -19757,14 +19374,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       <div key={e.key} className="mb-1.5">
                         <div className="text-[10px] text-slate-400">{e.porUds ? `${dentro.length} de ${e.capacidad}` : `Estante ${e.nivel}`}</div>
                         {(e.porUds ? [dentro] : [dentro.filter((x) => x.estante.fila !== "exterior"), dentro.filter((x) => x.estante.fila === "exterior")]).map((fila, fi) => (
-                        <div key={fi} className="flex bg-slate-100 rounded overflow-hidden mb-0.5" style={{ minHeight: "2.6rem" }} title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
+                        <div key={fi} className="flex h-6 bg-slate-100 rounded overflow-hidden mb-0.5" title={e.porUds ? "" : fi === 0 ? "Fila interior" : "Fila exterior"}>
                           {fila.map((x) => (
-                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""}${x.presupuesto ? ` · Presupuesto ${x.presupuesto}` : ""}${x.pedido ? ` · Pedido ${x.pedido}` : ""} · ${x.ref || "sin referencia"}${x.habitacion ? ` · ${x.habitacion}` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${x.alto}` : ""} mm${x.color ? ` · ${x.color}` : ""}${x.descripcion ? ` · ${x.descripcion}` : ""}`}
-                              className="border-r-2 border-white bg-[#86D325] text-slate-900 flex flex-col items-center justify-center overflow-hidden leading-tight py-0.5"
-                              style={{ height: "2.6rem", width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
-                              <span className="font-bold text-[9px] text-slate-800 truncate max-w-full">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}{x.cliente ? ` · ${String(x.cliente).split("·")[0].trim()}` : ""}</span>
-                              <span className="text-[10px] font-semibold truncate max-w-full">{x.ref || x.habitacion || "sin ref."}{x.ref && x.habitacion ? ` · ${x.habitacion}` : ""}</span>
-                              <span className="text-[9px] text-slate-700 truncate max-w-full">{largoPersiana(x)}{x.alto ? `×${x.alto}` : ""}{x.color ? ` · ${x.color}` : ""}</span>
+                            <div key={x.id} title={`EXP ${x.expediente}${x.refObra ? ` (${x.refObra})` : ""}${x.cliente ? ` · ${x.cliente}` : ""} · ${x.ref || ""} · ${largoPersiana(x)} mm`}
+                              className="h-6 border-r-2 border-white bg-[#86D325] text-[9px] font-bold text-slate-900 flex items-center justify-center overflow-hidden"
+                              style={{ width: `${Math.min(100, e.porUds ? 100 / e.capacidad : (largoPersiana(x) / e.largo) * 100)}%` }}>
+                              {x.ref ? <span className="flex flex-col items-center leading-none"><span className="font-semibold text-slate-700 text-[8px]">{x.expediente}{partePersiana(x) ? ` ${partePersiana(x)}` : ""}</span><span className="text-[10px]">{x.ref}</span></span> : `${x.expediente}${partePersiana(x) ? ` ${partePersiana(x)}` : ""}`}
                             </div>
                           ))}
                         </div>
@@ -20393,8 +20008,6 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
   const nPanelesSinApuntar = panelesQueFaltan(cristales, ctxPaneles.paneles).length;
-  // Persianas que ya han llegado (marcadas en Materiales pendientes) y todavía no se han colocado en carros
-  const nLlegadasPersianas = toArray(ctxPaneles.pedidosPersianas).filter((q) => q && q.llegadaFabrica && q.estado !== "recibida").length;
   const nDiscrepancias = discrepanciasTodas(pedidos).reduce((t, x) => t + x.items.length, 0);
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
@@ -20426,12 +20039,11 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-      if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
       const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-      const oficinaOk = misPedidos.every((pd) => pedidoLlegadoParaFabricar(pd) || uxDaPorRecibido(pd));
+      const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
       // Uxcar no rellena el checklist «Qué lleva la obra»: para sus obras basta con que todos sus pedidos de cristal/persiana hayan llegado (Uxcar) y fábrica los haya confirmado
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
@@ -20445,7 +20057,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (p.origen === "portalUxcar") return pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
     return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
   }).map((p) => ({ p, faltan: p.origen === "portalUxcar"
-    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => !pedidoLlegadoParaFabricar(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => pd.estado !== "Recibido" ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
     : condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
 
   const descargarWord = () => {
@@ -20692,19 +20304,6 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                 <span><b>{marcadas.length}</b> obra{marcadas.length === 1 ? "" : "s"} marcada{marcadas.length === 1 ? "" : "s"} ({marcadas.map((p) => `#${p.numero}`).join(" · ")})</span>
                 <span><b>{fmtHoras(hSel)}</b> ≈ <b>{(hSel / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(hSel / hDia - 1) < 0.05 ? "" : "s"} con {fmtHoras(hDia)} al día</span>
                 {sinH > 0 && <span className="font-semibold text-amber-200">{sinH} sin horas (no suman)</span>}
-                {(() => {
-                  const sinS = marcadas.filter((p) => !salidaDefinida(p));
-                  if (!sinS.length) return null;
-                  return (
-                    <select value="" onChange={(e) => { const v = e.target.value; if (!v || !onActualizarProyecto) return; sinS.forEach((p) => onActualizarProyecto(p.id, v === "Instalación" ? { llevaInstalacion: true } : { estadoLogistica: v })); }}
-                      className="px-2 py-1.5 rounded-md text-xs font-semibold text-slate-900 bg-amber-200 border border-amber-400" title="Pone la misma salida a las marcadas que todavía no la tienen. No toca las que ya la tienen.">
-                      <option value="">Salida para las {sinS.length} que no la tienen…</option>
-                      <option value="Reparto (camión)">Todas: Reparto</option>
-                      <option value="Recogida en fábrica">Todas: Recogida</option>
-                      <option value="Instalación">Todas: Instalación</option>
-                    </select>
-                  );
-                })()}
                 <span className="ml-auto flex gap-2">
                   {TALLERES_FAB.map((t) => (
                     <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { const sinS = marcadas.filter((p) => !salidaDefinida(p)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`); return; } marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
@@ -20840,12 +20439,6 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           <div className="px-4 py-3 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm mb-6">
             Cuando llegue un material (cristal, persiana, aluminio, PVC...), márcalo aquí como "Ha llegado". Este control es tuyo, no depende de lo que oficina haya marcado — así luego se puede comparar y ver si todo cuadra.
           </div>
-          {nLlegadasPersianas > 0 && (
-            <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-sm mb-6 flex flex-wrap items-center gap-3">
-              <span><b>{nLlegadasPersianas}</b> persiana{nLlegadasPersianas === 1 ? "" : "s"} (con sus cajones y guías) han llegado y están <b>pendientes de ubicar</b>. El CRM propone en qué carro va cada expediente; no se coloca nada hasta que lo confirmes.</span>
-              <button type="button" onClick={() => setTab("persianasAlmacen")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-md hover:opacity-90">Ver el reparto en carros</button>
-            </div>
-          )}
 
           {onRecibirConAlbaran && (
             <AlbaranFabrica pedidos={pedidos} materiales={materiales} proveedores={proveedores}
@@ -20884,7 +20477,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                       <span className="text-xs text-slate-500">Entrega prevista: {pedido.fechaEntregaPrevista ? fmtDate(pedido.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}</span>
                       {onConfirmarPedidoEntero && (pedido.lineas || []).some((l) => !l.confirmadoFabrica) && (
                         <button
-                          onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; const pers = esPedidoDePersianasCRM(pedido); if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.${pers ? "\n\nLas persianas (y sus cajones / guías) pasan al almacén de persianas como «pendientes de ubicar», con una propuesta de carros. No se colocan solas: tú confirmas." : ""}\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id, { aAlmacen: true }); }}
+                          onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id); }}
                           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
                           className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md hover:opacity-90"
                         >
@@ -21494,7 +21087,7 @@ function EnviarAlbaranModal({ envio, datos, emailInicial, onClose }) {
       const dataUrl = await aDataUrl(await obtenerPdf());
       const r = await fetch("/.netlify/functions/enviar-email", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cc: emailUsuarioActual, destinatario: email, asunto: `Albarán de salida ${envio.numeroAlbaran || ""} — Ecowin PVC`,
-          cuerpo: `Buenos días,\n\nLe adjuntamos el albarán de salida ${envio.numeroAlbaran || ""} del ${fmtDate(envio.fechaSalida)}${envio.firmaChofer ? `, firmado por ${envio.firmaChofer.nombre}` : ""}.\n\nMaterial: ${envio.descripcion}${envio.cantidad ? ` (${envio.cantidad})` : ""}\n\nUn saludo,\nEcowin PVC`,
+          cuerpo: `Buenos días,\n\nLe adjuntamos el albarán de salida ${envio.numeroAlbaran || ""} del ${fmtDate(envio.fechaSalida)}${envio.firmaChofer ? `, firmado por ${envio.firmaChofer.nombre}` : ""}.\n\nMaterial: ${envio.descripcion}${envio.cantidad ? ` (${envio.cantidad})` : ""}\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`,
           adjuntos: [{ nombre: nombreArchivo, dataUrl }] }) });
       const j = await r.json().catch(() => ({}));
       if (j.ok) setMsg("✓ Enviado."); else setMsg(`No se pudo enviar: ${j.error || r.status}. Usa "Descargar" o "Compartir" mientras tanto.`);
@@ -27511,7 +27104,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
     if (!cliente?.email) return null;
     const asunto = `Incidencia #${incidencia.numero} — Ecowin PVC`;
     const cuerpo = `Hola ${cliente.nombre},\n\nLe escribimos respecto a la incidencia registrada${proyecto ? ` sobre el proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}.\n\n${incidencia.descripcion || ""}\n\nQuedamos a su disposición para cualquier duda.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${cliente.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${cliente.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const enlaceWhatsappCliente = () => {
@@ -29999,7 +29592,8 @@ function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProfor
         presupuesto={presupuesto}
         onBack={() => setView("list")}
         onEdit={() => { setEditId(presupuesto.id); setView("form"); }}
-        onDelete={() => onDelete(presupuesto.id)}
+        onDelete={() => { if (confirm(`¿Eliminar el presupuesto ${presupuesto.numero}?\n\nSe borra del todo y no se puede deshacer.`)) onDelete(presupuesto.id); }}
+        puedeEliminar={isAdmin && !toArray(proyectos).some((p) => p.presupuestoId === presupuesto.id)}
         onAddLlamada={(llamada, nuevoEstado) => onAddLlamada(presupuesto.id, llamada, nuevoEstado)}
         onDeleteLlamada={(llamadaId) => onDeleteLlamada(presupuesto.id, llamadaId)}
         onMarcarEnviado={(metodo) => onMarcarEnviado(presupuesto.id, metodo)}
@@ -35576,7 +35170,7 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
   );
 }
 
-function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
+function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
   const dias = diasSinRespuestaDe(presupuesto);
@@ -35641,8 +35235,8 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
   const enlaceEmailManual = () => {
     if (!presupuesto.email) return null;
     const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
-    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${presupuesto.email}?${emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`;
+    return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   // Genera el PDF al momento y lo manda por email directamente desde el CRM
@@ -35669,7 +35263,7 @@ function PresupuestoDetail({ onRecrearProyecto, onAbrirProyecto, onLeerDatos, on
         nombreArchivo = `presupuesto-${presupuesto.numero || presupuesto.id}.pdf`;
       }
       const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
-      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nUn saludo,\nEcowin PVC`;
+      const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""} en el documento adjunto.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`;
 
       const response = await fetch("/.netlify/functions/enviar-email", {
         method: "POST",
@@ -36950,7 +36544,7 @@ async function uxContarVentanasConClaude(dataUrl, mediaType) {
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
   const prompt = [
-    "Esto es un listado de carpintería de PVC/aluminio (\"Listado dibujos\" o \"Listado de montaje\") con un dibujo por cada modelo. Mira el TEXTO y también los DIBUJOS de cada recuadro.",
+    "Esto es un listado de carpintería de PVC/aluminio (\"Carga de material\", \"Listado dibujos\" o \"Listado de montaje\") con un dibujo por cada modelo. Mira el TEXTO y también los DIBUJOS de cada recuadro.",
     "Para cada modelo/recuadro saca:",
     "- modelo: el texto de \"Modelo:\" o, si no hay, el de la columna TIPO (p.ej. \"Dormitorio\", \"Baño\").",
     "- uds: las unidades (\"Uds:\" o columna UDS). Si la casilla de unidades está VACÍA o no aparece, uds = 1 (el programa no escribe el 1): NO te saltes ese modelo. Si el número de unidades solo viene escrito en la descripción o en el texto del recuadro, cógelo de ahí.",
@@ -44763,7 +44357,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
     const pr = toArray(ctx.proyectos).find((y) => y && y.id === pd.proyectoId);
     const nn = pr ? numsExpediente(pr.numero || pr.expediente || "").find((n) => numsPlanif.has(String(n))) : null;
     return { pd, pr, dia: nn ? numsPlanif.get(String(nn)) : "" };
-  }).filter((x) => !(x.pr && (x.pr.planificableOk || ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida", "Entregado", "Cancelado"].includes(x.pr.estadoTrabajo)))).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
+  }).sort((a, b) => (a.dia ? 1 : 0) - (b.dia ? 1 : 0) || String(a.pd.fechaEntregaPrevista || "9999").localeCompare(String(b.pd.fechaEntregaPrevista || "9999")));
   const nSinPlan = sinPlanificar.filter((x) => !x.dia).length;
   // CONTROL POR OBRA de todo lo pedido (nuestro y de Uxcar): cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.
   const ctrlObras = (() => {
@@ -44777,7 +44371,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       toArray(pd.lineas).forEach((l) => {
         if (!l) return;
         const n = parseFloat(l.cantidad) || 1;
-        const rec = l.estado === "Recibido" || pd.estado === "Recibido" || l.confirmadoFabrica ? n : 0; // también cuenta lo que fábrica ha dado por llegado
+        const rec = l.estado === "Recibido" || pd.estado === "Recibido" ? n : 0;
         if (t === "cristal") { f.cP += n; f.cR += rec; } else { f.pP += n; f.pR += rec; }
       });
       if (pd.tipoUxcar) f.ux = true; else f.propio = true;
@@ -44787,20 +44381,11 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
       }
       m.set(key, f);
     });
-    // «Lo que viene»: una obra que ya se ha dado por planificable (contestado «sí» al aviso) o que ya está en marcha deja de salir aquí
-    const yaNoViene = (pr) => !!pr && (!!pr.planificableOk || ["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida", "Entregado", "Cancelado"].includes(pr.estadoTrabajo));
-    return [...m.values()].filter((f) => f.abiertos > 0 && !yaNoViene(f.pr)).map((f) => {
-      // La obra se reconoce en los almacenes por todo lo que la une (ver clavesObraControl): proyecto, expediente, presupuesto, Uxcar y pedidos.
-      const claves = clavesObraControl(f.pr, ctx.uxExpedientes, ctx.pedidosCrm);
-      const nums = [...claves.exps];
-      const cL = !f.pr ? 0 : cristales.reduce((a, c) => {
-        const ps = toArray(c.piezas).filter((q) => casaObraControl(claves, { ...c, ...q, expediente: q.expediente || c.expediente }));
-        if (ps.length) return a + ps.reduce((b, q) => b + (parseFloat(q.cantidad) || 1), 0);
-        return casaObraControl(claves, c) ? a + (parseFloat(c.cantidad) || 0) : a;
-      }, 0);
-      const pL = !f.pr ? 0 : itemsP.filter((x) => !x.entregada && tipoAlm(x) === "persiana" && casaObraControl(claves, x)).length;
+    return [...m.values()].filter((f) => f.abiertos > 0).map((f) => {
+      const nums = f.pr ? numsExpediente(f.pr.numero || f.pr.expediente || "") : [];
+      const fake = { expNums: nums };
       const dia = nums.map((n) => numsPlanif.get(String(n))).find(Boolean) || "";
-      return { ...f, cL, pL, dia };
+      return { ...f, cL: nums.length ? llegCris(fake) : 0, pL: nums.length ? llegPers(fake) : 0, dia };
     }).sort((a, b) => ((a.dia ? 1 : 0) - (b.dia ? 1 : 0)) || String(a.entrega || "9999").localeCompare(String(b.entrega || "9999")));
   })();
   const filasObra = obras.map((x) => { const ac = accDe(x); return { ...x, pe: esperadas(x.obra, "persianas"), pl: llegPers(x.obra), ce: esperadas(x.obra, "cristal"), cl: llegCris(x.obra), ac, mosqLleg: itemsObra(x.obra, "mosquitera").length, sitiosP: sitiosItems(itemsObra(x.obra, "persiana")), sitiosM: sitiosItems(itemsObra(x.obra, "mosquitera")), sitiosC: sitiosCris(x.obra), mosqFalta: !!ac.mosq.lleva && !marcaAcc(x, "mosquitera") && !(itemsObra(x.obra, "mosquitera").length >= Math.max(1, (ac.mosq.uds || 1))), postFalta: !!ac.post.lleva && !marcaAcc(x, "postigo") }; });
@@ -44926,24 +44511,7 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
           </div>
       <div className={`bg-white border border-slate-200 rounded-xl p-5 ${ve("cristales") && (vv("cristales") || vv("persianas")) ? "" : "hidden"}`}>
         <h4 className="font-semibold text-slate-800 text-sm mb-1">Obras con material pedido: lo que viene <span className="text-slate-400 font-normal text-xs">({ctrlObras.length} obras)</span></h4>
-        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes.</p>
-        <div className="flex flex-wrap items-center gap-2 mb-2 text-[11px]">
-          <span className="font-semibold text-slate-500">Colores:</span>
-          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold border border-emerald-200">Verde = todo recibido y ya en su almacén</span>
-          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-bold border border-amber-200">Naranja = aún falta por llegar (o la obra sin planificar)</span>
-          <span className="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">Sin color = recibido, pero todavía no está colocado en el almacén</span>
-        </div>
-        {(() => {
-          const pend = ctx.persianasEnCarrosSinRecibir ? ctx.persianasEnCarrosSinRecibir() : [];
-          if (!pend.length) return null;
-          const nl = pend.reduce((t, x) => t + x.lineas.length, 0);
-          return (
-            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-amber-900">{pend.length} obra{pend.length === 1 ? "" : "s"} con todas las persianas ya en carros ({pend.map((x) => `#${x.proyecto.numero}`).slice(0, 8).join(", ")}) pero el pedido sin dar por llegado.</span>
-              <button onClick={() => { if (window.confirm(`Se darán por llegadas ${nl} línea${nl === 1 ? "" : "s"} (persianas, cajones y guías) de ${pend.length} obra${pend.length === 1 ? "" : "s"}, porque en los carros hay tantas piezas como se pidieron.\n\n¿Seguro?`)) ctx.aplicarPersianasEnCarros(); }} className="px-3 py-1.5 rounded bg-amber-700 text-white font-semibold">Dar por llegadas las que ya están en carros</button>
-            </div>
-          );
-        })()}
+        <p className="text-xs text-slate-500 mb-2">Por obra, nuestras y de Uxcar: cuántos cristales y compactos se han pedido, cuántos se han dado por recibidos en el pedido y cuántos hay ya en los almacenes. Naranja = aún falta por llegar.</p>
         {ctrlObras.length === 0 ? <p className="text-sm text-slate-400">No hay pedidos abiertos de cristales ni compactos.</p> : (
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
@@ -44953,8 +44521,8 @@ function PuestoPreparacionMaterial({ cristales = [], onIrA, soloPedidos = false 
                   <tr key={f.key}>
                     <td className="px-3 py-2 font-semibold text-slate-800">{f.pr ? `#${f.pr.numero} ${f.pr.nombre || ""}` : "sin obra enlazada"}</td>
                     <td className="px-3 py-2">{f.ux && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 mr-1">UXCAR</span>}{f.propio && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">Propio</span>}</td>
-                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : f.cP && f.cL >= f.cP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
-                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : f.pP && f.pL >= f.pP ? "bg-emerald-50 text-emerald-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.cP && f.cR < f.cP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.cP ? <>{f.cP} pedidos · {f.cR} recibidos<span className="block text-[11px] font-normal">{f.cL} en caballetes</span></> : "—"}</td>
+                    <td className={`px-3 py-2 ${f.pP && f.pR < f.pP ? "bg-amber-50 text-amber-800 font-bold" : "text-slate-600"}`}>{f.pP ? <>{f.pP} pedidas · {f.pR} recibidas<span className="block text-[11px] font-normal">{f.pL} en carros</span></> : "—"}</td>
                     <td className="px-3 py-2 text-slate-600">{f.entrega ? fmtDia(f.entrega) : "—"}</td>
                     <td className={`px-3 py-2 ${f.dia ? "text-slate-600" : "bg-amber-50 text-amber-800 font-bold"}`}>{f.dia ? fmtDia(f.dia) : "No"}</td>
                   </tr>
@@ -45934,7 +45502,14 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const [publicando, setPublicando] = useState(false);
   const publicar = async () => {
     if (!cfg.emailFabrica) { alert("Pon primero el correo de fábrica (arriba, en los ajustes)."); return; }
-    if (!confirm(`¿Confirmar el planning desde el ${fmtDate(desde)} y mandarlo a ${cfg.emailFabrica}?`)) return;
+    // Aviso (no bloqueo): obras que entran en el planning sin etiquetas de la línea (el lote lo hace oficina cuando se le dice)
+    const sinEtiquetas = firmes.filter((o) => {
+      if (!(o.ventanas > 0)) return false;
+      const x = o.ref && o.ref.tipo === "uxcar" ? toArray(uxExpedientes).find((e) => e.id === o.ref.id) : proyectos.find((pr) => pr.id === (o.ref && o.ref.id));
+      return !!x && toArray(x.etiquetasFab).length === 0;
+    }).map((o) => o.nombre);
+    const avisoEtiq = sinEtiquetas.length ? `\n\n⚠ SIN ETIQUETAS DE LA LÍNEA (falta hacer el lote): ${sinEtiquetas.join(", ")}.\nPide a oficina que haga el lote antes de fabricar. Puedes confirmar igualmente.` : "";
+    if (!confirm(`¿Confirmar el planning desde el ${fmtDate(desde)} y mandarlo a ${cfg.emailFabrica}?${avisoEtiq}`)) return;
     setPublicando(true);
     try {
       const obrasSnap = {};
@@ -46515,13 +46090,13 @@ async function clasificarPdfObra(file) {
     const mv = T.match(/VERSION\s*:?\s*\.?\s*(\d+)/) || T.match(/PRES(?:UPUESTO)?\s*:?\s*[\d.]+-(\d+)/);
     clasificarPdfObra.version.set(file, mv ? mv[1] : "");
     if (/HOJA DE CORTE/.test(T)) return "corte";
-    if (/CARGA (DE )?MATERIAL/.test(T)) return "dibujos"; // la carga de material hace de tipo plano: cuenta las ventanas
     if (/TIPOLOGIA ?:/.test(T) && /FAB ?:/.test(T)) return "etiquetas";
     if (/V\d{2}\.\d+ ?- ?\d[\d.]* ?-FAB ?:/.test(T)) return "etiquetas";
     if (/ANALISIS (DE )?MATERIALES/.test(T)) return "analisis";
     if (/LISTADO (DE )?MANO DE OBRA/.test(T)) return "mano_obra";
     if (/LISTADO (DE )?CAJAS/.test(T)) return "cajas";
     if (/LISTADO (DE )?DIBUJOS/.test(T)) return "dibujos";
+    if (/CARGA MATERIAL/.test(T)) return "dibujos"; // la carga de material trae un dibujo por modelo, con Pos, medidas y uds: hace de tipo plano
     if (/LISTADO (DE )?VIDRIOS|LISTADO (DE )?CRISTALES/.test(T)) return "cristales";
     if (/PEDIDO COMPRA/.test(T) && /PERSIANA|CAJON|LAMA|GUIAS?/.test(T)) return "persianas";
     if (/PEDIDO COMPRA/.test(T) && /VIDRIO|CRISTAL|\d+\/\d+\/\d+/.test(T)) return "cristales";
@@ -46564,7 +46139,7 @@ async function aplicarPdfEtiquetasObra(file, lotesPrevios, presupuestoNumero) {
     const fj = r.corte.modelos.filter((m) => m.tipo === "fijo").length, pu = r.corte.modelos.filter((m) => m.tipo === "puerta").length;
     return { lotes: ap.lotes, corte: r.corte, aviso: `Hoja de corte aplicada a ${ap.aplicadas} ventanas${fj || pu ? ` (${[fj ? `${fj} fijo${fj > 1 ? "s" : ""}` : "", pu ? `${pu} puerta${pu > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ")})` : ""}.${ap.modelosSinVentana.length ? ` Sin ventanas para: ${ap.modelosSinVentana.join(", ")}.` : ""}` };
   }
-  if (!r.lotes.length) return { lotes: null, aviso: /corte/i.test(file.name || "") ? `⚠ ${file.name}: NO he podido leer la hoja de corte (no he sacado ningún modelo). Los demás documentos no tienen nada que ver con este aviso.` : `${file.name}: no he encontrado etiquetas de fabricación.` };
+  if (!r.lotes.length) return { lotes: null, aviso: `${file.name}: no he encontrado etiquetas de fabricación.` };
   const nv = r.lotes.reduce((a, l) => a + l.ventanas.length, 0);
   return { lotes: mezclarLotesFab(toArray(lotesPrevios), r, file.name), aviso: `Etiquetas: ${nv} ventanas/puertas (lote ${r.lotes.map((l) => l.fab).join(", ")}).` };
 }
@@ -46584,10 +46159,21 @@ const tipoListadoPorLineas = (refs) => {
   const p = (t.match(/persiana|lama|caj[oó]n|gu[ií]a|compacto|recogedor|cinta|motor/gi) || []).length;
   return c === 0 && p === 0 ? "" : c >= p ? "cristales" : "persianas";
 };
+// La hoja de corte vale si está guardada para Auxiliares (por el nº de presupuesto de la obra) o ya aplicada a las ventanas de las etiquetas
+const candidatosPresuObra = (p) => {
+  const c = [p && p.presupuestoNumero, ((String((p && p.nombre) || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1]), p && p.numero, p && p.expediente, p && p.uxcarRef];
+  return c.map((x) => digitosPresu(x)).filter((x, i, a) => x && a.indexOf(x) === i);
+};
+const tieneHojaCorteObra = (p, hojas) => {
+  const cands = candidatosPresuObra(p);
+  const hs = hojas && typeof hojas === "object" ? hojas : {};
+  const ok = (h) => !!(h && toArray(h.modelos).length);
+  return cands.some((k) => ok(hs[k]) || Object.values(hs).some((h) => ok(h) && digitosPresu(h.presupuesto) === k)) || lotesConCorte(p && p.etiquetasFab);
+};
 const lotesConCorte = (lotes) => toArray(lotes).some((l) => toArray(l.ventanas).some((v) => v && v.corte));
 const llevaPersianas = (recuento, listado) => toArray(recuento).some((l) => l && l.persiana) || toArray(listado && listado.lineas).some((l) => l && l.seccion === "persianas" && !/mosquit|con tela|\btela\b/i.test(`${l.codigo || ""} ${l.descripcion || ""}`));
 // Lista de los documentos de la obra: cuáles están y cuáles faltan (recuadro "Documentación de la obra")
-function estadoDocumentosObra(p) {
+function estadoDocumentosObra(p, hojas) {
   const lis = p.listadoMateriales;
   const docs = toArray(p.documentos);
   const tipoDoc = (d) => d.tipoListado || tipoListadoPorNombre(d.nombre);
@@ -46598,20 +46184,18 @@ function estadoDocumentosObra(p) {
   return [
     { nombre: "Presupuesto", ok: !!p.presupuestoId || docs.some((d) => /presupuesto/i.test(d.nombre || "")) },
     { nombre: "Análisis de materiales", ok: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))), nota: lis && lis.archivo ? lis.archivo : "" },
-    // El listado de dibujos ya no se sube: ahora va el fichero «carga material». Si aun así hay tipo plano o recuento se muestra como opcional.
-    { nombre: "Carga de material", ok: docs.some((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || !!(p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano"), nota: (docs.find((d) => /carga[\s_.-]*material/i.test(d.nombre || "")) || {}).nombre || (p.documentoEntrega && p.documentoEntrega.nombre) || "" },
-    ...(((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length) ? [{ nombre: "Listado de dibujos (tipo plano)", ok: true, opcional: true, nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" }] : []),
+    { nombre: "Carga de material (tipo plano y ventanas)", ok: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length), nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" },
     { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
     { nombre: "Listado de persianas", ok: tienePers, noHace: !tienePers && !persianaNecesaria, nota: (docs.find((d) => tipoDoc(d) === "persianas") || {}).nombre || "" },
     { nombre: "Etiquetas", ok: lotes.length > 0, opcional: true, nota: lotes.length ? `${nVent} ventanas · lote ${lotes.map((l) => l.fab).join(", ")}` : "" },
-    { nombre: "Hoja de corte", ok: lotesConCorte(lotes), opcional: true, nota: lotesConCorte(lotes) ? "aplicada" : lotes.length ? "" : "va después de las etiquetas" },
+    { nombre: "Hoja de corte", ok: tieneHojaCorteObra(p, hojas), nota: tieneHojaCorteObra(p, hojas) ? "de ella salen los Auxiliares" : "súbela con el resto: de ella salen los Auxiliares" },
     lis && parseFloat(lis.horas) > 0
       ? { nombre: "Listado de mano de obra (horas)", ok: true, nota: `${lis.horas} h para el planning` }
       : { nombre: "Listado de mano de obra (horas)", ok: false, nota: "sin él, el planning usa las horas calculadas con el recuento (las de Fábrica → Planning)" },
   ];
 }
 const tieneHorasListado = (x) => !!(x && x.listadoMateriales && parseFloat(x.listadoMateriales.horas) > 0);
-function documentosQueFaltanObra(p) {
+function documentosQueFaltanObra(p, hojas) {
   const lis = p.listadoMateriales;
   const docs = toArray(p.documentos);
   const tiene = {
@@ -46620,14 +46204,15 @@ function documentosQueFaltanObra(p) {
     cristales: docs.some((d) => (d.tipoListado || tipoListadoPorNombre(d.nombre)) === "cristales"),
     persianas: docs.some((d) => (d.tipoListado || tipoListadoPorNombre(d.nombre)) === "persianas") || toArray(lis && lis.tiposDocs).includes("cajas"),
     etiquetas: toArray(p.etiquetasFab).length > 0,
-    corte: lotesConCorte(p.etiquetasFab),
+    corte: tieneHojaCorteObra(p, hojas),
   };
   if (!Object.values(tiene).some(Boolean)) return null; // sin nada del programa: no sabemos si es de ventanas
   const faltan = [];
   // Basta con el análisis de materiales: de él salen los cristales, las persianas y el resto. Dibujos, cristales y persianas sueltos ya no se exigen.
   if (!tiene.analisis) faltan.push("análisis de materiales");
   if (!tieneHorasListado(p)) faltan.push("listado de mano de obra (horas)");
-  // Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola
+  if (!tiene.corte) faltan.push("hoja de corte");
+  // Las etiquetas de la línea las hace oficina con el lote: se avisa al administrador al confirmar el planning, no aquí
   return faltan;
 }
 function documentosQueFaltanUx(e, uxPedidos) {
@@ -46642,7 +46227,7 @@ function documentosQueFaltanUx(e, uxPedidos) {
     corte: lotesConCorte(e.etiquetasFab),
   };
   const faltan = [];
-  if (!tiene.dibujos) faltan.push("listado de dibujos");
+  if (!tiene.dibujos) faltan.push("carga de material");
   if (!tiene.analisis) faltan.push("informe de materiales");
   if (!tieneHorasListado(e)) faltan.push("listado de mano de obra (horas)");
   if (!tiene.cristales) faltan.push("pedido de cristales");
@@ -47083,22 +46668,22 @@ Con el presupuesto **Aceptado y firmado** aparece el botón verde.
 Con el proyecto creado, sigue con la guía **"Subir los documentos de una obra"**: análisis, dibujos, cristales, persianas, etiquetas y hoja de corte. Mientras falte alguno, sale el aviso amarillo **"Faltan documentos"** arriba.`,
   },
   {
-    para: "equipo", orden: 2, version: 6, titulo: "Guía del equipo: subir los documentos de una obra",
+    para: "equipo", orden: 2, version: 10, titulo: "Guía del equipo: subir los documentos de una obra",
     contenido: `## Resumen
 Todos los documentos de una obra se suben **de una vez, con un solo botón**, dentro de la obra. El CRM reconoce cada PDF por su cabecera y lo manda a su sitio: **los pedidos no se suben aparte en Pedidos**.
 
 | PDF del programa | Qué hace el CRM con él | ¿Crea pedido? |
 | --- | --- | --- |
 | Presupuesto | Lo guarda en los documentos de la obra | No |
-| Análisis de materiales | Material de la obra, horas, "Qué lleva la obra" | Sí: **pedidos en espera** de lo que falta (perfiles, herraje…) |
-| Listado de dibujos | Tipo plano (va con el albarán) y recuento de ventanas | No |
-| Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
-| Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: sale **arriba el pedido relleno para confirmarlo** |
-| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Opcional por ahora** (hasta que esté la línea con pistola) | No |
-| Hoja de corte (opcional por ahora) | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola | No |
+| Análisis de materiales | Material de la obra, horas, "Qué lleva la obra" | **De momento no**: no se crean pedidos de perfiles/herraje al subirlo (el stock se está poniendo al día); el material se prepara desde Preparación de material |
+| Carga de material (o listado de dibujos) | Tipo plano (va con el albarán) y recuento de ventanas. Trae un dibujo por modelo, con su Pos, medidas y uds | No |
+| Listado de cristales (o pedido de compra de vidrio) | Lo guarda en la obra | Sí: se crea **solo un pedido EN ESPERA** (el proveedor se elige luego en Pedidos) |
+| Listado de persianas (pedido de compra) | Lo guarda en la obra | Sí: se crea **solo un pedido EN ESPERA** (el proveedor se elige luego en Pedidos) |
+| Etiquetas de la línea | La pistola reconoce cada ventana y su caballete. **Las crea oficina al hacer el lote** (cuando se les avisa) y tienen que estar **antes de que la obra entre en planificación**; si faltan, al confirmar el planning sale un aviso al administrador | No |
+| Hoja de corte (**se pide**: si falta, sale en «Faltan documentos») | Marca fijos, puertas, hojas, ventanas unidas, persiana y mosquitera; separa las ventanas unidas para la pistola. **De ella salen los Auxiliares** (al subirla con el resto, se guarda sola para Auxiliares) (guía, inversor, hoja de contra, lama de contra…): se lee tanto la hoja por modelos con «Pos» como la hoja por grupos (cabecera «Número»). La pegatina de cada pieza lleva el membrete de la hoja y el carro y la posición donde dejarla | No |
 | Listado de mano de obra | **Horas de fabricación exactas** para el planning. Si falta, el planning usa las horas calculadas con el recuento y sale el aviso "Faltan documentos" | No |
 
-**Obligatorio:** el análisis de materiales (de él salen cristales, persianas y el resto) y el **listado de mano de obra** (las horas de fabricación). Si falta el listado de mano de obra, la obra **no se bloquea**: el planning usa las horas calculadas con el recuento (las que están programadas en Fábrica → Planning). Pero el aviso amarillo "Faltan documentos" se queda para que lo tengáis controlado. Etiquetas y hoja de corte son opcionales hasta que esté la línea con pistola; entonces volverán a ser obligatorias.
+**Obligatorio:** el análisis de materiales (de él salen cristales, persianas y el resto), el **listado de mano de obra** (las horas de fabricación) y la **hoja de corte** (de ella salen los Auxiliares). Si falta el listado de mano de obra, la obra **no se bloquea**: el planning usa las horas calculadas con el recuento (las que están programadas en Fábrica → Planning). Pero el aviso amarillo "Faltan documentos" se queda para que lo tengáis controlado. Las etiquetas de la línea deben estar antes de planificar: si una obra entra en el planning sin ellas, al confirmarlo sale un aviso al administrador (no se bloquea, se puede confirmar igualmente). Los Auxiliares no dependen de las etiquetas: salen de la hoja de corte.
 
 **Atajo:** si la obra solo tiene el listado de vidrios y la hoja de corte (por ejemplo un expediente de Uxcar ya pedido), no hace falta nada más: usa **"Expediente rápido"** (ver la guía "Expediente rápido") y no saldrá el aviso de documentos que faltan.
 
@@ -47124,7 +46709,7 @@ El planning reparte las obras por días según sus horas. Salen así, por este o
 3. Pulsa **"Subir documentos de la obra"** y elige **todos los PDF a la vez** (con Ctrl pulsado).
 4. Espera. Pone "Leyendo…" y puede tardar **un par de minutos**. No cierres ni cambies de pantalla.
 5. **Lee el aviso** que sale: dice qué ha hecho con cada PDF y si hay **versiones distintas** o un listado repetido que no ha usado.
-6. Arriba sale el **pedido de cristales** (y el de **persianas** si lleva). Revisa las líneas y **confírmalo**. Si cierras sin confirmar, el pedido no se crea.
+6. A los pocos segundos se crea **solo** el pedido de cristales (y el de **persianas** si lleva), **en espera**, como los de perfiles y herraje. Revisa sus líneas y elige el proveedor en la pestaña Pedidos.
 7. Si faltaba algún PDF, súbelo luego con el mismo botón. Mientras falte el análisis de materiales o el listado de mano de obra, sale arriba el aviso amarillo **"Faltan documentos"**.
 
 ## Qué revisar después
@@ -47156,7 +46741,7 @@ Los documentos de Uxcar los sube **Uxcar desde su portal**. Nosotros no los subi
 - Antes de lanzar a fabricar un expediente de Uxcar, comprueba que tiene ventanas contadas, informe de materiales y pedidos de cristales y persianas.`,
   },
   {
-    para: "equipo", orden: 3, version: 9, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
+    para: "equipo", orden: 3, version: 11, titulo: "Guía de fábrica: de los documentos a la ventana cobrada",
     contenido: `## Resumen
 Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; etiquetas y hoja de corte son opcionales por ahora), empieza el trabajo de fábrica. La obra pasa por 8 pasos y cada uno lo hace alguien distinto.
 
@@ -47172,8 +46757,8 @@ Cuando la obra tiene subido el análisis de materiales (lo único obligatorio; e
 | 8. Facturar y cobrar | Oficina | Facturas y Entrada de dinero | Factura emitida y dinero cobrado |
 
 ## 1. Pedir el material
-Al subir los documentos de la obra (con el botón único), el CRM crea solo los **pedidos en espera** de lo que falta (perfiles, herraje…) y deja preparados los de **cristales** y **persianas** para confirmar. No se sube nada aparte en Pedidos.
-1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra y comprueba que el de cristales (y persianas si lleva) está confirmado y **no hay ninguno repetido**.
+Al subir los documentos de la obra (con el botón único), el CRM crea solo, **en espera**, los pedidos de **cristales** y **persianas**. Los de perfiles y herraje **de momento no se crean solos** (el stock se está poniendo al día): ese material se prepara desde Preparación de material. No se sube nada aparte en Pedidos.
+1. En **Pedidos**, el responsable revisa los pedidos en espera de la obra y comprueba que el de cristales (y persianas si lleva) está y **no hay ninguno repetido**.
 2. Los de la semana se juntan en un pedido por proveedor (se pide los miércoles o jueves).
 3. Al pedirlo, pon siempre **fecha del pedido** y **fecha aproximada de llegada**.
 4. Si se pide por otra vía (teléfono, web), márcalo como hecho por otra vía para que pase a Realizado.
@@ -47200,7 +46785,7 @@ La semana antes se eligen las obras a fabricar.
 2. En **Fábrica → Planning**, mira **"Planning — listas para fabricar"**: son las obras con todo el material.
 3. Elige las obras (tuyas y de Uxcar), cada una en su **taller**. Puedes cambiar el orden y las horas. Las horas salen del **listado de mano de obra** si se subió; si no, del recuento de ventanas. Las listas salen por color y se pueden ir marcando con tick.
 4. Si falta material para varias obras, usa **"Crear pedidos en espera con lo que falta"**.
-5. Confirma el planning.
+5. Confirma el planning. Si alguna obra entra sin etiquetas de la línea (el lote lo hace oficina cuando se le avisa), sale un aviso con las obras afectadas: puedes confirmar igualmente, pero pide a oficina que haga el lote antes de fabricar.
 6. En **Preparación de material** ves el material de los días (o de la semana) que elijas, todo junto, sin separar por obras. Arriba hay **cuadrados**: Todo · Perfiles y herraje · Cristales · Compactos · Auxiliares. Pincha uno y solo ves lo de ese puesto. Cada persona ve solo los puestos que el administrador le haya dado (en Administración → Usuarios → «Puestos de Preparación de material»; sin ninguno marcado ve todo):
    - **Perfiles**: una lista; la misma referencia y el mismo color se suman (8830 blanco = una línea). Colores distintos, líneas distintas. **Ojo con la barra de margen**: por cada 10 barras de una referencia en una obra hay que sacar **una más** por roturas y cortes. La lista ya la suma y lo dice («20 + 2 de margen»): sácala siempre del almacén y métela para dentro con el resto.
    - **Perfiles de Uxcar**: lista aparte. Salen del **stock de Uxcar** (el de su portal), no del nuestro, y dice si les llega o no. El **herraje y los accesorios** de las obras de Uxcar sí son nuestros y van en la lista de herraje.
@@ -47240,7 +46825,7 @@ Al subir las etiquetas, el CRM ya reserva los caballetes que necesita la obra.
 3. Si una ventana va mal colocada, se puede mover a otro caballete o quitar.
 4. Cuando están todas, en **Fábrica → En fabricación** pulsa **Fabricación terminada** en la obra.
 
-- [ ] Sin el **tipo plano** (listado de dibujos) no se puede terminar: es obligatorio porque va con el albarán de entrega.
+- [ ] Sin el **tipo plano** (carga de material) no se puede terminar: es obligatorio porque va con el albarán de entrega.
 
 ## 7. Salida y entrega
 La obra sale de tres formas: reparto, recogida en fábrica (Uxcar casi siempre) o instalación. La forma de salida se eligió al empezar a fabricar.
@@ -48461,12 +48046,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
   const leer = async (file) => {
     setError(""); setElegidos([]);
     try {
-      // Acepta el .json de la copia diaria por email y también el .json.gz que baja Firebase de sus copias de seguridad
-      let texto;
-      if (/\.gz$/i.test(file.name) || file.type === "application/gzip" || file.type === "application/x-gzip") {
-        texto = await new Response(file.stream().pipeThrough(new DecompressionStream("gzip"))).text();
-      } else texto = await file.text();
-      const datos = JSON.parse(texto);
+      const datos = JSON.parse(await file.text());
       if (!datos || typeof datos !== "object") throw new Error("formato");
       setCopia(datos); setNombreArchivo(file.name);
     } catch (e) { setError("Ese archivo no es una copia de seguridad del CRM (tiene que ser el .json que llega por email)."); }
@@ -48488,7 +48068,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
       <p className="text-xs text-slate-500 mb-3">Sube el archivo .json de la copia que llega cada día por email. Te enseña lo que había en esa copia y ya no existe ahora (por ejemplo, una obra que ha desaparecido) y lo puedes recuperar tal cual estaba. No toca nada de lo que hay ahora.</p>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Upload size={14} /> {copia ? "Cambiar archivo" : "Subir copia de seguridad (.json)"}</button>
-        <input ref={inputRef} type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         {copia && <span className="text-xs text-emerald-700 font-semibold">✓ {nombreArchivo}</span>}
       </div>
       {error && <p className="text-xs text-rose-600 font-semibold mb-2">⚠ {error}</p>}
@@ -48504,11 +48084,6 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
             <p className="text-sm text-slate-400">En esta copia no hay nada de {def.label.toLowerCase()} que falte ahora{q ? " con esa búsqueda" : ""}.</p>
           ) : (
             <>
-              <div className="flex flex-wrap items-center gap-3 mb-1.5 text-xs">
-                <span className="text-slate-500 font-semibold">{faltan.length} para recuperar · {elegidos.length} marcado{elegidos.length === 1 ? "" : "s"}</span>
-                <button type="button" onClick={() => setElegidos(faltan.map((x) => x.id))} className="text-[#2E8B57] font-bold hover:underline">Marcar todos ({faltan.length})</button>
-                <button type="button" onClick={() => setElegidos([])} className="text-slate-500 hover:underline">Quitar marcas</button>
-              </div>
               <div className="max-h-64 overflow-y-auto border border-slate-100 rounded-md divide-y divide-slate-100 mb-2">
                 {faltan.map((x) => (
                   <label key={x.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
@@ -49143,12 +48718,11 @@ const tabInicialFabrica = { actual: null };
 function calcListoParaFabricar(proyectos, pedidos) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-    if (p.planificableOk) return true; // el usuario ya contestó «sí, se puede planificar»
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
     const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-    const oficinaOk = misPedidos.every((pd) => pedidoLlegadoParaFabricar(pd) || uxDaPorRecibido(pd));
+    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
     const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
     const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
     return oficinaOk && fabricaOk && checklistOk;
@@ -49401,9 +48975,64 @@ const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-ZÁÉÍÓÚ ]*|MARR[OÓ]N|BRONCE|ROBLE[A-Z ]*|NOGAL|CREMA|MARFIL|PLATA))/i;
 // Devuelve { presupuesto, version, referencia, cliente, modelos:[{modelo, uds, ancho, alto, filas:[{ref, desc, color, lCorte, lFinal, ud, tot, enMetros}]}] }
 // paginas = [[trozos de texto de pdf.js…], …] (igual que el resto de lectores de PDF del CRM). refs = referencias que se buscan.
+// Hoja de corte por GRUPOS (cabecera «Número : 6.994 Versión: 1», tabla «Modelo Ancho Alto Uds», sin «Presupuesto:» ni «Pos:»).
+// En las filas de PERFILES pdf.js entrega «ángulo descripción Ud COLOR L.Corte+ToT+Referencia» pegados: «…BATIENTE 64 MM 1 BLANCO 10541808088S» = 1054 + 1 + 808088S.
+function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
+  const todo = paginas.map((it) => it.join("")).join("\n");
+  const cab = todo.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\.?\s*(\d+)/i);
+  const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
+  const version = cab ? cab[2] : "";
+  if (!presupuesto) return null;
+  const referencia = ((todo.match(/Refer[eé]nc[ií]a\s*:[ \t]*([^\n]*)/i) || [])[1] || "").trim();
+  const cliente = ((todo.match(/Cliente\s*:[ \t]*([^\n]+)/i) || [])[1] || "").trim();
+  const fab = ((todo.match(/(\d{1,2}\.\d{3})\s*Cliente\s*:/i) || [])[1] || "").trim(); // nº del recuadro del membrete (junto a «Cliente»)
+  const fechaDoc = ((todo.match(/\b(\d{2}\/\d{2}\/\d{4})\b/) || [])[1] || "").trim();
+  const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean);
+  const bloques = [];
+  let actual = null;
+  paginas.forEach((it) => {
+    const lineas = it.join("").split("\n");
+    lineas.forEach((linea, i) => {
+      if (/^\s*Modelo\s+Ancho\s+Alto\s+Uds\s*$/i.test(linea)) {
+        const dato = (lineas[i + 1] || "").match(/^\s*(.+?)\s+(\d{2,4})\s+(\d{2,4})\s+(\d+)\s*$/);
+        actual = { nombre: dato ? dato[1].trim().toUpperCase() : "GRUPO", ancho: dato ? parseInt(dato[2], 10) : null, alto: dato ? parseInt(dato[3], 10) : null, uds: dato ? parseInt(dato[4], 10) || 1 : 1, lineas: [] };
+        bloques.push(actual);
+        return;
+      }
+      if (actual) actual.lineas.push(linea);
+    });
+  });
+  const vistos = {};
+  const modelos = bloques.map((b) => {
+    const n = (vistos[b.nombre] = (vistos[b.nombre] || 0) + 1);
+    const filas = [];
+    b.lineas.forEach((linea) => {
+      for (const ref of lista) {
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)\\s(\\d+)\\s+(?:${AUX_COLOR_RE.source}\\s*)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
+        if (!m) continue;
+        const ud = parseInt(m[2], 10);
+        const color = m[3] ? m[3].toUpperCase() : "";
+        const digitos = m[4];
+        const tot = String(ud * b.uds), totUd = String(ud);
+        const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
+        const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
+        const desc = m[1].replace(AUX_COLOR_RE, "").trim();
+        filas.push({ ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
+        return;
+      }
+    });
+    const texto = b.lineas.join("\n");
+    const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
+    return { modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas };
+  });
+  return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
+}
+
 function leerAuxiliaresHojaCorte(paginas, refs) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   if (!/HOJA DE CORTE/i.test(todo)) return null;
+  // Hoja de corte por GRUPOS (sin «Presupuesto:» ni «Pos:»): tiene su propio lector
+  if (!/Presupuesto\s*:\s*[\d.]+/i.test(todo) && /Modelo\s+Ancho\s+Alto\s+Uds/i.test(todo)) return leerAuxiliaresHojaCorteGrupos(paginas, refs);
   const cab = todo.match(/Presupuesto\s*:\s*([\d.]+)\s*(?:Versi[oó]n\s*:\s*(\d+))?/i);
   const presupuesto = cab ? cab[1].replace(/\D/g, "") : "";
   const version = cab && cab[2] ? cab[2] : "";
@@ -49466,6 +49095,9 @@ const AUX_CFG_DEFECTO = {
     { id: "r7", ref: "2304", nombre: "Esquinero 90", pasos: "", activo: false },
     { id: "r8", ref: "9022010", nombre: "Conector marcos", pasos: "", activo: false },
     { id: "r9", ref: "3178", nombre: "Junta ensanche marco", pasos: "", activo: false },
+    { id: "r10", ref: "808088S", nombre: "Inversor (batiente 64)", pasos: "", activo: true },
+    { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
+    { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40,
@@ -49551,6 +49183,7 @@ function auxExpandir(hojas, cfg, ventanas) {
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: f.ref, nombre: rc.nombre || f.desc || f.ref,
             lCorte: f.lCorte, color: f.color || "", k, n,
             ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
+            referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
         }
       }));
@@ -49582,16 +49215,18 @@ function imprimirAux(lista, cfg) {
     .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; align-items: center; }
     .r1 { width: 100%; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
     .med { width: 100%; font-size: 7.5mm; font-weight: bold; line-height: 1.05; white-space: nowrap; }
-    .r2 { width: 100%; font-size: 3.2mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
-    .sitio { width: 100%; font-size: 4mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
+    .r2 { width: 100%; font-size: 2.9mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
+    .sitio { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 2mm; font-size: 5.2mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
+    .sitio .lugar { flex: 0 0 auto; }
+    .sitio .pasos { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 3mm; font-weight: normal; }
     .bar { margin-top: 0.6mm; line-height: 0; }
     .dig { font-size: 3mm; letter-spacing: 0.5mm; line-height: 1.1; margin-top: 0.3mm; }
   </style></head><body><div class="et">
     <div class="r1"><span>${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span><span>${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
     <div class="med">${esc(auxMed(p.lCorte))} mm</div>
-    <div class="r2">${esc([p.grupo, p.cliente].filter(Boolean).join(" · ") || p.unidad)}</div>
-    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}`)}</div>
-    <div class="sitio">${esc(`${p.carroNombre || ""} · hueco ${p.hueco ?? ""}`)}${p.pasosTxt ? esc(` · ${p.pasosTxt}`) : ""}</div>
+    <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
+    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}${p.fab ? ` · Fab ${p.fab}` : ""}`)}</div>
+    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POSICIÓN ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 8, 0.5, ancho - 6)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
@@ -49741,7 +49376,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}`);
