@@ -18568,6 +18568,34 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // Búsqueda tolerante: ignora "EXP", espacios, guiones y puntos ("EXP 852", "exp-852" y "852" son lo mismo)
   const limpiaExp = (t) => String(t || "").toLowerCase().replace(/exp(ediente)?/g, "").replace(/[^a-z0-9]/g, "");
   const coincideExp = (exp, qq) => { const b = limpiaExp(qq); return !!b && limpiaExp(exp).includes(b); };
+  // El buscador del mapa también encuentra por nombre de cliente, nº de presupuesto, referencia, habitación o color
+  const sinAcentos = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const coincideItem = (x, qq) => {
+    if (coincideExp(x.expediente, qq)) return true;
+    const t = sinAcentos(qq).trim();
+    if (!t) return false;
+    if (sinAcentos(`${x.cliente || ""} ${x.ref || ""} ${x.habitacion || ""} ${x.color || ""} ${x.descripcion || ""}`).includes(t)) return true;
+    const d = limpiaExp(qq);
+    return d.length >= 3 && [x.presupuesto, x.refObra, x.pedido].some((v) => v && limpiaExp(v).includes(d));
+  };
+  const nombreCorto = (c) => String(c || "").split("·")[0].trim();
+  // Qué hay en un carro, expediente a expediente: cliente, presupuesto, cuántas, referencias con medida y colores
+  const detalleCarro = (num) => {
+    const m = new Map();
+    activos.filter((x) => x.estante && x.estante.carro === num).forEach((x) => {
+      const k = soloDigitos(x.expediente) || String(x.expediente || "?");
+      if (!m.has(k)) m.set(k, { exp: k, cliente: "", ppto: "", n: 0, refs: new Map(), colores: new Set() });
+      const g = m.get(k);
+      g.n += 1;
+      if (!g.cliente && x.cliente) g.cliente = nombreCorto(x.cliente);
+      if (!g.ppto && (x.presupuesto || x.refObra)) g.ppto = String(x.presupuesto || x.refObra);
+      const medida = `${largoPersiana(x)}${x.alto ? `×${x.alto}` : ""}`;
+      const rf = `${x.ref || x.habitacion || "sin ref."} ${medida}`.trim();
+      g.refs.set(rf, (g.refs.get(rf) || 0) + 1);
+      if (x.color) g.colores.add(String(x.color));
+    });
+    return [...m.values()];
+  };
 
   const subir = async (file) => {
     setLeyendo(true); setAviso("");
@@ -19515,15 +19543,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> VACÍO (sin persianas)</span>
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <button onClick={() => { const ll = ordenados.filter((c) => activos.some((x) => x.estante && x.estante.carro === c.numero)); if (!ll.length) { alert("No hay carros con " + cosa + " dentro."); return; } imprimirCarros(ll); }} className="flex items-center gap-1 font-semibold text-slate-700 border border-slate-400 px-2.5 py-1 rounded-lg hover:bg-slate-50">🖨 Imprimir todos los carros</button>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, nombre, presupuesto…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[250px]" />
           </div>
           {nq && (() => {
-            const coinciden = items.filter((x) => coincideExp(x.expediente, nq));
+            const coinciden = items.filter((x) => coincideItem(x, nq));
             const enCarro = coinciden.filter((x) => x.estante && !x.entregada).length;
             const sin = coinciden.filter((x) => !x.estante && !x.enPuesto && !x.entregada).length;
             const puesto = coinciden.filter((x) => x.enPuesto && !x.entregada).length;
             const fuera = coinciden.filter((x) => x.entregada).length;
-            if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
+            if (!coinciden.length) return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">No hay ninguna {esMosq ? "mosquitera" : "persiana"} con ese expediente, nombre o presupuesto en este almacén. Mira si se escribió distinto en el packing list (pestaña «{Cosa} (una a una)») o si está en otro almacén.</div>;
             return <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">{coinciden.length} encontradas: {enCarro} en carros (resaltados){sin ? ` · ${sin} sin sitio` : ""}{puesto ? ` · ${puesto} en puesto` : ""}{fuera ? ` · ${fuera} ya salieron` : ""}.{new Set(coinciden.map((x) => soloDigitos(x.expediente))).size === 1 && (
               <button onClick={() => { const e = soloDigitos(coinciden[0].expediente); if (!window.confirm(`¿Borrar las ${coinciden.length} ${cosa} del EXP ${e} de este almacén? Quedan fuera del CRM y podrás volver a meterlas. No se puede deshacer.`)) return; const ids = new Set(coinciden.map((x) => x.id)); guardarItems(items.filter((x) => !ids.has(x.id))); setQ(""); setAviso(`EXP ${e}: ${ids.size} ${cosa} borradas. Ya puedes volver a meterlas.`); }} className="ml-3 px-2 py-0.5 rounded bg-rose-600 text-white font-semibold">Borrar las {coinciden.length} del EXP {soloDigitos(coinciden[0].expediente)}</button>
             )}</div>;
@@ -19535,11 +19563,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 {fila.map((c) => {
                   const t = TIPOS_CARRO_PERSIANA[c.tipo] || TIPOS_CARRO_PERSIANA.gris;
                   const r = resumenCarro(c);
-                  const resaltado = nq && r.exps.some((e) => coincideExp(e, nq));
+                  const resaltado = nq && activos.some((x) => x.estante && x.estante.carro === c.numero && coincideItem(x, nq));
+                  const det = detalleCarro(c.numero);
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
-                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
+                      className={`${det.length ? "w-[250px]" : "w-[150px]"} shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -19548,8 +19577,18 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, r.pct * 100)}%`, background: r.pct >= 0.95 ? "#E11D48" : "#86D325" }} />
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">{r.n} {cosa} · {Math.round(r.pct * 100)} %</div>
-                      <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
-                        {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
+                      <div className="mt-0.5 space-y-1">
+                        {det.length ? det.slice(0, 4).map((g) => {
+                          const refs = [...g.refs.entries()];
+                          return (
+                            <div key={g.exp} className="text-[11px] leading-tight border-t border-slate-100 pt-0.5" title={`EXP ${g.exp}${g.cliente ? ` · ${g.cliente}` : ""}${g.ppto ? ` · Ppto ${g.ppto}` : ""} · ${g.n} ${cosa}\n${refs.map(([k, v]) => `${v} × ${k}`).join("\n")}${g.colores.size ? `\nColor: ${[...g.colores].join(", ")}` : ""}`}>
+                              <div className="font-bold text-slate-800 truncate">EXP {g.exp}{g.cliente ? ` · ${g.cliente}` : ""}</div>
+                              <div className="text-slate-600 truncate">{g.ppto ? `Ppto ${g.ppto} · ` : ""}<b>{g.n}</b> {g.n === 1 ? cosa.replace(/s$/, "") : cosa}</div>
+                              <div className="text-slate-500 truncate">{refs.slice(0, 2).map(([k, v]) => (v > 1 ? `${v}× ` : "") + k).join(" · ")}{refs.length > 2 ? ` +${refs.length - 2}` : ""}{g.colores.size ? ` · ${[...g.colores].slice(0, 2).join("/")}` : ""}</div>
+                            </div>
+                          );
+                        }) : <span className="text-[11px] text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
+                        {det.length > 4 && <div className="text-[10px] font-semibold text-slate-500">+{det.length - 4} expedientes más</div>}
                       </div>
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
                     </button>
