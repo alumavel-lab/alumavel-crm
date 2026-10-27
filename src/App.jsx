@@ -3919,6 +3919,7 @@ export default function App() {
   // Recordatorio de recuento de stock: a los 45 días de activarlo (y luego cada 45 días) sale un aviso fijo hasta que se marque como hecho
   const [recuentoStock, setRecuentoStock] = useState(undefined);
   useEffect(() => onValue(ref(fbDb, "recordatorios/recuentoStock"), (snap) => setRecuentoStock(snap.val() || null), () => setRecuentoStock(null)), []);
+  const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
@@ -5355,7 +5356,7 @@ export default function App() {
               onClick={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }}
               className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-orange-100 text-orange-800 hover:bg-orange-200"
             >
-              ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →
+              ⚠ {disc.length} pedido{disc.length === 1 ? "" : "s"} con discrepancia entre oficina y fábrica ({disc.reduce((t, x) => t + x.items.length, 0)} líneas). Toca para verlos →{isAdmin && (() => { const hoyD = new Date().toISOString().slice(0, 10); const v = Object.values(vistasDiscApp || {}).filter((x) => x && String(x.fecha || "").slice(0, 10) === hoyD).sort((p, q) => String(q.fecha).localeCompare(String(p.fecha))); return v.length ? <span className="ml-2 font-normal text-orange-700">· {v.map((x) => `${x.nombre} lo abrió a las ${new Date(x.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`).join(" · ")}</span> : null; })()}
             </button>
           );
         })()}
@@ -5368,7 +5369,7 @@ export default function App() {
           if (!resp && !veFabrica && !soloUx) return null;
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
-          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
@@ -8364,7 +8365,7 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
         const telProv = String((prov && prov.movil) || "").replace(/[^\d+]/g, "");
         // Los enlaces se construyen al confirmar, ya con la fecha de llegada elegida
         const waProv = (fecha) => telProv ? `https://wa.me/${telProv.startsWith("+") ? telProv.slice(1) : telProv.startsWith("34") ? telProv : "34" + telProv}?text=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, confírmennos que han recibido el pedido.`)}` : "";
-        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
+        const mailProv = (fecha) => prov && prov.email ? `mailto:${prov.email}?${ccMail()}subject=${encodeURIComponent(`Pedido ${p.numero} — ALUMAVEL — Obra ${proyecto.nombre} (#${proyecto.numero})`)}&body=${encodeURIComponent(`Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${textoPedidoProveedor(p, proyecto, materiales, fecha)}\n\nPor favor, respondan confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`)}` : "";
         const empezar = (metodo) => {
           setConfirmando({ id: p.id, metodo, fecha: p.fechaEntregaPrevista || fechaEntregaPorProveedor(prov, p, materiales) });
         };
@@ -11412,7 +11413,7 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
           <div className="flex flex-wrap gap-2">
             <button disabled={!elegidos.length} onClick={imprimir} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50"><Printer size={14} /> Imprimir / PDF</button>
             {tel && <a href={`https://wa.me/${tel.length === 9 ? "34" + tel : tel}?text=${encodeURIComponent(texto())}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><MessageCircle size={14} /> WhatsApp</a>}
-            {prov && prov.email && <a href={`mailto:${prov.email}?subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
+            {prov && prov.email && <a href={`mailto:${prov.email}?${ccMail()}subject=${encodeURIComponent(`Pedido ${numeroGrupo} — ECOWIN PVC`)}&body=${encodeURIComponent(texto())}`} className="flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 hover:bg-slate-50"><Mail size={14} /> Correo</a>}
             <label className="ml-auto flex items-center gap-1.5 text-sm text-slate-600">Llegada prevista <span className="text-rose-600">*</span>
               <input type="date" value={llegada} min={new Date().toISOString().slice(0, 10)} onChange={(e) => setLlegada(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm" />
             </label>
@@ -12945,7 +12946,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
     const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
-    return `mailto:${proveedor.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${proveedor.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const falta_fecha = () => {
@@ -19725,6 +19726,7 @@ function PlanningAluminio({ proyectos = [], listoParaFabricar = [], modo = "alum
 //  · «oficina»: oficina lo tiene como recibido pero fábrica no lo ha confirmado
 // Correo de quien está usando el CRM: va en copia (cc) de todo correo que se manda a un proveedor o cliente.
 let emailUsuarioActual = "";
+function ccMail() { return emailUsuarioActual ? `cc=${encodeURIComponent(emailUsuarioActual)}&` : ""; } // copia a quien envía, en los correos que se abren con mailto
 // Pedidos de Uxcar (id del portal) que Uxcar ya ha dado por recibidos con su albarán. En esos pedidos NO existe «oficina»: confirman Uxcar y fábrica.
 let uxRecibidoIds = new Set();
 const uxDaPorRecibido = (p) => !!p && !!p.uxcarPedidoId && uxRecibidoIds.has(p.uxcarPedidoId);
@@ -27106,7 +27108,7 @@ function IncidenciaDetail({ incidencia, proyecto, cliente, pedidos, proveedores,
     if (!cliente?.email) return null;
     const asunto = `Incidencia #${incidencia.numero} — Ecowin PVC`;
     const cuerpo = `Hola ${cliente.nombre},\n\nLe escribimos respecto a la incidencia registrada${proyecto ? ` sobre el proyecto #${proyecto.numero} — ${proyecto.nombre}` : ""}.\n\n${incidencia.descripcion || ""}\n\nQuedamos a su disposición para cualquier duda.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${cliente.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${cliente.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   const enlaceWhatsappCliente = () => {
@@ -35238,7 +35240,7 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
     if (!presupuesto.email) return null;
     const asunto = `Presupuesto ${presupuesto.numero} — Ecowin PVC`;
     const cuerpo = `Buenos días,\n\nLe adjuntamos el presupuesto ${presupuesto.numero}${presupuesto.direccionEnvio ? ` para "${presupuesto.direccionEnvio}"` : ""}.\n\nImporte: ${importePresupuestoTexto(presupuesto)}.\n\nPor favor, respondan a este mensaje confirmándonos que han recibido el correo.\n\nUn saludo,\nEcowin PVC`;
-    return `mailto:${presupuesto.email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    return `mailto:${presupuesto.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
   };
 
   // Genera el PDF al momento y lo manda por email directamente desde el CRM
@@ -37809,7 +37811,7 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar, emailProveedor = "", movil
           <div className="text-sm font-semibold text-orange-800">¿Falta o ha venido roto? Reclámalo al proveedor</div>
           <p className="text-xs text-orange-700">Se manda lo que falta de la comparación y tu comentario.</p>
           <div className="flex flex-wrap gap-2">
-            {emailProveedor && <a onClick={() => marcarReclamado()} href={`mailto:${emailProveedor}?subject=${encodeURIComponent(`Reclamación pedido ${pedido.numero || ""} — Uxcar`)}&body=${encodeURIComponent(textoReclamo())}`} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-orange-600 text-white">Abrir en mi correo</a>}
+            {emailProveedor && <a onClick={() => marcarReclamado()} href={`mailto:${emailProveedor}?${ccMail()}subject=${encodeURIComponent(`Reclamación pedido ${pedido.numero || ""} — Uxcar`)}&body=${encodeURIComponent(textoReclamo())}`} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-orange-600 text-white">Abrir en mi correo</a>}
             {movilProveedor && <a target="_blank" rel="noreferrer" onClick={() => marcarReclamado()} href={`https://wa.me/${String(movilProveedor).replace(/\D/g, "")}?text=${encodeURIComponent(textoReclamo())}`} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-emerald-600 text-white">Reclamar por WhatsApp</a>}
             <button type="button" onClick={copiarReclamo} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-orange-300 text-orange-800">Copiar texto</button>
           </div>
@@ -45551,7 +45553,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
       if (sinListado.length) texto += `\nOJO: estas obras no tienen listado de materiales en el CRM: ${sinListado.join(", ")}\n`;
       texto += `\nCada día a las 7:00 os llegará otro correo con lo que hay que preparar para el siguiente día de trabajo.\n— CRM Ecowin PVC`;
       const r = await fetch("/.netlify/functions/enviar-email", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ destinatario: cfg.emailFabrica, asunto: `Planning de fabricación — semana del ${fmtDate(desde)}`, cuerpo: texto, nombreRemitente: "Planning Ecowin PVC" }) });
+        body: JSON.stringify({ destinatario: cfg.emailFabrica, asunto: `Planning de fabricación — semana del ${fmtDate(desde)}`, cuerpo: texto, cc: emailUsuarioActual, nombreRemitente: "Planning Ecowin PVC" }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || d.error) alert(`Planning guardado (el aviso diario ya lo usará), pero el correo de la semana no se pudo enviar: ${d.error || r.status}. Cuando esté arreglado el correo, vuelve a pulsar el botón.`);
       else alert(`Planning confirmado y enviado a ${cfg.emailFabrica}.`);
@@ -45917,7 +45919,7 @@ function UxFichaPedido({ pedido, proveedor, perfil, authUser, onVolver, onMarcar
         <div className="text-sm font-semibold text-slate-800">Mandar al proveedor</div>
         <div className="flex flex-wrap gap-2">
           {email ? (
-            <a href={`mailto:${email}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={() => { onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
+            <a href={`mailto:${email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={() => { onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
               <Mail size={14} /> Abrir en mi correo
             </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene correo puesto.</span>}
