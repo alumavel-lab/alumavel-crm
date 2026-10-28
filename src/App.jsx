@@ -22368,10 +22368,12 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
     <div className="p-4 sm:p-8 max-w-5xl">
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
+        {tabBtn("cargas", "Cargas de hoy", repartos.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length)}
         {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
       </div>
+      {tab === "cargas" && <div className="p-4"><CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} /></div>}
       {tab === "repartos" && (
         <div className="space-y-2">
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
@@ -50966,6 +50968,173 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   );
 }
 
+
+// Control del día: panel PRIVADO del jefe para llevar a mano el seguimiento de las obras que se fabrican hoy.
+// No toca nada del CRM (ni estados, ni lecturas, ni pedidos): solo guarda colores por día en «controlDia».
+// Se toca una obra, una vivienda o una ventana para cambiarle el color: gris (pendiente) → verde (hecha) → naranja (problema) → gris.
+function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const marcasTodas = useObjetoFb("controlDia");
+  const marcas = (marcasTodas && marcasTodas[hoy]) || {};
+  const [todas, setTodas] = useState(false);
+  const [cerradas, setCerradas] = useState({});
+  const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
+  const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+  const enProceso = (d) => {
+    const pr = d.tipo === "p" ? toArray(proyectos).find((p) => p.id === d.id) : toArray(proyectos).find((p) => p.id === d.proyectoId);
+    return !!pr && pr.estadoTrabajo === "En proceso";
+  };
+  const obras = new Map();
+  indice.forEach((hh) => {
+    if (!hh.ventana.modelo || String(hh.pieza.c) !== baseDe(hh.ventana)) return;
+    const d = hh.dueno;
+    if (!todas && !enProceso(d)) return;
+    if (!obras.has(d.key)) obras.set(d.key, { d, viv: new Map() });
+    const o = obras.get(d.key);
+    const g = hh.ventana.grupo || "Sin vivienda";
+    if (!o.viv.has(g)) o.viv.set(g, []);
+    o.viv.get(g).push({ id: limpia(hh.ventana.id || hh.ventana.pos || baseDe(hh.ventana)), pos: hh.ventana.pos || "", fab: hh.lote.fab, tip: hh.ventana.tipo || hh.ventana.pos, medida: hh.ventana.medida || "", color: hh.ventana.color || "" });
+  });
+  const lista = [...obras.values()].sort((a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true }));
+  const valor = (dk, id) => (marcas[limpia(dk)] || {})[id] || 0;
+  const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${hoy}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
+  const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
+  const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
+  const tocaVentana = (o, v) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act); };
+  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); };
+  const nVerdes = lista.filter((o) => colorDe([...o.viv.values()].flat().map((v) => valor(o.d.key, v.id))) === "verde").length;
+  if (tv) return (
+    <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
+      <div className="flex items-center gap-4 mb-3">
+        <b className="text-3xl">Carga de material · {lista.length} obras · {nVerdes} terminadas</b>
+        <span className="text-sm text-slate-300">Toca una ventana: gris → verde → naranja (problema) → gris. Toca el nombre de una obra o vivienda para ponerla toda en verde.</span>
+        <button type="button" onClick={() => setTv(false)} className="ml-auto px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
+      </div>
+      <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(26rem, 1fr))" }}>
+        {lista.map((o) => {
+          const vivs = [...o.viv.entries()]; const todosIds = vivs.flatMap(([, vs]) => vs.map((v) => v.id)); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
+          return (
+            <div key={o.d.key} className={`rounded-xl border-4 p-3 ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+              <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`w-full text-left rounded-lg px-3 py-2 text-2xl font-extrabold ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : "bg-slate-700"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="text-base font-semibold">· {vals.filter((v) => v === 1).length}/{vals.length}</span></button>
+              {vivs.map(([g, vs]) => (
+                <div key={g} className="mt-2">
+                  <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className="text-lg font-bold text-sky-300 mb-1">{g}</button>
+                  <div className="flex flex-wrap gap-2">
+                    {vs.map((v) => { const val = valor(o.d.key, v.id); return (
+                      <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 text-center min-w-[7rem] ${val === 1 ? "bg-emerald-600 border-emerald-300" : val === 2 ? "bg-orange-500 border-orange-200" : "bg-white text-slate-900 border-slate-300"}`}>
+                        <div className="flex justify-center"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} /></div>
+                        <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
+                        {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
+                      </button>
+                    ); })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3 mb-2">
+        <b className="text-sm text-slate-800">Control del día · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
+        <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
+        <label className="text-xs text-slate-600 flex items-center gap-1"><input type="checkbox" checked={todas} onChange={(e) => setTodas(e.target.checked)} /> Ver todas las obras con hoja de corte (no solo las «En proceso»)</label>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
+      {lista.length === 0 && <p className="text-sm text-slate-500">No hay ninguna obra «En proceso» con hoja de corte cargada. Marca la casilla de arriba para ver todas, o empieza a fabricar la obra desde Fábrica → Planning.</p>}
+      {lista.map((o) => {
+        const vivs = [...o.viv.entries()];
+        const todosIds = vivs.flatMap(([, vs]) => vs.map((v) => v.id));
+        const vals = todosIds.map((i) => valor(o.d.key, i));
+        const col = colorDe(vals);
+        const abierta = !cerradas[o.d.key];
+        return (
+          <div key={o.d.key} className={`rounded-lg border-2 mb-3 ${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
+            <div className="flex items-center gap-2 p-2">
+              <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
+              <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
+            </div>
+            {abierta && vivs.map(([g, vs]) => {
+              const gv = vs.map((v) => valor(o.d.key, v.id)); const gc = colorDe(gv);
+              return (
+                <div key={g} className="px-2 pb-2 pl-5">
+                  <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`px-3 py-1.5 mb-1 rounded-md border-2 text-sm font-semibold ${estilo[gc]}`}>{gc === "verde" ? "✓ " : ""}{g} <span className="font-normal text-xs">· {gv.filter((v) => v === 1).length}/{gv.length}</span></button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {vs.map((v) => { const val = valor(o.d.key, v.id); return (
+                      <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</button>
+                    ); })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Cargas de hoy: todos los albaranes de entrega/recogida del día abiertos en una sola pantalla; se toca cada cosa al cargarla y se pone en verde (se comparte entre pantallas)
+function CargasDelDia({ proyectos, clientes, caballetes, quien }) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const marcas = useObjetoFb("cargasHoy");
+  const [verOtros, setVerOtros] = useState(false);
+  const esCarga = (p) => (p.estadoLogistica === "Reparto (camión)" || esRecogidaFabrica(p)) && !["Entregado", "Cancelado"].includes(p.estadoTrabajo);
+  const todas = toArray(proyectos).filter((p) => esCarga(p) && p.fechaReparto);
+  const deHoy = todas.filter((p) => p.fechaReparto === hoy);
+  const otras = todas.filter((p) => p.fechaReparto !== hoy).sort((a, b) => a.fechaReparto.localeCompare(b.fechaReparto));
+  const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_").slice(0, 80);
+  const items = (p) => {
+    const cabs = toArray(caballetes).filter((c) => c.obra && c.obra.proyectoId === p.id && c.estado !== "libre").map((c) => ({ k: "cab_" + limpia(c.numero), t: `Caballete ${c.numero}${c.ubicacion ? ` (${c.ubicacion})` : ""}` }));
+    const a = p.albaranEntrega || {};
+    const lineas = String(a.contenido || [p.nombre, p.especificaciones].filter(Boolean).join("\n")).split(/\n+/).map((x) => x.trim()).filter(Boolean).map((t, i) => ({ k: "l" + i + "_" + limpia(t).slice(0, 30), t }));
+    return [...cabs, ...lineas];
+  };
+  const toca = async (p, it, hecho) => { try { await fbSet(ref(fbDb, `cargasHoy/${hoy}/${p.id}/${it.k}`), hecho ? null : { por: quien || "", ts: Date.now() }); } catch (e) { /* nada */ } };
+  const tarjeta = (p, fecha) => {
+    const its = items(p);
+    const m = ((marcas || {})[fecha] || {})[p.id] || {};
+    const n = its.filter((it) => m[it.k]).length;
+    const completa = its.length > 0 && n === its.length;
+    const c = toArray(clientes).find((x) => x.id === p.clienteId);
+    const dir = [p.ubicacion || (c && c.direccion) || "", (p.provinciaReparto === "Otra ciudad..." ? p.ciudadRepartoManual : p.provinciaReparto) || (c && c.provincia) || ""].filter(Boolean).join(", ");
+    const doc = p.documentoEntrega;
+    return (
+      <div key={p.id} className={`rounded-lg border-2 p-3 mb-3 ${completa ? "border-emerald-500 bg-emerald-50" : "border-slate-300 bg-white"}`}>
+        <div className="flex flex-wrap items-baseline gap-2">
+          <b className="text-lg">#{p.numero} · {p.nombre}</b>
+          <span className="text-sm text-slate-600">{c ? c.nombre : ""}</span>
+          <span className={`ml-auto text-sm font-extrabold ${completa ? "text-emerald-700" : "text-amber-700"}`}>{completa ? "✓ CARGADO" : `${n} de ${its.length}`}</span>
+        </div>
+        <div className="text-xs text-slate-500 mb-2">{esRecogidaFabrica(p) ? "Recogida en fábrica" : "Reparto en camión"}{dir ? ` · ${dir}` : ""}{p.albaranEntrega && p.albaranEntrega.chofer ? ` · ${p.albaranEntrega.chofer}` : ""}{doc && doc.url ? <> · <a href={doc.url} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57]">tipo plano</a></> : null}</div>
+        {its.length === 0 ? <div className="text-sm text-slate-500">Este albarán no tiene contenido ni caballetes: ábrelo en Albaranes y rellena «Material que se entrega».</div> : (
+          <div className="flex flex-wrap gap-2">
+            {its.map((it) => { const hecho = !!m[it.k]; return (
+              <button key={it.k} type="button" onClick={() => toca(p, it, hecho)} className={`text-left px-3 py-2.5 rounded-md border-2 text-sm font-semibold min-w-[8rem] ${hecho ? "bg-emerald-600 border-emerald-800 text-white" : "bg-white border-slate-300 text-slate-800 hover:bg-slate-50"}`}>{hecho ? "✓ " : ""}{it.t}</button>
+            ); })}
+          </div>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div>
+      <div className="text-sm font-bold text-slate-800 mb-2">Cargas de hoy ({deHoy.length}) · toca cada cosa al cargarla</div>
+      {deHoy.length === 0 ? <p className="text-sm text-slate-500 mb-3">Ningún albarán con fecha de reparto o recogida hoy. Revisa la fecha en el proyecto.</p> : deHoy.map((p) => tarjeta(p, hoy))}
+      {otras.length > 0 && (
+        <div className="mt-2">
+          <button type="button" onClick={() => setVerOtros((v) => !v)} className="text-xs font-semibold text-slate-600 underline">{verOtros ? "Ocultar" : "Ver"} otras fechas pendientes ({otras.length})</button>
+          {verOtros && <div className="mt-2">{otras.map((p) => <div key={p.id}><div className="text-xs font-bold text-slate-500 mb-1">{fmtDate(p.fechaReparto)}{p.fechaReparto < hoy ? " · ATRASADA" : ""}</div>{tarjeta(p, p.fechaReparto)}</div>)}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -50973,6 +51142,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = soloAlmacen ? [
+    { id: "cargas", t: "Cargas de hoy", aviso: "" },
     { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "" },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
@@ -50981,6 +51151,8 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
     { id: "auxiliares", t: "Auxiliares", aviso: "" },
+    { id: "controlDia", t: "Control del día", aviso: "" },
+    { id: "cargas", t: "Cargas de hoy", aviso: "" },
     ...(verMas ? [
       { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
       { id: "estanterias", t: "Estanterías e informes", aviso: "" },
@@ -51006,6 +51178,8 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
+      {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
