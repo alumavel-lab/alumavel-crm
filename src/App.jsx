@@ -43951,6 +43951,9 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
   const [ocupado, setOcupado] = useState("");
   const [ver, setVer] = useState(null); // ventana abierta para ver su ficha e historial
   const escaneos = useEscaneosLinea();
+  // Ventanas «cogidas»: al tocar una ventana lista (verde) se marca como cogida; la vivienda se manda cuando están todas
+  const [cogidas, setCogidas] = useState(() => { try { return new Set(JSON.parse(sessionStorage.getItem("alumavel_cogidas_linea") || "[]")); } catch (e) { return new Set(); } });
+  const toggleCogida = (b) => setCogidas((prev) => { const n = new Set(prev); if (n.has(b)) n.delete(b); else n.add(b); try { sessionStorage.setItem("alumavel_cogidas_linea", JSON.stringify([...n])); } catch (e) { /* nada */ } return n; });
   const hojasOv = useObjetoFb("hojasLinea");
   const pilOv = useObjetoFb("pilastraLinea");
   const solOv = useObjetoFb("solapeLinea");
@@ -43995,7 +43998,7 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
   const cambiarAuto = (v) => { setAuto(v); try { localStorage.setItem("alumavel_control_auto", v ? "si" : "no"); } catch (e) { /* nada */ } };
   useEffect(() => {
     if (!auto) return;
-    lista.filter((g) => g.completa && g.nCoger > 0 && !enProceso.current.has(g.k)).forEach(async (g) => {
+    lista.filter((g) => g.completa && g.nCoger > 0 && !enProceso.current.has(g.k) && g.ventanas.every((x, i) => g.st[i] !== "coger" || cogidas.has(baseDe(x.h.ventana)))).forEach(async (g) => {
       enProceso.current.add(g.k);
       const res = []; let fallo = false;
       try {
@@ -44009,7 +44012,7 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
       if (res.length) { try { await fbSet(ref(fbDb, `mensajesLinea/${Date.now()}_${Math.random().toString(36).slice(2, 6)}`), { ts: Date.now(), texto: `✅ VIVIENDA COMPLETA ${g.grupo || ""}${g.cliente ? " · " + g.cliente : ""}: ${res.join(", ")} ${fallo ? "movidas a la Línea (alguna no cabía: revisa)" : "enviadas solas a la Línea · listas para acristalar"}` }); } catch (e) { /* nada */ } }
       setTimeout(() => enProceso.current.delete(g.k), fallo ? 60000 : 5000);
     });
-  }, [lista, auto]); // eslint-disable-line
+  }, [lista, auto, cogidas]); // eslint-disable-line
   const mandarUna = async (x) => {
     setOcupado(baseDe(x.h.ventana));
     try { const r = await moverVentanaControl({ h: x.h, zonaId: "sinPersiana", zonas, ubic, por: quien || "Control de línea" }); setMsg(r.texto); } catch (e) { setMsg("Error: " + ((e && e.message) || e)); }
@@ -44025,14 +44028,17 @@ function MandarViviendasLinea({ ubic, indice, sinPersOv, quien }) {
         <div key={g.k} className={`rounded-md border p-2 mb-2 ${g.completa ? "border-emerald-400 bg-emerald-50" : "border-slate-200 bg-white"}`}>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700 mb-1">
             <b className="text-sm">{g.grupo || "Vivienda"}</b><span>{g.cliente}{g.obra ? ` · ${g.obra}` : ""}</span>
+            {g.nCoger > 0 && <span className="font-bold text-emerald-800">cogidas {g.ventanas.filter((x, i) => g.st[i] === "coger" && cogidas.has(baseDe(x.h.ventana))).length} de {g.nCoger}</span>}
             <span className={`font-bold ${g.completa ? "text-emerald-700" : "text-amber-700"}`}>{g.completa ? "COMPLETA" : `faltan ${g.st.filter((e) => e === "falta" || e === "inc").length} de ${g.ventanas.length}`}</span>
             {g.nCoger > 0 && <button type="button" disabled={!!ocupado} onClick={() => mandar(g)} className="ml-auto px-3 py-1 rounded bg-sky-600 text-white font-semibold disabled:opacity-40">{ocupado === g.k ? "Moviendo…" : `Mandar ${g.nCoger} a la Línea`}</button>}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {g.ventanas.map((x, i) => { const e = g.st[i]; const u = x.u; return (
-              <span key={x.h.ventana.id} onClick={() => setVer(x.h)} title="Pincha para ver dónde está y todos sus pasos" className={`inline-flex items-center gap-1 border rounded px-2 py-1 text-xs cursor-pointer hover:ring-2 hover:ring-sky-400 ${chip[e]}`}>
+              <span key={x.h.ventana.id} onClick={() => (e === "coger" ? toggleCogida(baseDe(x.h.ventana)) : setVer(x.h))} title={e === "coger" ? "Toca para marcarla como cogida (otra vez para quitarla)" : "Pincha para ver dónde está y todos sus pasos"} className={`inline-flex items-center gap-1 border rounded px-2 py-1 text-xs cursor-pointer hover:ring-2 hover:ring-sky-400 ${e === "coger" && cogidas.has(baseDe(x.h.ventana)) ? "bg-emerald-600 border-emerald-800 text-white" : chip[e]}`}>
                 <DibujoCargaVentana fab={x.h.lote.fab} tip={x.h.ventana.tipo || x.h.ventana.pos} alto={30} />
                 <b>{x.h.ventana.pos}</b>
+                {e === "coger" && cogidas.has(baseDe(x.h.ventana)) && <b>✓ COGIDA</b>}
+                {e === "coger" && <button type="button" onClick={(ev) => { ev.stopPropagation(); setVer(x.h); }} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/80 text-slate-700 border border-slate-300">ficha</button>}
                 <span>{e === "coger" ? `COGER: ${nom(u.zonaId)} · est. ${u.hueco}` : e === "linea" ? `en la Línea · est. ${u.hueco}` : e === "hecha" ? "ya acristalada" : e === "inc" ? "⚠ INCIDENCIA" : u ? `falta: ${nom(u.zonaId)} · est. ${u.hueco}` : "falta: sin leer"}</span>
                 {e === "coger" && <button type="button" disabled={!!ocupado} onClick={(ev) => { ev.stopPropagation(); mandarUna(x); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white disabled:opacity-40">{ocupado === baseDe(x.h.ventana) ? "…" : "➡ Mandar a la Línea"}</button>}
                 {(e === "falta" || e === "inc") && <button type="button" onClick={(ev) => { ev.stopPropagation(); buscar(x); }} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">📣</button>}
