@@ -4209,7 +4209,8 @@ export default function App() {
   const uxCreandoRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxCreandoRef.current) return;
-    const sinProyecto = uxExpedientes.filter((e) => e && e.id && !e.proyectoId);
+    // Sin proyecto: no tiene proyectoId, O apunta a un proyecto que ya no existe (se borró a mano) y ningún otro proyecto lo reclama.
+    const sinProyecto = uxExpedientes.filter((e) => e && e.id && (!e.proyectoId || (!proyectos.some((p) => p.id === e.proyectoId) && !proyectos.some((p) => p.uxcarExpedienteId === e.id))));
     if (sinProyecto.length === 0) return;
     uxCreandoRef.current = true;
     (async () => {
@@ -4224,7 +4225,7 @@ export default function App() {
         const nuevos = [];
         for (const exp of sinProyecto) {
           const nuevoId = uid();
-          const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (actual ? undefined : nuevoId)).catch(() => null);
+          const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
           const piezas = [exp.ventanas ? `${exp.ventanas} ventanas` : "", exp.puertas ? `${exp.puertas} puertas` : "", exp.osciloParalelas ? `${exp.osciloParalelas} oscilo-paralelas` : ""].filter(Boolean).join(", ");
           nuevos.push({
@@ -4248,7 +4249,7 @@ export default function App() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uxExpedientes, currentUser?.id, loading]);
+  }, [uxExpedientes, proyectos.length, currentUser?.id, loading]);
 
   // Documentos de Uxcar → ficha del proyecto: todo lo que Uxcar sube a su expediente (hoja de corte,
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
@@ -9252,6 +9253,7 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
   // Documentos de la obra "al día": al subir varias hojas seguidas (cristales + persianas)
   // cada una se añade a lo último guardado, no a lo que había al pulsar el botón.
   const documentosObraRef = useRef(null);
+  const [docsDesbloqueados, setDocsDesbloqueados] = useState({});
   documentosObraRef.current = documentosObraRef.current && documentosObraRef.current.id === proyecto.id && documentosObraRef.current.pendiente
     ? documentosObraRef.current : { id: proyecto.id, lista: toArray(proyecto.documentos), pendiente: false };
   const guardarDocumentosObra = (lista) => {
@@ -9598,7 +9600,20 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
           <div className="mt-3">
             <span className="text-xs text-slate-500 block mb-2">Documentos guardados ({proyecto.documentos.length})</span>
             <div className="flex flex-wrap gap-2">
-              {proyecto.documentos.map((d) => (
+              {proyecto.documentos.map((d) => {
+                // Solo los PRESUPUESTOS se bloquean (nunca pedidos, hoja de corte, análisis…), y solo cuando ya hay uno firmado/aceptado.
+                const urlD = String(d.url || "").replace(/%2F/gi, "/");
+                const esPres = (x) => /documentos-presupuestos/i.test(String(x.url || "").replace(/%2F/gi, "/")) || /presupuesto|ppto/i.test(x.nombre || "") || /firmado|aceptado/i.test(x.nombre || "");
+                const esFirmado = (x) => esPres(x) && /firmado|aceptado/i.test(x.nombre || "");
+                const hayFirmado = proyecto.documentos.some(esFirmado);
+                const bloqueado = hayFirmado && esPres(d) && !esFirmado(d) && !docsDesbloqueados[d.id];
+                return bloqueado ? (
+                  <span key={d.id} className="flex items-center gap-1.5 bg-slate-100 border border-dashed border-slate-300 pl-3 pr-2 py-1.5 rounded-lg text-slate-400" title="Presupuesto sin firmar: bloqueado para no equivocarte. Hay otro firmado/aceptado.">
+                    <span>🔒</span> <span className="text-sm line-through decoration-slate-300">{d.nombre}</span>
+                    <span className="text-[11px] font-semibold text-amber-700 whitespace-nowrap">sin firmar</span>
+                    <button type="button" onClick={() => { if (window.confirm(`"${d.nombre}" es un presupuesto SIN FIRMAR y esta obra ya tiene otro firmado/aceptado.\n\n¿Desbloquearlo para abrirlo?`)) setDocsDesbloqueados((x) => ({ ...x, [d.id]: true })); }} className="text-[11px] underline text-slate-500 hover:text-slate-800">Desbloquear</button>
+                  </span>
+                ) : (
                 <span key={d.id} className="flex items-center gap-1 bg-slate-50 border border-slate-200 pl-3 pr-1.5 py-1.5 rounded-lg hover:bg-slate-100">
                   <a href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
                     <FileText size={14} className="text-slate-400" /> {d.nombre}
@@ -9608,7 +9623,8 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
                     onClick={() => { if (window.confirm(`¿Quitar "${d.nombre}" de los documentos de esta obra?\n\nSolo desaparece de la lista de la obra.`)) guardarDocumentosObra(documentosObraRef.current.lista.filter((x) => x.id !== d.id)); }}
                     className="text-slate-300 hover:text-rose-500 p-0.5"><X size={14} /></button>
                 </span>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -20606,15 +20622,31 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const [provFiltroFab, setProvFiltroFab] = useState("");
   const proveedoresEnCurso = [...new Map(pedidosEnCurso.filter((p) => p.proveedorId).map((p) => [p.proveedorId, proveedorNombre(p.proveedorId)])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
 
+  // Fecha de llegada prevista: filtro + lo atrasado en rojo (los pedidos atrasados salen primero)
+  const [fechaFiltroFab, setFechaFiltroFab] = useState("");
+  const [fechaDesdeFab, setFechaDesdeFab] = useState("");
+  const [fechaHastaFab, setFechaHastaFab] = useState("");
+  const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const hoyFab = isoLocal(new Date());
+  const enDiasFab = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return isoLocal(d); };
+  const fechaPed = (p) => String(p.fechaEntregaPrevista || "").slice(0, 10);
+  const diasAtraso = (p) => { const f = fechaPed(p); return f && f < hoyFab ? Math.round((new Date(hoyFab) - new Date(f)) / 86400000) : 0; };
   const filtered = useMemo(() => {
-    const base = provFiltroFab ? pedidosEnCurso.filter((p) => p.proveedorId === provFiltroFab) : pedidosEnCurso;
+    let base = provFiltroFab ? pedidosEnCurso.filter((p) => p.proveedorId === provFiltroFab) : pedidosEnCurso;
+    if (fechaFiltroFab === "atrasados") base = base.filter((p) => fechaPed(p) && fechaPed(p) < hoyFab);
+    else if (fechaFiltroFab === "hoy") base = base.filter((p) => fechaPed(p) === hoyFab);
+    else if (fechaFiltroFab === "7dias") base = base.filter((p) => fechaPed(p) && fechaPed(p) >= hoyFab && fechaPed(p) <= enDiasFab(7));
+    else if (fechaFiltroFab === "sinfecha") base = base.filter((p) => !fechaPed(p));
+    else if (fechaFiltroFab === "rango") base = base.filter((p) => fechaPed(p) && (!fechaDesdeFab || fechaPed(p) >= fechaDesdeFab) && (!fechaHastaFab || fechaPed(p) <= fechaHastaFab));
+    base = [...base].sort((a, b) => (fechaPed(a) || "9999").localeCompare(fechaPed(b) || "9999"));
     if (!q) return base;
     return base.filter((p) => {
       const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
       const ql = q.toLowerCase().trim();
       return s.includes(ql) || s.replace(/[.\s]/g, "").includes(ql.replace(/[.\s]/g, "")); // «6994» encuentra «6.994-1»
     });
-  }, [pedidosEnCurso, q, provFiltroFab]);
+  }, [pedidosEnCurso, q, provFiltroFab, fechaFiltroFab, fechaDesdeFab, fechaHastaFab, hoyFab]);
+  const nAtrasadosFab = pedidosEnCurso.filter((p) => diasAtraso(p) > 0).length;
 
   // Proyectos donde TODO coincide: oficina ha recibido todos los pedidos, fábrica ha
   // confirmado la llegada de todas las líneas, y el checklist "Qué lleva la obra" está
@@ -21038,13 +21070,33 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               {proveedoresEnCurso.map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
             </Select>
           </div>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Select value={fechaFiltroFab} onChange={(e) => setFechaFiltroFab(e.target.value)} className="!w-auto">
+              <option value="">Todas las fechas de llegada</option>
+              <option value="atrasados">🔴 Atrasados (debían llegar y no han llegado)</option>
+              <option value="hoy">Llegan hoy</option>
+              <option value="7dias">Llegan en los próximos 7 días</option>
+              <option value="rango">Entre dos fechas…</option>
+              <option value="sinfecha">Sin fecha de llegada</option>
+            </Select>
+            {fechaFiltroFab === "rango" && (
+              <>
+                <label className="text-xs text-slate-500 flex items-center gap-1">Desde <input type="date" value={fechaDesdeFab} onChange={(e) => setFechaDesdeFab(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+                <label className="text-xs text-slate-500 flex items-center gap-1">Hasta <input type="date" value={fechaHastaFab} onChange={(e) => setFechaHastaFab(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm" /></label>
+              </>
+            )}
+            {nAtrasadosFab > 0 && fechaFiltroFab !== "atrasados" && (
+              <button onClick={() => setFechaFiltroFab("atrasados")} className="text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-md">⚠ {nAtrasadosFab} atrasado{nAtrasadosFab === 1 ? "" : "s"}: verlos</button>
+            )}
+            {fechaFiltroFab && <button onClick={() => { setFechaFiltroFab(""); setFechaDesdeFab(""); setFechaHastaFab(""); }} className="text-xs text-slate-500 underline">Quitar filtro</button>}
+          </div>
 
           <div className="space-y-4">
             {filtered.map((pedido) => {
               const proyecto = pedido.proyectoId ? proyectos.find((p) => p.id === pedido.proyectoId) : null;
               return (
-                <div key={pedido.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <div key={pedido.id} className={`bg-white border rounded-lg overflow-hidden ${diasAtraso(pedido) > 0 ? "border-red-400 ring-1 ring-red-200" : "border-slate-200"}`}>
+                  <div className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2 ${diasAtraso(pedido) > 0 ? "bg-red-50 border-red-200" : "bg-slate-50 border-slate-200"}`}>
                     <div>
                       <span className="font-mono-num text-sm text-[#2E8B57] font-bold">#{pedido.numero}</span>
                       <span className="ml-2 font-semibold text-slate-700">{(pedido.proveedorExterno || proveedorNombre(pedido.proveedorId))}</span>
@@ -21057,7 +21109,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-slate-500">Pedido hecho: {pedido.fechaCompra ? fmtDate(pedido.fechaCompra) : <b className="text-red-600">sin fecha</b>}</span>
-                      <span className="text-xs text-slate-500">Entrega prevista: {pedido.fechaEntregaPrevista ? fmtDate(pedido.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}</span>
+                      <span className={`text-xs ${diasAtraso(pedido) > 0 ? "text-red-700 font-bold" : "text-slate-500"}`}>Entrega prevista: {pedido.fechaEntregaPrevista ? fmtDate(pedido.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}{diasAtraso(pedido) > 0 ? ` · ATRASADO ${diasAtraso(pedido)} día${diasAtraso(pedido) === 1 ? "" : "s"}` : ""}</span>
                       {onConfirmarPedidoEntero && (pedido.lineas || []).some((l) => !l.confirmadoFabrica) && (
                         <button
                           onClick={() => { const n = (pedido.lineas || []).filter((l) => !l.confirmadoFabrica).length; if (window.confirm(`¿Ha llegado TODO el pedido #${pedido.numero}? Se marcan como llegadas sus ${n} línea${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}.\n\nSi falta o viene roto algo, no uses este botón: marca solo lo que ha llegado.`)) onConfirmarPedidoEntero(pedido.id); }}
@@ -47788,15 +47840,21 @@ async function uxNumeroDePdf(f) {
     try {
       const lib = await cargarPdfJs();
       const doc = await lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
-      const tc = await (await doc.getPage(1)).getTextContent();
-      const T = tc.items.map((i) => i.str).join(" ").replace(/\s+/g, " ");
+      let T = "";
+      for (let pg = 1; pg <= Math.min(2, doc.numPages || 1); pg++) { const tc = await (await doc.getPage(pg)).getTextContent(); T += " " + tc.items.map((i) => i.str).join(" "); }
+      T = T.replace(/\s+/g, " ");
       // El expediente es número + versión: «Presupuesto:6.994-1» (pedidos) y «Número : 6.994 Versión:. 3» (hoja de corte, análisis…) → «6.994-1» y «6.994-3». Otra versión = otro expediente.
       const m1 = T.match(/PRESUPUESTO\s*:\s*([\d.]+?)\.?\s*-\s*(\d+)/i);
       if (m1) return `${m1[1]}-${m1[2]}`;
       const m2 = T.match(/N[UÚ]MERO\s*:\s*([\d.]+?)\.?(?:\s+VERSI[OÓ]N\s*:?\.?\s*(\d+))?(?=\s|$)/i);
       if (m2) return m2[2] ? `${m2[1]}-${m2[2]}` : m2[1];
       const m3 = T.match(/PRESUPUESTO\s*:\s*([\d.]+)/i);
-      return m3 ? m3[1].replace(/\.$/, "") : "";
+      if (m3) return m3[1].replace(/\.$/, "");
+      // Otros formatos (pedidos de cristales del proveedor): «Ppto 6.700-1», «Nº presupuesto 6.700», «Oferta: 6.700-1», «Obra 6.700-1»
+      const m4 = T.match(/(?:PPTO|PRESUPUESTO|OFERTA|OBRA|EXPEDIENTE|REF(?:ERENCIA)?)\.?\s*(?:N[ºO°.]*\s*)?[:\-]?\s*(\d[\d.]{2,}\d?)\s*-\s*(\d{1,2})\b/i);
+      if (m4) return `${m4[1].replace(/\.$/, "")}-${m4[2]}`;
+      const m5 = T.match(/(?:PPTO|PRESUPUESTO|OFERTA|EXPEDIENTE)\.?\s*(?:N[ºO°.]*\s*)?[:\-]?\s*(\d[\d.]{2,}\d)/i);
+      return m5 ? m5[1].replace(/\.$/, "") : "";
     } catch (e) { return ""; }
 }
 async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, ctr }) {
@@ -47981,7 +48039,14 @@ function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx
         const porNum = new Map(), sinNum = [];
         for (const f of files) { const n = (await uxNumeroDePdf(f)).replace(/\D/g, ""); if (!n) { sinNum.push(f.name); continue; } porNum.set(n, [...(porNum.get(n) || []), f]); }
         const todos = [];
-        if (sinNum.length) todos.push(`⚠ Sin número de expediente (no subidos): ${sinNum.join(", ")}`);
+        // Si en la subida hay UN solo expediente, los PDF sin número (p. ej. el pedido de cristales del proveedor) se asignan a él
+        if (sinNum.length && porNum.size === 1) {
+          const [kUnico] = [...porNum.keys()];
+          porNum.set(kUnico, [...porNum.get(kUnico), ...sinNum.map((nom) => files.find((f) => f.name === nom)).filter(Boolean)]);
+          todos.push(`ℹ ${sinNum.join(", ")}: no trae número de expediente legible; lo he guardado en el expediente ${kUnico}, que es el único de esta subida. Compruébalo.`);
+          sinNum.length = 0;
+        }
+        if (sinNum.length) todos.push(`⚠ Sin número de expediente (no subidos): ${sinNum.join(", ")}. Ábrelo y súbelo desde dentro del expediente, o súbelo junto con el resto de su expediente.`);
         let hechos = 0, k = 0, ultimo = null;
         let conocidos = expedientes;
         for (const [num, fs] of porNum) {
