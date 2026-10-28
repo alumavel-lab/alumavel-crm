@@ -6052,6 +6052,7 @@ export default function App() {
         )}
         {modulo === "pedidos" && (
           <PedidosModulo
+            tarifasAluminio={tarifasAluminio}
             clientes={clientes}
             onMarcarGrupo={marcarGrupoPedido}
             pedidos={pedidos}
@@ -11796,7 +11797,201 @@ function AgruparPedidosEspera({ pedidos, proveedores, materiales, proyectos, onM
   );
 }
 
-function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
+// Consultar el precio (o el stock) de un perfil/material SIN crear ningún pedido.
+// Busca en el catálogo de Gestión de Stock: lo que se ve aquí es lo que hay guardado allí.
+function ConsultaPreciosMateriales({ tarifas, materiales, proveedores, onVolver }) {
+  const [q, setQ] = useState("");
+  const [provId, setProvId] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  // % de beneficio y % de manipulación (se recuerdan en este navegador). Precio final = coste × (1 + manipulación) × (1 + beneficio).
+  const leerLS = (k) => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } };
+  const [benef, setBenef] = useState(() => leerLS("consultaPrecios_benef"));
+  const [manip, setManip] = useState(() => leerLS("consultaPrecios_manip"));
+  const guardarLS = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+  const nBenef = parseFloat(String(benef).replace(",", ".")) || 0, nManip = parseFloat(String(manip).replace(",", ".")) || 0;
+  const factor = (1 + nManip / 100) * (1 + nBenef / 100);
+  const conMargen = nBenef !== 0 || nManip !== 0;
+  const norm = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const compacto = (t) => norm(t).replace(/[\s.\-_/]/g, "");
+  const palabras = norm(q).split(/\s+/).filter(Boolean);
+  const lista = toArray(materiales);
+  const resultados = (palabras.length || provId) ? lista.filter((m) => {
+    if (provId && m.proveedorId !== provId) return false;
+    const txt = norm(`${m.codigo} ${m.descripcion} ${m.color || ""} ${m.acabadoDescripcion || ""} ${m.familia || ""}`);
+    const txtC = compacto(txt);
+    return palabras.every((w) => txt.includes(w) || txtC.includes(compacto(w)));
+  }) : [];
+  const provNombre = (id) => (toArray(proveedores).find((p) => p.id === id) || {}).nombre || "—";
+  const eur = (v) => (v === "" || v == null || isNaN(parseFloat(v)) ? "—" : money(parseFloat(v)));
+  const MAX = 80;
+  // Precios de las TARIFAS de proveedor (Calculadora → Tarifas de aluminio): salen aunque el perfil no esté en Stock.
+  // Precio neto = precio de tarifa − descuento del proveedor. En perfiles el precio es por metro; barra = metro × largo de barra de la tarifa.
+  const filasTarifa = [];
+  if (palabras.length) {
+    toArray(tarifas).forEach((t) => {
+      if (provId && t.proveedorId !== provId) return;
+      const barraM = (parseFloat(t.longitudBarra) || 6000) / 1000;
+      toArray(t.items).forEach((it) => {
+        const txt = norm(`${it.ref} ${it.desc} ${it.serie || ""}`);
+        const txtC = compacto(txt);
+        if (!palabras.every((w) => txt.includes(w) || txtC.includes(compacto(w)))) return;
+        const dto = parseFloat((t.descuentos || {})[TARIFA_DESCUENTO_CLAVE[it.tipo] || "accesorios"]) || 0;
+        const porMetro = it.unidad !== "ud";
+        Object.entries(it.precios || {}).forEach(([clave, val]) => {
+          const bruto = parseFloat(val);
+          if (isNaN(bruto) || bruto <= 0) return;
+          const neto = bruto * (1 - dto / 100);
+          filasTarifa.push({ key: `${t.id}-${it.id}-${clave}`, tarifa: t.nombre || "Tarifa", ref: it.ref, desc: it.desc, acab: (t.acabadosNombres || {})[clave] || clave, dto, porMetro, bruto, neto, barra: porMetro ? neto * barraM : null, barraM });
+        });
+      });
+    });
+  }
+  // Precio por metro y por barra entera. Longitud de barra: la del material (>100 = mm, si no metros).
+  // Si el precio está por "Metro lineal" → /barra = precio × metros de la barra; si está por "Barra" o "Unidad"
+  // con longitud conocida → /m = precio ÷ metros de la barra. Sin longitud no se inventa nada.
+  const precios = (m, valor) => {
+    const v = parseFloat(valor);
+    if (isNaN(v)) return { m: "—", b: "—", nota: "", mn: null, bn: null };
+    const lm = parseFloat(m.longitud) || 0;
+    const barraM = lm > 100 ? lm / 1000 : lm; // metros de una barra entera
+    const u = String(m.unidadCompra || "Unidad");
+    if (/metro/i.test(u)) return { m: money(v), b: barraM > 0 ? money(v * barraM) : "—", nota: barraM > 0 ? "" : "sin longitud de barra", mn: v, bn: barraM > 0 ? v * barraM : null };
+    if (/barra|unidad/i.test(u) && barraM > 0) return { m: money(v / barraM), b: money(v), nota: "", mn: v / barraM, bn: v };
+    if (/barra/i.test(u)) return { m: "—", b: money(v), nota: "sin longitud de barra", mn: null, bn: v };
+    return { m: "—", b: "—", nota: `precio por ${u.toLowerCase()}: ${money(v)}`, mn: null, bn: null };
+  };
+  return (
+    <div className="p-8 max-w-6xl">
+      <button onClick={onVolver} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> Volver a Pedidos</button>
+      <h2 className="font-display text-xl font-bold text-slate-800 mb-1">Consultar precios</h2>
+      <p className="text-sm text-slate-500 mb-4">Busca un perfil o material por código o nombre y mira su precio y stock. No crea ningún pedido. Sale lo que está dado de alta en Gestión de Stock.</p>
+      <div className="flex flex-wrap gap-3 mb-4">
+        <div className="relative flex-1 min-w-[240px] max-w-md">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setAbierto(null); }} placeholder="Ej.: 7001, marco 72, batiente blanco…" className={inputCls + " pl-9"} />
+        </div>
+        <Select value={provId} onChange={(e) => setProvId(e.target.value)} className="!w-auto">
+          <option value="">Todos los proveedores</option>
+          {toArray(proveedores).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+        </Select>
+      </div>
+      <div className="flex flex-wrap items-end gap-4 mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200">
+        <label className="text-xs font-semibold text-slate-600">% manipulación
+          <input value={manip} onChange={(e) => { setManip(e.target.value); guardarLS("consultaPrecios_manip", e.target.value); }} inputMode="decimal" placeholder="0" className={inputCls + " !w-24 mt-1"} />
+        </label>
+        <label className="text-xs font-semibold text-slate-600">% beneficio
+          <input value={benef} onChange={(e) => { setBenef(e.target.value); guardarLS("consultaPrecios_benef", e.target.value); }} inputMode="decimal" placeholder="0" className={inputCls + " !w-24 mt-1"} />
+        </label>
+        <span className="text-xs text-slate-500 flex-1 min-w-[220px]">{conMargen ? `Precio final = coste + ${nManip}% de manipulación, y sobre eso ${nBenef}% de beneficio (coste × ${factor.toFixed(4)}).` : "Pon los porcentajes y saldrá el precio final con ellos (€/m y €/barra), además del coste."}</span>
+      </div>
+      {!palabras.length && !provId && <p className="text-sm text-slate-400">Escribe algo para buscar entre {lista.length} materiales.</p>}
+      {(palabras.length > 0 || provId) && resultados.length === 0 && <p className="text-sm text-slate-500">No hay nada con eso en Gestión de Stock (mira debajo, en las tarifas de proveedores).</p>}
+      {resultados.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                <th className="px-3 py-2.5 font-semibold">Código</th>
+                <th className="px-3 py-2.5 font-semibold">Descripción</th>
+                <th className="px-3 py-2.5 font-semibold">Color</th>
+                <th className="px-3 py-2.5 font-semibold">Proveedor</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Compra €/m</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Compra €/barra</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Venta €/m</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Venta €/barra</th>
+                {conMargen && <th className="px-3 py-2.5 font-semibold text-right text-emerald-700">Final €/m</th>}
+                {conMargen && <th className="px-3 py-2.5 font-semibold text-right text-emerald-700">Final €/barra</th>}
+                <th className="px-3 py-2.5 font-semibold text-right">Stock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resultados.slice(0, MAX).map((m) => (
+                <React.Fragment key={m.id}>
+                  <tr onClick={() => setAbierto(abierto === m.id ? null : m.id)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
+                    <td className="px-3 py-2 font-mono-num text-slate-700">{m.codigo}</td>
+                    <td className="px-3 py-2 text-slate-800">{m.descripcion}</td>
+                    <td className="px-3 py-2 text-slate-500">{m.color || "—"}</td>
+                    <td className="px-3 py-2 text-slate-600">{provNombre(m.proveedorId)}</td>
+                    {(() => { const c = precios(m, m.precioCompra), v = precios(m, m.precioVenta); const nota = c.nota || v.nota; return (<>
+                      <td className="px-3 py-2 text-right font-mono-num font-semibold">{c.m}</td>
+                      <td className="px-3 py-2 text-right font-mono-num font-semibold">{c.b}</td>
+                      <td className="px-3 py-2 text-right font-mono-num">{v.m}</td>
+                      <td className="px-3 py-2 text-right font-mono-num">{v.b}{nota ? <div className="text-[10px] text-amber-600 font-normal text-right">{nota}</div> : null}</td>
+                    {conMargen && <td className="px-3 py-2 text-right font-mono-num font-bold text-emerald-700">{c.mn != null ? money(c.mn * factor) : "—"}</td>}
+                    {conMargen && <td className="px-3 py-2 text-right font-mono-num font-bold text-emerald-700">{c.bn != null ? money(c.bn * factor) : "—"}</td>}
+                    </>); })()}
+                    <td className="px-3 py-2 text-right font-mono-num">{m.stockReal ?? "—"}</td>
+                  </tr>
+                  {abierto === m.id && (
+                    <tr className="bg-slate-50 border-b border-slate-100">
+                      <td colSpan={11} className="px-4 py-2.5 text-xs text-slate-600">
+                        {toArray(m.historicoPrecios).length === 0 ? "Sin historial de precios." : (
+                          <div>
+                            <div className="font-semibold mb-1">Historial de precios</div>
+                            {toArray(m.historicoPrecios).slice().reverse().map((h) => (
+                              <div key={h.id}>{fmtDate(h.fecha)} · compra {eur(h.precioCompra)} · venta {eur(h.precioVenta)} · {h.origen}</div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {palabras.length > 0 && (
+        <div className="mt-6">
+          <h3 className="font-display font-bold text-slate-800 mb-1">En las tarifas de los proveedores <span className="text-xs font-normal text-slate-400">(aunque no estén en Stock)</span></h3>
+          {filasTarifa.length === 0 ? (
+            <p className="text-sm text-slate-500">No sale en ninguna tarifa cargada. {toArray(tarifas).length === 0 ? "Aún no hay tarifas cargadas (Presupuestos → Calculadora → Ventanas → Tarifas de aluminio)." : `Se ha buscado en ${toArray(tarifas).length} tarifa(s).`}</p>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <th className="px-3 py-2.5 font-semibold">Ref.</th>
+                    <th className="px-3 py-2.5 font-semibold">Descripción</th>
+                    <th className="px-3 py-2.5 font-semibold">Acabado / color</th>
+                    <th className="px-3 py-2.5 font-semibold">Tarifa</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Tarifa bruta</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Dto.</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Neto €/m</th>
+                    <th className="px-3 py-2.5 font-semibold text-right">Neto €/barra</th>
+                    {conMargen && <th className="px-3 py-2.5 font-semibold text-right text-emerald-700">Final €/m</th>}
+                    {conMargen && <th className="px-3 py-2.5 font-semibold text-right text-emerald-700">Final €/barra</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filasTarifa.slice(0, 120).map((f) => (
+                    <tr key={f.key} className="border-b border-slate-100">
+                      <td className="px-3 py-2 font-mono-num text-slate-700">{f.ref}</td>
+                      <td className="px-3 py-2 text-slate-800">{f.desc}</td>
+                      <td className="px-3 py-2 text-slate-500">{f.acab}</td>
+                      <td className="px-3 py-2 text-slate-500">{f.tarifa}</td>
+                      <td className="px-3 py-2 text-right font-mono-num">{f.bruto.toFixed(3)} €{f.porMetro ? "/m" : "/ud"}</td>
+                      <td className="px-3 py-2 text-right font-mono-num text-slate-500">{f.dto}%</td>
+                      <td className="px-3 py-2 text-right font-mono-num font-semibold">{f.porMetro ? f.neto.toFixed(3) + " €" : <span className="text-slate-500">{f.neto.toFixed(3)} €/ud</span>}</td>
+                      <td className="px-3 py-2 text-right font-mono-num font-semibold">{f.porMetro ? <>{money(f.barra)}<div className="text-[10px] text-slate-400 font-normal">barra de {f.barraM} m</div></> : "—"}</td>
+                      {conMargen && <td className="px-3 py-2 text-right font-mono-num font-bold text-emerald-700">{f.porMetro ? money(f.neto * factor) : <span className="text-xs">{money(f.neto * factor)}/ud</span>}</td>}
+                      {conMargen && <td className="px-3 py-2 text-right font-mono-num font-bold text-emerald-700">{f.porMetro ? money(f.barra * factor) : "—"}</td>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {filasTarifa.length > 120 && <p className="text-xs text-slate-400 mt-2">Salen las 120 primeras de {filasTarifa.length}. Añade más palabras para afinar.</p>}
+        </div>
+      )}
+      {resultados.length > MAX && <p className="text-xs text-slate-400 mt-2">Salen los {MAX} primeros de {resultados.length}. Añade más palabras para afinar.</p>}
+    </div>
+  );
+}
+
+function PedidosModulo({ tarifasAluminio, clientes, onActualizarPedido, onRecibirConAlbaran, onMarcarGrupo, pedidos, proveedores, materiales, articulos, proyectos, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onRecibir, nextNumero, isAdmin, prefill, onClearPrefill, onConfirmarAlbaran, onMarcarEnviado, onCrearDesdeFoto, onCrearPedidoFaltante, onGenerarPedidoDesdeObras, tabPrincipal, setTabPrincipal, solicitudes, currentUser, solicitudView, setSolicitudView, solicitudEditId, setSolicitudEditId, solicitudDetailId, setSolicitudDetailId, onUpsertSolicitud, onDeleteSolicitud, onAprobarSolicitud, onRechazarSolicitud, onComentarSolicitud, solicitudPrefill, onClearSolicitudPrefill }) {
   const [agrupando, setAgrupando] = useState(false);
   const [q, setQ] = useState("");
   const [leyendoFoto, setLeyendoFoto] = useState(false);
@@ -12039,6 +12234,8 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
     );
   }
 
+  if (tabPrincipal === "precios") return <ConsultaPreciosMateriales tarifas={tarifasAluminio} materiales={materiales} proveedores={proveedores} onVolver={() => setTabPrincipal("pedidos")} />;
+
   if (tabPrincipal === "solicitudes") {
     return (
       <SolicitudesPedidoModulo
@@ -12077,6 +12274,10 @@ function PedidosModulo({ clientes, onActualizarPedido, onRecibirConAlbaran, onMa
         <button onClick={() => setTabPrincipal("pedidos")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tabPrincipal === "pedidos" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Pedidos
+        </button>
+        <button onClick={() => setTabPrincipal("precios")}
+          className="px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition border-transparent text-slate-500 hover:text-slate-700">
+          Consultar precios
         </button>
         <button onClick={() => setTabPrincipal("solicitudes")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tabPrincipal === "solicitudes" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
