@@ -50974,9 +50974,13 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
 // Se toca una obra, una vivienda o una ventana para cambiarle el color: gris (pendiente) → verde (hecha) → naranja (problema) → gris.
 function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
   const hoy = new Date().toISOString().slice(0, 10);
+  const [dia, setDia] = useState(hoy); // día elegido en el calendario
+  const [mesVer, setMesVer] = useState(hoy.slice(0, 7));
+  const [buscar, setBuscar] = useState("");
   const marcasTodas = useObjetoFb("controlDia");
-  const marcas = (marcasTodas && marcasTodas[hoy]) || {};
-  const [todas, setTodas] = useState(false);
+  const marcas = (marcasTodas && marcasTodas[dia]) || {};
+  const asignTodas = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } }
+  const asign = (asignTodas && asignTodas[dia]) || {};
   const [cerradas, setCerradas] = useState({});
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
@@ -50989,16 +50993,28 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
   indice.forEach((hh) => {
     if (!hh.ventana.modelo || String(hh.pieza.c) !== baseDe(hh.ventana)) return;
     const d = hh.dueno;
-    if (!todas && !enProceso(d)) return;
     if (!obras.has(d.key)) obras.set(d.key, { d, viv: new Map() });
     const o = obras.get(d.key);
     const g = hh.ventana.grupo || "Sin vivienda";
     if (!o.viv.has(g)) o.viv.set(g, []);
     o.viv.get(g).push({ id: limpia(hh.ventana.id || hh.ventana.pos || baseDe(hh.ventana)), pos: hh.ventana.pos || "", fab: hh.lote.fab, tip: hh.ventana.tipo || hh.ventana.pos, medida: hh.ventana.medida || "", color: hh.ventana.color || "" });
   });
-  const lista = [...obras.values()].sort((a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true }));
+  const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
+  const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
+  const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()))).sort(ordenObras);
+  const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
+  const sumaDias = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const siguienteLaborable = (f) => { let x = sumaDias(f, 1); while ([0, 6].includes(new Date(x + "T12:00:00").getDay())) x = sumaDias(x, 1); return x; };
+  const pasarAlSiguiente = async () => {
+    const sig = siguienteLaborable(dia); const noTerminadas = lista.filter((o) => colorDe([...o.viv.values()].flat().map((v) => valor(o.d.key, v.id))) !== "verde");
+    for (const o of noTerminadas) { try { await fbSet(ref(fbDb, `controlDiaObras/${sig}/${limpia(o.d.key)}`), true); } catch (e) { /* nada */ } }
+    setDia(sig); setMesVer(sig.slice(0, 7));
+  };
+  const diasMes = (() => { const [y, m] = mesVer.split("-").map(Number); const primero = new Date(y, m - 1, 1); const n = new Date(y, m, 0).getDate(); const hueco = (primero.getDay() + 6) % 7; const arr = Array(hueco).fill(null); for (let i = 1; i <= n; i++) arr.push(`${mesVer}-${String(i).padStart(2, "0")}`); return arr; })();
+  const cambiaMes = (n) => { const [y, m] = mesVer.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); setMesVer(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); };
+  const nombreMes = new Date(mesVer + "-01T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" });
   const valor = (dk, id) => (marcas[limpia(dk)] || {})[id] || 0;
-  const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${hoy}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
+  const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${dia}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
   const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
   const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
   const tocaVentana = (o, v) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act); };
@@ -51040,12 +51056,34 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-2">
-        <b className="text-sm text-slate-800">Control del día · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
+        <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
-        <label className="text-xs text-slate-600 flex items-center gap-1"><input type="checkbox" checked={todas} onChange={(e) => setTodas(e.target.checked)} /> Ver todas las obras con hoja de corte (no solo las «En proceso»)</label>
+        {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
       </div>
+      <div className="mb-3 inline-block rounded-lg border border-slate-300 bg-white p-2">
+        <div className="flex items-center justify-between mb-1">
+          <button type="button" onClick={() => cambiaMes(-1)} className="px-2 font-bold">‹</button>
+          <b className="text-sm capitalize">{nombreMes}</b>
+          <button type="button" onClick={() => cambiaMes(1)} className="px-2 font-bold">›</button>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
+        <div className="grid grid-cols-7 gap-1">
+          {diasMes.map((f, i) => { if (!f) return <span key={i} />; const n = Object.keys((asignTodas && asignTodas[f]) || {}).length; const sel = f === dia; return (
+            <button key={f} type="button" onClick={() => setDia(f)} className={`w-12 h-12 rounded-md border-2 text-sm font-semibold flex flex-col items-center justify-center ${sel ? "bg-slate-900 text-white border-slate-900" : f === hoy ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
+              <span>{Number(f.slice(8))}</span>{n > 0 && <span className={`text-[10px] leading-none ${sel ? "text-emerald-300" : "text-emerald-700"}`}>{n} obra{n === 1 ? "" : "s"}</span>}
+            </button>
+          ); })}
+        </div>
+      </div>
+      <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} disponibles con hoja de corte)</summary>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar obra, expediente…" className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        <div className="mt-2 flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
+          {disponibles.length === 0 ? <span className="text-xs text-slate-500">No hay más obras con hoja de corte cargada.</span> : disponibles.map((o) => <button key={o.d.key} type="button" onClick={() => asignar(o, true)} className="px-2.5 py-1.5 rounded-md border border-slate-300 text-xs font-semibold hover:bg-emerald-50">+ {o.d.nombre}</button>)}
+        </div>
+      </details>
       <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
-      {lista.length === 0 && <p className="text-sm text-slate-500">No hay ninguna obra «En proceso» con hoja de corte cargada. Marca la casilla de arriba para ver todas, o empieza a fabricar la obra desde Fábrica → Planning.</p>}
+      {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Añádelas arriba con «➕ Añadir obras a este día».</p>}
       {lista.map((o) => {
         const vivs = [...o.viv.entries()];
         const todosIds = vivs.flatMap(([, vs]) => vs.map((v) => v.id));
@@ -51057,6 +51095,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
+              <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
             </div>
             {abierta && vivs.map(([g, vs]) => {
               const gv = vs.map((v) => valor(o.d.key, v.id)); const gc = colorDe(gv);
