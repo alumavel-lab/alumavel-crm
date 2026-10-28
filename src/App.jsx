@@ -3351,6 +3351,19 @@ export default function App() {
     showToast(`${nuevos.length === 1 ? "Documento añadido" : nuevos.length + " documentos añadidos"} también al proyecto #${proy.numero}`);
   };
 
+  // Cambio rápido de estado desde la lista «Llamar hoy»: no abre la ficha ni crea nada; si se pasa un proyecto, deja el presupuesto enlazado a él
+  const cambiarEstadoPresupuestoRapido = (ids, estado, proyectoId) => {
+    const lista = new Set(Array.isArray(ids) ? ids : [ids]);
+    const hoy = new Date().toISOString().slice(0, 10);
+    savePresupuestos(presupuestos.map((p) => {
+      if (!lista.has(p.id)) return p;
+      const n = { ...p, estado, proximaLlamadaFecha: "", fechaRespuesta: p.fechaRespuesta || hoy };
+      if (estado === "Rechazado" && !n.motivoRechazo) n.motivoRechazo = "Otro";
+      if (proyectoId && !n.proyectoCreadoId) n.proyectoCreadoId = proyectoId;
+      return n;
+    }));
+    showToast(lista.size === 1 ? `Presupuesto marcado como ${estado.toLowerCase()}` : `${lista.size} presupuestos marcados como ${estado.toLowerCase()}`);
+  };
   const upsertPresupuesto = (data) => {
     let next;
     let idParaAbrir = null;
@@ -4218,7 +4231,7 @@ export default function App() {
             id: nuevoId, numero: String(numero++), nombre: `Uxcar · ${exp.numero}${piezas ? " · " + piezas : ""}`,
             clienteId: cliente.id, tipoVenta: "Venta", especificaciones: `Expediente ${exp.numero} (${exp.tipo || "sin tipo"}) metido por Uxcar desde su portal.${exp.observaciones ? "\n" + exp.observaciones : ""}`,
             estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
-            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: exp.fechaEntrega || uxSumarDias(exp.fechaAlta || uxHoy(), UX_DIAS_ENTREGA_PEDIDO), fechaEntregado: "",
+            estadoTrabajo: "Pendiente de aceptación", fechaAceptado: exp.fechaAlta || uxHoy(), ubicacion: "", fechaSolicitud: exp.fechaAlta || uxHoy(), fechaEntregaPrevista: exp.fechaEntrega || uxSumarDias(exp.fechaAlta || uxHoy(), UX_DIAS_ENTREGA_EXPEDIENTE), fechaEntregado: "",
             provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
             gastos: [], registroHorario: [], checklistMateriales: checklistMaterialesPorDefecto(),
             origen: "portalUxcar", uxcarExpedienteId: exp.id,
@@ -4236,6 +4249,40 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, currentUser?.id, loading]);
+
+  // Documentos de Uxcar → ficha del proyecto: todo lo que Uxcar sube a su expediente (hoja de corte,
+  // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
+  // Se apuntan las URLs ya copiadas (uxDocsVistos) para no volver a meter uno que el usuario haya quitado.
+  const uxDocsSyncRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || loading || uxDocsSyncRef.current) return;
+    const cambios = [];
+    for (const pr of toArray(proyectos)) {
+      if (!pr || pr.origen !== "portalUxcar" || !pr.uxcarExpedienteId) continue;
+      const exp = toArray(uxExpedientes).find((e) => e.id === pr.uxcarExpedienteId);
+      if (!exp) continue;
+      const delPedido = toArray(uxPedidos).filter((pd) => toArray(pd.expedientes).some((x) => (x.expedienteId || "") === exp.id));
+      const candidatos = [
+        ...toArray(exp.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: d.tipo || "" })),
+        ...delPedido.flatMap((pd) => toArray(pd.documentos).map((d) => ({ nombre: d.nombre, url: d.url, tipo: pd.tipo === "Persianas" ? "Pedido de persianas/compactos" : "Listado de vidrios (pedido de cristales)" }))),
+      ].filter((d) => d && d.url && d.nombre);
+      const vistos = new Set(toArray(pr.uxDocsVistos));
+      const yaEnObra = new Set(toArray(pr.documentos).map((d) => d.url));
+      const nuevos = candidatos.filter((d) => !vistos.has(d.url) && !yaEnObra.has(d.url));
+      const unicos = [...new Map(nuevos.map((d) => [d.url, d])).values()];
+      const nuevasVistas = candidatos.filter((d) => !vistos.has(d.url));
+      if (nuevasVistas.length) cambios.push({ id: pr.id, unicos, vistas: [...vistos, ...nuevasVistas.map((d) => d.url)] });
+    }
+    if (!cambios.length) return;
+    uxDocsSyncRef.current = true;
+    saveProyectos(toArray(proyectos).map((p) => {
+      const c = cambios.find((x) => x.id === p.id);
+      if (!c) return p;
+      return { ...p, documentos: [...toArray(p.documentos), ...c.unicos.map((d) => ({ id: uid(), nombre: d.tipo ? `${d.tipo} — ${d.nombre}` : d.nombre, url: d.url, subidoEn: Date.now(), deUxcar: true }))], uxDocsVistos: c.vistas };
+    }));
+    setTimeout(() => { uxDocsSyncRef.current = false; }, 1500);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uxExpedientes, uxPedidos, proyectos, currentUser?.id, loading]);
 
   // Proformas automáticas de las obras entregadas (ver observacionesEntrega más arriba)
   const proformasRef = useRef(false);
@@ -4644,15 +4691,26 @@ export default function App() {
     if (!currentUser || loading) return;
     const porId = new Map(uxPedidos.map((p) => [p.id, p]));
     const aEnviar = pedidos.filter((pd) => pd.uxcarPedidoId && !pd.envioConfirmado && (() => { const p = porId.get(pd.uxcarPedidoId); return p && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual); })());
+    // Pedidos de Uxcar sin fecha de llegada (los creados al subir documentos): por defecto una semana desde el pedido; Uxcar puede cambiarla
+    const sinFechaLleg = uxPedidos.filter((p) => p && p.id && !p.llegadaPrevista && !p.recibido && !p.recepcion);
+    if (sinFechaLleg.length > 0) {
+      const hoyL = uxHoy(), patchL = {};
+      sinFechaLleg.forEach((p) => { let f = uxSumarDias(p.fecha || hoyL, UX_DIAS_ENTREGA_PEDIDO); if (f < hoyL) f = uxSumarDias(hoyL, UX_DIAS_ENTREGA_PEDIDO); patchL[`pedidos/${p.id}/llegadaPrevista`] = f; });
+      fbUpdate(ref(fbDb, "portalUxcar"), patchL).catch(() => {});
+    }
+    // La fecha de llegada de la copia de tu CRM sigue a la del portal
+    const cambiaFecha = pedidos.filter((pd) => pd.origen === "portalUxcar" && pd.uxcarPedidoId && pd.estado !== "Recibido" && (() => { const p = porId.get(pd.uxcarPedidoId); return p && p.llegadaPrevista && pd.fechaEntregaPrevista !== p.llegadaPrevista; })());
     // Si Uxcar cambia el proveedor del pedido en su portal, la copia de tu CRM lo refleja («Dealum (de Uxcar)»)
     const nombreProv = (pd) => { const p = pd.uxcarPedidoId ? porId.get(pd.uxcarPedidoId) : null; return p && p.proveedorNombre ? `${p.proveedorNombre} (de Uxcar)` : ""; };
     const cambiaProv = pedidos.filter((pd) => pd.origen === "portalUxcar" && nombreProv(pd) && pd.proveedorExterno !== nombreProv(pd));
-    if (aEnviar.length > 0 || cambiaProv.length > 0) {
+    if (aEnviar.length > 0 || cambiaProv.length > 0 || cambiaFecha.length > 0) {
       const ids = new Set(aEnviar.map((x) => x.id));
       const idsProv = new Set(cambiaProv.map((x) => x.id));
+      const idsFecha = new Set(cambiaFecha.map((x) => x.id));
       savePedidos(pedidos.map((pd) => {
         let r = pd;
         if (idsProv.has(pd.id)) r = { ...r, proveedorExterno: nombreProv(pd) };
+        if (idsFecha.has(pd.id)) r = { ...r, fechaEntregaPrevista: porId.get(pd.uxcarPedidoId).llegadaPrevista };
         if (!ids.has(pd.id)) return r;
         const p = porId.get(pd.uxcarPedidoId);
         return { ...r, envioConfirmado: true, envioMetodo: p.enviadoEmail ? "email" : p.enviadoWhatsapp ? "whatsapp" : "manual", fechaEnvioConfirmado: new Date().toISOString() };
@@ -5578,7 +5636,7 @@ export default function App() {
           if (!resp && !veFabrica && !soloUx) return null;
           const disc = discrepanciasParaMi(discrepanciasTodas(pedidos), { fabrica: veFabrica, oficina: resp, uxcar: soloUx });
           const nomProv = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
-          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
+          return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
@@ -6157,6 +6215,7 @@ export default function App() {
             detailId={presupuestoDetailId}
             setDetailId={setPresupuestoDetailId}
             onUpsert={upsertPresupuesto}
+            onCambiarEstadoRapido={cambiarEstadoPresupuestoRapido}
             onDelete={deletePresupuesto}
             onAddLlamada={addLlamadaPresupuesto}
             onDeleteLlamada={deleteLlamadaPresupuesto}
@@ -7732,7 +7791,14 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                       const mios = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
                       const fila = (tipo, et) => {
                         const ps = mios.filter((pd) => tipoPedidoMaterial(pd) === tipo);
-                        if (!ps.length) return <div className="text-rose-600 font-semibold">{et}: sin pedir</div>;
+                        if (!ps.length) {
+                          // Respeta "Qué lleva la obra": si la ficha dice que NO lleva, no es un pedido que falte
+                          const it = normalizarChecklist(p.checklistMateriales).find((c) => (tipo === "cristal" ? /^cristal/i : /^persiana/i).test(String(c.nombre || "").trim()));
+                          if (it && it.estado === "no") return <div className="text-slate-400">{et}: no lleva</div>;
+                          if (it && it.enStock) return <div className="text-slate-500">{et}: en stock</div>;
+                          if (it && !it.estado) return <div className="text-amber-700 font-semibold">{et}: sin decir si lleva</div>;
+                          return <div className="text-rose-600 font-semibold">{et}: sin pedir</div>;
+                        }
                         const ok = ps.every((pd) => pd.estado === "Recibido");
                         const enviado = ps.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado));
                         const fp = ps.map((pd) => pd.fechaCompra).filter(Boolean).sort()[0];
@@ -8707,7 +8773,8 @@ function PedidosObraAcciones({ proyecto, pedidos, proveedores, materiales, openP
                     <span className="text-xs text-slate-600 font-semibold">Fecha de llegada (obligatoria, va en el mensaje al proveedor):{dias ? ` (suele tardar ${dias} días ${enColor ? "en color" : "en blanco"})` : ""}</span>
                     <input type="date" min={hoy} value={confirmando.fecha || ""} onChange={(e) => setConfirmando({ ...confirmando, fecha: e.target.value, falta: false })} className={`border rounded px-2 py-1 text-xs ${confirmando.falta ? "border-red-500 ring-2 ring-red-200" : "border-slate-300"}`} />
                     {confirmando.falta && <span className="text-xs font-semibold text-red-600">Pon la fecha aproximada de llegada para poder pedirlo (luego se puede cambiar).</span>}
-                    <button onClick={() => { if (!confirmando.fecha) { setConfirmando({ ...confirmando, falta: true }); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url) window.open(url, "_blank", "noopener"); onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Confirmar pedido hecho</button>
+                    <button onClick={() => { if (!confirmando.fecha) { setConfirmando({ ...confirmando, falta: true }); return; } const url = confirmando.metodo === "whatsapp" ? waProv(confirmando.fecha) : confirmando.metodo === "email" ? mailProv(confirmando.fecha) : ""; if (url && !confirmando.abierto) { window.open(url, "_blank", "noopener"); setConfirmando({ ...confirmando, abierto: true }); return; } onMarcarPedidoEnviado(p.id, confirmando.metodo, confirmando.fecha, !!confirmando.recibido); setConfirmando(null); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">{confirmando.abierto ? `✓ Sí, ya lo he enviado por ${confirmando.metodo === "whatsapp" ? "WhatsApp" : "correo"}: marcar como hecho` : confirmando.metodo === "whatsapp" ? "1) Abrir WhatsApp para enviarlo" : confirmando.metodo === "email" ? "1) Abrir el correo para enviarlo" : "Confirmar pedido hecho"}</button>
+                    {confirmando.abierto && <span className="text-xs text-amber-700 font-semibold">El pedido NO consta como hecho hasta que pulses el botón verde, cuando lo hayas mandado.</span>}
                     {!tipoPedidoMaterial(p) && (
                       <label className="flex items-center gap-1 text-xs text-slate-700" title="No suma al Stock. Solo evita que fábrica tenga que confirmar que ha llegado.">
                         <input type="checkbox" checked={!!confirmando.recibido} onChange={(e) => setConfirmando({ ...confirmando, recibido: e.target.checked })} />
@@ -20059,7 +20126,7 @@ const discrepanciasTodas = (pedidos) => toArray(pedidos).map((p) => ({ p, items:
 // Aviso que INSISTE: mientras haya un pedido que una parte da por llegado y la otra no, sale una ventana que pregunta por qué no se ha marcado
 // y vuelve a salir cada 15 minutos (y al entrar) hasta que se resuelva. «Más tarde» solo la aplaza.
 const MIN_INSISTE_DISCREPANCIA = 15;
-function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor }) {
+function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor, onDarDeBaja }) {
   const [abierto, setAbierto] = useState(true);
   const hay = disc.length > 0;
   useEffect(() => {
@@ -20089,6 +20156,11 @@ function AvisoDiscrepanciaInsistente({ disc, onIr, nombreProveedor }) {
                   ? <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>Uxcar no ha subido su albarán</b>. Uxcar: ¿ha llegado o falta algo?</div>
                   : <div className="text-orange-800">Fábrica ya lo ha confirmado ({faltaOficina} línea{faltaOficina === 1 ? "" : "s"}) y <b>oficina no lo ha marcado como recibido</b>. Oficina: ¿por qué no? ¿Falta el albarán o no ha llegado?</div>)}
                 {faltaFabrica > 0 && <div className="text-orange-800">{p.uxcarPedidoId ? "Uxcar" : "Oficina"} lo tiene como recibido ({faltaFabrica} línea{faltaFabrica === 1 ? "" : "s"}) y <b>fábrica no lo ha confirmado</b>. Fábrica: ¿ha llegado de verdad? Confírmalo o di qué falta.</div>}
+                {faltaFabrica > 0 && onDarDeBaja && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button onClick={() => { if (window.confirm(`¿Dar de baja el pedido #${p.numero}? Se marcan como llegadas en fábrica todas sus líneas pendientes y desaparece de Materiales pendientes.`)) onDarDeBaja(p.id); }} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md">Dar de baja: ha llegado todo</button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -26324,7 +26396,14 @@ function UxcExpediente({ exp, onBack }) {
   const [hojaId, setHojaId] = useState(null);
   const id = exp.id;
   const cab = exp.cab || {};
-  const guardar = (sub, val) => fbSet(ref(fbDb, `${UXC_NODO}/${id}/${sub}`), val === "" || val === undefined ? null : uxcLimpio(val)).catch((e) => alert("No se pudo guardar: " + e.message));
+  // Una vez enviada a oficina la medición queda BLOQUEADA: ya hay obra y pedidos hechos con esos datos. Se puede desbloquear a propósito.
+  const [desbloqueada, setDesbloqueada] = useState(false);
+  const bloqueada = !!exp.envio && !desbloqueada;
+  const guardar = (sub, val) => {
+    if (bloqueada && !String(sub).startsWith("envio")) { alert("Esta medición ya está enviada a oficina y está bloqueada para que no cambien los datos con los que se han hecho la obra y los pedidos.\n\nSi de verdad hay que corregir algo, pulsa «Desbloquear para corregir» arriba."); return Promise.resolve(); }
+    return fbSet(ref(fbDb, `${UXC_NODO}/${id}/${sub}`), val === "" || val === undefined ? null : uxcLimpio(val)).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const abrirHoja = (x) => { if (bloqueada) { alert("Medición enviada a oficina: bloqueada. Pulsa «Desbloquear para corregir» si hay que cambiar algo."); return; } setHojaId(x); };
   const vs = uxcLista(exp.ventanas), ps = uxcLista(exp.partidas), ex = uxcLista(exp.extras);
   const comp = uxcComprobaciones(exp);
   const T = ({ k, children }) => <button onClick={() => setTab(k)} className={`crm-tab px-3 py-2 text-sm font-semibold ${tab === k ? "border-[#2E8B57]" : ""}`}>{children}</button>;
@@ -26336,7 +26415,7 @@ function UxcExpediente({ exp, onBack }) {
   const icoN = { ok: "✓", aviso: "⚠", error: "✕" };
   const vi = exp.vidrio || {};
   const vHoja = hojaId ? vs.find((x) => x.id === hojaId) : null;
-  if (vHoja) return <UxcHojaPantalla exp={exp} v={vHoja} vs={vs} guardar={guardar} onCerrar={() => setHojaId(null)} onIr={setHojaId} onNueva={propia ? nuevaVentana : null} />;
+  if (vHoja && !bloqueada) return <UxcHojaPantalla exp={exp} v={vHoja} vs={vs} guardar={guardar} onCerrar={() => setHojaId(null)} onIr={setHojaId} onNueva={propia ? nuevaVentana : null} />;
 
   return (
     <div>
@@ -26348,6 +26427,12 @@ function UxcExpediente({ exp, onBack }) {
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
       </div>
       <UxcEnvio exp={exp} guardar={guardar} />
+      {exp.envio && (
+        <div className={`mb-4 p-3 rounded-lg border text-sm flex flex-wrap items-center gap-3 ${bloqueada ? "bg-slate-100 border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-800"}`}>
+          <span className="flex-1 min-w-[220px]">{bloqueada ? "🔒 Enviada a oficina: solo se puede mirar. Las hojas de medida no se abren para editar." : "🔓 Desbloqueada para corregir. Recuerda avisar a oficina de lo que cambies: la obra y los pedidos ya creados NO se actualizan solos."}</span>
+          <button onClick={() => { if (bloqueada) { if (window.confirm("¿Desbloquear para corregir?\n\nLa obra en Proyectos y los pedidos ya hechos NO se actualizan solos con lo que cambies.")) setDesbloqueada(true); } else setDesbloqueada(false); }} className="text-xs font-semibold border border-slate-400 bg-white rounded-md px-3 py-1.5 hover:bg-slate-50">{bloqueada ? "Desbloquear para corregir" : "Volver a bloquear"}</button>
+        </div>
+      )}
       <UxcResumenFabrica exp={exp} guardar={guardar} />
       <div className="flex gap-1 mb-5 border-b border-slate-200 overflow-x-auto">
         {propia
@@ -26355,7 +26440,7 @@ function UxcExpediente({ exp, onBack }) {
           : <><T k="plano">Plano</T><T k="resumen">Resumen y control</T><T k="ventanas">Ventanas ({vs.length})</T><T k="partidas">Partidas Aena ({ps.length})</T><T k="extras">Extras / proforma ({ex.length})</T><T k="imprevistos">Imprevistos</T><T k="imprimir">Imprimir</T></>}
       </div>
 
-      {tab === "plano" && !propia && <UxcPlano exp={exp} vs={vs} onAbrir={setHojaId} guardar={guardar} />}
+      {tab === "plano" && !propia && <UxcPlano exp={exp} vs={vs} onAbrir={abrirHoja} guardar={guardar} />}
 
       {tab === "resumen" && (
         <div className="space-y-5">
@@ -26402,11 +26487,11 @@ function UxcExpediente({ exp, onBack }) {
           <p className="text-xs text-slate-500">Añade las ventanas una a una: al pulsar «Añadir ventana» se abre su hoja de medición. Todo se guarda al momento.</p>
           {vs.map((v) => { const o = uxcObs(v); return (
             <div key={v.id} className="bg-white border border-slate-200 rounded-lg p-3 flex flex-wrap items-center gap-3">
-              <button onClick={() => setHojaId(v.id)} className="text-left flex-1 min-w-[200px]">
+              <button onClick={() => abrirHoja(v.id)} className="text-left flex-1 min-w-[200px]">
                 <div className="font-bold text-slate-800">{v.ref || "(sin referencia)"} <span className="font-normal text-slate-500">{v.estancia}</span> {v.medida && <span className="text-xs font-bold text-emerald-700">✓ Medida</span>}</div>
                 <div className="text-xs text-slate-500">{v.tipo}{v.anchoFab && v.altoFab ? ` · ${v.anchoFab} × ${uxcAltoTxt(v)}` : " · sin medir todavía"}{o.persiana ? " · persiana" : ""}{o.mosquitera ? " · mosquitera" : ""}</div>
               </button>
-              <button onClick={() => setHojaId(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
+              <button onClick={() => abrirHoja(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
               <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="text-xs font-semibold border border-slate-300 rounded-md px-2.5 py-1.5 flex items-center gap-1 hover:bg-slate-50"><Printer size={13} /> Imprimir</button>
               <button onClick={() => { if (window.confirm(`¿Quitar ${v.ref || "esta ventana"}?`)) guardar(`ventanas/${v.id}`, null); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
             </div>); })}
@@ -26425,7 +26510,7 @@ function UxcExpediente({ exp, onBack }) {
                 <div className="flex-1 min-w-[160px]"><UxcCel voz valor={v.estancia} onGuardar={(x) => g("estancia", x)} placeholder="Estancia (Salón 1…)" /></div>
                 <label className="text-xs font-semibold text-rose-700 flex items-center gap-1"><input type="checkbox" checked={!!v.rechazada} onChange={(e) => g("rechazada", e.target.checked)} /> RECHAZA (según plano)</label>
                 {v.medida && <span className="text-xs font-bold text-emerald-700">✓ Medida</span>}
-                <button onClick={() => setHojaId(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
+                <button onClick={() => abrirHoja(v.id)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-semibold rounded-md px-3 py-1.5 flex items-center gap-1"><Ruler size={13} /> Rellenar hoja</button>
                 <button onClick={() => uxcAbrirImpresion("Medición " + v.ref, uxcHojaVentanaHTML(exp, v))} className="text-xs font-semibold border border-slate-300 rounded-md px-2.5 py-1.5 flex items-center gap-1 hover:bg-slate-50"><Printer size={13} /> Imprimir</button>
                 <button onClick={() => { if (window.confirm(`¿Quitar ${v.ref || "esta carpintería"}?`)) guardar(`ventanas/${v.id}`, null); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={15} /></button>
               </div>
@@ -29610,7 +29695,7 @@ function ConfiguracionFirmaPanel({ configuracionFirma, onSubirPdf }) {
   );
 }
 
-function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
+function PresupuestosModulo({ onCambiarEstadoRapido, onRecrearProyecto, onAbrirProyecto, onPasarAProforma, presupuestos, clientes, usuarios, nextNumero, onCrearClienteRapido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onCrearProyecto, onDuplicar, isAdmin, prefill, onClearPrefill, tarifasPersianas, onSaveTarifasPersianas, onPasarPersianasAPresupuesto, proyectos, onEnviarFirma, onConfirmarFirmaManual, configuracionFirma, onSubirPdfCondicionesFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, anadirPersianasAId, onClearAnadirPersianasA, onAbrirCalculadoraParaAnadirPersianas, onAnadirPersianasAPresupuestoExistente }) {
   const [tab, setTab] = useState("lista");
 
   // Si venimos de pulsar "Añadir más persianas" en una ficha, saltar directo
@@ -29789,6 +29874,15 @@ function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProfor
     const d = diasSinRespuestaDe(p);
     return d !== null && d > 7;
   });
+  // ¿Este presupuesto ya está aceptado en una obra? Se enlaza por la obra que se creó desde él, por su nº de presupuesto o por el nombre de la obra
+  const proyectoAceptadoDe = (p) => {
+    const dn = digitosPresu(p.numero);
+    return toArray(proyectos).find((pr) => pr && pr.estadoPresupuesto === "Presupuesto aceptado" && (
+      (p.proyectoCreadoId && pr.id === p.proyectoCreadoId) || (p.proyectoId && pr.id === p.proyectoId)
+      || (dn.length >= 3 && (digitosPresu(pr.presupuestoNumero) === dn || new RegExp(`presupuesto\\s*${dn.split("").join("\\.?")}(?!\\d)`, "i").test(pr.nombre || "")))
+    )) || null;
+  };
+  const llamarYaAceptados = llamarHoy.map((p) => ({ p, pr: proyectoAceptadoDe(p) })).filter((x) => x.pr);
   const contactarVencidos = presupuestos.filter((p) => {
     if (p.estado !== "En espera" || !p.fechaPrevistaConfirmacion) return false;
     return new Date(p.fechaPrevistaConfirmacion) < new Date(new Date().toISOString().slice(0, 10));
@@ -29990,20 +30084,31 @@ function PresupuestosModulo({ onRecrearProyecto, onAbrirProyecto, onPasarAProfor
         <div className="mb-6 space-y-3">
           {llamarHoy.length > 0 && (
             <div className="px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm">
-              <div className="font-semibold mb-2">⚠ Llamar hoy (más de 7 días sin respuesta): {llamarHoy.length}</div>
+              <div className="font-semibold mb-2 flex flex-wrap items-center gap-3">
+                <span>⚠ Llamar hoy (más de 7 días sin respuesta): {llamarHoy.length}</span>
+                {onCambiarEstadoRapido && llamarYaAceptados.length > 0 && (
+                  <button onClick={() => { if (window.confirm(`${llamarYaAceptados.length} de estos presupuestos ya tienen su obra aceptada (${llamarYaAceptados.map((x) => x.p.numero).join(", ")}).\n\n¿Marcarlos como Aceptados y quitarlos de esta lista?`)) llamarYaAceptados.forEach((x) => onCambiarEstadoRapido(x.p.id, "Aceptado", x.pr.id)); }} className="text-xs font-semibold bg-emerald-600 text-white px-2.5 py-1 rounded">Marcar aceptados los {llamarYaAceptados.length} que ya tienen obra</button>
+                )}
+              </div>
               <div className="space-y-1.5">
-                {llamarHoy.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between gap-2 bg-white/60 rounded px-3 py-1.5">
-                    <span>{p.numero} — {p.clienteNombre} ({diasSinRespuestaDe(p)}d)</span>
-                    {enlaceWhatsapp(p) ? (
+                {llamarHoy.map((p) => { const prAcep = proyectoAceptadoDe(p); return (
+                  <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 bg-white/60 rounded px-3 py-1.5">
+                    <span>{p.numero} — {p.clienteNombre} ({diasSinRespuestaDe(p)}d)
+                      {prAcep && <span className="ml-2 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">✓ ya aceptado · obra #{prAcep.numero}</span>}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                    {onCambiarEstadoRapido && <button onClick={() => onCambiarEstadoRapido(p.id, "Aceptado", prAcep ? prAcep.id : undefined)} className={`text-xs font-semibold px-2 py-1 rounded border ${prAcep ? "bg-emerald-600 text-white border-emerald-600" : "text-emerald-700 border-emerald-300 bg-white"}`}>✓ Aceptado</button>}
+                    {onCambiarEstadoRapido && !prAcep && <button onClick={() => { if (window.confirm(`¿Marcar el presupuesto ${p.numero} como Rechazado? Se guarda con motivo «Otro»; puedes cambiarlo en su ficha.`)) onCambiarEstadoRapido(p.id, "Rechazado"); }} className="text-xs font-semibold px-2 py-1 rounded border text-rose-700 border-rose-300 bg-white">✗ Rechazado</button>}
+                    {prAcep ? null : enlaceWhatsapp(p) ? (
                       <a href={enlaceWhatsapp(p)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs font-semibold bg-emerald-600 text-white px-2.5 py-1 rounded">
                         <MessageCircle size={13} /> WhatsApp
                       </a>
                     ) : (
                       <span className="text-xs text-slate-400">Sin teléfono</span>
                     )}
+                    </span>
                   </div>
-                ))}
+                ); })}
               </div>
             </div>
           )}
@@ -33441,6 +33546,7 @@ function PresupuestosPresentacion({ presupuestos }) {
 
 function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
+  const [asignando, setAsignando] = useState(false);
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
   const totalSinProyecto = sinProyecto.reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
 
@@ -33498,8 +33604,24 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
       </div>
 
       {sinProyecto.length > 0 && (
-        <div className="px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold mb-6">
-          ⚠ {sinProyecto.length} entrada{sinProyecto.length === 1 ? "" : "s"} sin proyecto asignado todavía — {money(totalSinProyecto)} pendientes de vincular.
+        <div className="mb-6">
+          <button
+            onClick={() => setAsignando((v) => !v)}
+            className="w-full text-left px-4 py-3 rounded-md bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 text-sm font-semibold flex items-center justify-between gap-3 cursor-pointer"
+          >
+            <span>⚠ {sinProyecto.length} entrada{sinProyecto.length === 1 ? "" : "s"} sin proyecto asignado todavía — {money(totalSinProyecto)} pendientes de vincular.</span>
+            <span className="text-xs underline whitespace-nowrap">{asignando ? "Cerrar" : "Asignar ahora →"}</span>
+          </button>
+          {asignando && (
+            <div className="mt-2 bg-white border border-amber-300 rounded-lg overflow-hidden">
+              <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900 border-b border-amber-200">
+                Cada entrada te propone primero los proyectos del mismo cliente y los que tienen pendiente parecido al importe. <strong>Es solo una sugerencia: comprueba que es la obra correcta antes de pulsar Asignar.</strong>
+              </div>
+              {sinProyecto.map((i) => (
+                <AsignarEntradaFila key={i.id} ingreso={i} proyectos={proyectos} clientes={clientes} saldos={proyectosConSaldo} onAsignar={(pid) => onVincular(i.id, pid)} onEditar={() => { setEditId(i.id); setView("form"); }} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -33594,6 +33716,52 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function AsignarEntradaFila({ ingreso, proyectos, clientes, saldos, onAsignar, onEditar }) {
+  const [sel, setSel] = useState("");
+  const norm = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const imp = parseFloat(ingreso.importe) || 0;
+  const nomEntrada = norm(ingreso.clienteNombre);
+  const saldoDe = (id) => saldos.find((r) => r.proyecto.id === id)?.pendiente;
+  const lista = proyectos
+    .map((p) => {
+      const nomCli = norm(clientes.find((c) => c.id === p.clienteId)?.nombre);
+      const mismoCliente = !!nomEntrada && !!nomCli && (nomCli.includes(nomEntrada) || nomEntrada.includes(nomCli));
+      const pend = saldoDe(p.id);
+      const cuadra = pend != null && Math.abs(pend - imp) < 0.01;
+      const cabe = pend != null && imp <= pend + 0.01;
+      const score = (mismoCliente ? 4 : 0) + (cuadra ? 2 : 0) + (cabe ? 1 : 0);
+      return { p, nomCli, mismoCliente, pend, cuadra, score };
+    })
+    .sort((a, b) => b.score - a.score || (b.p.numero || 0) - (a.p.numero || 0));
+  const sugeridos = lista.filter((x) => x.score >= 4);
+  return (
+    <div className="px-4 py-3 border-b border-slate-100 last:border-0 flex flex-wrap items-center gap-3">
+      <div className="min-w-[220px] flex-1">
+        <div className="font-semibold text-slate-800 text-sm">{ingreso.clienteNombre || "(sin cliente)"} · <span className="font-mono-num">{money(imp)}</span></div>
+        <div className="text-xs text-slate-500">{fmtDate(ingreso.fecha)}{ingreso.concepto ? " · " + ingreso.concepto : ""}</div>
+        {sugeridos.length === 0 && <div className="text-xs text-slate-400 mt-0.5">Ningún proyecto de ese cliente: elige a mano.</div>}
+      </div>
+      <Select value={sel} onChange={(e) => setSel(e.target.value)} className="max-w-[320px] !py-1.5 !text-xs">
+        <option value="">Elegir proyecto…</option>
+        {lista.map(({ p, nomCli, mismoCliente, pend, cuadra }) => (
+          <option key={p.id} value={p.id}>
+            {mismoCliente ? "★ " : ""}#{p.numero} — {p.nombre}{nomCli ? " (" + nomCli + ")" : ""}{pend != null ? " · pte " + money(pend) : ""}{cuadra ? " · CUADRA" : ""}
+          </option>
+        ))}
+      </Select>
+      <button
+        onClick={() => sel && onAsignar(sel)}
+        disabled={!sel}
+        style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
+        className="text-xs font-semibold disabled:bg-slate-300 px-3 py-1.5 rounded-md"
+      >
+        Asignar
+      </button>
+      <button onClick={onEditar} className="text-xs text-slate-500 hover:text-slate-800 underline">Editar</button>
     </div>
   );
 }
@@ -36426,6 +36594,7 @@ const UX_ESTADOS = {
 const UX_MATERIALES = [["pvc", "PVC"], ["herrajes", "Herrajes"], ["refuerzos", "Refuerzos"], ["accesorios", "Accesorios"], ["vidrios", "Vidrios"], ["compactos", "Compactos"]];
 const UX_MAT_ESTADOS = { no_lleva: "No lleva", pendiente: "Pendiente de pedir", pedido: "Pedido", recibido: "Recibido en fábrica" };
 const UX_DIAS_ENTREGA = 6;
+const UX_DIAS_ENTREGA_EXPEDIENTE = 13; // entrega del expediente/proyecto por defecto: dos semanas menos un día desde el alta (se puede cambiar)
 const UX_DIAS_ENTREGA_PEDIDO = 7; // fecha de entrega por defecto: una semana después de que Uxcar suba/envíe el pedido (ellos pueden cambiarla)
 const uxHoy = () => new Date().toISOString().slice(0, 10);
 const uxSumarDias = (fecha, n) => { const d = new Date((fecha || uxHoy()) + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
@@ -37234,7 +37403,7 @@ function UxHistorial({ exp, pedidos }) {
 }
 
 function UxFichaDatos({ exp, onCambiarEntrega }) {
-  const entregaDef = !exp.fechaEntrega && exp.fechaAlta ? uxSumarDias(exp.fechaAlta, UX_DIAS_ENTREGA_PEDIDO) : "";
+  const entregaDef = !exp.fechaEntrega && exp.fechaAlta ? uxSumarDias(exp.fechaAlta, UX_DIAS_ENTREGA_EXPEDIENTE) : "";
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
@@ -46351,6 +46520,10 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
           ) : <div className="font-semibold">{pedido.proveedorNombre || "—"}</div>}
         </div>
         <div><div className="text-xs text-slate-400">Fecha</div><div className="font-semibold">{uxFecha(pedido.fecha)}</div></div>
+        <div>
+          <div className="text-xs text-slate-400">Llegada prevista</div>
+          {onMarcar && !pedido.recibido ? <input type="date" value={pedido.llegadaPrevista || ""} onChange={(ev) => ev.target.value && onMarcar({ llegadaPrevista: ev.target.value })} className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white" /> : <div className="font-semibold">{pedido.llegadaPrevista ? uxFecha(pedido.llegadaPrevista) : "—"}</div>}
+        </div>
         <div><div className="text-xs text-slate-400">Hecho por</div><div className="font-semibold">{pedido.creadoPor || "—"}</div></div>
       </div>
       {uxDocsPedido(pedido).length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1">{uxDocsPedido(pedido).map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#2E8B57] hover:underline"><FileText size={15} /> Ver documento ({d.nombre})</a>)}</div>}
@@ -46626,7 +46799,7 @@ function estadoDocumentosObra(p, hojas) {
   const persianaNecesaria = !lis || llevaPersianas(p.recuento, lis);
   const tienePers = docs.some((d) => tipoDoc(d) === "persianas") || toArray(lis && lis.tiposDocs).includes("cajas");
   return [
-    { nombre: "Presupuesto", ok: !!p.presupuestoId || docs.some((d) => /presupuesto/i.test(d.nombre || "")) },
+    { nombre: "Presupuesto", ok: !!p.presupuestoId || !!p.presupuestoFirmado || docs.some((d) => /presupuesto|aceptado|firmado/i.test(d.nombre || "") || /documentos-presupuestos/i.test(String(d.url || "").replace(/%2F/gi, "/"))), nota: !p.presupuestoId && (parseFloat(p.importePresupuesto) || 0) > 0 && !docs.some((d) => /presupuesto|aceptado|firmado/i.test(d.nombre || "") || /documentos-presupuestos/i.test(String(d.url || "").replace(/%2F/gi, "/"))) ? "hay importe (" + p.importePresupuesto + " €) pero ningún PDF del presupuesto en documentos" : "" },
     { nombre: "Análisis de materiales", ok: !!(lis && toArray(lis.lineas).length && (!lis.tiposDocs || toArray(lis.tiposDocs).includes("analisis"))), nota: lis && lis.archivo ? lis.archivo : "" },
     { nombre: "Carga de material (tipo plano y ventanas)", ok: !!((p.documentoEntrega && p.documentoEntrega.tipo === "tipo_plano") || toArray(p.recuento).length), nota: p.documentoEntrega ? p.documentoEntrega.nombre : "" },
     { nombre: "Listado de cristales", ok: docs.some((d) => tipoDoc(d) === "cristales"), nota: (docs.find((d) => tipoDoc(d) === "cristales") || {}).nombre || "" },
@@ -47468,7 +47641,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const id = e ? e.id : uid();
   const base = e || {
     id, numero: numero.toUpperCase(), presupuesto: numero, tipo: (tipos && tipos[0]) || "", ventanas: 0, puertas: 0, osciloParalelas: 0, recuento: [], controlOtros: false,
-    observaciones: "", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), fechaEntrega: uxSumarDias(uxHoy(), UX_DIAS_ENTREGA_PEDIDO), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
+    observaciones: "", materiales: {}, estado: "virtual", fechaAlta: uxHoy(), fechaEntrega: uxSumarDias(uxHoy(), UX_DIAS_ENTREGA_EXPEDIENTE), creadoAt: Date.now(), creadoPor: nombre, creadoPorUid: authUser.uid,
   };
   const sets = {};
   // 1) Hoja de corte: recuento + Auxiliares
@@ -47548,7 +47721,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       patch[`pedidos/${pid}`] = JSON.parse(JSON.stringify({
         id: pid, numero: "UX-" + sig, tipo: tipoPed, proveedorId: prov.id || "", proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
         documento: { nombre: f.name, url }, documentos: [{ nombre: f.name, url }], expedientes: [{ expedienteId: id, numero: base.numero, nombre: "", lineas }], comentarios: "",
-        fecha: hoy, llegadaPrevista: "", creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
+        fecha: hoy, llegadaPrevista: uxSumarDias(hoy, UX_DIAS_ENTREGA_PEDIDO), creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
       }));
       const mk = uxMatAlbaran(tipoPed);
       if (mk) matsPatch[mk] = { estado: ((base.materiales || {})[mk] || {}).estado === "recibido" ? "recibido" : "pedido" };
