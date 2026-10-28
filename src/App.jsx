@@ -48051,6 +48051,12 @@ function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx
         let conocidos = expedientes;
         for (const [num, fs] of porNum) {
           k++; setProg(`Expediente ${k} de ${porNum.size} (${num})…`);
+          // Si ese expediente YA existe, no se sube otra vez desde aquí (duplicaba pedidos). Para añadir algo, se abre el expediente y se sube desde dentro.
+          const yaExiste = conocidos.find((x) => String(x.numero || "").replace(/\D/g, "") === num || String(x.presupuesto || "").split(/[·,]/).some((y) => y.replace(/\D/g, "") === num));
+          if (yaExiste) {
+            todos.push(`⛔ ${yaExiste.numero}: YA EXISTE (subido el ${uxFecha(yaExiste.fechaAlta)}). No se ha subido nada otra vez para no duplicar pedidos. Si falta algún documento, abre ese expediente y súbelo desde dentro; si quieres rehacerlo desde cero, bórralo antes.`);
+            continue;
+          }
           try {
             const r = await uxSubirDocumentosExpediente({ ...base, files: fs, exp: null, expedientes: conocidos });
             todos.push(`— ${num}: ${r.avisos.join(" ")}`);
