@@ -51716,6 +51716,67 @@ function FolioCarga({ url, ventanas, valorDe, onToca, onMover, notas = {}, onNot
 // Control del día: panel PRIVADO del jefe para llevar a mano el seguimiento de las obras que se fabrican hoy.
 // No toca nada del CRM (ni estados, ni lecturas, ni pedidos): solo guarda colores por día en «controlDia».
 // Se toca una obra, una vivienda o una ventana para cambiarle el color: gris (pendiente) → verde (hecha) → naranja (problema) → gris.
+// ---- Planning de producción del programa (PDF «PLANING»): bloques «Fecha Inicio», presupuestos y ventanas con horas ----
+function lineasDePaginaPdf(items) {
+  const arr = items.filter((it) => it && it.str && it.str.trim()).map((it) => ({ s: it.str, x: it.transform[4], y: it.transform[5] }));
+  arr.sort((a, b) => (Math.abs(b.y - a.y) > 3 ? b.y - a.y : a.x - b.x));
+  const lineas = []; let cur = null;
+  arr.forEach((it) => { if (cur && Math.abs(cur.y - it.y) <= 3) cur.p.push(it); else { cur = { y: it.y, p: [it] }; lineas.push(cur); } });
+  return lineas.map((l) => l.p.sort((a, b) => a.x - b.x).map((i) => i.s.trim()).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+const numEs = (t) => parseFloat(String(t || "").replace(/\./g, "").replace(",", ".")) || 0;
+const normPosPlan = (t) => String(t || "").toUpperCase().replace(/\s+/g, "").replace(/^([A-Z])O(\d)/, "$10$2");
+function esPlaningEdmo(lineas) { const t = lineas.slice(0, 80).join("\n"); return /PLANING/i.test(t) && /Fecha Inicio/i.test(lineas.join("\n").slice(0, 4000)) && /Horas Trabajo/i.test(t + lineas.slice(80, 200).join("\n")); }
+function parsearPlaningEdmo(lineas) {
+  const bloques = []; let linea = "", cap = 0, bl = null, pr = null, ve = null;
+  const cerrarVe = () => { ve = null; };
+  for (const l of lineas) {
+    let m;
+    if (/^PLANING\b/i.test(l) || /^P[aá]gina \d+ de \d+$/i.test(l) || /^\d{1,3}$/.test(l) || /^Pres Cliente/i.test(l) || /^k$/i.test(l) || /^ECOWIN/i.test(l)) continue;
+    if ((m = l.match(/^Linea de Producci[oó]n:\s*(.*)$/i))) { linea = m[1].trim(); continue; }
+    if (/^►?\s*Empresa:/i.test(l)) continue;
+    if ((m = l.match(/Capacidad:\s*([\d.,]*)\s*horas/i))) { cap = numEs(m[1]); continue; }
+    if ((m = l.match(/^Fecha Inicio:\s*(\d{2})\/(\d{2})\/(\d{4})/i))) { bl = { fechaInicio: `${m[3]}-${m[2]}-${m[1]}`, linea, capacidad: cap, pres: [], total: null }; bloques.push(bl); pr = null; ve = null; continue; }
+    if ((m = l.match(/^TOTAL\s+([\d.,]+)\s+(\d+)\s*$/))) { if (bl) bl.total = { horas: numEs(m[1]), ventanas: parseInt(m[2], 10) }; pr = null; ve = null; continue; }
+    if (!bl) continue;
+    if ((m = l.match(/^(\d{1,2}\.\d{3}-\d+)\s+(.*)$/))) {
+      const r = m[2].match(/^(.*?)\s*(\d+,\d{2})\s+(\d+)\s+(\d{2})\/(\d{2})\/(\d{4})/);
+      if (r) { pr = { pres: m[1], cliente: r[1].replace(/^Cliente:\s*/i, "").trim(), horas: numEs(r[2]), nVent: parseInt(r[3], 10), fechaProd: `${r[6]}-${r[5]}-${r[4]}`, fab: "", ref: "", ventanas: [], notas: [] }; bl.pres.push(pr); ve = null; continue; }
+    }
+    if (pr && !pr.ventanas.length && (m = l.match(/^Fab:\s*([\d.]*)\s*(?:Ref:\s*)?(?:Ref:)?\s*(.*)$/i))) { pr.fab = m[1].replace(/\./g, ""); pr.ref = m[2].replace(/^Ref:\s*/i, "").trim(); continue; }
+    if (pr && (m = l.match(/^(.+?)\s+(\d+,\d{3})\s+(\d+)\s*$/))) {
+      if (/^Material sin tratar$/i.test(m[1].trim())) { ve = { nota: true, desc: "" }; pr.notas.push(ve); continue; }
+      let pos = "", color = "";
+      const a = m[1].match(/^([A-Za-z]{1,3}\d{1,3}[.,]\d{2,3})\s+(.*)$/) || m[1].match(/^([A-Za-z]{1,3}\d{1,3})\s*-\s*(.*)$/) || m[1].match(/^(extra\s+\S+)\s+(.*)$/i);
+      if (a) { pos = a[1]; color = a[2]; } else { const t = m[1].split(/\s+/); pos = t[0]; color = t.slice(1).join(" "); }
+      ve = { pos: pos.trim(), color: color.trim(), horas: numEs(m[2]), uds: parseInt(m[3], 10), desc: "" };
+      pr.ventanas.push(ve); continue;
+    }
+    if (ve && !ve.desc) { ve.desc = l; continue; }
+    if (ve && ve.desc && !ve.nota) { ve.desc += " " + l; continue; }
+    if (ve && ve.nota) { ve.desc += (ve.desc ? " " : "") + l; continue; }
+  }
+  bloques.forEach((b) => b.pres.forEach((p) => { p.notas = p.notas.map((n) => n.desc).filter(Boolean); }));
+  return bloques;
+}
+// Reparte los presupuestos por días laborables, llenando X horas por día (un presupuesto no se parte). Los bloques se ordenan por su Fecha Inicio y van en cadena:
+// cada uno empieza en su fecha, o cuando acaba el anterior si eso es más tarde, así ningún día pasa de X horas.
+function repartirPlaningPorDias(bloques, horasDia) {
+  const sig = (f) => { const d = new Date(f + "T12:00:00"); do { d.setDate(d.getDate() + 1); } while ([0, 6].includes(d.getDay())); return d.toISOString().slice(0, 10); };
+  const lab = (f) => { const d = new Date(f + "T12:00:00"); while ([0, 6].includes(d.getDay())) d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
+  const orden = bloques.map((b, i) => ({ b, i })).sort((x, y) => x.b.fechaInicio.localeCompare(y.b.fechaInicio) || x.i - y.i).map((x) => x.b);
+  const out = []; let dia = null, acum = 0;
+  orden.forEach((b, bi) => {
+    const ini = lab(b.fechaInicio);
+    if (dia === null || ini > dia) { dia = ini; acum = 0; }
+    b.pres.forEach((p) => {
+      if (acum > 0 && acum + p.horas > horasDia) { dia = sig(dia); acum = 0; }
+      acum += p.horas; out.push({ p, dia, bloque: bi, fechaInicio: b.fechaInicio });
+    });
+  });
+  return out;
+}
+
 function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const hoy = new Date().toISOString().slice(0, 10);
   const [dia, setDia] = useState(hoy); // día elegido en el calendario
@@ -51723,6 +51784,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [buscar, setBuscar] = useState("");
   const planImgs = useObjetoFb("controlDiaPlanningImg"); // foto/hoja del planning subido, por mes: { "2026-11": { url, nombre } }
   const [planImgPend, setPlanImgPend] = useState(null); // imagen del planning recién leído, a guardar con «Guardar planning»
+  const planPres = useObjetoFb("controlDiaPlaning"); // planning de producción importado (PDF «PLANING»): { claveDePresupuesto: { pres, cliente, ref, horas, obraKey, ventanas:[{pos,color,desc,horas}] } }
+  const [planEdmo, setPlanEdmo] = useState(null); // vista previa del PDF «PLANING»: { bloques, horasDia, soloMaterial }
+  const [destDia, setDestDia] = useState("");
   const [pinSel, setPinSel] = useState(null); // chincheta de obra elegida para moverla de día: { k, de }
   const [verPlanImg, setVerPlanImg] = useState(false);
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
@@ -51769,6 +51833,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const key = `u-${e.id}`;
     if (!obras.has(key)) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
   });
+  // Presupuestos del planning de producción que no están en el CRM: obra «virtual» con las ventanas del propio planning
+  Object.entries(planPres || {}).forEach(([pk, pr]) => {
+    if (!pr || pr.obraKey) return;
+    const key = `pl-${pk}`;
+    if (obras.has(key)) return;
+    const vs = []; const vistos = {};
+    toArray(pr.ventanas).forEach((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistos[id]) { vistos[id]++; id = `${id}_${vistos[id]}`; } else vistos[id] = 1; vs.push({ id, pos: w.pos || "", fab: "", tip: w.pos || "", medida: "", color: w.color || "" }); });
+    const o = { d: { key, tipo: "pl", id: pk, nombre: pr.nombre || `Pres. ${pr.pres}` }, viv: new Map() };
+    if (vs.length) o.viv.set("Ventanas del planning", vs);
+    obras.set(key, o);
+  });
   // Obras sin ventanas en las etiquetas: se usan las leídas de su «Carga de material» (con dibujo) y, si no, el recuento de la obra (sin dibujo)
   obras.forEach((o) => {
     const g = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
@@ -51804,6 +51879,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos)).map((p) => p.id));
   const proyectoIdDe = (o) => (o.d.tipo === "p" ? o.d.id : o.d.tipo === "u" ? ((toArray(uxExpedientes).find((e) => e.id === o.d.id) || {}).proyectoId || "") : "");
   const materialObra = (o) => {
+    if (o.d.tipo === "pl") return { ok: true, motivo: "" };
     const pid = proyectoIdDe(o);
     const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     if (!p) return { ok: false, motivo: o.d.tipo === "s" ? "sin obra asignada" : "no está enlazada a una obra del CRM" };
@@ -51814,6 +51890,69 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const falta = peds.filter((pd) => !llegadoParaObra(pd)).map((pd) => `${tipoPedidoMaterial(pd) === "persianas" ? "persianas" : "cristales"} sin llegar`);
     const sinConf = peds.filter((pd) => llegadoParaObra(pd) && toArray(pd.lineas).some((l) => !l.confirmadoFabrica)).length;
     return { ok: false, motivo: [...new Set(falta)].join(", ") || (sinConf ? "material llegado sin confirmar por fábrica" : "falta material") };
+  };
+  // Información del planning de producción (PDF «PLANING») por obra y por ventana
+  const planVent = new Map(); const presDeObra = new Map();
+  Object.entries(planPres || {}).forEach(([pk, pr]) => {
+    if (!pr) return;
+    const k = limpia(pr.obraKey || `pl-${pk}`);
+    if (!presDeObra.has(k)) presDeObra.set(k, []);
+    presDeObra.get(k).push(pr);
+    if (!planVent.has(k)) planVent.set(k, new Map());
+    toArray(pr.ventanas).forEach((w) => planVent.get(k).set(normPosPlan(w.pos), w));
+  });
+  const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
+  const horasDelDia = Object.keys(asign).reduce((a, k) => a + (presDeObra.get(k) || []).reduce((b, pr) => b + (Number(pr.horas) || 0), 0), 0);
+  // Vista previa del PDF «PLANING»: reparto por días y cruce con las obras del CRM (por nº de presupuesto)
+  const edmoCalc = planEdmo ? (() => {
+    const filas = repartirPlaningPorDias(planEdmo.bloques, Number(planEdmo.horasDia) > 0 ? Number(planEdmo.horasDia) : 160);
+    const todos = [...obras.values()].filter((ob) => ob.d.tipo !== "pl");
+    filas.forEach((f) => {
+      const dg = digitosPresu(f.p.pres);
+      const hits = todos.filter((ob) => pptosDe(ob).has(dg)).sort((a, b) => (a.d.tipo === "p" ? 0 : 1) - (b.d.tipo === "p" ? 0 : 1));
+      f.ob = hits[0] || null; f.nHits = hits.length;
+      f.key = f.ob ? limpia(f.ob.d.key) : limpia(`pl-${limpia(f.p.pres)}`);
+      f.mat = f.ob ? materialObra(f.ob) : { ok: true, motivo: "" };
+      f.incluir = !(planEdmo.soloMaterial && f.ob && !f.mat.ok);
+    });
+    const dias = new Map(); filas.forEach((f) => { if (!dias.has(f.dia)) dias.set(f.dia, []); dias.get(f.dia).push(f); });
+    const descuadre = filas.filter((f) => Math.abs(f.p.ventanas.reduce((a, v) => a + v.horas, 0) - f.p.horas) > 0.05).map((f) => f.p.pres);
+    // Posibles duplicados dentro del propio planning
+    const dup = [];
+    const firma = (f) => (f.p.ventanas.length >= 2 ? f.p.ventanas.map((v) => `${normPosPlan(v.pos)}|${v.horas}`).sort().join(";") : "");
+    const porFirma = new Map(); filas.forEach((f) => { const k = firma(f); if (!k) return; if (!porFirma.has(k)) porFirma.set(k, []); porFirma.get(k).push(f); });
+    porFirma.forEach((fs) => { if (fs.length > 1 && new Set(fs.map((f) => String(f.p.pres).split("-")[0])).size > 1) dup.push(`${fs.map((f) => f.p.pres).join(" y ")} tienen exactamente las mismas ventanas y horas`); });
+    filas.forEach((f) => { const c = {}; f.p.ventanas.forEach((v) => { const k = `${normPosPlan(v.pos)}|${v.horas}`; c[k] = (c[k] || 0) + 1; }); const d = Object.entries(c).filter(([, n]) => n > 1); if (d.length) dup.push(`En ${f.p.pres} se repite la misma posición con las mismas horas: ${d.map(([k, n]) => `${k.split("|")[0]} ×${n}`).join(", ")} (puede ser a propósito)`); });
+    const porObra = new Map(); filas.forEach((f) => { if (!f.ob) return; if (!porObra.has(f.key)) porObra.set(f.key, []); porObra.get(f.key).push(f); });
+    porObra.forEach((fs) => { if (fs.length > 1 && new Set(fs.map((f) => String(f.p.pres).split("-")[0])).size > 1) dup.push(`${fs.map((f) => f.p.pres).join(" y ")} se enlazan con la misma obra del CRM (${fs[0].ob.d.nombre})`); });
+    return { duplicados: dup, filas, dias: [...dias.entries()], nVent: filas.reduce((a, f) => a + f.p.ventanas.length, 0), horas: filas.reduce((a, f) => a + f.p.horas, 0), enCrm: filas.filter((f) => f.ob).length, descuadre };
+  })() : null;
+  const guardarEdmo = async () => {
+    if (!edmoCalc) return;
+    const upd = {}; const asig = {};
+    edmoCalc.filas.forEach((f) => {
+      const pk = limpia(f.p.pres);
+      upd[pk] = { pres: f.p.pres, cliente: f.p.cliente || "", ref: f.p.ref || "", fab: f.p.fab || "", horas: f.p.horas, nVent: f.p.nVent, obraKey: f.ob ? limpia(f.ob.d.key) : "", nombre: f.ob ? "" : `${f.p.pres} · ${String(f.p.cliente || "").replace(/^\d+-/, "")}${f.p.ref ? " · " + f.p.ref : ""}`, dia: f.dia, ventanas: f.p.ventanas.map((w) => ({ pos: w.pos || "", color: w.color || "", desc: w.desc || "", horas: w.horas || 0 })), notas: f.p.notas || [] };
+      if (f.incluir) {
+        // la obra queda SOLO en el día nuevo: se quita de los días en los que estaba antes
+        Object.keys(asignTodas || {}).forEach((d) => { if (d !== f.dia && asignTodas[d] && asignTodas[d][f.key]) asig[`${d}/${f.key}`] = null; });
+        asig[`${f.dia}/${f.key}`] = true;
+      }
+    });
+    try {
+      await fbUpdate(ref(fbDb, "controlDiaPlaning"), upd);
+      if (Object.keys(asig).length) await fbUpdate(ref(fbDb, "controlDiaObras"), asig);
+      const primero = edmoCalc.dias[0] && edmoCalc.dias[0][0];
+      if (primero) { setDia(primero); setMesVer(primero.slice(0, 7)); }
+      setPlanEdmo(null);
+    } catch (e) { alert("No se pudo guardar el planning: " + e.message); }
+  };
+  const moverDiaEntero = async () => {
+    const ks = Object.keys(asign);
+    if (!destDia || destDia === dia || !ks.length) return;
+    if (!window.confirm(`¿Mover las ${ks.length} obras del ${fmtDate(dia)} al ${fmtDate(destDia)}? Se llevan sus marcas, horas y notas.`)) return;
+    for (const k of ks) await moverObraDia(k, dia, destDia);
+    setDia(destDia); setMesVer(destDia.slice(0, 7)); setDestDia("");
   };
   const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
@@ -51940,6 +52079,15 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const leerPlanning = async (file) => {
     setLeyendoPlan(true); setErrPlan(""); setPlan(null); setPlanImgPend(null);
     try {
+      // PDF «PLANING» del programa (bloques con Fecha Inicio, presupuestos y ventanas con horas): se lee directamente del texto, sin IA
+      if (file.type === "application/pdf" || /\.pdf$/i.test(file.name || "")) {
+        try {
+          const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+          let lineas = [];
+          for (let n = 1; n <= pdfDoc.numPages; n++) { const pg = await pdfDoc.getPage(n); const tc = await pg.getTextContent(); lineas = lineas.concat(lineasDePaginaPdf(tc.items)); }
+          if (esPlaningEdmo(lineas)) { const bl = parsearPlaningEdmo(lineas); if (bl.some((b) => b.pres.length)) { setPlanEdmo({ bloques: bl, horasDia: 160, soloMaterial: false }); return; } }
+        } catch (e) { console.error("No se pudo leer el PDF como planning de producción", e); }
+      }
       // Imagen para verla al lado del calendario (foto o primera hoja del PDF; un Excel no tiene imagen)
       (async () => {
         try {
@@ -52086,6 +52234,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-sm font-bold">{v.tip}</div> : null}
                         {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
+                        {(() => { const inf = infoVent(o, v); return inf ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{inf.color} · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div> : null; })()}
                       </button>
                     ); })}
                   </div>
@@ -52101,11 +52250,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     <div>
       {inputCarga}
       <div className="flex flex-wrap items-center gap-3 mb-2">
-        <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
+        <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}{horasDelDia > 0 ? ` · ${fmtHoras(horasDelDia)} del planning` : ""}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">{verFolio ? "Ver como lista" : "Ver el folio con chinchetas"}</button>
         <button type="button" onClick={() => setInforme((x) => !x)} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${informe ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-800 border-slate-400"}`}>📋 {informe ? "Volver a las obras" : "Informe del día"}</button>
         {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
+        {lista.length > 0 && <span className="inline-flex items-center gap-1"><input type="date" value={destDia} onChange={(e) => setDestDia(e.target.value)} className="border border-slate-300 rounded px-1 py-1 text-sm" /><button type="button" disabled={!destDia} onClick={moverDiaEntero} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold disabled:opacity-40">Mover todo el día a esa fecha</button></span>}
       </div>
       <div className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -52114,6 +52264,31 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <label className="text-xs text-slate-600 flex items-center gap-1">Si pone «lunes, martes…» sin fecha, la semana empieza el <input type="date" value={lunesSemana} onChange={(e) => setLunesSemana(e.target.value)} className="border border-slate-300 rounded px-1 py-0.5" /></label>
         </div>
         {errPlan && <p className="text-xs text-rose-600 mt-1">{errPlan}</p>}
+        {planEdmo && edmoCalc && (
+          <div className="mt-2 border-t border-slate-200 pt-2">
+            <div className="text-sm font-bold text-slate-800">Planning de producción leído: {edmoCalc.filas.length} presupuestos · {edmoCalc.nVent} ventanas · {fmtHoras(edmoCalc.horas)} · {edmoCalc.enCrm} enlazados con obras del CRM</div>
+            <div className="text-xs text-slate-600 my-1 flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1">Horas por día <input type="number" min="1" value={planEdmo.horasDia} onChange={(e) => setPlanEdmo((x) => ({ ...x, horasDia: e.target.value }))} className="w-20 border border-slate-300 rounded px-1 py-0.5" /></label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={!!planEdmo.soloMaterial} onChange={(e) => setPlanEdmo((x) => ({ ...x, soloMaterial: e.target.checked }))} /> De las enlazadas con el CRM, añadir solo las que ya tienen el material</label>
+            </div>
+            <div className="text-[11px] text-slate-500 mb-2">Cada bloque empieza en su «Fecha Inicio» (o cuando acaba el anterior) y se van llenando los días laborables con las horas de cada presupuesto, en el orden del PDF. Es un reparto calculado por mí: después puedes mover cada obra o el día entero.</div>
+            {edmoCalc.dias.map(([d, fs]) => (
+              <details key={d} className="mb-1 rounded border border-slate-200 px-2 py-1">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-800">{fmtDate(d)} · {fs.length} presupuesto{fs.length === 1 ? "" : "s"} · {fmtHoras(fs.reduce((a, f) => a + f.p.horas, 0))} · {fs.reduce((a, f) => a + f.p.ventanas.length, 0)} ventanas</summary>
+                {fs.map((f, i) => (
+                  <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : "text-slate-600"} ${f.incluir ? "" : "line-through opacity-60"}`}>
+                    {f.ob ? (f.mat.ok ? "✓" : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : "no está en el CRM: se crea con las ventanas del planning"}
+                  </div>
+                ))}
+              </details>
+            ))}
+            {edmoCalc.duplicados.length > 0 && <div className="mb-2 rounded border border-amber-400 bg-amber-50 px-2 py-1.5 text-xs text-amber-900"><b>⚠ Posibles duplicados ({edmoCalc.duplicados.length}):</b>{edmoCalc.duplicados.map((t, i) => <div key={i} className="mt-0.5">• {t}</div>)}</div>}
+            {edmoCalc.duplicados.length === 0 && <div className="mb-2 text-xs text-emerald-700">✓ No he encontrado duplicados en este planning.</div>}
+            {edmoCalc.descuadre.length > 0 && <div className="text-xs text-amber-700 mt-1">Ojo: en {edmoCalc.descuadre.join(", ")} las horas de la cabecera no coinciden con la suma de sus ventanas (hay líneas extra en el propio PDF). Se guardan tal cual.</div>}
+            <button type="button" onClick={guardarEdmo} className="mt-2 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">Guardar planning</button>
+            <button type="button" onClick={() => setPlanEdmo(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
+          </div>
+        )}
         {plan && (
           <div className="mt-2 border-t border-slate-200 pt-2">
             <div className="text-sm font-bold text-slate-800 mb-1">Esto es lo que he leído. Revísalo antes de guardar:</div>
@@ -52211,7 +52386,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <tbody>{filas.map((f, i) => (
                     <tr key={i} className="border-t border-slate-100">
                       <td className="px-2 py-1 text-slate-600">{f.g || "—"}</td>
-                      <td className="px-2 py-1 font-semibold">{f.v ? f.v.pos : "Toda la obra"}{f.v && f.v.tip && f.v.tip !== f.v.pos ? <span className="font-normal text-slate-400"> ({f.v.tip})</span> : null}</td>
+                      <td className="px-2 py-1 font-semibold">{f.v ? f.v.pos : "Toda la obra"}{f.v && f.v.tip && f.v.tip !== f.v.pos ? <span className="font-normal text-slate-400"> ({f.v.tip})</span> : null}{(() => { const inf = f.v ? infoVent(f.o, f.v) : null; return inf ? <div className="text-[11px] font-normal text-slate-500">{inf.color} · {fmtHoras(inf.horas)} · {inf.desc}</div> : null; })()}</td>
                       <td className="px-2 py-1">{f.v ? f.v.medida : ""}</td>
                       <td className="px-2 py-1"><span className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded ${ESTADO_INFORME[f.val].c}`}>{ESTADO_INFORME[f.val].t}</span></td>
                       <td className="px-2 py-1 font-mono-num text-slate-600">{f.val ? (horaDe(f.t) || <span className="text-slate-300" title="Marcada antes de que el CRM apuntara la hora">—</span>) : ""}</td>
@@ -52246,6 +52421,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {o.fuente === "recuento" ? <span className="font-normal text-amber-700"> · del recuento de la obra, sin dibujo</span> : null}
               {estadoCarga[o.d.key] === "leyendo" ? <span className="font-normal text-amber-700"> · leyendo la carga de material…</span> : null}
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
+              {(presDeObra.get(limpia(o.d.key)) || []).map((pr, i) => <div key={i} className="font-normal text-slate-600">Planning: presupuesto {pr.pres} · {fmtHoras(Number(pr.horas) || 0)}{pr.cliente ? ` · ${String(pr.cliente).replace(/^\d+-/, "")}` : ""}{pr.ref ? ` · ${pr.ref}` : ""}</div>)}
             </div>
             {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
             {abierta && (o.folio && verFolio ? [] : vivs).map(([g, vs]) => {
@@ -52260,6 +52436,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         <div>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-[11px] font-bold opacity-80">{v.tip}</div> : null}
                         {v.medida ? <div className="text-[11px] font-normal opacity-80">{v.medida}</div> : null}
+                        {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold">{inf.color} · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
                       </button>
                     ); })}
                   </div>
