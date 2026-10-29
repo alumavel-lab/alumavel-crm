@@ -16057,9 +16057,9 @@ function NuevoCristalForm({ onCancel, onSave, onFotos }) {
 
 // Un caballete está VACÍO cuando tiene cristales y todos están ya puestos (no queda ninguna unidad por usar)
 const caballeteVacio = (c) => { const ps = toArray(c && c.piezas); return ps.length > 0 && ps.every((p) => !!p.puesto); };
-function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false, destacar = null, verDetalleSolo = false }) {
+function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMapa, soloLectura = false, destacar = null, verDetalleSolo = false, resaltarIds = null, tituloResalte = "" }) {
   const hayFiltro = hayFiltroCristales(filtros);
-  const q = hayFiltro ? textoFiltrosCristales(filtros) : "";
+  const q = hayFiltro ? textoFiltrosCristales(filtros) : (resaltarIds ? tituloResalte : "");
   const cambiarZona = (zonaId, campo, delta) => {
     const cfg = ZONAS_CRISTALES[zonaId];
     const nuevo = (cfg[campo] || 0) + delta;
@@ -16084,7 +16084,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
   const ocupantes = (zona, fila, hueco) => cristales.filter((c) => c.ubicacion && c.ubicacion.zona === zona && c.ubicacion.fila === fila && c.ubicacion.hueco === hueco);
   // texto de búsqueda de un caballete: sus datos + los de cada cristal (vivienda, expediente, medida)
   const textoCaballete = (x) => normalizarMapa(`${x.lote} ${x.secuencia} ${x.cliente} ${x.proveedor} ${x.expediente} ${x.medida} ${(x.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`);
-  const coincidentes = hayFiltro ? cristales.filter((x) => cristalCoincideFiltros(x, filtros)) : [];
+  const coincidentes = hayFiltro ? cristales.filter((x) => cristalCoincideFiltros(x, filtros)) : (resaltarIds ? cristales.filter((x) => resaltarIds.has(x.id)) : []);
   const ubicados = coincidentes.filter((x) => x.ubicacion);
   const sinUbicar = coincidentes.filter((x) => !x.ubicacion);
   return (
@@ -16124,7 +16124,7 @@ function MapaAlmacenCristales({ cristales, filtros, onVerHueco, onAsignarDesdeMa
                   {Array.from({ length: cfg.huecos }, (_, i) => i + 1).map((hueco) => {
                     const cs = ocupantes(zonaId, fila, hueco);
                     const c = cs[0];
-                    const coincide = hayFiltro && cs.some((x) => cristalCoincideFiltros(x, filtros));
+                    const coincide = (hayFiltro && cs.some((x) => cristalCoincideFiltros(x, filtros))) || (!!resaltarIds && cs.some((x) => resaltarIds.has(x.id)));
                     const vacio = cs.length > 0 && cs.every(caballeteVacio);
                     const focoRojo = !!destacar && destacar.zona === zonaId && destacar.fila === fila && destacar.hueco === hueco;
                     const hoyCris = hoyISO();
@@ -52129,6 +52129,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [verPlanImg, setVerPlanImg] = useState(false);
   const { pedirPin, modalPin } = usePinCristales();
   const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
+  const [huecoMat, setHuecoMat] = useState(null);
   const [verMat, setVerMat] = useState(null); // caballete o carro abierto desde «Dónde está el material»
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
   const [leyendoPlan, setLeyendoPlan] = useState(false);
@@ -52889,6 +52890,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <div key={o.d.key} className="bg-white border border-slate-200 rounded px-2 py-1.5 text-xs">
                         <div className="font-semibold text-slate-800">{o.d.nombre} <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
                         <div className="flex flex-wrap items-center gap-2 mt-1">
+                          {(dm.cabs.length > 0 || dm.pers.length > 0) && <button type="button" onClick={() => setVerMat({ tipo: "todo", o, dm })} className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold">📍 Ver dónde está (un toque)</button>}
                           <span className="text-slate-700">Persianas en almacén: <b>{dm.pers.length}</b></span>
                           {dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Dar de baja</button>}
                           <span className="text-slate-700 ml-2">Caballetes de cristal: <b>{dm.cabs.length}</b></span>
@@ -52929,7 +52931,16 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             {abierta && (() => { const dm = dondeMaterial(o); return (
               <div className="mx-3 mb-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
                 <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material{col === "verde" && dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="ml-3 px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Obra terminada: dar de baja sus {dm.pers.length} persianas del almacén</button>}</div>
-                {dm.filas.length ? dm.filas.map((f, i) => f.ir ? <button key={i} type="button" onClick={() => setVerMat(f.ir)} className="block text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1"><b>{f.t}:</b> {f.txt} <span className="font-semibold">· 📍 ver dónde</span></button> : <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>)
+                {dm.filas.length ? (() => {
+                  const fc = dm.filas.filter((f) => f.t === "Cristales"); const fp = dm.filas.filter((f) => f.t !== "Cristales");
+                  const fila = (f, i) => f.ir ? <button key={i} type="button" onClick={() => setVerMat(f.ir)} className="block text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1"><b>{f.t}:</b> {f.txt} <span className="font-semibold">· 📍 ver dónde</span></button> : <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>;
+                  const ubic = dm.cabs.filter((c) => c.ubicacion).length;
+                  return (<>
+                    <button type="button" onClick={() => setVerMat({ tipo: "todo", o, dm })} className="mb-1 px-3 py-1.5 rounded-md bg-rose-600 text-white font-bold text-sm">📍 Ver dónde está todo (un toque)</button>
+                    {fc.length > 3 ? <div className="text-slate-700"><b>Cristales:</b> {fc.length} caballetes · {ubic} en el mapa · {fc.length - ubic} pendientes de ubicar</div> : fc.map(fila)}
+                    {fp.map((f, i) => fila(f, "p" + i))}
+                  </>);
+                })()
                   : <div className="text-slate-500">{dm.sinClaves ? "Esta obra no tiene nº de presupuesto/expediente para buscarlo." : "No encuentro cristales ni persianas de esta obra en los almacenes (puede que no hayan llegado o estén apuntados con otro número)."}</div>}
               </div>); })()}
             {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
@@ -52964,10 +52975,33 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-3 overflow-y-auto" onClick={() => setVerMat(null)}>
           <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl p-4 my-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3 mb-2">
-              <div className="font-bold text-slate-800">{verMat.tipo === "cristal" ? `Caballete ${verMat.c.lote || verMat.c.numero || "s/n"}` : `Carro ${verMat.x.estante.carro}`}</div>
+              <div className="font-bold text-slate-800">{verMat.tipo === "todo" ? "Dónde está todo el material" : verMat.tipo === "cristal" ? `Caballete ${verMat.c.lote || verMat.c.numero || "s/n"}` : `Carro ${verMat.x.estante.carro}`}</div>
               <button type="button" onClick={() => setVerMat(null)} className="ml-auto text-sm font-semibold text-slate-500 border border-slate-300 rounded px-3 py-1">Cerrar</button>
             </div>
-            {verMat.tipo === "cristal" ? (
+            {verMat.tipo === "todo" ? (() => {
+              const { o: ob, dm: d } = verMat; const ids = new Set(d.cabs.map((c) => c.id));
+              const ub = d.cabs.filter((c) => c.ubicacion).sort((a, b) => ubicacionTexto(a.ubicacion).localeCompare(ubicacionTexto(b.ubicacion), "es", { numeric: true }));
+              const pend = d.cabs.filter((c) => !c.ubicacion);
+              const carros = {}; d.pers.forEach((x) => { const k = x.estante ? `Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : "Pendientes de ubicar"; (carros[k] = carros[k] || { n: 0, x }).n++; });
+              return (<>
+                <div className="mb-2 text-sm font-bold text-slate-800">{ob.d.nombre}</div>
+                <div className="grid sm:grid-cols-2 gap-2 mb-3 text-sm">
+                  <div className="rounded-lg border-2 border-rose-300 bg-rose-50 p-2">
+                    <div className="font-bold text-rose-800">🪟 Cristales · {d.cabs.length} caballete{d.cabs.length === 1 ? "" : "s"}</div>
+                    {ub.map((c) => <div key={c.id} className="font-semibold">Caballete {c.lote || c.numero || "s/n"}: <span className="text-rose-700">{ubicacionTexto(c.ubicacion)}</span></div>)}
+                    {pend.length > 0 && <div className="mt-1 text-slate-700">{pend.length} sin hueco en el mapa (pendientes de ubicar): {pend.map((c) => c.lote || c.numero || "s/n").join(", ")}</div>}
+                    {d.cabs.length === 0 && <div className="text-slate-500">Ninguno.</div>}
+                  </div>
+                  <div className="rounded-lg border-2 border-emerald-300 bg-emerald-50 p-2">
+                    <div className="font-bold text-emerald-800">🪟 Persianas · {d.pers.length}</div>
+                    {Object.entries(carros).map(([k, v]) => <div key={k} className="font-semibold">{k}: {v.n} ud{v.x.estante ? <button type="button" onClick={() => setVerMat({ tipo: "persiana", x: v.x })} className="ml-2 text-xs text-sky-700 underline">ver carro</button> : null}</div>)}
+                    {d.pers.length === 0 && <div className="text-slate-500">Ninguna.</div>}
+                  </div>
+                </div>
+                {ub.length > 0 && <MapaAlmacenCristales cristales={toArray(almacenRapido.cristales)} filtros={FILTROS_CRISTALES_VACIOS} soloLectura verDetalleSolo onVerHueco={setHuecoMat} resaltarIds={ids} tituloResalte={`Material de ${ob.d.nombre}`} />}
+                {huecoMat && <CaballeteSoloLectura cristales={toArray(almacenRapido.cristales)} ubic={huecoMat} onCerrar={() => setHuecoMat(null)} />}
+              </>);
+            })() : verMat.tipo === "cristal" ? (
               <>
                 <div className="mb-2 px-3 py-2 rounded-lg bg-rose-600 text-white text-base font-extrabold">👉 {verMat.c.ubicacion ? ubicacionTexto(verMat.c.ubicacion) : verMat.c.enPuesto ? `Está en ${verMat.c.enPuesto}` : "Pendiente de ubicar (aún no tiene hueco en el mapa)"}</div>
                 <CaballeteFilas c={verMat.c} />
