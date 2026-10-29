@@ -2667,16 +2667,13 @@ export default function App() {
     const nuevasPers = [];
     filas.filter((f) => f.tipo === "persiana").forEach((f) => {
       const bien = bienDe(f);
-      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", parte: normParte(f.refObra), pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null });
+      for (let i = 0; i < bien; i++) nuevasPers.push({ id: uid(), expediente, ref: f.ref || "", refObra: f.refObra || "", parte: normParte(f.refObra), pedidoProv: f.pedidoProv || numeroPedidoProveedor || "", ancho: f.ancho, largo: f.ancho, alto: f.alto, descripcion: f.nombre, modelo: "", pedido: pedido.numero, proveedor: proveedorNombre, fechaEntrada: hoy, estante: null, pendienteUbicar: true, presupuesto: String((proyecto && proyecto.presupuestoNumero) || (expUx && (expUx.presupuesto || expUx.presupuestoNumero)) || "") });
     });
+    // Las persianas NO se colocan solas: entran en «Pendientes de ubicar» del almacén de recepción y las ubica la persona
     let sinSitioPers = 0;
     if (nuevasPers.length) {
-      // Solo en el almacén marcado para recibir pedidos (los números de carro se repiten entre almacenes)
       const almRec = almacenRecepcionPersianas(almacenesPersianas);
-      const reservadasOtros = pedidos.filter((p) => p.id !== pedido.id && p.reparto && p.estado !== "Recibido" && p.estado !== "Cancelado").flatMap((p) => toArray(p.reparto.persianas).filter((u) => u.estante));
-      const estado = estadoOcupacionPersianas([...persianasAlmacen.filter((x) => almacenDe(x) === almRec), ...reservadasOtros]);
-      const r = colocarGrupoPersianas(nuevasPers, expediente || "—", estantesAlmacenPersianas(carrosPersianas.filter((c) => almacenDe(c) === almRec)), estado);
-      nuevasPers.forEach((x) => { x.almacenId = almRec; x.estante = r.res[x.id] || null; if (!x.estante) sinSitioPers++; });
+      nuevasPers.forEach((x) => { x.almacenId = almRec; x.estante = null; sinSitioPers++; });
     }
 
     // 4) El pedido: lo recibido y lo roto por línea
@@ -2724,7 +2721,7 @@ export default function App() {
     if (aStock) partes.push(`${aStock} al stock${altas ? ` (${altas} material${altas === 1 ? "" : "es"} nuevo${altas === 1 ? "" : "s"})` : ""}`);
     if (nuevosCab.length) partes.push(`${nuevosCab.reduce((a, c) => a + (parseFloat(c.cantidad) || 0), 0)} cristales a Fábrica${nuevosCab.some((c) => !c.ubicacion) ? " (alguno sin hueco)" : ""}`);
     if (cristalesYaEstaban.length) partes.push(`${cristalesYaEstaban.reduce((a, x) => a + x.cantidad, 0)} cristales ya estaban en sus caballetes (packing list): no se han movido ni duplicado`);
-    if (nuevasPers.length) partes.push(`${nuevasPers.length} persianas al almacén${sinSitioPers ? ` (${sinSitioPers} sin sitio)` : ""}`);
+    if (nuevasPers.length) partes.push(`${nuevasPers.length} persianas en «Pendientes de ubicar» (Fábrica → Almacén de persianas): ubícalas tú`);
     if (rotosTotal) partes.push(`${rotosTotal} rotos`);
     showToast(`Pedido #${pedido.numero}: ${todo ? "recibido completo" : "entrada parcial"}${partes.length ? " · " + partes.join(" · ") : ""}`, todo ? "ok" : "error");
     // Informe de dónde va cada cosa (se enseña en pantalla tras confirmar la entrada)
@@ -18513,6 +18510,16 @@ function PanelesPendientes({ cristales = [] }) {
     </div>
   );
 }
+// Nº de presupuesto de una persiana/mosquitera del almacén: el que lleva guardado, o el de su proyecto/expediente
+function presupuestoDePersiana(x, ctx) {
+  if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
+  const nums = numsExpediente(x && x.expediente);
+  if (!nums.length) return "";
+  const p = toArray(ctx && ctx.proyectos).find((pr) => pr.presupuestoNumero && numsExpediente(pr.numero).some((n) => nums.includes(n)));
+  if (p) return String(p.presupuestoNumero);
+  const e = toArray(ctx && ctx.uxExpedientes).find((ex) => numsExpediente(ex.numero).some((n) => nums.includes(n)) && (ex.presupuesto || ex.presupuestoNumero));
+  return e ? String(e.presupuesto || e.presupuestoNumero) : "";
+}
 function AlmacenPersianas() {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const todosCarros = ctx.carrosPersianas || [];
@@ -18537,7 +18544,7 @@ function AlmacenPersianas() {
     const trozos = busca.toLowerCase().replace(/(\d)\s*[x×*]\s*(\d)/g, "$1 $2").split(/\s+/).filter(Boolean);
     if (!trozos.length) return [];
     return todosItems.filter((x) => {
-      const texto = [largoPersiana(x), ...Object.entries(x).filter(([k, v]) => !["id", "almacenId", "estante"].includes(k) && (typeof v === "string" || typeof v === "number")).map(([, v]) => v)]
+      const texto = [presupuestoDePersiana(x, ctx), largoPersiana(x), ...Object.entries(x).filter(([k, v]) => !["id", "almacenId", "estante"].includes(k) && (typeof v === "string" || typeof v === "number")).map(([, v]) => v)]
         .join(" ").toLowerCase();
       const textoSP = texto.replace(/\./g, ""); // «6994» también encuentra «6.994-1»
       return trozos.every((t) => texto.includes(t) || textoSP.includes(t.replace(/\./g, "")));
@@ -18621,7 +18628,7 @@ function AlmacenPersianas() {
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex items-center gap-2">
           <Search size={16} className="text-slate-400 shrink-0" />
-          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder={`Buscar en ${almacenes.length > 1 ? "todos los almacenes" : "el almacén"}: expediente, vivienda, medida (1200x1400), color…`}
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder={`🔍 Buscar por nº de presupuesto en ${almacenes.length > 1 ? "todos los almacenes" : "el almacén"} (también expediente, vivienda, medida, color…)`}
             className="flex-1 min-w-0 text-sm border border-slate-200 rounded-lg px-3 py-2" />
           {busca && <button onClick={() => setBusca("")} className="text-slate-400 hover:text-slate-700"><X size={16} /></button>}
         </div>
@@ -18635,7 +18642,8 @@ function AlmacenPersianas() {
               <button key={x.id} disabled={!x.estante || x.entregada}
                 onClick={() => { setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
                 className={`w-full text-left flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm ${x.estante && !x.entregada ? "hover:bg-[#EEF7E4]" : "opacity-70"}`}>
-                <b>EXP {x.expediente || "—"}</b>
+                <b>{presupuestoDePersiana(x, ctx) ? `Ppto ${presupuestoDePersiana(x, ctx)}` : `EXP ${x.expediente || "—"}`}</b>
+                {presupuestoDePersiana(x, ctx) && <span className="text-xs text-slate-500">EXP {x.expediente || "—"}</span>}
                 <span>{x.ref || ""}</span>
                 <span className="font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</span>
                 {(x.refObra || x.cliente) && <span className="text-xs text-slate-500">{[x.refObra, x.cliente].filter(Boolean).join(" · ")}</span>}
@@ -18939,6 +18947,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxM.pedidosPersianas, ctxM.persianasAlmacen]);
 
+  const [qPend, setQPend] = useState("");
+  const [carroPpto, setCarroPpto] = useState({});
+  const [carroFila, setCarroFila] = useState({});
   const activos = items.filter((x) => !x.entregada);
   const sinSitio = activos.filter((x) => !x.estante && !x.enPuesto);
   const estantes = useMemo(() => estantesAlmacenPersianas(carros), [carros]);
@@ -19561,7 +19572,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["expedientes", "Expedientes con material"], ["sinsitio", `Sin sitio (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
+        {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["expedientes", "Expedientes con material"], ["sinsitio", `Pendientes de ubicar (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
         ))}
         <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.ods,application/pdf,image/*" className="hidden"
@@ -19917,25 +19928,62 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         return <ExpedientesConMaterial filas={filas} proyectos={ctxM.proyectos} cosa={cosa} extra={esMosq ? null : { label: "cristales", mapa: mapaC }} />;
       })()}
 
-      {vista === "sinsitio" && (
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          {sinSitio.length === 0 ? <p className="text-sm text-slate-400">Todas las {cosa} tienen sitio.</p> : (
-            <>
-              <p className="text-sm text-slate-600 mb-2">{Cosa} que no han cabido en ningún {esMosq ? "carro" : "estante (o miden menos de 40 cm)"}. Libera sitio o cambia la configuración de algún carro y pulsa <b>Volver a colocar</b>.</p>
-              <table className="w-full text-xs mb-3">
-                <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Expediente</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Largo</th><th></th></tr></thead>
-                <tbody>{sinSitio.map((x) => (
-                  <tr key={x.id} className="border-b border-slate-100">
-                    <td className="py-1 pr-2 font-semibold">EXP {x.expediente || "—"}</td><td className="pr-2">{x.ref || "—"}</td><td className="pr-2">{largoPersiana(x)} mm</td>
-                    <td><button onClick={() => { if (window.confirm(`¿Borrar esta ${esMosq ? "mosquitera" : "persiana"} del almacén?`)) guardarItems(items.filter((y) => y.id !== x.id)); }} className="text-rose-500"><Trash2 size={12} /></button></td>
-                  </tr>))}
-                </tbody>
-              </table>
-              <button onClick={recolocarSinSitio} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90">Volver a colocar</button>
-            </>
-          )}
-        </div>
-      )}
+      {vista === "sinsitio" && (() => {
+        const presuDe = (x) => presupuestoDePersiana(x, ctxM);
+        const nb = limpiaExp(qPend);
+        const lista = sinSitio.filter((x) => !nb || limpiaExp(presuDe(x)).includes(nb) || limpiaExp(x.expediente).includes(nb) || limpiaExp(`${x.ref || ""} ${x.refObra || ""} ${x.cliente || ""}`).includes(nb));
+        const grupos = {};
+        lista.forEach((x) => { const k = presuDe(x) || ("EXP " + (x.expediente || "—")); (grupos[k] = grupos[k] || []).push(x); });
+        const ubicar = (xs, carroN) => {
+          if (!carroN) { setAviso("Elige primero el carro."); return; }
+          const est = estantes.filter((e) => e.carro === parseInt(carroN, 10));
+          const estado = estadoOcupacionPersianas(items);
+          const sitio = {};
+          const porExp = {};
+          xs.forEach((x) => { const k = x.expediente || "—"; (porExp[k] = porExp[k] || []).push(x); });
+          Object.entries(porExp).forEach(([exp, g]) => { const r = colocarGrupoPersianas(g, exp, est, estado); Object.assign(sitio, r.res); });
+          const n = Object.keys(sitio).length;
+          if (n) guardarItems(items.map((x) => (sitio[x.id] ? { ...x, estante: sitio[x.id], pendienteUbicar: false } : x)));
+          setAviso(n === xs.length ? `${n} ubicadas en el carro ${carroN}.` : `${n} de ${xs.length} ubicadas en el carro ${carroN}; el resto no cabe ahí: prueba otro carro.`);
+        };
+        return (
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <p className="text-sm text-slate-600 mb-2">{Cosa} que han entrado y <b>todavía no tienen sitio</b>. No se colocan solas: elige el carro y pulsa <b>Ubicar</b>. Se agrupan por <b>nº de presupuesto</b>.</p>
+            <input value={qPend} onChange={(e) => setQPend(e.target.value)} placeholder="🔍 Buscar por nº de presupuesto (también expediente, vivienda…)" className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm mb-3" />
+            {sinSitio.length === 0 ? <p className="text-sm text-slate-400">No hay nada pendiente de ubicar.</p> : lista.length === 0 ? <p className="text-sm text-slate-400">Nada coincide con esa búsqueda.</p> : (
+              <>
+                {Object.entries(grupos).map(([k, xs]) => (
+                  <div key={k} className="border border-amber-300 bg-amber-50/50 rounded-lg p-2 mb-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <b className="text-base">{/^EXP /.test(k) ? k : `Presupuesto ${k}`}</b>
+                      <span className="text-xs text-slate-600">{xs.length} {xs.length === 1 ? "pieza" : "piezas"}{xs[0].expediente && !/^EXP /.test(k) ? ` · EXP ${xs[0].expediente}` : ""}</span>
+                      <select value={carroPpto[k] || ""} onChange={(e) => setCarroPpto((c) => ({ ...c, [k]: e.target.value }))} className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs">
+                        <option value="">Carro…</option>{opcionesCarro(-1)}
+                      </select>
+                      <button type="button" onClick={() => ubicar(xs, carroPpto[k])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Ubicar todas</button>
+                    </div>
+                    <table className="w-full text-xs">
+                      <tbody>{xs.map((x) => (
+                        <tr key={x.id} className="border-t border-amber-200">
+                          <td className="py-1 pr-2">{x.ref || "—"}{x.refObra ? ` · ${x.refObra}` : ""}</td>
+                          <td className="pr-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} mm</td>
+                          <td className="pr-2 text-slate-500">{x.cliente || ""}</td>
+                          <td className="text-right whitespace-nowrap">
+                            <select value={carroFila[x.id] || ""} onChange={(e) => setCarroFila((c) => ({ ...c, [x.id]: e.target.value }))} className="border border-slate-300 rounded px-1 py-0.5 text-[11px]"><option value="">Carro…</option>{opcionesCarro(-1)}</select>
+                            <button type="button" onClick={() => ubicar([x], carroFila[x.id])} className="ml-1 text-[11px] font-semibold text-[#2E8B57] border border-[#2E8B57] px-2 py-0.5 rounded">Ubicar</button>
+                            <button onClick={() => { if (window.confirm(`¿Borrar esta ${esMosq ? "mosquitera" : "persiana"} del almacén?`)) guardarItems(items.filter((y) => y.id !== x.id)); }} className="ml-1 text-rose-500 align-middle"><Trash2 size={12} /></button>
+                          </td>
+                        </tr>))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+                <button onClick={recolocarSinSitio} className="text-xs font-semibold text-slate-600 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50">Colocar todas automáticamente (solo si te da igual dónde)</button>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {vista === "reorganizar" && (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
