@@ -51983,6 +51983,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [destDia, setDestDia] = useState("");
   const [pinSel, setPinSel] = useState(null); // chincheta de obra elegida para moverla de día: { k, de }
   const [verPlanImg, setVerPlanImg] = useState(false);
+  const [verMat, setVerMat] = useState(null); // caballete o carro abierto desde «Dónde está el material»
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
   const [leyendoPlan, setLeyendoPlan] = useState(false);
   const [errPlan, setErrPlan] = useState("");
@@ -52088,24 +52089,37 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   // Dónde está ahora el material de cada obra (caballetes de cristal y carros de persianas), buscado por nº de presupuesto/expediente
   const dondeMaterial = (o) => {
     const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
-    const claves = new Set([...pptosDe(o)]);
-    (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => { const d = digitosPresu(pr.pres); if (d.length >= 3) claves.add(d); });
+    // Claves SOLO de presupuesto (el nº de expediente puede ser el mismo para muchas obras, p. ej. «UXCAREXP 823»)
+    const claves = new Set();
+    const addP = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) claves.add(dg); });
+    (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => addP(pr.pres));
     const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
-    if (pry) [pry.numero, pry.expediente, pry.referencia].forEach((x) => digs(x).forEach((d) => claves.add(d)));
-    // nº de expediente que va en el nombre («… UXCAREXP 823 LOTE 1»)
-    for (const m of String(o.d.nombre || "").matchAll(/EXP(?:EDIENTE)?\.?\s*(\d{3,})/gi)) claves.add(m[1]);
-    if (!claves.size) return { filas: [], sinClaves: true };
-    const idsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => p.id) : []);
-    const numsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => String(p.numero)) : []);
+    if (pry) addP(pry.presupuestoNumero);
+    if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { addP(e.presupuesto); addP(e.presupuestoNumero); } }
+    // Ventanas de la obra: la posición («V01.375») es única y es la clave más segura
+    const sq = (t) => normPosPlan(t).replace(/\./g, "");
+    const posObra = new Set([...o.viv.values()].flat().map((v) => sq(v.pos)).filter(Boolean));
+    const refOk = (r) => { const q = sq(r); return !!q && posObra.has(q); };
+    const pedsObra = pid ? toArray(pedidos).filter((p) => p.proyectoId === pid) : [];
+    const idsPed = new Set(pedsObra.map((p) => p.id)); const numsPed = new Set(pedsObra.map((p) => String(p.numero)));
+    if (!claves.size && !posObra.size && !pedsObra.length) return { filas: [], sinClaves: true, pers: [] };
+    const pptoOk = (...ts) => digs(ts.join(" ")).some((d) => claves.has(d));
     const filas = [];
-    toArray(almacenRapido.cristales).filter((c) => (c.pedidoId && idsPed.has(c.pedidoId)) || digs([c.expediente, c.secuencia, c.presupuesto, ...toArray(c.piezas).map((x) => x.expediente)].join(" ")).some((d) => claves.has(d)))
-      .forEach((c) => filas.push({ t: "Cristales", txt: `Caballete ${c.lote || c.numero || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"}` }));
+    toArray(almacenRapido.cristales).filter((c) => (c.pedidoId && idsPed.has(c.pedidoId)) || pptoOk(c.presupuesto, ...toArray(c.piezas).map((x) => x.presupuesto || x.ppto)) || toArray(c.piezas).some((x) => refOk(x.ref)))
+      .forEach((c) => filas.push({ t: "Cristales", txt: `Caballete ${c.lote || c.numero || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"}`, ir: { tipo: "cristal", c } }));
     const almacenes = toArray(almacenRapido.almacenesPersianas); const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén de persianas";
-    const g = {};
-    toArray(almacenRapido.persianas).filter((x) => !x.entregada && (numsPed.has(String(x.pedido || "")) || digs([x.expediente, x.presupuesto].join(" ")).some((d) => claves.has(d))))
-      .forEach((x) => { const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; g[k] = (g[k] || 0) + 1; });
-    Object.entries(g).forEach(([k, n]) => filas.push({ t: "Persianas", txt: `${k} · ${n} ud` }));
-    return { filas, sinClaves: false };
+    const g = {}; const pers = [];
+    toArray(almacenRapido.persianas).filter((x) => !x.entregada && !x.colocadaVentana && (numsPed.has(String(x.pedido || "")) || pptoOk(x.presupuesto) || refOk(x.ref)))
+      .forEach((x) => { pers.push(x); const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
+    Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
+    return { filas, sinClaves: false, pers };
+  };
+  // Obra terminada (todas sus ventanas en verde): da de baja sus persianas del almacén, como si se hubieran puesto en la ventana
+  const quitarPersianasObra = (o, pers) => {
+    if (!pers.length || !almacenRapido.savePersianas) return;
+    if (!window.confirm(`¿Dar de baja del almacén las ${pers.length} persiana${pers.length === 1 ? "" : "s"} de «${o.d.nombre}»? Se marcan como puestas en la ventana (ya no salen en los carros).`)) return;
+    const ids = new Set(pers.map((x) => x.id)); const hoy2 = new Date().toISOString().slice(0, 10);
+    almacenRapido.savePersianas(toArray(almacenRapido.persianas).map((y) => (ids.has(y.id) ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoy2, colocadaVentana: true } : y)));
   };
   // Información del planning de producción (PDF «PLANING») por obra y por ventana
   const planVent = new Map(); const presDeObra = new Map();
@@ -52688,8 +52702,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             </div>
             {abierta && (() => { const dm = dondeMaterial(o); return (
               <div className="mx-3 mb-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
-                <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material</div>
-                {dm.filas.length ? dm.filas.map((f, i) => <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>)
+                <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material{col === "verde" && dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="ml-3 px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Obra terminada: dar de baja sus {dm.pers.length} persianas del almacén</button>}</div>
+                {dm.filas.length ? dm.filas.map((f, i) => f.ir ? <button key={i} type="button" onClick={() => setVerMat(f.ir)} className="block text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1"><b>{f.t}:</b> {f.txt} <span className="font-semibold">· 📍 ver dónde</span></button> : <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>)
                   : <div className="text-slate-500">{dm.sinClaves ? "Esta obra no tiene nº de presupuesto/expediente para buscarlo." : "No encuentro cristales ni persianas de esta obra en los almacenes (puede que no hayan llegado o estén apuntados con otro número)."}</div>}
               </div>); })()}
             {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
@@ -52715,6 +52729,25 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })}
+      {verMat && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-3 overflow-y-auto" onClick={() => setVerMat(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl p-4 my-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="font-bold text-slate-800">{verMat.tipo === "cristal" ? `Caballete ${verMat.c.lote || verMat.c.numero || "s/n"}` : `Carro ${verMat.x.estante.carro}`}</div>
+              <button type="button" onClick={() => setVerMat(null)} className="ml-auto text-sm font-semibold text-slate-500 border border-slate-300 rounded px-3 py-1">Cerrar</button>
+            </div>
+            {verMat.tipo === "cristal" ? (
+              <>
+                <div className="mb-2 px-3 py-2 rounded-lg bg-rose-600 text-white text-base font-extrabold">👉 {verMat.c.ubicacion ? ubicacionTexto(verMat.c.ubicacion) : verMat.c.enPuesto ? `Está en ${verMat.c.enPuesto}` : "Pendiente de ubicar (aún no tiene hueco en el mapa)"}</div>
+                <CaballeteFilas c={verMat.c} />
+                {verMat.c.ubicacion && <AlmacenPuestoSoloLectura puestoId="cristales" cristales={toArray(almacenRapido.cristales)} destacarCristal={{ ubicacion: verMat.c.ubicacion, caballete: String(verMat.c.lote || verMat.c.numero || ""), viv: "", medida: "", puesto: false }} />}
+              </>
+            ) : (
+              <AlmacenPuestoSoloLectura puestoId="persianaA" cristales={[]} destacarPers={{ carro: verMat.x.estante.carro, almacenId: almacenDe(verMat.x), lado: verMat.x.estante.lado, nivel: verMat.x.estante.nivel, ref: verMat.x.ref }} />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
