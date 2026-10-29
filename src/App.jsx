@@ -26454,10 +26454,20 @@ async function uxcLeerPaginaIA(file, onProgreso) {
       const pesaMucho = paginas[i].length > 2500000;
       const intentos = [];
       if (!pesaMucho) intentos.push(() => uxcLlamarIA({ type: "document", source: { type: "base64", media_type: "application/pdf", data: paginas[i] } }));
+      // Intento en segundo plano: sin límite de tiempo y con mucho más espacio de respuesta (páginas con muchísimo contenido, que si no «llegan cortadas»)
+      intentos.push(async () => {
+        const bytes = Uint8Array.from(atob(paginas[i]), (c) => c.charCodeAt(0));
+        const f = new File([bytes], `pagina-${i + 1}.pdf`, { type: "application/pdf" });
+        const t = String(await pedirTextoIAEnSegundoPlano(f, UXC_PROMPT_IA, 16000, 100)).replace(/```json|```/g, "").trim();
+        const ini = t.indexOf("{"), fin = t.lastIndexOf("}");
+        const cuerpo = ini !== -1 && fin !== -1 ? t.slice(ini, fin + 1) : t;
+        try { return JSON.parse(cuerpo); } catch (e) { return JSON.parse(repararJsonIA(cuerpo)); }
+      }); intentos[intentos.length - 1].bg = true;
       intentos.push(async () => { const u = await uxcPaginaPdfAImagen(file, i, 1600); return uxcLlamarIA({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: u.split(",")[1] } }); });
       intentos.push(async () => { const u = await uxcPaginaPdfAImagen(file, i, 1100); return uxcLlamarIA({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: u.split(",")[1] } }); });
       let ok = null, ultimo = "";
       for (const t of intentos) {
+        if (/cortada/.test(ultimo) && !t.bg) continue; // si llegó cortada, repetirlo igual no sirve: pasa directo al intento en segundo plano
         try { ok = await t(); break; } catch (e) { console.error(e); ultimo = e.message || String(e); }
       }
       res.push(ok || { tipo: "otro", _fallo: `${file.name || "PDF"} (página ${i + 1}) — ${ultimo}` });
@@ -51711,6 +51721,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [dia, setDia] = useState(hoy); // día elegido en el calendario
   const [mesVer, setMesVer] = useState(hoy.slice(0, 7));
   const [buscar, setBuscar] = useState("");
+  const planImgs = useObjetoFb("controlDiaPlanningImg"); // foto/hoja del planning subido, por mes: { "2026-11": { url, nombre } }
+  const [planImgPend, setPlanImgPend] = useState(null); // imagen del planning recién leído, a guardar con «Guardar planning»
+  const [pinSel, setPinSel] = useState(null); // chincheta de obra elegida para moverla de día: { k, de }
+  const [verPlanImg, setVerPlanImg] = useState(false);
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
   const [leyendoPlan, setLeyendoPlan] = useState(false);
   const [errPlan, setErrPlan] = useState("");
@@ -51924,8 +51938,22 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   };
   const NOMBRES_DIA = { lunes: 0, martes: 1, miercoles: 2, miércoles: 2, jueves: 3, viernes: 4, sabado: 5, sábado: 5, domingo: 6 };
   const leerPlanning = async (file) => {
-    setLeyendoPlan(true); setErrPlan(""); setPlan(null);
+    setLeyendoPlan(true); setErrPlan(""); setPlan(null); setPlanImgPend(null);
     try {
+      // Imagen para verla al lado del calendario (foto o primera hoja del PDF; un Excel no tiene imagen)
+      (async () => {
+        try {
+          let url = null;
+          if ((file.type || "").startsWith("image/")) url = await reducirImagenParaIA(file, 1600);
+          else if (file.type === "application/pdf") {
+            const lib = await cargarPdfJs(); const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+            const pg = await doc.getPage(1); const base = pg.getViewport({ scale: 1 }); const vp = pg.getViewport({ scale: Math.min(3, 1600 / Math.max(base.width, base.height)) });
+            const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+            await pg.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise; url = c.toDataURL("image/jpeg", 0.75);
+          }
+          if (url) setPlanImgPend({ url, nombre: file.name || "planning" });
+        } catch (e) { console.error("No se pudo preparar la imagen del planning", e); }
+      })();
       const prompt = `Es un planning de fabricación (puede ser una lista por días o un CALENDARIO mensual en el que cada semana es una fila y los días lunes a viernes son columnas; la foto puede estar girada). Hoy es ${hoy}. Devuelve SOLO un JSON con este formato, sin texto alrededor:
 {"dias":[{"dia":"lunes","fecha":"YYYY-MM-DD o vacío si no se puede saber","presupuestos":["6243-1","6435-1"]}]}
 Reglas: un elemento por día con trabajo. En un calendario, el número pequeño de la esquina de cada casilla es el día del mes, y el mes sale en el encabezado (p. ej. «noviembre, 9» en la primera casilla); si no pone año, usa el año de hoy o el siguiente si el mes ya pasó. "presupuestos" lleva TODOS los presupuestos de ese día, uno por cada entrada de la casilla, sin inventar ni repetir. Cada entrada empieza por el presupuesto con su versión después del punto: «6243.1 (5 h) EXP 980…» es el presupuesto "6243-1"; ignora las horas entre paréntesis, los números de expediente (EXP, Expediente, P4…), las unidades («5 Uds.») y los colores. Si una entrada solo trae un número de expediente sin presupuesto delante, pon ese número tal cual. Ignora las notas escritas a mano y los totales de unidades de cada semana. Si un día no tiene nada, no lo pongas.`;
@@ -51956,9 +51984,24 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const guardarPlanning = async () => {
     const ok = plan.map((d) => ({ ...d, obras: d.obras.filter((x) => x.incluir) })).filter((d) => d.fecha && d.obras.length);
     for (const d of ok) for (const ob of d.obras) { try { await fbSet(ref(fbDb, `controlDiaObras/${d.fecha}/${limpia(ob.key)}`), true); } catch (e) { /* nada */ } }
+    if (planImgPend && ok.length) { for (const m of [...new Set(ok.map((d) => d.fecha.slice(0, 7)))]) { try { await fbSet(ref(fbDb, `controlDiaPlanningImg/${m}`), { url: planImgPend.url, nombre: planImgPend.nombre, subidoEn: Date.now() }); } catch (e) { console.error(e); alert("Las obras se han guardado, pero no se pudo guardar la imagen del planning: " + e.message); } } }
     if (ok.length) { setDia(ok[0].fecha); setMesVer(ok[0].fecha.slice(0, 7)); }
-    setPlan(null);
+    setPlanImgPend(null); setPlan(null);
   };
+  // Mueve una obra de un día a otro, con sus marcas, horas y notas
+  const moverObraDia = async (k, de, a) => {
+    setPinSel(null);
+    if (!k || !de || !a || de === a) return;
+    try {
+      await fbSet(ref(fbDb, `controlDiaObras/${a}/${k}`), true);
+      for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) {
+        const sn = await fbGet(ref(fbDb, `${nodo}/${de}/${k}`));
+        if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${de}/${k}`), null); }
+      }
+      await fbSet(ref(fbDb, `controlDiaObras/${de}/${k}`), null);
+    } catch (e) { alert("No se pudo mover la obra: " + e.message); }
+  };
+  const obraPorClave = new Map([...obras.values()].map((o) => [limpia(o.d.key), o]));
   const diasMes = (() => { const [y, m] = mesVer.split("-").map(Number); const primero = new Date(y, m - 1, 1); const n = new Date(y, m, 0).getDate(); const hueco = (primero.getDay() + 6) % 7; const arr = Array(hueco).fill(null); for (let i = 1; i <= n; i++) arr.push(`${mesVer}-${String(i).padStart(2, "0")}`); return arr; })();
   const cambiaMes = (n) => { const [y, m] = mesVer.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); setMesVer(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); };
   const nombreMes = new Date(mesVer + "-01T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" });
@@ -52092,21 +52135,44 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         )}
       </div>
-      <div className="mb-3 inline-block rounded-lg border border-slate-300 bg-white p-2">
-        <div className="flex items-center justify-between mb-1">
-          <button type="button" onClick={() => cambiaMes(-1)} className="px-2 font-bold">‹</button>
-          <b className="text-sm capitalize">{nombreMes}</b>
-          <button type="button" onClick={() => cambiaMes(1)} className="px-2 font-bold">›</button>
+      <div className="mb-3 flex flex-wrap items-start gap-3">
+        <div className="rounded-lg border border-slate-300 bg-white p-2 flex-1 min-w-[320px]">
+          <div className="flex items-center justify-between mb-1">
+            <button type="button" onClick={() => cambiaMes(-1)} className="px-2 font-bold">‹</button>
+            <b className="text-sm capitalize">{nombreMes}</b>
+            <button type="button" onClick={() => cambiaMes(1)} className="px-2 font-bold">›</button>
+          </div>
+          {pinSel ? <div className="mb-1 px-2 py-1 rounded bg-amber-100 border border-amber-400 text-xs font-semibold text-amber-900 flex items-center gap-2">📌 Moviendo «{(obraPorClave.get(pinSel.k) || { d: { nombre: pinSel.k } }).d.nombre}»: toca el día al que la quieres pasar <button type="button" onClick={() => setPinSel(null)} className="ml-auto underline">cancelar</button></div> : <div className="mb-1 text-[11px] text-slate-500">📌 Toca la chincheta de una obra y luego el día al que la quieres mover (o arrástrala).</div>}
+          <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
+          <div className="grid grid-cols-7 gap-1">
+            {diasMes.map((f, i) => { if (!f) return <span key={i} />; const ks = Object.keys((asignTodas && asignTodas[f]) || {}); const sel = f === dia; return (
+              <div key={f} onClick={() => { if (pinSel) moverObraDia(pinSel.k, pinSel.de, f); else setDia(f); }}
+                onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); if (pinSel) moverObraDia(pinSel.k, pinSel.de, f); }}
+                className={`rounded-md border-2 p-1 min-h-[4.5rem] cursor-pointer ${pinSel ? "border-dashed border-amber-400" : ""} ${sel ? "bg-slate-900 text-white border-slate-900" : f === hoy ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
+                <div className="text-xs font-bold text-left">{Number(f.slice(8))}</div>
+                {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f; return (
+                  <button key={k} type="button" draggable title={nom + " — toca para moverla de día"}
+                    onDragStart={() => setPinSel({ k, de: f })}
+                    onClick={(e) => { e.stopPropagation(); setPinSel(elegida ? null : { k, de: f }); }}
+                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"}`}>📌 {nom}</button>
+                ); })}
+              </div>
+            ); })}
+          </div>
         </div>
-        <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
-        <div className="grid grid-cols-7 gap-1">
-          {diasMes.map((f, i) => { if (!f) return <span key={i} />; const n = Object.keys((asignTodas && asignTodas[f]) || {}).length; const sel = f === dia; return (
-            <button key={f} type="button" onClick={() => setDia(f)} className={`w-12 h-12 rounded-md border-2 text-sm font-semibold flex flex-col items-center justify-center ${sel ? "bg-slate-900 text-white border-slate-900" : f === hoy ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
-              <span>{Number(f.slice(8))}</span>{n > 0 && <span className={`text-[10px] leading-none ${sel ? "text-emerald-300" : "text-emerald-700"}`}>{n} obra{n === 1 ? "" : "s"}</span>}
-            </button>
-          ); })}
-        </div>
+        {planImgs && planImgs[mesVer] && planImgs[mesVer].url && (
+          <div className="rounded-lg border border-slate-300 bg-white p-2 flex-1 min-w-[280px] max-w-xl">
+            <div className="flex items-center justify-between mb-1 gap-2"><b className="text-xs text-slate-700 truncate">Planning de {nombreMes}</b><button type="button" onClick={() => setVerPlanImg(true)} className="text-xs font-semibold underline text-slate-600">ampliar</button></div>
+            <img src={planImgs[mesVer].url} alt="Planning" onClick={() => setVerPlanImg(true)} className="w-full rounded border border-slate-200 cursor-zoom-in" />
+          </div>
+        )}
       </div>
+      {verPlanImg && planImgs && planImgs[mesVer] && (
+        <div className="fixed inset-0 z-50 bg-black/80 overflow-auto p-3" onClick={() => setVerPlanImg(false)}>
+          <button type="button" className="fixed top-3 right-3 px-3 py-1.5 rounded-md bg-white text-sm font-bold">Cerrar ✕</button>
+          <img src={planImgs[mesVer].url} alt="Planning" className="mx-auto max-w-none w-[1600px]" />
+        </div>
+      )}
       <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
         <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} con material · tuyas y de Uxcar)</summary>
         <label className="mt-2 flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verSinMaterial} onChange={(e) => setVerSinMaterial(e.target.checked)} /> Ver también las que todavía no tienen todo el material ({nSinMaterial}) — salen con lo que les falta</label>
