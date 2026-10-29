@@ -1518,7 +1518,7 @@ export default function App() {
       : clientes.find((c) => /uxcar/i.test(c.nombre || ""));
     if (!cliente) {
       cliente = propia
-        ? { id: uid(), nombre: String(cab.cliente || "").trim() || "Cliente sin nombre", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición propia (Mediciones → Mis obras)" }
+        ? { id: uid(), nombre: String(cab.cliente || "").trim() || "Cliente sin nombre", email: "", telefono: "", movil: String(cab.telefono || "").trim(), notas: "Cliente creado automáticamente desde una medición propia (Mediciones → Mis obras)" }
         : { id: uid(), nombre: "Uxcar", email: "", telefono: "", notas: "Cliente creado automáticamente desde una medición de Aena" };
       saveClientes([cliente, ...clientes]);
     }
@@ -1548,6 +1548,7 @@ export default function App() {
   };
   uxcPuente.crearProyecto = crearProyectoDesdeMedicionUxcar;
   uxcPuente.nombresClientes = () => clientes.map((c) => c.nombre).filter(Boolean);
+  uxcPuente.fichaCliente = (nombre) => { const n = String(nombre || "").trim().toLowerCase(); return n ? (clientes.find((c) => String(c.nombre || "").trim().toLowerCase() === n) || null) : null; };
 
   const nextNumeroProyecto = () => {
     const nums = proyectos.map((p) => parseInt(String(p.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
@@ -2039,6 +2040,12 @@ export default function App() {
       return { ...p, ...patch, ...extra };
     });
     saveProyectos(next);
+    // Marcar «lleva instalación» desde cualquier sitio (p. ej. Fábrica → forma de salida) también crea su ficha en Instalaciones
+    const antes = proyectosRef.current.find((p) => p.id === id);
+    if (patch.llevaInstalacion && antes && !antes.llevaInstalacion) {
+      const hay = toArray(instalaciones).some((i) => i.proyectoId === id);
+      if (!hay) { crearInstalacionParaProyecto({ ...antes, ...patch }); showToast("Ficha de instalación creada — pendiente de instalación"); }
+    }
   };
 
   // Usa un artículo (de la lista de Artículos) en un proyecto: descuenta automáticamente
@@ -4305,6 +4312,23 @@ export default function App() {
   // Documentos de Uxcar → ficha del proyecto: todo lo que Uxcar sube a su expediente (hoja de corte,
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
   // Se apuntan las URLs ya copiadas (uxDocsVistos) para no volver a meter uno que el usuario haya quitado.
+  // Obras que llevan instalación y todavía no tienen ficha en Instalaciones (marcadas desde otros sitios): se crean solas, una sola vez por sesión. Solo el administrador, para no duplicar si hay varios conectados.
+  const instAutoRef = useRef(false);
+  useEffect(() => {
+    if (!currentUser || currentUser.rol !== "Administrador" || loading || instAutoRef.current) return;
+    if (!Array.isArray(instalaciones)) return;
+    const conFicha = new Set(toArray(instalaciones).map((i) => i.proyectoId));
+    const faltan = toArray(proyectos).filter((p) => p && p.llevaInstalacion && !["Entregado", "Cancelado"].includes(p.estadoTrabajo) && !conFicha.has(p.id));
+    instAutoRef.current = true;
+    if (!faltan.length) return;
+    const nuevas = faltan.map((p) => ({
+      id: uid(), proyectoId: p.id, estado: "Pendiente de instalación",
+      presupuestoInstalacion: "", registroHoras: [], gastos: [], materialFurgoneta: [], notas: "",
+      fechaMontaje: p.fechaMontaje || "", vehiculoId: null, creadaEn: Date.now(),
+    }));
+    setInstalaciones((prev) => { const ya = new Set(toArray(prev).map((i) => i.proyectoId)); const add = nuevas.filter((n) => !ya.has(n.proyectoId)); if (!add.length) return prev; const updated = [...add, ...toArray(prev)]; persist("instalaciones", updated); return updated; });
+    showToast(`${faltan.length} obra${faltan.length === 1 ? "" : "s"} con instalación sin ficha: ya se han creado en Instalaciones`);
+  }, [proyectos, instalaciones, currentUser?.id, loading]); // eslint-disable-line
   const uxDocsSyncRef = useRef(false);
   useEffect(() => {
     if (!currentUser || loading || uxDocsSyncRef.current) return;
@@ -8008,8 +8032,9 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
             </Select>
           </Field>
           <Field label="Reparto / Recogida">
-            <Select value={f.estadoLogistica || "Sin definir"} onChange={set("estadoLogistica")}>
-              {ESTADO_LOGISTICA.map((t) => <option key={t}>{t}</option>)}
+            <Select value={f.llevaInstalacion && (!f.estadoLogistica || f.estadoLogistica === "Sin definir") ? "Instalación" : (f.estadoLogistica || "Sin definir")}
+              onChange={(e) => { const v = e.target.value; if (v === "Instalación") setF({ ...f, estadoLogistica: "Sin definir", llevaInstalacion: true }); else setF({ ...f, estadoLogistica: v }); }}>
+              {[...ESTADO_LOGISTICA, "Instalación"].map((t) => <option key={t}>{t}</option>)}
             </Select>
           </Field>
         </div>
@@ -8582,9 +8607,28 @@ function TipoPlanoObra({ proyecto, onInlineUpdate, sinBoton }) {
 const textoPdfSeguro = (t) => String(t == null ? "" : t).replace(/[→⇒]/g, "->").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[^\x20-\x7E\xA0-\xFF€—–·•…]/g, "?");
 // Datos de la obra (o de dónde sale el pedido) para que el proveedor y quien lo vea
 // sepan siempre a qué va: se usan en el correo, el WhatsApp, el PDF y el listado.
+// Nº de presupuesto (con versión si la tiene) de una obra: es lo que se usa SIEMPRE para referenciarla
+const presupuestoDeObra = (proyecto) => {
+  if (!proyecto) return "";
+  const guardado = String(proyecto.presupuestoNumero || "").trim();
+  if (guardado) return guardado;
+  return ((String(proyecto.nombre || "").match(/presupuesto\s*(\d[\d.]*(?:\s*-\s*\d+)?)/i) || [])[1] || "").replace(/\s+/g, "");
+};
+// Los dos datos con los que se identifica una obra en las listas: nº de presupuesto (con versión) y referencia / expediente
+function datosObraPedido(pedido, proyecto, uxExpedientes) {
+  const exp = pedido && pedido.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e.id === pedido.uxcarExpedienteId) : (proyecto && proyecto.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e.id === proyecto.uxcarExpedienteId) : null);
+  let ppto = presupuestoDeObra(proyecto);
+  if (!ppto && exp && /\d{3,}/.test(String(exp.numero || ""))) ppto = String(exp.numero).replace(/^EXP\.?\s*/i, "").trim();
+  if (!ppto && proyecto) ppto = ((String(proyecto.nombre || "").match(/(\d\.\d{3}(?:\s*-\s*\d+)?)/) || [])[1] || "").replace(/\s+/g, "");
+  const ref = [proyecto && proyecto.referencia, proyecto && proyecto.expediente, exp && (exp.referencia || exp.expediente)].filter(Boolean).map((x) => String(x).trim()).filter((x, i, a) => a.indexOf(x) === i).join(" · ");
+  const obra = proyecto ? `#${proyecto.numero} — ${proyecto.nombre || ""}`.trim() : "";
+  return { ppto, ref, obra };
+}
 const lineasObraPedido = (pedido, proyecto, cliente) => {
   const out = [];
   if (proyecto) {
+    const ppto = presupuestoDeObra(proyecto);
+    if (ppto) out.push(`Nº presupuesto: ${ppto}`);
     out.push(`Obra: #${proyecto.numero} — ${proyecto.nombre || ""}`.trim());
     const ref = [proyecto.referencia, proyecto.expediente].filter(Boolean).join(" · ");
     if (ref) out.push(`Referencia: ${ref}`);
@@ -13588,7 +13632,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
       const medidas = l.modo === "libre" && (l.ancho || l.alto) ? ` (${l.ancho || "—"} x ${l.alto || "—"})` : "";
       return `- ${nombreLinea(l)}${medidas}: ${l.cantidad} ud.`;
     }).join("\n");
-    const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
+    const refProyecto = proyecto ? ` — ${presupuestoDeObra(proyecto) ? `Ppto ${presupuestoDeObra(proyecto)} · ` : ""}Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
     const asunto = `Pedido ${pedido.numero} — ALUMAVEL${refProyecto}`;
     const cuerpo = `Buenos días,\n\nLes hacemos el siguiente pedido:\n\n${bloqueObra}\n\n${lineasTexto}\n\n${pedido.fechaEntregaPrevista ? fraseLlegadaProveedor(pedido.fechaEntregaPrevista) : "Les rogamos nos confirmen la fecha de entrega."}\n${pedido.comentarios ? `\nComentarios: ${pedido.comentarios}\n` : ""}\nPor favor, respondan a este mensaje confirmándonos que han recibido el pedido.\n\nUn saludo,\nALUMAVEL`;
     return `mailto:${proveedor.email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
@@ -13607,7 +13651,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
     setEmailEnviadoOk(false);
     try {
       const tieneAdjuntos = (pedido.adjuntosPdf && pedido.adjuntosPdf.length > 0) || toArray(pedido.documentos).some((d) => d.enviar !== false && d.url);
-      const refProyecto = proyecto ? ` — Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
+      const refProyecto = proyecto ? ` — ${presupuestoDeObra(proyecto) ? `Ppto ${presupuestoDeObra(proyecto)} · ` : ""}Obra: ${proyecto.nombre} (#${proyecto.numero})` : "";
       let cuerpo;
       if (tieneAdjuntos) {
         // Con PDF adjunto no hace falta repetir el desglose por escrito: el propio
@@ -14649,6 +14693,7 @@ function TrabajoCristales({ cristales, filtros }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const aplicar = ctx.actualizarPiezasLote || (() => {});
   const reubicar = ctx.moverPiezasACaballete || (() => {});
+  const { pedirPin, modalPin } = usePinCristales();
   const n = Math.max(1, Math.min(60, parseInt(ctx.huecosTrabajo, 10) || 6));
   const hoy = hoyISO();
   const hayFiltro = hayFiltroCristales(filtros);
@@ -14696,11 +14741,15 @@ function TrabajoCristales({ cristales, filtros }) {
     if (!id) return;
     const dest = cristales.find((c) => c.id === id);
     if (!dest) return;
-    if (window.confirm(`¿Reubicar los ${its.length} cristal(es) del hueco ${h} en el caballete ${dest.lote || "s/n"}? Dejarán de estar en trabajo y pasarán a ese caballete.`)) reubicar(its.map((x) => ({ origenId: x.c.id, indice: x.i })), id);
+    if (!window.confirm(`¿Reubicar los ${its.length} cristal(es) del hueco ${h} en el caballete ${dest.lote || "s/n"}? Dejarán de estar en trabajo y pasarán a ese caballete.`)) return;
+    const libre = enTallerCab(dest) && its.every((x) => enTallerCab(x.c));
+    pedirPin(libre, "Hace falta el PIN para mover cristales entre caballetes. Solo es libre entre caballetes del Taller.", () => reubicar(its.map((x) => ({ origenId: x.c.id, indice: x.i })), id));
   };
+
   const puedeQuitar = n > 1 && itemsDe(n).length === 0;
   return (
     <div className="space-y-4">
+      {modalPin}
       <div className="bg-white border border-slate-200 rounded-lg p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
@@ -14933,6 +14982,13 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   const [abrirPedidoCristal, setAbrirPedidoCristal] = useState(0); // al pulsar «Subir pedido de cristales» se salta a «Control de pedidos» y se abre el selector de archivo
   const [verReorganizar, setVerReorganizar] = useState(false);
   const [pidePin, setPidePin] = useState(false);
+  const { pedirPin, modalPin } = usePinCristales();
+  // Baja de caballetes: libre solo si TODOS están en el taller; si no, PIN.
+  const borrarCaballetes = (ids, texto) => {
+    const lista = cristales.filter((c) => ids.includes(c.id));
+    const libre = lista.length > 0 && lista.every(enTallerCab);
+    pedirPin(libre, texto || "Hace falta el PIN para dar de baja caballetes que no están en el Taller.", () => { if (onDeleteMany && ids.length > 1) onDeleteMany(ids); else ids.forEach((id) => onDelete(id)); });
+  };
   const [verUltimos, setVerUltimos] = useState(false);
   const [abiertosPend, setAbiertosPend] = useState(() => new Set()); // caballetes pendientes con el detalle de cristales desplegado
   const alternarPend = (id) => setAbiertosPend((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
@@ -15325,13 +15381,13 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                       <span>{unidades(c)} ud · {toArray(c.piezas).length} pieza{toArray(c.piezas).length === 1 ? "" : "s"}</span>
                       <span className="text-slate-500">{textoSitioCab(c)}</span>
                       {c.fechaEntrada || c.fecha ? <span className="text-slate-400">{fmtDate(c.fechaEntrada || c.fecha)}</span> : null}
-                      <button onClick={() => { if (window.confirm(`¿Borrar este caballete ${c.lote || ""} (EXP ${c.expediente || "—"}, ${unidades(c)} ud, ${textoSitioCab(c)})? No se puede deshacer.`)) onDelete(c.id); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar este</button>
+                      <button onClick={() => { if (window.confirm(`¿Borrar este caballete ${c.lote || ""} (EXP ${c.expediente || "—"}, ${unidades(c)} ud, ${textoSitioCab(c)})? No se puede deshacer.`)) borrarCaballetes([c.id]); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar este</button>
                     </div>
                   ))}
                   <button onClick={() => {
                     const dejar = v.find((c) => c.ubicacion) || v[0];
                     const sobran = v.filter((c) => c.id !== dejar.id);
-                    if (window.confirm(`Dejo el caballete ${dejar.lote || ""} (${textoSitioCab(dejar)}) y borro los otros ${sobran.length}. No se puede deshacer. ¿Sigo?`)) { if (onDeleteMany) onDeleteMany(sobran.map((c) => c.id)); else sobran.forEach((c) => onDelete(c.id)); }
+                    if (window.confirm(`Dejo el caballete ${dejar.lote || ""} (${textoSitioCab(dejar)}) y borro los otros ${sobran.length}. No se puede deshacer. ¿Sigo?`)) borrarCaballetes(sobran.map((c) => c.id));
                   }} className="mt-1 text-[11px] font-semibold text-rose-700 border border-rose-300 px-2 py-0.5 rounded hover:bg-rose-100">Dejar el ubicado y borrar los demás</button>
                 </div>
               ))}
@@ -15352,11 +15408,11 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                   <span className="font-semibold">Caballete {c.lote || "sin número"}</span>
                   <span>EXP {c.expediente || "—"}</span>
                   <span className="text-slate-500">{textoSitioCab(c)}</span>
-                  <button onClick={() => { if (window.confirm(`¿Borrar el caballete ${c.lote || ""} (sin cristales, ${textoSitioCab(c)})? El hueco queda libre.`)) onDelete(c.id); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar y dejar el sitio libre</button>
+                  <button onClick={() => { if (window.confirm(`¿Borrar el caballete ${c.lote || ""} (sin cristales, ${textoSitioCab(c)})? El hueco queda libre.`)) borrarCaballetes([c.id]); }} className="ml-auto text-[11px] font-semibold text-white bg-rose-600 px-2 py-0.5 rounded hover:bg-rose-700">Borrar y dejar el sitio libre</button>
                 </div>
               ))}
             </div>
-            {vacios.length > 1 && <button onClick={() => { if (window.confirm(`¿Borrar los ${vacios.length} caballetes sin cristales y dejar sus huecos libres? No se puede deshacer.`)) { if (onDeleteMany) onDeleteMany(vacios.map((c) => c.id)); else vacios.forEach((c) => onDelete(c.id)); } }} className="mt-2 text-xs font-semibold text-rose-700 border border-rose-300 px-3 py-1 rounded hover:bg-rose-100">Borrar los {vacios.length} vacíos</button>}
+            {vacios.length > 1 && <button onClick={() => { if (window.confirm(`¿Borrar los ${vacios.length} caballetes sin cristales y dejar sus huecos libres? No se puede deshacer.`)) borrarCaballetes(vacios.map((c) => c.id)); }} className="mt-2 text-xs font-semibold text-rose-700 border border-rose-300 px-3 py-1 rounded hover:bg-rose-100">Borrar los {vacios.length} vacíos</button>}
           </div>
         );
       })()}
@@ -15448,7 +15504,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
               <button
                 onClick={() => {
                   if (window.confirm(`¿Borrar los ${pendientes.length} caballete(s) pendientes que ves ahora en la lista (según el buscador)? Esta acción no se puede deshacer.`)) {
-                    if (onDeleteMany) onDeleteMany(pendientes.map((c) => c.id)); else pendientes.forEach((c) => onDelete(c.id));
+                    borrarCaballetes(pendientes.map((c) => c.id));
                   }
                 }}
                 className="text-xs font-semibold text-rose-600 border border-rose-200 px-3 py-1.5 rounded-md hover:bg-rose-50"
@@ -15499,7 +15555,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
                         Asignar ubicación
                       </button>
                       <button
-                        onClick={() => { if (window.confirm("¿Borrar este caballete pendiente?")) onDelete(c.id); }}
+                        onClick={() => { if (window.confirm("¿Borrar este caballete pendiente?")) borrarCaballetes([c.id]); }}
                         className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1.5 rounded-md hover:bg-rose-50"
                       >
                         Borrar
@@ -15620,7 +15676,11 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           zonaInicial={zonaForzada}
           sugerencia={sugerirUbicacion(asignando)}
           onClose={() => { setAsignando(null); setZonaForzada(null); }}
-          onConfirmar={(ubicacion) => { const ok = onUbicar(asignando.id, ubicacion); if (ok) { setAsignando(null); setZonaForzada(null); } }}
+          onConfirmar={(ubicacion) => {
+            const cab = asignando;
+            // libre solo si el caballete ya está en el taller y se queda en el taller (mover dentro del taller)
+            pedirPin(enTallerCab(cab) && ubicacion.zona === "taller", "Hace falta el PIN para mover caballetes de un lado a otro o colocarlos por primera vez. Dentro del Taller no hace falta.", () => { const ok = onUbicar(cab.id, ubicacion); if (ok) { setAsignando(null); setZonaForzada(null); } });
+          }}
         />
       )}
 
@@ -15630,13 +15690,14 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
           ubicacion={verDetalle}
           cristalesEnHueco={cristales.filter((c) => c.ubicacion && c.ubicacion.zona === verDetalle.zona && c.ubicacion.fila === verDetalle.fila && c.ubicacion.hueco === verDetalle.hueco)}
           onClose={() => setVerDetalle(null)}
-          onLiberar={(id) => onLiberar(id)}
-          onEliminar={(id) => onDelete(id)}
+          onLiberar={(id) => pedirPin(false, "Hace falta el PIN para sacar un caballete de su sitio (vuelve a pendientes).", () => onLiberar(id))}
+          onEliminar={(id) => borrarCaballetes([id])}
           onMover={(cristal) => { setVerDetalle(null); setZonaForzada(null); setAsignando(cristal); }}
           onMoverTaller={(cristal) => { setVerDetalle(null); setZonaForzada("taller"); setAsignando(cristal); }}
           onUpdate={onUpdate}
         />
       )}
+      {modalPin}
     </div>
   );
 }
@@ -16143,6 +16204,7 @@ function IncidenciaCristal({ pieza, cristal, onGuardar, etiqueta, dondeEsta }) {
 // Pasa UN cristal (una línea) a otro caballete: escribes su número (o lo eliges de la lista) y pulsas Pasar.
 function MoverPiezaACaballete({ todos, origenId, indice, etiqueta }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const { pedirPin, modalPin } = usePinCristales();
   const [dest, setDest] = useState("");
   const idLista = useRef(`cabs-${Math.random().toString(36).slice(2, 8)}`).current;
   const clave = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
@@ -16153,11 +16215,14 @@ function MoverPiezaACaballete({ todos, origenId, indice, etiqueta }) {
     const dst = lista.find((c) => clave(c.lote) === d);
     if (!dst) { alert(`No existe el caballete "${dest}". Escribe el número de uno que ya esté en el almacén de cristales.`); return; }
     if (!window.confirm(`¿Pasar ${etiqueta || "este cristal"} al caballete ${dst.lote}?`)) return;
-    if (ctx.moverPiezasACaballete) ctx.moverPiezasACaballete([{ origenId, indice }], dst.id);
-    setDest("");
+    const org = toArray(todos).find((c) => c.id === origenId);
+    pedirPin(enTallerCab(org) && enTallerCab(dst), "Hace falta el PIN para mover cristales entre caballetes. Solo es libre entre caballetes del Taller.", () => {
+      if (ctx.moverPiezasACaballete) ctx.moverPiezasACaballete([{ origenId, indice }], dst.id);
+      setDest("");
+    });
   };
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex items-center gap-1">{modalPin}
       <input list={idLista} value={dest} onChange={(e) => setDest(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); pasar(); } }} placeholder="Caballete…" className="border border-slate-300 rounded px-1.5 py-0.5 text-[11px] w-24 bg-white" />
       <datalist id={idLista}>{lista.map((c) => <option key={c.id} value={c.lote}>{[c.expediente, c.ubicacion ? "en mapa" : ""].filter(Boolean).join(" · ")}</option>)}</datalist>
       <button type="button" onClick={pasar} disabled={!dest.trim()} className="text-[11px] font-semibold border border-slate-300 bg-white rounded px-1.5 py-0.5 hover:bg-slate-50 disabled:opacity-40">Pasar</button>
@@ -16165,6 +16230,7 @@ function MoverPiezaACaballete({ todos, origenId, indice, etiqueta }) {
   );
 }
 function PiezasCristalTabla({ cristal, onUpdate, todos }) {
+  const { pedirPin, modalPin } = usePinCristales();
   const piezas = cristal.piezas || [];
   const [verAnadir, setVerAnadir] = useState(false);
   const [nuevo, setNuevo] = useState({ ref: "", expediente: "", ancho: "", alto: "", cantidad: 1, pedido: "" });
@@ -16173,7 +16239,7 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
   const guardarIncidencia = (i, cambios) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, ...cambios } : p)) });
   const quitar = (i, p) => {
     if (!window.confirm(`¿Quitar de este caballete el cristal ${p.ref ? `"${p.ref}"` : `de ${p.ancho}×${p.alto}`}? No se borra el cristal, solo se saca de aquí.`)) return;
-    onUpdate(cristal.id, { piezas: piezas.filter((_, j) => j !== i) });
+    pedirPin(enTallerCab(cristal), "Hace falta el PIN para quitar cristales de un caballete que no está en el Taller.", () => onUpdate(cristal.id, { piezas: piezas.filter((_, j) => j !== i) }));
   };
   const anadir = () => {
     const ancho = parseFloat(nuevo.ancho) || 0, alto = parseFloat(nuevo.alto) || 0;
@@ -16242,6 +16308,7 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
   const conIncidencia = piezas.filter((p) => p.incidencia).length;
   return (
     <div className="mt-2">
+      {modalPin}
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="font-semibold text-slate-600">Cristales ({piezas.length} líneas)</span>
         <div className="flex items-center gap-2">
@@ -17494,7 +17561,28 @@ async function huellaPinReorganizar(pin) {
   const buf = await crypto.subtle.digest("SHA-256", datos);
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function PinReorganizarModal({ onOk, onCancelar }) {
+// ---- Quién puede mover y dar de baja caballetes de cristal ----
+// Regla: SOLO los caballetes que están en el Taller los pueden mover (dentro del taller) y dar de baja los trabajadores.
+// Todo lo demás (caballetes de Arriba/Abajo o pendientes, pasar de un lado a otro, mover cristales entre caballetes,
+// sacar un cristal de su caballete) pide el PIN; el administrador entra sin PIN. Tras un PIN correcto hay 3 minutos de margen.
+const enTallerCab = (c) => !!(c && c.ubicacion && c.ubicacion.zona === "taller");
+let pinCristalesValidoHasta = 0;
+function usePinCristales() {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const [req, setReq] = useState(null);
+  // libre = true si la acción la puede hacer cualquiera (todo ocurre dentro del taller)
+  const pedirPin = (libre, motivo, accion) => {
+    if (libre || ctx.esAdmin || Date.now() < pinCristalesValidoHasta) { accion(); return; }
+    setReq({ motivo, accion });
+  };
+  const modalPin = req ? (
+    <PinReorganizarModal motivo={req.motivo}
+      onOk={() => { pinCristalesValidoHasta = Date.now() + 3 * 60 * 1000; const a = req.accion; setReq(null); a(); }}
+      onCancelar={() => setReq(null)} />
+  ) : null;
+  return { pedirPin, modalPin };
+}
+function PinReorganizarModal({ onOk, onCancelar, motivo }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
@@ -17511,15 +17599,15 @@ function PinReorganizarModal({ onOk, onCancelar }) {
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onCancelar}>
       <div className="bg-white rounded-lg p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-bold text-slate-800 mb-1">{sinPin ? "Reorganizar bloqueado" : "Introduce el PIN"}</h3>
+        <h3 className="font-bold text-slate-800 mb-1">{sinPin ? "Bloqueado: falta el PIN" : "Introduce el PIN"}</h3>
         {sinPin ? (
           <>
-            <p className="text-xs text-slate-500 mb-3">Todavía no hay un PIN para reorganizar los caballetes. Pídele al administrador que lo cree en Administración.</p>
+            <p className="text-xs text-slate-500 mb-3">Todavía no hay un PIN para mover o dar de baja caballetes fuera del taller. Pídele al administrador que lo cree en Administración.</p>
             <button onClick={onCancelar} className="text-sm font-semibold text-slate-600 border border-slate-300 px-3.5 py-2 rounded-md hover:bg-slate-50">Cerrar</button>
           </>
         ) : (
           <>
-            <p className="text-xs text-slate-500 mb-3">Hace falta para reorganizar los caballetes del mapa.</p>
+            <p className="text-xs text-slate-500 mb-3">{motivo || "Hace falta para reorganizar los caballetes del mapa."}</p>
             <input type="password" inputMode="numeric" autoComplete="off" autoFocus maxLength={8} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); entrar(); } }} className="w-full border border-slate-300 rounded-md px-3 py-2 text-lg tracking-widest mb-2" />
             {error && <div className="text-xs text-rose-600 mb-2">{error}</div>}
             <div className="flex items-center gap-2">
@@ -17550,8 +17638,8 @@ function PinReorganizarAdmin({ hash, onGuardar }) {
   const caja = (v, set, ph) => <input type="password" inputMode="numeric" autoComplete="off" maxLength={8} value={v} onChange={(e) => set(e.target.value.replace(/\D/g, ""))} placeholder={ph} className="border border-slate-300 rounded-md px-3 py-2 text-sm w-40" />;
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6">
-      <h2 className="font-display font-bold text-slate-800 text-sm mb-1">PIN para reorganizar los caballetes de cristal</h2>
-      <p className="text-xs text-slate-500 mb-3">Protege el botón "Reorganizar por expediente" del almacén de cristales. Los administradores entran siempre sin PIN, así que no se pierde el acceso aunque se olvide. {hash ? <b className="text-emerald-700">Ahora hay un PIN puesto.</b> : <b className="text-amber-700">Ahora no hay PIN: solo los administradores pueden reorganizar.</b>}</p>
+      <h2 className="font-display font-bold text-slate-800 text-sm mb-1">PIN del almacén de cristales</h2>
+      <p className="text-xs text-slate-500 mb-3">Protege: "Reorganizar por expediente", mover caballetes de un lado a otro, mover cristales entre caballetes y dar de baja caballetes fuera del Taller. En el Taller, mover dentro del taller y dar de baja no piden PIN. Los administradores entran siempre sin PIN, así que no se pierde el acceso aunque se olvide. {hash ? <b className="text-emerald-700">Ahora hay un PIN puesto.</b> : <b className="text-amber-700">Ahora no hay PIN: solo los administradores pueden reorganizar.</b>}</p>
       <div className="flex flex-wrap items-center gap-2">
         {caja(nuevo, setNuevo, "PIN nuevo")}
         {caja(repetir, setRepetir, "Repite el PIN")}
@@ -20728,6 +20816,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const yaPedido = (p) => !!p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado);
   const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
   const [provFiltroFab, setProvFiltroFab] = useState("");
+  const [qPpto, setQPpto] = useState(""); // buscador 1: nº de presupuesto
+  const [qRefFab, setQRefFab] = useState(""); // buscador 2: referencia / expediente / obra
   const proveedoresEnCurso = [...new Map(pedidosEnCurso.filter((p) => p.proveedorId).map((p) => [p.proveedorId, proveedorNombre(p.proveedorId)])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
 
   // Fecha de llegada prevista: filtro + lo atrasado en rojo (los pedidos atrasados salen primero)
@@ -20747,13 +20837,22 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     else if (fechaFiltroFab === "sinfecha") base = base.filter((p) => !fechaPed(p));
     else if (fechaFiltroFab === "rango") base = base.filter((p) => fechaPed(p) && (!fechaDesdeFab || fechaPed(p) >= fechaDesdeFab) && (!fechaHastaFab || fechaPed(p) <= fechaHastaFab));
     base = [...base].sort((a, b) => (fechaPed(a) || "9999").localeCompare(fechaPed(b) || "9999"));
+    const sinPuntos = (t) => String(t || "").toLowerCase().replace(/[.\s]/g, "");
+    if (qPpto.trim() || qRefFab.trim()) {
+      base = base.filter((p) => {
+        const d = datosObraPedido(p, p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null, uxExpedientes);
+        if (qPpto.trim() && !sinPuntos(d.ppto).includes(sinPuntos(qPpto))) return false;
+        if (qRefFab.trim() && !(sinPuntos(d.ref).includes(sinPuntos(qRefFab)) || sinPuntos(d.obra).includes(sinPuntos(qRefFab)))) return false;
+        return true;
+      });
+    }
     if (!q) return base;
     return base.filter((p) => {
       const s = `${p.numero} ${(p.proveedorExterno || proveedorNombre(p.proveedorId))} ${p.comentarios || ""} ${(p.lineas || []).map((l) => l.modo === "libre" ? l.referencia : materialInfo(l.materialId)?.descripcion).join(" ")}`.toLowerCase();
       const ql = q.toLowerCase().trim();
       return s.includes(ql) || s.replace(/[.\s]/g, "").includes(ql.replace(/[.\s]/g, "")); // «6994» encuentra «6.994-1»
     });
-  }, [pedidosEnCurso, q, provFiltroFab, fechaFiltroFab, fechaDesdeFab, fechaHastaFab, hoyFab]);
+  }, [pedidosEnCurso, q, qPpto, qRefFab, proyectos, uxExpedientes, provFiltroFab, fechaFiltroFab, fechaDesdeFab, fechaHastaFab, hoyFab]);
   const nAtrasadosFab = pedidosEnCurso.filter((p) => diasAtraso(p) > 0).length;
   const [abiertoEcoId, setAbiertoEcoId] = useState(null);
   const ecoAbierto = abiertoEcoId && filtered.some((p) => p.id === abiertoEcoId) ? abiertoEcoId : null; // si el pedido ya no está pendiente (se dio por llegado), vuelve a la lista
@@ -21187,6 +21286,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por proveedor, material, referencia..." className={inputCls + " pl-9"} />
           </div>
+          <div className="mb-4 flex flex-wrap gap-2">
+            <div className="relative w-56"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={qPpto} onChange={(e) => setQPpto(e.target.value)} placeholder="Nº de presupuesto (6036)" className={inputCls + " pl-9"} /></div>
+            <div className="relative w-64"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={qRefFab} onChange={(e) => setQRefFab(e.target.value)} placeholder="Referencia / expediente (EXP 728)" className={inputCls + " pl-9"} /></div>
+          </div>
           <div className="mb-4 max-w-xs">
             <Select value={provFiltroFab} onChange={(e) => setProvFiltroFab(e.target.value)}>
               <option value="">Todos los proveedores</option>
@@ -21218,10 +21321,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto mb-4">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
-                  <tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Obra</th><th className="text-left px-3 py-2">Pedido hecho</th><th className="text-left px-3 py-2">Llega</th><th className="text-left px-3 py-2">Estado</th></tr>
+                  <tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Nº presupuesto</th><th className="text-left px-3 py-2">Referencia / expediente</th><th className="text-left px-3 py-2">Pedido hecho</th><th className="text-left px-3 py-2">Llega</th><th className="text-left px-3 py-2">Estado</th></tr>
                 </thead>
                 <tbody>
-                  {filtered.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No hay materiales pendientes de confirmar llegada.</td></tr>}
+                  {filtered.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No hay materiales pendientes de confirmar llegada.</td></tr>}
                   {filtered.map((p) => {
                     const pr = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null;
                     const tipo = tipoPedidoMaterial(p) === "persianas" ? "Persianas" : "Cristales";
@@ -21232,7 +21335,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                         <td className="px-3 py-2 font-semibold">#{p.numero}</td>
                         <td className="px-3 py-2">{tipo}</td>
                         <td className="px-3 py-2">{p.proveedorExterno || proveedorNombre(p.proveedorId)}</td>
-                        <td className="px-3 py-2 text-xs text-slate-600 max-w-[260px]">{pr ? `#${pr.numero} — ${pr.nombre}` : "—"}</td>
+                        {(() => { const d = datosObraPedido(p, pr, uxExpedientes); return (<>
+                          <td className="px-3 py-2 font-bold whitespace-nowrap">{d.ppto || <span className="text-slate-400 font-normal">—</span>}</td>
+                          <td className="px-3 py-2 text-xs max-w-[240px]"><div className="font-semibold text-slate-800">{d.ref || <span className="text-slate-400 font-normal">sin referencia</span>}</div>{d.obra && <div className="text-slate-500">{d.obra}</div>}</td>
+                        </>); })()}
                         <td className="px-3 py-2 whitespace-nowrap">{p.fechaCompra ? fmtDate(p.fechaCompra) : <b className="text-red-600">sin fecha</b>}</td>
                         <td className={`px-3 py-2 whitespace-nowrap ${at > 0 ? "text-red-700 font-bold" : ""}`}>{p.fechaEntregaPrevista ? fmtDate(p.fechaEntregaPrevista) : <b className="text-red-600">sin fecha</b>}</td>
                         <td className="px-3 py-2">
@@ -25473,7 +25579,7 @@ function MedicionesModulo({ mediciones, view, setView, editId, setEditId, detail
    partidas y extras son mapas por id, y cada edición escribe solo su trozo, para que dos
    personas puedan medir ventanas distintas a la vez sin pisarse. */
 const UXC_NODO = "medicionesUxcar";
-const uxcPuente = { crearProyecto: null, nombresClientes: () => [] }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
+const uxcPuente = { crearProyecto: null, nombresClientes: () => [], fichaCliente: () => null }; // App deja aquí la función que crea la obra (Proyecto) desde una vivienda medida
 const uxcNav = { id: null, propia: false, discrepancias: false }; // el aviso de arriba deja aquí el expediente que hay que abrir
 const UXC_FOTOS = "medicionesUxcarFotos"; // fotos de cada ventana (fallos, estado del hueco…), aparte para no cargar la lista
 const UXC_PLANO = "medicionesUxcarPlano"; // la foto del plano va aparte para no cargarla con la lista
@@ -26245,10 +26351,10 @@ function MedicionesUxcarZona({ propia = false }) {
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
               return (
                 <tr key={x.id} onClick={() => setAbiertoId(x.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
-                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div></td>
+                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div>{c.citaFecha && <div className="text-[11px] font-semibold text-sky-700">📅 {uxcFechaCorta(c.citaFecha)}{c.citaHora ? ` · ${c.citaHora}` : ""}</div>}</td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (c.cliente || "—") : (c.direccion || "—")}<div className="text-[11px] text-slate-400">{propia ? c.direccion : c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (() => { const rr = uxcResumenOficina(x); return `${rr.medidas.length} de ${rr.activas.length}`; })() : uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{!uxcTelefonoEfectivo(x) && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Falta teléfono</Badge>}{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
                 </tr>
               );
             })}
@@ -26599,6 +26705,68 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
 }
 
 /* ---------- Enviar a oficina / meter prisa ---------- */
+// Teléfono con el que se llama al cliente de una medición: el escrito en el expediente o, si no, el de la ficha del cliente del CRM
+function uxcFichaYTelefono(exp) {
+  const cab = (exp && exp.cab) || {};
+  const ficha = uxcPuente.fichaCliente ? uxcPuente.fichaCliente(cab.cliente) : null;
+  const propio = String(cab.telefono || "").trim();
+  const deFicha = ficha ? String(ficha.movil || ficha.telefono || "").trim() : "";
+  return { ficha, propio, deFicha, tel: propio || deFicha };
+}
+const uxcTelefonoEfectivo = (exp) => uxcFichaYTelefono(exp).tel;
+const uxcFechaCorta = (f) => (f ? String(f).split("-").reverse().slice(0, 2).join("/") : "");
+function UxcContactoCita({ exp }) {
+  const cab = exp.cab || {};
+  const propia = !!exp.propia;
+  const { ficha, propio, deFicha, tel } = uxcFichaYTelefono(exp);
+  // El contacto y la cita no dependen de los pedidos, así que se pueden corregir aunque la medición esté enviada a oficina
+  const guardarC = (k, v) => fbSet(ref(fbDb, `${UXC_NODO}/${exp.id}/cab/${k}`), String(v || "").trim() === "" ? null : String(v).trim()).catch((e) => alert("No se pudo guardar: " + e.message));
+  const destino = [cab.direccion, cab.municipio].filter(Boolean).join(", ");
+  const mapa = destino ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destino)}&travelmode=driving` : "";
+  const digitos = tel.replace(/\D/g, "");
+  const wa = digitos ? `https://wa.me/${digitos.length === 9 ? "34" + digitos : digitos}` : "";
+  const calendario = (() => {
+    if (!cab.citaFecha) return "";
+    const f = String(cab.citaFecha).replace(/-/g, "");
+    const h = String(cab.citaHora || "09:00").replace(":", "") + "00";
+    const [hh, mm] = String(cab.citaHora || "09:00").split(":").map((x) => parseInt(x, 10) || 0);
+    const fin = String((hh + 1) % 24).padStart(2, "0") + String(mm).padStart(2, "0") + "00";
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent("Medir " + (cab.expediente || "obra") + (cab.cliente ? " · " + cab.cliente : ""))}&dates=${f}T${h}/${f}T${fin}&location=${encodeURIComponent(destino)}&details=${encodeURIComponent(tel ? "Tel. " + tel : "")}`;
+  })();
+  const falta = !tel;
+  return (
+    <div className={`mb-4 rounded-lg border-2 p-3 ${falta ? "border-rose-400 bg-rose-50" : "border-slate-200 bg-white"}`}>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <div className="text-sm font-bold text-slate-800">Contacto y cita</div>
+        {falta
+          ? <span className="text-xs font-bold text-rose-700">⚠ Falta el teléfono (obligatorio para enviar a oficina)</span>
+          : ficha && !propio ? <span className="text-xs font-semibold text-emerald-700">✓ Teléfono de la ficha del cliente «{ficha.nombre}»</span>
+          : <span className="text-xs font-semibold text-emerald-700">✓ Teléfono apuntado en este expediente</span>}
+        {!ficha && cab.cliente ? <span className="text-xs text-amber-700 font-semibold">· No existe ficha de «{cab.cliente}» en Clientes{propia ? " (se creará con este teléfono al enviar)" : ""}</span> : null}
+        {ficha && !deFicha && !propio ? <span className="text-xs text-amber-700 font-semibold">· La ficha existe pero no tiene teléfono</span> : null}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <Field label={propia ? "Teléfono del cliente" : "Teléfono del propietario"} required>
+          <UxcCel tipo="tel" valor={cab.telefono} placeholder={deFicha || "Obligatorio"} onGuardar={(v) => guardarC("telefono", v)} />
+        </Field>
+        <Field label="Dirección">
+          <UxcCel voz valor={cab.direccion} onGuardar={(v) => guardarC("direccion", v)} />
+        </Field>
+        <Field label="Fecha de la cita"><UxcCel tipo="date" valor={cab.citaFecha} onGuardar={(v) => guardarC("citaFecha", v)} /></Field>
+        <Field label="Hora"><UxcCel tipo="time" valor={cab.citaHora} onGuardar={(v) => guardarC("citaHora", v)} /></Field>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mt-3">
+        {mapa
+          ? <a href={mapa} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-lg text-sm font-bold text-white bg-sky-600 hover:bg-sky-700">📍 Cómo llegar (Google Maps)</a>
+          : <span className="px-3 py-2 rounded-lg text-sm font-semibold text-rose-700 border border-rose-300 bg-white">Falta la dirección para el mapa</span>}
+        {tel && <a href={`tel:${tel.replace(/\s/g, "")}`} className="px-3 py-2 rounded-lg text-sm font-bold text-white bg-[#2E8B57] hover:opacity-90">📞 Llamar {tel}</a>}
+        {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-lg text-sm font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">WhatsApp</a>}
+        {calendario && <a href={calendario} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-lg text-sm font-semibold border border-slate-300 text-slate-700 hover:bg-slate-50">📅 Añadir al calendario</a>}
+        {cab.citaFecha && <span className="text-sm font-semibold text-slate-700">Cita: {uxcFechaCorta(cab.citaFecha)}{cab.citaHora ? ` a las ${cab.citaHora}` : " (sin hora)"}</span>}
+      </div>
+    </div>
+  );
+}
 function UxcEnvio({ exp, guardar }) {
   const r = uxcResumenOficina(exp);
   const cab = exp.cab || {};
@@ -26612,6 +26780,7 @@ function UxcEnvio({ exp, guardar }) {
   const enlace = (() => { try { return window.location.origin; } catch (e) { return ""; } })();
   const propia = !!exp.propia;
   const enviar = async () => {
+    if (!uxcTelefonoEfectivo(exp)) { alert("Antes de enviar a oficina hay que poner el teléfono del cliente en el cuadro «Contacto y cita» (arriba). Es obligatorio."); return; }
     if (propia && !String(cab.cliente || "").trim()) { alert("Antes de enviar, pon el cliente en la pestaña «Datos de la obra» (el nombre como está en Clientes, o uno nuevo: se creará solo)."); return; }
     if (propia && !r.activas.length) { alert("Todavía no has añadido ninguna ventana."); return; }
     let aviso = "";
@@ -26851,6 +27020,7 @@ function UxcExpediente({ exp, onBack }) {
         <span className="text-sm text-slate-500">{cab.direccion}</span>
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
       </div>
+      <UxcContactoCita exp={exp} />
       <UxcEnvio exp={exp} guardar={guardar} />
       {exp.envio && (
         <div className={`mb-4 p-3 rounded-lg border text-sm flex flex-wrap items-center gap-3 ${bloqueada ? "bg-slate-100 border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-800"}`}>
@@ -51025,6 +51195,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
   const [dia, setDia] = useState(hoy); // día elegido en el calendario
   const [mesVer, setMesVer] = useState(hoy.slice(0, 7));
   const [buscar, setBuscar] = useState("");
+  const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
+  const [leyendoPlan, setLeyendoPlan] = useState(false);
+  const [errPlan, setErrPlan] = useState("");
+  const [lunesSemana, setLunesSemana] = useState(() => { const d = new Date(); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return d.toISOString().slice(0, 10); });
+  const inputPlanRef = useRef(null);
   const marcasTodas = useObjetoFb("controlDia");
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
   const asignTodas = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } }
@@ -51047,16 +51222,67 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
     if (!o.viv.has(g)) o.viv.set(g, []);
     o.viv.get(g).push({ id: limpia(hh.ventana.id || hh.ventana.pos || baseDe(hh.ventana)), pos: hh.ventana.pos || "", fab: hh.lote.fab, tip: hh.ventana.tipo || hh.ventana.pos, medida: hh.ventana.medida || "", color: hh.ventana.color || "" });
   });
+  // Todas las obras (tuyas y de Uxcar), tengan o no hoja de corte cargada: sin ella se marcan enteras, sin viviendas ni ventanas
+  toArray(proyectos).filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo)).forEach((p) => {
+    const key = `p-${p.id}`;
+    if (!obras.has(key)) obras.set(key, { d: { key, tipo: "p", id: p.id, nombre: `#${p.numero} ${p.nombre || ""}`.trim() }, viv: new Map() });
+  });
+  toArray(uxExpedientes).forEach((e) => {
+    const key = `u-${e.id}`;
+    if (!obras.has(key)) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
+  });
+  const pptosDe = (o) => {
+    const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
+    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
+    if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); numsExpediente(e.numero).forEach((n) => out.add(n)); } }
+    return out;
+  };
   const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
-  const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()))).sort(ordenObras);
+  const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
   const sumaDias = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const siguienteLaborable = (f) => { let x = sumaDias(f, 1); while ([0, 6].includes(new Date(x + "T12:00:00").getDay())) x = sumaDias(x, 1); return x; };
   const pasarAlSiguiente = async () => {
-    const sig = siguienteLaborable(dia); const noTerminadas = lista.filter((o) => colorDe([...o.viv.values()].flat().map((v) => valor(o.d.key, v.id))) !== "verde");
+    const sig = siguienteLaborable(dia); const noTerminadas = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) !== "verde");
     for (const o of noTerminadas) { try { await fbSet(ref(fbDb, `controlDiaObras/${sig}/${limpia(o.d.key)}`), true); } catch (e) { /* nada */ } }
     setDia(sig); setMesVer(sig.slice(0, 7));
+  };
+  const NOMBRES_DIA = { lunes: 0, martes: 1, miercoles: 2, miércoles: 2, jueves: 3, viernes: 4, sabado: 5, sábado: 5, domingo: 6 };
+  const leerPlanning = async (file) => {
+    setLeyendoPlan(true); setErrPlan(""); setPlan(null);
+    try {
+      const prompt = `Es un planning de fabricación semanal. Devuelve SOLO un JSON con este formato, sin texto alrededor:
+{"dias":[{"dia":"lunes","fecha":"YYYY-MM-DD o vacío si no pone fecha","presupuestos":["6633","6994-1"]}]}
+Reglas: un elemento por día; "presupuestos" lleva TODOS los números de presupuesto (o de expediente si solo pone ese) de ese día, tal como aparecen, sin inventar ninguno ni repetir; si el documento agrupa por semanas, incluye todos los días de todas las semanas, con "fecha" cuando se vea. Si un día no tiene nada, no lo pongas.`;
+      const texto = await pedirTextoIAEnSegundoPlano(file, prompt, 8000, 100);
+      const limpio = String(texto || "").replace(/```json|```/gi, "").trim();
+      const a = limpio.indexOf("{"), b = limpio.lastIndexOf("}");
+      let o; try { o = JSON.parse(limpio.slice(a, b + 1)); } catch (e) { o = JSON.parse(repararJsonIA(limpio.slice(a, b + 1))); }
+      const dias = toArray(o && o.dias);
+      if (!dias.length) throw new Error("No he encontrado días con presupuestos en el documento.");
+      const todos = [...obras.values()];
+      const res = dias.map((x) => {
+        let fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(x.fecha || "")) ? String(x.fecha) : "";
+        const nd = String(x.dia || "").trim().toLowerCase();
+        if (!fecha && NOMBRES_DIA[nd] != null) fecha = sumaDias(lunesSemana, NOMBRES_DIA[nd]);
+        const encontradas = new Map(); const no = [];
+        toArray(x.presupuestos).forEach((t) => {
+          const dg = digitosPresu(t); const lleno = String(t || "").replace(/\D/g, "");
+          const hit = dg.length >= 3 ? todos.filter((ob) => { const s = pptosDe(ob); return s.has(dg) || s.has(lleno); }) : [];
+          if (hit.length) hit.forEach((ob) => encontradas.set(ob.d.key, ob.d.nombre)); else no.push(String(t));
+        });
+        return { fecha, etiqueta: x.dia || fmtDate(fecha), obras: [...encontradas.entries()].map(([key, nombre]) => ({ key, nombre })), noEncontradas: no };
+      });
+      setPlan(res);
+    } catch (e) { setErrPlan("No se pudo leer el planning: " + ((e && e.message) || "prueba con otro archivo")); }
+    finally { setLeyendoPlan(false); }
+  };
+  const guardarPlanning = async () => {
+    const ok = plan.filter((d) => d.fecha && d.obras.length);
+    for (const d of ok) for (const ob of d.obras) { try { await fbSet(ref(fbDb, `controlDiaObras/${d.fecha}/${limpia(ob.key)}`), true); } catch (e) { /* nada */ } }
+    if (ok.length) { setDia(ok[0].fecha); setMesVer(ok[0].fecha.slice(0, 7)); }
+    setPlan(null);
   };
   const diasMes = (() => { const [y, m] = mesVer.split("-").map(Number); const primero = new Date(y, m - 1, 1); const n = new Date(y, m, 0).getDate(); const hueco = (primero.getDay() + 6) % 7; const arr = Array(hueco).fill(null); for (let i = 1; i <= n; i++) arr.push(`${mesVer}-${String(i).padStart(2, "0")}`); return arr; })();
   const cambiaMes = (n) => { const [y, m] = mesVer.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); setMesVer(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); };
@@ -51066,8 +51292,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
   const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
   const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
   const tocaVentana = (o, v) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act); };
+  const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); };
-  const nVerdes = lista.filter((o) => colorDe([...o.viv.values()].flat().map((v) => valor(o.d.key, v.id))) === "verde").length;
+  const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       <div className="flex items-center gap-4 mb-3">
@@ -51077,7 +51304,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
       </div>
       <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(26rem, 1fr))" }}>
         {lista.map((o) => {
-          const vivs = [...o.viv.entries()]; const todosIds = vivs.flatMap(([, vs]) => vs.map((v) => v.id)); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
+          const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           return (
             <div key={o.d.key} className={`rounded-xl border-4 p-3 ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`w-full text-left rounded-lg px-3 py-2 text-2xl font-extrabold ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : "bg-slate-700"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="text-base font-semibold">· {vals.filter((v) => v === 1).length}/{vals.length}</span></button>
@@ -51108,6 +51335,28 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
       </div>
+      <div className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <input ref={inputPlanRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leerPlanning(e.target.files[0]); e.target.value = ""; }} />
+          <button type="button" disabled={leyendoPlan} onClick={() => inputPlanRef.current && inputPlanRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-bold disabled:opacity-50">{leyendoPlan ? "Leyendo planning…" : "📅 Subir planning (PDF, Excel o foto)"}</button>
+          <label className="text-xs text-slate-600 flex items-center gap-1">Si pone «lunes, martes…» sin fecha, la semana empieza el <input type="date" value={lunesSemana} onChange={(e) => setLunesSemana(e.target.value)} className="border border-slate-300 rounded px-1 py-0.5" /></label>
+        </div>
+        {errPlan && <p className="text-xs text-rose-600 mt-1">{errPlan}</p>}
+        {plan && (
+          <div className="mt-2 border-t border-slate-200 pt-2">
+            <div className="text-sm font-bold text-slate-800 mb-1">Esto es lo que he leído. Revísalo antes de guardar:</div>
+            {plan.map((d, i) => (
+              <div key={i} className="mb-2 text-sm">
+                <b>{d.etiqueta}{d.fecha ? ` · ${fmtDate(d.fecha)}` : " · SIN FECHA (no se guardará)"}</b>
+                <div className="text-xs text-emerald-800">{d.obras.length ? d.obras.map((o) => o.nombre).join(" · ") : "ninguna obra reconocida"}</div>
+                {d.noEncontradas.length > 0 && <div className="text-xs text-rose-700">No encontrados en el CRM: {d.noEncontradas.join(", ")}</div>}
+              </div>
+            ))}
+            <button type="button" onClick={guardarPlanning} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">Guardar planning</button>
+            <button type="button" onClick={() => setPlan(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
+          </div>
+        )}
+      </div>
       <div className="mb-3 inline-block rounded-lg border border-slate-300 bg-white p-2">
         <div className="flex items-center justify-between mb-1">
           <button type="button" onClick={() => cambiaMes(-1)} className="px-2 font-bold">‹</button>
@@ -51124,17 +51373,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra }) {
         </div>
       </div>
       <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
-        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} disponibles con hoja de corte)</summary>
-        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar obra, expediente…" className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} disponibles · tuyas y de Uxcar)</summary>
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar por nº de presupuesto, expediente o nombre…" className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
         <div className="mt-2 flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
-          {disponibles.length === 0 ? <span className="text-xs text-slate-500">No hay más obras con hoja de corte cargada.</span> : disponibles.map((o) => <button key={o.d.key} type="button" onClick={() => asignar(o, true)} className="px-2.5 py-1.5 rounded-md border border-slate-300 text-xs font-semibold hover:bg-emerald-50">+ {o.d.nombre}</button>)}
+          {disponibles.length === 0 ? <span className="text-xs text-slate-500">No hay más obras abiertas.</span> : disponibles.map((o) => <button key={o.d.key} type="button" onClick={() => asignar(o, true)} className="px-2.5 py-1.5 rounded-md border border-slate-300 text-xs font-semibold hover:bg-emerald-50">+ {o.d.nombre}</button>)}
         </div>
       </details>
       <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
       {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Añádelas arriba con «➕ Añadir obras a este día».</p>}
       {lista.map((o) => {
         const vivs = [...o.viv.entries()];
-        const todosIds = vivs.flatMap(([, vs]) => vs.map((v) => v.id));
+        const todosIds = idsDe(o);
         const vals = todosIds.map((i) => valor(o.d.key, i));
         const col = colorDe(vals);
         const abierta = !cerradas[o.d.key];
