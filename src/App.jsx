@@ -2705,7 +2705,9 @@ export default function App() {
           nCris += bien;
         });
         const cantidad = piezas.reduce((a, p) => a + (parseFloat(p.cantidad) || 0), 0);
-        const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id };
+        const info = datosObraPedido(pedido, proyecto, uxExpedientes);
+        piezas.forEach((pz) => { if (!pz.presupuesto && info.ppto) pz.presupuesto = info.ppto; });
+        const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, presupuesto: info.ppto || "", obraTexto: info.obra || "", referencia: info.ref || "", medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id, pedidoNumero: pedido.numero };
         const reservado = propios.find((h) => !estaOcupado(h.zona, h.fila, h.hueco));
         if (reservado) propios.splice(propios.indexOf(reservado), 1);
         const ub = reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
@@ -14832,7 +14834,7 @@ const pptoCoincideBusq = (q, ...textos) => {
 function textoBuscableCab(c, p) {
   const piezas = p ? [p] : (c.piezas || []);
   const ob = c.obra || {};
-  return `${c.lote} ${c.numero} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.expedientes || ""} ${c.presupuesto || ""} ${c.presupuestos || ""} ${c.referencia || ""} ${c.medida} ${c.comentario || ""} ${ob.nombre || ""} ${ob.numero || ""} ${c.enPuesto || ""} ${c.ubicacion ? ubicacionTexto(c.ubicacion) : ""} ${piezas.map((x) => `${x.ref} ${x.vivienda || ""} ${x.expediente || ""} ${x.presupuesto || ""} ${x.ppto || ""} ${x.referencia || ""} ${ubicacionPieza(x)} ${x.ancho}x${x.alto} ${x.ancho} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""}`).join(" ")}`;
+  return `${c.lote} ${c.numero} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.expedientes || ""} ${c.presupuesto || ""} ${c.presupuestos || ""} ${c.referencia || ""} ${c.medida} ${c.comentario || ""} ${ob.nombre || ""} ${ob.numero || ""} ${c.obraTexto || ""} ${c.albaran || ""} ${c.enPuesto || ""} ${c.ubicacion ? ubicacionTexto(c.ubicacion) : ""} ${piezas.map((x) => `${x.ref} ${x.vivienda || ""} ${x.expediente || ""} ${x.presupuesto || ""} ${x.ppto || ""} ${x.referencia || ""} ${ubicacionPieza(x)} ${x.ancho}x${x.alto} ${x.ancho} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""}`).join(" ")}`;
 }
 function textoFiltrosCristales(f) {
   return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.ppto && `presupuesto ${f.ppto}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
@@ -16725,8 +16727,12 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Nº caballete:</b> {cristal.lote || "—"} <button onClick={() => cambiarNumeroCaballete(cristal, todos, onUpdate, guardarFusionM)} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar número</button></p>
                 <p><b>Nº pedido:</b> {cristal.secuencia || "—"}</p>
                 <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
+                {cristal.obraTexto && <p><b>Obra:</b> {cristal.obraTexto}</p>}
                 <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
                 <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
+                <p><b>Nº presupuesto:</b> {cristal.presupuesto || [...new Set(toArray(cristal.piezas).map((x) => x.presupuesto || x.ppto).filter(Boolean))].join(", ") || "—"}</p>
+                {cristal.referencia && <p><b>Referencia:</b> {cristal.referencia}</p>}
+                {cristal.albaran && <p><b>Albarán:</b> {cristal.albaran}</p>}
                 <p><b>Medida:</b> {cristal.medida || "—"}</p>
                 <p><b>Colocado el:</b> {fmtDate(cristal.fechaColocado)}</p>
               </div>
@@ -52364,18 +52370,30 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const normColor = (t) => String(t || "").toUpperCase().replace(/\s+/g, " ").trim();
   const mediaHVent = (() => { let h = 0, n = 0; Object.values(planPres || {}).forEach((pr) => { if (pr && Number(pr.horas) > 0 && Number(pr.nVent) > 0) { h += Number(pr.horas); n += Number(pr.nVent); } }); return n ? Math.round((h / n) * 10) / 10 : 0; })();
   const hVentEfec = Number(autoHVent) > 0 ? Number(autoHVent) : mediaHVent;
+  // Horas y color de cada obra, por este orden: 1) PDF «PLANING»; 2) los archivos de la obra (listado de materiales y «Listado mano de obra», las mismas cuentas que «Listo para fabricar»); 3) estimación por ventanas (solo si se marca)
   const infoAuto = (o) => {
     const prs = presDeObra.get(limpia(o.d.key)) || [];
     let horas = prs.reduce((a, pr) => a + (Number(pr.horas) || 0), 0);
+    let origen = horas > 0 ? "PLANING" : "";
     const cnt = {}; prs.forEach((pr) => toArray(pr.ventanas).forEach((w) => { const c = normColor(w.color); if (c) cnt[c] = (cnt[c] || 0) + 1; }));
     let nVent = Object.values(cnt).reduce((a, b) => a + b, 0);
-    let est = false;
+    const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    let grupoColor = "";
+    if (pry) {
+      try {
+        if (!(horas > 0)) { const r = horasDeObraListo(pry, uxExpedientes, null); if (r.horas > 0) { horas = Math.round(r.horas * 10) / 10; origen = r.origen === "estimadas" ? "obra (estimadas)" : r.origen === "a mano" ? "a mano" : "listado"; } }
+        const lc = listaColorDeObra(pry); const cols = coloresPerfilDeObra(pry);
+        if (!Object.keys(cnt).length && cols.length) grupoColor = (LISTAS_COLOR_FABRICA.find((x) => x.id === lc.id) || {}).nombre ? (lc.id === "varios" ? cols.slice().sort().join(" + ") : LISTAS_COLOR_FABRICA.find((x) => x.id === lc.id).nombre.toUpperCase()) : "";
+      } catch (e) { /* nada */ }
+    }
     const vivs = [...o.viv.values()].flat();
-    if (!Object.keys(cnt).length) vivs.forEach((v) => { const c = normColor(v.color); if (c) cnt[c] = (cnt[c] || 0) + 1; }); // color de las etiquetas / hoja de corte
     if (!nVent) nVent = vivs.length;
-    if (!(horas > 0) && autoEstimar && nVent > 0 && hVentEfec > 0) { horas = Math.round(nVent * hVentEfec * 10) / 10; est = true; }
+    if (!grupoColor && !Object.keys(cnt).length) vivs.forEach((v) => { const c = normColor(v.color); if (c) cnt[c] = (cnt[c] || 0) + 1; });
+    let est = false;
+    if (!(horas > 0) && autoEstimar && nVent > 0 && hVentEfec > 0) { horas = Math.round(nVent * hVentEfec * 10) / 10; est = true; origen = "≈ por ventanas"; }
     const colores = Object.keys(cnt).sort();
-    return { horas, colores, color: colores.length ? colores.join(" + ") : (autoEstimar ? "SIN COLOR" : ""), nVent, est };
+    const color = grupoColor || (colores.length ? colores.join(" + ") : (autoEstimar ? "SIN COLOR" : ""));
+    return { horas, colores, color, nVent, est, origen };
   };
   const calcAuto = () => {
     const yaPlan = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) yaPlan.add(k); }));
@@ -53063,11 +53081,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <div key={i} className="rounded-md bg-white border border-slate-300 p-2">
                 <div className="flex flex-wrap items-center gap-2 text-sm font-bold">
                   <span>{fmtDate(d.dia)}</span>
-                  <span className="px-2 py-0.5 rounded-full text-xs border border-slate-400" style={{ background: colorHexVentana(d.color) || "#e2e8f0", color: /NEGRO|NOGAL|7016|ANTRACITA/.test(d.color) ? "#fff" : "#111" }}>{d.color}</span>
+                  <span className="px-2 py-0.5 rounded-full text-xs border border-slate-400" style={{ background: d.color === "SIN COLOR" ? "#fecdd3" : (colorHexVentana(d.color) || "#e2e8f0"), borderStyle: d.color === "SIN COLOR" ? "dashed" : undefined, color: /NEGRO|NOGAL|7016|ANTRACITA/.test(d.color) ? "#fff" : "#111" }}>{d.color}</span>
                   <span className={d.horas > plan.cap ? "text-rose-700" : d.horas < plan.cap * 0.6 ? "text-amber-700" : "text-emerald-700"}>{fmtHoras(d.horas)} / {plan.cap} h{d.horas > plan.cap ? " ⚠ se pasa" : d.horas < plan.cap * 0.6 ? " · día corto (no hay más de este color)" : ""}</span>
                 </div>
                 <ul className="mt-1 text-xs text-slate-700">
-                  {d.items.map((c) => <li key={c.k} className="flex items-center gap-1"><input type="checkbox" checked onChange={() => setAutoExcl((x) => ({ ...x, [c.k]: true }))} title="Quitar de la propuesta" /> {c.o.d.nombre} · {c.est ? "≈" : ""}{fmtHoras(c.horas)} · {c.nVent} vent.{c.est ? " (estimado)" : ""}</li>)}
+                  {d.items.map((c) => <li key={c.k} className="flex items-center gap-1"><input type="checkbox" checked onChange={() => setAutoExcl((x) => ({ ...x, [c.k]: true }))} title="Quitar de la propuesta" /> {c.o.d.nombre} · {c.est ? "≈" : ""}{fmtHoras(c.horas)} · {c.nVent} vent. <span className="text-slate-400">({c.origen})</span></li>)}
                 </ul>
               </div>
             ))}
