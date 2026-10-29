@@ -51561,6 +51561,25 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
 }
 
 
+// Baja un archivo guardado en Firebase Storage pasando por el servidor (el navegador no puede: CORS del bucket → «Failed to fetch»), por trozos para archivos grandes
+async function bajarArchivoGuardado(url) {
+  const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
+  const trozos = [];
+  let desde = 0, total = Infinity;
+  while (desde < total) {
+    const r = await fetch("/.netlify/functions/descargar-archivo", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ url, desde }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `no se pudo descargar el PDF (${r.status})`);
+    const b = Uint8Array.from(atob(d.base64), (c) => c.charCodeAt(0));
+    if (!b.length) break;
+    trozos.push(b);
+    total = Number.isFinite(d.total) ? d.total : desde + b.length;
+    desde += b.length;
+  }
+  const out = new Uint8Array(trozos.reduce((a, t) => a + t.length, 0));
+  let p = 0; trozos.forEach((t) => { out.set(t, p); p += t.length; });
+  return out;
+}
 // Folio de la «Carga de material»: la propia hoja del PDF con una chincheta sobre cada ventana (con su medida); al tocarla cambia de color
 const _folioDocs = new Map();
 const _folioImgs = new Map();
@@ -51569,7 +51588,7 @@ async function imagenFolioPdf(url, n) {
   if (_folioImgs.has(k)) return _folioImgs.get(k);
   let pr = _folioDocs.get(url);
   if (!pr) {
-    pr = (async () => { const lib = await cargarPdfJs(); const r = await fetch(url); if (!r.ok) throw new Error("no se pudo descargar el PDF"); return lib.getDocument({ data: new Uint8Array(await r.arrayBuffer()) }).promise; })();
+    pr = (async () => { const lib = await cargarPdfJs(); const bytes = await bajarArchivoGuardado(url); return lib.getDocument({ data: bytes }).promise; })();
     _folioDocs.set(url, pr);
     pr.catch(() => _folioDocs.delete(url));
   }
@@ -51672,7 +51691,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const g = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
     const vg = g ? toArray(g.ventanas) : [];
     const conPins = vg.some((v) => v && v.pag && v.px != null);
-    const docP = o.d.tipo === "p" ? ((toArray(proyectos).find((p) => p.id === o.d.id) || {}).documentoEntrega || null) : null;
+    const docP = (g && g.url) ? { url: g.url } : (o.d.tipo === "p" ? ((toArray(proyectos).find((p) => p.id === o.d.id) || {}).documentoEntrega || null) : null);
     o.tienePins = conPins;
     if (o.viv.size > 0 && !(conPins && docP && docP.url)) { o.fuente = "etiquetas"; return; }
     if (vg.length) {
@@ -51721,15 +51740,19 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
-  const traerCarga = async (o) => {
+  const traerCarga = async (o, fichero) => {
     const p = toArray(proyectos).find((x) => x.id === o.d.id);
     const doc = p && p.documentoEntrega;
-    if (!doc || !doc.url) { setEstadoCarga((s) => ({ ...s, [o.d.key]: "error: la obra no tiene Carga de material subida (sube el PDF en «Documentación de la obra»)" })); return; }
+    if (!fichero && (!doc || !doc.url)) { setEstadoCarga((s) => ({ ...s, [o.d.key]: "error: esta obra no tiene la Carga de material en el CRM: pulsa «Subir la carga de material» y elige el PDF" })); return; }
     setEstadoCarga((s) => ({ ...s, [o.d.key]: "leyendo" }));
     try {
-      const resp = await fetch(doc.url);
-      if (!resp.ok) throw new Error("no se pudo descargar el PDF");
-      const blob = await resp.blob();
+      let urlPdf = doc && doc.url;
+      let blob;
+      if (fichero) {
+        // El PDF que eliges aquí solo se usa para esta pantalla: se guarda aparte y no cambia los documentos de la obra
+        urlPdf = await subirArchivoAStorage(fichero, `documentos-entrega/controlDia-${limpia(o.d.key)}`);
+        blob = fichero;
+      } else blob = new Blob([await bajarArchivoGuardado(doc.url)], { type: "application/pdf" });
       const ventanas = [];
       // Ruta del folio: se lee el PDF y se apunta en qué sitio de la hoja está cada ventana (para poner su chincheta)
       const lib = await cargarPdfJs();
@@ -51766,10 +51789,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
         toArray(r.lotes).forEach((l) => toArray(l.ventanas).forEach((v) => ventanas.push({ id: limpia(v.id || v.pos), pos: v.pos || "", tip: v.tipo || v.pos || "", medida: v.medida || "", color: v.color || "", grupo: v.grupo || "Sin vivienda", fab: l.fab })));
       }
       if (!ventanas.length) throw new Error("no he encontrado ventanas en ese PDF (¿es la Carga de material / Listado de dibujos?)");
-      await fbSet(ref(fbDb, `controlDiaVentanas/${limpia(o.d.key)}`), { archivo: doc.nombre || "", leido: new Date().toISOString(), ventanas });
+      await fbSet(ref(fbDb, `controlDiaVentanas/${limpia(o.d.key)}`), { archivo: fichero ? fichero.name : (doc.nombre || ""), url: urlPdf || "", leido: new Date().toISOString(), ventanas });
       setEstadoCarga((s) => { const n = { ...s }; delete n[o.d.key]; return n; });
     } catch (e) { setEstadoCarga((s) => ({ ...s, [o.d.key]: "error: " + ((e && e.message) || "no se pudo leer") })); }
   };
+  const inputCargaRef = useRef(null);
+  const obraSubida = useRef(null);
+  const pedirPdfCarga = (o) => { obraSubida.current = o; if (inputCargaRef.current) inputCargaRef.current.click(); };
+  const inputCarga = <input ref={inputCargaRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f && obraSubida.current) traerCarga(obraSubida.current, f); }} />;
   const claveLeerCarga = lista.map((o) => `${o.d.key}:${o.fuente}:${o.tienePins ? 1 : 0}`).join("|");
   useEffect(() => {
     lista.forEach((o) => {
@@ -51838,6 +51865,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
+      {inputCarga}
       <div className="flex items-center gap-4 mb-3">
         <b className="text-3xl">Carga de material · {lista.length} obras · {nVerdes} terminadas</b>
         <span className="text-sm text-slate-300">Toca una ventana: gris → verde → naranja (problema) → gris. Toca el nombre de una obra o vivienda para ponerla toda en verde.</span>
@@ -51852,6 +51880,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`w-full text-left rounded-lg px-3 py-2 text-2xl font-extrabold ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : "bg-slate-700"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="text-base font-semibold">· {vals.filter((v) => v === 1).length}/{vals.length}</span></button>
               <div className="mt-1 px-1 text-lg font-bold text-sky-200">{vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}{o.fuente === "recuento" ? <span className="text-sm font-normal text-amber-300"> · del recuento, sin dibujo</span> : null}</div>
               {estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo la carga de material…</div>}
+              {!o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mx-1 mt-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir la carga de material</button>}
               {String(estadoCarga[o.d.key] || "").startsWith("error") && <div className="px-1 text-sm text-rose-300">{estadoCarga[o.d.key]}</div>}
               {o.folio && verFolio && <div className="bg-slate-100 rounded-lg p-2 mt-2"><FolioCarga url={o.folio.url} ventanas={vivs.flatMap(([, vs]) => vs).filter((v) => v.pag)} valorDe={(id) => valor(o.d.key, id)} onToca={(v) => tocaVentana(o, v)} grande /></div>}
               {(o.folio && verFolio ? vivs.map(([g, vs]) => [g, vs.filter((v) => !v.pag)]).filter(([, vs]) => vs.length) : vivs).map(([g, vs]) => (
@@ -51877,6 +51906,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   );
   return (
     <div>
+      {inputCarga}
       <div className="flex flex-wrap items-center gap-3 mb-2">
         <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
@@ -51946,7 +51976,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <div key={o.d.key} className={`rounded-lg border-2 mb-3 ${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
-              {o.d.tipo === "p" && !o.tienePins && <button type="button" onClick={() => traerCarga(o)} title="Lee el PDF de Carga de material de la obra y trae sus ventanas con dibujo" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📥 Traer ventanas y dibujos</button>}
+              {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir la carga de material</button>}
+              {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
               <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
             </div>
