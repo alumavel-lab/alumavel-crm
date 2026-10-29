@@ -52357,7 +52357,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     try { await guardarCopia("Antes de quitar obras repetidas"); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
   const [verLista, setVerLista] = useState(false);
-  const [qLista, setQLista] = useState(""); const [soloFalta, setSoloFalta] = useState(false); const [maxLista, setMaxLista] = useState(60);
+  const [qLista, setQLista] = useState(""); const [soloFalta, setSoloFalta] = useState(false); const [maxLista, setMaxLista] = useState(100000);
   // Estado de cada tipo de material de una obra: "ok" llegado y confirmado · "conf" llegado sin confirmar · "no" sin llegar · "sin" no tiene pedido
   const estadoMat = (o, tipo) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -52555,7 +52555,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   };
   const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
-  const [verSinMaterial, setVerSinMaterial] = useState(false);
+  const [verSinMaterial, setVerSinMaterial] = useState(true);
   const [verFolio, setVerFolio] = useState(true); // true: la hoja de la carga con chinchetas · false: lista de ventanas
   const sinAsignarDia = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (o.d.tipo === "s" || !["Entregado", "Cancelado"].includes((toArray(proyectos).find((x) => x.id === proyectoIdDe(o)) || {}).estadoTrabajo)));
   const nSinMaterial = sinAsignarDia.filter((o) => !materialObra(o).ok).length;
@@ -53061,7 +53061,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {verLista && (() => {
         const q = qLista.trim().toLowerCase(); const qd = q.replace(/\D/g, "");
-        let filas = [...obras.values()].filter((o) => o.d.tipo !== "pl").map(filaLista);
+        let filas = [...obras.values()].map(filaLista);
         if (q) filas = filas.filter((r) => String(r.o.d.nombre).toLowerCase().includes(q) || (qd.length >= 3 && [...pptosDe(r.o)].some((x) => x.includes(qd))));
         const totFalta = filas.filter((r) => r.faltan > 0).length;
         if (soloFalta) filas = filas.filter((r) => r.faltan > 0);
@@ -53090,14 +53090,15 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             <div className="text-[11px] text-slate-500 mt-1">✅ hecho · 🟡 llegado pero sin confirmar por fábrica · ❌ falta · — no lleva / sin pedido. Horas con «≈» = estimadas.</div>
             <div className="mt-2 overflow-x-auto">
               <table className="w-full text-xs">
-                <thead className="text-left text-slate-500"><tr><th className="py-1 pr-2">Obra</th><th className="px-1">Cristal</th><th className="px-1">Persiana</th><th className="px-1">Color</th><th className="px-1">Horas</th><th className="px-1" title="Listado de materiales de la obra">Listado</th><th className="px-1" title="PDF de la Carga de material (con chinchetas)">Carga PDF</th><th className="px-1">PLANING</th><th className="px-1">Falta</th></tr></thead>
+                <thead className="text-left text-slate-500"><tr><th className="py-1 pr-2">Obra / presupuesto</th><th className="px-1">Material</th><th className="px-1">Cristal</th><th className="px-1">Persiana</th><th className="px-1">Color</th><th className="px-1">Horas</th><th className="px-1" title="Listado de materiales de la obra">Listado</th><th className="px-1" title="PDF de la Carga de material (con chinchetas)">Carga PDF</th><th className="px-1">PLANING</th><th className="px-1">Falta</th></tr></thead>
                 <tbody>
                   {filas.slice(0, maxLista).map((r, ri, arr) => (
                     <React.Fragment key={r.o.d.key}>
-                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={9} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}
+                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={10} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}
                       {r.g === 0 && <button type="button" onClick={() => { setAutoGrupo(filas.filter((x) => x.g === r.g).map((x) => limpia(x.o.d.key))); setAutoExcl({}); setAutoAbierto(true); }} className="ml-3 px-2 py-0.5 rounded bg-indigo-600 text-white text-xs font-bold">🗓 Planificar este grupo</button>}</td></tr>}
                     <tr className="border-t border-slate-100 align-top">
-                      <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}</td>
+                      <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}{r.o.d.tipo === "pl" ? <span className="ml-1 text-[10px] font-normal text-slate-500">(solo en el PLANING, no está en el CRM)</span> : null}{r.o.d.tipo === "pl" ? <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaPlaning/${r.o.d.id}`), null).catch(() => {}); }} className="ml-2 px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold" title="Borra este presupuesto del PLANING (no toca el CRM)">🗑 Borrar</button> : null}</td>
+                      <td className="px-1 text-center" title="Material completo y confirmado por fábrica">{r.ok ? "✅" : "❌"}</td>
                       <td className="px-1 text-center">{ic(r.cristal)}</td>
                       <td className="px-1 text-center">{ic(r.persiana)}</td>
                       <td className="px-1 whitespace-nowrap">{r.color ? <span title="Color de la carpintería">✅ {r.color}</span> : "❌"}</td>
