@@ -52318,8 +52318,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
     return { filas, sinClaves: false, pers, cabs, piezaDeObra };
   };
-  // Planifica de golpe en este día todas las obras con material que no están ya en este día (en los otros días se quedan donde estaban: las marcas son de cada día)
-  const obrasPlanificables = () => sinAsignarDia.filter((o) => o.d.tipo !== "pl" && materialObra(o).ok);
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
   const guardarCopia = async (motivo) => {
@@ -52357,6 +52355,26 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const { quitar } = repetidasPlan(); if (!quitar.length) return;
     const upd = {}; quitar.forEach((x) => { upd[`${x.d}/${x.k}`] = null; });
     try { await guardarCopia("Antes de quitar obras repetidas"); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
+  };
+  const [verLista, setVerLista] = useState(false);
+  const [qLista, setQLista] = useState(""); const [soloFalta, setSoloFalta] = useState(true); const [maxLista, setMaxLista] = useState(60);
+  // Estado de cada tipo de material de una obra: "ok" llegado y confirmado · "conf" llegado sin confirmar · "no" sin llegar · "sin" no tiene pedido
+  const estadoMat = (o, tipo) => {
+    const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    if (!p) return "sin";
+    const peds = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd) && ((tipoPedidoMaterial(pd) === "persianas") === (tipo === "persianas")));
+    if (!peds.length) return "sin";
+    if (peds.some((pd) => !llegadoParaObra(pd))) return "no";
+    if (peds.some((pd) => toArray(pd.lineas).some((l) => !l.confirmadoFabrica))) return "conf";
+    return "ok";
+  };
+  const filaLista = (o) => {
+    const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    const inf = infoAuto(o);
+    const hayListado = !!pry && toArray(pry.listadoMateriales && pry.listadoMateriales.lineas).length > 0;
+    const r = { o, pry, cristal: estadoMat(o, "cristales"), persiana: estadoMat(o, "persianas"), color: inf.color && inf.color !== "SIN COLOR" ? inf.color : "", horas: inf.horas, origen: inf.origen, est: inf.est, listado: hayListado, carga: !!o.tienePins, planing: (presDeObra.get(limpia(o.d.key)) || []).length > 0 };
+    r.faltan = (r.cristal === "no" || r.cristal === "conf" ? 1 : 0) + (r.persiana === "no" || r.persiana === "conf" ? 1 : 0) + (r.color ? 0 : 1) + (r.horas > 0 && !r.est ? 0 : 1) + (r.listado ? 0 : 1) + (r.carga ? 0 : 1);
+    return r;
   };
   const [autoAbierto, setAutoAbierto] = useState(false);
   const [autoIni, setAutoIni] = useState("");
@@ -52428,30 +52446,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       await fbSet(ref(fbDb, "controlDiaLote"), { dia: plan.dias[0].dia, claves: Object.keys(upd).map((x) => x.split("/")[1]), porDia, en: Date.now() });
       setDia(plan.dias[0].dia); setMesVer(plan.dias[0].dia.slice(0, 7)); setAutoAbierto(false);
     } catch (e) { alert("No se pudo planificar: " + e.message); }
-  };
-  const planificarTodas = async () => {
-    const cand = obrasPlanificables();
-    if (!cand.length) { alert("No hay obras con material que estén sin planificar."); return; }
-    const upd = {}; cand.forEach((o) => { upd[`${dia}/${limpia(o.d.key)}`] = true; });
-    try {
-      await guardarCopia("Antes de planificar todas en un día");
-      await fbUpdate(ref(fbDb, "controlDiaObras"), upd);
-      await fbSet(ref(fbDb, "controlDiaLote"), { dia, claves: cand.map((o) => limpia(o.d.key)), en: Date.now() });
-    } catch (e) { alert("No se pudo planificar: " + e.message); }
-  };
-  // Saca todas las obras de este día: vuelven a la lista «Añadir obras a este día» (las marcas y notas de colores no se borran)
-  const quitarTodasDelDia = async () => {
-    const ks = Object.keys(asign); if (!ks.length) return;
-    const upd = {}; ks.forEach((k) => { upd[`${dia}/${k}`] = null; });
-    try { await guardarCopia("Antes de quitar las obras del día"); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
-  };
-  // Deshace la planificación de golpe: quita del día esas obras (las marcas de colores no se tocan) y vuelven a quedar sin planificar
-  const quitarLote = async () => {
-    if (!lote || !lote.claves) return;
-    const upd = {};
-    if (lote.porDia) Object.entries(lote.porDia).forEach(([d, ks]) => toArray(ks).forEach((k) => { upd[`${d}/${k}`] = null; })); else toArray(lote.claves).forEach((k) => { upd[`${lote.dia}/${k}`] = null; });
-    await guardarCopia("Antes de quitar el lote");
-    try { await fbUpdate(ref(fbDb, "controlDiaObras"), upd); await fbSet(ref(fbDb, "controlDiaLote"), null); if (lote.dia) { setDia(lote.dia); setMesVer(lote.dia.slice(0, 7)); } } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
   // Salta a la tarjeta de la obra: si no está en el día que miras, cambia al primer día de su planning (o la añade a este día)
   const irAObraLimpiar = (o, dias) => {
@@ -53042,9 +53036,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         </div>
       )}
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <button type="button" onClick={planificarTodas} className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-sm font-bold">📥 Planificar en este día todas las obras con material ({obrasPlanificables().length})</button>
-        {lista.length > 0 && <button type="button" onClick={quitarTodasDelDia} className="px-3 py-1.5 rounded-md bg-slate-700 text-white text-sm font-bold">↩ Quitar las {lista.length} obras de este día (vuelven a la lista)</button>}
-        {lote && lote.claves && <button type="button" onClick={quitarLote} className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">↩ Quitar las {toArray(lote.claves).length} que añadí de golpe ({lote.dia ? fmtDate(lote.dia) : ""})</button>}
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {lista.length > 0 && <button type="button" onClick={async () => { const ks = lista.map((o) => limpia(o.d.key)); const todas = ks.every((k) => papel && papel[k]); const upd = {}; ks.forEach((k) => { upd[k] = todas ? null : true; }); try { await fbUpdate(ref(fbDb, "controlDiaPapel"), upd); } catch (e) { alert("No se pudo marcar: " + e.message); } }} title="Marca (o desmarca) como «hecha en papel» todas las obras de este día" className="px-3 py-1.5 rounded-md bg-purple-600 text-white text-sm font-bold">🟣 {lista.every((o) => papel && papel[limpia(o.d.key)]) ? "Desmarcar" : "Marcar"} las {lista.length} de este día en papel</button>}
@@ -53054,6 +53045,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <option value="morado">🟣 Solo las marcadas en papel ({Object.keys(papel || {}).filter((k) => papel[k]).length})</option>
           <option value="sin">Solo las NO marcadas en papel</option>
         </select>
+        <button type="button" onClick={() => setVerLista((v) => !v)} className="px-3 py-1.5 rounded-md bg-slate-700 text-white text-sm font-bold">📋 Lista de obras pendientes (qué les falta)</button>
         <button type="button" onClick={() => setAutoAbierto((v) => !v)} className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-bold">🗓 Planificar automático por colores ({autoHoras} h/día, L–V)</button>
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
@@ -53066,6 +53058,49 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         )}
       </div>
+      {verLista && (() => {
+        const q = qLista.trim().toLowerCase(); const qd = q.replace(/\D/g, "");
+        let filas = [...obras.values()].filter((o) => o.d.tipo !== "pl").map(filaLista);
+        if (q) filas = filas.filter((r) => String(r.o.d.nombre).toLowerCase().includes(q) || (qd.length >= 3 && [...pptosDe(r.o)].some((x) => x.includes(qd))));
+        const totFalta = filas.filter((r) => r.faltan > 0).length;
+        if (soloFalta) filas = filas.filter((r) => r.faltan > 0);
+        filas.sort((a, b) => b.faltan - a.faltan || String(a.o.d.nombre).localeCompare(String(b.o.d.nombre), "es", { numeric: true }));
+        const ic = (v) => v === "ok" ? "✅" : v === "conf" ? "🟡" : v === "no" ? "❌" : "—";
+        const sino = (b) => (b ? "✅" : "❌");
+        return (
+          <div className="mb-3 rounded-lg border-2 border-slate-400 bg-white p-3">
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <b>📋 Obras pendientes: {totFalta} con algo por hacer</b>
+              <input value={qLista} onChange={(e) => setQLista(e.target.value)} placeholder="Buscar por nombre o nº de presupuesto…" className="border border-slate-300 rounded px-2 py-1 text-sm w-64" />
+              <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo las que tienen algo pendiente</label>
+              <button type="button" onClick={() => setVerLista(false)} className="ml-auto text-xs underline">Cerrar</button>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">✅ hecho · 🟡 llegado pero sin confirmar por fábrica · ❌ falta · — no lleva / sin pedido. Horas con «≈» = estimadas.</div>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-slate-500"><tr><th className="py-1 pr-2">Obra</th><th className="px-1">Cristal</th><th className="px-1">Persiana</th><th className="px-1">Color</th><th className="px-1">Horas</th><th className="px-1" title="Listado de materiales de la obra">Listado</th><th className="px-1" title="PDF de la Carga de material (con chinchetas)">Carga PDF</th><th className="px-1">PLANING</th><th className="px-1">Falta</th></tr></thead>
+                <tbody>
+                  {filas.slice(0, maxLista).map((r) => (
+                    <tr key={r.o.d.key} className="border-t border-slate-100 align-top">
+                      <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}</td>
+                      <td className="px-1 text-center">{ic(r.cristal)}</td>
+                      <td className="px-1 text-center">{ic(r.persiana)}</td>
+                      <td className="px-1 whitespace-nowrap">{r.color ? <span title="Color de la carpintería">✅ {r.color}</span> : "❌"}</td>
+                      <td className="px-1 whitespace-nowrap">{r.horas > 0 ? <span title={r.origen}>{r.est ? "≈" : "✅"} {fmtHoras(r.horas)}</span> : "❌"}</td>
+                      <td className="px-1 text-center">{sino(r.listado)}</td>
+                      <td className="px-1 whitespace-nowrap">{r.carga ? "✅" : <button type="button" onClick={() => pedirPdfCarga(r.o)} className="px-1.5 py-0.5 rounded border border-sky-300 bg-sky-50 text-sky-800 font-semibold">❌ 📎 Subir</button>}</td>
+                      <td className="px-1 text-center">{sino(r.planing)}</td>
+                      <td className="px-1 text-center font-bold">{r.faltan || "✅"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filas.length > maxLista && <button type="button" onClick={() => setMaxLista((m) => m + 100)} className="mt-2 text-xs underline">Ver más ({filas.length - maxLista} restantes)</button>}
+              {filas.length === 0 && <div className="text-xs text-slate-500 mt-2">No hay obras con algo pendiente con ese filtro.</div>}
+            </div>
+          </div>
+        );
+      })()}
       {autoAbierto && (() => { const plan = calcAuto(); const totH = plan.dias.reduce((a, d) => a + d.horas, 0); const nObras = plan.dias.reduce((a, d) => a + d.items.length, 0); return (
         <div className="mb-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 p-3">
           <div className="flex flex-wrap items-end gap-3 text-sm">
