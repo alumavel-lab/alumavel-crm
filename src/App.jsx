@@ -26639,6 +26639,7 @@ function MedicionesUxcarZona({ propia = false }) {
   const [lista, setLista] = useState(null);
   const [abiertoId, setAbiertoId] = useState(() => { const x = uxcNav.id; uxcNav.id = null; uxcNav.propia = false; return x; });
   const [q, setQ] = useState("");
+  const [ubicTodas, setUbicTodas] = useState("");
   const [leyendo, setLeyendo] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [errorIA, setErrorIA] = useState("");
@@ -26652,6 +26653,35 @@ function MedicionesUxcarZona({ propia = false }) {
   const vacioPropia = () => ({ id: uid(), creadoEn: Date.now(), origen: "propia", propia: true, revisado: true, cab: { expediente: "", concurso: "", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
   const vacio = () => ({ id: uid(), creadoEn: Date.now(), origen: "manual", revisado: true, cab: { expediente: "", concurso: "DPM 511-23", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
 
+  // Coloca las chinchetas que faltan en TODOS los expedientes ya guardados que tienen planos (sin volver a subirlos)
+  const colocarTodas = async () => {
+    setUbicTodas("Mirando qué expedientes tienen planos…");
+    const trabajos = [];
+    for (const x of (lista || []).filter((z) => !z.propia)) {
+      const sin = uxcLista(x.ventanas).filter((v) => v.ref && (v.px === undefined || v.px === null));
+      if (!sin.length || toArray(x.planos).some((q) => q && q.url)) continue;
+      let planos = [];
+      try { const sn = await fbGet(ref(fbDb, `${UXC_PLANO}/${x.id}`)); planos = uxcPlanosGuardados(sn.val()); } catch (e) { planos = []; }
+      if (planos.length) trabajos.push({ x, sin, planos });
+    }
+    if (!trabajos.length) { setUbicTodas(""); alert("No hay expedientes con planos guardados y ventanas sin chincheta."); return; }
+    if (!window.confirm(`Voy a colocar las chinchetas de ${trabajos.length} expediente${trabajos.length === 1 ? "" : "s"} (${trabajos.reduce((a, t) => a + t.sin.length, 0)} ventanas, una lectura de IA por plano: ${trabajos.reduce((a, t) => a + t.planos.length, 0)} en total). Tarda unos minutos y no hay que cerrar la pantalla. ¿Sigo?`)) { setUbicTodas(""); return; }
+    let n = 0, f = 0, i = 0;
+    for (const t of trabajos) {
+      i++;
+      for (const pn of t.planos) {
+        const mias = t.sin.filter((v) => (v.plano ? v.plano === pn.id : pn.id === t.planos[0].id));
+        if (!mias.length) continue;
+        setUbicTodas(`Expediente ${(t.x.cab || {}).expediente || ""} (${i} de ${trabajos.length}): plano «${pn.nombre}»…`);
+        try {
+          const res = await uxcUbicarEnPlano(pn.url, mias.map((v) => v.ref));
+          for (const v of mias) { const r = res.get(uxcNorm(v.ref)); if (r) { await fbUpdate(ref(fbDb, `${UXC_NODO}/${t.x.id}/ventanas/${v.id}`), { px: r.x, py: r.y, plano: pn.id }); n++; } else f++; }
+        } catch (e) { console.error(e); f += mias.length; }
+      }
+    }
+    setUbicTodas("");
+    alert(`${n} chinchetas colocadas; ${f} sin colocar (las que no encontré, colócalas a mano con «📍 Colocar»). Revísalas en cada expediente.`);
+  };
   const desdeFotos = async (files) => {
     const fs = Array.from(files || []);
     if (!fs.length) return;
@@ -26683,6 +26713,21 @@ function MedicionesUxcarZona({ propia = false }) {
     setLeyendo(false); setProgreso("");
     const exp = uxcExpedienteDesdeIA(paginas);
     if (!Object.keys(exp.ventanas || {}).length && !Object.keys(exp.partidas || {}).length) { setErrorIA("No he podido sacar ni ventanas ni partidas de esas fotos." + (fallos.length ? " Fallaron: " + fallos.join(", ") + "." : "") + " Prueba con fotos más nítidas o de una en una."); return; }
+    // Chinchetas en cada plano: se buscan en la imagen del plano (no frena el guardado si falla)
+    if (planosImg.length) {
+      const vl = Object.values(exp.ventanas || {});
+      setLeyendo(true);
+      for (const pl of planosImg) {
+        const mias = vl.filter((v) => v && v.ref && v.plano === pl.id);
+        if (!mias.length) continue;
+        try {
+          setProgreso(`Colocando las chinchetas en «${pl.nombre}»…`);
+          const res = await uxcUbicarEnPlano(pl.url, mias.map((v) => v.ref));
+          mias.forEach((v) => { const r = res.get(uxcNorm(v.ref)); if (r) { v.px = r.x; v.py = r.y; } });
+        } catch (e) { console.error("No se pudieron colocar las chinchetas", e); }
+      }
+      setLeyendo(false); setProgreso("");
+    }
     if (fallos.length) alert("Estas fotos no se pudieron leer y hay que meterlas a mano o repetirlas:\n" + fallos.join("\n"));
     if (planosImg.length) { const mapa = {}; planosImg.forEach((x) => { mapa[x.id] = x; }); try { await fbSet(ref(fbDb, `${UXC_PLANO}/${exp.id}`), mapa); } catch (e) { console.error("No se guardaron los planos", e); alert("El expediente se creará, pero no se pudieron guardar los planos: " + e.message); } }
     await crear(exp);
@@ -26701,6 +26746,7 @@ function MedicionesUxcarZona({ propia = false }) {
         {!propia && <button disabled={leyendo} onClick={() => fotosRef.current && fotosRef.current.click()} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-bold py-4 rounded-lg hover:bg-[#2E8B57]/5 disabled:opacity-60">
           {leyendo ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />} {leyendo ? progreso : "Crear desde fotos (IA)"}
         </button>}
+        {!propia && <button disabled={!!ubicTodas || leyendo} onClick={colocarTodas} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-sky-500 text-sky-800 font-bold py-4 rounded-lg hover:bg-sky-50 disabled:opacity-60">{ubicTodas ? <><Loader2 size={18} className="animate-spin" /> {ubicTodas}</> : "📍 Colocar las chinchetas en todos los expedientes"}</button>}
         <input ref={fotosRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={(e) => { desdeFotos(e.target.files); e.target.value = ""; }} />
       </div>
       {errorIA && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorIA}</div>}
@@ -26979,6 +27025,38 @@ function uxcPlanosGuardados(val) {
   if (typeof val === "string") return [{ id: "u", nombre: "Plano", url: val, orden: 0 }];
   return Object.values(val).filter((x) => x && x.url).sort((a, b) => (a.orden || 0) - (b.orden || 0));
 }
+// Pide a la IA dónde está, en la imagen del plano, el cuadrito de cada referencia (V01/003…). Devuelve Map(uxcNorm(ref) → { x, y }) en % del ancho y del alto.
+async function uxcUbicarEnPlano(urlImagen, refs) {
+  const m = String(urlImagen || "").match(/^data:(image\/[a-z+.-]+);base64,(.+)$/i);
+  if (!m) throw new Error("el plano no es una imagen guardada en el CRM");
+  const lista = [...new Set(refs.map((r) => String(r || "").trim()).filter(Boolean))];
+  if (!lista.length) return new Map();
+  const prompt = `Esta imagen es un plano de planta de un expediente de Aena. Cada carpintería lleva un cuadrito de nomenclatura con su código (V01/003, V03/103, A01/001…) y debajo su alzado. Puede estar girada: gírala mentalmente.
+Busca el cuadrito de cada una de estas referencias: ${lista.join(", ")}.
+Para cada una que veas con seguridad en ESTA imagen, devuelve el CENTRO de su cuadrito con el código como porcentaje del ancho (x) y del alto (y) de la imagen, de 0 a 100 con un decimal (x=0 izquierda, x=100 derecha, y=0 arriba, y=100 abajo). Si una referencia no está en esta imagen o no la lees con seguridad, NO la pongas. NUNCA inventes posiciones.
+Devuelve SOLO JSON, sin texto ni \`\`\`: {"pos":[{"ref":"V03/103","x":43.2,"y":34.1}]}`;
+  let texto = "";
+  try {
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 3000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } }, { type: "text", text: prompt }] }] }),
+    });
+    if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message || "error al leer");
+    texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  } catch (e) {
+    // si el servidor se pasa de tiempo, se repite en segundo plano
+    const blob = await (await fetch(urlImagen)).blob();
+    texto = await pedirTextoIAEnSegundoPlano(new File([blob], "plano.jpg", { type: m[1] }), prompt, 3000, 60);
+  }
+  const limpio = String(texto || "").replace(/```json|```/gi, "").trim();
+  const a = limpio.indexOf("{"), b = limpio.lastIndexOf("}");
+  let o; try { o = JSON.parse(limpio.slice(a, b + 1)); } catch (e) { o = JSON.parse(repararJsonIA(limpio.slice(a, b + 1))); }
+  const res = new Map();
+  toArray(o && o.pos).forEach((q) => { const x = parseFloat(String(q.x).replace(",", ".")), y = parseFloat(String(q.y).replace(",", ".")); if (q && q.ref && x >= 0 && x <= 100 && y >= 0 && y <= 100) res.set(uxcNorm(q.ref), { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }); });
+  return res;
+}
 function UxcPlano({ exp, vs, onAbrir, guardar }) {
   const fijos = toArray(exp.planos).filter((x) => x && x.url);
   const [dbPl, setDbPl] = useState(undefined); // undefined = cargando
@@ -26989,6 +27067,8 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   useEffect(() => { if (colocar && avisoColocar.current) avisoColocar.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [colocar]);
   const [zoom, setZoom] = useState(100);
   const [subiendo, setSubiendo] = useState(false);
+  const [ubicando, setUbicando] = useState("");
+  const [msgUbic, setMsgUbic] = useState("");
   const fileRef = useRef(null);
   useEffect(() => {
     if (fijos.length) return undefined;
@@ -27033,6 +27113,22 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   const colocada = (v) => v.px !== undefined && v.px !== null;
   const enEste = (v) => colocada(v) && !!actual && (v.plano ? v.plano === actual.id : actual.id === planos[0].id); // sin plano apuntado = el primero
   const sinColocar = vs.filter((v) => !colocada(v));
+  // Coloca solas las chinchetas que faltan, buscando cada código en la imagen del plano (la IA calcula el sitio: conviene revisarlas)
+  const autoColocar = async () => {
+    setMsgUbic(""); let n = 0, falta = 0, fallo = "";
+    try {
+      for (const pn of planos) {
+        const mias = vs.filter((v) => !colocada(v) && v.ref && (v.plano ? v.plano === pn.id : pn.id === planos[0].id));
+        if (!mias.length || !pn.url) continue;
+        setUbicando(`Buscando ${mias.length} ventana${mias.length === 1 ? "" : "s"} en «${pn.nombre}»…`);
+        try {
+          const res = await uxcUbicarEnPlano(pn.url, mias.map((v) => v.ref));
+          for (const v of mias) { const r = res.get(uxcNorm(v.ref)); if (r) { await guardar(`ventanas/${v.id}/px`, r.x); await guardar(`ventanas/${v.id}/py`, r.y); await guardar(`ventanas/${v.id}/plano`, pn.id); n++; } else falta++; }
+        } catch (e) { console.error(e); fallo = e.message || String(e); falta += mias.length; }
+      }
+    } finally { setUbicando(""); }
+    setMsgUbic(`${n} chincheta${n === 1 ? "" : "s"} colocada${n === 1 ? "" : "s"}${falta ? ` · ${falta} sin colocar (no las encontré${fallo ? ": " + fallo : ""}): usa «📍 Colocar»` : ""}. Revísalas: si alguna no está en su sitio, «Mover chincheta».`);
+  };
   const nombreDe = (id) => (planos.find((x) => x.id === id) || {}).nombre || "";
   const src = actual ? actual.url : null;
   return (
@@ -27042,10 +27138,12 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
         {!fijos.length && <button onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo} className="text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-60">{subiendo ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} {planos.length ? "Añadir otro plano" : "Subir foto del plano"}</button>}
         {!fijos.length && actual && <button onClick={quitar} className="text-xs text-slate-500 underline">Quitar este plano</button>}
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        {!fijos.length && planos.length > 0 && sinColocar.length > 0 && <button onClick={autoColocar} disabled={!!ubicando} className="text-sm font-semibold border-2 border-sky-500 text-sky-800 bg-sky-50 rounded-md px-3 py-2 disabled:opacity-60">{ubicando ? <><Loader2 size={14} className="inline animate-spin mr-1" />{ubicando}</> : `📍 Colocar las ${sinColocar.length} chinchetas que faltan`}</button>}
         {src && <div className="flex items-center gap-1 ml-auto text-sm"><span className="text-slate-500">Zoom</span>{[100, 150, 220].map((z) => <button key={z} onClick={() => setZoom(z)} className={`px-2.5 py-1 rounded border text-xs font-semibold ${zoom === z ? "bg-slate-800 text-white border-slate-800" : "border-slate-300"}`}>{z}%</button>)}</div>}
       </div>
       {!fijos.length && dbPl === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
       {!fijos.length && dbPl && dbPl.length === 0 && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto de cada plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja. (Si subes el PDF del expediente con «Crear desde fotos», los planos se sacan solos.)</div>}
+      {msgUbic && <div className="mb-2 px-3 py-2 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 text-sm">{msgUbic}</div>}
       {colocar && <div ref={avisoColocar} style={{ position: "sticky", top: 0, zIndex: 30 }} className="mb-2 px-3 py-2 rounded bg-sky-100 border-2 border-sky-500 text-sky-900 text-sm font-semibold shadow">👆 Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
       {src && (
         <div className="border border-slate-300 rounded-lg overflow-auto bg-white mb-4" style={{ maxHeight: "75vh" }}>
