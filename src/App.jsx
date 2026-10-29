@@ -52130,6 +52130,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const { pedirPin, modalPin } = usePinCristales();
   const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
   const [huecoMat, setHuecoMat] = useState(null);
+  const lote = useObjetoFb("controlDiaLote"); // última planificación de golpe: { dia, claves:[...], en }
   const [selLimp, setSelLimp] = useState({}); // obras marcadas para dar de baja (si no se toca, se marcan solas las que están en verde)
   const [irObra, setIrObra] = useState(null); // clave de la obra a la que saltar (desde el buscador de Limpiar)
   const [resalt, setResalt] = useState(null);
@@ -52281,6 +52282,23 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       .forEach((x) => { pers.push(x); const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
     Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
     return { filas, sinClaves: false, pers, cabs, piezaDeObra };
+  };
+  // Planifica de golpe en este día todas las obras con material que aún no están en NINGÚN día (no toca las ya planificadas)
+  const obrasPlanificables = () => sinAsignarDia.filter((o) => o.d.tipo !== "pl" && materialObra(o).ok && !Object.keys(asignTodas || {}).some((d) => asignTodas[d] && asignTodas[d][limpia(o.d.key)]));
+  const planificarTodas = async () => {
+    const cand = obrasPlanificables();
+    if (!cand.length) { alert("No hay obras con material que estén sin planificar."); return; }
+    const upd = {}; cand.forEach((o) => { upd[`${dia}/${limpia(o.d.key)}`] = true; });
+    try {
+      await fbUpdate(ref(fbDb, "controlDiaObras"), upd);
+      await fbSet(ref(fbDb, "controlDiaLote"), { dia, claves: cand.map((o) => limpia(o.d.key)), en: Date.now() });
+    } catch (e) { alert("No se pudo planificar: " + e.message); }
+  };
+  // Deshace la planificación de golpe: quita del día esas obras (las marcas de colores no se tocan) y vuelven a quedar sin planificar
+  const quitarLote = async () => {
+    if (!lote || !lote.claves) return;
+    const upd = {}; toArray(lote.claves).forEach((k) => { upd[`${lote.dia}/${k}`] = null; });
+    try { await fbUpdate(ref(fbDb, "controlDiaObras"), upd); await fbSet(ref(fbDb, "controlDiaLote"), null); if (lote.dia) { setDia(lote.dia); setMesVer(lote.dia.slice(0, 7)); } } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
   // Salta a la tarjeta de la obra: si no está en el día que miras, cambia al primer día de su planning (o la añade a este día)
   const irAObraLimpiar = (o, dias) => {
@@ -52857,6 +52875,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <img src={planImgs[mesVer].url} alt="Planning" className="mx-auto max-w-none w-[1600px]" />
         </div>
       )}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <button type="button" onClick={planificarTodas} className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-sm font-bold">📥 Planificar en este día todas las obras con material ({obrasPlanificables().length})</button>
+        {lote && lote.claves && <button type="button" onClick={quitarLote} className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">↩ Quitar las {toArray(lote.claves).length} que añadí de golpe ({lote.dia ? fmtDate(lote.dia) : ""})</button>}
+      </div>
       <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
         <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} con material · tuyas y de Uxcar)</summary>
         <label className="mt-2 flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verSinMaterial} onChange={(e) => setVerSinMaterial(e.target.checked)} /> Ver también las que todavía no tienen todo el material ({nSinMaterial}) — salen con lo que les falta</label>
