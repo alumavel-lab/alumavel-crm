@@ -52372,7 +52372,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     const inf = infoAuto(o);
     const hayListado = !!pry && toArray(pry.listadoMateriales && pry.listadoMateriales.lineas).length > 0;
-    const r = { o, pry, cristal: estadoMat(o, "cristales"), persiana: estadoMat(o, "persianas"), color: inf.color && inf.color !== "SIN COLOR" ? inf.color : "", horas: inf.horas, origen: inf.origen, est: inf.est, listado: hayListado, carga: !!o.tienePins, planing: (presDeObra.get(limpia(o.d.key)) || []).length > 0 };
+    const r = { o, ok: materialObra(o).ok, pry, cristal: estadoMat(o, "cristales"), persiana: estadoMat(o, "persianas"), color: inf.color && inf.color !== "SIN COLOR" ? inf.color : "", horas: inf.horas, origen: inf.origen, est: inf.est, listado: hayListado, carga: !!o.tienePins, planing: (presDeObra.get(limpia(o.d.key)) || []).length > 0 };
     r.faltan = (r.cristal === "no" || r.cristal === "conf" ? 1 : 0) + (r.persiana === "no" || r.persiana === "conf" ? 1 : 0) + (r.color ? 0 : 1) + (r.horas > 0 && !r.est ? 0 : 1) + (r.listado ? 0 : 1) + (r.carga ? 0 : 1);
     return r;
   };
@@ -52380,6 +52380,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [autoIni, setAutoIni] = useState("");
   const [autoHoras, setAutoHoras] = useState(160);
   const [autoExcl, setAutoExcl] = useState({});
+  const [autoGrupo, setAutoGrupo] = useState(null); // si no es null: solo se planifican estas obras (las de un grupo de la lista)
   const [autoEstimar, setAutoEstimar] = useState(true); // incluir también las obras sin PLANING, estimando sus horas
   const [autoHVent, setAutoHVent] = useState(""); // horas por ventana para estimar (vacío = la media de lo que ya hay en el PLANING)
   const sumaDiasF = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toLocaleDateString("sv-SE"); };
@@ -52415,7 +52416,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   };
   const calcAuto = () => {
     const yaPlan = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) yaPlan.add(k); }));
-    const cand = sinAsignarDia.filter((o) => o.d.tipo !== "pl" && materialObra(o).ok && !yaPlan.has(limpia(o.d.key))).map((o) => ({ o, k: limpia(o.d.key), ...infoAuto(o) }));
+    const cand = sinAsignarDia.filter((o) => o.d.tipo !== "pl" && (autoGrupo ? autoGrupo.includes(limpia(o.d.key)) && materialObra(o).ok : materialObra(o).ok) && !yaPlan.has(limpia(o.d.key))).map((o) => ({ o, k: limpia(o.d.key), ...infoAuto(o) }));
     const sinDatos = cand.filter((c) => !c.horas || !c.color);
     const buenas = cand.filter((c) => c.horas > 0 && c.color && !autoExcl[c.k]);
     const grupos = {}; buenas.forEach((c) => { (grupos[c.color] = grupos[c.color] || []).push(c); });
@@ -53046,7 +53047,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <option value="sin">Solo las NO marcadas en papel</option>
         </select>
         <button type="button" onClick={() => setVerLista((v) => !v)} className="px-3 py-1.5 rounded-md bg-slate-700 text-white text-sm font-bold">📋 Lista de obras pendientes (qué les falta)</button>
-        <button type="button" onClick={() => setAutoAbierto((v) => !v)} className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-bold">🗓 Planificar automático por colores ({autoHoras} h/día, L–V)</button>
+        <button type="button" onClick={() => { setAutoGrupo(null); setAutoAbierto((v) => !v); }} className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-bold">🗓 Planificar automático por colores ({autoHoras} h/día, L–V)</button>
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
             <summary className="cursor-pointer text-sm font-semibold text-slate-700">⏪ Volver a como estaba ({Object.keys(copias).length} copias)</summary>
@@ -53066,13 +53067,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         if (soloFalta) filas = filas.filter((r) => r.faltan > 0);
         const llega = (v) => v === "ok" || v === "conf";
         const grupoDe = (r) => {
-          if ((llega(r.cristal) && (llega(r.persiana) || r.persiana === "sin")) || (llega(r.persiana) && r.cristal === "sin")) return 0;
+          if (r.ok) return 0;
           if (llega(r.cristal) && r.persiana === "no") return 1;
           if (llega(r.persiana) && r.cristal === "no") return 2;
           if (r.cristal === "no" || r.persiana === "no") return 3;
           return 4;
         };
-        const NOMBRES_G = ["✅ Todo el material llegado (cristal y persiana si la lleva)", "🟡 Cristal llegado · falta la persiana", "🟡 Persiana llegada · falta el cristal", "❌ Pedido, todavía sin llegar", "— Sin pedido de cristal ni persiana"];
+        const NOMBRES_G = ["✅ Listas: material completo y confirmado por fábrica (se pueden planificar)", "🟡 Cristal llegado · falta la persiana", "🟡 Persiana llegada · falta el cristal", "❌ Falta material por llegar o por confirmar", "— Sin pedido de cristal ni persiana"];
         filas.forEach((r) => { r.g = grupoDe(r); });
         filas.sort((a, b) => a.g - b.g || String(a.color).localeCompare(String(b.color)) || String(a.o.d.nombre).localeCompare(String(b.o.d.nombre), "es", { numeric: true }));
         const resumenG = NOMBRES_G.map((nm, gi) => { const fs = filas.filter((r) => r.g === gi); return { nm, n: fs.length, h: fs.reduce((a, r) => a + (r.horas || 0), 0) }; });
@@ -53093,7 +53094,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <tbody>
                   {filas.slice(0, maxLista).map((r, ri, arr) => (
                     <React.Fragment key={r.o.d.key}>
-                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={9} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}</td></tr>}
+                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={9} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}
+                      {r.g === 0 && <button type="button" onClick={() => { setAutoGrupo(filas.filter((x) => x.g === r.g).map((x) => limpia(x.o.d.key))); setAutoExcl({}); setAutoAbierto(true); }} className="ml-3 px-2 py-0.5 rounded bg-indigo-600 text-white text-xs font-bold">🗓 Planificar este grupo</button>}</td></tr>}
                     <tr className="border-t border-slate-100 align-top">
                       <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}</td>
                       <td className="px-1 text-center">{ic(r.cristal)}</td>
@@ -53124,6 +53126,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             {autoEstimar && <label className="text-xs">h por ventana <input type="number" step="0.1" value={autoHVent} placeholder={String(mediaHVent || "")} onChange={(e) => setAutoHVent(e.target.value)} className="w-16 border border-slate-300 rounded px-1 py-0.5" /></label>}
             <span className="text-xs text-slate-600">Solo lunes a viernes · se saltan los días que ya tienen obras · un día = un solo color de carpintería</span>
           </div>
+          {autoGrupo && <div className="mt-2 text-xs font-bold text-indigo-900">Solo se planifica el grupo elegido en la lista ({autoGrupo.length} obras). <button type="button" onClick={() => setAutoGrupo(null)} className="underline">Volver a todas las que tienen material</button></div>}
           <div className="mt-2 text-sm font-semibold">{nObras} obras → {plan.dias.length} días · {fmtHoras(totH)} en total</div>
           <div className="mt-1 flex flex-col gap-2">
             {plan.dias.map((d, i) => (
