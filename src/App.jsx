@@ -21370,6 +21370,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "persianasAlmacen" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Almacén persianas y mosquiteras
         </button>
+        <button onClick={() => setTab("controlDiaFab")}
+          className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition ${tab === "controlDiaFab" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+          🗓 Control del día
+        </button>
         <button onClick={() => setTab("procesoExterno")}
           className={`px-4 py-2.5 text-sm font-semibold crm-tab border-b-2 -mb-px transition flex items-center gap-1.5 ${tab === "procesoExterno" ? "border-[#2E8B57] text-[#2E8B57]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
           Albarán de salida
@@ -21790,6 +21794,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -52302,9 +52307,12 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     try { await guardarCopia("Antes de volver atrás"); await fbSet(ref(fbDb, "controlDiaObras"), c.datos && Object.keys(c.datos).length ? c.datos : null); await fbSet(ref(fbDb, "controlDiaLote"), null); } catch (e) { alert("No se pudo volver atrás: " + e.message); }
   };
   // ---- Planificación automática: días de 160 h, de lunes a viernes, un mismo color de carpintería por día ----
+  const papel = useObjetoFb("controlDiaPapel"); // { claveObra: true } = ya planificada/hecha en el planning de papel (amarillo) → morado
+  const [filtroPapel, setFiltroPapel] = useState("todas");
+  const alternarPapel = async (k) => { try { await fbSet(ref(fbDb, `controlDiaPapel/${k}`), (papel && papel[k]) ? null : true); } catch (e) { alert("No se pudo marcar: " + e.message); } };
   const [autoAbierto, setAutoAbierto] = useState(false);
   const [autoIni, setAutoIni] = useState("");
-  const [autoHoras, setAutoHoras] = useState(60);
+  const [autoHoras, setAutoHoras] = useState(160);
   const [autoExcl, setAutoExcl] = useState({});
   const sumaDiasF = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toLocaleDateString("sv-SE"); };
   const esFinde = (f) => { const g = new Date(f + "T12:00:00").getDay(); return g === 0 || g === 6; };
@@ -52927,7 +52935,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <button key={k} type="button" draggable title={nom + " — toca para ver dónde está su material (arrástrala para moverla de día)"}
                     onDragStart={() => setPinSel({ k, de: f })}
                     onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; } setObraInfo(obraInfo === k ? null : k); }}
-                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"}`}>{hecha ? "✓" : "📌"} {nom}</button>
+                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : papel && papel[k] ? "bg-purple-600 border-purple-800 text-white" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"}`}>{hecha ? "✓" : "📌"} {nom}</button>
                 ); })}
               </div>
             ); })}
@@ -52956,6 +52964,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         {lote && lote.claves && <button type="button" onClick={quitarLote} className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">↩ Quitar las {toArray(lote.claves).length} que añadí de golpe ({lote.dia ? fmtDate(lote.dia) : ""})</button>}
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
+        {lista.length > 0 && <button type="button" onClick={async () => { const ks = lista.map((o) => limpia(o.d.key)); const todas = ks.every((k) => papel && papel[k]); const upd = {}; ks.forEach((k) => { upd[k] = todas ? null : true; }); try { await fbUpdate(ref(fbDb, "controlDiaPapel"), upd); } catch (e) { alert("No se pudo marcar: " + e.message); } }} title="Marca (o desmarca) como «hecha en papel» todas las obras de este día" className="px-3 py-1.5 rounded-md bg-purple-600 text-white text-sm font-bold">🟣 {lista.every((o) => papel && papel[limpia(o.d.key)]) ? "Desmarcar" : "Marcar"} las {lista.length} de este día en papel</button>}
+        <select value={filtroPapel} onChange={(e) => setFiltroPapel(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" title="Filtra las obras del día según estén marcadas como hechas en el planning de papel">
+          <option value="todas">🟣 Papel: ver todas</option>
+          <option value="morado">🟣 Solo las marcadas en papel ({Object.keys(papel || {}).filter((k) => papel[k]).length})</option>
+          <option value="sin">Solo las NO marcadas en papel</option>
+        </select>
         <button type="button" onClick={() => setAutoAbierto((v) => !v)} className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-bold">🗓 Planificar automático por colores ({autoHoras} h/día, L–V)</button>
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
@@ -53088,20 +53102,21 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {!informe && lista.map((o) => {
+      {!informe && lista.filter((o) => filtroPapel === "todas" || (filtroPapel === "morado") === !!(papel && papel[limpia(o.d.key)])).map((o) => {
         const vivs = [...o.viv.entries()];
         const todosIds = idsDe(o);
         const vals = todosIds.map((i) => valor(o.d.key, i));
         const col = colorDe(vals);
         const abierta = !cerradas[o.d.key];
         return (
-          <div key={o.d.key} id={"obra-" + limpia(o.d.key)} className={`${resalt === limpia(o.d.key) ? "ring-8 ring-rose-400 " : ""}rounded-lg border-2 mb-3 ${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
+          <div key={o.d.key} id={"obra-" + limpia(o.d.key)} className={`${resalt === limpia(o.d.key) ? "ring-8 ring-rose-400 " : ""}rounded-lg border-2 mb-3 ${papel && papel[limpia(o.d.key)] ? "border-purple-600 bg-purple-50 " : ""}${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
               {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir la carga de material</button>}
               {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
               {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
+              <button type="button" onClick={() => alternarPapel(limpia(o.d.key))} title="Márcala si en el planning de papel está en amarillo" className={`px-3 py-2 text-xs font-semibold rounded-md border ${papel && papel[limpia(o.d.key)] ? "bg-purple-600 text-white border-purple-800" : "bg-white text-purple-800 border-purple-300"}`}>{papel && papel[limpia(o.d.key)] ? "🟣 En papel ✓" : "🟣 Hecha en papel"}</button>
               <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
             </div>
             <div className="px-3 pb-1 text-xs font-semibold text-slate-600">
