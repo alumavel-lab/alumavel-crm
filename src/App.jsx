@@ -52130,6 +52130,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const { pedirPin, modalPin } = usePinCristales();
   const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
   const [huecoMat, setHuecoMat] = useState(null);
+  const [irObra, setIrObra] = useState(null); // clave de la obra a la que saltar (desde el buscador de Limpiar)
+  const [resalt, setResalt] = useState(null);
+  useEffect(() => {
+    if (!irObra) return undefined;
+    const el = document.getElementById("obra-" + irObra);
+    if (!el) return undefined;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    setResalt(irObra); setIrObra(null);
+    return undefined;
+  });
+  useEffect(() => { if (!resalt) return undefined; const t = setTimeout(() => setResalt(null), 3500); return () => clearTimeout(t); }, [resalt]);
   const [verMat, setVerMat] = useState(null); // caballete o carro abierto desde «Dónde está el material»
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
   const [leyendoPlan, setLeyendoPlan] = useState(false);
@@ -52269,6 +52280,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       .forEach((x) => { pers.push(x); const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
     Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
     return { filas, sinClaves: false, pers, cabs, piezaDeObra };
+  };
+  // Salta a la tarjeta de la obra: si no está en el día que miras, cambia al primer día de su planning (o la añade a este día)
+  const irAObraLimpiar = (o, dias) => {
+    const k = limpia(o.d.key);
+    setCerradas((c) => ({ ...c, [o.d.key]: false }));
+    if (!asign[k]) {
+      if (dias && dias.length) { const d = dias.includes(dia) ? dia : dias[0]; setDia(d); setMesVer(d.slice(0, 7)); }
+      else if (window.confirm(`«${o.d.nombre}» no está en ningún día del planning. ¿La añado al ${fmtDate(dia)} para verla aquí?`)) asignar(o, true);
+      else return;
+    }
+    setIrObra(k);
   };
   // Da de baja los cristales de una obra: si el caballete lleva piezas de otras obras, solo se quitan las de esta; si no, se quita el caballete. Pide el PIN (regla de cristales).
   const quitarCristalesObra = (o, dm) => {
@@ -52888,7 +52910,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <div className="mt-2 space-y-1">
                     {filasL.map(({ o, dm, verdes, tot, dias }) => (
                       <div key={o.d.key} className="bg-white border border-slate-200 rounded px-2 py-1.5 text-xs">
-                        <div className="font-semibold text-slate-800">{o.d.nombre} <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
+                        <div className="font-semibold text-slate-800"><button type="button" onClick={() => irAObraLimpiar(o, dias)} className="text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1" title="Ir a esta obra">📍 {o.d.nombre}</button> <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
                         <div className="flex flex-wrap items-center gap-2 mt-1">
                           {(dm.cabs.length > 0 || dm.pers.length > 0) && <button type="button" onClick={() => setVerMat({ tipo: "todo", o, dm })} className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold">📍 Ver dónde está (un toque)</button>}
                           <span className="text-slate-700">Persianas en almacén: <b>{dm.pers.length}</b></span>
@@ -52912,7 +52934,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const col = colorDe(vals);
         const abierta = !cerradas[o.d.key];
         return (
-          <div key={o.d.key} className={`rounded-lg border-2 mb-3 ${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
+          <div key={o.d.key} id={"obra-" + limpia(o.d.key)} className={`${resalt === limpia(o.d.key) ? "ring-8 ring-rose-400 " : ""}rounded-lg border-2 mb-3 ${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
               {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir la carga de material</button>}
