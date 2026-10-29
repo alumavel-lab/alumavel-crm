@@ -52357,7 +52357,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     try { await guardarCopia("Antes de quitar obras repetidas"); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
   const [verLista, setVerLista] = useState(false);
-  const [qLista, setQLista] = useState(""); const [soloFalta, setSoloFalta] = useState(true); const [maxLista, setMaxLista] = useState(60);
+  const [qLista, setQLista] = useState(""); const [soloFalta, setSoloFalta] = useState(false); const [maxLista, setMaxLista] = useState(60);
   // Estado de cada tipo de material de una obra: "ok" llegado y confirmado · "conf" llegado sin confirmar · "no" sin llegar · "sin" no tiene pedido
   const estadoMat = (o, tipo) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -53064,7 +53064,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         if (q) filas = filas.filter((r) => String(r.o.d.nombre).toLowerCase().includes(q) || (qd.length >= 3 && [...pptosDe(r.o)].some((x) => x.includes(qd))));
         const totFalta = filas.filter((r) => r.faltan > 0).length;
         if (soloFalta) filas = filas.filter((r) => r.faltan > 0);
-        filas.sort((a, b) => b.faltan - a.faltan || String(a.o.d.nombre).localeCompare(String(b.o.d.nombre), "es", { numeric: true }));
+        const llega = (v) => v === "ok" || v === "conf";
+        const grupoDe = (r) => {
+          if ((llega(r.cristal) && (llega(r.persiana) || r.persiana === "sin")) || (llega(r.persiana) && r.cristal === "sin")) return 0;
+          if (llega(r.cristal) && r.persiana === "no") return 1;
+          if (llega(r.persiana) && r.cristal === "no") return 2;
+          if (r.cristal === "no" || r.persiana === "no") return 3;
+          return 4;
+        };
+        const NOMBRES_G = ["✅ Todo el material llegado (cristal y persiana si la lleva)", "🟡 Cristal llegado · falta la persiana", "🟡 Persiana llegada · falta el cristal", "❌ Pedido, todavía sin llegar", "— Sin pedido de cristal ni persiana"];
+        filas.forEach((r) => { r.g = grupoDe(r); });
+        filas.sort((a, b) => a.g - b.g || String(a.color).localeCompare(String(b.color)) || String(a.o.d.nombre).localeCompare(String(b.o.d.nombre), "es", { numeric: true }));
+        const resumenG = NOMBRES_G.map((nm, gi) => { const fs = filas.filter((r) => r.g === gi); return { nm, n: fs.length, h: fs.reduce((a, r) => a + (r.horas || 0), 0) }; });
         const ic = (v) => v === "ok" ? "✅" : v === "conf" ? "🟡" : v === "no" ? "❌" : "—";
         const sino = (b) => (b ? "✅" : "❌");
         return (
@@ -53080,8 +53091,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <table className="w-full text-xs">
                 <thead className="text-left text-slate-500"><tr><th className="py-1 pr-2">Obra</th><th className="px-1">Cristal</th><th className="px-1">Persiana</th><th className="px-1">Color</th><th className="px-1">Horas</th><th className="px-1" title="Listado de materiales de la obra">Listado</th><th className="px-1" title="PDF de la Carga de material (con chinchetas)">Carga PDF</th><th className="px-1">PLANING</th><th className="px-1">Falta</th></tr></thead>
                 <tbody>
-                  {filas.slice(0, maxLista).map((r) => (
-                    <tr key={r.o.d.key} className="border-t border-slate-100 align-top">
+                  {filas.slice(0, maxLista).map((r, ri, arr) => (
+                    <React.Fragment key={r.o.d.key}>
+                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={9} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}</td></tr>}
+                    <tr className="border-t border-slate-100 align-top">
                       <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}</td>
                       <td className="px-1 text-center">{ic(r.cristal)}</td>
                       <td className="px-1 text-center">{ic(r.persiana)}</td>
@@ -53092,6 +53105,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <td className="px-1 text-center">{sino(r.planing)}</td>
                       <td className="px-1 text-center font-bold">{r.faltan || "✅"}</td>
                     </tr>
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
