@@ -52079,6 +52079,26 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const sinConf = peds.filter((pd) => llegadoParaObra(pd) && toArray(pd.lineas).some((l) => !l.confirmadoFabrica)).length;
     return { ok: false, motivo: [...new Set(falta)].join(", ") || (sinConf ? "material llegado sin confirmar por fábrica" : "falta material") };
   };
+  // Dónde está ahora el material de cada obra (caballetes de cristal y carros de persianas), buscado por nº de presupuesto/expediente
+  const dondeMaterial = (o) => {
+    const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+    const claves = new Set([...pptosDe(o)]);
+    (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => { const d = digitosPresu(pr.pres); if (d.length >= 3) claves.add(d); });
+    const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    if (pry) [pry.numero, pry.expediente, pry.referencia].forEach((x) => digs(x).forEach((d) => claves.add(d)));
+    if (!claves.size) return { filas: [], sinClaves: true };
+    const idsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => p.id) : []);
+    const numsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => String(p.numero)) : []);
+    const filas = [];
+    toArray(almacenRapido.cristales).filter((c) => (c.pedidoId && idsPed.has(c.pedidoId)) || digs([c.expediente, c.secuencia, c.presupuesto, ...toArray(c.piezas).map((x) => x.expediente)].join(" ")).some((d) => claves.has(d)))
+      .forEach((c) => filas.push({ t: "Cristales", txt: `Caballete ${c.lote || c.numero || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"}` }));
+    const almacenes = toArray(almacenRapido.almacenesPersianas); const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén de persianas";
+    const g = {};
+    toArray(almacenRapido.persianas).filter((x) => !x.entregada && (numsPed.has(String(x.pedido || "")) || digs([x.expediente, x.presupuesto].join(" ")).some((d) => claves.has(d))))
+      .forEach((x) => { const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; g[k] = (g[k] || 0) + 1; });
+    Object.entries(g).forEach(([k, n]) => filas.push({ t: "Persianas", txt: `${k} · ${n} ud` }));
+    return { filas, sinClaves: false };
+  };
   // Información del planning de producción (PDF «PLANING») por obra y por ventana
   const planVent = new Map(); const presDeObra = new Map();
   Object.entries(planPres || {}).forEach(([pk, pr]) => {
@@ -52627,6 +52647,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
               {(presDeObra.get(limpia(o.d.key)) || []).map((pr, i) => <div key={i} className="font-normal text-slate-600">Planning: presupuesto {pr.pres} · {fmtHoras(Number(pr.horas) || 0)}{pr.cliente ? ` · ${String(pr.cliente).replace(/^\d+-/, "")}` : ""}{pr.ref ? ` · ${pr.ref}` : ""}</div>)}
             </div>
+            {abierta && (() => { const dm = dondeMaterial(o); return (
+              <div className="mx-3 mb-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
+                <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material</div>
+                {dm.filas.length ? dm.filas.map((f, i) => <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>)
+                  : <div className="text-slate-500">{dm.sinClaves ? "Esta obra no tiene nº de presupuesto/expediente para buscarlo." : "No encuentro cristales ni persianas de esta obra en los almacenes (puede que no hayan llegado o estén apuntados con otro número)."}</div>}
+              </div>); })()}
             {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
             {abierta && (o.folio && verFolio ? [] : vivs).map(([g, vs]) => {
               const gv = vs.map((v) => valor(o.d.key, v.id)); const gc = colorDe(gv);
