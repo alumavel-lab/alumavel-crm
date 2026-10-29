@@ -52346,16 +52346,26 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [autoIni, setAutoIni] = useState("");
   const [autoHoras, setAutoHoras] = useState(160);
   const [autoExcl, setAutoExcl] = useState({});
+  const [autoEstimar, setAutoEstimar] = useState(true); // incluir también las obras sin PLANING, estimando sus horas
+  const [autoHVent, setAutoHVent] = useState(""); // horas por ventana para estimar (vacío = la media de lo que ya hay en el PLANING)
   const sumaDiasF = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toLocaleDateString("sv-SE"); };
   const esFinde = (f) => { const g = new Date(f + "T12:00:00").getDay(); return g === 0 || g === 6; };
   const sigLab = (f) => { let x = f; for (let i = 0; i < 10 && esFinde(x); i++) x = sumaDiasF(x, 1); return x; };
   const normColor = (t) => String(t || "").toUpperCase().replace(/\s+/g, " ").trim();
+  const mediaHVent = (() => { let h = 0, n = 0; Object.values(planPres || {}).forEach((pr) => { if (pr && Number(pr.horas) > 0 && Number(pr.nVent) > 0) { h += Number(pr.horas); n += Number(pr.nVent); } }); return n ? Math.round((h / n) * 10) / 10 : 0; })();
+  const hVentEfec = Number(autoHVent) > 0 ? Number(autoHVent) : mediaHVent;
   const infoAuto = (o) => {
     const prs = presDeObra.get(limpia(o.d.key)) || [];
-    const horas = prs.reduce((a, pr) => a + (Number(pr.horas) || 0), 0);
+    let horas = prs.reduce((a, pr) => a + (Number(pr.horas) || 0), 0);
     const cnt = {}; prs.forEach((pr) => toArray(pr.ventanas).forEach((w) => { const c = normColor(w.color); if (c) cnt[c] = (cnt[c] || 0) + 1; }));
+    let nVent = Object.values(cnt).reduce((a, b) => a + b, 0);
+    let est = false;
+    const vivs = [...o.viv.values()].flat();
+    if (!Object.keys(cnt).length) vivs.forEach((v) => { const c = normColor(v.color); if (c) cnt[c] = (cnt[c] || 0) + 1; }); // color de las etiquetas / hoja de corte
+    if (!nVent) nVent = vivs.length;
+    if (!(horas > 0) && autoEstimar && nVent > 0 && hVentEfec > 0) { horas = Math.round(nVent * hVentEfec * 10) / 10; est = true; }
     const colores = Object.keys(cnt).sort();
-    return { horas, colores, color: colores.length ? colores.join(" + ") : "", nVent: Object.values(cnt).reduce((a, b) => a + b, 0) };
+    return { horas, colores, color: colores.length ? colores.join(" + ") : (autoEstimar ? "SIN COLOR" : ""), nVent, est };
   };
   const calcAuto = () => {
     const yaPlan = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) yaPlan.add(k); }));
@@ -53033,6 +53043,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <div className="flex flex-wrap items-end gap-3 text-sm">
             <label>Empezar el <input type="date" value={autoIni || dia} onChange={(e) => setAutoIni(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1" /></label>
             <label>Horas por día <input type="number" value={autoHoras} onChange={(e) => setAutoHoras(e.target.value)} className="w-20 border border-slate-300 rounded px-1.5 py-1" /></label>
+            <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={autoEstimar} onChange={(e) => setAutoEstimar(e.target.checked)} /> Incluir las obras sin PLANING (horas estimadas)</label>
+            {autoEstimar && <label className="text-xs">h por ventana <input type="number" step="0.1" value={autoHVent} placeholder={String(mediaHVent || "")} onChange={(e) => setAutoHVent(e.target.value)} className="w-16 border border-slate-300 rounded px-1 py-0.5" /></label>}
             <span className="text-xs text-slate-600">Solo lunes a viernes · se saltan los días que ya tienen obras · un día = un solo color de carpintería</span>
           </div>
           <div className="mt-2 text-sm font-semibold">{nObras} obras → {plan.dias.length} días · {fmtHoras(totH)} en total</div>
@@ -53045,14 +53057,14 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <span className={d.horas > plan.cap ? "text-rose-700" : d.horas < plan.cap * 0.6 ? "text-amber-700" : "text-emerald-700"}>{fmtHoras(d.horas)} / {plan.cap} h{d.horas > plan.cap ? " ⚠ se pasa" : d.horas < plan.cap * 0.6 ? " · día corto (no hay más de este color)" : ""}</span>
                 </div>
                 <ul className="mt-1 text-xs text-slate-700">
-                  {d.items.map((c) => <li key={c.k} className="flex items-center gap-1"><input type="checkbox" checked onChange={() => setAutoExcl((x) => ({ ...x, [c.k]: true }))} title="Quitar de la propuesta" /> {c.o.d.nombre} · {fmtHoras(c.horas)} · {c.nVent} vent.</li>)}
+                  {d.items.map((c) => <li key={c.k} className="flex items-center gap-1"><input type="checkbox" checked onChange={() => setAutoExcl((x) => ({ ...x, [c.k]: true }))} title="Quitar de la propuesta" /> {c.o.d.nombre} · {c.est ? "≈" : ""}{fmtHoras(c.horas)} · {c.nVent} vent.{c.est ? " (estimado)" : ""}</li>)}
                 </ul>
               </div>
             ))}
           </div>
           {plan.sinDatos.length > 0 && (
             <div className="mt-2 rounded-md bg-amber-100 border border-amber-400 p-2 text-xs">
-              <b>{plan.sinDatos.length} obras con material NO se planifican</b> porque no tengo su color u horas (hace falta subir su PLANING): {plan.sinDatos.slice(0, 40).map((c) => `${c.o.d.nombre}${!c.horas ? " [sin horas]" : ""}${!c.color ? " [sin color]" : ""}`).join(" · ")}
+              <b>{plan.sinDatos.length} obras con material NO se planifican</b> porque no tengo sus horas ni sus ventanas (sube su PLANING o activa «Incluir las obras sin PLANING»): {plan.sinDatos.slice(0, 40).map((c) => `${c.o.d.nombre}${!c.horas ? " [sin horas]" : ""}${!c.color ? " [sin color]" : ""}`).join(" · ")}
             </div>
           )}
           {Object.keys(autoExcl).some((k) => autoExcl[k]) && <button type="button" onClick={() => setAutoExcl({})} className="mt-2 text-xs underline">Volver a incluir las que quité ({Object.keys(autoExcl).filter((k) => autoExcl[k]).length})</button>}
