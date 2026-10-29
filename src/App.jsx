@@ -39586,7 +39586,7 @@ function agruparEtiquetasModelo(paginas) {
 }
 // ---- "Carga de material" (un pedido: número, referencia y sus ventanas): sirve para crear pegatinas cuando no hay PDF de etiquetas ----
 // No trae lote de fabricación: se usa el número del pedido (6.305 → lote 6305). Los códigos se generan igual que en "modelos unidad".
-function agruparCargaMaterial(paginas) {
+function agruparCargaMaterial(paginas, opts = {}) {
   const lotes = new Map();
   let etiquetas = 0, ignoradas = 0, repetidas = 0, persianas = 0, extrasSinNumero = 0;
   const vistos = new Set();
@@ -39635,7 +39635,7 @@ function agruparCargaMaterial(paginas) {
         const posN = posIni > 0 ? posIni + u - 1 : 0;
         const seq = posN > 0 ? String(posN % 1000).padStart(3, "0") : String((seqBase + 100 * (u - 1)) % 1000).padStart(3, "0");
         const code = "9" + fab.slice(-4).padStart(4, "0") + exp.slice(-4).padStart(4, "0") + seq;
-        if (vistos.has(code)) { repetidas++; continue; }
+        if (vistos.has(code) && !opts.todas) { repetidas++; continue; } // (opts.todas: Control del día quiere TODAS las ventanas; el código de pegatina repetido le da igual)
         vistos.add(code);
         const id = posN > 0 ? `${fab}|${exp}|P${posN}` : `${fab}|${exp}|${tip}${u > 1 ? `#${u}` : ""}`;
         let lote = lotes.get(fab);
@@ -51603,10 +51603,14 @@ async function imagenFolioPdf(url, n) {
   _folioImgs.set(k, d);
   return d;
 }
-function FolioCarga({ url, ventanas, valorDe, onToca, grande }) {
+function FolioCarga({ url, ventanas, valorDe, onToca, onMover, notas = {}, onNota, colocando, onColocar, grande }) {
   const paginas = [...new Set(ventanas.map((v) => v.pag))].sort((a, b) => a - b);
   const [imgs, setImgs] = useState({});
   const [err, setErr] = useState("");
+  const [arrastre, setArrastre] = useState(null); // chincheta que se está moviendo: { id, pag, px, py }
+  const [edit, setEdit] = useState(null); // nota que se está escribiendo: { id, texto }
+  const cajas = useRef({});
+  const drag = useRef(null);
   const clave = paginas.join(",");
   useEffect(() => {
     let vivo = true;
@@ -51620,19 +51624,65 @@ function FolioCarga({ url, ventanas, valorDe, onToca, grande }) {
   // eslint-disable-next-line
   }, [url, clave]);
   const col = { 0: ["#ffffff", "#334155", "#0f172a"], 1: ["#059669", "#064e3b", "#ffffff"], 2: ["#f97316", "#7c2d12", "#ffffff"] };
+  const acota = (x) => Math.min(1, Math.max(0, x));
+  const alBajar = (e, v, n) => {
+    const caja = cajas.current[n]; if (!caja) return;
+    e.stopPropagation();
+    const r = caja.getBoundingClientRect();
+    drag.current = { v, n, r, ox: e.clientX - (v.px * r.width + r.left), oy: e.clientY - (v.py * r.height + r.top), x0: e.clientX, y0: e.clientY, moved: false, last: null };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* nada */ }
+  };
+  const alMover = (e) => {
+    const d = drag.current; if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 8) return;
+    d.moved = true;
+    d.last = { px: acota((e.clientX - d.ox - d.r.left) / d.r.width), py: acota((e.clientY - d.oy - d.r.top) / d.r.height) };
+    setArrastre({ id: d.v.id, pag: d.n, ...d.last });
+  };
+  const alSoltar = () => {
+    const d = drag.current; drag.current = null;
+    if (!d) return;
+    if (d.moved && d.last) { onMover && onMover(d.v, d.n, d.last.px, d.last.py); setArrastre(null); }
+    else onToca(d.v);
+  };
   return (
     <div className="space-y-3 mt-2">
       {err && <div className="text-sm text-rose-600">{err}</div>}
       {paginas.map((n) => (
-        <div key={n} className="relative w-full select-none" style={{ lineHeight: 0 }}>
+        <div key={n} ref={(el) => { cajas.current[n] = el; }} className="relative w-full select-none" style={{ lineHeight: 0, touchAction: "pan-y", cursor: colocando ? "crosshair" : "default" }}
+          onClick={(e) => { if (!colocando || !onColocar) return; const r = e.currentTarget.getBoundingClientRect(); onColocar(colocando, n, acota((e.clientX - r.left) / r.width), acota((e.clientY - r.top) / r.height)); }}>
           {imgs[n] ? <img src={imgs[n]} alt={`Folio ${n}`} className="w-full rounded border border-slate-300 bg-white" draggable={false} /> : <div className="w-full h-64 rounded border border-slate-300 bg-white flex items-center justify-center text-slate-400 text-sm" style={{ lineHeight: "normal" }}>Dibujando el folio {n}…</div>}
-          {imgs[n] && ventanas.filter((v) => v.pag === n).map((v) => { const val = valorDe(v.id); const [bg, borde, tx] = col[val] || col[0]; return (
-            <button key={v.id} type="button" onClick={() => onToca(v)} title={`${v.pos || ""} ${v.tip || ""}`.trim()}
-              style={{ position: "absolute", left: `${v.px * 100}%`, top: `${v.py * 100}%`, transform: "translate(-50%, -100%)", lineHeight: 1.1, display: "flex", flexDirection: "column", alignItems: "center", background: "none", border: "none", padding: 0, cursor: "pointer" }}>
-              <span style={{ background: bg, color: tx, border: `3px solid ${borde}`, borderRadius: 10, padding: grande ? "4px 9px" : "2px 6px", fontWeight: 800, fontSize: grande ? 20 : 13, whiteSpace: "nowrap", boxShadow: "0 2px 6px rgba(0,0,0,.35)" }}>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.medida || v.pos || "·"}</span>
-              <span style={{ width: 0, height: 0, borderLeft: "7px solid transparent", borderRight: "7px solid transparent", borderTop: `10px solid ${borde}` }} />
-            </button>
-          ); })}
+          {imgs[n] && ventanas.filter((v) => v.pag === n).map((v) => {
+            const val = valorDe(v.id); const [bg, borde, tx] = col[val] || col[0];
+            const p = arrastre && arrastre.id === v.id ? arrastre : v;
+            const nota = notas[v.id];
+            return (
+              <React.Fragment key={v.id}>
+                <div title={`${v.pos || ""} ${v.tip || ""}`.trim()}
+                  onPointerDown={(e) => alBajar(e, v, n)} onPointerMove={alMover} onPointerUp={alSoltar} onPointerCancel={() => { drag.current = null; setArrastre(null); }}
+                  style={{ position: "absolute", left: `${p.px * 100}%`, top: `${p.py * 100}%`, transform: "translate(-50%, -100%)", lineHeight: 1.1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "grab", touchAction: "none", zIndex: arrastre && arrastre.id === v.id ? 30 : 5, pointerEvents: colocando ? "none" : "auto" }}>
+                  <span style={{ position: "relative", background: bg, color: tx, border: `3px solid ${borde}`, borderRadius: 10, padding: grande ? "4px 9px" : "2px 6px", fontWeight: 800, fontSize: grande ? 20 : 13, whiteSpace: "nowrap", boxShadow: "0 2px 6px rgba(0,0,0,.35)" }}>
+                    {val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.medida || v.pos || "·"}
+                    {onNota && <span role="button" title="Escribir una nota o problema" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); setEdit({ id: v.id, texto: nota || "" }); }}
+                      style={{ position: "absolute", right: -12, top: -12, width: grande ? 26 : 20, height: grande ? 26 : 20, borderRadius: 999, background: nota ? "#facc15" : "#e2e8f0", color: "#0f172a", border: "2px solid #334155", fontSize: grande ? 14 : 11, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>✎</span>}
+                  </span>
+                  <span style={{ width: 0, height: 0, borderLeft: "7px solid transparent", borderRight: "7px solid transparent", borderTop: `10px solid ${borde}` }} />
+                </div>
+                {nota && <div style={{ position: "absolute", left: `${p.px * 100}%`, top: `${p.py * 100}%`, transform: "translate(-50%, 6px)", maxWidth: 190, background: "#fef08a", color: "#713f12", border: "1px solid #ca8a04", borderRadius: 6, padding: "2px 6px", fontSize: grande ? 15 : 11, fontWeight: 700, lineHeight: 1.2, pointerEvents: "none", zIndex: 4 }}>{nota}</div>}
+              </React.Fragment>
+            );
+          })}
+          {edit && ventanas.some((v) => v.id === edit.id && v.pag === n) && (() => { const v = ventanas.find((x) => x.id === edit.id); return (
+            <div style={{ position: "absolute", left: `${Math.min(70, v.px * 100)}%`, top: `${Math.min(85, v.py * 100)}%`, zIndex: 40, lineHeight: "normal", background: "#fff", border: "2px solid #334155", borderRadius: 8, padding: 8, boxShadow: "0 6px 20px rgba(0,0,0,.4)", width: 240 }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 4 }}>Nota de {v.medida || v.pos}</div>
+              <input autoFocus value={edit.texto} onChange={(e) => setEdit({ ...edit, texto: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") { onNota(edit.id, edit.texto); setEdit(null); } }} placeholder="Ej.: falta una hoja, vidrio roto…" style={{ width: "100%", border: "1px solid #94a3b8", borderRadius: 6, padding: "4px 6px", fontSize: 14, color: "#0f172a" }} />
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <button type="button" onClick={() => { onNota(edit.id, edit.texto); setEdit(null); }} style={{ background: "#059669", color: "#fff", borderRadius: 6, padding: "3px 10px", fontSize: 13, fontWeight: 700 }}>Guardar</button>
+                <button type="button" onClick={() => { onNota(edit.id, ""); setEdit(null); }} style={{ border: "1px solid #94a3b8", borderRadius: 6, padding: "3px 10px", fontSize: 13, color: "#0f172a" }}>Borrar nota</button>
+                <button type="button" onClick={() => setEdit(null)} style={{ borderRadius: 6, padding: "3px 6px", fontSize: 13, color: "#475569" }}>Cerrar</button>
+              </div>
+            </div>
+          ); })()}
         </div>
       ))}
     </div>
@@ -51654,12 +51704,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const inputPlanRef = useRef(null);
   const marcasTodas = useObjetoFb("controlDia");
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
+  const horasTodas = useObjetoFb("controlDiaHoras"); // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
+  const horas = (horasTodas && horasTodas[dia]) || {};
   const asignTodas = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } }
   const asign = (asignTodas && asignTodas[dia]) || {};
   const [cerradas, setCerradas] = useState({});
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
+  const pinsMov = useObjetoFb("controlDiaPins"); // chinchetas movidas a mano: { claveObra: { idVentana: { pag, px, py } } }
+  const notasTodas = useObjetoFb("controlDiaNotas"); // notas por día: { fecha: { claveObra: { idVentana: "texto" } } }
+  const [colocando, setColocando] = useState(null); // { key, id }: se está colocando una chincheta tocando en el folio
   const intentadasCarga = useRef({});
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
   const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
@@ -51690,13 +51745,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   obras.forEach((o) => {
     const g = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
     const vg = g ? toArray(g.ventanas) : [];
+    const ovObra = (pinsMov && pinsMov[limpia(o.d.key)]) || {};
     const conPins = vg.some((v) => v && v.pag && v.px != null);
     const docP = (g && g.url) ? { url: g.url } : (o.d.tipo === "p" ? ((toArray(proyectos).find((p) => p.id === o.d.id) || {}).documentoEntrega || null) : null);
     o.tienePins = conPins;
     if (o.viv.size > 0 && !(conPins && docP && docP.url)) { o.fuente = "etiquetas"; return; }
     if (vg.length) {
       o.viv = new Map();
-      vg.forEach((v) => { const gr = v.grupo || "Sin vivienda"; if (!o.viv.has(gr)) o.viv.set(gr, []); o.viv.get(gr).push({ id: limpia(v.id || v.pos), pos: v.pos || "", fab: v.fab || "", tip: v.tip || v.pos || "", medida: v.medida || "", color: v.color || "", pag: v.pag || 0, px: v.px, py: v.py }); });
+      vg.forEach((v) => { const gr = v.grupo || "Sin vivienda"; if (!o.viv.has(gr)) o.viv.set(gr, []); const idv = limpia(v.id || v.pos); const ov = ovObra[idv]; o.viv.get(gr).push({ id: idv, pos: v.pos || "", fab: v.fab || "", tip: v.tip || v.pos || "", medida: v.medida || "", color: v.color || "", pag: ov ? ov.pag : (v.pag || 0), px: ov ? ov.px : v.px, py: ov ? ov.py : v.py }); });
       o.fuente = "carga";
       if (conPins && docP && docP.url) o.folio = { url: docP.url };
       return;
@@ -51742,7 +51798,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
   const traerCarga = async (o, fichero) => {
     const p = toArray(proyectos).find((x) => x.id === o.d.id);
-    const doc = p && p.documentoEntrega;
+    const g0 = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
+    const doc = (p && p.documentoEntrega && p.documentoEntrega.url) ? p.documentoEntrega : (g0 && g0.url ? { url: g0.url, nombre: g0.archivo || "" } : null);
     if (!fichero && (!doc || !doc.url)) { setEstadoCarga((s) => ({ ...s, [o.d.key]: "error: esta obra no tiene la Carga de material en el CRM: pulsa «Subir la carga de material» y elige el PDF" })); return; }
     setEstadoCarga((s) => ({ ...s, [o.d.key]: "leyendo" }));
     try {
@@ -51765,7 +51822,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
         itemsPag.push(tc.items.filter((i) => i.str && i.str.trim()).map((i) => ({ s: i.str.trim(), x: i.transform[4], y: i.transform[5], h: i.height || Math.abs(i.transform[3]) || 9 })));
         dims.push({ W: pg.view[2] - pg.view[0], H: pg.view[3] - pg.view[1], x0: pg.view[0], rotate: pg.rotate });
       }
-      const rc = agruparCargaMaterial(paginasTxt);
+      const rc = agruparCargaMaterial(paginasTxt, { todas: true });
       if (rc.lotes.length) {
         await guardarDibujosCarga(pdfDoc, rc);
         rc.lotes.forEach((l) => toArray(l.ventanas).forEach((v) => ventanas.push({ id: limpia(v.id || v.pos), pos: v.pos || "", tip: v.tipo || v.pos || "", medida: v.medida || "", color: v.color || "", grupo: v.grupo || "Sin vivienda", fab: l.fab })));
@@ -51793,6 +51850,42 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       setEstadoCarga((s) => { const n = { ...s }; delete n[o.d.key]; return n; });
     } catch (e) { setEstadoCarga((s) => ({ ...s, [o.d.key]: "error: " + ((e && e.message) || "no se pudo leer") })); }
   };
+  const moverPin = (o, v, pag, px, py) => { fbSet(ref(fbDb, `controlDiaPins/${limpia(o.d.key)}/${v.id}`), { pag, px: Math.round(px * 1000) / 1000, py: Math.round(py * 1000) / 1000 }).catch(() => {}); };
+  const guardarNota = (o, id, texto) => { fbSet(ref(fbDb, `controlDiaNotas/${dia}/${limpia(o.d.key)}/${id}`), String(texto || "").trim() || null).catch(() => {}); };
+  // El folio de una obra con sus chinchetas, y debajo las ventanas que no tienen chincheta (para colocarlas tocando en el folio)
+  const folioDe = (o, vivs, grande) => {
+    const todas = vivs.flatMap(([, vs]) => vs);
+    const sin = todas.filter((v) => !v.pag);
+    const notasObra = ((notasTodas && notasTodas[dia]) || {})[limpia(o.d.key)] || {};
+    const colId = colocando && colocando.key === o.d.key ? colocando.id : null;
+    const vcol = colId ? todas.find((v) => v.id === colId) : null;
+    return (
+      <>
+        {vcol && <div className="mb-2 px-3 py-2 rounded-md bg-sky-600 text-white text-sm font-bold flex items-center gap-3">Toca en el folio donde va la chincheta de «{vcol.medida || vcol.pos}»<button type="button" onClick={() => setColocando(null)} className="ml-auto px-2 py-0.5 rounded bg-white text-sky-800 text-xs">Cancelar</button></div>}
+        <FolioCarga url={o.folio.url} ventanas={todas.filter((v) => v.pag)} valorDe={(id) => valor(o.d.key, id)} onToca={(v) => tocaVentana(o, v)} onMover={(v, pag, px, py) => moverPin(o, v, pag, px, py)}
+          notas={notasObra} onNota={(id, t) => guardarNota(o, id, t)} colocando={colId} onColocar={(id, pag, px, py) => { moverPin(o, { id }, pag, px, py); setColocando(null); }} grande={grande} />
+        {sin.length > 0 && (
+          <div className="mt-3 p-2 rounded-md border border-amber-300 bg-amber-50 text-slate-900" style={{ lineHeight: "normal" }}>
+            <div className="text-xs font-bold text-amber-800 mb-1">{sin.length} ventana{sin.length === 1 ? "" : "s"} sin chincheta (no he encontrado su sitio en el folio): toca «📍 Colocar» y luego toca en el folio</div>
+            <div className="flex flex-wrap gap-2">
+              {sin.map((v) => { const val = valor(o.d.key, v.id); return (
+                <span key={v.id} className="inline-flex items-stretch rounded-md overflow-hidden border-2 border-slate-400">
+                  <button type="button" onClick={() => tocaVentana(o, v)} className={`px-2 py-1 text-sm font-bold ${val === 1 ? "bg-emerald-600 text-white" : val === 2 ? "bg-orange-500 text-white" : "bg-white text-slate-900"}`}>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}</button>
+                  <button type="button" onClick={() => setColocando({ key: o.d.key, id: v.id })} className="px-2 py-1 text-xs font-bold bg-sky-100 text-sky-900 border-l-2 border-slate-400">📍 Colocar</button>
+                </span>
+              ); })}
+            </div>
+          </div>
+        )}
+      </>
+    );
+  };
+  // ---- Informe del día: qué se ha hecho, qué tiene problema y qué falta, con filtros por obra, vivienda, ventana y estado ----
+  const [informe, setInforme] = useState(false);
+  const [fObra, setFObra] = useState("");
+  const [fViv, setFViv] = useState("");
+  const [fVent, setFVent] = useState("");
+  const [fEst, setFEst] = useState("");
   const inputCargaRef = useRef(null);
   const obraSubida = useRef(null);
   const pedirPdfCarga = (o) => { obraSubida.current = o; if (inputCargaRef.current) inputCargaRef.current.click(); };
@@ -51859,10 +51952,53 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${dia}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
   const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
   const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
-  const tocaVentana = (o, v) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act); };
+  // Apunta el momento en que se marca (o se desmarca) cada ventana, aparte de la marca de color
+  const guardarHoras = (dk, h) => { fbSet(ref(fbDb, `controlDiaHoras/${dia}/${limpia(dk)}`), Object.keys(h).length ? h : null).catch(() => {}); };
+  const tocaVentana = (o, v) => {
+    const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act);
+    const h = { ...(horas[limpia(o.d.key)] || {}) }; if (n) h[v.id] = Date.now(); else delete h[v.id]; guardarHoras(o.d.key, h);
+  };
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
-  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); };
+  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act);
+    const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
+  const notasDia = (notasTodas && notasTodas[dia]) || {};
+  const ESTADO_INFORME = { 1: { t: "✓ Hecha", c: "bg-emerald-100 text-emerald-800" }, 2: { t: "⚠ Problema", c: "bg-orange-100 text-orange-800" }, 0: { t: "Pendiente", c: "bg-slate-100 text-slate-600" } };
+  const todasFilasInforme = lista.flatMap((o) => {
+    const vivs = [...o.viv.entries()];
+    const notasObra = notasDia[limpia(o.d.key)] || {};
+    const horasObra = horas[limpia(o.d.key)] || {};
+    if (!vivs.length) return [{ o, g: "", v: null, val: valor(o.d.key, "_obra"), nota: notasObra._obra || "", t: horasObra._obra || 0 }];
+    return vivs.flatMap(([g, vs]) => vs.map((v) => ({ o, g, v, val: valor(o.d.key, v.id), nota: notasObra[v.id] || "", t: horasObra[v.id] || 0 })));
+  });
+  const filasInforme = todasFilasInforme.filter((f) => {
+    if (fObra && f.o.d.key !== fObra) return false;
+    if (fViv && f.g !== fViv) return false;
+    if (fEst !== "" && String(f.val) !== fEst) return false;
+    const q = fVent.trim().toLowerCase();
+    if (q && !`${f.v ? `${f.v.pos} ${f.v.tip} ${f.v.medida}` : ""} ${f.nota}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const vivsInforme = [...new Set(todasFilasInforme.filter((f) => !fObra || f.o.d.key === fObra).map((f) => f.g).filter(Boolean))];
+  const horaDe = (t) => (t ? new Date(t).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : "");
+  const tiemposInforme = todasFilasInforme.map((f) => f.t).filter(Boolean).sort((a, b) => a - b);
+  const textoTiempos = tiemposInforme.length ? `Primera marca ${horaDe(tiemposInforme[0])} · última ${horaDe(tiemposInforme[tiemposInforme.length - 1])}` : "";
+  const cuentaInforme = (arr) => ({ total: arr.length, hechas: arr.filter((f) => f.val === 1).length, problema: arr.filter((f) => f.val === 2).length, pendientes: arr.filter((f) => !f.val).length });
+  const imprimirInforme = () => {
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const tot = cuentaInforme(todasFilasInforme), vis = cuentaInforme(filasInforme);
+    const porObra = new Map();
+    filasInforme.forEach((f) => { if (!porObra.has(f.o.d.key)) porObra.set(f.o.d.key, { o: f.o, filas: [] }); porObra.get(f.o.d.key).filas.push(f); });
+    const filtros = [fObra && `obra: ${(lista.find((x) => x.d.key === fObra) || { d: { nombre: "" } }).d.nombre}`, fViv && `vivienda: ${fViv}`, fEst !== "" && `estado: ${ESTADO_INFORME[fEst].t}`, fVent.trim() && `búsqueda: ${fVent.trim()}`].filter(Boolean).join(" · ");
+    const cuerpo = [...porObra.values()].map(({ o, filas }) => {
+      const c = cuentaInforme(filas);
+      return `<h3>${esc(o.d.nombre)} <small>· ${c.hechas}/${c.total} hechas${c.problema ? ` · ${c.problema} con problema` : ""}</small></h3><table><tr><th>Vivienda</th><th>Ventana</th><th>Medida</th><th>Estado</th><th>Hora</th><th>Nota</th></tr>${filas.map((f) => `<tr class="e${f.val}"><td>${esc(f.g)}</td><td>${esc(f.v ? f.v.pos : "Toda la obra")}${f.v && f.v.tip && f.v.tip !== f.v.pos ? ` <small>(${esc(f.v.tip)})</small>` : ""}</td><td>${esc(f.v ? f.v.medida : "")}</td><td>${esc(ESTADO_INFORME[f.val].t)}</td><td>${esc(f.val ? horaDe(f.t) : "")}</td><td>${esc(f.nota)}</td></tr>`).join("")}</table>`;
+    }).join("");
+    const w = window.open("", "_blank");
+    if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para este sitio."); return; }
+    w.document.write(`<html><head><meta charset="utf-8"><title>Informe del día ${esc(fmtDate(dia))}</title><style>body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:16px}h1{font-size:18px;margin:0 0 4px}h3{font-size:14px;margin:14px 0 4px}small{font-weight:normal;color:#555}table{border-collapse:collapse;width:100%}th,td{border:1px solid #bbb;padding:3px 6px;text-align:left}th{background:#eee}.e1 td{background:#e6f6ec}.e2 td{background:#ffe7d1}</style></head><body><h1>Control del día · ${esc(fmtDate(dia))}</h1><div>${lista.length} obra${lista.length === 1 ? "" : "s"} · ${tot.total} ventanas: <b>${tot.hechas} hechas</b>, <b>${tot.problema} con problema</b>, ${tot.pendientes} pendientes${textoTiempos ? ` · ${esc(textoTiempos)}` : ""}</div>${filtros ? `<div>Filtro: ${esc(filtros)} → ${vis.total} ventanas</div>` : ""}${cuerpo || "<p>Sin datos para este filtro.</p>"}</body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
+  };
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -51882,8 +52018,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo la carga de material…</div>}
               {!o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mx-1 mt-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir la carga de material</button>}
               {String(estadoCarga[o.d.key] || "").startsWith("error") && <div className="px-1 text-sm text-rose-300">{estadoCarga[o.d.key]}</div>}
-              {o.folio && verFolio && <div className="bg-slate-100 rounded-lg p-2 mt-2"><FolioCarga url={o.folio.url} ventanas={vivs.flatMap(([, vs]) => vs).filter((v) => v.pag)} valorDe={(id) => valor(o.d.key, id)} onToca={(v) => tocaVentana(o, v)} grande /></div>}
-              {(o.folio && verFolio ? vivs.map(([g, vs]) => [g, vs.filter((v) => !v.pag)]).filter(([, vs]) => vs.length) : vivs).map(([g, vs]) => (
+              {o.folio && verFolio && <div className="bg-slate-100 rounded-lg p-2 mt-2">{folioDe(o, vivs, true)}</div>}
+              {(o.folio && verFolio ? [] : vivs).map(([g, vs]) => (
                 <div key={g} className="mt-2">
                   <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className="text-lg font-bold text-sky-300 mb-1">{g}</button>
                   <div className="flex flex-wrap gap-2">
@@ -51911,6 +52047,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <b className="text-sm text-slate-800">{fmtDate(dia)}{dia === hoy ? " (hoy)" : ""} · {lista.length} obra{lista.length === 1 ? "" : "s"} · {nVerdes} terminada{nVerdes === 1 ? "" : "s"}</b>
         <button type="button" onClick={() => setTv(true)} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">{verFolio ? "Ver como lista" : "Ver el folio con chinchetas"}</button>
+        <button type="button" onClick={() => setInforme((x) => !x)} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${informe ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-800 border-slate-400"}`}>📋 {informe ? "Volver a las obras" : "Informe del día"}</button>
         {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
       </div>
       <div className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
@@ -51966,7 +52103,49 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </details>
       <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
       {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Añádelas arriba con «➕ Añadir obras a este día».</p>}
-      {lista.map((o) => {
+      {informe && (() => {
+        const tot = cuentaInforme(todasFilasInforme), vis = cuentaInforme(filasInforme);
+        const porObra = new Map();
+        filasInforme.forEach((f) => { if (!porObra.has(f.o.d.key)) porObra.set(f.o.d.key, { o: f.o, filas: [] }); porObra.get(f.o.d.key).filas.push(f); });
+        return (
+          <div className="mb-4 rounded-lg border-2 border-slate-300 bg-white p-3">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <b className="text-base text-slate-900">Informe del {fmtDate(dia)}</b>
+              <span className="text-sm text-slate-600">{lista.length} obra{lista.length === 1 ? "" : "s"} · {tot.total} ventanas: <b className="text-emerald-700">{tot.hechas} hechas</b> · <b className="text-orange-600">{tot.problema} con problema</b> · {tot.pendientes} pendientes{textoTiempos ? ` · ${textoTiempos}` : ""}</span>
+              <button type="button" onClick={imprimirInforme} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">🖨 Imprimir / PDF</button>
+            </div>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <select value={fObra} onChange={(e) => { setFObra(e.target.value); setFViv(""); }} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todas las obras</option>{lista.map((o) => <option key={o.d.key} value={o.d.key}>{o.d.nombre}</option>)}</select>
+              <select value={fViv} onChange={(e) => setFViv(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todas las viviendas</option>{vivsInforme.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+              <select value={fEst} onChange={(e) => setFEst(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todos los estados</option><option value="1">✓ Hechas</option><option value="2">⚠ Con problema</option><option value="0">Pendientes</option></select>
+              <input value={fVent} onChange={(e) => setFVent(e.target.value)} placeholder="Ventana, medida o nota…" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm flex-1 min-w-[12rem]" />
+              {(fObra || fViv || fEst !== "" || fVent) && <button type="button" onClick={() => { setFObra(""); setFViv(""); setFEst(""); setFVent(""); }} className="text-xs text-slate-500 underline">Quitar filtros</button>}
+            </div>
+            {(fObra || fViv || fEst !== "" || fVent) && <div className="text-xs text-slate-500 mb-2">Con este filtro: {vis.total} ventanas · {vis.hechas} hechas · {vis.problema} con problema · {vis.pendientes} pendientes</div>}
+            {porObra.size === 0 && <p className="text-sm text-slate-500">No hay ventanas con este filtro{lista.length === 0 ? " (este día no tiene obras)" : ""}.</p>}
+            {[...porObra.values()].map(({ o, filas }) => { const c = cuentaInforme(filas); return (
+              <div key={o.d.key} className="mb-3">
+                <div className="text-sm font-bold text-slate-800 mb-1">{o.d.nombre} <span className="font-normal text-slate-500">· {c.hechas}/{c.total} hechas{c.problema ? ` · ${c.problema} con problema` : ""}</span></div>
+                <div className="overflow-x-auto"><table className="w-full text-sm border border-slate-200">
+                  <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-2 py-1">Vivienda</th><th className="text-left px-2 py-1">Ventana</th><th className="text-left px-2 py-1">Medida</th><th className="text-left px-2 py-1">Estado</th><th className="text-left px-2 py-1">Hora</th><th className="text-left px-2 py-1">Nota</th></tr></thead>
+                  <tbody>{filas.map((f, i) => (
+                    <tr key={i} className="border-t border-slate-100">
+                      <td className="px-2 py-1 text-slate-600">{f.g || "—"}</td>
+                      <td className="px-2 py-1 font-semibold">{f.v ? f.v.pos : "Toda la obra"}{f.v && f.v.tip && f.v.tip !== f.v.pos ? <span className="font-normal text-slate-400"> ({f.v.tip})</span> : null}</td>
+                      <td className="px-2 py-1">{f.v ? f.v.medida : ""}</td>
+                      <td className="px-2 py-1"><span className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded ${ESTADO_INFORME[f.val].c}`}>{ESTADO_INFORME[f.val].t}</span></td>
+                      <td className="px-2 py-1 font-mono-num text-slate-600">{f.val ? (horaDe(f.t) || <span className="text-slate-300" title="Marcada antes de que el CRM apuntara la hora">—</span>) : ""}</td>
+                      <td className="px-2 py-1 text-amber-800">{f.nota}</td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+              </div>
+            ); })}
+            <p className="text-[11px] text-slate-400">El informe sale de las marcas de colores y las notas de este día. Apunta la hora en que se marcó cada ventana (las marcadas antes de esta versión salen con «—»). No guarda quién la marcó.</p>
+          </div>
+        );
+      })()}
+      {!informe && lista.map((o) => {
         const vivs = [...o.viv.entries()];
         const todosIds = idsDe(o);
         const vals = todosIds.map((i) => valor(o.d.key, i));
@@ -51977,6 +52156,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
               {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir la carga de material</button>}
+              {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
               {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
               <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
@@ -51987,8 +52167,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {estadoCarga[o.d.key] === "leyendo" ? <span className="font-normal text-amber-700"> · leyendo la carga de material…</span> : null}
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
             </div>
-            {abierta && o.folio && verFolio && <div className="px-3 pb-2"><FolioCarga url={o.folio.url} ventanas={vivs.flatMap(([, vs]) => vs).filter((v) => v.pag)} valorDe={(id) => valor(o.d.key, id)} onToca={(v) => tocaVentana(o, v)} /></div>}
-            {abierta && (o.folio && verFolio ? vivs.map(([g, vs]) => [g, vs.filter((v) => !v.pag)]).filter(([, vs]) => vs.length) : vivs).map(([g, vs]) => {
+            {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
+            {abierta && (o.folio && verFolio ? [] : vivs).map(([g, vs]) => {
               const gv = vs.map((v) => valor(o.d.key, v.id)); const gc = colorDe(gv);
               return (
                 <div key={g} className="px-2 pb-2 pl-5">
