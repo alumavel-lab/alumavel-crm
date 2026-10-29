@@ -53087,31 +53087,52 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo las que tienen algo pendiente</label>
               <button type="button" onClick={() => setVerLista(false)} className="ml-auto text-xs underline">Cerrar</button>
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">✅ hecho · 🟡 llegado pero sin confirmar por fábrica · ❌ falta · — no lleva / sin pedido. Horas con «≈» = estimadas.</div>
-            <div className="mt-2 overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead className="text-left text-slate-500"><tr><th className="py-1 pr-2">Obra / presupuesto</th><th className="px-1">Material</th><th className="px-1">Cristal</th><th className="px-1">Persiana</th><th className="px-1">Color</th><th className="px-1">Horas</th><th className="px-1" title="Listado de materiales de la obra">Listado</th><th className="px-1" title="PDF de la Carga de material (con chinchetas)">Carga PDF</th><th className="px-1">PLANING</th><th className="px-1">Falta</th></tr></thead>
-                <tbody>
-                  {filas.slice(0, maxLista).map((r, ri, arr) => (
-                    <React.Fragment key={r.o.d.key}>
-                    {(ri === 0 || arr[ri - 1].g !== r.g) && <tr><td colSpan={10} className="pt-3 pb-1 font-bold text-slate-800 border-t-2 border-slate-300">{resumenG[r.g].nm} · {resumenG[r.g].n} obras · {fmtHoras(resumenG[r.g].h)}
-                      {r.g === 0 && <button type="button" onClick={() => { setAutoGrupo(filas.filter((x) => x.g === r.g).map((x) => limpia(x.o.d.key))); setAutoExcl({}); setAutoAbierto(true); }} className="ml-3 px-2 py-0.5 rounded bg-indigo-600 text-white text-xs font-bold">🗓 Planificar este grupo</button>}</td></tr>}
-                    <tr className="border-t border-slate-100 align-top">
-                      <td className="py-1 pr-2 font-semibold">{r.o.d.nombre}{r.o.d.tipo === "pl" ? <span className="ml-1 text-[10px] font-normal text-slate-500">(solo en el PLANING, no está en el CRM)</span> : null}{r.o.d.tipo === "pl" ? <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaPlaning/${r.o.d.id}`), null).catch(() => {}); }} className="ml-2 px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold" title="Borra este presupuesto del PLANING (no toca el CRM)">🗑 Borrar</button> : null}</td>
-                      <td className="px-1 text-center" title="Material completo y confirmado por fábrica">{r.ok ? "✅" : "❌"}</td>
-                      <td className="px-1 text-center">{ic(r.cristal)}</td>
-                      <td className="px-1 text-center">{ic(r.persiana)}</td>
-                      <td className="px-1 whitespace-nowrap">{r.color ? <span title="Color de la carpintería">✅ {r.color}</span> : "❌"}</td>
-                      <td className="px-1 whitespace-nowrap">{r.horas > 0 ? <span title={r.origen}>{r.est ? "≈" : "✅"} {fmtHoras(r.horas)}</span> : "❌"}</td>
-                      <td className="px-1 text-center">{sino(r.listado)}</td>
-                      <td className="px-1 whitespace-nowrap">{r.carga ? "✅" : <button type="button" onClick={() => pedirPdfCarga(r.o)} className="px-1.5 py-0.5 rounded border border-sky-300 bg-sky-50 text-sky-800 font-semibold">❌ 📎 Subir</button>}</td>
-                      <td className="px-1 text-center">{sino(r.planing)}</td>
-                      <td className="px-1 text-center font-bold">{r.faltan || "✅"}</td>
-                    </tr>
-                    </React.Fragment>
-                  ))}
-                </tbody>
-              </table>
+            <div className="text-[11px] text-slate-500 mt-1">✅ hecho · 🟡 llegado pero sin confirmar por fábrica · ❌ falta · — no lleva / sin pedido. Horas con «≈» = estimadas. Cada cuadro es una obra.</div>
+            <div className="mt-2">
+              {(() => {
+                const vis = filas.slice(0, maxLista);
+                const GCOL = ["border-emerald-500 bg-emerald-50", "border-amber-500 bg-amber-50", "border-amber-500 bg-amber-50", "border-rose-400 bg-rose-50", "border-slate-400 bg-slate-100"];
+                const chip = (et, v, titulo) => { const ok = v === true || v === "ok"; const med = v === "conf"; const no = v === false || v === "no"; const cls = ok ? "bg-emerald-100 text-emerald-800 border-emerald-300" : med ? "bg-amber-100 text-amber-800 border-amber-300" : no ? "bg-rose-100 text-rose-800 border-rose-300" : "bg-slate-100 text-slate-400 border-slate-200"; return <span title={titulo || et} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ${cls}`}>{ok ? "✅" : med ? "🟡" : no ? "❌" : "—"} {et}</span>; };
+                return NOMBRES_G.map((nm, gi) => { const fs = vis.filter((r) => r.g === gi); if (!fs.length) return null; return (
+                  <div key={gi} className={gi === 0 ? "" : "mt-5"}>
+                    <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 border-l-4 ${GCOL[gi]}`}>
+                      <b className="text-sm text-slate-800">{nm}</b>
+                      <span className="text-xs text-slate-600">{resumenG[gi].n} obras · {fmtHoras(resumenG[gi].h)}</span>
+                      {gi === 0 && <button type="button" onClick={() => { setAutoGrupo(filas.filter((x) => x.g === 0).map((x) => limpia(x.o.d.key))); setAutoExcl({}); setAutoAbierto(true); }} className="ml-auto px-3 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold">🗓 Planificar este grupo</button>}
+                    </div>
+                    <div className="grid gap-2 grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
+                      {fs.map((r) => (
+                        <div key={r.o.d.key} className="rounded-lg border border-slate-300 bg-white p-2.5 shadow-sm flex flex-col gap-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="font-bold text-[13px] text-slate-900 leading-snug line-clamp-3" title={r.o.d.nombre}>{r.o.d.nombre}</div>
+                            <span title="Cosas que faltan" className={`shrink-0 text-[11px] font-extrabold px-2 py-0.5 rounded-full ${r.faltan ? "bg-rose-600 text-white" : "bg-emerald-600 text-white"}`}>{r.faltan ? `Falta ${r.faltan}` : "Completa"}</span>
+                          </div>
+                          {r.o.d.tipo === "pl" && <div className="text-[11px] text-slate-500">Solo en el PLANING, no está en el CRM</div>}
+                          <div className="flex flex-wrap gap-1.5 text-[11px]">
+                            <span title="Color de la carpintería" className={`px-1.5 py-0.5 rounded border font-semibold ${r.color ? "bg-sky-50 text-sky-900 border-sky-200" : "bg-rose-100 text-rose-800 border-rose-300"}`}>🎨 {r.color || "sin color"}</span>
+                            <span title={r.origen} className={`px-1.5 py-0.5 rounded border font-semibold ${r.horas > 0 ? "bg-indigo-50 text-indigo-900 border-indigo-200" : "bg-rose-100 text-rose-800 border-rose-300"}`}>⏱ {r.horas > 0 ? `${r.est ? "≈ " : ""}${fmtHoras(r.horas)}` : "sin horas"}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {chip("Material", r.ok, "Material completo y confirmado por fábrica")}
+                            {chip("Cristal", r.cristal)}
+                            {chip("Persiana", r.persiana)}
+                            {chip("Listado", !!r.listado, "Listado de materiales de la obra")}
+                            {chip("PLANING", !!r.planing)}
+                            {chip("Carga PDF", !!r.carga, "PDF de la Carga de material (con chinchetas)")}
+                          </div>
+                          {(!r.carga || r.o.d.tipo === "pl" || r.g === 0) && (
+                            <div className="flex flex-wrap gap-1.5 mt-auto">
+                              {r.g === 0 && <button type="button" onClick={() => { setAutoGrupo([limpia(r.o.d.key)]); setAutoExcl({}); setAutoAbierto(true); }} className="px-2 py-1 rounded-md bg-emerald-600 text-white text-[11px] font-bold" title="Material completo: la manda al planificador (verás la vista previa antes de confirmar)">🗓 Mandar a planificar</button>}
+                              {!r.carga && <button type="button" onClick={() => pedirPdfCarga(r.o)} className="px-2 py-1 rounded-md border border-sky-300 bg-sky-50 text-sky-800 text-[11px] font-semibold">📎 Subir carga PDF</button>}
+                              {r.o.d.tipo === "pl" && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaPlaning/${r.o.d.id}`), null).catch(() => {}); }} className="ml-auto px-2 py-1 rounded-md bg-red-600 text-white text-[11px] font-bold" title="Borra este presupuesto del PLANING (no toca el CRM)">🗑 Borrar</button>}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ); });
+              })()}
               {filas.length > maxLista && <button type="button" onClick={() => setMaxLista((m) => m + 100)} className="mt-2 text-xs underline">Ver más ({filas.length - maxLista} restantes)</button>}
               {filas.length === 0 && <div className="text-xs text-slate-500 mt-2">No hay obras con algo pendiente con ese filtro.</div>}
             </div>
