@@ -26402,13 +26402,17 @@ async function uxcLlamarIA(bloque) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, messages: [{ role: "user", content: [bloque, { type: "text", text: UXC_PROMPT_IA }] }] }),
   });
-  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  if (!response.ok) {
+    const motivo = response.status === 504 || response.status === 502 ? "tardó demasiado" : response.status === 413 ? "la página pesa demasiado" : "error " + response.status;
+    throw new Error("respuesta no válida (" + motivo + ")");
+  }
   const data = await response.json();
   if (data.error) throw new Error(data.error.message || "error al leer");
   const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{"), fin = limpio.lastIndexOf("}");
-  return JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  try { return JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio); }
+  catch (e) { throw new Error("la respuesta llegó cortada (demasiado contenido en la página)"); }
 }
 // Un PDF de varias páginas se parte en PDFs de una sola página (el prompt está pensado para UNA página por llamada y así no se pasa del tiempo del servidor).
 async function uxcPdfEnPaginas(file) {
@@ -26445,8 +26449,18 @@ async function uxcLeerPaginaIA(file, onProgreso) {
     const res = [];
     for (let i = 0; i < paginas.length; i++) {
       if (onProgreso) onProgreso(`${file.name || "PDF"}: página ${i + 1} de ${paginas.length}…`);
-      try { res.push(await uxcLlamarIA({ type: "document", source: { type: "base64", media_type: "application/pdf", data: paginas[i] } })); }
-      catch (e) { console.error(e); res.push({ tipo: "otro", _fallo: `${file.name || "PDF"} (página ${i + 1})` }); }
+      // Intento 1: la página como PDF (si pesa poco; una página escaneada pesada hace que el servidor se pase de tiempo).
+      // Intento 2: la página como imagen reducida. Intento 3: otra vez como imagen, más pequeña.
+      const pesaMucho = paginas[i].length > 2500000;
+      const intentos = [];
+      if (!pesaMucho) intentos.push(() => uxcLlamarIA({ type: "document", source: { type: "base64", media_type: "application/pdf", data: paginas[i] } }));
+      intentos.push(async () => { const u = await uxcPaginaPdfAImagen(file, i, 1600); return uxcLlamarIA({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: u.split(",")[1] } }); });
+      intentos.push(async () => { const u = await uxcPaginaPdfAImagen(file, i, 1100); return uxcLlamarIA({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: u.split(",")[1] } }); });
+      let ok = null, ultimo = "";
+      for (const t of intentos) {
+        try { ok = await t(); break; } catch (e) { console.error(e); ultimo = e.message || String(e); }
+      }
+      res.push(ok || { tipo: "otro", _fallo: `${file.name || "PDF"} (página ${i + 1}) — ${ultimo}` });
     }
     return res;
   }
