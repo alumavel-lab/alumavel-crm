@@ -52727,8 +52727,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
         } catch (e) { console.error("No se pudo preparar la imagen del planning", e); }
       })();
       const prompt = `Es un planning de fabricación (puede ser una lista por días o un CALENDARIO mensual en el que cada semana es una fila y los días lunes a viernes son columnas; la foto puede estar girada). Hoy es ${hoy}. Devuelve SOLO un JSON con este formato, sin texto alrededor:
-{"dias":[{"dia":"lunes","fecha":"YYYY-MM-DD o vacío si no se puede saber","presupuestos":["6243-1","6435-1"]}]}
-Reglas: un elemento por día con trabajo. En un calendario, el número pequeño de la esquina de cada casilla es el día del mes, y el mes sale en el encabezado (p. ej. «noviembre, 9» en la primera casilla); si no pone año, usa el año de hoy o el siguiente si el mes ya pasó. "presupuestos" lleva TODOS los presupuestos de ese día, uno por cada entrada de la casilla, sin inventar ni repetir. Cada entrada empieza por el presupuesto con su versión después del punto: «6243.1 (5 h) EXP 980…» es el presupuesto "6243-1"; ignora las horas entre paréntesis, los números de expediente (EXP, Expediente, P4…), las unidades («5 Uds.») y los colores. Si una entrada solo trae un número de expediente sin presupuesto delante, pon ese número tal cual. Ignora las notas escritas a mano y los totales de unidades de cada semana. Si un día no tiene nada, no lo pongas.`;
+{"dias":[{"dia":"lunes","fecha":"YYYY-MM-DD o vacío si no se puede saber","presupuestos":[{"p":"6243-1","amarillo":true},{"p":"6435-1","amarillo":false}]}]}
+Reglas: un elemento por día con trabajo. En un calendario, el número pequeño de la esquina de cada casilla es el día del mes, y el mes sale en el encabezado (p. ej. «noviembre, 9» en la primera casilla); si no pone año, usa el año de hoy o el siguiente si el mes ya pasó. "presupuestos" lleva TODOS los presupuestos de ese día, uno por cada entrada de la casilla, sin inventar ni repetir. Cada entrada empieza por el presupuesto con su versión después del punto: «6243.1 (5 h) EXP 980…» es el presupuesto "6243-1"; ignora las horas entre paréntesis, los números de expediente (EXP, Expediente, P4…), las unidades («5 Uds.») y los colores. Si una entrada solo trae un número de expediente sin presupuesto delante, pon ese número tal cual. Ignora las notas escritas a mano y los totales de unidades de cada semana. Si un día no tiene nada, no lo pongas. En cada entrada indica "amarillo":true solo si esa línea está marcada con rotulador AMARILLO fluorescente; si está sin marcar (blanca) o marcada de naranja, rosa u otro color, pon "amarillo":false. Si dudas, false.`;
       const texto = await pedirTextoIAEnSegundoPlano(file, prompt, 14000, 100);
       const limpio = String(texto || "").replace(/```json|```/gi, "").trim();
       const a = limpio.indexOf("{"), b = limpio.lastIndexOf("}");
@@ -52741,12 +52741,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const nd = String(x.dia || "").trim().toLowerCase();
         if (!fecha && NOMBRES_DIA[nd] != null) fecha = sumaDias(lunesSemana, NOMBRES_DIA[nd]);
         const encontradas = new Map(); const no = [];
-        toArray(x.presupuestos).forEach((t) => {
+        toArray(x.presupuestos).forEach((it) => {
+          const t = it && typeof it === "object" ? it.p : it; const am = !!(it && typeof it === "object" && it.amarillo === true);
           const dg = digitosPresu(t); const lleno = String(t || "").replace(/\D/g, "");
           const hit = dg.length >= 3 ? todos.filter((ob) => { const s = pptosDe(ob); return s.has(dg) || s.has(lleno); }) : [];
-          if (hit.length) hit.forEach((ob) => encontradas.set(ob.d.key, ob.d.nombre)); else no.push(String(t));
+          if (hit.length) hit.forEach((ob) => { const prev = encontradas.get(ob.d.key); encontradas.set(ob.d.key, { nombre: ob.d.nombre, am: am || !!(prev && prev.am) }); }); else no.push(String(t));
         });
-        const obrasDia = [...encontradas.entries()].map(([key, nombre]) => { const ob = todos.find((z) => z.d.key === key); const m = ob ? materialObra(ob) : { ok: false, motivo: "" }; return { key, nombre, lista: m.ok, motivo: m.motivo, incluir: m.ok }; });
+        const obrasDia = [...encontradas.entries()].map(([key, v]) => { const ob = todos.find((z) => z.d.key === key); const m = ob ? materialObra(ob) : { ok: false, motivo: "" }; return { key, nombre: v.nombre, lista: m.ok, motivo: m.motivo, incluir: m.ok, morado: v.am }; });
         return { fecha, etiqueta: x.dia || fmtDate(fecha), obras: obrasDia, noEncontradas: no };
       });
       setPlan(res);
@@ -52755,8 +52756,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   };
   // Solo comparar: NO planifica nada ni toca los días; marca en morado («en el papel») las obras que reconoce del planning subido
   const soloCompararPlanning = async () => {
-    const claves = [...new Set(plan.flatMap((d) => d.obras.map((o) => limpia(o.key))))];
-    if (!claves.length) { alert("No he reconocido ninguna obra para marcar en morado."); return; }
+    const claves = [...new Set(plan.flatMap((d) => d.obras.filter((o) => o.morado).map((o) => limpia(o.key))))];
+    if (!claves.length) { alert("No hay ninguna obra con la casilla «🟣 amarillo en papel» marcada."); return; }
     const upd = {}; claves.forEach((k) => { upd[k] = true; });
     try { await fbUpdate(ref(fbDb, "controlDiaPapel"), upd); setPlanImgPend(null); setPlan(null); alert(`${claves.length} obras marcadas en morado. No se ha planificado nada.`); } catch (e) { alert("No se pudo marcar: " + e.message); }
   };
@@ -52944,6 +52945,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <label key={o.key} className={`flex items-center gap-1.5 text-xs ${o.lista ? "text-emerald-800" : "text-amber-800"}`}>
                     <input type="checkbox" checked={!!o.incluir} onChange={(e) => setPlan((pl) => pl.map((dd, ii) => (ii !== i ? dd : { ...dd, obras: dd.obras.map((oo) => (oo.key === o.key ? { ...oo, incluir: e.target.checked } : oo)) })))} />
                     {o.lista ? "✓" : "⚠"} {o.nombre}{o.lista ? "" : ` — falta: ${o.motivo || "material"} (no se añade salvo que lo marques)`}
+                    <span className="ml-2 inline-flex items-center gap-1 px-1.5 rounded border border-purple-300 bg-purple-50 text-purple-800" title="Marca en morado al pulsar «Solo comparar». Viene marcada si la IA vio la línea en amarillo: revísalo con el papel.">
+                      <input type="checkbox" checked={!!o.morado} onChange={(e) => setPlan((pl) => pl.map((dd, ii) => (ii !== i ? dd : { ...dd, obras: dd.obras.map((oo) => (oo.key === o.key ? { ...oo, morado: e.target.checked } : oo)) })))} /> 🟣 amarillo en papel
+                    </span>
                   </label>
                 ))}
                 {d.noEncontradas.length > 0 && <div className="text-xs text-rose-700">No encontrados en el CRM: {d.noEncontradas.join(", ")}</div>}
@@ -52984,7 +52988,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         </div>
         {planImgs && planImgs[mesVer] && planImgs[mesVer].url && (
           <div className="rounded-lg border border-slate-300 bg-white p-2 flex-1 min-w-[280px] max-w-xl">
-            <div className="flex items-center justify-between mb-1 gap-2"><b className="text-xs text-slate-700 truncate">Planning de {nombreMes}</b><button type="button" onClick={() => setVerPlanImg(true)} className="text-xs font-semibold underline text-slate-600">ampliar</button></div>
+            <div className="flex items-center justify-between mb-1 gap-2"><b className="text-xs text-slate-700 truncate">Planning de {nombreMes}</b><span className="flex items-center gap-3"><button type="button" onClick={() => setVerPlanImg(true)} className="text-xs font-semibold underline text-slate-600">ampliar</button><button type="button" onClick={async () => { try { await fbSet(ref(fbDb, `controlDiaPlanningImg/${mesVer}`), null); } catch (e) { alert("No se pudo quitar la foto: " + e.message); } }} title="Quita esta foto del calendario. No toca las obras ni los días." className="text-xs font-bold text-rose-700 border border-rose-300 rounded px-2 py-0.5 bg-white">🗑 Quitar la foto</button></span></div>
             <img src={planImgs[mesVer].url} alt="Planning" onClick={() => setVerPlanImg(true)} className="w-full rounded border border-slate-200 cursor-zoom-in" />
           </div>
         )}
