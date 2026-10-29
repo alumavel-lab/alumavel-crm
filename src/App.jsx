@@ -39058,7 +39058,23 @@ const uxDesglosaExp = (p, exps) => {
   return { exp: [...new Set(exp)], ppto: [...new Set(ppto)], sinExp };
 };
 const uxTextoExp = (d) => (d.exp.length ? d.exp.join(", ") + (d.sinExp ? ` · +${d.sinExp} sin expediente` : "") : (d.ppto.length ? "sin dato" : "—"));
-function UxListaPedidos({ pedidos, expedientes, onAbrir, onNuevo }) {
+// Elegir proveedor de un pedido: de la lista, o escribiendo el nombre si no está dado de alta (así siempre se sabe de dónde viene)
+const uxElegirProveedor = (valor, proveedores, p, onCambiar) => {
+  let pr = null;
+  if (valor === "__otro__") {
+    const nombre = (window.prompt("Nombre del proveedor (de dónde viene este pedido):", p.proveedorNombre || "") || "").trim();
+    if (!nombre) return;
+    const existente = toArray(proveedores).find((x) => String(x.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
+    pr = existente || { id: "", nombre, email: "", movil: "" };
+  } else {
+    pr = toArray(proveedores).find((x) => x.id === valor) || null;
+    if (!pr) return;
+  }
+  if (uxPedidoYaMandado(p) && !window.confirm(`El pedido ${p.numero || ""} ya figura como enviado al proveedor.\n\n¿Cambiar el proveedor a ${pr.nombre}? Solo cambia el dato: no se vuelve a mandar nada.`)) return;
+  onCambiar(pr);
+};
+const uxPedidoYaMandado = (p) => !!(p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recepcion);
+function UxListaPedidos({ pedidos, expedientes, onAbrir, onNuevo, proveedores = [], onCambiarProveedor }) {
   const lista = [...pedidos].sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
   return (
     <div className="space-y-3">
@@ -39075,7 +39091,17 @@ function UxListaPedidos({ pedidos, expedientes, onAbrir, onNuevo }) {
                 <td className="px-3 py-2 font-semibold text-slate-900 whitespace-nowrap">{p.numero}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{uxFecha(p.fecha)}</td>
                 <td className="px-3 py-2">{p.tipo}</td>
-                <td className="px-3 py-2">{p.proveedorNombre}</td>
+                <td className="px-3 py-2" onClick={onCambiarProveedor ? (ev) => ev.stopPropagation() : undefined}>
+                  {onCambiarProveedor ? (
+                    <select value={p.proveedorId && proveedores.some((x) => x.id === p.proveedorId) ? p.proveedorId : ""}
+                      onChange={(ev) => uxElegirProveedor(ev.target.value, proveedores, p, (pr) => onCambiarProveedor(p.id, pr))}
+                      className={`border rounded px-1.5 py-1 text-sm bg-white max-w-[180px] ${p.proveedorNombre ? "border-slate-200" : "border-amber-400 bg-amber-50"}`}>
+                      <option value="">{p.proveedorNombre ? p.proveedorNombre + (p.proveedorId ? "" : " (sin enlazar)") : "— Sin proveedor: elige —"}</option>
+                      {proveedores.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+                      <option value="__otro__">✏ Otro: escribir el nombre…</option>
+                    </select>
+                  ) : p.proveedorNombre}
+                </td>
                 <td className="px-3 py-2 text-slate-600">{uxTextoExp(uxDesglosaExp(p, expedientes))}</td>
                 <td className="px-3 py-2 text-slate-600">{uxDesglosaExp(p, expedientes).ppto.join(", ") || "—"}</td>
                 <td className="px-3 py-2"><span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border whitespace-nowrap ${e.cls}`}>{e.label}</span></td>
@@ -47457,10 +47483,11 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
         <div><div className="text-xs text-slate-400">Qué</div><div className="font-semibold">{pedido.tipo}</div></div>
         <div>
           <div className="text-xs text-slate-400">Proveedor</div>
-          {onCambiarProveedor && proveedores.length > 0 && !(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual || pedido.recepcion) ? (
-            <select value={pedido.proveedorId || ""} onChange={(ev) => onCambiarProveedor(proveedores.find((x) => x.id === ev.target.value) || null)} className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white">
-              <option value="">— Elige proveedor —</option>
+          {onCambiarProveedor ? (
+            <select value={pedido.proveedorId && proveedores.some((x) => x.id === pedido.proveedorId) ? pedido.proveedorId : ""} onChange={(ev) => uxElegirProveedor(ev.target.value, proveedores, pedido, onCambiarProveedor)} className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white">
+              <option value="">{pedido.proveedorNombre ? pedido.proveedorNombre + (pedido.proveedorId ? "" : " (sin enlazar)") : "— Sin proveedor: elige —"}</option>
               {proveedores.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+              <option value="__otro__">✏ Otro: escribir el nombre…</option>
             </select>
           ) : <div className="font-semibold">{pedido.proveedorNombre || "—"}</div>}
         </div>
@@ -49149,7 +49176,9 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
             }}
           />
         ) : vista === "pedidos" || vista === "fichaPedido" ? (
-          <UxListaPedidos pedidos={pedidosUx} expedientes={expedientes} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }} />
+          <UxListaPedidos pedidos={pedidosUx} expedientes={expedientes} onNuevo={() => setVista("nuevoPedido")} onAbrir={(id) => { setPedidoAbiertoId(id); setVista("fichaPedido"); }}
+            proveedores={proveedoresUx}
+            onCambiarProveedor={(id, pr) => marcarPedido(id, { proveedorId: pr ? pr.id : "", proveedorNombre: pr ? pr.nombre : "", proveedorEmail: pr ? pr.email || "" : "", proveedorMovil: pr ? pr.movil || "" : "" })} />
         ) : vista === "editar" && abierto ? (
           <UxFormExpediente initial={abierto} tipos={tipos} expedientes={expedientes} onCancel={() => setVista("ficha")} onSave={guardarEdicion} />
         ) : vista === "ficha" && abierto ? (
