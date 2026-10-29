@@ -14803,10 +14803,16 @@ const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", ppto: "", otro: ""
 const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.ppto || f.otro));
 // Búsqueda por número de presupuesto: "6710" encuentra "6.710", "6710-1" y "6554, 6556, 6710"
 const pptoCoincideBusq = (q, ...textos) => {
-  const b = String(q || "").replace(/\D/g, "");
+  const b = String(q || "").split(/[-/]/)[0].replace(/\D/g, "");
   if (!b) return true;
-  return textos.some((t) => String(t || "").split(/[·,;\s]+/).some((x) => x.replace(/\D/g, "").includes(b)));
+  return textos.some((t) => String(t || "").split(/[·,;\s]+/).some((x) => x.split(/[-/]/)[0].replace(/\D/g, "").includes(b)));
 };
+// Todo lo que se puede buscar de un caballete (y de una pieza): nº, lote, cliente, obra, presupuesto, expedientes, vivienda, medida, sitio, comentarios
+function textoBuscableCab(c, p) {
+  const piezas = p ? [p] : (c.piezas || []);
+  const ob = c.obra || {};
+  return `${c.lote} ${c.numero} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.expedientes || ""} ${c.presupuesto || ""} ${c.presupuestos || ""} ${c.referencia || ""} ${c.medida} ${c.comentario || ""} ${ob.nombre || ""} ${ob.numero || ""} ${c.enPuesto || ""} ${c.ubicacion ? ubicacionTexto(c.ubicacion) : ""} ${piezas.map((x) => `${x.ref} ${x.vivienda || ""} ${x.expediente || ""} ${x.presupuesto || ""} ${x.ppto || ""} ${x.referencia || ""} ${ubicacionPieza(x)} ${x.ancho}x${x.alto} ${x.ancho} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""}`).join(" ")}`;
+}
 function textoFiltrosCristales(f) {
   return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.ppto && `presupuesto ${f.ppto}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
 }
@@ -14817,7 +14823,7 @@ function piezaCoincideFiltros(c, p, f) {
   if (viv && !normBusq(p.ref).includes(viv)) return false;
   if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
   if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, p.presupuesto, p.ppto)) return false;
-  if (otro && !normBusq(`${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
+  if (otro && !normBusq(textoBuscableCab(c, p)).includes(otro)) return false;
   return true;
 }
 // ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
@@ -14825,10 +14831,10 @@ function cristalCoincideFiltros(c, f) {
   const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, ...(c.piezas || []).map((p) => p.presupuesto || p.ppto))) return false;
-  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
+  if (otro && !normBusq(textoBuscableCab(c)).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
-  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(p.expediente || c.expediente).includes(exp)));
+  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(`${p.expediente || ""} ${c.expediente || ""}`).includes(exp)));
 }
 function BuscadoresCristales({ filtros, setFiltros }) {
   const campo = (k, placeholder, ancho) => (
@@ -50934,7 +50940,7 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
   const [abierto, setAbierto] = useState(false);
   const nq = normBusq(q);
   const pend = cristales.filter((c) => !c.ubicacion && !c.enPuesto && toArray(c.piezas).some((p) => !p.puesto));
-  const filtrados = nq ? pend.filter((c) => normBusq(`${c.lote} ${c.cliente} ${textoExpedientes(c, 20)} ${toArray(c.piezas).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(nq)) : pend;
+  const filtrados = nq ? pend.filter((c) => normBusq(`${textoBuscableCab(c)} ${textoExpedientes(c, 20)}`).includes(nq)) : pend;
   const foco = destacarCristal && !destacarCristal.ubicacion;
   const abre = abierto || foco;
   return (
@@ -52086,6 +52092,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => { const d = digitosPresu(pr.pres); if (d.length >= 3) claves.add(d); });
     const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     if (pry) [pry.numero, pry.expediente, pry.referencia].forEach((x) => digs(x).forEach((d) => claves.add(d)));
+    // nº de expediente que va en el nombre («… UXCAREXP 823 LOTE 1»)
+    for (const m of String(o.d.nombre || "").matchAll(/EXP(?:EDIENTE)?\.?\s*(\d{3,})/gi)) claves.add(m[1]);
     if (!claves.size) return { filas: [], sinClaves: true };
     const idsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => p.id) : []);
     const numsPed = new Set(pid ? toArray(pedidos).filter((p) => p.proyectoId === pid).map((p) => String(p.numero)) : []);
@@ -52286,6 +52294,34 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     for (const o of noTerminadas) { try { await fbSet(ref(fbDb, `controlDiaObras/${sig}/${limpia(o.d.key)}`), true); } catch (e) { /* nada */ } }
     setDia(sig); setMesVer(sig.slice(0, 7));
   };
+  // Añade los dibujos a un planning YA guardado (sin tocar días ni obras): se vuelve a elegir el mismo PDF «PLANING»
+  const [msgDib, setMsgDib] = useState("");
+  const inputDibRef = useRef(null);
+  const sacarDibujosGuardados = async (file) => {
+    setMsgDib("Leyendo el PDF…");
+    try {
+      const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      let lineas = [], meta = [];
+      for (let n = 1; n <= pdfDoc.numPages; n++) { const pg = await pdfDoc.getPage(n); const tc = await pg.getTextContent(); lineasYDePaginaPdf(tc.items).forEach((l) => { lineas.push(l.t); meta.push({ pag: n, y: l.y }); }); }
+      if (!esPlaningEdmo(lineas)) { setMsgDib("Ese PDF no parece el PLANING del programa."); return; }
+      const bl = parsearPlaningEdmo(lineas, meta);
+      const dibs = await extraerDibujosPlaning(lib, pdfDoc, bl, (t) => setMsgDib(t));
+      const nDib = Object.keys(dibs).length;
+      if (!nDib) { setMsgDib("No he conseguido sacar ningún dibujo de ese PDF (el navegador no me da las imágenes)."); return; }
+      const upd = {}; let puestos = 0, sinPres = 0; const usados = new Set();
+      bl.forEach((b) => b.pres.forEach((p) => {
+        const pk = limpia(p.pres); const g = (planPres || {})[pk];
+        if (!g) { sinPres++; return; }
+        const cola = {}; p.ventanas.forEach((w) => { const k = normPosPlan(w.pos); (cola[k] = cola[k] || []).push(w.dib || ""); });
+        const vs = toArray(g.ventanas).map((w) => { const k = normPosPlan(w.pos); const d = (cola[k] || []).shift() || w.dib || ""; if (d) { usados.add(d); if (d !== w.dib) puestos++; } return { ...w, dib: d }; });
+        upd[`${pk}/ventanas`] = vs;
+      }));
+      const claves = [...usados];
+      for (let i = 0; i < claves.length; i += 40) { const trozo = {}; claves.slice(i, i + 40).forEach((k) => { if (dibs[k]) trozo[k] = dibs[k]; }); if (Object.keys(trozo).length) await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
+      if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaPlaning"), upd);
+      setMsgDib(`Listo: ${puestos} ventanas con dibujo${sinPres ? ` · ${sinPres} presupuestos del PDF no estaban guardados en el CRM` : ""}.`);
+    } catch (e) { console.error(e); setMsgDib("Error: " + (e.message || e)); }
+  };
   const NOMBRES_DIA = { lunes: 0, martes: 1, miercoles: 2, miércoles: 2, jueves: 3, viernes: 4, sabado: 5, sábado: 5, domingo: 6 };
   const leerPlanning = async (file) => {
     setLeyendoPlan(true); setErrPlan(""); setPlan(null); setPlanImgPend(null);
@@ -52482,6 +52518,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <div className="flex flex-wrap items-center gap-2">
           <input ref={inputPlanRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leerPlanning(e.target.files[0]); e.target.value = ""; }} />
           <button type="button" disabled={leyendoPlan} onClick={() => inputPlanRef.current && inputPlanRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-bold disabled:opacity-50">{leyendoPlan ? "Leyendo planning…" : "📅 Subir planning (PDF, Excel o foto)"}</button>
+          <input ref={inputDibRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) sacarDibujosGuardados(e.target.files[0]); e.target.value = ""; }} />
+          <button type="button" onClick={() => inputDibRef.current && inputDibRef.current.click()} title="Elige otra vez el PDF PLANING: añade los dibujos de las ventanas al planning ya guardado, sin cambiar días ni obras" className="px-3 py-1.5 rounded-md text-sm font-bold border border-sky-300 bg-sky-50 text-sky-800">🖼 Añadir dibujos al planning guardado</button>
+          {msgDib && <span className="text-xs text-slate-600">{msgDib}</span>}
           <label className="text-xs text-slate-600 flex items-center gap-1">Si pone «lunes, martes…» sin fecha, la semana empieza el <input type="date" value={lunesSemana} onChange={(e) => setLunesSemana(e.target.value)} className="border border-slate-300 rounded px-1 py-0.5" /></label>
         </div>
         {errPlan && <p className="text-xs text-rose-600 mt-1">{errPlan}</p>}
