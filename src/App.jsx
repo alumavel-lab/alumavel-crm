@@ -52130,6 +52130,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const { pedirPin, modalPin } = usePinCristales();
   const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
   const [huecoMat, setHuecoMat] = useState(null);
+  const [selLimp, setSelLimp] = useState({}); // obras marcadas para dar de baja (si no se toca, se marcan solas las que están en verde)
   const [irObra, setIrObra] = useState(null); // clave de la obra a la que saltar (desde el buscador de Limpiar)
   const [resalt, setResalt] = useState(null);
   useEffect(() => {
@@ -52292,13 +52293,24 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     }
     setIrObra(k);
   };
+  // Da de baja de golpe el material de todas las obras marcadas (persianas: una confirmación; cristales: PIN)
+  const quitarLoMarcado = (filas) => {
+    const marc = filas.filter((f) => f.marcado);
+    const pers = marc.flatMap((f) => f.dm.pers); const cabsPlan = new Map();
+    marc.forEach((f) => f.dm.cabs.forEach((c) => { const ps = toArray(c.piezas); const mias = ps.filter((x) => f.dm.piezaDeObra(x)); const e = cabsPlan.get(c.id) || { c, quitar: new Set() }; (mias.length ? mias : ps).forEach((x) => e.quitar.add(x)); e.todo = e.todo || !ps.length; cabsPlan.set(c.id, e); }));
+    if (!pers.length && !cabsPlan.size) { alert("Las obras marcadas no tienen material en los almacenes."); return; }
+    const hacer = () => {
+      if (pers.length && almacenRapido.savePersianas) { const ids = new Set(pers.map((x) => x.id)); const h2 = new Date().toISOString().slice(0, 10); almacenRapido.savePersianas(toArray(almacenRapido.persianas).map((y) => (ids.has(y.id) ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: h2, colocadaVentana: true } : y))); }
+      if (cabsPlan.size && almacenRapido.saveCristales) almacenRapido.saveCristales(toArray(almacenRapido.cristales).flatMap((c) => { const e = cabsPlan.get(c.id); if (!e) return [c]; const rest = toArray(c.piezas).filter((x) => !e.quitar.has(x)); if (e.todo || !rest.length) return []; return [{ ...c, piezas: rest }]; }));
+    };
+    if (cabsPlan.size) pedirPin([...cabsPlan.values()].every((e) => enTallerCab(e.c)), "Hace falta el PIN para dar de baja cristales que no están en el Taller.", hacer); else hacer();
+  };
   // Da de baja los cristales de una obra: si el caballete lleva piezas de otras obras, solo se quitan las de esta; si no, se quita el caballete. Pide el PIN (regla de cristales).
   const quitarCristalesObra = (o, dm) => {
     if (!dm.cabs.length || !almacenRapido.saveCristales) return;
     const plan2 = dm.cabs.map((c) => { const ps = toArray(c.piezas); const mias = ps.filter((x) => dm.piezaDeObra(x)); return { c, quitarPiezas: mias.length > 0 && mias.length < ps.length ? mias : null }; });
     const txt = plan2.map((p) => `· Caballete ${p.c.lote || p.c.numero || "s/n"}: ${p.quitarPiezas ? `solo ${p.quitarPiezas.length} pieza(s) de esta obra (el resto se queda)` : "se da de baja entero"}`).join("\n");
     pedirPin(plan2.every((p) => enTallerCab(p.c)), "Hace falta el PIN para dar de baja cristales que no están en el Taller.", () => {
-      if (!window.confirm(`¿Dar de baja los cristales de «${o.d.nombre}»?\n\n${txt}`)) return;
       const porId = new Map(plan2.map((p) => [p.c.id, p]));
       almacenRapido.saveCristales(toArray(almacenRapido.cristales).flatMap((c) => { const p = porId.get(c.id); if (!p) return [c]; if (!p.quitarPiezas) return []; return [{ ...c, piezas: toArray(c.piezas).filter((x) => !p.quitarPiezas.includes(x)) }]; }));
     });
@@ -52306,7 +52318,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   // Obra terminada (todas sus ventanas en verde): da de baja sus persianas del almacén, como si se hubieran puesto en la ventana
   const quitarPersianasObra = (o, pers) => {
     if (!pers.length || !almacenRapido.savePersianas) return;
-    if (!window.confirm(`¿Dar de baja del almacén las ${pers.length} persiana${pers.length === 1 ? "" : "s"} de «${o.d.nombre}»? Se marcan como puestas en la ventana (ya no salen en los carros).`)) return;
     const ids = new Set(pers.map((x) => x.id)); const hoy2 = new Date().toISOString().slice(0, 10);
     almacenRapido.savePersianas(toArray(almacenRapido.persianas).map((y) => (ids.has(y.id) ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoy2, colocadaVentana: true } : y)));
   };
@@ -52817,11 +52828,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); if (pinSel) moverObraDia(pinSel.k, pinSel.de, f); }}
                 className={`rounded-md border-2 p-1 min-h-[4.5rem] cursor-pointer ${pinSel ? "border-dashed border-amber-400" : ""} ${sel ? "bg-slate-900 text-white border-slate-900" : f === hoy ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
                 <div className="text-xs font-bold text-left">{Number(f.slice(8))}</div>
-                {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f; return (
+                {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f;
+                  const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
+                  const hecha = idsC.length > 0 && idsC.every((i) => mkC[i] === 1); const prob = idsC.some((i) => mkC[i] === 2); return (
                   <button key={k} type="button" draggable title={nom + " — toca para ver dónde está su material (arrástrala para moverla de día)"}
                     onDragStart={() => setPinSel({ k, de: f })}
                     onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; } setObraInfo(obraInfo === k ? null : k); }}
-                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : "bg-sky-100 border-sky-300 text-sky-900"}`}>📌 {nom}</button>
+                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"}`}>{hecha ? "✓" : "📌"} {nom}</button>
                 ); })}
               </div>
             ); })}
@@ -52899,18 +52912,21 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {!informe && (() => {
         const nq = qLimp.replace(/\D/g, "");
         const cand = (nq ? [...obras.values()].filter((o) => o.d.tipo !== "pl" || true).filter((o) => { const sp = new Set([...pptosDe(o)]); (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => sp.add(digitosPresu(pr.pres))); return [...sp].some((x) => x.includes(nq)); }) : lista).slice(0, 40);
-        const filasL = cand.map((o) => ({ o, dm: dondeMaterial(o), verdes: idsDe(o).filter((i) => valor(o.d.key, i) === 1).length, tot: idsDe(o).length, dias: Object.keys(asignTodas || {}).filter((d) => asignTodas[d] && asignTodas[d][limpia(o.d.key)]).sort() }));
+        const filasL = cand.map((o) => { const verdes = idsDe(o).filter((i) => valor(o.d.key, i) === 1).length; const tot = idsDe(o).length; const k = limpia(o.d.key); const marcado = selLimp[k] !== undefined ? selLimp[k] : (tot > 0 && verdes === tot); return { o, k, dm: dondeMaterial(o), verdes, tot, marcado, dias: Object.keys(asignTodas || {}).filter((d) => asignTodas[d] && asignTodas[d][k]).sort() }; });
+        const nMarc = filasL.filter((f) => f.marcado && (f.dm.pers.length || f.dm.cabs.length)).length;
         return (
           <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50/40 p-2">
             <button type="button" onClick={() => setVerLimp(!verLimp)} className="text-sm font-bold text-rose-800">{verLimp ? "▼" : "▶"} 🧹 Limpiar el almacén: dar de baja el material de obras ya hechas</button>
             {verLimp && (
               <div className="mt-2">
                 <input value={qLimp} onChange={(e) => setQLimp(e.target.value)} placeholder="Nº de presupuesto (ej. 6409). Vacío: las obras de este día" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm w-full max-w-sm bg-white" />
+                <p className="text-xs text-slate-600 mt-2">Las obras con todas las ventanas en verde salen <b>marcadas solas</b>. Quita la marca a las que no quieras y pulsa el botón.</p>
+                {filasL.length > 0 && <button type="button" disabled={!nMarc} onClick={() => quitarLoMarcado(filasL)} className="mt-1 px-3 py-1.5 rounded-md bg-rose-600 text-white font-bold text-sm disabled:opacity-40">🗑 Dar de baja el material de las obras marcadas ({nMarc})</button>}
                 {filasL.length === 0 ? <p className="text-xs text-slate-500 mt-2">No hay obras con ese número.</p> : (
                   <div className="mt-2 space-y-1">
-                    {filasL.map(({ o, dm, verdes, tot, dias }) => (
+                    {filasL.map(({ o, k, dm, verdes, tot, marcado, dias }) => (
                       <div key={o.d.key} className="bg-white border border-slate-200 rounded px-2 py-1.5 text-xs">
-                        <div className="font-semibold text-slate-800"><button type="button" onClick={() => irAObraLimpiar(o, dias)} className="text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1" title="Ir a esta obra">📍 {o.d.nombre}</button> <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
+                        <div className="font-semibold text-slate-800"><label className="mr-2 inline-flex items-center gap-1 font-bold text-rose-700"><input type="checkbox" checked={marcado} onChange={(e) => setSelLimp((m) => ({ ...m, [k]: e.target.checked }))} className="w-5 h-5" />Borrar</label><button type="button" onClick={() => irAObraLimpiar(o, dias)} className="text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1" title="Ir a esta obra">📍 {o.d.nombre}</button> <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
                         <div className="flex flex-wrap items-center gap-2 mt-1">
                           {(dm.cabs.length > 0 || dm.pers.length > 0) && <button type="button" onClick={() => setVerMat({ tipo: "todo", o, dm })} className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold">📍 Ver dónde está (un toque)</button>}
                           <span className="text-slate-700">Persianas en almacén: <b>{dm.pers.length}</b></span>
