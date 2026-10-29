@@ -13623,7 +13623,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase text-slate-500"><tr>
-                <th className="text-left px-3 py-2">Material</th><th className="text-right px-3 py-2">Pendiente</th><th className="text-right px-3 py-2">Llegan</th><th className="text-right px-3 py-2">Rotos</th><th className="text-right px-3 py-2">Faltarán</th><th className="text-left px-3 py-2">Va a</th><th className="text-right px-3 py-2">Precio</th>
+                <th className="text-left px-3 py-2">Material</th><th className="text-right px-3 py-2">Pendiente</th><th className="text-right px-3 py-2">Llegan</th><th className="text-right px-3 py-2">Rotos</th><th className="text-right px-3 py-2">Faltarán</th><th className="text-left px-3 py-2">Va a</th><th className="text-left px-3 py-2">Caballete nº</th><th className="text-right px-3 py-2">Precio</th>
               </tr></thead>
               <tbody>
                 {lectura.filas.map((f, i) => {
@@ -13641,6 +13641,7 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
                       <td className="px-3 py-1.5 text-right">{f.pend > 0 ? <input type="number" min="0" value={f.rotos} onChange={(e) => setFila(i, { rotos: e.target.value })} className={`w-14 text-right border rounded px-1.5 py-0.5 ${num(f.rotos) > 0 ? "border-rose-300 bg-rose-50" : "border-slate-200"}`} /> : ""}</td>
                       <td className={`px-3 py-1.5 text-right font-semibold ${falta > 0 ? "text-rose-600" : "text-emerald-700"}`}>{f.pend > 0 ? (falta > 0 ? falta : "✓") : ""}</td>
                       <td className="px-3 py-1.5 text-xs text-slate-500 whitespace-nowrap">{DESTINO_RECEPCION[f.tipo]}</td>
+                      <td className="px-3 py-1.5">{f.tipo === "cristal" && f.pend > 0 ? <input value={f.caballete || ""} onChange={(e) => setFila(i, { caballete: e.target.value })} placeholder="nº" title="Número del caballete donde pones este cristal. Mismo número = mismo caballete; distinto = otro caballete." className="w-20 border border-slate-300 rounded px-1.5 py-0.5 text-sm" /> : ""}</td>
                       <td className="px-3 py-1.5 text-right text-xs whitespace-nowrap">{f.precioAlb > 0 ? <span className={distinto ? "font-semibold text-orange-700" : "text-slate-600"} title={distinto ? `Pagabas ${money(f.precioRef)}` : ""}>{distinto ? (f.precioAlb > f.precioRef ? "▲ " : "▼ ") : ""}{money(f.precioAlb)}</span> : <span className="text-slate-300">—</span>}</td>
                     </tr>
                   );
@@ -13648,6 +13649,15 @@ function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archiv
               </tbody>
             </table>
           </div>
+          {lectura.filas.some((f) => f.tipo === "cristal" && f.pend > 0) && (
+            <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sm flex flex-wrap items-center gap-2">
+              <b className="text-sky-900">Caballetes de los cristales:</b>
+              <span className="text-xs text-slate-600">escribe en cada línea el nº del caballete (el mismo nº = el mismo caballete), o pon uno solo para todos:</span>
+              <input id="cabTodos" placeholder="nº para todos" className="w-28 border border-slate-300 rounded px-1.5 py-0.5 text-sm" />
+              <button type="button" onClick={() => { const v = (document.getElementById("cabTodos") || {}).value || ""; lectura.filas.forEach((f, i) => { if (f.tipo === "cristal" && f.pend > 0) setFila(i, { caballete: v }); }); }} className="px-2 py-1 rounded bg-sky-700 text-white text-xs font-bold">Poner a todos los cristales</button>
+              <span className="text-[11px] text-amber-800">Si el nº ya existe como caballete en el almacén, NO se añaden ahí: se entiende que ya estaban. Usa un nº nuevo.</span>
+            </div>
+          )}
           {lectura.filas.some((f) => f.precioRef > 0 && f.precioAlb > 0 && Math.abs(f.precioAlb - f.precioRef) / f.precioRef > 0.01) && <div className="px-3 py-2 rounded-md bg-orange-50 border border-orange-300 text-orange-800 text-sm font-semibold">€ Hay precios distintos a los del pedido (marcados en naranja).</div>}
           {lectura.sobrantes.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm">⚠ En el albarán hay {lectura.sobrantes.length} línea{lectura.sobrantes.length === 1 ? "" : "s"} que no encuentro en el pedido: {lectura.sobrantes.map((a) => `${a.codigo || a.descripcion}${a.ancho ? ` ${a.ancho}×${a.alto}` : ""} (${a.resto})`).join(", ")}.</div>}
           <p className="text-xs text-slate-400">La lectura es automática y puede fallar con fotos borrosas: revisa las cantidades antes de confirmar.</p>
