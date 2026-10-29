@@ -52324,6 +52324,24 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const papel = useObjetoFb("controlDiaPapel"); // { claveObra: true } = ya planificada/hecha en el planning de papel (amarillo) → morado
   const [filtroPapel, setFiltroPapel] = useState("todas");
   const alternarPapel = async (k) => { try { await fbSet(ref(fbDb, `controlDiaPapel/${k}`), (papel && papel[k]) ? null : true); } catch (e) { alert("No se pudo marcar: " + e.message); } };
+  // Obras repetidas: la misma obra metida en más de un día. Se deja en el día donde tiene más marcas de colores (y si empatan, en el primero) y se quita de los demás
+  const repetidasPlan = () => {
+    const por = {};
+    Object.entries(asignTodas || {}).forEach(([d, o]) => Object.keys(o || {}).forEach((k) => { if (o[k]) (por[k] = por[k] || []).push(d); }));
+    const quitar = [];
+    Object.entries(por).forEach(([k, dias]) => {
+      if (dias.length < 2) return;
+      const marcas = (d) => Object.values(((marcasTodas && marcasTodas[d]) || {})[k] || {}).filter((v) => v === 1 || v === 2).length;
+      const orden = [...dias].sort((a, b) => marcas(b) - marcas(a) || a.localeCompare(b));
+      orden.slice(1).forEach((d) => quitar.push({ k, d }));
+    });
+    return { quitar, nObras: new Set(quitar.map((x) => x.k)).size };
+  };
+  const quitarRepetidas = async () => {
+    const { quitar } = repetidasPlan(); if (!quitar.length) return;
+    const upd = {}; quitar.forEach((x) => { upd[`${x.d}/${x.k}`] = null; });
+    try { await guardarCopia("Antes de quitar obras repetidas"); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
+  };
   const [autoAbierto, setAutoAbierto] = useState(false);
   const [autoIni, setAutoIni] = useState("");
   const [autoHoras, setAutoHoras] = useState(160);
@@ -52735,7 +52753,15 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     } catch (e) { setErrPlan("No se pudo leer el planning: " + ((e && e.message) || "prueba con otro archivo")); }
     finally { setLeyendoPlan(false); }
   };
+  // Solo comparar: NO planifica nada ni toca los días; marca en morado («en el papel») las obras que reconoce del planning subido
+  const soloCompararPlanning = async () => {
+    const claves = [...new Set(plan.flatMap((d) => d.obras.map((o) => limpia(o.key))))];
+    if (!claves.length) { alert("No he reconocido ninguna obra para marcar en morado."); return; }
+    const upd = {}; claves.forEach((k) => { upd[k] = true; });
+    try { await fbUpdate(ref(fbDb, "controlDiaPapel"), upd); setPlanImgPend(null); setPlan(null); alert(`${claves.length} obras marcadas en morado. No se ha planificado nada.`); } catch (e) { alert("No se pudo marcar: " + e.message); }
+  };
   const guardarPlanning = async () => {
+    await guardarCopia("Antes de guardar un planning subido");
     const ok = plan.map((d) => ({ ...d, obras: d.obras.filter((x) => x.incluir) })).filter((d) => d.fecha && d.obras.length);
     for (const d of ok) for (const ob of d.obras) { try { await fbSet(ref(fbDb, `controlDiaObras/${d.fecha}/${limpia(ob.key)}`), true); } catch (e) { /* nada */ } }
     if (planImgPend && ok.length) { for (const m of [...new Set(ok.map((d) => d.fecha.slice(0, 7)))]) { try { await fbSet(ref(fbDb, `controlDiaPlanningImg/${m}`), { url: planImgPend.url, nombre: planImgPend.nombre, subidoEn: Date.now() }); } catch (e) { console.error(e); alert("Las obras se han guardado, pero no se pudo guardar la imagen del planning: " + e.message); } } }
@@ -52923,6 +52949,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {d.noEncontradas.length > 0 && <div className="text-xs text-rose-700">No encontrados en el CRM: {d.noEncontradas.join(", ")}</div>}
               </div>
             ))}
+            <button type="button" onClick={soloCompararPlanning} className="mr-2 px-3 py-1.5 rounded-md bg-purple-600 text-white text-sm font-bold" title="No añade nada a los días: solo marca en morado las obras reconocidas">🟣 Solo comparar (marcar en morado, sin planificar)</button>
             <button type="button" onClick={guardarPlanning} className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">Guardar planning</button>
             <button type="button" onClick={() => setPlan(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
           </div>
@@ -52979,6 +53006,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {lista.length > 0 && <button type="button" onClick={async () => { const ks = lista.map((o) => limpia(o.d.key)); const todas = ks.every((k) => papel && papel[k]); const upd = {}; ks.forEach((k) => { upd[k] = todas ? null : true; }); try { await fbUpdate(ref(fbDb, "controlDiaPapel"), upd); } catch (e) { alert("No se pudo marcar: " + e.message); } }} title="Marca (o desmarca) como «hecha en papel» todas las obras de este día" className="px-3 py-1.5 rounded-md bg-purple-600 text-white text-sm font-bold">🟣 {lista.every((o) => papel && papel[limpia(o.d.key)]) ? "Desmarcar" : "Marcar"} las {lista.length} de este día en papel</button>}
+        {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
         <select value={filtroPapel} onChange={(e) => setFiltroPapel(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" title="Filtra las obras del día según estén marcadas como hechas en el planning de papel">
           <option value="todas">🟣 Papel: ver todas</option>
           <option value="morado">🟣 Solo las marcadas en papel ({Object.keys(papel || {}).filter((k) => papel[k]).length})</option>
