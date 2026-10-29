@@ -2516,7 +2516,7 @@ export default function App() {
     const hoy = new Date().toISOString().slice(0, 10);
 
     const materialesNext = materiales.map((m) => {
-      const lineasMaterial = pedido.lineas.filter((l) => l.materialId === m.id && l.estado !== "Recibido");
+      const lineasMaterial = pedido.lineas.filter((l) => l.materialId === m.id && l.estado !== "Recibido" && !l.stockPorFabrica);
       if (lineasMaterial.length === 0) return m;
       let stockReal = m.stockReal || 0;
       const nuevosMovimientos = lineasMaterial.map((l) => {
@@ -2533,7 +2533,7 @@ export default function App() {
     // (mismo código y mismo acabado/color) se le suma; si no, se da de alta solo.
     let materialesFinal = materialesNext;
     let altasNuevas = 0;
-    pedido.lineas.filter((l) => l.modo === "libre" && l.tarifaRef && l.estado !== "Recibido").forEach((l) => {
+    pedido.lineas.filter((l) => l.modo === "libre" && l.tarifaRef && l.estado !== "Recibido" && !l.stockPorFabrica).forEach((l) => {
       const t = l.tarifaRef;
       const cant = parseFloat(l.cantidad) || 0;
       if (!cant || !t.ref) return;
@@ -2580,7 +2580,9 @@ export default function App() {
   //  · persianas → almacén de persianas (colocadas en su carro si hay sitio)
   // Se apunta en el pedido lo recibido y lo roto; si llega todo pasa a "Recibido". Si es
   // un pedido de Uxcar, la entrada también se guarda en su portal.
-  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas }) => {
+  // desdeFabrica: la entrada la da fábrica. Fábrica NO cierra el pedido en oficina: las líneas quedan confirmadas por fábrica
+  // (la obra sigue su camino) pero el pedido y las líneas siguen abiertos en oficina hasta que oficina los cierre ella misma.
+  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica }) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -2689,7 +2691,7 @@ export default function App() {
       const f = porId[l.id];
       if (!f || !(parseFloat(f.llega) > 0)) {
         // Línea que fábrica ya había marcado como llegada (a la antigua, sin almacén): se cierra en oficina sin crear nada otra vez
-        if (cerrarConfirmadas && l.confirmadoFabrica && (parseFloat(l.recibidoBien) || 0) < (parseFloat(l.cantidad) || 0)) return { ...l, recibidoBien: parseFloat(l.cantidad) || 0, estado: "Recibido" };
+        if (cerrarConfirmadas && l.confirmadoFabrica && (parseFloat(l.recibidoBien) || 0) < (parseFloat(l.cantidad) || 0)) return desdeFabrica ? { ...l, recibidoBien: parseFloat(l.cantidad) || 0, recibidoPorFabrica: true } : { ...l, recibidoBien: parseFloat(l.cantidad) || 0, estado: "Recibido" };
         // Línea que oficina ya tenía recibida y fábrica aún no había confirmado: se confirma sin crear nada
         if (cerrarConfirmadas && !l.confirmadoFabrica && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0)) return { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "Fábrica" };
         return l;
@@ -2698,12 +2700,22 @@ export default function App() {
       bienTotal += bien; rotosTotal += rotos;
       const recibidoBien = (parseFloat(l.recibidoBien) || 0) + bien;
       const completa = recibidoBien >= (parseFloat(l.cantidad) || 0);
-      return { ...l, recibidoBien, rotos: (parseFloat(l.rotos) || 0) + rotos, cantidadRecibida: (parseFloat(l.cantidadRecibida) || 0) + (parseFloat(f.llega) || 0), ...(completa ? { estado: "Recibido", confirmadoFabrica: true, fechaConfirmadoFabrica: hoy } : {}) };
+      return { ...l, recibidoBien, rotos: (parseFloat(l.rotos) || 0) + rotos, cantidadRecibida: (parseFloat(l.cantidadRecibida) || 0) + (parseFloat(f.llega) || 0), ...(f.tipo === "stock" && !esUxcar && bien > 0 ? { stockPorFabrica: true } : {}), ...(completa ? (desdeFabrica ? { recibidoPorFabrica: true, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy } : { estado: "Recibido", confirmadoFabrica: true, fechaConfirmadoFabrica: hoy }) : {}) };
     });
     const todo = lineas.length > 0 && lineas.every((l) => (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
     const recep = { fecha: hoy, archivo: archivo || "", numeroAlbaran: numeroAlbaran || "", bien: bienTotal, rotos: rotosTotal, cristales: nCris, persianas: nuevasPers.length, por: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" };
+    // Aviso para quien lleva los pedidos (administrador y responsable de pedidos): fábrica ha dado material por llegado.
+    // Se guarda en el propio pedido; cada persona lo marca como visto desde su aviso de arriba.
+    const resumenAviso = [
+      aStock ? `${aStock} al stock` : "",
+      nuevosCab.length ? `${nuevosCab.reduce((a, c) => a + (parseFloat(c.cantidad) || 0), 0)} cristales a Fábrica` : "",
+      cristalesYaEstaban.length ? `${cristalesYaEstaban.reduce((a, x) => a + x.cantidad, 0)} cristales ya estaban en sus caballetes` : "",
+      nuevasPers.length ? `${nuevasPers.length} persianas pendientes de ubicar` : "",
+      rotosTotal ? `${rotosTotal} rotos` : "",
+    ].filter(Boolean).join(" · ");
     const pedidoNuevo = { ...pedido, lineas, recepciones: [...toArray(pedido.recepciones), recep], albaranComprobado: { fecha: new Date().toISOString(), archivo: archivo || "" },
-      ...(todo ? { estado: "Recibido", fechaRecibido: hoy, recepcionParcial: false } : { recepcionParcial: true }) };
+      avisoRecepcion: { fecha: new Date().toISOString(), por: recep.por || "Fábrica", porId: currentUser ? currentUser.id : "", completo: todo, resumen: resumenAviso, vistoPor: {} },
+      ...(todo ? (desdeFabrica ? { recepcionParcial: false, fabricaDaPorLlegado: hoy } : { estado: "Recibido", fechaRecibido: hoy, recepcionParcial: false }) : { recepcionParcial: true }) };
 
     if (mats !== materiales) saveMateriales(mats);
     if (nuevosCab.length) saveCristales([...nuevosCab, ...cristales]);
@@ -2813,17 +2825,17 @@ export default function App() {
     const filas = filasLlegadaManual(pedido);
     if (!filas.length) {
       // Nada nuevo que recibir: solo había líneas marcadas a la antigua → se cierran en oficina
-      recibirPedidoConAlbaran(pedidoId, { filas: [], archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "", cerrarConfirmadas: true });
+      recibirPedidoConAlbaran(pedidoId, { filas: [], archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "", cerrarConfirmadas: true, desdeFabrica: true });
       return;
     }
-    recibirPedidoConAlbaran(pedidoId, { filas, archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "", cerrarConfirmadas: true });
+    recibirPedidoConAlbaran(pedidoId, { filas, archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "", cerrarConfirmadas: true, desdeFabrica: true });
   };
   const confirmarLineaFabrica = (pedidoId, lineaId, confirmado) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
     if (confirmado) {
       const filas = filasLlegadaManual(pedido, lineaId);
-      if (filas.length) { recibirPedidoConAlbaran(pedidoId, { filas, archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "" }); return; }
+      if (filas.length) { recibirPedidoConAlbaran(pedidoId, { filas, archivo: "(a mano)", numeroAlbaran: "", numeroPedidoProveedor: "", desdeFabrica: true }); return; }
     } else if (toArray(pedido.recepciones).length > 0 && !window.confirm("Esta línea ya se recibió y sus cristales/persianas/stock ya se crearon.\n\nDesmarcarla NO los borra. ¿Desmarcar igualmente?")) return;
     savePedidos(pedidos.map((p) => (p.id !== pedidoId ? p : {
       ...p,
@@ -2845,7 +2857,7 @@ export default function App() {
   const saveTareasAluminio = (next) => { setTareasAluminio(next); persist("tareasAluminio", next); };
   const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
-  almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen;
+  almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen; almacenRapido.almacenesPersianas = almacenesPersianas; almacenRapido.materiales = materiales;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
 
   const addCristal = (data) => {
@@ -3136,6 +3148,13 @@ export default function App() {
     if (!lista || lista.length === 0) return;
     const ids = new Set(lista.map((p) => p.id));
     savePedidos(pedidos.map((p) => (ids.has(p.id) ? { ...p, avisoLlegadaVisto: true } : p)));
+  };
+
+  // Aviso «fábrica ha dado por llegado un pedido»: lo ve el administrador y el responsable de pedidos hasta que lo abre
+  const marcarAvisosRecepcionVistos = (lista) => {
+    if (!lista || !lista.length || !currentUser) return;
+    const ids = new Set(lista.map((p) => p.id));
+    savePedidos(pedidos.map((p) => (ids.has(p.id) && p.avisoRecepcion ? { ...p, avisoRecepcion: { ...p.avisoRecepcion, vistoPor: { ...(p.avisoRecepcion.vistoPor || {}), [currentUser.id]: new Date().toISOString() } } } : p)));
   };
 
   const enviarAPedido = (proveedorId, lineas, proyectoId, comentarios, adjuntos) => {
@@ -4532,7 +4551,7 @@ export default function App() {
         const et = pr.estadoTrabajo || "";
         if (["Entregado", "Cancelado"].includes(et)) estado = et;
         else if (["En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(et)) estado = et === "En proceso" ? "En fabricación" : et;
-        else if (cp.length && cp.every((pd) => (pd.estado === "Recibido" || uxDaPorRecibido(pd)) && toArray(pd.lineas).every((l) => l.confirmadoFabrica))) estado = "Listo para fabricar";
+        else if (cp.length && cp.every((pd) => llegadoParaObra(pd) && toArray(pd.lineas).every((l) => l.confirmadoFabrica))) estado = "Listo para fabricar";
         else estado = "Esperando material";
       }
       const cr = K.d.length >= 2 || K.pptos.size ? toArray(cristales).filter((x) => uxCaballeteEs(x, K)) : [];
@@ -5715,6 +5734,23 @@ export default function App() {
           return <AvisoDiscrepanciaInsistente disc={disc} nombreProveedor={nomProv} onDarDeBaja={veFabrica ? confirmarPedidoEnteroFabrica : undefined} onIr={() => { if (!isAdmin && disc.length) { try { fbSet(ref(fbDb, `avisosDiscrepancia/${currentUser.id}`), { nombre: currentUser.nombre || currentUser.email || "Usuario", fecha: new Date().toISOString(), pedidos: disc.map((x) => x.p.numero).filter(Boolean).slice(0, 30) }).catch(() => {}); } catch (e) { /* solo informativo */ } } if (resp) setModulo("pedidos"); else if (soloUx) { uxcNav.discrepancias = true; setModulo("uxcar"); } else { tabInicialFabrica.actual = "discrepancias"; setModulo("fabrica"); } }} />;
         })()}
         {(() => {
+          // Fábrica ha dado material por llegado: se avisa a quien lleva los pedidos (administrador y responsable de pedidos)
+          if (!currentUser || !(isAdmin || currentUser.responsablePedidos)) return null;
+          const nuevos = pedidos.filter((p) => p.avisoRecepcion && !(p.avisoRecepcion.vistoPor && p.avisoRecepcion.vistoPor[currentUser.id]) && String(p.avisoRecepcion.porId || "") !== String(currentUser.id) && (Date.now() - new Date(p.avisoRecepcion.fecha).getTime()) < 14 * 86400000);
+          if (!nuevos.length) return null;
+          const nomProvR = (pd) => pd.proveedorExterno || ((toArray(proveedores).find((x) => x.id === pd.proveedorId) || {}).nombre) || "proveedor";
+          const detalle = nuevos.slice(0, 3).map((p) => { const pr = p.proyectoId ? proyectos.find((x) => x.id === p.proyectoId) : null; const pp = pr ? presupuestoDeObra(pr) : ""; return `#${p.numero} ${nomProvR(p)}${pp ? " · Ppto " + pp : ""}${p.avisoRecepcion.completo ? "" : " (parcial)"}${p.avisoRecepcion.resumen ? " — " + p.avisoRecepcion.resumen : ""}`; }).join(" | ");
+          return (
+            <button
+              onClick={() => { marcarAvisosRecepcionVistos(nuevos); setModulo("pedidos"); if (nuevos.length === 1) { setPedidoDetailId(nuevos[0].id); setPedidoView("detail"); } else setPedidoView("list"); }}
+              className="w-full flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-left transition bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+            >
+              <Truck size={15} />
+              📦 Fábrica ha dado por llegado material de {nuevos.length} pedido{nuevos.length === 1 ? "" : "s"}: {detalle}{nuevos.length > 3 ? "…" : ""}. Toca para verlo{nuevos.length === 1 ? "" : "s"} →
+            </button>
+          );
+        })()}
+        {(() => {
           if (!currentUser || !tieneAcceso("pedidos")) return null;
           const hoy = new Date().toISOString().slice(0, 10);
           const pedidosRetrasados = pedidos.filter((p) =>
@@ -6481,7 +6517,7 @@ export default function App() {
             clientes={clientes}
             onConfirmarLinea={confirmarLineaFabrica}
             onConfirmarPedidoEntero={confirmarPedidoEnteroFabrica}
-            onRecibirConAlbaran={recibirPedidoConAlbaran}
+            onRecibirConAlbaran={(id, datos) => recibirPedidoConAlbaran(id, { ...(datos || {}), desdeFabrica: true })}
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
@@ -7587,7 +7623,7 @@ function faseObra(p, pedidos) {
   if (p.estadoPresupuesto !== "Presupuesto aceptado") return { txt: "Aún sin aceptar", cls: "bg-slate-100 text-slate-500" };
   const cp = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
   if (!cp.length) return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
-  const llegado = cp.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+  const llegado = cp.every((pd) => llegadoParaObra(pd));
   if (llegado && cp.every((pd) => toArray(pd.lineas).every((l) => l.confirmadoFabrica))) return { txt: "LISTA PARA FABRICAR", cls: "bg-emerald-100 text-emerald-800" };
   if (llegado) return { txt: "Material llegado · falta confirmar en fábrica", cls: "bg-amber-100 text-amber-800" };
   if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
@@ -8808,6 +8844,87 @@ const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
   return `Pedido ${pedido.numero} — ALUMAVEL${proyecto ? `\nObra: ${proyecto.nombre} (#${proyecto.numero})` : ""}\n\n${lineas}${pedido.comentarios && !/^Material que falta según|^.*: Material que falta según/.test(pedido.comentarios) ? `\n\nComentarios: ${pedido.comentarios}` : ""}${fecha ? `\n\n${fraseLlegadaProveedor(fecha)}` : ""}`;
 };
 
+// En la ficha de la obra (pestaña Pedidos): cada pedido con el estado de cada línea y DÓNDE está ahora el material
+// (caballete del almacén de cristales, carro del almacén de persianas o stock). Todo se busca con los números de la obra
+// (nº de pedido, presupuesto, expediente); si no encuentra nada lo dice, no se lo inventa.
+function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
+  const cristales = toArray(almacenRapido.cristales), pers = toArray(almacenRapido.persianas), almacenes = toArray(almacenRapido.almacenesPersianas);
+  const lista = toArray(pedidos).filter((p) => p && p.estado !== "Cancelado");
+  if (!lista.length) return null;
+  const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+  const claves = new Set([proyecto.numero, proyecto.presupuestoNumero, proyecto.expediente, proyecto.referencia, presupuestoDeObra(proyecto)].flatMap(digs));
+  // «6036-2» (versión): también vale el 6036 a secas
+  [proyecto.presupuestoNumero, presupuestoDeObra(proyecto)].forEach((x) => { const b = String(x || "").split(/[-/]/)[0].replace(/\D/g, ""); if (b.length >= 3) claves.add(b); });
+  const idsPedidos = new Set(lista.map((p) => p.id));
+  const numsPedidos = new Set(lista.map((p) => String(p.numero)));
+  const cabs = cristales.filter((c) => (c.pedidoId && idsPedidos.has(c.pedidoId)) || digs([c.expediente, c.secuencia, c.presupuesto, ...toArray(c.piezas).map((x) => x.expediente)].join(" ")).some((d) => claves.has(d)));
+  const persOb = pers.filter((x) => !x.entregada && (numsPedidos.has(String(x.pedido || "")) || digs([x.expediente, x.presupuesto].join(" ")).some((d) => claves.has(d))));
+  const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén de persianas";
+  const orden = { "En espera": 0, "Pendiente": 1, "Realizado": 2, "Reclamado": 3, "Recibido": 4 };
+  const sorted = [...lista].sort((a, b) => (orden[a.estado] ?? 9) - (orden[b.estado] ?? 9));
+  const destino = (tipo) => tipo === "cristal" ? "Almacén de cristales" : tipo === "persiana" ? "Almacén de persianas" : tipo === "stock" ? "Stock" : "—";
+  const donde = [];
+  if (cabs.length) donde.push({ t: "Cristales", filas: cabs.map((c) => `Caballete ${c.lote || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"} · ${parseFloat(c.cantidad) || toArray(c.piezas).length} ud`) });
+  if (persOb.length) {
+    const g = {};
+    persOb.forEach((x) => { const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar (sin sitio)`; g[k] = (g[k] || 0) + 1; });
+    donde.push({ t: "Persianas", filas: Object.entries(g).map(([k, n]) => `${k} · ${n} ud`) });
+  }
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-slate-100 text-sm font-bold text-slate-800">📍 Dónde está el material de esta obra</div>
+      <div className="divide-y divide-slate-100">
+        {sorted.map((p) => {
+          const prov = toArray(proveedores).find((x) => x.id === p.proveedorId);
+          const enviado = !!p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado);
+          return (
+            <div key={p.id} className="px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mb-1.5">
+                <b>Pedido #{p.numero}</b>
+                <span className="text-slate-600">{p.proveedorExterno || (prov && prov.nombre) || "proveedor"}</span>
+                <span className={`text-xs font-semibold ${enviado ? "text-sky-700" : "text-rose-700"}`}>{enviado ? p.estado : "Sin pedir al proveedor"}</span>
+                {p.fechaEntregaPrevista && !toArray(p.lineas).every((l) => l.confirmadoFabrica) && <span className="text-xs text-slate-500">llegada prevista {fmtDate(p.fechaEntregaPrevista)}</span>}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {toArray(p.lineas).map((l) => {
+                      const tipo = tipoLineaRecepcion(l, p);
+                      const ped = parseFloat(l.cantidad) || 0, ya = parseFloat(l.recibidoBien) || 0;
+                      const nombre = l.modo === "libre" ? (l.referencia || l.descripcion || "Sin referencia") : ((toArray(almacenRapido.materiales).find((m) => m.id === l.materialId) || {}).descripcion || l.referencia || "Material");
+                      const estado = l.confirmadoFabrica ? <span className="text-emerald-700 font-semibold">✓ Llegado{l.fechaConfirmadoFabrica ? ` ${fmtDate(l.fechaConfirmadoFabrica)}` : ""}</span>
+                        : ya > 0 ? <span className="text-amber-700 font-semibold">Han llegado {ya} de {ped}</span>
+                        : enviado ? <span className="text-amber-700 font-semibold">🕓 Pedido, sin llegar</span> : <span className="text-rose-700 font-semibold">Sin pedir</span>;
+                      return (
+                        <tr key={l.id} className="border-t border-slate-50">
+                          <td className="py-1 pr-3">{nombre}</td>
+                          <td className="py-1 pr-3 whitespace-nowrap font-mono-num">{l.ancho && l.alto ? `${l.ancho}×${l.alto}` : ""}</td>
+                          <td className="py-1 pr-3 text-right">{ped}</td>
+                          <td className="py-1 pr-3">{estado}</td>
+                          <td className="py-1 text-slate-500">{l.confirmadoFabrica ? "En: " : "Irá a: "}{destino(tipo)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 text-sm">
+        <div className="font-semibold text-slate-700 mb-1">Ahora mismo en los almacenes</div>
+        {donde.length === 0
+          ? <div className="text-xs text-slate-500">No encuentro cristales ni persianas de esta obra en los almacenes. Puede que aún no hayan llegado, o que estén apuntados con otro número de presupuesto o expediente.</div>
+          : donde.map((d) => (
+            <div key={d.t} className="mb-1"><span className="text-xs font-bold text-slate-600">{d.t}:</span>
+              <ul className="ml-4 list-disc text-xs text-slate-700">{d.filas.map((f, i) => <li key={i}>{f}</li>)}</ul>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
 // Pedidos de la obra (arriba en la pestaña Pedidos del proyecto), con lo necesario para
 // PEDIRLOS desde aquí mismo: elegir proveedor, mandarlo por WhatsApp o email, o marcar que
 // ya se ha pedido de otra forma — pidiendo siempre la fecha aproximada de llegada.
@@ -10316,6 +10433,7 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
               <Plus size={14} /> Nuevo pedido
             </button>
           </div>
+          <UbicacionMaterialPedidos proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} />
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <PedidosObraAcciones proyecto={proyecto} pedidos={pedidos} proveedores={proveedores} materiales={materiales} openPedido={openPedido}
               onMarcarPedidoEnviado={onMarcarPedidoEnviado || (() => {})} onActualizarPedido={onActualizarPedido || (() => {})} onRecordarProveedorSeccion={onRecordarProveedorSeccion} onRecibirPedido={onRecibirPedido} />
@@ -13309,6 +13427,60 @@ const emparejarAlbaran = (pedido, lineasAlb, materiales, nombreLinea) => {
   return { filas, sobrantes: alb.filter((a) => a.resto > 0) };
 };
 
+// En la ficha del pedido: DÓNDE está ahora cada línea recibida (almacén de persianas y carro exacto, o caballete de cristal).
+// Se busca por el nº de pedido con el que entró o, si no, por los números de la obra (presupuesto/expediente) y la medida.
+function DondeEstaPedido({ pedido, proyectos }) {
+  const pers = toArray(almacenRapido.persianas), cabs = toArray(almacenRapido.cristales), almacenes = toArray(almacenRapido.almacenesPersianas);
+  const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén de persianas";
+  const lineas = toArray(pedido.lineas);
+  const hayRecibido = toArray(pedido.recepciones).length > 0 || lineas.some((l) => l.confirmadoFabrica || (parseFloat(l.recibidoBien) || 0) > 0);
+  if (!hayRecibido) return null;
+  const pr = pedido.proyectoId ? toArray(proyectos).find((x) => x.id === pedido.proyectoId) : null;
+  const dg = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+  const claves = new Set(pr ? [pr.numero, pr.presupuestoNumero, pr.expediente, presupuestoDeObra(pr)].flatMap(dg) : []);
+  if (pr) [pr.presupuestoNumero, presupuestoDeObra(pr)].forEach((x) => { const b = String(x || "").split(/[-/]/)[0].replace(/\D/g, ""); if (b.length >= 3) claves.add(b); });
+  const medida = (a, b) => `${Math.round(parseFloat(a) || 0)}x${Math.round(parseFloat(b) || 0)}`;
+  const esMia = (x) => String(x.pedido || "") === String(pedido.numero) || dg([x.expediente, x.presupuesto].join(" ")).some((d) => claves.has(d));
+  const sitio = (x) => x.entregada ? `Salió el ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${nombreAlm(almacenDe(x))} · CARRO ${x.estante.carro} · lado ${x.estante.lado} · estante ${x.estante.nivel}${x.estante.fila ? ` · fila ${x.estante.fila}` : ""}` : `${nombreAlm(almacenDe(x))} · SIN CARRO: pendiente de ubicar`;
+  const filasPers = lineas.filter((l) => tipoLineaRecepcion(l, pedido) === "persiana").map((l) => {
+    const ped = parseFloat(l.cantidad) || 0, llegadas = parseFloat(l.recibidoBien) || 0;
+    const m = medida(l.ancho, l.alto);
+    const halladas = pers.filter((x) => medida(largoPersiana(x), x.alto) === m && esMia(x));
+    const g = {};
+    halladas.forEach((x) => { const k = sitio(x); g[k] = (g[k] || 0) + 1; });
+    return { l, ped, llegadas, g, n: halladas.length, llegada: l.confirmadoFabrica || llegadas > 0 };
+  });
+  const cabsMios = cabs.filter((c) => c.pedidoId === pedido.id || String(c.secuencia || "") === String(pedido.numero) || dg([c.expediente, c.secuencia, c.presupuesto].join(" ")).some((d) => claves.has(d)));
+  const tieneCristal = lineas.some((l) => tipoLineaRecepcion(l, pedido) === "cristal");
+  if (!filasPers.length && !tieneCristal) return null;
+  return (
+    <div className="my-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+      <div className="font-bold text-slate-800 mb-1">📍 Dónde está lo recibido de este pedido</div>
+      {filasPers.length > 0 && (
+        <div className="mb-2">
+          <div className="text-xs font-bold text-slate-600 mb-1">Persianas</div>
+          {filasPers.map(({ l, ped, llegadas, g, n, llegada }) => (
+            <div key={l.id} className="ml-1 mb-1.5 text-xs">
+              <div className="text-slate-800"><b>{l.referencia || l.descripcion || "Persiana"}</b> · {l.ancho && l.alto ? `${l.ancho}×${l.alto}` : "sin medida"} · pedidas {ped}{llegadas ? ` · llegadas ${llegadas}` : ""}</div>
+              {Object.entries(g).map(([k, v]) => <div key={k} className="ml-3 text-slate-700">• <b>{v}</b> → {k}</div>)}
+              {n === 0 && (llegada
+                ? <div className="ml-3 font-semibold text-rose-700">⚠ Consta como recibida pero no la encuentro en ningún almacén (ni por nº de pedido ni por presupuesto/expediente + medida).</div>
+                : <div className="ml-3 text-amber-700 font-semibold">🕓 Todavía no ha llegado</div>)}
+              {n > 0 && n < Math.round(llegadas) && <div className="ml-3 font-semibold text-rose-700">⚠ Llegaron {Math.round(llegadas)} y solo encuentro {n}.</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {tieneCristal && (
+        <div className="mb-1">
+          <div className="text-xs font-bold text-slate-600">Cristales · {cabsMios.length} caballete(s)</div>
+          {cabsMios.map((c) => <div key={c.id} className="ml-3 text-xs text-slate-700">• Caballete {c.lote || "s/n"} → {c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"}</div>)}
+          {cabsMios.length === 0 && <div className="ml-3 text-xs text-slate-500">No encuentro caballetes de este pedido.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 function RecepcionPedido({ pedido, materiales, nombreLinea, puedeRecibir, archivoInicial, onArchivoUsado, onRecibirConAlbaran, onCrearPedidoFaltante, infoInicial }) {
   const [informe, setInforme] = useState(null); // dónde ha ido cada cristal y cada persiana al confirmar la entrada
   const [leyendo, setLeyendo] = useState(false);
@@ -13940,6 +14112,7 @@ function PedidoDetail({ clientes, onActualizarPedido, pedido, proveedor, materia
         </div>
       )}
 
+      <DondeEstaPedido pedido={pedido} proyectos={proyectos} />
       <RecepcionPedido pedido={pedido} materiales={materiales} nombreLinea={nombreLinea} puedeRecibir={puedeRecibir}
         archivoInicial={archivoInicial} onArchivoUsado={onArchivoUsado}
         onRecibirConAlbaran={(datos) => onRecibirConAlbaran && onRecibirConAlbaran(pedido.id, datos)} onCrearPedidoFaltante={onCrearPedidoFaltante} />
@@ -18638,6 +18811,81 @@ function AlmacenPersianas() {
       return trozos.every((t) => texto.includes(t) || textoSP.includes(t.replace(/\./g, "")));
     }).sort((a, b) => (a.entregada ? 1 : 0) - (b.entregada ? 1 : 0) || String(a.expediente).localeCompare(String(b.expediente)));
   }, [busca, todosItems]);
+  // Persianas YA PEDIDAS que todavía no ha dado fábrica por llegadas (siguen en Materiales pendientes): también salen en la búsqueda,
+  // marcadas como «pendiente de llegar». Cuando fábrica las da por llegadas pasan a ser piezas del almacén (arriba).
+  const pendientesDeLlegar = useMemo(() => {
+    const prov = toArray(ctx.proveedores), proys = toArray(ctx.proyectos);
+    const out = [];
+    toArray(ctx.pedidosCrm).forEach((p) => {
+      if (!p || p.estado === "Cancelado") return;
+      if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return;
+      const pr = p.proyectoId ? proys.find((x) => x.id === p.proyectoId) : null;
+      const d = datosObraPedido(p, pr, ctx.uxExpedientes);
+      const nomProv = p.proveedorExterno || ((prov.find((x) => x.id === p.proveedorId) || {}).nombre) || "";
+      toArray(p.lineas).forEach((l) => {
+        if (l.confirmadoFabrica || tipoLineaRecepcion(l, p) !== "persiana") return;
+        const pedida = parseFloat(l.cantidad) || 0, ya = parseFloat(l.recibidoBien) || 0;
+        out.push({
+          id: `${p.id}-${l.id}`, pedido: p.numero, proveedor: nomProv, ppto: d.ppto, ref: d.ref, obra: d.obra, referencia: l.referencia || l.descripcion || "",
+          ancho: l.ancho || "", alto: l.alto || "", cantidad: pedida, llegadas: ya, prevista: p.fechaEntregaPrevista || "",
+          texto: [p.numero, nomProv, d.ppto, d.ref, d.obra, l.referencia, l.descripcion, l.ancho, l.alto, l.ancho && l.alto ? `${l.ancho} ${l.alto}` : "", l.comentario, p.comentarios].filter(Boolean).join(" ").toLowerCase(),
+        });
+      });
+    });
+    return out;
+  }, [ctx.pedidosCrm, ctx.proyectos, ctx.proveedores, ctx.uxExpedientes]);
+  const resultadosPed = useMemo(() => {
+    const trozos = busca.toLowerCase().replace(/(\d)\s*[x×*]\s*(\d)/g, "$1 $2").split(/\s+/).filter(Boolean);
+    if (!trozos.length) return [];
+    return pendientesDeLlegar.filter((x) => { const sp = x.texto.replace(/\./g, ""); return trozos.every((t) => x.texto.includes(t) || sp.includes(t.replace(/\./g, ""))); });
+  }, [busca, pendientesDeLlegar]);
+  // ¿Faltan persianas de pedidos que ya se dieron por llegados? Compara, por pedido y medida, lo que llegó con lo que hay en el almacén
+  // (incluidas las que ya salieron). Lo que falta se puede volver a crear en «Pendientes de ubicar».
+  const [verPerdidas, setVerPerdidas] = useState(false);
+  const [marcadasPerd, setMarcadasPerd] = useState({});
+  const faltantesDePedidos = useMemo(() => {
+    if (!verPerdidas) return [];
+    const out = [];
+    const proys = toArray(ctx.proyectos);
+    const dg = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+    toArray(ctx.pedidosCrm).forEach((p) => {
+      if (!p || p.estado === "Cancelado") return;
+      const pr = p.proyectoId ? proys.find((x) => x.id === p.proyectoId) : null;
+      const expUx = p.uxcarExpedienteId ? toArray(ctx.uxExpedientes).find((e) => e.id === p.uxcarExpedienteId) : null;
+      const claves = new Set([pr && pr.numero, pr && pr.presupuestoNumero, pr && presupuestoDeObra(pr), expUx && expUx.numero].flatMap(dg));
+      const grupos = {};
+      toArray(p.lineas).forEach((l) => {
+        if (tipoLineaRecepcion(l, p) !== "persiana") return;
+        const llegadas = parseFloat(l.recibidoBien) || 0;
+        if (llegadas <= 0) return;
+        const k = `${Math.round(parseFloat(l.ancho) || 0)}x${Math.round(parseFloat(l.alto) || 0)}`;
+        (grupos[k] = grupos[k] || { k, llegadas: 0, l }).llegadas += llegadas;
+      });
+      Object.values(grupos).forEach((g) => {
+        const hay = todosItems.filter((x) => `${Math.round(largoPersiana(x))}x${Math.round(parseFloat(x.alto) || 0)}` === g.k && (String(x.pedido || "") === String(p.numero) || dg([x.expediente, x.presupuesto].join(" ")).some((d) => claves.has(d)))).length;
+        const faltan = Math.round(g.llegadas) - hay;
+        if (faltan > 0) out.push({ id: `${p.id}|${g.k}`, p, pr, expUx, g, hay, faltan });
+      });
+    });
+    return out;
+  }, [verPerdidas, ctx.pedidosCrm, ctx.proyectos, ctx.uxExpedientes, todosItems]);
+  const recuperarPerdidas = () => {
+    const elegidas = faltantesDePedidos.filter((x) => marcadasPerd[x.id] !== false);
+    if (!elegidas.length) return;
+    const total = elegidas.reduce((a, x) => a + x.faltan, 0);
+    if (!window.confirm(`Voy a crear ${total} persiana(s) en «Pendientes de ubicar» del almacén de recepción, con los datos de sus pedidos (referencia, medida, presupuesto).\n\nSolo hazlo si de verdad llegaron y no están en el almacén. ¿Las creo?`)) return;
+    const hoyR = new Date().toISOString().slice(0, 10), almRec = almacenRecepcionPersianas(almacenes);
+    const nuevas = [];
+    elegidas.forEach((x) => {
+      const { p, pr, expUx, g } = x, l = g.l;
+      const expediente = expUx ? String(expUx.numero || "").replace(/^EXP\.?\s*/i, "") : pr ? String(pr.numero || "") : "";
+      const nomProv = p.proveedorExterno || ((toArray(ctx.proveedores).find((y) => y.id === p.proveedorId) || {}).nombre) || "";
+      for (let i = 0; i < x.faltan; i++) nuevas.push({ id: uid(), expediente, ref: l.referencia || l.descripcion || "", refObra: "", parte: "", pedidoProv: "", ancho: l.ancho, largo: l.ancho, alto: l.alto, descripcion: l.referencia || l.descripcion || "", modelo: "", pedido: p.numero, proveedor: nomProv, fechaEntrada: hoyR, estante: null, pendienteUbicar: true, almacenId: almRec, presupuesto: String((pr && presupuestoDeObra(pr)) || ""), recuperadaDePedido: true });
+    });
+    saveItems([...todosItems, ...nuevas]);
+    setVerPerdidas(false);
+    alert(`${nuevas.length} persianas creadas en «Pendientes de ubicar». Revísalas y ubícalas.`);
+  };
   const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén";
 
   const carros = todosCarros.filter((c) => almacenDe(c) === almacen.id);
@@ -18722,14 +18970,24 @@ function AlmacenPersianas() {
         </div>
         {busca.trim() && (
           <div className="mt-2 max-h-[45vh] overflow-y-auto">
-            <div className="text-xs text-slate-500 mb-1">{resultados.length} encontrada(s){resultados.length > 100 ? " · mostrando las 100 primeras" : ""}</div>
-            {resultados.some((x) => x.entregada) && (resultados.filter((x) => x.entregada).length <= 60
+            <div className="text-xs text-slate-500 mb-1">{resultados.length} en el almacén{resultadosPed.length ? ` · ${resultadosPed.length} pedida${resultadosPed.length === 1 ? "" : "s"} pendiente${resultadosPed.length === 1 ? "" : "s"} de llegar` : ""}{resultados.length > 100 ? " · mostrando las 100 primeras" : ""}</div>
+            {resultadosPed.slice(0, 100).map((x) => (
+              <div key={x.id} className="w-full flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm bg-amber-50/60">
+                <b>{x.ppto ? `Ppto ${x.ppto}` : `Pedido #${x.pedido}`}</b>
+                {x.ref && <span className="text-xs text-slate-600">{x.ref}</span>}
+                <span>{x.referencia}</span>
+                <span className="font-mono-num">{x.ancho && x.alto ? `${x.ancho} × ${x.alto}` : ""}</span>
+                <span className="text-xs text-slate-500">{x.cantidad} ud · Pedido #{x.pedido}{x.proveedor ? ` · ${x.proveedor}` : ""}</span>
+                <span className="ml-auto text-xs font-semibold text-amber-700">🕓 Pedida, pendiente de llegar{x.llegadas ? ` (han llegado ${x.llegadas})` : ""}{x.prevista ? ` · prevista ${fmtDate(x.prevista)}` : ""}</span>
+              </div>
+            ))}
+            {resultados.some((x) => x.entregada) && (resultados.filter((x) => x.entregada).length <= 400
               ? <button onClick={() => recuperarEntregadas(resultados.filter((x) => x.entregada))} className="mb-2 text-xs font-semibold text-white px-3 py-1.5 rounded-md hover:opacity-90" style={{ backgroundColor: "#d97706" }}>↩ Recuperar las {resultados.filter((x) => x.entregada).length} que figuran como salidas (vuelven al almacén)</button>
-              : <div className="mb-2 text-xs text-amber-700">Hay más de 60 salidas en esta búsqueda: escribe un expediente concreto para poder recuperarlas.</div>)}
+              : <div className="mb-2 text-xs text-amber-700">Hay más de 400 salidas en esta búsqueda: escribe un expediente concreto para poder recuperarlas.</div>)}
             {resultados.slice(0, 100).map((x) => (
-              <button key={x.id} disabled={!x.estante || x.entregada}
-                onClick={() => { setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
-                className={`w-full text-left flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm ${x.estante && !x.entregada ? "hover:bg-[#EEF7E4]" : "opacity-70"}`}>
+              <div key={x.id} role="button" tabIndex={0}
+                onClick={() => { if (!x.estante || x.entregada) return; setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), carro: x.estante.carro, t: Date.now() }); setBusca(""); }}
+                className={`w-full text-left flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm ${x.estante && !x.entregada ? "hover:bg-[#EEF7E4] cursor-pointer" : x.entregada ? "" : "opacity-70"}`}>
                 <b>{presupuestoDePersiana(x, ctx) ? `Ppto ${presupuestoDePersiana(x, ctx)}` : `EXP ${x.expediente || "—"}`}</b>
                 {presupuestoDePersiana(x, ctx) && <span className="text-xs text-slate-500">EXP {x.expediente || "—"}</span>}
                 <span>{x.ref || ""}</span>
@@ -18738,10 +18996,40 @@ function AlmacenPersianas() {
                 <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
                   {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
                 </span>
+                {x.entregada && <button type="button" onClick={(e) => { e.stopPropagation(); recuperarEntregadas([x]); }} className="text-xs font-semibold text-white px-2 py-1 rounded hover:opacity-90" style={{ backgroundColor: "#d97706" }}>↩ Recuperar esta</button>}
                 {x.incidencia && <span className="w-full text-xs text-rose-600">Incidencia: {x.incidencia}</span>}
-              </button>
+              </div>
             ))}
-            {resultados.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">No hay nada que coincida.</div>}
+            {resultados.length === 0 && resultadosPed.length === 0 && <div className="text-sm text-slate-400 py-3 text-center">No hay nada que coincida.</div>}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => { setVerPerdidas(!verPerdidas); setMarcadasPerd({}); }} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">🔎 Revisar si faltan persianas de pedidos ya recibidos</button>
+          <span className="text-xs text-slate-500">Compara lo que se dio por llegado en cada pedido con lo que hay en el almacén (también las que ya salieron).</span>
+        </div>
+        {verPerdidas && (
+          <div className="mt-3">
+            {faltantesDePedidos.length === 0
+              ? <div className="text-sm text-emerald-700 font-semibold">✓ No falta ninguna: todo lo que se dio por llegado está en el almacén (o ya salió).</div>
+              : <>
+                <div className="text-xs text-slate-600 mb-2">Estas medidas llegaron según el pedido, pero en el almacén hay menos unidades. Marca las que quieres volver a crear.</div>
+                <div className="max-h-[40vh] overflow-y-auto border border-slate-100 rounded-lg">
+                  {faltantesDePedidos.map((x) => (
+                    <label key={x.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 py-1.5 border-b border-slate-100 text-sm">
+                      <input type="checkbox" checked={marcadasPerd[x.id] !== false} onChange={(e) => setMarcadasPerd({ ...marcadasPerd, [x.id]: e.target.checked })} />
+                      <b>{x.pr && presupuestoDeObra(x.pr) ? `Ppto ${presupuestoDeObra(x.pr)}` : `Pedido #${x.p.numero}`}</b>
+                      <span className="text-xs text-slate-500">Pedido #{x.p.numero}{x.pr ? ` · ${x.pr.nombre || ""}` : ""}</span>
+                      <span>{x.g.l.referencia || x.g.l.descripcion || ""}</span>
+                      <span className="font-mono-num">{x.g.k.replace("x", " × ")}</span>
+                      <span className="ml-auto text-xs font-semibold text-rose-700">llegaron {Math.round(x.g.llegadas)} · en el almacén {x.hay} · faltan {x.faltan}</span>
+                    </label>
+                  ))}
+                </div>
+                <button onClick={recuperarPerdidas} className="mt-2 text-sm font-semibold text-white px-3 py-2 rounded-lg hover:opacity-90" style={{ backgroundColor: "#2E8B57" }}>Crear las marcadas en «Pendientes de ubicar»</button>
+              </>}
           </div>
         )}
       </div>
@@ -20515,7 +20803,9 @@ function ccMail() { return emailUsuarioActual ? `cc=${encodeURIComponent(emailUs
 // Pedidos de Uxcar (id del portal) que Uxcar ya ha dado por recibidos con su albarán. En esos pedidos NO existe «oficina»: confirman Uxcar y fábrica.
 let uxRecibidoIds = new Set();
 const uxDaPorRecibido = (p) => !!p && !!p.uxcarPedidoId && uxRecibidoIds.has(p.uxcarPedidoId);
-const ofiRecibida = (p, l) => uxDaPorRecibido(p) || p.estado === "Recibido" || l.estado === "Recibido" || ((parseFloat(l.recibidoBien) || 0) > 0 && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
+const ofiRecibida = (p, l) => uxDaPorRecibido(p) || p.estado === "Recibido" || l.estado === "Recibido" || (!l.recibidoPorFabrica && (parseFloat(l.recibidoBien) || 0) > 0 && (parseFloat(l.recibidoBien) || 0) >= (parseFloat(l.cantidad) || 0));
+// La obra sigue su camino cuando oficina/Uxcar lo da por recibido O cuando fábrica ha confirmado todas las líneas (fábrica no cierra el aviso de oficina)
+const llegadoParaObra = (pd) => !!pd && (pd.estado === "Recibido" || uxDaPorRecibido(pd) || (toArray(pd.lineas).length > 0 && toArray(pd.lineas).every((l) => l.confirmadoFabrica)));
 const discrepanciasPedido = (p) => {
   if (!p || p.estado === "Cancelado" || p.discrepanciaIgnorada) return [];
   if (!(p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado))) return [];
@@ -20883,7 +21173,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
       const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-      const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+      const oficinaOk = misPedidos.every((pd) => llegadoParaObra(pd));
       const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
       // Uxcar no rellena el checklist «Qué lleva la obra»: para sus obras basta con que todos sus pedidos de cristal/persiana hayan llegado (Uxcar) y fábrica los haya confirmado
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
@@ -20897,7 +21187,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (p.origen === "portalUxcar") return pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
     return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
   }).map((p) => ({ p, faltan: p.origen === "portalUxcar"
-    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => pd.estado !== "Recibido" ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
     : condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
 
   const descargarWord = () => {
@@ -39885,7 +40175,7 @@ function crearExpedienteRapido(listados, cortes) {
   return { lotes, avisos: nuevosAvisos, cristalesReq, persianasReq, etiquetas: lotes.reduce((a, l) => a + l.ventanas.length, 0), ignoradas: 0, repetidas: 0, rapido: true };
 }
 // ---- Comprobación y reserva en los almacenes de cristales y persianas ----
-const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null, controlPrevio: new Map() }; // lo rellena App en cada pintado
+const almacenRapido = { cristales: [], saveCristales: null, persianas: [], savePersianas: null, almacenesPersianas: [], materiales: [], controlPrevio: new Map() }; // lo rellena App en cada pintado
 const digitosExp = (t) => String(t || "").split(/[,;]/).map((x) => x.replace(/\D/g, "")).filter(Boolean);
 // Mira si cada cristal del listado está en el almacén (misma medida, girada o no, ±3 mm, y de este expediente o sin expediente puesto).
 // Devuelve { faltan: [texto], reservas: Map<"idCab|idxPieza", [{fab,ppto,modelo,n}]>, resumen:{pedidos, encontrados} }
@@ -50304,7 +50594,7 @@ function calcListoParaFabricar(proyectos, pedidos) {
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
     const misPedidos = todosPedidos.filter(esPedidoCristalOCompacto);
-    const oficinaOk = misPedidos.every((pd) => pd.estado === "Recibido" || uxDaPorRecibido(pd));
+    const oficinaOk = misPedidos.every((pd) => llegadoParaObra(pd));
     const fabricaOk = misPedidos.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica));
     const checklistOk = condicionesPendientesChecklist(p, pedidos).length === 0;
     return oficinaOk && fabricaOk && checklistOk;
