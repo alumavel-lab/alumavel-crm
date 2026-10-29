@@ -14803,10 +14803,16 @@ const FILTROS_CRISTALES_VACIOS = { cab: "", viv: "", exp: "", ppto: "", otro: ""
 const hayFiltroCristales = (f) => !!(f && (f.cab || f.viv || f.exp || f.ppto || f.otro));
 // Búsqueda por número de presupuesto: "6710" encuentra "6.710", "6710-1" y "6554, 6556, 6710"
 const pptoCoincideBusq = (q, ...textos) => {
-  const b = String(q || "").replace(/\D/g, "");
+  const b = String(q || "").split(/[-/]/)[0].replace(/\D/g, "");
   if (!b) return true;
-  return textos.some((t) => String(t || "").split(/[·,;\s]+/).some((x) => x.replace(/\D/g, "").includes(b)));
+  return textos.some((t) => String(t || "").split(/[·,;\s]+/).some((x) => x.split(/[-/]/)[0].replace(/\D/g, "").includes(b)));
 };
+// Todo lo que se puede buscar de un caballete (y de una pieza): nº, lote, cliente, obra, presupuesto, expedientes, vivienda, medida, sitio, comentarios
+function textoBuscableCab(c, p) {
+  const piezas = p ? [p] : (c.piezas || []);
+  const ob = c.obra || {};
+  return `${c.lote} ${c.numero} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.expedientes || ""} ${c.presupuesto || ""} ${c.presupuestos || ""} ${c.referencia || ""} ${c.medida} ${c.comentario || ""} ${ob.nombre || ""} ${ob.numero || ""} ${c.enPuesto || ""} ${c.ubicacion ? ubicacionTexto(c.ubicacion) : ""} ${piezas.map((x) => `${x.ref} ${x.vivienda || ""} ${x.expediente || ""} ${x.presupuesto || ""} ${x.ppto || ""} ${x.referencia || ""} ${ubicacionPieza(x)} ${x.ancho}x${x.alto} ${x.ancho} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""}`).join(" ")}`;
+}
 function textoFiltrosCristales(f) {
   return [f.cab && `caballete ${f.cab}`, f.viv && `vivienda ${f.viv}`, f.exp && `expediente ${f.exp}`, f.ppto && `presupuesto ${f.ppto}`, f.otro && `"${f.otro}"`].filter(Boolean).join(" · ");
 }
@@ -14817,7 +14823,7 @@ function piezaCoincideFiltros(c, p, f) {
   if (viv && !normBusq(p.ref).includes(viv)) return false;
   if (exp && !normExpBusq(p.expediente || c.expediente).includes(exp)) return false;
   if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, p.presupuesto, p.ppto)) return false;
-  if (otro && !normBusq(`${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto} ${p.ancho} ${p.alto} ${c.lote} ${c.cliente} ${p.incidencia || ""} ${p.comentario || ""}`).includes(otro)) return false;
+  if (otro && !normBusq(textoBuscableCab(c, p)).includes(otro)) return false;
   return true;
 }
 // ¿Este caballete cumple los filtros? Vivienda y expediente deben coincidir en la MISMA pieza.
@@ -14825,10 +14831,10 @@ function cristalCoincideFiltros(c, f) {
   const cab = normBusq(f.cab), viv = normBusq(f.viv), exp = normExpBusq(f.exp), otro = normBusq(f.otro);
   if (cab && !normBusq(c.lote).includes(cab)) return false;
   if (f.ppto && !pptoCoincideBusq(f.ppto, c.presupuesto, ...(c.piezas || []).map((p) => p.presupuesto || p.ppto))) return false;
-  if (otro && !normBusq(`${c.lote} ${c.secuencia} ${c.cliente} ${c.proveedor} ${c.expediente} ${c.medida} ${(c.piezas || []).map((p) => `${p.ref} ${p.expediente} ${ubicacionPieza(p)} ${p.ancho}x${p.alto}`).join(" ")}`).includes(otro)) return false;
+  if (otro && !normBusq(textoBuscableCab(c)).includes(otro)) return false;
   if (!viv && !exp) return true;
   const piezas = (c.piezas || []).length ? c.piezas : [{ ref: "", expediente: "" }];
-  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(p.expediente || c.expediente).includes(exp)));
+  return piezas.some((p) => (!viv || normBusq(p.ref).includes(viv)) && (!exp || normExpBusq(`${p.expediente || ""} ${c.expediente || ""}`).includes(exp)));
 }
 function BuscadoresCristales({ filtros, setFiltros }) {
   const campo = (k, placeholder, ancho) => (
@@ -26701,6 +26707,7 @@ function MedicionesUxcarZona({ propia = false }) {
   const [lista, setLista] = useState(null);
   const [abiertoId, setAbiertoId] = useState(() => { const x = uxcNav.id; uxcNav.id = null; uxcNav.propia = false; return x; });
   const [q, setQ] = useState("");
+  const [ubicTodas, setUbicTodas] = useState("");
   const [leyendo, setLeyendo] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [errorIA, setErrorIA] = useState("");
@@ -26714,6 +26721,35 @@ function MedicionesUxcarZona({ propia = false }) {
   const vacioPropia = () => ({ id: uid(), creadoEn: Date.now(), origen: "propia", propia: true, revisado: true, cab: { expediente: "", concurso: "", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
   const vacio = () => ({ id: uid(), creadoEn: Date.now(), origen: "manual", revisado: true, cab: { expediente: "", concurso: "DPM 511-23", pedido: "", aeropuerto: "", municipio: "", direccion: "", cliente: "", color: "PVC BLANCO", fechaMedicion: new Date().toISOString().slice(0, 10), medidoPor: "" }, vidrio: { ext: "", camara: "", gas: "", int: "", be: false, cs: "" }, ventanas: {}, partidas: {}, totales: {}, extras: {}, imprevistos: {} });
 
+  // Coloca las chinchetas que faltan en TODOS los expedientes ya guardados que tienen planos (sin volver a subirlos)
+  const colocarTodas = async () => {
+    setUbicTodas("Mirando qué expedientes tienen planos…");
+    const trabajos = [];
+    for (const x of (lista || []).filter((z) => !z.propia)) {
+      const sin = uxcLista(x.ventanas).filter((v) => v.ref && (v.px === undefined || v.px === null));
+      if (!sin.length || toArray(x.planos).some((q) => q && q.url)) continue;
+      let planos = [];
+      try { const sn = await fbGet(ref(fbDb, `${UXC_PLANO}/${x.id}`)); planos = uxcPlanosGuardados(sn.val()); } catch (e) { planos = []; }
+      if (planos.length) trabajos.push({ x, sin, planos });
+    }
+    if (!trabajos.length) { setUbicTodas(""); alert("No hay expedientes con planos guardados y ventanas sin chincheta."); return; }
+    if (!window.confirm(`Voy a colocar las chinchetas de ${trabajos.length} expediente${trabajos.length === 1 ? "" : "s"} (${trabajos.reduce((a, t) => a + t.sin.length, 0)} ventanas, una lectura de IA por plano: ${trabajos.reduce((a, t) => a + t.planos.length, 0)} en total). Tarda unos minutos y no hay que cerrar la pantalla. ¿Sigo?`)) { setUbicTodas(""); return; }
+    let n = 0, f = 0, i = 0;
+    for (const t of trabajos) {
+      i++;
+      for (const pn of t.planos) {
+        const mias = t.sin.filter((v) => (v.plano ? v.plano === pn.id : pn.id === t.planos[0].id));
+        if (!mias.length) continue;
+        setUbicTodas(`Expediente ${(t.x.cab || {}).expediente || ""} (${i} de ${trabajos.length}): plano «${pn.nombre}»…`);
+        try {
+          const res = await uxcUbicarEnPlano(pn.url, mias.map((v) => v.ref));
+          for (const v of mias) { const r = res.get(uxcNorm(v.ref)); if (r) { await fbUpdate(ref(fbDb, `${UXC_NODO}/${t.x.id}/ventanas/${v.id}`), { px: r.x, py: r.y, plano: pn.id }); n++; } else f++; }
+        } catch (e) { console.error(e); f += mias.length; }
+      }
+    }
+    setUbicTodas("");
+    alert(`${n} chinchetas colocadas; ${f} sin colocar (las que no encontré, colócalas a mano con «📍 Colocar»). Revísalas en cada expediente.`);
+  };
   const desdeFotos = async (files) => {
     const fs = Array.from(files || []);
     if (!fs.length) return;
@@ -26745,6 +26781,21 @@ function MedicionesUxcarZona({ propia = false }) {
     setLeyendo(false); setProgreso("");
     const exp = uxcExpedienteDesdeIA(paginas);
     if (!Object.keys(exp.ventanas || {}).length && !Object.keys(exp.partidas || {}).length) { setErrorIA("No he podido sacar ni ventanas ni partidas de esas fotos." + (fallos.length ? " Fallaron: " + fallos.join(", ") + "." : "") + " Prueba con fotos más nítidas o de una en una."); return; }
+    // Chinchetas en cada plano: se buscan en la imagen del plano (no frena el guardado si falla)
+    if (planosImg.length) {
+      const vl = Object.values(exp.ventanas || {});
+      setLeyendo(true);
+      for (const pl of planosImg) {
+        const mias = vl.filter((v) => v && v.ref && v.plano === pl.id);
+        if (!mias.length) continue;
+        try {
+          setProgreso(`Colocando las chinchetas en «${pl.nombre}»…`);
+          const res = await uxcUbicarEnPlano(pl.url, mias.map((v) => v.ref));
+          mias.forEach((v) => { const r = res.get(uxcNorm(v.ref)); if (r) { v.px = r.x; v.py = r.y; } });
+        } catch (e) { console.error("No se pudieron colocar las chinchetas", e); }
+      }
+      setLeyendo(false); setProgreso("");
+    }
     if (fallos.length) alert("Estas fotos no se pudieron leer y hay que meterlas a mano o repetirlas:\n" + fallos.join("\n"));
     if (planosImg.length) { const mapa = {}; planosImg.forEach((x) => { mapa[x.id] = x; }); try { await fbSet(ref(fbDb, `${UXC_PLANO}/${exp.id}`), mapa); } catch (e) { console.error("No se guardaron los planos", e); alert("El expediente se creará, pero no se pudieron guardar los planos: " + e.message); } }
     await crear(exp);
@@ -26763,6 +26814,7 @@ function MedicionesUxcarZona({ propia = false }) {
         {!propia && <button disabled={leyendo} onClick={() => fotosRef.current && fotosRef.current.click()} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-[#2E8B57] text-[#2E8B57] font-bold py-4 rounded-lg hover:bg-[#2E8B57]/5 disabled:opacity-60">
           {leyendo ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />} {leyendo ? progreso : "Crear desde fotos (IA)"}
         </button>}
+        {!propia && <button disabled={!!ubicTodas || leyendo} onClick={colocarTodas} className="flex-1 min-w-[220px] flex items-center justify-center gap-2 border-2 border-sky-500 text-sky-800 font-bold py-4 rounded-lg hover:bg-sky-50 disabled:opacity-60">{ubicTodas ? <><Loader2 size={18} className="animate-spin" /> {ubicTodas}</> : "📍 Colocar las chinchetas en todos los expedientes"}</button>}
         <input ref={fotosRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={(e) => { desdeFotos(e.target.files); e.target.value = ""; }} />
       </div>
       {errorIA && <div className="mb-4 px-4 py-3 rounded-md bg-rose-50 border border-rose-300 text-rose-700 text-sm font-semibold">⚠ {errorIA}</div>}
@@ -27041,6 +27093,38 @@ function uxcPlanosGuardados(val) {
   if (typeof val === "string") return [{ id: "u", nombre: "Plano", url: val, orden: 0 }];
   return Object.values(val).filter((x) => x && x.url).sort((a, b) => (a.orden || 0) - (b.orden || 0));
 }
+// Pide a la IA dónde está, en la imagen del plano, el cuadrito de cada referencia (V01/003…). Devuelve Map(uxcNorm(ref) → { x, y }) en % del ancho y del alto.
+async function uxcUbicarEnPlano(urlImagen, refs) {
+  const m = String(urlImagen || "").match(/^data:(image\/[a-z+.-]+);base64,(.+)$/i);
+  if (!m) throw new Error("el plano no es una imagen guardada en el CRM");
+  const lista = [...new Set(refs.map((r) => String(r || "").trim()).filter(Boolean))];
+  if (!lista.length) return new Map();
+  const prompt = `Esta imagen es un plano de planta de un expediente de Aena. Cada carpintería lleva un cuadrito de nomenclatura con su código (V01/003, V03/103, A01/001…) y debajo su alzado. Puede estar girada: gírala mentalmente.
+Busca el cuadrito de cada una de estas referencias: ${lista.join(", ")}.
+Para cada una que veas con seguridad en ESTA imagen, devuelve el CENTRO de su cuadrito con el código como porcentaje del ancho (x) y del alto (y) de la imagen, de 0 a 100 con un decimal (x=0 izquierda, x=100 derecha, y=0 arriba, y=100 abajo). Si una referencia no está en esta imagen o no la lees con seguridad, NO la pongas. NUNCA inventes posiciones.
+Devuelve SOLO JSON, sin texto ni \`\`\`: {"pos":[{"ref":"V03/103","x":43.2,"y":34.1}]}`;
+  let texto = "";
+  try {
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 3000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } }, { type: "text", text: prompt }] }] }),
+    });
+    if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message || "error al leer");
+    texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  } catch (e) {
+    // si el servidor se pasa de tiempo, se repite en segundo plano
+    const blob = await (await fetch(urlImagen)).blob();
+    texto = await pedirTextoIAEnSegundoPlano(new File([blob], "plano.jpg", { type: m[1] }), prompt, 3000, 60);
+  }
+  const limpio = String(texto || "").replace(/```json|```/gi, "").trim();
+  const a = limpio.indexOf("{"), b = limpio.lastIndexOf("}");
+  let o; try { o = JSON.parse(limpio.slice(a, b + 1)); } catch (e) { o = JSON.parse(repararJsonIA(limpio.slice(a, b + 1))); }
+  const res = new Map();
+  toArray(o && o.pos).forEach((q) => { const x = parseFloat(String(q.x).replace(",", ".")), y = parseFloat(String(q.y).replace(",", ".")); if (q && q.ref && x >= 0 && x <= 100 && y >= 0 && y <= 100) res.set(uxcNorm(q.ref), { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }); });
+  return res;
+}
 function UxcPlano({ exp, vs, onAbrir, guardar }) {
   const fijos = toArray(exp.planos).filter((x) => x && x.url);
   const [dbPl, setDbPl] = useState(undefined); // undefined = cargando
@@ -27051,6 +27135,8 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   useEffect(() => { if (colocar && avisoColocar.current) avisoColocar.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [colocar]);
   const [zoom, setZoom] = useState(100);
   const [subiendo, setSubiendo] = useState(false);
+  const [ubicando, setUbicando] = useState("");
+  const [msgUbic, setMsgUbic] = useState("");
   const fileRef = useRef(null);
   useEffect(() => {
     if (fijos.length) return undefined;
@@ -27095,6 +27181,22 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
   const colocada = (v) => v.px !== undefined && v.px !== null;
   const enEste = (v) => colocada(v) && !!actual && (v.plano ? v.plano === actual.id : actual.id === planos[0].id); // sin plano apuntado = el primero
   const sinColocar = vs.filter((v) => !colocada(v));
+  // Coloca solas las chinchetas que faltan, buscando cada código en la imagen del plano (la IA calcula el sitio: conviene revisarlas)
+  const autoColocar = async () => {
+    setMsgUbic(""); let n = 0, falta = 0, fallo = "";
+    try {
+      for (const pn of planos) {
+        const mias = vs.filter((v) => !colocada(v) && v.ref && (v.plano ? v.plano === pn.id : pn.id === planos[0].id));
+        if (!mias.length || !pn.url) continue;
+        setUbicando(`Buscando ${mias.length} ventana${mias.length === 1 ? "" : "s"} en «${pn.nombre}»…`);
+        try {
+          const res = await uxcUbicarEnPlano(pn.url, mias.map((v) => v.ref));
+          for (const v of mias) { const r = res.get(uxcNorm(v.ref)); if (r) { await guardar(`ventanas/${v.id}/px`, r.x); await guardar(`ventanas/${v.id}/py`, r.y); await guardar(`ventanas/${v.id}/plano`, pn.id); n++; } else falta++; }
+        } catch (e) { console.error(e); fallo = e.message || String(e); falta += mias.length; }
+      }
+    } finally { setUbicando(""); }
+    setMsgUbic(`${n} chincheta${n === 1 ? "" : "s"} colocada${n === 1 ? "" : "s"}${falta ? ` · ${falta} sin colocar (no las encontré${fallo ? ": " + fallo : ""}): usa «📍 Colocar»` : ""}. Revísalas: si alguna no está en su sitio, «Mover chincheta».`);
+  };
   const nombreDe = (id) => (planos.find((x) => x.id === id) || {}).nombre || "";
   const src = actual ? actual.url : null;
   return (
@@ -27104,10 +27206,12 @@ function UxcPlano({ exp, vs, onAbrir, guardar }) {
         {!fijos.length && <button onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo} className="text-sm font-semibold border border-slate-300 rounded-md px-3 py-2 flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-60">{subiendo ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />} {planos.length ? "Añadir otro plano" : "Subir foto del plano"}</button>}
         {!fijos.length && actual && <button onClick={quitar} className="text-xs text-slate-500 underline">Quitar este plano</button>}
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { subir(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        {!fijos.length && planos.length > 0 && sinColocar.length > 0 && <button onClick={autoColocar} disabled={!!ubicando} className="text-sm font-semibold border-2 border-sky-500 text-sky-800 bg-sky-50 rounded-md px-3 py-2 disabled:opacity-60">{ubicando ? <><Loader2 size={14} className="inline animate-spin mr-1" />{ubicando}</> : `📍 Colocar las ${sinColocar.length} chinchetas que faltan`}</button>}
         {src && <div className="flex items-center gap-1 ml-auto text-sm"><span className="text-slate-500">Zoom</span>{[100, 150, 220].map((z) => <button key={z} onClick={() => setZoom(z)} className={`px-2.5 py-1 rounded border text-xs font-semibold ${zoom === z ? "bg-slate-800 text-white border-slate-800" : "border-slate-300"}`}>{z}%</button>)}</div>}
       </div>
       {!fijos.length && dbPl === undefined && <p className="text-sm text-slate-400">Cargando plano…</p>}
       {!fijos.length && dbPl && dbPl.length === 0 && <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center text-sm text-slate-500 mb-4">Sube una foto de cada plano «Planta baja – referencias de carpinterías». Después colocas una chincheta en cada ventana y desde el plano abres su hoja. (Si subes el PDF del expediente con «Crear desde fotos», los planos se sacan solos.)</div>}
+      {msgUbic && <div className="mb-2 px-3 py-2 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 text-sm">{msgUbic}</div>}
       {colocar && <div ref={avisoColocar} style={{ position: "sticky", top: 0, zIndex: 30 }} className="mb-2 px-3 py-2 rounded bg-sky-100 border-2 border-sky-500 text-sky-900 text-sm font-semibold shadow">👆 Toca en el plano el sitio de <b>{(vs.find((x) => x.id === colocar) || {}).ref}</b>. <button onClick={() => setColocar("")} className="underline ml-2">Cancelar</button></div>}
       {src && (
         <div className="border border-slate-300 rounded-lg overflow-auto bg-white mb-4" style={{ maxHeight: "75vh" }}>
@@ -50898,7 +51002,7 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
   const [abierto, setAbierto] = useState(false);
   const nq = normBusq(q);
   const pend = cristales.filter((c) => !c.ubicacion && !c.enPuesto && toArray(c.piezas).some((p) => !p.puesto));
-  const filtrados = nq ? pend.filter((c) => normBusq(`${c.lote} ${c.cliente} ${textoExpedientes(c, 20)} ${toArray(c.piezas).map((p) => `${p.ref} ${p.expediente} ${p.ancho}x${p.alto}`).join(" ")}`).includes(nq)) : pend;
+  const filtrados = nq ? pend.filter((c) => normBusq(`${textoBuscableCab(c)} ${textoExpedientes(c, 20)}`).includes(nq)) : pend;
   const foco = destacarCristal && !destacarCristal.ubicacion;
   const abre = abierto || foco;
   return (
@@ -51779,21 +51883,22 @@ function FolioCarga({ url, ventanas, valorDe, onToca, onMover, notas = {}, onNot
 // No toca nada del CRM (ni estados, ni lecturas, ni pedidos): solo guarda colores por día en «controlDia».
 // Se toca una obra, una vivienda o una ventana para cambiarle el color: gris (pendiente) → verde (hecha) → naranja (problema) → gris.
 // ---- Planning de producción del programa (PDF «PLANING»): bloques «Fecha Inicio», presupuestos y ventanas con horas ----
-function lineasDePaginaPdf(items) {
+function lineasYDePaginaPdf(items) {
   const arr = items.filter((it) => it && it.str && it.str.trim()).map((it) => ({ s: it.str, x: it.transform[4], y: it.transform[5] }));
   arr.sort((a, b) => (Math.abs(b.y - a.y) > 3 ? b.y - a.y : a.x - b.x));
   const lineas = []; let cur = null;
   arr.forEach((it) => { if (cur && Math.abs(cur.y - it.y) <= 3) cur.p.push(it); else { cur = { y: it.y, p: [it] }; lineas.push(cur); } });
-  return lineas.map((l) => l.p.sort((a, b) => a.x - b.x).map((i) => i.s.trim()).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean);
+  return lineas.map((l) => ({ t: l.p.sort((a, b) => a.x - b.x).map((i) => i.s.trim()).join(" ").replace(/\s+/g, " ").trim(), y: l.y })).filter((l) => l.t);
 }
+function lineasDePaginaPdf(items) { return lineasYDePaginaPdf(items).map((l) => l.t); }
 const numEs = (t) => parseFloat(String(t || "").replace(/\./g, "").replace(",", ".")) || 0;
 const normPosPlan = (t) => String(t || "").toUpperCase().replace(/\s+/g, "").replace(/^([A-Z])O(\d)/, "$10$2");
 function esPlaningEdmo(lineas) { const t = lineas.slice(0, 80).join("\n"); return /PLANING/i.test(t) && /Fecha Inicio/i.test(lineas.join("\n").slice(0, 4000)) && /Horas Trabajo/i.test(t + lineas.slice(80, 200).join("\n")); }
-function parsearPlaningEdmo(lineas) {
+function parsearPlaningEdmo(lineas, meta) {
   const bloques = []; let linea = "", cap = 0, bl = null, pr = null, ve = null;
   const cerrarVe = () => { ve = null; };
-  for (const l of lineas) {
-    let m;
+  for (let li = 0; li < lineas.length; li++) {
+    const l = lineas[li]; let m;
     if (/^PLANING\b/i.test(l) || /^P[aá]gina \d+ de \d+$/i.test(l) || /^\d{1,3}$/.test(l) || /^Pres Cliente/i.test(l) || /^k$/i.test(l) || /^ECOWIN/i.test(l)) continue;
     if ((m = l.match(/^Linea de Producci[oó]n:\s*(.*)$/i))) { linea = m[1].trim(); continue; }
     if (/^►?\s*Empresa:/i.test(l)) continue;
@@ -51811,7 +51916,7 @@ function parsearPlaningEdmo(lineas) {
       let pos = "", color = "";
       const a = m[1].match(/^([A-Za-z]{1,3}\d{1,3}[.,]\d{2,3})\s+(.*)$/) || m[1].match(/^([A-Za-z]{1,3}\d{1,3})\s*-\s*(.*)$/) || m[1].match(/^(extra\s+\S+)\s+(.*)$/i);
       if (a) { pos = a[1]; color = a[2]; } else { const t = m[1].split(/\s+/); pos = t[0]; color = t.slice(1).join(" "); }
-      ve = { pos: pos.trim(), color: color.trim(), horas: numEs(m[2]), uds: parseInt(m[3], 10), desc: "" };
+      ve = { pos: pos.trim(), color: color.trim(), horas: numEs(m[2]), uds: parseInt(m[3], 10), desc: "", pag: meta ? meta[li].pag : 0, y: meta ? meta[li].y : 0 };
       pr.ventanas.push(ve); continue;
     }
     if (ve && !ve.desc) { ve.desc = l; continue; }
@@ -51838,6 +51943,99 @@ function repartirPlaningPorDias(bloques, horasDia) {
   });
   return out;
 }
+// Miniaturas de ventana de una página: [{ name, cy }] (centro vertical en puntos PDF, y hacia arriba). Solo las de tamaño de miniatura (≈30×24 pt), no logos.
+function miniaturasDePagina(ol, OPS) {
+  const out = []; let m = [1, 0, 0, 1, 0, 0]; const st = [];
+  const mul = (a, b) => [a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3], a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5]];
+  ol.fnArray.forEach((fn, i) => {
+    const a = ol.argsArray[i];
+    if (fn === OPS.save) st.push(m.slice()); else if (fn === OPS.restore) m = st.pop() || m; else if (fn === OPS.transform) m = mul(a, m);
+    else if (fn === OPS.paintImageXObject) { const w = Math.hypot(m[0], m[1]), h = Math.hypot(m[2], m[3]); if (w > 18 && w < 50 && h > 14 && h < 40) out.push({ name: a[0], cy: m[5] + h / 2 }); }
+  });
+  return out;
+}
+// Empareja cada ventana con la miniatura más cercana en vertical (una miniatura solo para una ventana)
+function emparejarMiniaturas(ventanasPag, minis) {
+  const usadas = new Set(); const res = new Map();
+  const pares = []; ventanasPag.forEach((v, vi) => minis.forEach((mi, ii) => pares.push({ vi, ii, d: Math.abs(mi.cy - v.y) })));
+  pares.sort((a, b) => a.d - b.d).forEach((p) => { if (p.d > 18 || res.has(p.vi) || usadas.has(p.ii)) return; res.set(p.vi, minis[p.ii].name); usadas.add(p.ii); });
+  return res;
+}
+// Pasa la imagen de una miniatura del PDF (datos en bruto) a un JPEG pequeño en base64
+async function dibujoDeObjetoPdf(o) {
+  if (!o || !o.width || !o.height) return "";
+  const W = o.width, H = o.height; const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
+  if (o.bitmap) g.drawImage(o.bitmap, 0, 0);
+  else if (o.data && (o.kind === 2 || o.kind === 3)) {
+    const id = g.createImageData(W, H), d = o.data, out = id.data;
+    if (o.kind === 3) out.set(d.subarray ? d.subarray(0, out.length) : d);
+    else for (let i = 0, j = 0; i < W * H; i++) { out[j++] = d[i * 3]; out[j++] = d[i * 3 + 1]; out[j++] = d[i * 3 + 2]; out[j++] = 255; }
+    g.putImageData(id, 0, 0);
+  } else return "";
+  const k = Math.min(1, 300 / W); const c2 = document.createElement("canvas"); c2.width = Math.max(1, Math.round(W * k)); c2.height = Math.max(1, Math.round(H * k));
+  c2.getContext("2d").drawImage(c, 0, 0, c2.width, c2.height);
+  return c2.toDataURL("image/jpeg", 0.7);
+}
+const hashTexto = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i += 3) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36) + t.length.toString(36); };
+// Saca los dibujos (a color) de cada ventana del PDF «PLANING» y se los pone a cada ventana (w.dib = clave). Devuelve { clave: dataUrl }
+async function extraerDibujosPlaning(lib, pdfDoc, bloques, onProgreso) {
+  const dibs = {}; const vs = bloques.flatMap((b) => b.pres.flatMap((p) => p.ventanas));
+  const pags = [...new Set(vs.map((v) => v.pag))].filter(Boolean).sort((a, b) => a - b);
+  const inicio = Date.now();
+  for (const n of pags) {
+    if (Date.now() - inicio > 120000) break; // tiempo máximo: si se pasa, se guardan los que haya
+    let seguidosSinRespuesta = 0;
+    if (onProgreso) onProgreso(`Sacando los dibujos del planning: página ${n} de ${pdfDoc.numPages}…`);
+    try {
+      const pg = await pdfDoc.getPage(n); const ol = await pg.getOperatorList();
+      const minis = miniaturasDePagina(ol, lib.OPS); const vp = vs.filter((v) => v.pag === n); const par = emparejarMiniaturas(vp, minis);
+      const cache = {};
+      for (let i = 0; i < vp.length; i++) {
+        const name = par.get(i); if (!name) continue;
+        if (cache[name] === undefined) {
+          if (seguidosSinRespuesta >= 3 || Date.now() - inicio > 120000) { cache[name] = ""; continue; }
+          const o = await new Promise((res) => { try { pg.objs.get(name, res); } catch (e) { res(null); } setTimeout(() => res(null), 2000); });
+          if (!o) seguidosSinRespuesta++; else seguidosSinRespuesta = 0;
+          const url = await dibujoDeObjetoPdf(o).catch(() => ""); cache[name] = url ? hashTexto(url) : "";
+          if (url) dibs[cache[name]] = url;
+        }
+        if (cache[name]) vp[i].dib = cache[name];
+      }
+    } catch (e) { console.error("No se pudieron sacar los dibujos de la página " + n, e); }
+  }
+  return dibs;
+}
+// Dibujo de una ventana sacado del planning (a color, con medidas): se baja solo cuando se necesita
+const _planDibs = new Map();
+function usePlanDib(hash) {
+  const [src, setSrc] = useState(() => ((_planDibs.get(hash) || {}).val) || "");
+  useEffect(() => {
+    if (!hash) return undefined;
+    let e = _planDibs.get(hash);
+    if (!e) {
+      e = { val: undefined, subs: new Set() }; _planDibs.set(hash, e);
+      const av = (v) => { e.val = v; e.subs.forEach((f) => f(v)); };
+      onValue(ref(fbDb, `controlDiaPlaningDib/${hash}`), (sn) => av(sn.val() || ""), () => av(""));
+    }
+    e.subs.add(setSrc); if (e.val !== undefined) setSrc(e.val);
+    return () => { e.subs.delete(setSrc); };
+  }, [hash]);
+  return src;
+}
+function DibujoPlan({ hash, alto = 110, sinZoomAlTocar = false }) {
+  const src = usePlanDib(hash); const [grande, setGrande] = useState(false);
+  if (!src) return null;
+  return (<>
+    <span className="relative inline-block">
+      <img src={src} alt="Ventana" onClick={sinZoomAlTocar ? undefined : (ev) => { ev.stopPropagation(); setGrande(true); }} style={{ height: alto }} className={`rounded border border-slate-200 bg-white ${sinZoomAlTocar ? "" : "cursor-zoom-in"}`} />
+      {sinZoomAlTocar && <span role="button" onClick={(ev) => { ev.stopPropagation(); setGrande(true); }} className="absolute top-0 right-0 text-xs bg-white/90 border border-slate-300 rounded px-1 cursor-zoom-in">🔍</span>}
+    </span>
+    {grande && <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={(ev) => { ev.stopPropagation(); setGrande(false); }}><img src={src} alt="Ventana" className="max-h-[85vh] max-w-full bg-white rounded-lg" /></div>}
+  </>);
+}
+// Color aproximado de la ventana (para el puntito junto al nombre del color)
+const colorHexVentana = (t) => { const x = String(t || "").toLowerCase(); return /blanco/.test(x) ? "#ffffff" : /nogal/.test(x) ? "#6b4a2b" : /embero|roble|golden|madera/.test(x) ? "#9a6a38" : /negro/.test(x) ? "#111827" : /ral\s*7016|antracita|gris/.test(x) ? "#383e42" : /marfil|crema/.test(x) ? "#efe6cc" : null; };
+function ColorVentana({ texto }) { const hex = colorHexVentana(texto); return <span className="inline-flex items-center gap-1">{hex ? <span style={{ background: hex }} className="inline-block w-3 h-3 rounded-full border border-slate-500" /> : null}{texto}</span>; }
 
 // Panel que sale debajo del planning al tocar la chincheta de una obra: dónde están sus cristales, persianas y auxiliares, y si ya están cortados
 function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedientes, sinObra, onMover, onCerrar }) {
@@ -51929,6 +52127,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
   const [destDia, setDestDia] = useState("");
   const [pinSel, setPinSel] = useState(null); // chincheta de obra elegida para moverla de día: { k, de }
   const [verPlanImg, setVerPlanImg] = useState(false);
+  const { pedirPin, modalPin } = usePinCristales();
+  const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
+  const [verMat, setVerMat] = useState(null); // caballete o carro abierto desde «Dónde está el material»
   const [plan, setPlan] = useState(null); // vista previa del planning leído: [{ fecha, etiqueta, obras:[{key,nombre}], noEncontradas:[] }]
   const [leyendoPlan, setLeyendoPlan] = useState(false);
   const [errPlan, setErrPlan] = useState("");
@@ -51979,7 +52180,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const key = `pl-${pk}`;
     if (obras.has(key)) return;
     const vs = []; const vistos = {};
-    toArray(pr.ventanas).forEach((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistos[id]) { vistos[id]++; id = `${id}_${vistos[id]}`; } else vistos[id] = 1; vs.push({ id, pos: w.pos || "", fab: "", tip: w.pos || "", medida: "", color: w.color || "" }); });
+    toArray(pr.ventanas).forEach((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistos[id]) { vistos[id]++; id = `${id}_${vistos[id]}`; } else vistos[id] = 1; vs.push({ id, pos: w.pos || "", fab: String(pr.fab || "").replace(/\D/g, ""), tip: w.pos || "", medida: "", color: w.color || "" }); });
     const o = { d: { key, tipo: "pl", id: pk, nombre: pr.nombre || `Pres. ${pr.pres}` }, viv: new Map() };
     if (vs.length) o.viv.set("Ventanas del planning", vs);
     obras.set(key, o);
@@ -52031,6 +52232,61 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const sinConf = peds.filter((pd) => llegadoParaObra(pd) && toArray(pd.lineas).some((l) => !l.confirmadoFabrica)).length;
     return { ok: false, motivo: [...new Set(falta)].join(", ") || (sinConf ? "material llegado sin confirmar por fábrica" : "falta material") };
   };
+  // Dónde está ahora el material de cada obra (caballetes de cristal y carros de persianas), buscado por nº de presupuesto/expediente
+  // Solo los nº de presupuesto de la obra (el expediente puede ser el mismo para muchas obras: «UXCAREXP 823»)
+  const pptosPresupuesto = (o) => {
+    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
+    (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => add(pr.pres));
+    if (o.d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === o.d.id); if (p) add(p.presupuestoNumero); }
+    if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
+    return out;
+  };
+  const dondeMaterial = (o) => {
+    const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+    // Claves SOLO de presupuesto (el nº de expediente puede ser el mismo para muchas obras, p. ej. «UXCAREXP 823»)
+    const claves = new Set();
+    const addP = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) claves.add(dg); });
+    (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => addP(pr.pres));
+    const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    if (pry) addP(pry.presupuestoNumero);
+    if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { addP(e.presupuesto); addP(e.presupuestoNumero); } }
+    // Ventanas de la obra: la posición («V01.375») es única y es la clave más segura
+    const sq = (t) => normPosPlan(t).replace(/\./g, "");
+    const posObra = new Set([...o.viv.values()].flat().map((v) => sq(v.pos)).filter(Boolean));
+    const refOk = (r) => { const q = sq(r); return !!q && posObra.has(q); };
+    const pedsObra = pid ? toArray(pedidos).filter((p) => p.proyectoId === pid) : [];
+    const idsPed = new Set(pedsObra.map((p) => p.id)); const numsPed = new Set(pedsObra.map((p) => String(p.numero)));
+    if (!claves.size && !posObra.size && !pedsObra.length) return { filas: [], sinClaves: true, pers: [], cabs: [], piezaDeObra: () => false };
+    const pptoOk = (...ts) => digs(ts.join(" ")).some((d) => claves.has(d));
+    const filas = []; const cabs = [];
+    const piezaDeObra = (x) => refOk(x.ref) || pptoOk(x.presupuesto, x.ppto);
+    toArray(almacenRapido.cristales).filter((c) => (c.pedidoId && idsPed.has(c.pedidoId)) || pptoOk(c.presupuesto, ...toArray(c.piezas).map((x) => x.presupuesto || x.ppto)) || toArray(c.piezas).some((x) => refOk(x.ref)))
+      .forEach((c) => { cabs.push(c); filas.push({ t: "Cristales", txt: `Caballete ${c.lote || c.numero || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"}`, ir: { tipo: "cristal", c } }); });
+    const almacenes = toArray(almacenRapido.almacenesPersianas); const nombreAlm = (id) => (almacenes.find((a) => a.id === id) || {}).nombre || "Almacén de persianas";
+    const g = {}; const pers = [];
+    toArray(almacenRapido.persianas).filter((x) => !x.entregada && !x.colocadaVentana && (numsPed.has(String(x.pedido || "")) || pptoOk(x.presupuesto) || refOk(x.ref)))
+      .forEach((x) => { pers.push(x); const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
+    Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
+    return { filas, sinClaves: false, pers, cabs, piezaDeObra };
+  };
+  // Da de baja los cristales de una obra: si el caballete lleva piezas de otras obras, solo se quitan las de esta; si no, se quita el caballete. Pide el PIN (regla de cristales).
+  const quitarCristalesObra = (o, dm) => {
+    if (!dm.cabs.length || !almacenRapido.saveCristales) return;
+    const plan2 = dm.cabs.map((c) => { const ps = toArray(c.piezas); const mias = ps.filter((x) => dm.piezaDeObra(x)); return { c, quitarPiezas: mias.length > 0 && mias.length < ps.length ? mias : null }; });
+    const txt = plan2.map((p) => `· Caballete ${p.c.lote || p.c.numero || "s/n"}: ${p.quitarPiezas ? `solo ${p.quitarPiezas.length} pieza(s) de esta obra (el resto se queda)` : "se da de baja entero"}`).join("\n");
+    pedirPin(plan2.every((p) => enTallerCab(p.c)), "Hace falta el PIN para dar de baja cristales que no están en el Taller.", () => {
+      if (!window.confirm(`¿Dar de baja los cristales de «${o.d.nombre}»?\n\n${txt}`)) return;
+      const porId = new Map(plan2.map((p) => [p.c.id, p]));
+      almacenRapido.saveCristales(toArray(almacenRapido.cristales).flatMap((c) => { const p = porId.get(c.id); if (!p) return [c]; if (!p.quitarPiezas) return []; return [{ ...c, piezas: toArray(c.piezas).filter((x) => !p.quitarPiezas.includes(x)) }]; }));
+    });
+  };
+  // Obra terminada (todas sus ventanas en verde): da de baja sus persianas del almacén, como si se hubieran puesto en la ventana
+  const quitarPersianasObra = (o, pers) => {
+    if (!pers.length || !almacenRapido.savePersianas) return;
+    if (!window.confirm(`¿Dar de baja del almacén las ${pers.length} persiana${pers.length === 1 ? "" : "s"} de «${o.d.nombre}»? Se marcan como puestas en la ventana (ya no salen en los carros).`)) return;
+    const ids = new Set(pers.map((x) => x.id)); const hoy2 = new Date().toISOString().slice(0, 10);
+    almacenRapido.savePersianas(toArray(almacenRapido.persianas).map((y) => (ids.has(y.id) ? { ...y, estante: null, enPuesto: "", entregada: true, fechaSalida: hoy2, colocadaVentana: true } : y)));
+  };
   // Información del planning de producción (PDF «PLANING») por obra y por ventana
   const planVent = new Map(); const presDeObra = new Map();
   Object.entries(planPres || {}).forEach(([pk, pr]) => {
@@ -52072,7 +52328,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const upd = {}; const asig = {};
     edmoCalc.filas.forEach((f) => {
       const pk = limpia(f.p.pres);
-      upd[pk] = { pres: f.p.pres, cliente: f.p.cliente || "", ref: f.p.ref || "", fab: f.p.fab || "", horas: f.p.horas, nVent: f.p.nVent, obraKey: f.ob ? limpia(f.ob.d.key) : "", nombre: f.ob ? "" : `${f.p.pres} · ${String(f.p.cliente || "").replace(/^\d+-/, "")}${f.p.ref ? " · " + f.p.ref : ""}`, dia: f.dia, ventanas: f.p.ventanas.map((w) => ({ pos: w.pos || "", color: w.color || "", desc: w.desc || "", horas: w.horas || 0 })), notas: f.p.notas || [] };
+      upd[pk] = { pres: f.p.pres, cliente: f.p.cliente || "", ref: f.p.ref || "", fab: f.p.fab || "", horas: f.p.horas, nVent: f.p.nVent, obraKey: f.ob ? limpia(f.ob.d.key) : "", nombre: f.ob ? "" : `${f.p.pres} · ${String(f.p.cliente || "").replace(/^\d+-/, "")}${f.p.ref ? " · " + f.p.ref : ""}`, dia: f.dia, ventanas: f.p.ventanas.map((w) => ({ pos: w.pos || "", color: w.color || "", desc: w.desc || "", horas: w.horas || 0, dib: w.dib || "" })), notas: f.p.notas || [] };
       if (f.incluir) {
         // la obra queda SOLO en el día nuevo: se quita de los días en los que estaba antes
         Object.keys(asignTodas || {}).forEach((d) => { if (d !== f.dia && asignTodas[d] && asignTodas[d][f.key]) asig[`${d}/${f.key}`] = null; });
@@ -52080,6 +52336,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       }
     });
     try {
+      const usados = new Set(Object.values(upd).flatMap((x) => x.ventanas.map((w) => w.dib).filter(Boolean)));
+      const claves = Object.keys(planEdmo.dibs || {}).filter((k) => usados.has(k));
+      for (let i = 0; i < claves.length; i += 40) { const trozo = {}; claves.slice(i, i + 40).forEach((k) => { trozo[k] = planEdmo.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
       await fbUpdate(ref(fbDb, "controlDiaPlaning"), upd);
       if (Object.keys(asig).length) await fbUpdate(ref(fbDb, "controlDiaObras"), asig);
       const primero = edmoCalc.dias[0] && edmoCalc.dias[0][0];
@@ -52235,6 +52494,34 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     for (const o of noTerminadas) { try { await fbSet(ref(fbDb, `controlDiaObras/${sig}/${limpia(o.d.key)}`), true); } catch (e) { /* nada */ } }
     setDia(sig); setMesVer(sig.slice(0, 7));
   };
+  // Añade los dibujos a un planning YA guardado (sin tocar días ni obras): se vuelve a elegir el mismo PDF «PLANING»
+  const [msgDib, setMsgDib] = useState("");
+  const inputDibRef = useRef(null);
+  const sacarDibujosGuardados = async (file) => {
+    setMsgDib("Leyendo el PDF…");
+    try {
+      const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      let lineas = [], meta = [];
+      for (let n = 1; n <= pdfDoc.numPages; n++) { const pg = await pdfDoc.getPage(n); const tc = await pg.getTextContent(); lineasYDePaginaPdf(tc.items).forEach((l) => { lineas.push(l.t); meta.push({ pag: n, y: l.y }); }); }
+      if (!esPlaningEdmo(lineas)) { setMsgDib("Ese PDF no parece el PLANING del programa."); return; }
+      const bl = parsearPlaningEdmo(lineas, meta);
+      const dibs = await extraerDibujosPlaning(lib, pdfDoc, bl, (t) => setMsgDib(t));
+      const nDib = Object.keys(dibs).length;
+      if (!nDib) { setMsgDib("No he conseguido sacar ningún dibujo de ese PDF (el navegador no me da las imágenes)."); return; }
+      const upd = {}; let puestos = 0, sinPres = 0; const usados = new Set();
+      bl.forEach((b) => b.pres.forEach((p) => {
+        const pk = limpia(p.pres); const g = (planPres || {})[pk];
+        if (!g) { sinPres++; return; }
+        const cola = {}; p.ventanas.forEach((w) => { const k = normPosPlan(w.pos); (cola[k] = cola[k] || []).push(w.dib || ""); });
+        const vs = toArray(g.ventanas).map((w) => { const k = normPosPlan(w.pos); const d = (cola[k] || []).shift() || w.dib || ""; if (d) { usados.add(d); if (d !== w.dib) puestos++; } return { ...w, dib: d }; });
+        upd[`${pk}/ventanas`] = vs;
+      }));
+      const claves = [...usados];
+      for (let i = 0; i < claves.length; i += 40) { const trozo = {}; claves.slice(i, i + 40).forEach((k) => { if (dibs[k]) trozo[k] = dibs[k]; }); if (Object.keys(trozo).length) await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
+      if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaPlaning"), upd);
+      setMsgDib(`Listo: ${puestos} ventanas con dibujo${sinPres ? ` · ${sinPres} presupuestos del PDF no estaban guardados en el CRM` : ""}.`);
+    } catch (e) { console.error(e); setMsgDib("Error: " + (e.message || e)); }
+  };
   const NOMBRES_DIA = { lunes: 0, martes: 1, miercoles: 2, miércoles: 2, jueves: 3, viernes: 4, sabado: 5, sábado: 5, domingo: 6 };
   const leerPlanning = async (file) => {
     setLeyendoPlan(true); setErrPlan(""); setPlan(null); setPlanImgPend(null);
@@ -52243,9 +52530,19 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
       if (file.type === "application/pdf" || /\.pdf$/i.test(file.name || "")) {
         try {
           const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-          let lineas = [];
-          for (let n = 1; n <= pdfDoc.numPages; n++) { const pg = await pdfDoc.getPage(n); const tc = await pg.getTextContent(); lineas = lineas.concat(lineasDePaginaPdf(tc.items)); }
-          if (esPlaningEdmo(lineas)) { const bl = parsearPlaningEdmo(lineas); if (bl.some((b) => b.pres.length)) { setPlanEdmo({ bloques: bl, horasDia: 160, soloMaterial: false }); return; } }
+          let lineas = [], meta = [];
+          for (let n = 1; n <= pdfDoc.numPages; n++) { const pg = await pdfDoc.getPage(n); const tc = await pg.getTextContent(); lineasYDePaginaPdf(tc.items).forEach((l) => { lineas.push(l.t); meta.push({ pag: n, y: l.y }); }); }
+          if (esPlaningEdmo(lineas)) {
+            const bl = parsearPlaningEdmo(lineas, meta);
+            if (bl.some((b) => b.pres.length)) {
+              // La vista previa sale ya; los dibujos se sacan después, sin bloquear nada (y con tiempo máximo)
+              setPlanEdmo({ bloques: bl, horasDia: 160, soloMaterial: false, dibs: {}, dibsEstado: "leyendo", dibsMsg: "" });
+              extraerDibujosPlaning(lib, pdfDoc, bl, (t) => setPlanEdmo((x) => (x ? { ...x, dibsMsg: t } : x)))
+                .then((dibs) => setPlanEdmo((x) => (x ? { ...x, dibs, dibsEstado: "listo", dibsMsg: "" } : x)))
+                .catch((e) => { console.error(e); setPlanEdmo((x) => (x ? { ...x, dibsEstado: "error", dibsMsg: "" } : x)); });
+              return;
+            }
+          }
         } catch (e) { console.error("No se pudo leer el PDF como planning de producción", e); }
       }
       // Imagen para verla al lado del calendario (foto o primera hoja del PDF; un Excel no tiene imagen)
@@ -52392,12 +52689,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                     {vs.map((v) => { const val = valor(o.d.key, v.id); return (
                       <div key={v.id} className="relative flex flex-col items-stretch">
                       {lapizVentana(o, v, true)}
-                      <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 text-center min-w-[7rem] ${val === 1 ? "bg-emerald-600 border-emerald-300" : val === 2 ? "bg-orange-500 border-orange-200" : "bg-white text-slate-900 border-slate-300"}`}>
-                        <div className="flex justify-center"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} /></div>
+                      <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${val === 1 ? "bg-emerald-600 border-emerald-300" : val === 2 ? "bg-orange-500 border-orange-200" : "bg-white text-slate-900 border-slate-300"}`}>
+                        <div className="flex justify-center">{(() => { const inf = infoVent(o, v); return inf && inf.dib ? <DibujoPlan hash={inf.dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />; })()}</div>
                         <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-sm font-bold">{v.tip}</div> : null}
                         {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
-                        {(() => { const inf = infoVent(o, v); return inf ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{inf.color} · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div> : null; })()}
+                        {(() => { const inf = infoVent(o, v); return inf ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, true)}
                       </div>
@@ -52427,12 +52724,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <div className="flex flex-wrap items-center gap-2">
           <input ref={inputPlanRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leerPlanning(e.target.files[0]); e.target.value = ""; }} />
           <button type="button" disabled={leyendoPlan} onClick={() => inputPlanRef.current && inputPlanRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-bold disabled:opacity-50">{leyendoPlan ? "Leyendo planning…" : "📅 Subir planning (PDF, Excel o foto)"}</button>
+          <input ref={inputDibRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) sacarDibujosGuardados(e.target.files[0]); e.target.value = ""; }} />
+          <button type="button" onClick={() => inputDibRef.current && inputDibRef.current.click()} title="Elige otra vez el PDF PLANING: añade los dibujos de las ventanas al planning ya guardado, sin cambiar días ni obras" className="px-3 py-1.5 rounded-md text-sm font-bold border border-sky-300 bg-sky-50 text-sky-800">🖼 Añadir dibujos al planning guardado</button>
+          {msgDib && <span className="text-xs text-slate-600">{msgDib}</span>}
           <label className="text-xs text-slate-600 flex items-center gap-1">Si pone «lunes, martes…» sin fecha, la semana empieza el <input type="date" value={lunesSemana} onChange={(e) => setLunesSemana(e.target.value)} className="border border-slate-300 rounded px-1 py-0.5" /></label>
         </div>
         {errPlan && <p className="text-xs text-rose-600 mt-1">{errPlan}</p>}
         {planEdmo && edmoCalc && (
           <div className="mt-2 border-t border-slate-200 pt-2">
             <div className="text-sm font-bold text-slate-800">Planning de producción leído: {edmoCalc.filas.length} presupuestos · {edmoCalc.nVent} ventanas · {fmtHoras(edmoCalc.horas)} · {edmoCalc.enCrm} enlazados con obras del CRM</div>
+            {planEdmo.dibsEstado === "leyendo" && <div className="text-xs text-sky-700 my-1">⏳ {planEdmo.dibsMsg || "Sacando los dibujos de las ventanas…"} (puedes revisar los días mientras tanto; «Guardar» se activa al terminar)</div>}
+            {planEdmo.dibsEstado === "listo" && <div className={`text-xs my-1 ${Object.keys(planEdmo.dibs || {}).length ? "text-emerald-700" : "text-amber-700"}`}>{Object.keys(planEdmo.dibs || {}).length ? `✓ ${Object.keys(planEdmo.dibs).length} dibujos de ventana sacados del PDF` : "⚠ No he podido sacar los dibujos del PDF: se guardará sin dibujos."}</div>}
+            {planEdmo.dibsEstado === "error" && <div className="text-xs my-1 text-amber-700">⚠ Falló la lectura de los dibujos: se guardará sin dibujos.</div>}
             <div className="text-xs text-slate-600 my-1 flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-1">Horas por día <input type="number" min="1" value={planEdmo.horasDia} onChange={(e) => setPlanEdmo((x) => ({ ...x, horasDia: e.target.value }))} className="w-20 border border-slate-300 rounded px-1 py-0.5" /></label>
               <label className="flex items-center gap-1"><input type="checkbox" checked={!!planEdmo.soloMaterial} onChange={(e) => setPlanEdmo((x) => ({ ...x, soloMaterial: e.target.checked }))} /> De las enlazadas con el CRM, añadir solo las que ya tienen el material</label>
@@ -52451,7 +52754,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             {edmoCalc.duplicados.length > 0 && <div className="mb-2 rounded border border-amber-400 bg-amber-50 px-2 py-1.5 text-xs text-amber-900"><b>⚠ Posibles duplicados ({edmoCalc.duplicados.length}):</b>{edmoCalc.duplicados.map((t, i) => <div key={i} className="mt-0.5">• {t}</div>)}</div>}
             {edmoCalc.duplicados.length === 0 && <div className="mb-2 text-xs text-emerald-700">✓ No he encontrado duplicados en este planning.</div>}
             {edmoCalc.descuadre.length > 0 && <div className="text-xs text-amber-700 mt-1">Ojo: en {edmoCalc.descuadre.join(", ")} las horas de la cabecera no coinciden con la suma de sus ventanas (hay líneas extra en el propio PDF). Se guardan tal cual.</div>}
-            <button type="button" onClick={guardarEdmo} className="mt-2 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">Guardar planning</button>
+            <button type="button" disabled={planEdmo.dibsEstado === "leyendo"} onClick={guardarEdmo} className="mt-2 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold disabled:opacity-50">Guardar planning</button>
             <button type="button" onClick={() => setPlanEdmo(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
           </div>
         )}
@@ -52509,7 +52812,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         )}
       </div>
       {obraInfo && obraPorClave.get(obraInfo) && (() => { const oi = obraPorClave.get(obraInfo); return (
-        <PanelObraPlanning obra={oi} pptos={[...pptosDe(oi)]} motivoMaterial={(() => { const m = materialObra(oi); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra}
+        <PanelObraPlanning obra={oi} pptos={[...pptosPresupuesto(oi)]} motivoMaterial={(() => { const m = materialObra(oi); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra}
           onMover={() => { const de = Object.keys(asignTodas || {}).find((f) => (asignTodas[f] || {})[obraInfo]) || dia; setPinSel({ k: obraInfo, de: (asignTodas && asignTodas[dia] && asignTodas[dia][obraInfo]) ? dia : de }); }} onCerrar={() => setObraInfo(null)} />
       ); })()}
       {verPlanImg && planImgs && planImgs[mesVer] && (
@@ -52570,6 +52873,36 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
+      {!informe && (() => {
+        const nq = qLimp.replace(/\D/g, "");
+        const cand = (nq ? [...obras.values()].filter((o) => o.d.tipo !== "pl" || true).filter((o) => { const sp = new Set([...pptosDe(o)]); (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => sp.add(digitosPresu(pr.pres))); return [...sp].some((x) => x.includes(nq)); }) : lista).slice(0, 40);
+        const filasL = cand.map((o) => ({ o, dm: dondeMaterial(o), verdes: idsDe(o).filter((i) => valor(o.d.key, i) === 1).length, tot: idsDe(o).length, dias: Object.keys(asignTodas || {}).filter((d) => asignTodas[d] && asignTodas[d][limpia(o.d.key)]).sort() }));
+        return (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50/40 p-2">
+            <button type="button" onClick={() => setVerLimp(!verLimp)} className="text-sm font-bold text-rose-800">{verLimp ? "▼" : "▶"} 🧹 Limpiar el almacén: dar de baja el material de obras ya hechas</button>
+            {verLimp && (
+              <div className="mt-2">
+                <input value={qLimp} onChange={(e) => setQLimp(e.target.value)} placeholder="Nº de presupuesto (ej. 6409). Vacío: las obras de este día" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm w-full max-w-sm bg-white" />
+                {filasL.length === 0 ? <p className="text-xs text-slate-500 mt-2">No hay obras con ese número.</p> : (
+                  <div className="mt-2 space-y-1">
+                    {filasL.map(({ o, dm, verdes, tot, dias }) => (
+                      <div key={o.d.key} className="bg-white border border-slate-200 rounded px-2 py-1.5 text-xs">
+                        <div className="font-semibold text-slate-800">{o.d.nombre} <span className="font-normal text-slate-500">· {verdes}/{tot} ventanas en verde{dias.length ? ` · planning: ${dias.map(fmtDate).join(", ")}` : ""}</span></div>
+                        <div className="flex flex-wrap items-center gap-2 mt-1">
+                          <span className="text-slate-700">Persianas en almacén: <b>{dm.pers.length}</b></span>
+                          {dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Dar de baja</button>}
+                          <span className="text-slate-700 ml-2">Caballetes de cristal: <b>{dm.cabs.length}</b></span>
+                          {dm.cabs.length > 0 && <button type="button" onClick={() => quitarCristalesObra(o, dm)} className="px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Dar de baja (PIN)</button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {!informe && lista.map((o) => {
         const vivs = [...o.viv.entries()];
         const todosIds = idsDe(o);
@@ -52593,6 +52926,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
               {(presDeObra.get(limpia(o.d.key)) || []).map((pr, i) => <div key={i} className="font-normal text-slate-600">Planning: presupuesto {pr.pres} · {fmtHoras(Number(pr.horas) || 0)}{pr.cliente ? ` · ${String(pr.cliente).replace(/^\d+-/, "")}` : ""}{pr.ref ? ` · ${pr.ref}` : ""}</div>)}
             </div>
+            {abierta && (() => { const dm = dondeMaterial(o); return (
+              <div className="mx-3 mb-2 rounded-md bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
+                <div className="font-bold text-slate-700 mb-0.5">📍 Dónde está el material{col === "verde" && dm.pers.length > 0 && <button type="button" onClick={() => quitarPersianasObra(o, dm.pers)} className="ml-3 px-2 py-0.5 rounded border border-rose-300 bg-rose-50 text-rose-700 font-semibold">🗑 Obra terminada: dar de baja sus {dm.pers.length} persianas del almacén</button>}</div>
+                {dm.filas.length ? dm.filas.map((f, i) => f.ir ? <button key={i} type="button" onClick={() => setVerMat(f.ir)} className="block text-left text-sky-800 underline decoration-dotted hover:bg-sky-50 rounded px-1 -mx-1"><b>{f.t}:</b> {f.txt} <span className="font-semibold">· 📍 ver dónde</span></button> : <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>)
+                  : <div className="text-slate-500">{dm.sinClaves ? "Esta obra no tiene nº de presupuesto/expediente para buscarlo." : "No encuentro cristales ni persianas de esta obra en los almacenes (puede que no hayan llegado o estén apuntados con otro número)."}</div>}
+              </div>); })()}
             {abierta && o.folio && verFolio && <div className="px-3 pb-2">{folioDe(o, vivs, false)}</div>}
             {abierta && (o.folio && verFolio ? [] : vivs).map(([g, vs]) => {
               const gv = vs.map((v) => valor(o.d.key, v.id)); const gc = colorDe(gv);
@@ -52604,11 +52943,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <div key={v.id} className="relative flex flex-col items-stretch">
                       {lapizVentana(o, v, false)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 pr-8 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] text-center ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>
-                        {v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null}
+                        {(() => { const inf = infoVent(o, v); return inf && inf.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={inf.dib} alto={90} sinZoomAlTocar /></div> : (v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null); })()}
                         <div>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-[11px] font-bold opacity-80">{v.tip}</div> : null}
                         {v.medida ? <div className="text-[11px] font-normal opacity-80">{v.medida}</div> : null}
-                        {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold">{inf.color} · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
+                        {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, false)}
                       </div>
@@ -52620,6 +52959,26 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })}
+      {modalPin}
+      {verMat && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-3 overflow-y-auto" onClick={() => setVerMat(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl p-4 my-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="font-bold text-slate-800">{verMat.tipo === "cristal" ? `Caballete ${verMat.c.lote || verMat.c.numero || "s/n"}` : `Carro ${verMat.x.estante.carro}`}</div>
+              <button type="button" onClick={() => setVerMat(null)} className="ml-auto text-sm font-semibold text-slate-500 border border-slate-300 rounded px-3 py-1">Cerrar</button>
+            </div>
+            {verMat.tipo === "cristal" ? (
+              <>
+                <div className="mb-2 px-3 py-2 rounded-lg bg-rose-600 text-white text-base font-extrabold">👉 {verMat.c.ubicacion ? ubicacionTexto(verMat.c.ubicacion) : verMat.c.enPuesto ? `Está en ${verMat.c.enPuesto}` : "Pendiente de ubicar (aún no tiene hueco en el mapa)"}</div>
+                <CaballeteFilas c={verMat.c} />
+                {verMat.c.ubicacion && <AlmacenPuestoSoloLectura puestoId="cristales" cristales={toArray(almacenRapido.cristales)} destacarCristal={{ ubicacion: verMat.c.ubicacion, caballete: String(verMat.c.lote || verMat.c.numero || ""), viv: "", medida: "", puesto: false }} />}
+              </>
+            ) : (
+              <AlmacenPuestoSoloLectura puestoId="persianaA" cristales={[]} destacarPers={{ carro: verMat.x.estante.carro, almacenId: almacenDe(verMat.x), lado: verMat.x.estante.lado, nivel: verMat.x.estante.nivel, ref: verMat.x.ref }} />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
