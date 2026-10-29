@@ -8889,6 +8889,15 @@ const textoPedidoProveedor = (pedido, proyecto, materiales, fecha) => {
 // En la ficha de la obra (pestaña Pedidos): cada pedido con el estado de cada línea y DÓNDE está ahora el material
 // (caballete del almacén de cristales, carro del almacén de persianas o stock). Todo se busca con los números de la obra
 // (nº de pedido, presupuesto, expediente); si no encuentra nada lo dice, no se lo inventa.
+// Color que el proveedor pone al final del nombre de la línea («… Cajón con Tela · Madera»). «Madera» no es un color: la obra lleva el de su carpintería (Nogal, 7016…)
+const colorFinalLinea = (t) => { const x = String(t || "").split(/\s[·|]\s/); return x.length > 1 ? x[x.length - 1].trim() : ""; };
+const esColorMadera = (c) => /^madera$/i.test(String(c || "").trim());
+const colorCarpinteriaDePedidos = (lineas, nombreDe) => {
+  const cnt = {};
+  lineas.forEach((l) => { const c = colorFinalLinea(nombreDe(l)); if (!c || c.length > 24 || esColorMadera(c) || /^negro$/i.test(c)) return; const k = c.toUpperCase(); cnt[k] = cnt[k] || { n: 0, c }; cnt[k].n++; });
+  const top = Object.values(cnt).sort((a, b) => b.n - a.n)[0];
+  return top ? top.c : "";
+};
 function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
   const cristales = toArray(almacenRapido.cristales), pers = toArray(almacenRapido.persianas), almacenes = toArray(almacenRapido.almacenesPersianas);
   const lista = toArray(pedidos).filter((p) => p && p.estado !== "Cancelado");
@@ -8905,6 +8914,8 @@ function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
   const orden = { "En espera": 0, "Pendiente": 1, "Realizado": 2, "Reclamado": 3, "Recibido": 4 };
   const sorted = [...lista].sort((a, b) => (orden[a.estado] ?? 9) - (orden[b.estado] ?? 9));
   const destino = (tipo) => tipo === "cristal" ? "Almacén de cristales" : tipo === "persiana" ? "Almacén de persianas" : tipo === "stock" ? "Stock" : "—";
+  const nombreLineaPed = (l) => (l.modo === "libre" ? (l.referencia || l.descripcion || "") : ((toArray(almacenRapido.materiales).find((m) => m.id === l.materialId) || {}).descripcion || l.referencia || ""));
+  const colorObraPed = colorCarpinteriaDePedidos(lista.flatMap((p) => toArray(p.lineas)), nombreLineaPed);
   const donde = [];
   if (cabs.length) donde.push({ t: "Cristales", filas: cabs.map((c) => `Caballete ${c.lote || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"} · ${parseFloat(c.cantidad) || toArray(c.piezas).length} ud`) });
   if (persOb.length) {
@@ -8939,7 +8950,7 @@ function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
                         : enviado ? <span className="text-amber-700 font-semibold">🕓 Pedido, sin llegar</span> : <span className="text-rose-700 font-semibold">Sin pedir</span>;
                       return (
                         <tr key={l.id} className="border-t border-slate-50">
-                          <td className="py-1 pr-3">{nombre}</td>
+                          <td className="py-1 pr-3">{colorObraPed && esColorMadera(colorFinalLinea(nombre)) ? <>{String(nombre).replace(/\s[·|]\s*madera\s*$/i, "")} · <b className="text-amber-800" title="El proveedor pone «Madera»; se muestra el color de la carpintería de esta obra">{colorObraPed}</b></> : nombre}</td>
                           <td className="py-1 pr-3 whitespace-nowrap font-mono-num">{l.ancho && l.alto ? `${l.ancho}×${l.alto}` : ""}</td>
                           <td className="py-1 pr-3 text-right">{ped}</td>
                           <td className="py-1 pr-3">{estado}</td>
@@ -52233,6 +52244,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
     if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
     if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); numsExpediente(e.numero).forEach((n) => out.add(n)); } }
+    // Presupuestos que vienen del PDF «PLANING» (obras virtuales «pl-…» y obras del CRM enlazadas): también cuentan para reconocer un planning nuevo
+    (presDeObra.get(limpia(d.key)) || []).forEach((pr) => add(pr.pres));
+    if (d.tipo === "pl") { const pr = planPres && planPres[d.id]; if (pr) add(pr.pres); }
     return out;
   };
   // «Las que tenemos»: obras con el cristal (y la persiana, si la lleva) ya recibidos y confirmados por fábrica, o que ya están en proceso
