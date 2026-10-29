@@ -1009,7 +1009,7 @@ export default function App() {
   // página. Mientras el módulo de Proyectos esté abierto, se refresca solo cada 10s
   // para que dos pestañas/dispositivos viendo el mismo proyecto se mantengan al día.
   useEffect(() => {
-    if (modulo !== "proyectos") return undefined;
+    if (loading || !authUser || portalPerfil || portalCliente) return undefined;
     // En vivo: cuando otro usuario cambia algo, aquí se actualiza solo (sin pulsar "actualizar").
     // Si hay un cambio nuestro todavía sin guardar, se espera: al terminar de guardarse, Firebase avisa de nuevo y se sincroniza.
     const quitar = onValue(ref(fbDb, "proyectos"), (snap) => {
@@ -1023,8 +1023,33 @@ export default function App() {
         if (listaConIdsUnicos(lista)) persistBase.current.proyectos = lista;
       } catch (e) { /* se reintenta con el siguiente cambio */ }
     }, () => { /* sin conexión momentánea */ });
+    liveSetters.current.proyectos = (lista) => { proyectosRef.current = lista; setProyectos(lista); };
     return () => { try { quitar(); } catch (e) { /* nada */ } };
-  }, [modulo]);
+  }, [loading, authUser, portalPerfil, portalCliente]);
+
+  // En vivo TAMBIÉN el resto de listas de trabajo (antes solo se leían al abrir la página: lo que metía otra persona
+  // no se veía hasta recargar, y al guardar se trabajaba sobre una copia vieja). Misma regla que Proyectos: si hay un cambio
+  // propio sin guardar no se pisa; al guardarse, Firebase avisa otra vez y se sincroniza.
+  useEffect(() => {
+    if (loading || !authUser || portalPerfil || portalCliente) return undefined;
+    const mapa = {
+      clientes: setClientes, pedidos: setPedidos, incidencias: setIncidencias, instalaciones: setInstalaciones, materiales: setMateriales,
+      cristales: setCristales, confirmacionesCristal: setConfirmacionesCristal, carrosPersianas: setCarrosPersianas, persianasAlmacen: setPersianasAlmacen,
+      almacenesPersianas: setAlmacenesPersianas, pedidosPersianas: setPedidosPersianas, mediciones: setMediciones, tareas: setTareas, enviosProceso: setEnviosProceso, leads: setLeads,
+    };
+    Object.entries(mapa).forEach(([key, setter]) => { liveSetters.current[key] = setter; });
+    const quitar = Object.entries(mapa).map(([key, setter]) => onValue(ref(fbDb, key), (snap) => {
+      try {
+        if (persistPendiente.current[key] || persistInFlight.current[key]) return;
+        if (!snap.exists()) return;
+        const lista = toArray(snap.val());
+        if (JSON.stringify(lista) === JSON.stringify(persistBase.current[key] || null)) return; // igual que lo que ya tenemos
+        setter(lista);
+        if (listaConIdsUnicos(lista)) persistBase.current[key] = lista;
+      } catch (e) { /* se reintenta con el siguiente cambio */ }
+    }, () => { /* sin conexión momentánea */ }));
+    return () => { quitar.forEach((q) => { try { q(); } catch (e) { /* nada */ } }); };
+  }, [loading, authUser, portalPerfil, portalCliente]);
 
   // Abrir documentos en el móvil. Chrome (sobre todo en Android) no abre los documentos
   // guardados como "data:" (los antiguos) — al pulsar no hacía nada — y los PDF de
@@ -1086,6 +1111,7 @@ export default function App() {
   const [, setZonasCristalesVer] = useState(0);
   useEffect(() => onValue(ref(fbDb, "zonasCristales"), (snap) => { aplicarZonasCristales(snap.val()); setZonasCristalesVer((n) => n + 1); }, () => {}), []);
   const persistTimers = useRef({});
+  const liveSetters = useRef({}); // cómo aplicar a la pantalla lo que haya en Firebase de cada lista (lo rellenan los escuchadores en vivo)
   const persistLatest = useRef({});
   const persistInFlight = useRef({});
   // Última versión de cada lista tal como la tenía ESTE navegador (al cargar o al guardar).
@@ -1113,6 +1139,18 @@ export default function App() {
         }
         if (Array.isArray(payload)) persistBase.current[key] = payload;
         if (persistLatest.current[key] === payload) persistPendiente.current[key] = false;
+        // Tras guardar, lo que hay en Firebase puede incluir lo que otros añadieron mientras tanto (se fusionó): se trae a la pantalla.
+        // (El aviso en vivo de Firebase llega mientras aún se está guardando y se ignora, así que hay que pedirlo aquí.)
+        const aplicar = liveSetters.current[key];
+        if (aplicar && Array.isArray(payload) && !persistPendiente.current[key]) {
+          try {
+            const snapPost = await fbGet(ref(fbDb, key));
+            if (snapPost.exists() && !persistPendiente.current[key]) {
+              const listaPost = toArray(snapPost.val());
+              if (JSON.stringify(listaPost) !== JSON.stringify(payload)) { aplicar(listaPost); if (listaConIdsUnicos(listaPost)) persistBase.current[key] = listaPost; }
+            }
+          } catch (e) { /* sin conexión momentánea: el siguiente aviso en vivo lo trae */ }
+        }
         persistInFlight.current[key] = false;
         return;
       } catch (e) {
@@ -1123,7 +1161,9 @@ export default function App() {
       }
     }
     persistInFlight.current[key] = false;
-    showToast("No se pudo guardar. Comprueba tu conexión y vuelve a intentarlo.", "error");
+    showToast("No se pudo guardar. Comprueba tu conexión: se seguirá intentando solo.", "error");
+    // Sigue reintentando cada 10 s: antes se quedaba el cambio «pendiente» para siempre y esa pestaña dejaba de recibir lo de los demás
+    persistTimers.current[key] = setTimeout(() => writeToStorage(key), 10000);
   }, []);
 
   const persist = useCallback((key, value) => {
@@ -2483,7 +2523,9 @@ export default function App() {
   const upsertPedido = (data) => {
     let next;
     if (data.id) {
-      next = pedidos.map((p) => (p.id === data.id ? { ...p, ...data } : p));
+      // Si se ha elegido un proveedor de la lista, manda sobre el nombre que venía de Uxcar (si no, seguiría saliendo el antiguo)
+      const datos = data.proveedorId ? { ...data, proveedorExterno: "" } : data;
+      next = pedidos.map((p) => (p.id === data.id ? { ...p, ...datos } : p));
       showToast("Pedido actualizado");
       vincularPedidoChecklist(data.id, data.proyectoId, data.paraChecklist);
     } else {
@@ -4797,7 +4839,7 @@ export default function App() {
     const cambiaFecha = pedidos.filter((pd) => pd.origen === "portalUxcar" && pd.uxcarPedidoId && pd.estado !== "Recibido" && (() => { const p = porId.get(pd.uxcarPedidoId); return p && p.llegadaPrevista && pd.fechaEntregaPrevista !== p.llegadaPrevista; })());
     // Si Uxcar cambia el proveedor del pedido en su portal, la copia de tu CRM lo refleja («Dealum (de Uxcar)»)
     const nombreProv = (pd) => { const p = pd.uxcarPedidoId ? porId.get(pd.uxcarPedidoId) : null; return p && p.proveedorNombre ? `${p.proveedorNombre} (de Uxcar)` : ""; };
-    const cambiaProv = pedidos.filter((pd) => pd.origen === "portalUxcar" && nombreProv(pd) && pd.proveedorExterno !== nombreProv(pd));
+    const cambiaProv = pedidos.filter((pd) => pd.origen === "portalUxcar" && !pd.proveedorId && nombreProv(pd) && pd.proveedorExterno !== nombreProv(pd));
     if (aEnviar.length > 0 || cambiaProv.length > 0 || cambiaFecha.length > 0) {
       const ids = new Set(aEnviar.map((x) => x.id));
       const idsProv = new Set(cambiaProv.map((x) => x.id));
@@ -13129,7 +13171,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
 
   const submit = (e) => {
     e.preventDefault();
-    if (!f.proveedorId) { setErrorMsg("Falta seleccionar el proveedor."); return; }
+    if (!f.proveedorId && !f.proveedorExterno) { setErrorMsg("Falta seleccionar el proveedor."); return; }
     if (f.estado !== "En espera" && f.estado !== "Cancelado") {
       if (!f.fechaCompra) { setErrorMsg("Falta la fecha del pedido (es obligatoria)."); return; }
       if (!f.fechaEntregaPrevista) { setErrorMsg("Falta la fecha aproximada de llegada (es obligatoria): con ella se avisa si se retrasa y se hace el planning."); return; }
@@ -13166,7 +13208,8 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
         <div className="grid grid-cols-2 gap-4">
           <Field label="Proveedor" required>
-            <Select value={f.proveedorId} onChange={set("proveedorId")} required>
+            <Select value={f.proveedorId || ""} onChange={set("proveedorId")} required={!f.proveedorExterno}>
+              {(!f.proveedorId) && <option value="">{f.proveedorExterno ? `${f.proveedorExterno} — elige uno de tu lista para cambiarlo` : "— Elige proveedor —"}</option>}
               {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
             </Select>
           </Field>
@@ -13257,6 +13300,14 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
                       <TextInput type="number" step="0.01" placeholder="Precio ud. (€)" value={l.precio} onChange={(e) => setLinea(l.id, { precio: e.target.value })} />
                     </div>
                     <button type="button" onClick={() => removeLinea(l.id)} className="col-span-1 text-slate-300 hover:text-rose-500 justify-self-end"><X size={15} /></button>
+                    <div className="col-span-3 text-[11px] text-slate-500 font-semibold">Medida (mm)</div>
+                    <div className="col-span-3">
+                      <TextInput type="number" placeholder="Ancho / largo" value={l.ancho ?? ""} onChange={(e) => setLinea(l.id, { ancho: e.target.value })} />
+                    </div>
+                    <div className="col-span-3">
+                      <TextInput type="number" placeholder="Alto" value={l.alto ?? ""} onChange={(e) => setLinea(l.id, { alto: e.target.value })} />
+                    </div>
+                    {(parseFloat(l.recibidoBien) > 0) && <div className="col-span-12 text-[11px] text-amber-700">Ya se han recibido {l.recibidoBien} de esta línea: si cambias la medida o la cantidad, lo ya recibido en almacén no se modifica solo.</div>}
                   </div>
                 )}
               </div>
@@ -13265,6 +13316,9 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
           <div className="flex flex-wrap gap-3 mt-2">
             <button type="button" onClick={() => addLinea("catalogo")} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
               <Plus size={14} /> Añadir material de catálogo
+            </button>
+            <button type="button" onClick={() => addLinea("libre")} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
+              <Plus size={14} /> Añadir línea libre (cristal, persiana… con medida)
             </button>
             <button type="button" onClick={() => setVerSelectorTarifa(!verSelectorTarifa)} className="flex items-center gap-1 text-sm font-semibold text-[#2E8B57] hover:text-[#256E46]">
               <Plus size={14} /> Añadir desde tarifa de aluminio/herraje
