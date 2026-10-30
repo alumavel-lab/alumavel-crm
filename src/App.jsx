@@ -53244,14 +53244,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         </div>
       ); })()}
-      <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
-        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} obras: {disponibles.filter((o) => materialObra(o).ok).length} con material{disponibles.some((o) => !materialObra(o).ok) ? ` y ${disponibles.filter((o) => !materialObra(o).ok).length} sin él` : ""} · tuyas, de Uxcar y del PLANING)</summary>
-        <label className="mt-2 flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verSinMaterial} onChange={(e) => setVerSinMaterial(e.target.checked)} /> Ver también las que todavía no tienen todo el material ({nSinMaterial}) — salen con lo que les falta</label>
-        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar por nº de presupuesto, expediente o nombre…" className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-        <div className="mt-2 flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
-          {disponibles.length === 0 ? <span className="text-xs text-slate-500">No hay obras con el material completo por añadir{nSinMaterial ? ` (hay ${nSinMaterial} sin material: marca la casilla de arriba para verlas)` : ""}.</span> : disponibles.map((o) => { const m = materialObra(o); return <button key={o.d.key} type="button" onClick={() => asignar(o, true)} title={m.ok ? "Cristal y persiana (si lleva) recibidos" : `Falta: ${m.motivo}`} className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold ${m.ok ? "border-slate-300 hover:bg-emerald-50" : "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"}`}>+ {o.d.nombre}{m.ok ? "" : ` · falta: ${m.motivo}`}</button>; })}
-        </div>
-      </details>
       {(() => {
         const delDia = (planF && planF.dias && planF.dias[dia]) || {};
         const yaK = new Set(lista.map(claveFabDe).filter(Boolean));
@@ -53293,7 +53285,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         );
       })()}
       <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
-      {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Añádelas arriba con «➕ Añadir obras a este día».</p>}
+      {lista.length === 0 && <p className="text-sm text-slate-500">Este día no tiene obras. Sube tu planning con «Subir planning (PDF, Excel o foto)» y aquí se reproduce.</p>}
       {informe && (() => {
         const tot = cuentaInforme(todasFilasInforme), vis = cuentaInforme(filasInforme);
         const porObra = new Map();
@@ -53579,7 +53571,8 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
   const vistos = new Set();
   escaneos.forEach((x) => { if (x.fecha === hoy && (puesto === "todos" || x.puestoId === puesto)) vistos.add(`${x.fab || ""}|${x.ventanaId}`); });
   const real = realProp !== undefined ? realProp : vistos.size;
-  const fuera = !esHoy || minAhora < mIni || minAhora > mFin;
+  const fuera = !esHoy || minAhora < mIni;
+  const terminado = esHoy && minAhora > mFin;
   const atrasadas = Math.round((esperado - real) * 10) / 10;
   const mal = !fuera && atrasadas >= 1;
   const estilo = fuera ? "bg-slate-100 border-slate-300 text-slate-700" : mal ? "bg-red-100 border-red-500 text-red-900 animate-pulse" : "bg-emerald-100 border-emerald-500 text-emerald-900";
@@ -53590,16 +53583,15 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
         <span className="text-4xl leading-none">{fuera ? "🕒" : mal ? "🔔" : "😀"}</span>
         <div>
           <div className="text-3xl font-black leading-none">{real} <span className="text-lg font-bold">{realProp !== undefined ? "ventanas hechas" : "ventanas hoy"}</span></div>
-          <div className="text-xs font-semibold mt-1">Deberías llevar <b>{esperado}</b> ({ritmo} por hora desde las {inicio})</div>
         </div>
         <div className="text-sm font-bold">
-          {fuera ? (!esHoy ? "Este no es el día de hoy: solo se cuentan" : minAhora < mIni ? `Aún no ha empezado el turno (${inicio})` : "Turno terminado") : mal ? `Vamos tarde: faltan ${Math.ceil(atrasadas)} ventana${Math.ceil(atrasadas) === 1 ? "" : "s"}` : real > esperado + 1 ? `Vamos adelantados: +${Math.floor(real - esperado)}` : "Vamos bien"}
+          {fuera ? (!esHoy ? "Este no es el día de hoy: solo se cuentan" : `Aún no ha empezado el turno (${inicio})`) : terminado ? (mal ? "Turno terminado: no se llegó al ritmo" : "Turno terminado: ¡ritmo cumplido!") : mal ? "Vamos tarde" : "Vamos bien"}
         </div>
-        <span className="text-[11px] opacity-70">{realProp !== undefined ? "cuenta las ventanas que tocas en verde" : puesto === "todos" ? "cuenta ventanas distintas leídas en cualquier puesto" : `cuenta las leídas en ${nombrePuestoLinea(puesto)}`}</span>
         {admin && <button type="button" onClick={() => setEditar((v) => !v)} className="ml-auto text-xs underline">⚙ ajustar</button>}
       </div>
       {editar && admin && (
         <div className="mt-2 flex flex-wrap items-end gap-3 text-xs">
+          <span className="w-full opacity-70">El contador cuenta las ventanas que tocas en verde. Esperado ahora: {esperado} ({ritmo} por hora, de {inicio} a {fin}).</span>
           <label>Ventanas por hora <input type="number" min="1" step="0.5" defaultValue={ritmo} onBlur={(e) => guardar({ ritmo: parseFloat(e.target.value) || 8 })} className="w-16 border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
           <label>Inicio <input type="time" defaultValue={inicio} onBlur={(e) => guardar({ inicio: e.target.value || "08:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
           <label>Fin <input type="time" defaultValue={fin} onBlur={(e) => guardar({ fin: e.target.value || "16:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
