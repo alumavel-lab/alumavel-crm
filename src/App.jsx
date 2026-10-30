@@ -52316,10 +52316,16 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return null;
   };
   const claveFabDe = (o) => claveEn(o, planF && planF.obras);
-  const proyectoIdDe = (o) => (o.d.tipo === "p" ? o.d.id : o.d.tipo === "u" ? ((toArray(uxExpedientes).find((e) => e.id === o.d.id) || {}).proyectoId || "") : "");
+  // Obra del CRM de un presupuesto del PLANING que no está enlazada: se busca por código de presupuesto (con su versión)
+  const proyectoPorCodigo = (o) => {
+    const mios = [...presConVersion(o)]; if (!mios.length) return "";
+    const p = toArray(proyectos).find((x) => { const cs = []; [presupuestoDeObra(x), x.presupuestoNumero].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((y) => { const c = y.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) cs.push(c); })); return cs.some((c) => mios.some((m) => mismoPres(m, c))); });
+    return p ? p.id : "";
+  };
+  const proyectoIdDe = (o) => (o.d.tipo === "p" ? o.d.id : o.d.tipo === "u" ? ((toArray(uxExpedientes).find((e) => e.id === o.d.id) || {}).proyectoId || "") : o.d.tipo === "pl" ? proyectoPorCodigo(o) : "");
   const materialObra = (o) => {
-    if (o.d.tipo === "pl") return { ok: true, motivo: "" };
     const pid = proyectoIdDe(o);
+    if (o.d.tipo === "pl" && !pid) return { ok: false, motivo: "no está en el CRM con ese nº de presupuesto: no puedo saber qué material lleva" };
     const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     if (!p) return { ok: false, motivo: o.d.tipo === "s" ? "sin obra asignada" : "no está enlazada a una obra del CRM" };
     if (p.estadoTrabajo === "En proceso") return { ok: true, motivo: "" };
@@ -52924,7 +52930,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const hechasDia = todasFilasInforme.filter((f) => f.v && f.val === 1).length;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
-  const contadorCD = <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} />;
+  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -53097,8 +53103,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
-        <button type="button" onClick={() => setVerLista((v) => !v)} className="px-3 py-1.5 rounded-md bg-slate-700 text-white text-sm font-bold">📋 Lista de obras pendientes (qué les falta)</button>
-        <button type="button" onClick={() => { setAutoGrupo(null); setAutoAbierto((v) => !v); }} className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm font-bold">🗓 Planificar automático por colores ({autoHoras} h/día, L–V)</button>
         {Object.values(asignTodas || {}).some((d) => d && Object.keys(d).length) && <button type="button" onClick={async () => { try { await guardarCopia("Antes de vaciar todo Control del día"); await fbSet(ref(fbDb, "controlDiaObras"), null); await fbSet(ref(fbDb, "controlDiaLote"), null); } catch (e) { alert("No se pudo vaciar: " + e.message); } }} title="Quita TODAS las obras de TODOS los días. Se guarda copia: puedes volver con «Volver a como estaba». No toca el CRM ni las marcas de ventanas." className="px-3 py-1.5 rounded-md bg-red-700 text-white text-sm font-bold">🗑 Vaciar todo Control del día ({Object.values(asignTodas || {}).reduce((n, d) => n + Object.keys(d || {}).length, 0)} obras)</button>}
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
@@ -53115,154 +53119,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         )}
       </div>
-      {verLista && (() => {
-        const q = qLista.trim().toLowerCase(); const qd = q.replace(/\D/g, "");
-        let filas = [...obras.values()].map(filaLista);
-        if (q) filas = filas.filter((r) => String(r.o.d.nombre).toLowerCase().includes(q) || (qd.length >= 3 && [...pptosDe(r.o)].some((x) => x.includes(qd))));
-        const totFalta = filas.filter((r) => r.faltan > 0).length;
-        if (soloFalta) filas = filas.filter((r) => r.faltan > 0);
-        const llega = (v) => v === "ok" || v === "conf";
-        const grupoDe = (r) => {
-          if (r.ok) return 0;
-          if (llega(r.cristal) && r.persiana === "no") return 1;
-          if (llega(r.persiana) && r.cristal === "no") return 2;
-          if (r.cristal === "no" || r.persiana === "no") return 3;
-          return 4;
-        };
-        const NOMBRES_G = ["✅ Listas: material completo y confirmado por fábrica (se pueden planificar)", "🟡 Cristal llegado · falta la persiana", "🟡 Persiana llegada · falta el cristal", "❌ Falta material por llegar o por confirmar", "— Sin pedido de cristal ni persiana"];
-        filas.forEach((r) => { r.g = grupoDe(r); });
-        filas.sort((a, b) => a.g - b.g || String(a.color).localeCompare(String(b.color)) || String(a.o.d.nombre).localeCompare(String(b.o.d.nombre), "es", { numeric: true }));
-        const resumenG = NOMBRES_G.map((nm, gi) => { const fs = filas.filter((r) => r.g === gi); return { nm, n: fs.length, h: fs.reduce((a, r) => a + (r.horas || 0), 0) }; });
-        const ic = (v) => v === "ok" ? "✅" : v === "conf" ? "🟡" : v === "no" ? "❌" : "—";
-        const sino = (b) => (b ? "✅" : "❌");
-        return (
-          <div className="mb-3 rounded-lg border-2 border-slate-400 bg-white p-3">
-            <div className="flex flex-wrap items-center gap-3 text-sm">
-              <b>📋 Obras pendientes: {totFalta} con algo por hacer</b>
-              <input value={qLista} onChange={(e) => setQLista(e.target.value)} placeholder="Buscar por nombre o nº de presupuesto…" className="border border-slate-300 rounded px-2 py-1 text-sm w-64" />
-              <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={soloFalta} onChange={(e) => setSoloFalta(e.target.checked)} /> Solo las que tienen algo pendiente</label>
-              <button type="button" onClick={() => setVerLista(false)} className="ml-auto text-xs underline">Cerrar</button>
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">✅ hecho · 🟡 llegado pero sin confirmar por fábrica · ❌ falta · — no lleva / sin pedido. Horas con «≈» = estimadas. Cada cuadro es una obra.</div>
-            {(() => { const verdes = filas.filter((x) => x.g === 0).map((x) => limpia(x.o.d.key)); const elegidas = verdes.filter((k) => selLista[k]); return (
-              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-xs">
-                <button type="button" onClick={() => { const todas = elegidas.length === verdes.length; const m = {}; if (!todas) verdes.forEach((k) => { m[k] = true; }); setSelLista(m); }} className="px-2 py-1 rounded border border-slate-300 bg-white font-semibold">{elegidas.length === verdes.length && verdes.length ? "Quitar la selección" : `Elegir todas las completas (${verdes.length})`}</button>
-                <span className="text-slate-600">Elegidas: <b>{elegidas.length}</b></span>
-                <button type="button" disabled={!elegidas.length} onClick={() => { setAutoGrupo(elegidas); setAutoExcl({}); setAutoAbierto(true); }} className={`ml-auto px-3 py-1.5 rounded-md text-white font-bold ${elegidas.length ? "bg-indigo-600" : "bg-slate-400 cursor-not-allowed"}`}>🗓 Mandar las {elegidas.length} elegidas a planificar</button>
-              </div>
-            ); })()}
-            <div className="mt-2">
-              {(() => {
-                const vis = filas.slice(0, maxLista);
-                const GCOL = ["border-emerald-500 bg-emerald-50", "border-amber-500 bg-amber-50", "border-amber-500 bg-amber-50", "border-rose-400 bg-rose-50", "border-slate-400 bg-slate-100"];
-                const chip = (et, v, titulo) => { const ok = v === true || v === "ok"; const med = v === "conf"; const no = v === false || v === "no"; const cls = ok ? "bg-emerald-100 text-emerald-800 border-emerald-300" : med ? "bg-amber-100 text-amber-800 border-amber-300" : no ? "bg-rose-100 text-rose-800 border-rose-300" : "bg-slate-100 text-slate-400 border-slate-200"; return <span title={titulo || et} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-semibold ${cls}`}>{ok ? "✅" : med ? "🟡" : no ? "❌" : "—"} {et}</span>; };
-                return NOMBRES_G.map((nm, gi) => { const fs = vis.filter((r) => r.g === gi); if (!fs.length) return null; return (
-                  <div key={gi} className={gi === 0 ? "" : "mt-5"}>
-                    <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 border-l-4 ${GCOL[gi]}`}>
-                      <b className="text-sm text-slate-800">{nm}</b>
-                      <span className="text-xs text-slate-600">{resumenG[gi].n} obras · {fmtHoras(resumenG[gi].h)}</span>
-                      {gi === 0 && <button type="button" onClick={() => { setAutoGrupo(filas.filter((x) => x.g === 0).map((x) => limpia(x.o.d.key))); setAutoExcl({}); setAutoAbierto(true); }} className="ml-auto px-3 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold">🗓 Planificar este grupo</button>}
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      {fs.map((r) => {
-                        const k = limpia(r.o.d.key); const lista = r.g === 0; const sel = !!selLista[k];
-                        const falta = [];
-                        if (r.cristal === "no") falta.push("cristal por llegar"); else if (r.cristal === "conf") falta.push("cristal sin confirmar");
-                        if (r.persiana === "no") falta.push("persiana por llegar"); else if (r.persiana === "conf") falta.push("persiana sin confirmar");
-                        if (!r.color) falta.push("color"); if (!(r.horas > 0 && !r.est)) falta.push(r.horas > 0 ? "horas (estimadas)" : "horas");
-                        if (!r.listado) falta.push("listado"); if (!r.carga) falta.push("carga PDF");
-                        return (
-                        <div key={r.o.d.key} className={`rounded-lg border-l-4 border border-slate-200 p-2 shadow-sm flex flex-wrap items-center gap-x-3 gap-y-1.5 ${lista ? (sel ? "border-l-emerald-600 bg-emerald-100" : "border-l-emerald-500 bg-emerald-50") : "border-l-rose-400 bg-white"}`}>
-                          {lista ? <input type="checkbox" checked={sel} onChange={() => setSelLista((m) => ({ ...m, [k]: !m[k] }))} className="w-5 h-5 accent-emerald-600" title="Elegir para mandar a planificar" /> : <span className="w-5" />}
-                          <div className="min-w-[220px] flex-1 basis-64">
-                            <div className="font-bold text-[13px] text-slate-900 leading-snug" title={r.o.d.nombre}>{r.o.d.nombre}</div>
-                            {r.o.d.tipo === "pl" && <div className="text-[11px] text-slate-500">Solo en el PLANING, no está en el CRM</div>}
-                            <div className={`text-[11px] font-semibold ${falta.length ? "text-rose-700" : "text-emerald-700"}`}>{falta.length ? `Le falta: ${falta.join(" · ")}` : "✔ Completa"}</div>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5 items-center">
-                            <span title="Color de la carpintería" className={`px-1.5 py-0.5 rounded border text-[11px] font-semibold ${r.color ? "bg-sky-50 text-sky-900 border-sky-200" : "bg-rose-100 text-rose-800 border-rose-300"}`}>🎨 {r.color || "sin color"}</span>
-                            <span title={r.origen} className={`px-1.5 py-0.5 rounded border text-[11px] font-semibold ${r.horas > 0 ? "bg-indigo-50 text-indigo-900 border-indigo-200" : "bg-rose-100 text-rose-800 border-rose-300"}`}>⏱ {r.horas > 0 ? `${r.est ? "≈ " : ""}${fmtHoras(r.horas)}` : "sin horas"}</span>
-                            {chip("Material", r.ok, "Material completo y confirmado por fábrica")}
-                            {chip("Cristal", r.cristal)}
-                            {chip("Persiana", r.persiana)}
-                            {chip("Listado", !!r.listado, "Listado de materiales de la obra")}
-                            {chip("PLANING", !!r.planing)}
-                            {chip("Carga PDF", !!r.carga, "PDF de la Carga de material (con chinchetas)")}
-                          </div>
-                          <div className="flex flex-wrap gap-1.5 ml-auto">
-                            {!r.carga && <button type="button" onClick={() => pedirPdfCarga(r.o)} className="px-2 py-1 rounded-md border border-sky-300 bg-sky-50 text-sky-800 text-[11px] font-semibold">📎 Subir carga PDF</button>}
-                            {lista && <button type="button" onClick={() => { setAutoGrupo([k]); setAutoExcl({}); setAutoAbierto(true); }} className="px-2 py-1 rounded-md bg-emerald-600 text-white text-[11px] font-bold" title="Material completo: la manda al planificador (vista previa antes de confirmar)">🗓 Mandar a planificar</button>}
-                            {r.o.d.tipo === "pl" && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaPlaning/${r.o.d.id}`), null).catch(() => {}); }} className="px-2 py-1 rounded-md bg-red-600 text-white text-[11px] font-bold" title="Borra este presupuesto del PLANING (no toca el CRM)">🗑 Borrar</button>}
-                          </div>
-                        </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ); });
-              })()}
-              {filas.length > maxLista && <button type="button" onClick={() => setMaxLista((m) => m + 100)} className="mt-2 text-xs underline">Ver más ({filas.length - maxLista} restantes)</button>}
-              {filas.length === 0 && <div className="text-xs text-slate-500 mt-2">No hay obras con algo pendiente con ese filtro.</div>}
-            </div>
-          </div>
-        );
-      })()}
-      {autoAbierto && (() => { const plan = calcAuto(); const totH = plan.dias.reduce((a, d) => a + d.horas, 0); const nObras = plan.dias.reduce((a, d) => a + d.items.length, 0); return (
-        <div className="mb-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 p-3">
-          <div className="flex flex-wrap items-end gap-3 text-sm">
-            <label>Empezar el <input type="date" value={autoIni || dia} onChange={(e) => setAutoIni(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1" /></label>
-            <label>Horas por día <input type="number" value={autoHoras} onChange={(e) => setAutoHoras(e.target.value)} className="w-20 border border-slate-300 rounded px-1.5 py-1" /></label>
-            <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={autoEstimar} onChange={(e) => setAutoEstimar(e.target.checked)} /> Incluir las obras sin PLANING (horas estimadas)</label>
-            {autoEstimar && <label className="text-xs">h por ventana <input type="number" step="0.1" value={autoHVent} placeholder={String(mediaHVent || "")} onChange={(e) => setAutoHVent(e.target.value)} className="w-16 border border-slate-300 rounded px-1 py-0.5" /></label>}
-            <span className="text-xs text-slate-600">Solo lunes a viernes · se saltan los días que ya tienen obras · un día = un solo color de carpintería</span>
-          </div>
-          {autoGrupo && <div className="mt-2 text-xs font-bold text-indigo-900">Solo se planifica el grupo elegido en la lista ({autoGrupo.length} obras). <button type="button" onClick={() => setAutoGrupo(null)} className="underline">Volver a todas las que tienen material</button></div>}
-          <div className="mt-2 text-sm font-semibold">{nObras} obras → {plan.dias.length} días · {fmtHoras(totH)} en total</div>
-          <div className="mt-1 flex flex-col gap-2">
-            {plan.dias.map((d, i) => (
-              <div key={i} className="rounded-md bg-white border border-slate-300 p-2">
-                <div className="flex flex-wrap items-center gap-2 text-sm font-bold">
-                  <span>{fmtDate(d.dia)}</span>
-                  <span className="px-2 py-0.5 rounded-full text-xs border border-slate-400" style={{ background: d.color === "SIN COLOR" ? "#fecdd3" : (colorHexVentana(d.color) || "#e2e8f0"), borderStyle: d.color === "SIN COLOR" ? "dashed" : undefined, color: /NEGRO|NOGAL|7016|ANTRACITA/.test(d.color) ? "#fff" : "#111" }}>{d.color}</span>
-                  <span className={d.horas > plan.cap ? "text-rose-700" : d.horas < plan.cap * 0.6 ? "text-amber-700" : "text-emerald-700"}>{fmtHoras(d.horas)} / {plan.cap} h{d.horas > plan.cap ? " ⚠ se pasa" : d.horas < plan.cap * 0.6 ? " · día corto (no hay más de este color)" : ""}</span>
-                </div>
-                <ul className="mt-1 text-xs text-slate-700">
-                  {d.items.map((c) => <li key={c.k} className="flex items-center gap-1"><input type="checkbox" checked onChange={() => setAutoExcl((x) => ({ ...x, [c.k]: true }))} title="Quitar de la propuesta" /> {c.o.d.nombre} · {c.est ? "≈" : ""}{fmtHoras(c.horas)} · {c.nVent} vent. <span className="text-slate-400">({c.origen})</span></li>)}
-                </ul>
-              </div>
-            ))}
-          </div>
-          {plan.sinDatos.length > 0 && (
-            <div className="mt-2 rounded-md bg-amber-100 border border-amber-400 p-2 text-xs">
-              <b>{plan.sinDatos.length} obras con material NO se planifican</b> porque no tengo sus horas ni sus ventanas (sube su PLANING o activa «Incluir las obras sin PLANING»): {plan.sinDatos.slice(0, 40).map((c) => `${c.o.d.nombre}${!c.horas ? " [sin horas]" : ""}${!c.color ? " [sin color]" : ""}`).join(" · ")}
-            </div>
-          )}
-          {Object.keys(autoExcl).some((k) => autoExcl[k]) && <button type="button" onClick={() => setAutoExcl({})} className="mt-2 text-xs underline">Volver a incluir las que quité ({Object.keys(autoExcl).filter((k) => autoExcl[k]).length})</button>}
-          <div className="mt-2 flex gap-2">
-            <button type="button" disabled={!nObras} onClick={() => confirmarAuto(plan)} className="px-3 py-1.5 rounded-md bg-emerald-600 disabled:bg-slate-400 text-white text-sm font-bold">✅ Confirmar y planificar estos {plan.dias.length} días</button>
-            <button type="button" onClick={() => setAutoAbierto(false)} className="px-3 py-1.5 rounded-md bg-slate-200 text-sm font-bold">Cancelar</button>
-          </div>
-        </div>
-      ); })()}
-      {(() => {
-        const delDia = (planF && planF.dias && planF.dias[dia]) || {};
-        const yaK = new Set(lista.map(claveFabDe).filter(Boolean));
-        const faltan = Object.entries(delDia).filter(([k]) => !yaK.has(k));
-        if (!faltan.length) return null;
-        return (
-          <div className="mb-3 rounded-lg border-2 border-indigo-300 bg-indigo-50 p-3">
-            <b className="text-sm text-indigo-900">🏭 Fábrica tiene {faltan.length} obra{faltan.length === 1 ? "" : "s"} este día que no está{faltan.length === 1 ? "" : "n"} en tu planning</b>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {faltan.map(([k, v]) => { const oc = [...obras.values()].find((o) => claveFabDe(o) === k); return (
-                <div key={k} className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="font-semibold">{v.nombre}</span><span className="text-xs text-slate-600">{v.horas} h ese día</span>
-                  {oc ? <button type="button" onClick={() => asignar(oc, true)} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold">➕ Traer a mi planning</button> : <span className="text-xs text-amber-700">(no está en Control del día: súbela con el planning)</span>}
-                </div>
-              ); })}
-            </div>
-          </div>
-        );
-      })()}
       {(() => {
         const listasF = (planF && planF.listas) || {};
         if (!Object.keys(listasF).length) return null;
