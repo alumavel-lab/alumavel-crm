@@ -21329,14 +21329,43 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     });
   }, [proyectos, pedidos]);
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
-  const bloqueadosMaterial = useMemo(() => proyectos.filter((p) => {
-    if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) || false) return false;
-    if (listoParaFabricar.some((x) => x.id === p.id)) return false;
-    if (p.origen === "portalUxcar") return pedidos.some((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
-    return normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
-  }).map((p) => ({ p, faltan: p.origen === "portalUxcar"
-    ? pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd)).flatMap((pd) => !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
-    : condicionesPendientesChecklist(p, pedidos) })).filter((x) => x.faltan.length > 0), [proyectos, pedidos, listoParaFabricar]);
+  // Lo que hay físicamente en el almacén de una obra (caballetes de cristal y persianas), buscado por pedido o por nº de presupuesto
+  const matAlmacenObra = (p) => {
+    const ids = new Set(pedidos.filter((pd) => pd.proyectoId === p.id).map((pd) => pd.id));
+    const nums = new Set(pedidos.filter((pd) => pd.proyectoId === p.id).map((pd) => String(pd.numero)));
+    const claves = new Set(); const addP = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) claves.add(dg); });
+    addP(p.presupuestoNumero); addP(presupuestoDeObra(p));
+    if (p.uxcarExpedienteId) { const e = toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId); if (e) { addP(e.presupuesto); addP(e.presupuestoNumero); } }
+    const dig = (...ts) => String(ts.join(" ")).split(/[·,;\s]+/).map((x) => digitosPresu(x)).filter((x) => x.length >= 3);
+    const ok = (...ts) => dig(...ts).some((d) => claves.has(d));
+    const cabs = toArray(cristales).filter((c) => c && ((c.pedidoId && ids.has(c.pedidoId)) || ok(c.presupuesto, ...toArray(c.piezas).map((x) => x && (x.presupuesto || x.ppto)))));
+    const pers = toArray(ctxPaneles.persianasAlmacen).filter((x) => x && !x.entregada && !x.colocadaVentana && ((x.pedido && nums.has(String(x.pedido))) || ok(x.presupuesto, x.ppto)));
+    return { cabs, pers };
+  };
+  const bloqueadosMaterial = useMemo(() => proyectos.map((p) => {
+    if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo)) return null;
+    if (listoParaFabricar.some((x) => x.id === p.id)) return null;
+    const misPed = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
+    const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
+    let faltan = !marcada ? [] : p.origen === "portalUxcar"
+      ? misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+      : condicionesPendientesChecklist(p, pedidos);
+    // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
+    const m = matAlmacenObra(p);
+    if (!faltan.length && (m.cabs.length || m.pers.length)) {
+      const mot = [];
+      if (m.cabs.length) mot.push(`Hay cristal suyo en ${m.cabs.length} caballete${m.cabs.length === 1 ? "" : "s"} (${m.cabs.slice(0, 3).map((c) => c.lote || c.numero || "s/n").join(", ")})`);
+      if (m.pers.length) mot.push(`Hay ${m.pers.length} persiana${m.pers.length === 1 ? "" : "s"} suya${m.pers.length === 1 ? "" : "s"} en el almacén`);
+      const cris = misPed.filter(esPedidoCristalOCompacto);
+      if (!misPed.length) mot.push("pero la obra NO tiene ningún pedido en el CRM (por eso no puede salir como lista)");
+      else if (!cris.length) mot.push("pero no tiene pedido de cristal/compacto en el CRM");
+      else if (!cris.every(llegadoParaObra)) mot.push("pero su pedido no está marcado como llegado");
+      else if (!cris.every((pd) => (pd.lineas || []).every((l) => l.confirmadoFabrica))) mot.push("pero fábrica no ha confirmado las líneas del pedido");
+      else mot.push("pero falta completar el checklist «Qué lleva la obra»");
+      faltan = [mot.join(" · ")];
+    }
+    return faltan.length ? { p, faltan } : null;
+  }).filter(Boolean), [proyectos, pedidos, listoParaFabricar, cristales, ctxPaneles.persianasAlmacen, uxExpedientes]);
 
   const descargarWord = () => {
     const titulos = { listo: "Listo para fabricar", materiales: "Materiales pendientes", enfab: "En fabricación" };
@@ -45903,14 +45932,14 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
   };
   const irCarro = (x) => { if (!onIrA || !x.estante) return; focoAlmacen.actual = { tipo: "persiana", almacenId: almacenDe(x), carro: x.estante.carro }; onIrA("persianasAlmacen"); };
   const cands0 = qq.length < 2 ? [] : [
-    ...proyectos.filter((pr) => pr && !pr.anulado && pr.estadoTrabajo !== "Cancelado" && pr.origen !== "portalUxcar" && obraCoincideBusqueda(pr, qq, uxs, clientes)).map((pr) => {
+    ...proyectos.filter((pr) => pr && pr.origen !== "portalUxcar" && obraCoincideBusqueda(pr, qq, uxs, clientes)).map((pr) => {
       const pres = (String(pr.nombre || "").match(/presupuesto\s*(\d[\d.]*)/i) || [])[1];
       const cli = clientes.find((c) => c.id === pr.clienteId);
-      return { key: `p-${pr.id}`, titulo: `#${pr.numero} ${pr.nombre}`, cliente: cli ? cli.nombre : "", claves: [...new Set([pr.numero, pr.expediente, pres].map(soloDigitos).filter((x) => x && x.length >= 2))], listado: pr.listadoMateriales, proy: pr, proyectoId: pr.id };
+      return { key: `p-${pr.id}`, estadoTxt: pr.anulado ? "ANULADA" : (pr.estadoTrabajo || "Sin estado"), titulo: `#${pr.numero} ${pr.nombre}`, cliente: cli ? cli.nombre : "", claves: [...new Set([pr.numero, pr.expediente, pres].map(soloDigitos).filter((x) => x && x.length >= 2))], listado: pr.listadoMateriales, proy: pr, proyectoId: pr.id };
     }),
-    ...uxs.filter((e) => e && !e.anulado && (normBusca(`${e.numero} ${e.nombre || ""}`).includes(normBusca(qq)) || (soloDigitos(qq).length >= 2 && soloDigitos(e.numero) === soloDigitos(qq)))
+    ...uxs.filter((e) => e && (normBusca(`${e.numero} ${e.nombre || ""}`).includes(normBusca(qq)) || (soloDigitos(qq).length >= 2 && soloDigitos(e.numero) === soloDigitos(qq)) || (soloDigitos(qq).length >= 3 && [e.presupuesto, e.presupuestoNumero].some((t) => String(t || "").split(/[·,;\s]+/).some((x) => uxPptoDigitos(x) === soloDigitos(qq)))))
       && !proyectos.some((pr) => pr && pr.id === e.proyectoId && obraCoincideBusqueda(pr, qq, uxs, clientes))).map((e) => ({
-      key: `u-${e.id}`, titulo: `Uxcar ${e.numero}${e.nombre ? " · " + e.nombre : ""}`, cliente: "Uxcar", claves: [soloDigitos(e.numero)].filter((x) => x && x.length >= 2), listado: e.listadoMateriales, proy: null, proyectoId: "",
+      key: `u-${e.id}`, estadoTxt: e.anulado ? "ANULADO" : ({ virtual: "Virtual", produccion: "En producción", terminado: "Terminado", entregado: "Entregado" }[e.estado] || e.estado || ""), titulo: `Uxcar ${e.numero}${e.nombre ? " · " + e.nombre : ""}`, cliente: "Uxcar", claves: [soloDigitos(e.numero)].filter((x) => x && x.length >= 2), listado: e.listadoMateriales, proy: null, proyectoId: "",
     })),
   ].slice(0, 8);
   // Expedientes que no son una obra del CRM pero tienen material en tus almacenes (caballetes de cristal, carros de persianas o persianas pedidas):
@@ -46055,7 +46084,7 @@ function ComprobarExpedienteMaterial({ cristales, onIrA }) {
           return (
             <div key={o.key} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                <div className="font-bold text-slate-900">{o.titulo}</div>
+                <div className="font-bold text-slate-900">{o.titulo}{o.estadoTxt && <span className={`ml-2 align-middle text-[11px] font-semibold px-2 py-0.5 rounded ${/entreg|cancel|anulad/i.test(o.estadoTxt) ? "bg-slate-200 text-slate-700" : "bg-sky-50 text-sky-700"}`}>{o.estadoTxt}</span>}</div>
                 <div className="text-[11px] text-slate-500">{o.cliente ? `${o.cliente} · ` : ""}Busco el material por: {o.claves.length ? o.claves.join(", ") : "—"}</div>
               </div>
               <div className="divide-y divide-slate-100 text-sm">
