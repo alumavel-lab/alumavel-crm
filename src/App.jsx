@@ -52247,7 +52247,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Todas las obras (tuyas y de Uxcar), tengan o no hoja de corte cargada: sin ella se marcan enteras, sin viviendas ni ventanas
   // Códigos de presupuesto de los PLANING (el de la vista previa y los ya guardados): una obra ya Entregada/Cancelada en el CRM también se reconoce si su código sale en un planning
   const codigosPlanning = new Set();
-  toArray(planEdmo && planEdmo.bloques).forEach((b) => { const dg = String((b && b.pres) || "").split("-")[0].replace(/\D/g, ""); if (dg.length >= 3) codigosPlanning.add(dg); });
+  toArray(planEdmo && planEdmo.bloques).forEach((b) => toArray(b && b.pres).forEach((pr) => { const dg = String((pr && pr.pres) || "").split("-")[0].replace(/\D/g, ""); if (dg.length >= 3) codigosPlanning.add(dg); }));
   Object.values(planPres || {}).forEach((pr) => { const dg = String((pr && pr.pres) || "").split("-")[0].replace(/\D/g, ""); if (dg.length >= 3) codigosPlanning.add(dg); });
   const codigosDeProyecto = (p) => {
     const out = new Set(); const add = (t) => { const dg = digitosPresu(t); if (dg.length >= 3) out.add(dg); };
@@ -53128,6 +53128,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
         {Object.values(asignTodas || {}).some((d) => d && Object.keys(d).length) && <button type="button" onClick={async () => { try { await guardarCopia("Antes de vaciar todo Control del día"); await fbSet(ref(fbDb, "controlDiaObras"), null); await fbSet(ref(fbDb, "controlDiaLote"), null); } catch (e) { alert("No se pudo vaciar: " + e.message); } }} title="Quita TODAS las obras de TODOS los días. Se guarda copia: puedes volver con «Volver a como estaba». No toca el CRM ni las marcas de ventanas." className="px-3 py-1.5 rounded-md bg-red-700 text-white text-sm font-bold">🗑 Vaciar todo Control del día ({Object.values(asignTodas || {}).reduce((n, d) => n + Object.keys(d || {}).length, 0)} obras)</button>}
+        {Object.keys(planPres || {}).length > 0 && <button type="button" onClick={async () => { try { await guardarCopia("Antes de borrar los datos del PLANING"); await fbSet(ref(fbDb, "controlDiaPlaning"), null); await fbSet(ref(fbDb, "controlDiaPlaningDib"), null); } catch (e) { alert("No se pudo borrar: " + e.message); } }} title="Borra los datos que se guardaron del PDF PLANING (presupuestos, horas, ventanas, dibujos). No toca los días del calendario, ni las marcas, ni el CRM. Se vuelve a rellenar subiendo el PDF. Desaparece al usarlo." className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">🗑 Borrar datos del PLANING ({Object.keys(planPres).length} presupuestos) · un solo uso</button>}
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
             <summary className="cursor-pointer text-sm font-semibold text-slate-700">⏪ Volver a como estaba ({Object.keys(copias).length} copias)</summary>
@@ -53274,7 +53275,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const m = materialObra(o); const dm = dondeMaterial(o);
               return (
                 <div className="px-3 pb-1 text-[11px] font-semibold flex flex-col gap-0.5">
-                  <span className={m.ok ? "text-emerald-700" : "text-rose-700"}>📦 {m.ok ? "Material completo (confirmado por fábrica)" : `Le falta: ${m.motivo}`}</span>
+                  <span className={m.ok ? "text-emerald-700" : "text-rose-700"}>📦 {m.entregada ? "Obra ya ENTREGADA en el CRM" : m.ok ? "Material completo (confirmado por fábrica)" : `Le falta: ${m.motivo}`}</span>
                   {dm.sinClaves ? <span className="text-slate-500 font-normal">· Sin nº de presupuesto: no puedo decir dónde está su material</span> : dm.filas.map((f, i) => <span key={i} className="text-slate-600 font-normal">· {f.t}: {f.txt}</span>)}
                 </div>
               );
