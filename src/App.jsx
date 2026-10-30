@@ -6122,6 +6122,7 @@ export default function App() {
         )}
         {modulo === "proyectos" && (
           <ProyectosModulo
+            uxExpedientes={uxExpedientes}
             currentUser={currentUser}
             onRecibirPedido={recibirPedido}
             proyectos={proyectos}
@@ -7657,7 +7658,7 @@ function InfoRow({ icon, label, value }) {
 /* ================= PROYECTOS ================= */
 
 // En qué punto va una obra, de un vistazo (para la lista de Proyectos): material → listo para fabricar → en fábrica → listo para salir → entregado
-function faseObra(p, pedidos) {
+function faseObra(p, pedidos, uxExpedientes = []) {
   const et = p.estadoTrabajo || "";
   if (et === "Cancelado") return { txt: "Cancelado", cls: "bg-slate-100 text-slate-500" };
   if (et === "Entregado") return { txt: "Entregado", cls: "bg-emerald-100 text-emerald-800" };
@@ -7666,14 +7667,20 @@ function faseObra(p, pedidos) {
   if (p.listoParaAceptar && (!et || et === "Pendiente de aceptación")) return { txt: "✅ HA LLEGADO TODO · listo para aceptar", cls: "bg-violet-100 text-violet-800 font-bold" };
   if (p.estadoPresupuesto !== "Presupuesto aceptado") return { txt: "Aún sin aceptar", cls: "bg-slate-100 text-slate-500" };
   const cp = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
-  if (!cp.length) return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
+  if (!cp.length) {
+    // Uxcar puede haber marcado en su expediente que ya pidió los vidrios o los compactos, aunque en el CRM no exista ese pedido
+    const ex = p.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e && e.id === p.uxcarExpedienteId) : null;
+    const st = (k) => (ex && ex.materiales && ex.materiales[k] && ex.materiales[k].estado) || "";
+    if (["vidrios", "compactos"].some((k) => ["pedido", "recibido"].includes(st(k)))) return { txt: "Material pedido según Uxcar · falta el pedido en el CRM", cls: "bg-orange-100 text-orange-800" };
+    return { txt: "Aceptada · material sin pedir", cls: "bg-rose-100 text-rose-800" };
+  }
   const llegado = cp.every((pd) => llegadoParaObra(pd));
   if (llegado && cp.every((pd) => toArray(pd.lineas).every((l) => l.confirmadoFabrica))) return { txt: "LISTA PARA FABRICAR", cls: "bg-emerald-100 text-emerald-800" };
   if (llegado) return { txt: "Material llegado · falta confirmar en fábrica", cls: "bg-amber-100 text-amber-800" };
   if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
   return { txt: "Pedido en espera · sin enviar", cls: "bg-amber-100 text-amber-800" };
 }
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar }) {
+function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [] }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -7719,10 +7726,27 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         if (r && (!f || f < r[0] || f > r[1])) return false;
       }
       if (!q) return true;
-      const hay = `${p.numero} ${p.nombre} ${clienteNombre(p.clienteId)} ${p.ubicacion}`.toLowerCase();
-      return hay.includes(q.toLowerCase());
+      const hay = `${p.numero} ${p.nombre} ${clienteNombre(p.clienteId)} ${p.ubicacion} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase();
+      if (hay.includes(q.toLowerCase())) return true;
+      // «6897» debe encontrar «6.897-1»: se compara también sin puntos
+      const qd = q.replace(/[^\d]/g, "");
+      return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
   }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes]);
+  // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
+  const duplicadosNombre = useMemo(() => {
+    const cuenta = {};
+    proyectos.forEach((p) => { if (!p || p.estadoTrabajo === "Cancelado") return; const k = String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " "); if (k && /\d/.test(k)) (cuenta[k] = cuenta[k] || []).push(p.numero); });
+    const out = {};
+    Object.entries(cuenta).forEach(([k, nums]) => { if (nums.length > 1) out[k] = nums; });
+    return out;
+  }, [proyectos]);
+  // Expedientes de Uxcar que coinciden con la búsqueda y todavía NO son proyecto (siguen en «Planificación virtual»)
+  const uxSinProyecto = (() => {
+    const qd = String(q || "").replace(/[^\d]/g, "");
+    if (qd.length < 3) return [];
+    return toArray(uxExpedientes).filter((e) => e && (!e.proyectoId || !proyectos.some((p) => p.id === e.proyectoId)) && [e.numero, e.presupuesto, e.presupuestoNumero].some((t) => String(t || "").replace(/[^\d]/g, "").includes(qd))).slice(0, 20);
+  })();
 
   if (view === "form") {
     const editing = proyectos.find((p) => p.id === editId) || null;
@@ -7903,7 +7927,14 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
+            {uxSinProyecto.map((e) => (
+              <tr key={`ux-${e.id}`} className="border-b border-amber-200 bg-amber-50">
+                <td colSpan={13} className="px-4 py-2.5 text-sm text-amber-900">
+                  <b>Uxcar exp. {e.numero}</b>{e.presupuesto || e.presupuestoNumero ? ` · ppto ${e.presupuesto || e.presupuestoNumero}` : ""} · {(UX_ESTADOS[e.estado] || {}).label || e.estado || "sin estado"} — <b>todavía no es proyecto</b>: sigue en el módulo Uxcar y se crea la obra al aceptarlo.
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && uxSinProyecto.length === 0 && (
               <tr><td colSpan={13} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
             {filtered.map((p) => {
@@ -7916,7 +7947,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition"
                 >
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; return d && p.estadoTrabajo !== "Cancelado" ? <span className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap" title={`Mismo nombre que los proyectos ${d.map((n) => "#" + n).join(", ")}`}>⚠ posible duplicado ({d.filter((n) => n !== p.numero).map((n) => "#" + n).join(", ")})</span> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -7941,7 +7972,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                       {Object.keys(ESTADO_TRABAJO_STYLE).map((e) => <option key={e} value={e}>{e === "Pendiente de aceptación" && p.estadoPresupuesto === "Presupuesto aceptado" ? "Aceptado · sin fabricar" : e}</option>)}
                     </select>
                   </td>
-                  <td className="px-4 py-3">{(() => { const fs = faseObra(p, pedidos); return <span className={`text-[11px] font-bold px-2 py-1 rounded whitespace-nowrap ${fs.cls}`}>{fs.txt}</span>; })()}</td>
+                  <td className="px-4 py-3">{(() => { const fs = faseObra(p, pedidos, uxExpedientes); return <span className={`text-[11px] font-bold px-2 py-1 rounded whitespace-nowrap ${fs.cls}`}>{fs.txt}</span>; })()}</td>
                   <td className="px-4 py-3 text-xs">
                     {(() => {
                       const f = (d) => (d ? fmtDate(String(d).slice(0, 10)) : "");
@@ -21378,9 +21409,18 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             if (p.estadoTrabajo === "En proceso") return { t: `En fabricación · ${tallerDe(p)}`, c: "bg-blue-50 text-blue-700" };
             return { t: p.estadoTrabajo || "Sin estado", c: "bg-slate-100 text-slate-600" };
           };
+          // Expedientes de Uxcar que coinciden y NO tienen obra en el CRM (por eso no salen en «Listo para fabricar»)
+          const qdBusca = String(busca).replace(/\D/g, "");
+          const resUx = qdBusca.length >= 3 ? toArray(uxExpedientes).filter((e) => e && (!e.proyectoId || !proyectos.some((p) => p.id === e.proyectoId)) && [e.numero, e.presupuesto, e.presupuestoNumero, e.referencia, e.nombre].some((t) => String(t || "").replace(/\D/g, "").includes(qdBusca))).slice(0, 10) : [];
           return (
             <div className="mt-2 max-w-xl bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 shadow-sm">
-              {res.length === 0 && <div className="px-4 py-3 text-sm text-slate-500">Ninguna obra coincide con «{busca}».</div>}
+              {res.length === 0 && resUx.length === 0 && <div className="px-4 py-3 text-sm text-slate-500">Ninguna obra coincide con «{busca}».</div>}
+              {resUx.map((e) => (
+                <div key={`ux-${e.id}`} className="w-full text-left px-4 py-2.5 flex items-center gap-3">
+                  <span className="text-sm font-semibold text-slate-800 flex-1 truncate">Uxcar exp. {e.numero}{e.nombre ? ` — ${e.nombre}` : ""}</span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">Sin obra en el CRM</span>
+                </div>
+              ))}
               {res.map((p) => { const d = dondeEsta(p); return (
                 <button key={p.id} onClick={() => onVerProyecto && onVerProyecto(p.id)} className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center gap-3">
                   <span className="text-sm font-semibold text-slate-800 flex-1 truncate">#{p.numero} — {p.nombre}</span>
