@@ -18305,8 +18305,34 @@ const fechaIsoPedido = (t) => {
   const m = s.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);
   return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : "";
 };
+// Cabecera del «PEDIDO COMPRA» leída del texto del PDF (sin IA): presupuesto, referencia (EXP 823 BAJO 06-F), cliente y expediente. Si el PDF no tiene texto devuelve {}
+function cabeceraPedidoCompraDeLineas(lineas) {
+  const L = lineas.slice(0, 40); const out = {};
+  const txt = L.join("\n");
+  let m;
+  if ((m = txt.match(/Presupuesto\s*:\s*(\d[\d.]*(?:\s*-\s*\d+)?)/i))) out.presupuesto = m[1].replace(/\s+/g, "");
+  if ((m = txt.match(/Referencia\s*:\s*([^\n]+)/i))) out.referencia = m[1].replace(/\s+/g, " ").trim();
+  if ((m = txt.match(/Cliente\s*:\s*([^\n]+)/i))) out.cliente = m[1].replace(/\s+/g, " ").trim();
+  if (out.referencia && (m = out.referencia.match(/EXP(?:EDIENTE)?\.?\s*(\d{2,})/i))) out.expediente = m[1];
+  return out;
+}
+async function cabeceraPedidoCompraPdf(file) {
+  try {
+    const esPdf = (file.type || "") === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    if (!esPdf) return {};
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const tc = await (await doc.getPage(1)).getTextContent();
+    const lineas = lineasDePaginaPdf(tc.items);
+    if (!/PEDIDO COMPRA/i.test(lineas.slice(0, 15).join(" "))) return {};
+    return cabeceraPedidoCompraDeLineas(lineas);
+  } catch (e) { return {}; }
+}
 async function leerPedidoPersianas(file) {
   const o = await leerDocumentoCristalConIA(file, PROMPT_PEDIDO_PERSIANAS);
+  // Lo que se lee del texto del PDF manda sobre lo que devuelve la IA (la IA a veces recorta la referencia: «EXP 823 BAJO 06-F» → «EXP 823»)
+  const det = await cabeceraPedidoCompraPdf(file);
+  ["presupuesto", "referencia", "cliente", "expediente"].forEach((k) => { if (det[k]) o[k] = det[k]; });
   const refObra = String(o.referencia || "").trim();
   const cab = {
     pedido: String(o.pedido || "").trim(), presupuesto: String(o.presupuesto || "").trim(),
@@ -52387,16 +52413,23 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return { filas, sinClaves: false, pers, cabs, piezaDeObra };
   };
   // Material que hay en los almacenes para un código de presupuesto (aunque la obra no esté en el CRM)
-  const materialPorCodigo = (dg) => {
+  const materialPorCodigo = (dg, posiciones = []) => {
     const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
     const ok = (...ts) => digs(ts.join(" ")).includes(dg);
-    const cab = toArray(almacenRapido.cristales).filter((c) => ok(c.presupuesto, ...toArray(c.piezas).map((x) => x.presupuesto || x.ppto)));
-    const per = toArray(almacenRapido.persianas).filter((x) => !x.entregada && !x.colocadaVentana && ok(x.presupuesto));
-    const out = [];
-    if (cab.length) out.push(`cristales en ${cab.length} caballete${cab.length === 1 ? "" : "s"} (${cab.slice(0, 3).map((c) => c.lote || c.numero || "s/n").join(", ")})`);
-    if (per.length) out.push(`${per.length} persiana${per.length === 1 ? "" : "s"} en almacén`);
-    return out;
+    // La posición («V01.375») de las ventanas del planning es única: también sirve para encontrar cristales y persianas aunque no lleven el nº de presupuesto
+    const sq = (t) => normPosPlan(t).replace(/\./g, "");
+    const pos = new Set(toArray(posiciones).map(sq).filter(Boolean));
+    const refOk = (r) => { const q = sq(r); return !!q && pos.has(q); };
+    const cab = toArray(almacenRapido.cristales).filter((c) => ok(c.presupuesto, ...toArray(c.piezas).map((x) => x.presupuesto || x.ppto)) || toArray(c.piezas).some((x) => refOk(x.ref)));
+    const per = toArray(almacenRapido.persianas).filter((x) => !x.entregada && !x.colocadaVentana && (ok(x.presupuesto, x.ppto) || refOk(x.ref)));
+    return { nCab: cab.length, nPer: per.length, lotes: cab.slice(0, 3).map((c) => c.lote || c.numero || "s/n") };
   };
+  const chipsMat = (nC, nP, lotes = []) => (
+    <>
+      {nC > 0 && <span className="ml-1 rounded bg-sky-100 text-sky-900 px-1 font-semibold">🟦 cristal en {nC} caballete{nC === 1 ? "" : "s"}{lotes.length ? ` (${lotes.join(", ")})` : ""}</span>}
+      {nP > 0 && <span className="ml-1 rounded bg-orange-100 text-orange-900 px-1 font-semibold">🟧 {nP} persiana{nP === 1 ? "" : "s"} en almacén</span>}
+    </>
+  );
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica (manda Fábrica): { dias:{fecha:{clave:{nombre,horas}}}, obras:{clave:{nombre,tipo,id,num,inicio,fin}} }
@@ -53040,8 +53073,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <details key={d} className="mb-1 rounded border border-slate-200 px-2 py-1">
                 <summary className="cursor-pointer text-sm font-semibold text-slate-800">{fmtDate(d)} · {fs.length} presupuesto{fs.length === 1 ? "" : "s"} · {fmtHoras(fs.reduce((a, f) => a + f.p.horas, 0))} · {fs.reduce((a, f) => a + f.p.ventanas.length, 0)} ventanas</summary>
                 {fs.map((f, i) => (
-                  <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : (materialPorCodigo(digitosPresu(f.p.pres)).length ? "text-sky-900 bg-sky-100 rounded px-1 font-semibold" : "text-slate-600")} ${f.incluir ? "" : "line-through opacity-60"}`}>
-                    {f.ob ? (f.mat.ok ? (f.mat.entregada ? "✔" : "✓") : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.entregada ? " · ya figura ENTREGADA en el CRM" : f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : `no está en el CRM: se crea con las ventanas del planning${(() => { const mp = materialPorCodigo(digitosPresu(f.p.pres)); return mp.length ? ` · 📦 pero en almacén hay: ${mp.join(" y ")}` : " · sin material en almacén con ese nº"; })()}`}
+                  <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : "text-slate-600"} ${f.incluir ? "" : "line-through opacity-60"}`}>
+                    {f.ob ? (f.mat.ok ? (f.mat.entregada ? "✔" : "✓") : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.entregada ? " · ya figura ENTREGADA en el CRM" : f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : "no está en el CRM: se crea con las ventanas del planning"}
+                    {(() => { if (f.ob) { const dm = dondeMaterial(f.ob); return chipsMat(dm.cabs.length, dm.pers.length); } const mp = materialPorCodigo(digitosPresu(f.p.pres), f.p.ventanas.map((w) => w.pos)); return (mp.nCab || mp.nPer) ? chipsMat(mp.nCab, mp.nPer, mp.lotes) : <span className="ml-1 text-slate-500 font-normal">· sin material en almacén</span>; })()}
                   </div>
                 ))}
               </details>
@@ -53274,7 +53308,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               return (
                 <div className="px-3 pb-1 text-[11px] font-semibold flex flex-col gap-0.5">
                   <span className={m.ok ? "text-emerald-700" : "text-rose-700"}>📦 {m.entregada ? "Obra ya ENTREGADA en el CRM" : m.ok ? "Material completo (confirmado por fábrica)" : `Le falta: ${m.motivo}`}</span>
-                  {dm.cabs.length > 0 && !m.ok && <span className="self-start rounded bg-sky-100 text-sky-900 px-1.5 py-0.5">🟦 Hay cristal de esta obra en {dm.cabs.length} caballete{dm.cabs.length === 1 ? "" : "s"}</span>}
+                  {!m.ok && (dm.cabs.length > 0 || dm.pers.length > 0) && <span className="self-start">{chipsMat(dm.cabs.length, dm.pers.length)}</span>}
                   {dm.sinClaves ? <span className="text-slate-500 font-normal">· Sin nº de presupuesto: no puedo decir dónde está su material</span> : dm.filas.map((f, i) => <span key={i} className="text-slate-600 font-normal">· {f.t}: {f.txt}</span>)}
                 </div>
               );
