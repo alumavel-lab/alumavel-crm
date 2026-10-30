@@ -52245,7 +52245,18 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     o.viv.get(g).push({ id: limpia(hh.ventana.id || hh.ventana.pos || baseDe(hh.ventana)), pos: hh.ventana.pos || "", fab: hh.lote.fab, tip: hh.ventana.tipo || hh.ventana.pos, medida: hh.ventana.medida || "", color: hh.ventana.color || "" });
   });
   // Todas las obras (tuyas y de Uxcar), tengan o no hoja de corte cargada: sin ella se marcan enteras, sin viviendas ni ventanas
-  toArray(proyectos).filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo)).forEach((p) => {
+  // Códigos de presupuesto de los PLANING (el de la vista previa y los ya guardados): una obra ya Entregada/Cancelada en el CRM también se reconoce si su código sale en un planning
+  const codigosPlanning = new Set();
+  toArray(planEdmo && planEdmo.bloques).forEach((b) => { const dg = String((b && b.pres) || "").split("-")[0].replace(/\D/g, ""); if (dg.length >= 3) codigosPlanning.add(dg); });
+  Object.values(planPres || {}).forEach((pr) => { const dg = String((pr && pr.pres) || "").split("-")[0].replace(/\D/g, ""); if (dg.length >= 3) codigosPlanning.add(dg); });
+  const codigosDeProyecto = (p) => {
+    const out = new Set(); const add = (t) => { const dg = digitosPresu(t); if (dg.length >= 3) out.add(dg); };
+    add(p.presupuestoNumero); add(presupuestoDeObra(p));
+    // Escrito en el nombre/referencia: «6.673» (con punto) o «presupuesto 6673»
+    [p.nombre, p.referencia, p.expediente].forEach((t) => { const x = String(t || ""); (x.match(/\b\d\.\d{3}\b/g) || []).forEach(add); (x.match(/presupuesto\s*n?[ºo°.]?\s*(\d{4})\b/gi) || []).forEach((m) => add(m.replace(/\D/g, ""))); });
+    return out;
+  };
+  toArray(proyectos).filter((p) => !["Entregado", "Cancelado"].includes(p.estadoTrabajo) || [...codigosDeProyecto(p)].some((c) => codigosPlanning.has(c))).forEach((p) => {
     const key = `p-${p.id}`;
     if (!obras.has(key)) obras.set(key, { d: { key, tipo: "p", id: p.id, nombre: `#${p.numero} ${p.nombre || ""}`.trim() }, viv: new Map() });
   });
@@ -52291,7 +52302,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   });
   const pptosDe = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
-    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); add(presupuestoDeObra(p)); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
+    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); add(presupuestoDeObra(p)); codigosDeProyecto(p).forEach((n) => out.add(n)); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
     if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); numsExpediente(e.numero).forEach((n) => out.add(n)); } }
     // Presupuestos que vienen del PDF «PLANING» (obras virtuales «pl-…» y obras del CRM enlazadas): también cuentan para reconocer un planning nuevo
     (presDeObra.get(limpia(d.key)) || []).forEach((pr) => add(pr.pres));
@@ -52329,6 +52340,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     if (!p) return { ok: false, motivo: o.d.tipo === "s" ? "sin obra asignada" : "no está enlazada a una obra del CRM" };
     if (p.estadoTrabajo === "En proceso") return { ok: true, motivo: "" };
+    if (p.estadoTrabajo === "Entregado") return { ok: true, motivo: "", entregada: true };
+    if (p.estadoTrabajo === "Cancelado") return { ok: false, motivo: "obra CANCELADA en el CRM" };
     if (listasSet.has(p.id)) return { ok: true, motivo: "" };
     const peds = toArray(pedidos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado" && esPedidoCristalOCompacto(pd));
     if (!peds.length) return { ok: false, motivo: "no tiene pedido de cristal/persiana" };
@@ -52372,6 +52385,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       .forEach((x) => { pers.push(x); const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
     Object.entries(g).forEach(([k, v]) => filas.push({ t: "Persianas", txt: `${k} · ${v.n} ud`, ir: v.x.estante ? { tipo: "persiana", x: v.x } : null }));
     return { filas, sinClaves: false, pers, cabs, piezaDeObra };
+  };
+  // Material que hay en los almacenes para un código de presupuesto (aunque la obra no esté en el CRM)
+  const materialPorCodigo = (dg) => {
+    const digs = (t) => (String(t || "").match(/\d[\d.]*\d|\d/g) || []).map((x) => x.replace(/\./g, "")).filter((x) => x.length >= 3);
+    const ok = (...ts) => digs(ts.join(" ")).includes(dg);
+    const cab = toArray(almacenRapido.cristales).filter((c) => ok(c.presupuesto, ...toArray(c.piezas).map((x) => x.presupuesto || x.ppto)));
+    const per = toArray(almacenRapido.persianas).filter((x) => !x.entregada && !x.colocadaVentana && ok(x.presupuesto));
+    const out = [];
+    if (cab.length) out.push(`cristales en ${cab.length} caballete${cab.length === 1 ? "" : "s"} (${cab.slice(0, 3).map((c) => c.lote || c.numero || "s/n").join(", ")})`);
+    if (per.length) out.push(`${per.length} persiana${per.length === 1 ? "" : "s"} en almacén`);
+    return out;
   };
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
@@ -53017,7 +53041,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <summary className="cursor-pointer text-sm font-semibold text-slate-800">{fmtDate(d)} · {fs.length} presupuesto{fs.length === 1 ? "" : "s"} · {fmtHoras(fs.reduce((a, f) => a + f.p.horas, 0))} · {fs.reduce((a, f) => a + f.p.ventanas.length, 0)} ventanas</summary>
                 {fs.map((f, i) => (
                   <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : "text-slate-600"} ${f.incluir ? "" : "line-through opacity-60"}`}>
-                    {f.ob ? (f.mat.ok ? "✓" : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : "no está en el CRM: se crea con las ventanas del planning"}
+                    {f.ob ? (f.mat.ok ? (f.mat.entregada ? "✔" : "✓") : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.entregada ? " · ya figura ENTREGADA en el CRM" : f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : `no está en el CRM: se crea con las ventanas del planning${(() => { const mp = materialPorCodigo(digitosPresu(f.p.pres)); return mp.length ? ` · 📦 pero en almacén hay: ${mp.join(" y ")}` : " · sin material en almacén con ese nº"; })()}`}
                   </div>
                 ))}
               </details>
