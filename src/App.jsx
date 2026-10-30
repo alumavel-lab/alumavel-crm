@@ -21367,6 +21367,26 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     return faltan.length ? { p, faltan } : null;
   }).filter(Boolean), [proyectos, pedidos, listoParaFabricar, cristales, ctxPaneles.persianasAlmacen, uxExpedientes]);
 
+  // Material que está en el almacén (caballetes / carros) y NO pertenece a ninguna obra del CRM, agrupado por nº de presupuesto
+  const sinObraAlmacen = useMemo(() => {
+    const conocidos = new Set(); const addK = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) conocidos.add(d); });
+    proyectos.forEach((p) => { addK(p.presupuestoNumero); addK(presupuestoDeObra(p)); });
+    toArray(uxExpedientes).forEach((e) => { if (e && e.proyectoId && proyectos.some((p) => p.id === e.proyectoId)) { addK(e.presupuesto); addK(e.presupuestoNumero); } });
+    const idsPed = new Set(pedidos.filter((pd) => pd.proyectoId && proyectos.some((p) => p.id === pd.proyectoId)).map((pd) => pd.id));
+    const g = new Map();
+    const dame = (d) => { if (!g.has(d)) g.set(d, { ppto: d, exps: new Set(), cabs: [], pers: 0 }); return g.get(d); };
+    toArray(cristales).forEach((c) => {
+      if (!c || (c.pedidoId && idsPed.has(c.pedidoId))) return;
+      const pp = new Set(); [c.presupuesto, ...toArray(c.piezas).map((x) => x && (x.presupuesto || x.ppto))].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) pp.add(d); }));
+      [...pp].filter((d) => !conocidos.has(d)).forEach((d) => { const o = dame(d); o.cabs.push(c); String(c.expediente || "").split(/[·,;]+/).forEach((e) => { const n = e.replace(/\D/g, ""); if (n) o.exps.add(n); }); });
+    });
+    toArray(ctxPaneles.persianasAlmacen).forEach((x) => {
+      if (!x || x.entregada || x.colocadaVentana) return;
+      String(x.presupuesto || x.ppto || "").split(/[·,;\s]+/).forEach((t) => { const d = digitosPresu(t); if (d.length >= 3 && !conocidos.has(d)) dame(d).pers++; });
+    });
+    return [...g.values()].sort((a, b) => a.ppto.localeCompare(b.ppto));
+  }, [proyectos, pedidos, uxExpedientes, cristales, ctxPaneles.persianasAlmacen]);
+
   const descargarWord = () => {
     const titulos = { listo: "Listo para fabricar", materiales: "Materiales pendientes", enfab: "En fabricación" };
     const filaTabla = (cols) => `<tr>${cols.map((c) => `<td style="border:1px solid #ccc;padding:6px 10px;">${c}</td>`).join("")}</tr>`;
@@ -21443,7 +21463,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           const resUx = qdBusca.length >= 3 ? toArray(uxExpedientes).filter((e) => e && (!e.proyectoId || !proyectos.some((p) => p.id === e.proyectoId)) && [e.numero, e.presupuesto, e.presupuestoNumero, e.referencia, e.nombre].some((t) => String(t || "").replace(/\D/g, "").includes(qdBusca))).slice(0, 10) : [];
           return (
             <div className="mt-2 max-w-xl bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 shadow-sm">
-              {res.length === 0 && resUx.length === 0 && <div className="px-4 py-3 text-sm text-slate-500">Ninguna obra coincide con «{busca}».</div>}
+              {res.length === 0 && resUx.length === 0 && sinObraAlmacen.filter((o) => qdBusca.length >= 3 && (o.ppto.includes(qdBusca) || [...o.exps].some((e) => e === qdBusca))).length === 0 && <div className="px-4 py-3 text-sm text-slate-500">Ninguna obra coincide con «{busca}».</div>}
+              {qdBusca.length >= 3 && sinObraAlmacen.filter((o) => o.ppto.includes(qdBusca) || [...o.exps].some((e) => e === qdBusca)).map((o) => (
+                <div key={`sa-${o.ppto}`} className="w-full text-left px-4 py-2.5 flex items-center gap-3">
+                  <span className="text-sm font-semibold text-slate-800 flex-1 truncate">Presupuesto {o.ppto}{o.exps.size ? ` · EXP ${[...o.exps].join(", ")}` : ""} — {o.cabs.length} caballete{o.cabs.length === 1 ? "" : "s"}{o.pers ? ` · ${o.pers} persiana${o.pers === 1 ? "" : "s"}` : ""} en el almacén</span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">Material sin obra en el CRM</span>
+                </div>
+              ))}
               {resUx.map((e) => (
                 <div key={`ux-${e.id}`} className="w-full text-left px-4 py-2.5 flex items-center gap-3">
                   <span className="text-sm font-semibold text-slate-800 flex-1 truncate">Uxcar exp. {e.numero}{e.nombre ? ` — ${e.nombre}` : ""}</span>
@@ -21588,6 +21614,20 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           <div className="px-4 py-3 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm mb-6">
             Aquí solo aparecen los proyectos donde coincide todo: oficina ha recibido los pedidos, fábrica ha confirmado que ha llegado el material, y el checklist "Qué lleva la obra" está completo. Nada más entrar aquí, ya se puede empezar a fabricar.
           </div>
+          {sinObraAlmacen.length > 0 && (
+            <details className="mb-5 bg-white border border-rose-300 rounded-lg">
+              <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-rose-800">📦 {sinObraAlmacen.length} presupuesto{sinObraAlmacen.length === 1 ? "" : "s"} con material en el almacén y SIN obra en el CRM (por eso no pueden estar en «Listo para fabricar»)</summary>
+              <p className="px-4 pt-2 text-xs text-slate-500">Hay cristales en caballetes (o persianas en carros) con estos presupuestos, pero ninguna obra del CRM lleva ese número. Crea o abre la obra y ponle su nº de presupuesto, o súbela por el pedido, y pasará aquí sola.</p>
+              <div className="divide-y divide-slate-100">
+                {sinObraAlmacen.map((o) => (
+                  <div key={o.ppto} className="px-4 py-2.5 text-sm">
+                    <div className="font-semibold text-slate-800">Presupuesto {o.ppto}{o.exps.size ? <span className="text-slate-500 font-normal"> · EXP {[...o.exps].join(", ")}</span> : null}</div>
+                    <div className="text-xs text-sky-800">{o.cabs.slice(0, 6).map((c) => `Caballete ${c.lote || c.numero || "s/n"} (${textoSitioCab(c)})`).join(" · ")}{o.cabs.length > 6 ? ` · +${o.cabs.length - 6}` : ""}{o.pers ? ` · 🟧 ${o.pers} persiana${o.pers === 1 ? "" : "s"} en carros` : ""}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
           {bloqueadosMaterial.length > 0 && (
             <details className="mb-5 bg-white border border-amber-300 rounded-lg">
               <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
