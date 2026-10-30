@@ -17720,11 +17720,15 @@ const obraCoincideBusqueda = (p, q, uxExpedientes, clientes) => {
   if (!qq) return true;
   const qd = soloDigitos(qq);
   const esNumero = /^[\d.\s]+$/.test(qq) && qd.length > 0;
-  const exps = toArray(uxExpedientes).filter((e) => e && e.proyectoId === p.id).map((e) => String(e.numero || ""));
+  const expsUx = toArray(uxExpedientes).filter((e) => e && e.proyectoId === p.id);
+  const exps = expsUx.map((e) => String(e.numero || ""));
   const cli = toArray(clientes).find((c) => c.id === p.clienteId);
+  // Nº de presupuesto de la obra (con o sin versión: «6.746-1» → 6746): es la clave con la que se enlaza todo
+  const pptos = [p.presupuestoNumero, presupuestoDeObra(p), ...expsUx.flatMap((e) => [e.presupuesto, e.presupuestoNumero])].map((t) => String(t || "").split("-")[0]).map(soloDigitos).filter(Boolean);
   if (esNumero) {
     const numsNombre = String(p.nombre || "").match(/\d[\d.]*/g) || [];
     const candidatos = [p.numero, p.expediente, ...exps, ...numsNombre].map(soloDigitos).filter(Boolean);
+    if (pptos.some((c) => c === qd || (qd.length >= 3 && c.includes(qd)))) return true;
     return candidatos.some((c) => c === qd || (qd.length >= 3 && c.includes(qd)));
   }
   const texto = normBusca([p.numero, p.nombre, p.ubicacion, p.direccion, p.expediente, cli && cli.nombre, ...exps].join(" "));
