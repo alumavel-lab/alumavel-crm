@@ -21821,7 +21821,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -52177,7 +52177,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [] }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -52920,6 +52920,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     w.document.write(`<html><head><meta charset="utf-8"><title>Informe del día ${esc(fmtDate(dia))}</title><style>body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:16px}h1{font-size:18px;margin:0 0 4px}h3{font-size:14px;margin:14px 0 4px}small{font-weight:normal;color:#555}table{border-collapse:collapse;width:100%}th,td{border:1px solid #bbb;padding:3px 6px;text-align:left}th{background:#eee}.e1 td{background:#e6f6ec}.e2 td{background:#ffe7d1}</style></head><body><h1>Control del día · ${esc(fmtDate(dia))}</h1><div>${lista.length} obra${lista.length === 1 ? "" : "s"} · ${tot.total} ventanas: <b>${tot.hechas} hechas</b>, <b>${tot.problema} con problema</b>, ${tot.pendientes} pendientes${textoTiempos ? ` · ${esc(textoTiempos)}` : ""}</div>${filtros ? `<div>Filtro: ${esc(filtros)} → ${vis.total} ventanas</div>` : ""}${cuerpo || "<p>Sin datos para este filtro.</p>"}</body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
   };
+  const hechasDia = todasFilasInforme.filter((f) => f.v && f.val === 1).length;
+  const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
+  const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
+  const contadorCD = <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -52930,6 +52934,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
+      {contadorCD}
       <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(26rem, 1fr))" }}>
         {lista.map((o) => {
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
@@ -53088,6 +53093,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       )}
       <div className="mb-2 flex flex-wrap items-center gap-2">
       </div>
+      {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
         <button type="button" onClick={() => setVerLista((v) => !v)} className="px-3 py-1.5 rounded-md bg-slate-700 text-white text-sm font-bold">📋 Lista de obras pendientes (qué les falta)</button>
@@ -53519,6 +53525,56 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien }) {
   );
 }
 
+// Contador de ritmo de la línea: ventanas que han pasado hoy frente a las que deberían (ritmo por hora desde la hora de inicio)
+function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
+  const escaneos = useEscaneosLinea();
+  const cfg = useObjetoFb("configRitmoLinea");
+  const [ahora, setAhora] = useState(Date.now());
+  const [editar, setEditar] = useState(false);
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 20000); return () => clearInterval(t); }, []);
+  const ritmo = parseFloat(cfg.ritmo) > 0 ? parseFloat(cfg.ritmo) : 8;
+  const inicio = cfg.inicio || "08:00"; const fin = cfg.fin || "16:00"; const puesto = cfg.puesto || "todos";
+  const aMin = (t) => { const [h, m] = String(t || "0:0").split(":"); return (parseInt(h, 10) || 0) * 60 + (parseInt(m, 10) || 0); };
+  const d = new Date(ahora); const minAhora = d.getHours() * 60 + d.getMinutes();
+  const mIni = aMin(inicio), mFin = Math.max(aMin(fin), mIni + 1);
+  const trabajados = Math.min(Math.max(minAhora - mIni, 0), mFin - mIni);
+  const esperado = Math.round((trabajados / 60) * ritmo * 10) / 10;
+  const objetivoDia = Math.round(((mFin - mIni) / 60) * ritmo);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const vistos = new Set();
+  escaneos.forEach((x) => { if (x.fecha === hoy && (puesto === "todos" || x.puestoId === puesto)) vistos.add(`${x.fab || ""}|${x.ventanaId}`); });
+  const real = realProp !== undefined ? realProp : vistos.size;
+  const fuera = !esHoy || minAhora < mIni || minAhora > mFin;
+  const atrasadas = Math.round((esperado - real) * 10) / 10;
+  const mal = !fuera && atrasadas >= 1;
+  const estilo = fuera ? "bg-slate-100 border-slate-300 text-slate-700" : mal ? "bg-red-100 border-red-500 text-red-900 animate-pulse" : "bg-emerald-100 border-emerald-500 text-emerald-900";
+  const guardar = (patch) => fbSet(ref(fbDb, "configRitmoLinea"), { ...cfg, ...patch }).catch(() => {});
+  return (
+    <div className={`mb-3 rounded-xl border-2 px-4 py-3 ${estilo}`}>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+        <span className="text-4xl leading-none">{fuera ? "🕒" : mal ? "🔔" : "😀"}</span>
+        <div>
+          <div className="text-3xl font-black leading-none">{real} <span className="text-lg font-bold">{realProp !== undefined ? "ventanas hechas" : "ventanas hoy"}</span></div>
+          <div className="text-xs font-semibold mt-1">Deberías llevar <b>{esperado}</b> ({ritmo} por hora desde las {inicio})</div>
+        </div>
+        <div className="text-sm font-bold">
+          {fuera ? (!esHoy ? "Este no es el día de hoy: solo se cuentan" : minAhora < mIni ? `Aún no ha empezado el turno (${inicio})` : "Turno terminado") : mal ? `Vamos tarde: faltan ${Math.ceil(atrasadas)} ventana${Math.ceil(atrasadas) === 1 ? "" : "s"}` : real > esperado + 1 ? `Vamos adelantados: +${Math.floor(real - esperado)}` : "Vamos bien"}
+        </div>
+        <span className="text-[11px] opacity-70">{realProp !== undefined ? "cuenta las ventanas que tocas en verde" : puesto === "todos" ? "cuenta ventanas distintas leídas en cualquier puesto" : `cuenta las leídas en ${nombrePuestoLinea(puesto)}`}</span>
+        {admin && <button type="button" onClick={() => setEditar((v) => !v)} className="ml-auto text-xs underline">⚙ ajustar</button>}
+      </div>
+      {editar && admin && (
+        <div className="mt-2 flex flex-wrap items-end gap-3 text-xs">
+          <label>Ventanas por hora <input type="number" min="1" step="0.5" defaultValue={ritmo} onBlur={(e) => guardar({ ritmo: parseFloat(e.target.value) || 8 })} className="w-16 border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
+          <label>Inicio <input type="time" defaultValue={inicio} onBlur={(e) => guardar({ inicio: e.target.value || "08:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
+          <label>Fin <input type="time" defaultValue={fin} onBlur={(e) => guardar({ fin: e.target.value || "16:00" })} className="border border-slate-300 rounded px-1.5 py-1 bg-white" /></label>
+          <label>Contar en <select value={puesto} onChange={(e) => guardar({ puesto: e.target.value })} className="border border-slate-300 rounded px-1.5 py-1 bg-white"><option value="todos">Cualquier puesto</option>{PUESTOS_LINEA.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}</select></label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
@@ -53562,7 +53618,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
