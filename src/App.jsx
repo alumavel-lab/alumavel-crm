@@ -47297,7 +47297,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
     const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
-    return JSON.stringify({ dias, obras: obrasF });
+    const listasPub = {}; listasOrd.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
+    return JSON.stringify({ dias, obras: obrasF, listas: listasPub });
   })();
   const ultimoPublicadoFb = useRef("");
   useEffect(() => { if (publicadoFb === ultimoPublicadoFb.current) return; ultimoPublicadoFb.current = publicadoFb; fbSet(ref(fbDb, "planFabrica"), { ...JSON.parse(publicadoFb), en: Date.now() }).catch(() => {}); }, [publicadoFb]);
@@ -52290,7 +52291,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   });
   const pptosDe = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
-    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
+    if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); add(presupuestoDeObra(p)); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
     if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); numsExpediente(e.numero).forEach((n) => out.add(n)); } }
     // Presupuestos que vienen del PDF «PLANING» (obras virtuales «pl-…» y obras del CRM enlazadas): también cuentan para reconocer un planning nuevo
     (presDeObra.get(limpia(d.key)) || []).forEach((pr) => add(pr.pres));
@@ -52309,12 +52310,12 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return out;
   };
   const mismoPres = (a, b) => { if (a === b) return true; const [ba, va] = a.split("-"); const [bb, vb] = b.split("-"); return ba === bb && (!va || !vb); };
-  const claveFabDe = (o) => {
-    const obrasF = (planF && planF.obras) || {};
+  const claveEn = (o, mapa) => {
     const mios = [...presConVersion(o)]; if (!mios.length) return null;
-    for (const [k, f] of Object.entries(obrasF)) { if (toArray(f.pres).some((c) => mios.some((m) => mismoPres(m, c)))) return k; }
+    for (const [k, f] of Object.entries(mapa || {})) { if (toArray(f.pres).some((c) => mios.some((m) => mismoPres(m, c)))) return k; }
     return null;
   };
+  const claveFabDe = (o) => claveEn(o, planF && planF.obras);
   const proyectoIdDe = (o) => (o.d.tipo === "p" ? o.d.id : o.d.tipo === "u" ? ((toArray(uxExpedientes).find((e) => e.id === o.d.id) || {}).proyectoId || "") : "");
   const materialObra = (o) => {
     if (o.d.tipo === "pl") return { ok: true, motivo: "" };
@@ -52334,7 +52335,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const pptosPresupuesto = (o) => {
     const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
     (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => add(pr.pres));
-    if (o.d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === o.d.id); if (p) add(p.presupuestoNumero); }
+    if (o.d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === o.d.id); if (p) { add(p.presupuestoNumero); add(presupuestoDeObra(p)); } }
     if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
     return out;
   };
@@ -52345,7 +52346,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     const addP = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) claves.add(dg); });
     (presDeObra.get(limpia(o.d.key)) || []).forEach((pr) => addP(pr.pres));
     const pid = proyectoIdDe(o); const pry = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
-    if (pry) addP(pry.presupuestoNumero);
+    if (pry) { addP(pry.presupuestoNumero); addP(presupuestoDeObra(pry)); }
     if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { addP(e.presupuesto); addP(e.presupuestoNumero); } }
     // Ventanas de la obra: la posición («V01.375») es única y es la clave más segura
     const sq = (t) => normPosPlan(t).replace(/\./g, "");
@@ -53103,8 +53104,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
             <summary className="cursor-pointer text-sm font-semibold text-slate-700">⏪ Volver a como estaba ({Object.keys(copias).length} copias)</summary>
             <div className="mt-1 flex flex-col gap-1">
+              <button type="button" onClick={async () => { if (!window.confirm("¿Borrar TODAS las copias? Ya no podrás volver atrás a ninguna de ellas.")) return; try { await fbSet(ref(fbDb, "controlDiaObrasCopia"), null); } catch (e) { alert("No se pudieron borrar: " + e.message); } }} className="self-start text-xs font-bold px-2 py-1 rounded bg-red-600 text-white">🗑 Borrar todas las copias ({Object.keys(copias).length})</button>
               {Object.keys(copias).sort().reverse().map((k) => { const c = copias[k]; const n = Object.values(c.datos || {}).reduce((a, d) => a + Object.keys(d || {}).length, 0); return (
-                <button key={k} type="button" onClick={() => restaurarCopia(k)} className="text-left text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">{new Date(c.en).toLocaleString("es-ES")} · {c.motivo} · {n} obras en {Object.keys(c.datos || {}).length} días</button>
+                <div key={k} className="flex items-center gap-1">
+                  <button type="button" onClick={() => restaurarCopia(k)} className="flex-1 text-left text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">{new Date(c.en).toLocaleString("es-ES")} · {c.motivo} · {n} obras en {Object.keys(c.datos || {}).length} días</button>
+                  <button type="button" onClick={() => fbSet(ref(fbDb, `controlDiaObrasCopia/${k}`), null).catch(() => {})} title="Borrar solo esta copia" className="text-xs font-bold px-2 py-1 rounded border border-red-300 text-red-700 bg-white">🗑</button>
+                </div>
               ); })}
             </div>
           </details>
@@ -53240,7 +53245,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         </div>
       ); })()}
       <details className="mb-3 rounded-lg border border-slate-300 bg-white p-2" open={lista.length === 0}>
-        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} con material · tuyas y de Uxcar)</summary>
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">➕ Añadir obras a este día ({disponibles.length} obras: {disponibles.filter((o) => materialObra(o).ok).length} con material{disponibles.some((o) => !materialObra(o).ok) ? ` y ${disponibles.filter((o) => !materialObra(o).ok).length} sin él` : ""} · tuyas, de Uxcar y del PLANING)</summary>
         <label className="mt-2 flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verSinMaterial} onChange={(e) => setVerSinMaterial(e.target.checked)} /> Ver también las que todavía no tienen todo el material ({nSinMaterial}) — salen con lo que les falta</label>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar por nº de presupuesto, expediente o nombre…" className="mt-2 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
         <div className="mt-2 flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
@@ -53264,6 +53269,27 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               ); })}
             </div>
           </div>
+        );
+      })()}
+      {(() => {
+        const listasF = (planF && planF.listas) || {};
+        if (!Object.keys(listasF).length) return null;
+        const asignadas = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => asignadas.add(k)));
+        const porClave = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, listasF); if (k && !porClave.has(k)) porClave.set(k, o); });
+        const faltan = Object.entries(listasF).filter(([k]) => { const oc = porClave.get(k); return !oc || !asignadas.has(limpia(oc.d.key)); });
+        if (!faltan.length) return null;
+        return (
+          <details className="mb-3 rounded-lg border-2 border-emerald-400 bg-emerald-50 p-2" open>
+            <summary className="cursor-pointer text-sm font-bold text-emerald-900">🏭 Listas en Fábrica y todavía no en tu planning ({faltan.length}) — puedes traerlas</summary>
+            <div className="mt-2 flex flex-col gap-1.5 max-h-72 overflow-y-auto">
+              {faltan.map(([k, v]) => { const oc = porClave.get(k); return (
+                <div key={k} className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-semibold">{v.nombre}</span>{v.horas ? <span className="text-xs text-slate-600">{v.horas} h</span> : null}{v.enCurso ? <span className="text-[11px] text-slate-500">en fabricación</span> : null}
+                  {oc ? <button type="button" onClick={() => asignar(oc, true)} className="px-2.5 py-1 rounded-md bg-emerald-600 text-white text-xs font-bold">➕ Traer a este día</button> : <span className="text-xs text-amber-700">(no está en Control del día: se trae al subir su planning)</span>}
+                </div>
+              ); })}
+            </div>
+          </details>
         );
       })()}
       <p className="text-xs text-slate-500 mb-3">Solo para ti: no cambia nada en el CRM. Toca una <b>obra</b> o una <b>vivienda</b> para poner todo en verde (otra vez para quitarlo). Toca una <b>ventana</b> para cambiar su color: gris → verde → naranja (problema) → gris.</p>
@@ -53369,6 +53395,15 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <span className={dentro ? "text-emerald-700" : "text-amber-700"}>{dentro ? "✅" : "⚠"} 🏭 Fábrica: {fmtDate(f.inicio)}{f.fin !== f.inicio ? ` → ${fmtDate(f.fin)}` : ""}</span>
                   {!dentro && !pet && <button type="button" onClick={() => fbSet(ref(fbDb, `controlDiaPeticiones/${k}`), { nombre: f.nombre, fecha: dia, de: f.inicio, en: Date.now() }).catch(() => {})} className="px-2 py-0.5 rounded border border-indigo-300 bg-indigo-50 text-indigo-800" title="Fábrica manda: le pides el cambio y ella lo acepta o lo rechaza">📩 Pedir a Fábrica empezar el {fmtDate(dia)}</button>}
                   {pet && <span className="text-indigo-700">⏳ Pedido a Fábrica para el {fmtDate(pet.fecha)} · esperando su permiso <button type="button" onClick={() => fbSet(ref(fbDb, `controlDiaPeticiones/${k}`), null).catch(() => {})} className="underline ml-1">anular</button></span>}
+                </div>
+              );
+            })()}
+            {(() => {
+              const m = materialObra(o); const dm = dondeMaterial(o);
+              return (
+                <div className="px-3 pb-1 text-[11px] font-semibold flex flex-col gap-0.5">
+                  <span className={m.ok ? "text-emerald-700" : "text-rose-700"}>📦 {m.ok ? "Material completo (confirmado por fábrica)" : `Le falta: ${m.motivo}`}</span>
+                  {dm.sinClaves ? <span className="text-slate-500 font-normal">· Sin nº de presupuesto: no puedo decir dónde está su material</span> : dm.filas.map((f, i) => <span key={i} className="text-slate-600 font-normal">· {f.t}: {f.txt}</span>)}
                 </div>
               );
             })()}
