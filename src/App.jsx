@@ -53040,14 +53040,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <details key={d} className="mb-1 rounded border border-slate-200 px-2 py-1">
                 <summary className="cursor-pointer text-sm font-semibold text-slate-800">{fmtDate(d)} · {fs.length} presupuesto{fs.length === 1 ? "" : "s"} · {fmtHoras(fs.reduce((a, f) => a + f.p.horas, 0))} · {fs.reduce((a, f) => a + f.p.ventanas.length, 0)} ventanas</summary>
                 {fs.map((f, i) => (
-                  <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : "text-slate-600"} ${f.incluir ? "" : "line-through opacity-60"}`}>
+                  <div key={i} className={`text-xs mt-0.5 ${f.ob ? (f.mat.ok ? "text-emerald-800" : "text-amber-800") : (materialPorCodigo(digitosPresu(f.p.pres)).length ? "text-sky-900 bg-sky-100 rounded px-1 font-semibold" : "text-slate-600")} ${f.incluir ? "" : "line-through opacity-60"}`}>
                     {f.ob ? (f.mat.ok ? (f.mat.entregada ? "✔" : "✓") : "⚠") : "＋"} {f.p.pres} · {String(f.p.cliente || "").replace(/^\d+-/, "")} · {fmtHoras(f.p.horas)} · {f.p.ventanas.length} vent. — {f.ob ? `CRM: ${f.ob.d.nombre}${f.nHits > 1 ? ` (y ${f.nHits - 1} más con el mismo nº)` : ""}${f.mat.entregada ? " · ya figura ENTREGADA en el CRM" : f.mat.ok ? "" : ` · falta: ${f.mat.motivo}`}` : `no está en el CRM: se crea con las ventanas del planning${(() => { const mp = materialPorCodigo(digitosPresu(f.p.pres)); return mp.length ? ` · 📦 pero en almacén hay: ${mp.join(" y ")}` : " · sin material en almacén con ese nº"; })()}`}
                   </div>
                 ))}
               </details>
             ))}
-            {edmoCalc.duplicados.length > 0 && <div className="mb-2 rounded border border-amber-400 bg-amber-50 px-2 py-1.5 text-xs text-amber-900"><b>⚠ Posibles duplicados ({edmoCalc.duplicados.length}):</b>{edmoCalc.duplicados.map((t, i) => <div key={i} className="mt-0.5">• {t}</div>)}</div>}
-            {edmoCalc.duplicados.length === 0 && <div className="mb-2 text-xs text-emerald-700">✓ No he encontrado duplicados en este planning.</div>}
             {edmoCalc.descuadre.length > 0 && <div className="text-xs text-amber-700 mt-1">Ojo: en {edmoCalc.descuadre.join(", ")} las horas de la cabecera no coinciden con la suma de sus ventanas (hay líneas extra en el propio PDF). Se guardan tal cual.</div>}
             <button type="button" disabled={planEdmo.dibsEstado === "leyendo"} onClick={guardarEdmo} className="mt-2 px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold disabled:opacity-50">Guardar planning</button>
             <button type="button" onClick={() => setPlanEdmo(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
@@ -53276,6 +53274,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               return (
                 <div className="px-3 pb-1 text-[11px] font-semibold flex flex-col gap-0.5">
                   <span className={m.ok ? "text-emerald-700" : "text-rose-700"}>📦 {m.entregada ? "Obra ya ENTREGADA en el CRM" : m.ok ? "Material completo (confirmado por fábrica)" : `Le falta: ${m.motivo}`}</span>
+                  {dm.cabs.length > 0 && !m.ok && <span className="self-start rounded bg-sky-100 text-sky-900 px-1.5 py-0.5">🟦 Hay cristal de esta obra en {dm.cabs.length} caballete{dm.cabs.length === 1 ? "" : "s"}</span>}
                   {dm.sinClaves ? <span className="text-slate-500 font-normal">· Sin nº de presupuesto: no puedo decir dónde está su material</span> : dm.filas.map((f, i) => <span key={i} className="text-slate-600 font-normal">· {f.t}: {f.txt}</span>)}
                 </div>
               );
