@@ -4946,7 +4946,7 @@ export default function App() {
     const sinFechaLleg = uxPedidos.filter((p) => p && p.id && !p.llegadaPrevista && !p.recibido && !p.recepcion);
     if (sinFechaLleg.length > 0) {
       const hoyL = uxHoy(), patchL = {};
-      sinFechaLleg.forEach((p) => { let f = uxSumarDias(p.fecha || hoyL, UX_DIAS_ENTREGA_PEDIDO); if (f < hoyL) f = uxSumarDias(hoyL, UX_DIAS_ENTREGA_PEDIDO); patchL[`pedidos/${p.id}/llegadaPrevista`] = f; });
+      sinFechaLleg.forEach((p) => { let f = uxSumarDias(p.fecha || hoyL, UX_DIAS_ENTREGA_PEDIDO); if (f < hoyL) f = uxSumarDias(hoyL, UX_DIAS_ENTREGA_PEDIDO); patchL[`pedidos/${p.id}/llegadaPrevista`] = f; if (!uxPedidoYaMandado(p)) patchL[`pedidos/${p.id}/llegadaAuto`] = true; });
       fbUpdate(ref(fbDb, "portalUxcar"), patchL).catch(() => {});
     }
     // La fecha de llegada de la copia de tu CRM sigue a la del portal
@@ -48552,6 +48552,10 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
   const asunto = `Pedido ${pedido.numero} de ${pedido.tipo || "material"} — Uxcar${listaExp ? ` (${listaExp})` : ""}`;
   const cuerpo = `Buenos días,\n\nOs adjuntamos nuestro pedido de ${String(pedido.tipo || "material").toLowerCase()}${listaExp ? ` (expedientes ${listaExp})` : ""}.${pedido.comentarios ? `\n\n${pedido.comentarios}` : ""}\n\nPor favor, confirmad la recepción y la fecha de entrega.\n\nUn saludo,\n${perfil.nombre || ""}\nUxcar`;
   const e = uxEstadoPedido(pedido);
+  // Antes de darlo por ENVIADO tiene que tener proveedor y la fecha de entrega puesta (o confirmada, si es la automática)
+  const yaEnviado = !!(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual);
+  const faltaEnvio = yaEnviado ? [] : [!(pedido.proveedorNombre || pedido.proveedorId) ? "el PROVEEDOR" : "", !pedido.llegadaPrevista || pedido.llegadaAuto ? "la FECHA DE ENTREGA (ponla o pulsa «✓ Es correcta»)" : ""].filter(Boolean);
+  const comprobarEnvio = (ev) => { if (!faltaEnvio.length) return true; if (ev) ev.preventDefault(); alert(`Antes de mandar el pedido ${pedido.numero} falta:\n\n• ${faltaEnvio.join("\n• ")}`); return false; };
 
   const enviarCorreo = async () => {
     if (!email) return;
@@ -48598,7 +48602,8 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
         <div><div className="text-xs text-slate-400">Fecha</div><div className="font-semibold">{uxFecha(pedido.fecha)}</div></div>
         <div>
           <div className="text-xs text-slate-400">Llegada prevista</div>
-          {onMarcar && !pedido.recibido ? <input type="date" value={pedido.llegadaPrevista || ""} onChange={(ev) => ev.target.value && onMarcar({ llegadaPrevista: ev.target.value })} className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white" /> : <div className="font-semibold">{pedido.llegadaPrevista ? uxFecha(pedido.llegadaPrevista) : "—"}</div>}
+          {onMarcar && !pedido.recibido ? <input type="date" value={pedido.llegadaPrevista || ""} onChange={(ev) => ev.target.value && onMarcar({ llegadaPrevista: ev.target.value, llegadaAuto: null })} className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white" /> : <div className="font-semibold">{pedido.llegadaPrevista ? uxFecha(pedido.llegadaPrevista) : "—"}</div>}
+          {onMarcar && !pedido.recibido && pedido.llegadaAuto && pedido.llegadaPrevista && <button onClick={() => onMarcar({ llegadaAuto: null })} className="mt-1 block text-[11px] font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded px-2 py-0.5">Fecha automática · ✓ Es correcta</button>}
         </div>
         <div><div className="text-xs text-slate-400">Hecho por</div><div className="font-semibold">{pedido.creadoPor || "—"}</div></div>
       </div>
@@ -48606,19 +48611,20 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
 
       <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">
         <div className="text-sm font-semibold text-slate-800">Mandar al proveedor</div>
+        {faltaEnvio.length > 0 && <div className="text-sm font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">Para mandarlo falta: {faltaEnvio.join(" · ")}.</div>}
         <div className="flex flex-wrap gap-2">
           {email ? (
-            <a href={`mailto:${email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={() => { onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
+            <a href={`mailto:${email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={(ev) => { if (!comprobarEnvio(ev)) return; onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
               <Mail size={14} /> Abrir en mi correo
             </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene correo puesto.</span>}
           {enlaceWhatsapp ? (
-            <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={() => { onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
+            <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={(ev) => { if (!comprobarEnvio(ev)) return; onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
               <MessageCircle size={14} /> Mandar por WhatsApp
             </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene móvil puesto.</span>}
           {!(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual) && (
-            <button onClick={() => onMarcar({ enviadoManual: new Date().toISOString() })} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
+            <button onClick={() => { if (comprobarEnvio()) onMarcar({ enviadoManual: new Date().toISOString() }); }} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
           )}
         </div>
         <p className="text-xs text-slate-500">Se abre vuestro propio correo con el mensaje escrito (el CRM no manda correos). Por WhatsApp va el enlace al documento en el mensaje.</p>
@@ -49797,6 +49803,9 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     for (const f of fs) {
       // Un solo pedido de cada tipo por expediente: si ya hay uno ENVIADO al proveedor o recibido no se crea otro; si hay uno sin enviar, se sustituye por este documento
       const previos = toArray(pedidosUx).filter((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && patch[`pedidos/${p.id}`] !== null);
+      // Hasta que el pedido anterior no esté MANDADO al proveedor no se sube otro (el mismo pedido sin enviar sí se puede sustituir)
+      const sinMandar = toArray(pedidosUx).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido && !previos.some((q) => q.id === p.id));
+      if (sinMandar.length) { avisos.push(`⚠ ${f.name}: NO he creado el pedido. Antes tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}. Lo demás del expediente sí se ha guardado.`); continue; }
       const cerrado = previos.find((p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recibido || p.recepcion);
       if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
       previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
@@ -49816,7 +49825,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       patch[`pedidos/${pid}`] = JSON.parse(JSON.stringify({
         id: pid, numero: "UX-" + sig, tipo: tipoPed, proveedorId: prov.id || "", proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
         documento: { nombre: f.name, url }, documentos: [{ nombre: f.name, url }], expedientes: [{ expedienteId: id, numero: base.numero, nombre: "", lineas }], comentarios: "",
-        fecha: hoy, llegadaPrevista: uxSumarDias(hoy, UX_DIAS_ENTREGA_PEDIDO), creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
+        fecha: hoy, llegadaPrevista: uxSumarDias(hoy, UX_DIAS_ENTREGA_PEDIDO), llegadaAuto: true, creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
       }));
       const mk = uxMatAlbaran(tipoPed);
       if (mk) matsPatch[mk] = { estado: ((base.materiales || {})[mk] || {}).estado === "recibido" ? "recibido" : "pedido" };
@@ -50130,6 +50139,11 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return "UX-" + ((nums.length ? Math.max(...nums) : 0) + 1);
   };
   const guardarPedido = async ({ tipo, proveedorId, archivos, grupos, tipoExp, comentarios, fechaPedido, llegadaPrevista }) => {
+    // Obligatorio: proveedor, fecha de entrega y que no quede ningún pedido sin mandar
+    const sinMandar = pedidosUx.filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
+    if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
+    if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
+    if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
