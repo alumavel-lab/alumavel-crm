@@ -9655,6 +9655,13 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
       // Pedido compra de persianas (PDF con texto): se recuentan las medidas del propio PDF y se añade lo que la IA se haya saltado
       try {
         const filasTxt = await leerFilasPedidoCompraPdf(file);
+        // Guía y recogedor de cada línea (columnas que la IA no trae): se añaden a la descripción para que lleguen a la persiana del almacén
+        const mmPed = (t) => parseInt(String(t || "").replace(/\./g, ""), 10) || 0;
+        toArray(filasTxt.guias).forEach((g) => {
+          const l = nuevas.find((y) => mmPed(y.ancho) === g.ancho && mmPed(y.alto) === g.alto && !/Gu[ií]a:/.test(y.referencia));
+          if (!l) return;
+          l.referencia = [l.referencia, g.guia ? `Guía: ${g.guia}` : "", g.recogedor && !new RegExp(g.recogedor, "i").test(l.referencia) ? `Recogedor ${g.recogedor}` : ""].filter(Boolean).join(" · ");
+        });
         if (filasTxt.length) {
           const faltan = lineasQueFaltanPedidoCompra(filasTxt, nuevas);
           if (faltan.length) {
@@ -16941,8 +16948,34 @@ async function leerFilasPedidoCompraPdf(file) {
     }
     const T = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
     if (!/PEDIDO COMPRA/.test(T)) return [];
-    return filasDePedidoCompra(paginas);
+    const filas = filasDePedidoCompra(paginas);
+    filas.guias = guiasDePedidoCompra(paginas);
+    return filas;
   } catch (e) { return []; }
+}
+// Columnas «Guias» y «Recogedor» del PEDIDO COMPRA de persianas (la IA solo trae descripción y medidas): por cada
+// medida «2.000x2.185», el texto que cae bajo esas columnas en su bloque. Ej.: «Guia sencilla 60 x 78 mm · Guias: Nogal» y «Derecha»
+function guiasDePedidoCompra(paginas) {
+  const medida = /^\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*[xX×]\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*$/;
+  const aMm = (t) => parseInt(String(t).replace(/\./g, ""), 10) || 0;
+  const out = [];
+  paginas.forEach((items) => {
+    const its = items.filter((i) => String(i.s).trim());
+    const col = (re) => its.find((i) => re.test(String(i.s).trim()));
+    const cG = col(/^gu[ií]as$/i), cC = col(/^cinta$/i), cA = col(/^acc\.?$/i), cR = col(/^recogedor$/i);
+    if (!cG) return;
+    const finG = cC ? cC.x - 5 : cA ? cA.x - 5 : cR ? cR.x - 5 : Infinity;
+    const meds = its.filter((i) => medida.test(String(i.s))).sort((a, b) => b.y - a.y);
+    meds.forEach((it, k) => {
+      const m = String(it.s).match(medida);
+      const yFin = k + 1 < meds.length ? meds[k + 1].y + 12 : it.y - 40; // el bloque acaba donde empieza la medida siguiente
+      const enBloque = (o) => o.y <= it.y + 6 && o.y > yFin;
+      const guia = its.filter((o) => enBloque(o) && o.x >= cG.x - 15 && o.x < finG).sort((a, b) => b.y - a.y || a.x - b.x).map((o) => String(o.s).trim()).join(" ").replace(/\s+/g, " ").replace(/\s*(Gu[ií]as:)/i, " · $1").trim();
+      const rec = cR ? its.filter((o) => enBloque(o) && o.x >= cR.x - 15 && Math.abs(o.y - it.y) <= 6).map((o) => String(o.s).trim()).join(" ").trim() : "";
+      out.push({ ancho: aMm(m[1]), alto: aMm(m[2]), guia, recogedor: rec });
+    });
+  });
+  return out;
 }
 // Devuelve las líneas que faltan en `nuevas` (las de la IA) según el texto del PDF
 function lineasQueFaltanPedidoCompra(filas, nuevas) {
@@ -18349,7 +18382,9 @@ const parseLineaPersiana = (texto) => {
 const REFS_GUIA_PERSIANA = new Set(["C.327020"]); // la misma que «Guía de persiana» en AUX_CFG_DEFECTO (definido más abajo)
 // De dónde sale la guía según el pedido de la caja: «CJ_DECOR_S/G · Compacto decorativo - guía aparte» = se corta aquí en fábrica
 // (la persiana llega SIN guía); un cajón/compacto sin eso = la manda el proveedor (llega CON guía)
-const guiaSegunPedido = (desc) => { const t = String(desc || ""); if (/S\/G\b|gu[ií]a\s+aparte|sin\s+gu[ií]a/i.test(t)) return "fabrica"; if (/compacto|caj[oó]n|\bCJ_|con\s+gu[ií]a/i.test(t)) return "proveedor"; return ""; };
+// Pero si el pedido dice QUÉ guía («Guía: Guia sencilla 60 x 78 mm · Guias: Nogal»), aunque ponga «guía aparte», la manda el proveedor (aparte, no montada)
+const guiaSegunPedido = (desc) => { const t = String(desc || ""); if (/Gu[ií]a:\s*\S|gu[ií]a\s+(?:sencilla|doble|simple|reforzada)|gu[ií]a[^·,;]{0,20}\d+\s*x\s*\d+/i.test(t)) return "proveedor"; if (/S\/G\b|gu[ií]a\s+aparte|sin\s+gu[ií]a/i.test(t)) return "fabrica"; if (/compacto|caj[oó]n|\bCJ_|con\s+gu[ií]a/i.test(t)) return "proveedor"; return ""; };
+const tipoGuiaPedido = (desc) => ((String(desc || "").match(/Gu[ií]a:\s*([^·]+(?:·\s*Gu[ií]as:\s*[^·]+)?)/i) || [])[1] || "").trim();
 const TOL_GUIA_HOJA_MM = 100; // sin verificar con hojas reales: ancho/alto de la ventana frente a largo/alto de la persiana
 const etiquetaMano = (r) => (r === "Izquierda" ? "Recogedor izquierda" : r === "Derecha" ? "Recogedor derecha" : r === "Doble" ? "Doble recogedor" : r === "Eléctrica" ? "Eléctrica (motor)" : "");
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
@@ -20042,7 +20077,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               if (ped === "proveedor" && hojaFab && g.cortaGuia) return <div className="text-[10px] font-semibold text-rose-700">⚠ El pedido dice que la caja trae guía, pero la hoja de corte también la corta aquí{aux}: se duplicaría. Avisa en oficina.</div>;
               if (ped === "fabrica" && hojaFab === false) return <div className="text-[10px] font-semibold text-rose-700">⚠ La caja viene SIN guía (guía aparte) y la hoja de corte no corta guía para esta ventana: faltaría la guía. Avisa en oficina.</div>;
               if (ped === "fabrica" || hojaFab) return <div className="text-[10px] text-slate-600">Guía <b>cortada aquí en fábrica</b>{aux}. <b>La persiana tiene que venir SIN guía.</b></div>;
-              if (ped === "proveedor" || hojaFab === false) return <div className="text-[10px] text-slate-600">Guía <b>del proveedor</b>. <b>La persiana tiene que venir CON su guía.</b></div>;
+              if (ped === "proveedor" || hojaFab === false) { const tipo = tipoGuiaPedido(x.descripcion); return <div className="text-[10px] text-slate-600">Guía <b>del proveedor</b>{tipo ? <>: <b>{tipo}</b> (puede venir aparte, sin montar)</> : ""}. <b>Comprueba que viene{tipo ? " y que es esa" : " con su guía"}.</b></div>; }
               const falta = g.estado === "sinHoja" ? `no está la hoja de corte del presupuesto ${g.pptos.join(", ")}` : g.estado === "sinVentana" ? "no encuentro esta ventana en la hoja de corte" : "la persiana no tiene nº de presupuesto";
               return <div className="text-[10px] text-amber-700">Falta documentación: el pedido no dice si la caja lleva guía y {falta}. Compruébala a ojo.</div>;
             })()}
