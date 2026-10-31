@@ -22101,6 +22101,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               </div>
             </details>
           )}
+          <RevisionExpedientesUx uxExpedientes={uxExpedientes} cristales={cristales} persianas={ctxPaneles.persianasAlmacen} />
           {bloqueadosMaterial.length > 0 && (
             <details className="mb-5 bg-white border border-amber-300 rounded-lg">
               <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
@@ -47562,6 +47563,59 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
 }
 
 // Administración de puestos + partes del día (pestaña de Fábrica)
+// ── Revisión de los expedientes de Uxcar pendientes: material que no se encuentra por sus números y expedientes duplicados ──
+function RevisionExpedientesUx({ uxExpedientes, cristales, persianas }) {
+  const filas = useMemo(() => {
+    const exps = toArray(uxExpedientes).filter((e) => e && ["virtual", "produccion"].includes(e.estado));
+    const dig = (t) => String(t || "").replace(/\D/g, "");
+    const out = [];
+    exps.forEach((e) => {
+      const K = uxClaves(e);
+      const ev = uxEstadoMat(e, "vidrios"), ec = uxEstadoMat(e, "compactos");
+      const avisos = [];
+      // Números que salen en el expediente (nº, referencia, nombre, presupuesto): por si el material va con otro de ellos
+      const nums = new Set([e.numero, e.referencia, e.nombre, e.presupuesto].flatMap((t) => (String(t || "").match(/\d[\d.]{2,}/g) || []).map((x) => dig(String(x).split("-")[0]))).filter((x) => x.length >= 3));
+      const posibles = () => {
+        const p = toArray(persianas).filter((x) => x && !x.entregada && (nums.has(dig(x.expediente)) || String(x.presupuesto || "").split(/[·,]/).some((y) => nums.has(uxPptoDigitos(y)))) && !uxPersianaEs(x, K));
+        const c = toArray(cristales).filter((x) => x && ([...expedientesDeCaballete(x)].some((n) => nums.has(n)) || String(x.presupuesto || "").split(/[·,]/).some((y) => nums.has(uxPptoDigitos(y)))) && !uxCaballeteEs(x, K));
+        const etq = (xs, f) => [...new Set(xs.map(f).filter(Boolean))].slice(0, 4).join(" · ");
+        return [p.length ? `${p.length} persiana${p.length === 1 ? "" : "s"} con ${etq(p, (x) => `EXP ${dig(x.expediente) || "—"}${x.presupuesto ? ` / ppto ${x.presupuesto}` : ""}`)}` : "", c.length ? `${c.length} caballete${c.length === 1 ? "" : "s"} con ${etq(c, (x) => `EXP ${x.expediente || "—"}${x.presupuesto ? ` / ppto ${x.presupuesto}` : ""}`)}` : ""].filter(Boolean).join(" · ");
+      };
+      [["vidrios", "Cristales", ev], ["compactos", "Persianas", ec]].forEach(([k, n, est]) => {
+        if (est === "llegado_ux") { const pos = posibles(); avisos.push(`${n}: Uxcar lo confirmó y no encuentro el material en los almacenes con sus números (busco EXP ${[K.d, ...(K.exps || [])].filter(Boolean).join(", ")}${K.pptos.size ? ` · ppto ${[...K.pptos].join(", ")}` : ""}).${pos ? ` Hay ${pos}: si es el suyo, el número está mal en el almacén o en el expediente.` : " Comprueba que ha llegado y que está ubicado."}`); }
+        if (est === "en_fabrica") avisos.push(`${n}: la fábrica ya lo tiene en el almacén, pero Uxcar no ha confirmado su albarán.`);
+      });
+      if (avisos.length) out.push({ e, avisos });
+    });
+    // Duplicados: dos expedientes con el mismo EXPEDIENTE en la referencia o el mismo presupuesto
+    const porClave = {};
+    // (mismo presupuesto con distinta versión, 6.994-1 y 6.994-3, son obras distintas: no cuenta)
+    exps.forEach((e) => { const K = uxClaves(e); [...[...(K.exps || [])].map((x) => `EXP ${x}`), ...[...K.pptos].map((x) => `presupuesto ${x}${K.ver ? `-${K.ver}` : ""}`)].forEach((k) => { (porClave[k] = porClave[k] || new Set()).add(e); }); });
+    const vistos = new Set();
+    Object.entries(porClave).forEach(([k, set]) => {
+      if (set.size < 2) return;
+      const lista = [...set];
+      const clave = lista.map((e) => e.id).sort().join("|");
+      if (vistos.has(clave)) return; vistos.add(clave);
+      out.push({ e: lista[0], dup: true, avisos: [`Posible DUPLICADO: ${lista.map((e) => e.numero).join(" y ")} comparten ${k}. Si son la misma obra, deja uno solo (el que tenga los pedidos) y borra el otro.`] });
+    });
+    return out;
+  }, [uxExpedientes, cristales, persianas]);
+  if (!filas.length) return null;
+  return (
+    <details className="mb-5 bg-white border border-violet-300 rounded-lg">
+      <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-violet-800">🔎 Revisión de expedientes de Uxcar pendientes: {filas.length} con algo que mirar (pulsa para verlos)</summary>
+      <div className="divide-y divide-slate-100">
+        {filas.map((f, i) => (
+          <div key={i} className="px-4 py-2.5 text-sm">
+            <div className="font-semibold text-slate-800">{f.dup ? "⚠ " : ""}Uxcar exp. {f.e.numero}{f.e.referencia ? <span className="font-normal text-slate-500"> · {f.e.referencia}</span> : null}</div>
+            <ul className="text-xs text-slate-700 mt-0.5 list-disc pl-5">{f.avisos.map((t, k) => <li key={k}>{t}</li>)}</ul>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
 // ---------- GENTE NECESARIA POR PUESTO: carga de un día del planning (o escrita a mano) ÷ lo que hace una persona al día ----------
 // Qué cuenta cada puesto, sacado del recuento de ventanas de las obras
 const UNIDADES_CARGA = [
