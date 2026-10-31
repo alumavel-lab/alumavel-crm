@@ -1210,6 +1210,28 @@ export default function App() {
   // Descarga un archivo guardado (Firebase Storage) pasando por el servidor de
   // Netlify, porque el navegador no puede bajarlo directamente (CORS del bucket →
   // "Failed to fetch"). Devuelve { bytes, mimeType }.
+  // Lee el presupuesto firmado de la obra (texto de la descripción y de sus PDF) y lo compara con lo que va a fábrica.
+  // Devuelve null si no hay presupuesto en el CRM (p. ej. obras de Uxcar) o { obra, presupuestos, lineas } con los avisos.
+  const revisarPresupuestoAntesDeFabrica = async (p) => {
+    if (!p || p.origen === "portalUxcar") return null;
+    const ids = [p.presupuestoId, ...toArray(p.ampliaciones).map((a) => a && a.presupuestoId)].filter(Boolean);
+    const pres = presupuestos.filter((x) => ids.includes(x.id) || (x.proyectoId && x.proyectoId === p.id && /acept|firmad/i.test(String(x.estado || ""))));
+    if (!pres.length) return null;
+    let texto = pres.map((x) => `${x.descripcion || ""} ${x.observaciones || ""}`).join(" · ");
+    for (const x of pres) for (const d of toArray(x.documentos)) {
+      if (!d || !d.url || !/pdf/i.test(`${d.tipo || ""} ${d.nombre || ""} ${d.mimeType || ""}`)) continue;
+      try { const { bytes } = await descargarArchivoGuardado(d.url); texto += " · " + await textoDePdfBytes(bytes); } catch (e) { /* si no se puede leer, cuenta lo demás */ }
+    }
+    const extras = extrasDeTextoPresupuesto(texto);
+    if (!extras.length) return null;
+    const acc = accesoriosDeObra(p);
+    const lineas = extras.map((x) => {
+      if (!x.acc) return `• ${x.nombre}: está en el presupuesto. El CRM no lo controla: comprueba que está pedido o previsto.`;
+      const g = acc.grupos.find((y) => y.id === x.acc);
+      return g && g.lleva ? null : `⚠ ${x.nombre}: está en el presupuesto y NO aparece en lo que va a fábrica (listado de materiales ni «Qué lleva la obra»).`;
+    }).filter(Boolean);
+    return { obra: p.numero, presupuestos: pres.map((x) => x.numero).filter(Boolean).join(", "), lineas: lineas.sort((a, b) => (b.startsWith("⚠") ? 1 : 0) - (a.startsWith("⚠") ? 1 : 0)) };
+  };
   const descargarArchivoGuardado = async (url) => {
     const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
     const r = await fetch("/.netlify/functions/descargar-archivo", {
@@ -6655,9 +6677,16 @@ export default function App() {
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
-            onIniciarFabricacion={(proyectoId) => {
+            onIniciarFabricacion={async (proyectoId) => {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return; }
+              // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
+              const rev = await revisarPresupuestoAntesDeFabrica(proyectos.find((p) => p.id === proyectoId));
+              if (rev && rev.lineas.length) {
+                const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${rev.obra}, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}:\n\n${rev.lineas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
+                updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: rev.lineas, aceptado: ok } });
+                if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
+              }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
               showToast(desc ? `En fabricación. Stock descontado: ${desc.n} referencia${desc.n === 1 ? "" : "s"}${desc.creados ? ` (${desc.creados} dada${desc.creados === 1 ? "" : "s"} de alta sola${desc.creados === 1 ? "" : "s"} en Stock, en negativo)` : ""}${desc.sinMaterial ? ` · ${desc.sinMaterial} línea${desc.sinMaterial === 1 ? "" : "s"} sin material dado de alta en Stock (no descontadas)` : ""}` : "Proyecto marcado como en fabricación");
@@ -21460,6 +21489,32 @@ const ACCESORIOS_OBRA = [
   { id: "postigo", nombre: "Postigo", re: /postigo/i, color: "bg-violet-100 text-violet-800 ring-violet-300" },
   { id: "tapajuntas", nombre: "Tapajuntas", re: /tapajunt|tapa\s*-?\s*junta|(^|[^a-zñáéíóúü])tap([^a-zñáéíóúü]|$)/i, color: "bg-amber-100 text-amber-800 ring-amber-300" },
 ];
+// ── Antes de pasar a fábrica: lo que lleva el PRESUPUESTO FIRMADO frente a lo que va a fábrica ──
+// «acc» = se puede comprobar con lo que detecta el CRM (listado de materiales / «Qué lleva la obra»); sin «acc» = solo se avisa para que se revise.
+const EXTRAS_PRESUPUESTO = [
+  { id: "mosquitera", nombre: "MOSQUITERA", re: "mosquit", acc: "mosquitera" },
+  { id: "postigo", nombre: "POSTIGO / CONTRAVENTANA", re: "postigo|contraventana", acc: "postigo" },
+  { id: "persiana", nombre: "PERSIANA", re: "persiana|compacto", acc: "persiana" },
+  { id: "tapajuntas", nombre: "TAPAJUNTAS", re: "tapajunt|tapa\\s*junta", acc: "tapajuntas" },
+  { id: "motor", nombre: "MOTOR (persiana motorizada)", re: "motor|motoriz" },
+  { id: "portero", nombre: "PORTERO AUTOMÁTICO / VIDEOPORTERO", re: "portero|videoportero|telefonillo" },
+  { id: "cerradura", nombre: "CERRADURA / BOMBILLO ESPECIAL", re: "cerradura|bombillo|antibumping|multipunto" },
+  { id: "cristal", nombre: "CRISTAL ESPECIAL (templado, laminado, mate…)", re: "templad|laminad|stadip|\\bmate\\b|carglass|bajo\\s*emisiv" },
+  { id: "panel", nombre: "PANEL / PUERTA DE ENTRADA", re: "panel|s[aá]ndwich|puerta\\s+de\\s+entrada|blindad" },
+  { id: "toldo", nombre: "TOLDO", re: "toldo" },
+  { id: "reja", nombre: "REJA", re: "\\breja" },
+  { id: "vierteaguas", nombre: "VIERTEAGUAS / ALFÉIZAR", re: "vierteaguas|alf[eé]izar|albardilla" },
+  { id: "premarco", nombre: "PREMARCO", re: "premarco" },
+  { id: "desmontaje", nombre: "DESMONTAJE / RETIRADA", re: "desmontaj|retirada\\s+de" },
+];
+// Qué extras dice el texto del presupuesto (un «sin mosquitera» no cuenta)
+const extrasDeTextoPresupuesto = (texto) => {
+  const t = String(texto || "");
+  return EXTRAS_PRESUPUESTO.filter((x) => {
+    const limpio = t.replace(new RegExp(`\\b(sin|ni|no\\s+lleva|no\\s+incluye)\\s+(?:${x.re})\\w*`, "gi"), " ");
+    return new RegExp(x.re, "i").test(limpio);
+  });
+};
 const accesoriosDeObra = (p) => {
   const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
   const out = { hayListado: lineas.length > 0, grupos: [] };
