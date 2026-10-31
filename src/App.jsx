@@ -6591,7 +6591,7 @@ export default function App() {
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
-            pedidosCrm: pedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -18950,6 +18950,48 @@ const panelDeLinea = (conf, l) => ({
   observaciones: l.observaciones || "", detalle: l.detalle || "",
   tipo: tipoPanel(l), estado: "pendiente", fecha: new Date().toISOString().slice(0, 10), fechaCortado: "",
 });
+// Paneles que vienen en los PEDIDOS DE CRISTALES (listado de vidrios de cada expediente: obras del CRM y expedientes de Uxcar)
+// y que NO están en «Paneles pendientes de cortar». Así no se escapa ninguno aunque aún no hayan llegado en un caballete.
+const panelesDePedidosQueFaltan = (pedidosCrm, uxPedidos, proyectos, uxExpedientes, paneles) => {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const todos = [...toArray(paneles)];
+  const nuevos = [];
+  const meter = (l, exp, base, origen) => {
+    const ref = String(l.modelo || l.ref || "").trim();
+    const nums = numsExpediente(exp);
+    for (let k = 0; k < Math.max(1, Math.round(parseFloat(l.uds || l.cantidad) || 1)); k++) {
+      // cada unidad se compara con lo apuntado (las ya apuntadas «gastan» una coincidencia)
+      const i = todos.findIndex((x) => !x.__usado && mismaMedidaCristal(x.ancho, x.alto, l.ancho, l.alto)
+        && (!nums.length || !numsExpediente(x.expediente).length || numsExpediente(x.expediente).some((n) => nums.includes(n)))
+        && (!x.ref || !ref || normPedidoCristal(x.ref) === normPedidoCristal(ref)));
+      if (i >= 0) { todos[i] = { ...todos[i], __usado: true }; continue; }
+      const nuevo = { ...panelDeLinea({ numeroPedido: base.numero || "", proveedor: base.proveedor || "", fecha: base.fecha || hoy },
+        { ref, expediente: exp, ancho: l.ancho, alto: l.alto, cantidad: 1, descripcion: String(l.descripcion || l.referencia || "").trim(), color: l.color || "", modelo: l.codigo || "", presupuesto: base.presupuesto || "",
+          detalle: `${origen}${l.codigo ? ` · ${l.codigo}` : ""}` }), origen };
+      nuevos.push(nuevo); todos.push({ ...nuevo, __usado: true });
+    }
+  };
+  toArray(pedidosCrm).forEach((pd) => {
+    if (!pd || pd.estado === "Cancelado") return;
+    const pr = toArray(proyectos).find((x) => x.id === pd.proyectoId);
+    toArray(pd.lineas).forEach((l) => {
+      const txt = l.referencia || l.descripcion || "";
+      if (!l || !esLineaPanel({ descripcion: txt }) || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0)) return;
+      meter({ ...l, descripcion: txt, uds: l.cantidad }, String((pr && pr.numero) || pd.expediente || ""), { numero: pd.numero, proveedor: pd.proveedorExterno || "", fecha: pd.fecha, presupuesto: (pr && pr.presupuestoNumero) || "" }, `pedido #${pd.numero}`);
+    });
+  });
+  toArray(uxPedidos).forEach((pd) => {
+    if (!pd || pd.tipo !== "Cristales") return;
+    toArray(pd.expedientes).forEach((xe) => {
+      const e = toArray(uxExpedientes).find((y) => y && y.id === xe.expedienteId) || {};
+      toArray(xe.lineas).forEach((l) => {
+        if (!l || !esLineaPanel(l) || !(parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0)) return;
+        meter(l, String(xe.numero || e.numero || ""), { numero: pd.numero, proveedor: pd.proveedorNombre || "", fecha: pd.fecha, presupuesto: e.presupuesto || e.presupuestoNumero || "" }, `listado de vidrios ${pd.numero}`);
+      });
+    });
+  });
+  return nuevos;
+};
 // Paneles que hay en los caballetes (packing list, fotos…) y que NO están en «Paneles pendientes de cortar».
 // No quita nada de los caballetes: solo devuelve los paneles que faltan por apuntar para que se corten.
 const piezaEsPanel = (p) => esLineaPanel({ descripcion: Object.values(p || {}).filter((v) => typeof v === "string").join(" ") });
@@ -18980,7 +19022,8 @@ const panelesQueFaltan = (caballetes, paneles) => {
 function PanelesPendientes({ cristales = [] }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const paneles = toArray(ctx.paneles);
-  const sinApuntar = panelesQueFaltan(cristales, paneles);
+  const sinApuntarCab = panelesQueFaltan(cristales, paneles);
+  const sinApuntar = [...sinApuntarCab, ...panelesDePedidosQueFaltan(ctx.pedidosCrm, ctx.uxPedidosCtx, ctx.proyectos, ctx.uxExpedientes, [...paneles, ...sinApuntarCab])];
   const guardar = ctx.savePaneles || (() => {});
   const [ver, setVer] = useState("pendiente");
   const [buscar, setBuscar] = useState("");
@@ -19012,7 +19055,7 @@ function PanelesPendientes({ cristales = [] }) {
     <div className="space-y-4">
       <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[240px] text-sm text-slate-600">
-          <b>Paneles pendientes de cortar.</b> Aquí caen solos los paneles (sándwich, acústicos de las puertas de entrada…) que vienen en la confirmación del pedido de cristales. Cuando uno está cortado, lo marcas.
+          <b>Paneles pendientes de cortar.</b> Aquí caen los paneles (sándwich, acústicos de las puertas de entrada…) de la confirmación del pedido de cristales, de los listados de vidrios de cada expediente y de los caballetes. Cuando uno está cortado, lo marcas.
         </div>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, color, medida, cliente…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
         <button onClick={() => setForm(form ? null : { expediente: "", ref: "", ancho: "", alto: "", cantidad: 1, descripcion: "", color: "", modelo: "", presupuesto: "" })}
@@ -19020,7 +19063,7 @@ function PanelesPendientes({ cristales = [] }) {
       </div>
       {sinApuntar.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
-          <div className="text-sm font-bold text-amber-900 mb-1">Hay {sinApuntar.length} panel{sinApuntar.length === 1 ? "" : "es"} en los caballetes que no están en esta lista</div>
+          <div className="text-sm font-bold text-amber-900 mb-1">Hay {sinApuntar.length} panel{sinApuntar.length === 1 ? "" : "es"} en los caballetes o en los listados de vidrios que no están en esta lista</div>
           <ul className="text-xs text-amber-900 space-y-0.5 mb-2">
             {sinApuntar.slice(0, 8).map((x) => <li key={x.id}>EXP {numsExpediente(x.expediente)[0] || x.expediente || "—"} · {x.ref || "sin vivienda"} · {x.ancho} × {x.alto} mm · {x.cantidad} ud · {x.descripcion || x.tipo} · {x.origen}</li>)}
             {sinApuntar.length > 8 && <li>… y {sinApuntar.length - 8} más</li>}
@@ -21552,7 +21595,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
   const ctxPaneles = React.useContext(IncidenciasCristalCtx) || {};
   const nPanelesPend = toArray(ctxPaneles.paneles).filter((x) => (x.estado || "pendiente") === "pendiente").length;
-  const nPanelesSinApuntar = panelesQueFaltan(cristales, ctxPaneles.paneles).length;
+  const nPanelesSinApuntar = (() => { const cab = panelesQueFaltan(cristales, ctxPaneles.paneles); return cab.length + panelesDePedidosQueFaltan(ctxPaneles.pedidosCrm, ctxPaneles.uxPedidosCtx, ctxPaneles.proyectos, ctxPaneles.uxExpedientes, [...toArray(ctxPaneles.paneles), ...cab]).length; })();
   const nDiscrepancias = discrepanciasTodas(pedidos).reduce((t, x) => t + x.items.length, 0);
   const [terminandoId, setTerminandoId] = useState(null); // pide el tipo plano antes de "Fabricación terminada"
   const [q, setQ] = useState("");
