@@ -522,10 +522,16 @@ const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
     const nombre = c.nombre || "Sin nombre";
     if (!c.estado) { faltan.push(`${nombre}: falta decir si lo lleva o no`); return; }
     if (c.estado !== "si" || c.enStock) return;
-    const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    let vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    // Sin pedido enlazado a mano: vale el pedido de la obra que sea de ese material (cristal / persianas). Antes se atascaba aunque el pedido existiera.
+    if (vinculados.length === 0 && proyecto) {
+      const tipoItem = /cristal/i.test(nombre) ? "cristal" : "persianas";
+      vinculados = (pedidosTodos || []).filter((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && tipoPedidoMaterial(pd) === tipoItem);
+    }
     if (vinculados.length === 0) { faltan.push(`${nombre}: lleva, pero no tiene pedido vinculado`); return; }
     vinculados.forEach((pd) => {
-      if (pd.estado !== "Recibido") faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
+      // Llegado = «Recibido» en oficina O todas sus líneas confirmadas por fábrica (la misma regla que el resto de «Listo para fabricar»)
+      if (!llegadoParaObra(pd)) faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
       else if ((pd.lineas || []).some((l) => !l.confirmadoFabrica)) faltan.push(`${nombre}: el pedido #${pd.numero} está sin confirmar por fábrica`);
     });
   });
@@ -21936,9 +21942,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Proyectos donde TODO coincide: oficina ha recibido todos los pedidos, fábrica ha
   // confirmado la llegada de todas las líneas, y el checklist "Qué lleva la obra" está
   // completo. Solo cuando las tres cosas cuadran, el proyecto está listo para fabricar.
+  // Obras de Uxcar: el portal da el material por llegado con las DOS confirmaciones (albarán de Uxcar + material en los almacenes).
+  // Si es así, cuenta como llegado aunque no se haya hecho la entrada línea a línea en «Entradas Uxcar» (antes se quedaban atascadas).
+  const uxMaterialCompleto = (p) => uxMaterialCompletoObra(p, uxExpedientes);
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+      if (uxMaterialCompleto(p)) return true;
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -21949,7 +21959,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
       return oficinaOk && fabricaOk && checklistOk;
     });
-  }, [proyectos, pedidos]);
+  }, [proyectos, pedidos, uxExpedientes, cristales, ctxPaneles.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
   // Lo que hay físicamente en el almacén de una obra (caballetes de cristal y persianas), buscado por pedido o por nº de presupuesto
   const matAlmacenObra = (p) => {
@@ -21970,7 +21980,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     const misPed = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
     let faltan = !marcada ? [] : p.origen === "portalUxcar"
-      ? misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+      ? [...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
+          ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "está en el almacén, falta que Uxcar confirme su albarán", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
       : condicionesPendientesChecklist(p, pedidos);
     // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
     const m = matAlmacenObra(p);
@@ -52022,9 +52033,18 @@ async function devolverVentanaIncidencia(base, por) {
 
 const tabInicialFabrica = { actual: null };
 
-function calcListoParaFabricar(proyectos, pedidos) {
+// Obra de Uxcar con el material completo según el portal: cristales y persianas con las DOS confirmaciones (albarán de Uxcar + en los almacenes)
+function uxMaterialCompletoObra(p, uxExpedientes) {
+  if (!p || p.origen !== "portalUxcar" || !p.uxcarExpedienteId) return false;
+  const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId);
+  if (!e) return false;
+  const est = ["vidrios", "compactos"].map((k) => uxEstadoMat(e, k));
+  return est.some((x) => x === "recibido") && est.every((x) => x === "recibido" || x === "no_lleva");
+}
+function calcListoParaFabricar(proyectos, pedidos, uxExpedientes) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+    if (uxMaterialCompletoObra(p, uxExpedientes)) return true;
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -53461,7 +53481,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return out;
   };
   // «Las que tenemos»: obras con el cristal (y la persiana, si la lleva) ya recibidos y confirmados por fábrica, o que ya están en proceso
-  const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos)).map((p) => p.id));
+  const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos), uxExpedientes).map((p) => p.id));
   // Enlace con Fábrica: SIEMPRE por código de presupuesto (con su versión: -1 y -2 son viviendas distintas)
   const presConVersion = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
@@ -54645,7 +54665,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
-  const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
+  const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = soloAlmacen ? [
     { id: "cargas", t: "Cargas de hoy", aviso: "" },
