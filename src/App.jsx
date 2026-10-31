@@ -1246,14 +1246,20 @@ export default function App() {
       try { const { bytes } = await descargarArchivoGuardado(d.url); texto += " · " + await textoDePdfBytes(bytes); } catch (e) { /* si no se puede leer, cuenta lo demás */ }
     }
     const extras = extrasDeTextoPresupuesto(texto);
-    if (!extras.length) return null;
+    // Montaje: el presupuesto lo lleva (o no) frente a la salida de la obra
+    const presuMontaje = extras.some((x) => x.id === "montaje");
+    const obraMontaje = !!p.llevaInstalacion && p.estadoLogistica !== "Reparto (camión)";
+    const montaje = presuMontaje && !obraMontaje ? "falta" : !presuMontaje && obraMontaje ? "sobra" : "";
+    const lineasMontaje = montaje === "falta" ? [`⚠ MONTAJE: el presupuesto lleva montaje/instalación y la obra NO está como «Instalación» (salida: ${p.estadoLogistica || "sin elegir"}). Hay que pasarla a montaje.`]
+      : montaje === "sobra" ? ["• MONTAJE: la obra está como «Instalación» pero el presupuesto no dice montaje. Comprueba que es correcto."] : [];
+    if (!extras.length && !lineasMontaje.length) return null;
     const acc = accesoriosDeObra(p);
-    const lineas = extras.map((x) => {
+    const lineas = extras.filter((x) => x.id !== "montaje").map((x) => {
       if (!x.acc) return `• ${x.nombre}: está en el presupuesto. El CRM no lo controla: comprueba que está pedido o previsto.`;
       const g = acc.grupos.find((y) => y.id === x.acc);
       return g && g.lleva ? null : `⚠ ${x.nombre}: está en el presupuesto y NO aparece en lo que va a fábrica (listado de materiales ni «Qué lleva la obra»).`;
     }).filter(Boolean);
-    return { obra: p.numero, presupuestos: pres.map((x) => x.numero).filter(Boolean).join(", "), lineas: lineas.sort((a, b) => (b.startsWith("⚠") ? 1 : 0) - (a.startsWith("⚠") ? 1 : 0)) };
+    return { obra: p.numero, presupuestos: pres.map((x) => x.numero).filter(Boolean).join(", "), montaje, lineas: [...lineasMontaje, ...lineas.sort((a, b) => (b.startsWith("⚠") ? 1 : 0) - (a.startsWith("⚠") ? 1 : 0))] };
   };
   const descargarArchivoGuardado = async (url) => {
     const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
@@ -6713,6 +6719,11 @@ export default function App() {
               if (todas.length) {
                 const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${obraF.numero}${rev ? `, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}` : ""}:\n\n${todas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
                 updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: todas, aceptado: ok } });
+                // Si el presupuesto lleva montaje y la obra no, se ofrece pasarla a montaje (salida «Instalación») ahora mismo
+                if (rev && rev.montaje === "falta" && window.confirm(`El presupuesto de la obra #${obraF.numero} lleva MONTAJE.\n\n¿La paso a montaje (salida «Instalación») ahora?`)) {
+                  updateProyectoInline(proyectoId, { llevaInstalacion: true });
+                  showToast(`Obra #${obraF.numero} pasada a montaje (Instalación). Acuérdate de crear la instalación en el Calendario.`);
+                }
                 if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
               }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
@@ -21534,6 +21545,7 @@ const EXTRAS_PRESUPUESTO = [
   { id: "vierteaguas", nombre: "VIERTEAGUAS / ALFÉIZAR", re: "vierteaguas|alf[eé]izar|albardilla" },
   { id: "premarco", nombre: "PREMARCO", re: "premarco" },
   { id: "desmontaje", nombre: "DESMONTAJE / RETIRADA", re: "desmontaj|retirada\\s+de" },
+  { id: "montaje", nombre: "MONTAJE / INSTALACIÓN", re: "(?<!des)montaje|instalaci[oó]n|colocaci[oó]n" }, // se compara con la SALIDA de la obra
 ];
 // Qué extras dice el texto del presupuesto (un «sin mosquitera» no cuenta)
 const extrasDeTextoPresupuesto = (texto) => {
