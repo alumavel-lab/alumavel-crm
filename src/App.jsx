@@ -19959,6 +19959,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const actualizarCarro = (numero, patch) => guardarCarros(carros.map((c) => (c.numero === numero ? { ...c, ...patch } : c)));
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
   const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  // Sacar persianas del carro (ya colocadas en obra o cargadas): dejan el hueco libre y pasan a «salió»
+  const quitarDelCarro = (xs) => { const ids = new Set(xs.map((x) => x.id)); const hoyQ = new Date().toISOString().slice(0, 10); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: hoyQ } : y))); };
   const [qLista, setQLista] = useState("");
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
@@ -19977,6 +19979,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const quitar = x.estante && window.confirm(`Persiana colocada en obra.\n\n¿La quito también del carro ${x.estante.carro}? (deja su hueco libre)`);
             actualizarPersiana(x.id, { colocada: true, fechaColocada: hoyC, ...(quitar ? { estante: null, entregada: true, fechaSalida: hoyC } : {}) });
           }} />
+        {x.colocada && x.estante && !x.entregada && (
+          <button type="button" onClick={() => { if (window.confirm(`¿Quitar del carro ${x.estante.carro} esta persiana colocada (EXP ${x.expediente || "—"} · ${x.ref || ""})?`)) quitarDelCarro([x]); }}
+            className="block mt-1 text-[10px] font-semibold text-rose-600 border border-rose-200 rounded px-1.5 py-0.5 bg-white whitespace-nowrap">Quitar del carro</button>
+        )}
       </td>
       <td className="py-1.5 px-2 align-top">
         <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
@@ -20486,6 +20492,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinColocar} onChange={(e) => setSoloSinColocar(e.target.checked)} /> Solo sin colocar</label>
               <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinRevisar} onChange={(e) => setSoloSinRevisar(e.target.checked)} /> Solo sin revisar</label>
               <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencia} onChange={(e) => setSoloIncidencia(e.target.checked)} /> Solo con incidencia</label>
+              {(() => { const colEnCarro = items.filter((x) => x.colocada && x.estante && !x.entregada); return colEnCarro.length > 0 && (
+                <button type="button" onClick={() => { if (window.confirm(`¿Quitar de los carros las ${colEnCarro.length} ${cosa} que ya están colocadas en obra?\n\n${[...new Set(colEnCarro.map((x) => `EXP ${x.expediente || "—"}`))].join(" · ")}`)) quitarDelCarro(colEnCarro); }}
+                  className="text-xs font-semibold text-rose-600 border border-rose-300 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar de los carros las {colEnCarro.length} colocadas</button>
+              ); })()}
               <span className="ml-auto text-xs text-slate-500">{colocadas} de {items.length} colocadas{conInc ? <b className="text-rose-600"> · {conInc} con incidencia</b> : null}</span>
             </div>
             <div className="overflow-x-auto">
@@ -20699,6 +20709,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     )}
                     <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} ${cosa} del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
+                    {xs.some((x) => x.colocada) && xs.some((x) => !x.colocada) && (
+                      <button onClick={() => { const col = xs.filter((x) => x.colocada); if (window.confirm(`¿Quitar del carro solo las ${col.length} colocadas del EXP ${exp}?`)) quitarDelCarro(col); }}
+                        className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar solo las colocadas ({xs.filter((x) => x.colocada).length})</button>
+                    )}
                   </div>
                   <div className="overflow-x-auto mt-2">
                     <table className="w-full text-xs">
