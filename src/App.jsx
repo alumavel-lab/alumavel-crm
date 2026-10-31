@@ -4543,7 +4543,9 @@ export default function App() {
         // se hace en la próxima pasada, con la lista ya actualizada
         for (const t of trabajo.slice(0, 1)) {
           if (t.tipo === "aExpediente") {
-            await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${t.e.id}`), { listadoMateriales: JSON.parse(JSON.stringify(t.p.listadoMateriales)), crmListadoClave: t.k }).catch(() => {});
+            // Las horas del listado de mano de obra no se pisan con 0: se queda la que haya
+            const horasE = parseFloat(t.p.listadoMateriales && t.p.listadoMateriales.horas) || parseFloat(t.e.listadoMateriales && t.e.listadoMateriales.horas) || 0;
+            await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${t.e.id}`), { listadoMateriales: JSON.parse(JSON.stringify({ ...t.p.listadoMateriales, horas: horasE })), crmListadoClave: t.k }).catch(() => {});
             updateProyectoInline(t.p.id, { listadoUxClave: t.k });
             continue;
           }
@@ -4551,6 +4553,7 @@ export default function App() {
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${t.e.id}/crmListadoClave`), (actual) => (actual === t.k ? undefined : t.k)).catch(() => null);
           if (!res || !res.committed) continue;
           const l = JSON.parse(JSON.stringify(t.e.listadoMateriales));
+          if (!(parseFloat(l.horas) > 0) && t.p.listadoMateriales && parseFloat(t.p.listadoMateriales.horas) > 0) l.horas = parseFloat(t.p.listadoMateriales.horas); // no pisar las horas con 0
           const origen = l.numero || l.archivo || `Uxcar ${t.e.numero}`;
           const yaHabia = pedidos.some((pd) => pd.proyectoId === t.p.id && pd.estado !== "Cancelado" && pd.origenListado === origen);
           const grupos = yaHabia || !CREAR_PEDIDOS_ESPERA_AL_SUBIR_ANALISIS ? {} : gruposPedidoDesdeListado(l, materiales, proveedores, UX_SECCIONES_PROPIAS, t.p.id); // mismo criterio que en las obras propias: de momento no se crean pedidos de perfiles/herraje al subir el análisis
@@ -17402,6 +17405,24 @@ const rellenarChecklistDesdePedido = (checklist, pedido, materiales) => {
     return { ...c, estado: "si", enStock: false, pedidoIds: [...new Set([...(c.pedidoIds || []), pedido.id])] };
   });
 };
+// Horas del LISTADO MANO DE OBRA leídas del texto del PDF, sin IA («TOT.MO.PRES … 31,17 Horas»). 0 si no se encuentra.
+// La IA a veces no las saca y el expediente se quedaba con «falta listado de mano de obra» aunque el PDF estuviera subido.
+const horasDeTextoManoObra = (texto) => {
+  const t = String(texto || "").replace(/\s+/g, " ");
+  const m = t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/i)
+    || t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i) // un importe en euros no vale
+    || t.match(/TOTAL\s+(?:DE\s+)?HORAS[^0-9]{0,20}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1].replace(",", "."));
+  return Number.isFinite(n) && n > 0 && n < 5000 ? n : 0;
+};
+async function textoDePdfBytes(bytes) {
+  const lib = await cargarPdfJs();
+  const doc = await lib.getDocument({ data: bytes }).promise;
+  let t = "";
+  for (let n = 1; n <= doc.numPages; n++) t += (await (await doc.getPage(n)).getTextContent()).items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("") + "\n";
+  return t;
+}
 async function leerListadoMateriales(file) {
   // Se pide en formato de líneas separadas por | (y no JSON): así una comilla o un símbolo
   // raro en una descripción no estropea la lectura entera.
@@ -49505,13 +49526,21 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       catch (er) { avisos.push(`⚠ ${f.name}: no he podido leerlo (${er.message}).`); }
     }
     const conLineas = leidos.filter((x) => x.lineas && x.lineas.length);
-    const horas = Math.max(0, ...leidos.map((x) => x.horas || 0));
+    // Horas del listado de mano de obra leídas también del texto del PDF (la IA a veces no las encuentra)
+    const horasTxt = [];
+    for (const { f, t } of grupos.materiales) {
+      if (t !== "mano_obra") continue;
+      try { horasTxt.push(horasDeTextoManoObra(await textoDePdfBytes(new Uint8Array(await f.arrayBuffer())))); } catch (er) { /* sin texto: se queda lo de la IA */ }
+    }
+    const horas = Math.max(0, ...leidos.map((x) => x.horas || 0), ...horasTxt);
+    const horasYaGuardadas = parseFloat(base.listadoMateriales && base.listadoMateriales.horas) || 0;
     if (conLineas.length) {
       const b = conLineas[0];
-      sets.listadoMateriales = JSON.parse(JSON.stringify({ ...b, horas: horas || b.horas || 0, lineas: conLineas.flatMap((x) => x.lineas), archivo: leidos.map((x) => x.nombre).join(" + "), superficies: (leidos.find((x) => x.superficies && x.superficies.m2 > 0) || b).superficies, fecha: new Date().toISOString() }));
+      // Si en esta subida no viene el listado de horas, se conservan las que ya tenía (antes se ponían a 0)
+      sets.listadoMateriales = JSON.parse(JSON.stringify({ ...b, horas: horas || b.horas || horasYaGuardadas || 0, lineas: conLineas.flatMap((x) => x.lineas), archivo: leidos.map((x) => x.nombre).join(" + "), superficies: (leidos.find((x) => x.superficies && x.superficies.m2 > 0) || b).superficies, fecha: new Date().toISOString() }));
       avisos.push(`Análisis de materiales guardado (${sets.listadoMateriales.lineas.length} líneas${sets.listadoMateriales.horas ? ` · ${sets.listadoMateriales.horas} h` : ""}).`);
     } else if (horas > 0 && base.listadoMateriales) { sets.listadoMateriales = { ...base.listadoMateriales, horas }; avisos.push(`Mano de obra guardada (${horas} h).`); }
-    else if (horas > 0) avisos.push("Solo trae horas: sube también el análisis de materiales.");
+    else if (horas > 0) { sets.listadoMateriales = { horas, lineas: [] }; avisos.push(`Mano de obra guardada (${horas} h). Sube también el análisis de materiales.`); }
   }
   // 5) Cristales y persianas: pedido con su documento
   const ahora = Date.now();
@@ -49572,6 +49601,31 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   if (ctr) ctr.n = sig;
   avisos.unshift(nuevo ? `Expediente ${base.numero} creado.` : `Guardado en el expediente ${base.numero}.`);
   return { avisos, expId: id };
+}
+// Vuelve a leer, del PDF ya guardado, las horas del listado de mano de obra de los expedientes que dicen que les falta
+async function releerHorasManoObra(exps, boton) {
+  if (boton) { boton.disabled = true; boton.textContent = "Leyendo…"; }
+  const patch = {}; const bien = []; const mal = [];
+  for (const e of exps) {
+    const docs = toArray(e.documentos).filter((d) => d && d.url && /mano\s*de\s*obra/i.test(`${d.tipo || ""} ${d.nombre || ""}`));
+    let h = 0;
+    for (const d of docs) {
+      try {
+        const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
+        const r = await fetch("/.netlify/functions/descargar-archivo", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ url: d.url }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.base64) continue;
+        h = Math.max(h, horasDeTextoManoObra(await textoDePdfBytes(Uint8Array.from(atob(j.base64), (c) => c.charCodeAt(0)))));
+      } catch (er) { /* sigue con el siguiente */ }
+    }
+    if (h > 0) {
+      if (e.listadoMateriales) patch[`expedientes/${e.id}/listadoMateriales/horas`] = h; else patch[`expedientes/${e.id}/listadoMateriales`] = { horas: h, lineas: [] };
+      bien.push(`${e.numero}: ${h} h`);
+    } else mal.push(e.numero);
+  }
+  try { if (Object.keys(patch).length) await fbUpdate(ref(fbDb, "portalUxcar"), patch); } catch (er) { alert("No se pudo guardar: " + er.message); }
+  if (boton) { boton.disabled = false; boton.textContent = "🔄 Releer las horas de los listados de mano de obra ya subidos"; }
+  alert([bien.length ? `Horas recuperadas:\n${bien.join("\n")}` : "", mal.length ? `No he encontrado las horas en el PDF de: ${mal.join(", ")}.\nMándame uno de esos PDF para ver cómo vienen.` : ""].filter(Boolean).join("\n\n") || "Nada que hacer.");
 }
 function PortalSubirDocumentos({ expedientes, tipos, nombre, authUser, pedidosUx, proveedoresUx, aviso, expFijo, onHecho }) {
   const sel = expFijo ? expFijo.id : "__auto"; // en el portal no se elige ni se crea nada a mano: el número del PDF decide
@@ -49956,6 +50010,10 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
                 ))}
               </ul>
               <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.</p>
+              {pend.some(({ e, faltan }) => faltan.some((f) => /mano de obra/.test(f)) && toArray(e.documentos).some((d) => /mano\s*de\s*obra/i.test(`${d.tipo || ""} ${d.nombre || ""}`))) && (
+                <button onClick={(ev) => releerHorasManoObra(pend.filter(({ faltan }) => faltan.some((f) => /mano de obra/.test(f))).map(({ e }) => e), ev.currentTarget)}
+                  className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">🔄 Releer las horas de los listados de mano de obra ya subidos</button>
+              )}
             </div>
           );
         })()}
