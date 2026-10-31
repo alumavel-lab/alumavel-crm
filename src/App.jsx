@@ -522,10 +522,16 @@ const condicionesPendientesChecklist = (proyecto, pedidosTodos) => {
     const nombre = c.nombre || "Sin nombre";
     if (!c.estado) { faltan.push(`${nombre}: falta decir si lo lleva o no`); return; }
     if (c.estado !== "si" || c.enStock) return;
-    const vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    let vinculados = (pedidosTodos || []).filter((pd) => (c.pedidoIds || []).includes(pd.id) && pd.estado !== "Cancelado");
+    // Sin pedido enlazado a mano: vale el pedido de la obra que sea de ese material (cristal / persianas). Antes se atascaba aunque el pedido existiera.
+    if (vinculados.length === 0 && proyecto) {
+      const tipoItem = /cristal/i.test(nombre) ? "cristal" : "persianas";
+      vinculados = (pedidosTodos || []).filter((pd) => pd.proyectoId === proyecto.id && pd.estado !== "Cancelado" && tipoPedidoMaterial(pd) === tipoItem);
+    }
     if (vinculados.length === 0) { faltan.push(`${nombre}: lleva, pero no tiene pedido vinculado`); return; }
     vinculados.forEach((pd) => {
-      if (pd.estado !== "Recibido") faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
+      // Llegado = «Recibido» en oficina O todas sus líneas confirmadas por fábrica (la misma regla que el resto de «Listo para fabricar»)
+      if (!llegadoParaObra(pd)) faltan.push(`${nombre}: el pedido #${pd.numero} todavía no ha llegado`);
       else if ((pd.lineas || []).some((l) => !l.confirmadoFabrica)) faltan.push(`${nombre}: el pedido #${pd.numero} está sin confirmar por fábrica`);
     });
   });
@@ -2058,6 +2064,13 @@ export default function App() {
       }
 
     } else {
+      // CEPO: no meter dos veces la misma obra (mismo presupuesto con la misma versión, o mismo nombre)
+      const normP = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
+      const mismoPpto = normP(data.presupuestoNumero).length >= 3 ? proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && normP(p.presupuestoNumero) === normP(data.presupuestoNumero)) : null;
+      if (mismoPpto) { alert(`⛔ NO SE HA CREADO: el presupuesto ${data.presupuestoNumero} ya está en la obra #${mismoPpto.numero} «${mismoPpto.nombre}». La estabas metiendo dos veces.`); return; }
+      const baseP = digitosPresu(data.presupuestoNumero);
+      const igual = proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && ((baseP.length >= 3 && digitosPresu(p.presupuestoNumero) === baseP) || (String(data.nombre || "").trim() && String(p.nombre || "").trim().toLowerCase() === String(data.nombre || "").trim().toLowerCase())));
+      if (igual && !window.confirm(`⚠ Ya existe la obra #${igual.numero} «${igual.nombre}»${igual.presupuestoNumero ? ` (presupuesto ${igual.presupuestoNumero})` : ""}.\n\nParece que la estás metiendo DOS VECES.\n\nACEPTAR = crearla igualmente.\nCANCELAR = no crearla.`)) return;
       const np = {
         ...data,
         id: uid(),
@@ -2118,9 +2131,21 @@ export default function App() {
   const deleteProyecto = async (id) => {
     const pr = proyectos.find((p) => p.id === id);
     if (pr && (pr.origen === "portalUxcar" || pr.uxcarExpedienteId)) { if (!(await limpiarUxcarDeProyecto(pr))) return; }
-    saveProyectos(proyectos.filter((p) => p.id !== id));
+    saveProyectos(toArray(proyectosRef.current).filter((p) => p.id !== id)); // la lista más reciente: si se borran varias seguidas, no «resucita» la anterior
     setProyectoView("list");
     showToast("Proyecto eliminado");
+  };
+  // Borra obras de Uxcar SIN expediente (ya se borró en el portal): solo la ficha y sus copias de pedidos del portal en tu CRM.
+  // No pasa por el borrado completo (que intenta limpiar un expediente que ya no existe y se podía cortar a medias).
+  const borrarProyectosHuerfanos = (ids) => {
+    const set = new Set(ids);
+    const lista = toArray(proyectosRef.current).filter((p) => set.has(p.id));
+    if (!lista.length) return;
+    const pedsCrm = toArray(pedidos).filter((pd) => set.has(pd.proyectoId) && pd.origen === "portalUxcar");
+    if (!window.confirm(`¿Borrar ${lista.length === 1 ? `la obra #${lista[0].numero}` : `estas ${lista.length} obras`} de Uxcar sin expediente?\n\n${lista.map((p) => `#${p.numero} · ${p.nombre}`).join("\n")}\n\nSu expediente ya no existe en el portal.${pedsCrm.length ? ` Se quitan también ${pedsCrm.length} copia(s) de sus pedidos en tu CRM.` : ""} No se puede deshacer.`)) return;
+    if (pedsCrm.length) { const q = new Set(pedsCrm.map((x) => x.id)); savePedidos(toArray(pedidos).filter((x) => !q.has(x.id))); }
+    saveProyectos(toArray(proyectosRef.current).filter((p) => !set.has(p.id)));
+    showToast(`${lista.length} obra${lista.length === 1 ? "" : "s"} de Uxcar sin expediente borrada${lista.length === 1 ? "" : "s"}`);
   };
   // Proyectos de Uxcar «sueltos»: su expediente ya no existe (lo borraron en el portal) y el proyecto sigue sin tocar en «Pendiente de aceptación».
   const uxProyectosHuerfanos = useMemo(() => {
@@ -3414,6 +3439,25 @@ export default function App() {
   };
 
   const saveFacturas = (next) => { setFacturas(next); persist("facturas", next); };
+  // Proyectos DUPLICADOS: se borra solo la ficha repetida. Lo que colgaba de ella (pedidos, instalaciones, facturas, presupuestos,
+  // enlace con el expediente de Uxcar) pasa al que se queda. NO se toca el portal ni se borran pedidos (el borrado normal de una obra
+  // de Uxcar borra su expediente y sus pedidos, y los duplicados comparten el mismo expediente).
+  const borrarProyectosDuplicados = async (idsBorrar, idQuedar) => {
+    const borrar = new Set(idsBorrar.filter((id) => id && id !== idQuedar));
+    if (!borrar.size || !proyectos.some((p) => p.id === idQuedar)) return;
+    const quedar = proyectos.find((p) => p.id === idQuedar);
+    if (pedidos.some((pd) => borrar.has(pd.proyectoId))) savePedidos(pedidos.map((pd) => (borrar.has(pd.proyectoId) ? { ...pd, proyectoId: idQuedar } : pd)));
+    if (instalaciones.some((i) => borrar.has(i.proyectoId))) saveInstalaciones(instalaciones.map((i) => (borrar.has(i.proyectoId) ? { ...i, proyectoId: idQuedar } : i)));
+    if (facturas.some((f) => toArray(f.proyectosIds).some((id) => borrar.has(id)))) saveFacturas(facturas.map((f) => (toArray(f.proyectosIds).some((id) => borrar.has(id)) ? { ...f, proyectosIds: [...new Set(toArray(f.proyectosIds).map((id) => (borrar.has(id) ? idQuedar : id)))] } : f)));
+    if (presupuestos.some((x) => borrar.has(x.proyectoId))) savePresupuestos(presupuestos.map((x) => (borrar.has(x.proyectoId) ? { ...x, proyectoId: idQuedar } : x)));
+    const patchUx = {};
+    toArray(uxExpedientes).forEach((e) => { if (e && borrar.has(e.proyectoId)) patchUx[`expedientes/${e.id}/proyectoId`] = idQuedar; });
+    try { if (Object.keys(patchUx).length) await fbUpdate(ref(fbDb, "portalUxcar"), patchUx); } catch (e) { showToast("No se pudo actualizar el enlace con Uxcar: " + e.message, "error"); return; }
+    // Si la que se queda no tenía enlace con Uxcar y una borrada sí, se lo lleva
+    const conUx = proyectos.find((p) => borrar.has(p.id) && p.uxcarExpedienteId);
+    saveProyectos(proyectos.filter((p) => !borrar.has(p.id)).map((p) => (p.id === idQuedar && !p.uxcarExpedienteId && conUx ? { ...p, uxcarExpedienteId: conUx.uxcarExpedienteId } : p)));
+    showToast(`${borrar.size} duplicado${borrar.size === 1 ? "" : "s"} borrado${borrar.size === 1 ? "" : "s"}. Se queda #${quedar.numero}.`);
+  };
 
   const nextNumeroFactura = () => {
     const nums = facturas.filter((f) => !String(f.numero || "").startsWith("PF-")).map((f) => parseInt(String(f.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
@@ -4453,7 +4497,18 @@ export default function App() {
         }
         let numero = parseInt(nextNumeroProyecto(), 10);
         const nuevos = [];
+        // ANTES DE CREAR se vuelven a leer las obras de la base de datos: con varios CRM abiertos, otro ordenador puede haber creado ya
+        // la obra de este expediente y aquí todavía no haber llegado. Por eso salían 2 o 3 copias iguales (mismo nombre y mismo nº).
+        const snapP = await fbGet(ref(fbDb, "proyectos")).catch(() => null);
+        if (!snapP) return; // sin poder comprobarlo, no se crea nada (se reintenta en la siguiente pasada)
+        const frescos = toArray(snapP.val());
+        numero = Math.max(numero, ...frescos.map((p) => (parseInt(p && p.numero, 10) || 0) + 1)); // nº siguiente según lo que hay de verdad en la base de datos
         for (const exp of sinProyecto) {
+          if (frescos.some((p) => p && (p.uxcarExpedienteId === exp.id || (exp.proyectoId && p.id === exp.proyectoId)))) continue; // ya tiene su obra
+          // …ni si ya hay una obra con su mismo presupuesto y versión («Uxcar · 6.751-1 · …» o su casilla de presupuesto)
+          const normPV = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
+          const pv = normPV(exp.numero);
+          if (/^\d{3,}-\d+$/.test(pv) && frescos.some((p) => p && p.estadoTrabajo !== "Cancelado" && [p.presupuestoNumero, ...(String(p.nombre || "").match(/\d[\d.]*\s*-\s*\d+/g) || [])].some((t) => normPV(t) === pv))) continue;
           const nuevoId = uid();
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
@@ -5286,7 +5341,7 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
-  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null;
+  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null; uxPedidosGlobal = uxPedidos;
   useEffect(() => {
     if (recuentoStock !== null || !currentUser || !isAdmin) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -6274,6 +6329,8 @@ export default function App() {
         {modulo === "proyectos" && (
           <ProyectosModulo
             uxExpedientes={uxExpedientes}
+            onBorrarDuplicados={borrarProyectosDuplicados}
+            pedidosTodos={pedidos}
             currentUser={currentUser}
             onRecibirPedido={recibirPedido}
             proyectos={proyectos}
@@ -6912,7 +6969,8 @@ export default function App() {
             onBajaPortal={uxBajaPortal}
             onBorrar={uxBorrar}
             proyectosHuerfanos={uxProyectosHuerfanos}
-            onBorrarProyectoHuerfano={(id) => deleteProyecto(id)}
+            onBorrarProyectoHuerfano={(id) => borrarProyectosHuerfanos([id])}
+            onBorrarTodosHuerfanos={(ids) => borrarProyectosHuerfanos(ids)}
             nHuerfanos={uxPedidosHuerfanos.length}
             onPurgarHuerfanos={uxPurgarHuerfanos}
             onVerProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
@@ -7846,7 +7904,7 @@ function faseObra(p, pedidos, uxExpedientes = []) {
   if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
   return { txt: "Pedido en espera · sin enviar", cls: "bg-amber-100 text-amber-800" };
 }
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [] }) {
+function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -7912,6 +7970,8 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
   }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra]);
+  const [dupAbierto, setDupAbierto] = useState(""); // nombre del grupo de duplicados abierto para elegir cuál se queda
+  const [dupQuedar, setDupQuedar] = useState("");
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
   const duplicadosNombre = useMemo(() => {
     const cuenta = {};
@@ -7920,6 +7980,31 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     Object.entries(cuenta).forEach(([k, nums]) => { if (nums.length > 1) out[k] = nums; });
     return out;
   }, [proyectos]);
+  const [soloDup, setSoloDup] = useState(false);
+  const claveDup = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
+  // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
+  const filasLista = useMemo(() => {
+    const base = soloDup ? filtered.filter(esDup) : filtered;
+    const out = [], hechos = new Set();
+    base.forEach((p) => {
+      if (!esDup(p)) { out.push(p); return; }
+      const k = claveDup(p);
+      if (hechos.has(k)) return;
+      hechos.add(k);
+      base.filter((x) => esDup(x) && claveDup(x) === k).forEach((x) => out.push(x));
+    });
+    return out;
+  }, [filtered, soloDup, duplicadosNombre]); // eslint-disable-line react-hooks/exhaustive-deps
+  const nGruposDup = Object.keys(duplicadosNombre).length;
+  // ✓ verde: este se queda y se borran las demás copias de su grupo (borrado seguro: no toca Uxcar)
+  const quedarseCon = (p) => {
+    const grupo = proyectos.filter((x) => esDup(x) && claveDup(x) === claveDup(p));
+    const otros = grupo.filter((x) => x.id !== p.id);
+    if (!otros.length || !onBorrarDuplicados) return;
+    if (!window.confirm(`Se queda #${p.numero} «${p.nombre}» y se borran ${otros.length} copia${otros.length === 1 ? "" : "s"}.\n\nLo que tengan (pedidos, instalaciones, facturas, presupuestos, enlace con Uxcar) pasa a esta. El expediente de Uxcar y los pedidos NO se borran.\n\n¿Seguro?`)) return;
+    onBorrarDuplicados(otros.map((x) => x.id), p.id);
+  };
   // Expedientes de Uxcar que coinciden con la búsqueda y todavía NO son proyecto (siguen en «Planificación virtual»)
   const uxSinProyecto = (() => {
     const qd = String(q || "").replace(/[^\d]/g, "");
@@ -8066,6 +8151,46 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
         <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
       )}
+      {nGruposDup > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-900">
+          <b>⚠ {nGruposDup} obra{nGruposDup === 1 ? "" : "s"} repetida{nGruposDup === 1 ? "" : "s"}</b> (las copias salen juntas, con fondo amarillo). En la buena, pulsa <b className="text-emerald-700">✓ Este se queda</b> y se borran las demás.
+          <button onClick={() => setSoloDup(!soloDup)} className="ml-auto text-xs font-semibold px-3 py-1 rounded-md border border-amber-400 bg-white hover:bg-amber-100">{soloDup ? "Ver todas" : "Ver solo las repetidas"}</button>
+        </div>
+      )}
+      {dupAbierto && (() => {
+        const grupo = proyectos.filter((p) => p.estadoTrabajo !== "Cancelado" && String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ") === dupAbierto);
+        if (grupo.length < 2) return null;
+        const info = (p) => {
+          const nPed = toArray(pedidosTodos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado").length;
+          const nDoc = toArray(p.documentos).length, nEtq = toArray(p.etiquetasFab).length, nLis = toArray(p.listadoMateriales && p.listadoMateriales.lineas).length;
+          const enlUx = !!p.uxcarExpedienteId && toArray(uxExpedientes).some((e) => e && e.id === p.uxcarExpedienteId && e.proyectoId === p.id);
+          return { nPed, nDoc, nEtq, nLis, enlUx, puntos: (enlUx ? 100 : 0) + nPed * 10 + nEtq * 5 + nDoc + (nLis ? 3 : 0) + (p.estadoTrabajo && p.estadoTrabajo !== "Pendiente de aceptación" ? 20 : 0) };
+        };
+        const datos = grupo.map((p) => ({ p, i: info(p) }));
+        const recomendado = [...datos].sort((a, b) => b.i.puntos - a.i.puntos)[0].p.id;
+        const quedar = dupQuedar || recomendado;
+        return (
+          <div className="mb-4 bg-white border-2 border-amber-400 rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-2"><b className="text-slate-800">Duplicados: elige cuál se queda</b><button onClick={() => setDupAbierto("")} className="ml-auto text-xs border border-slate-300 rounded px-2 py-1">Cerrar</button></div>
+            <p className="text-xs text-slate-500 mb-2">Lo que tengan las copias (pedidos, instalaciones, facturas, presupuestos, enlace con Uxcar) pasa a la que se queda. Solo se borran las fichas repetidas: el expediente de Uxcar y los pedidos NO se borran.</p>
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-md">
+              {datos.map(({ p, i }) => (
+                <label key={p.id} className={`flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-sm cursor-pointer ${quedar === p.id ? "bg-emerald-50" : ""}`}>
+                  <input type="radio" checked={quedar === p.id} onChange={() => setDupQuedar(p.id)} />
+                  <b>#{p.numero}</b>
+                  <span className="text-xs text-slate-600">{p.estadoTrabajo || "—"}</span>
+                  <span className="text-xs text-slate-600">{i.nPed} pedido{i.nPed === 1 ? "" : "s"} · {i.nDoc} documento{i.nDoc === 1 ? "" : "s"} · {i.nEtq} lote{i.nEtq === 1 ? "" : "s"} de etiquetas · {i.nLis ? "con" : "sin"} listado</span>
+                  {i.enlUx && <span className="text-[11px] font-semibold text-violet-700">enlazado a Uxcar</span>}
+                  {p.id === recomendado && <span className="text-[11px] font-bold text-emerald-700">★ recomendado (el que más cosas tiene)</span>}
+                  <span className="ml-auto text-xs font-semibold">{quedar === p.id ? <span className="text-emerald-700">SE QUEDA</span> : <span className="text-rose-600">se borra</span>}</span>
+                </label>
+              ))}
+            </div>
+            <button onClick={() => { const otros = grupo.filter((p) => p.id !== quedar); const q = grupo.find((p) => p.id === quedar); if (!window.confirm(`Se queda #${q.numero} y se borran ${otros.length} copia${otros.length === 1 ? "" : "s"}.\n\nLo que tengan pasa a #${q.numero}. El expediente de Uxcar y los pedidos no se borran.\n\n¿Seguro?`)) return; onBorrarDuplicados && onBorrarDuplicados(otros.map((p) => p.id), quedar); setDupAbierto(""); }}
+              disabled={!onBorrarDuplicados} className="mt-3 text-sm font-semibold px-4 py-2 rounded-md bg-rose-600 text-white hover:opacity-90 disabled:opacity-40">Borrar los demás ({grupo.length - 1})</button>
+          </div>
+        );
+      })()}
       <details className="mb-3 bg-white border border-slate-200 rounded-lg">
         <summary className="cursor-pointer px-4 py-2 text-sm font-semibold text-slate-700">🎨 Chuleta: qué significa cada color de «¿En qué punto va?»</summary>
         <div className="px-4 pb-3 grid sm:grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
@@ -8116,17 +8241,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             {filtered.length === 0 && uxSinProyecto.length === 0 && (
               <tr><td colSpan={13} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
-            {filtered.map((p) => {
+            {filasLista.map((p, iFila) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
+              const dupFila = esDup(p), inicioGrupo = dupFila && (iFila === 0 || claveDup(filasLista[iFila - 1]) !== claveDup(p));
               const previstaVencida = !p.fechaEntregado && p.fechaEntregaPrevista && new Date(p.fechaEntregaPrevista) < new Date();
               return (
                 <tr
                   key={p.id}
                   onClick={() => { setDetailId(p.id); setView("detail"); }}
-                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition"
+                  className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition ${dupFila ? "bg-amber-50/60" : ""} ${inicioGrupo ? "border-t-4 border-t-amber-300" : ""}`}
                 >
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; return d && p.estadoTrabajo !== "Cancelado" ? <span className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap" title={`Mismo nombre que los proyectos ${d.map((n) => "#" + n).join(", ")}`}>⚠ posible duplicado ({d.filter((n) => n !== p.numero).map((n) => "#" + n).join(", ")})</span> : null; })()}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{dupFila && onBorrarDuplicados && <button type="button" onClick={(ev) => { ev.stopPropagation(); quedarseCon(p); }} title="Este se queda: se borran las demás copias" className="mr-2 inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 align-middle">✓ Este se queda</button>}{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; const otros = d ? d.filter((n) => n !== p.numero) : []; return d && p.estadoTrabajo !== "Cancelado" ? <button type="button" onClick={(ev) => { ev.stopPropagation(); setDupQuedar(""); setDupAbierto(String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")); }} className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap hover:bg-amber-200 underline" title="Pulsa para elegir cuál se queda y borrar las copias">⚠ posible duplicado ({otros.length ? otros.map((n) => "#" + n).join(", ") : `${d.length} con el mismo nº`}) · elegir</button> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
@@ -19127,6 +19253,43 @@ function PanelesPendientes({ cristales = [] }) {
   const pendientes = paneles.filter((x) => (x.estado || "pendiente") === "pendiente");
   const actualizar = (id, patch) => guardar(paneles.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const dato = (etq, val) => (val || val === 0) ? <div className="min-w-[110px]"><div className="text-[10px] uppercase tracking-wide text-slate-400">{etq}</div><div className="text-sm text-slate-800 break-words">{val}</div></div> : null;
+  // Hoja para el chico: los paneles pendientes de cortar, agrupados por COLOR y por TIPO de panel (sándwich, acústico…)
+  const colorPanel = (x) => {
+    const c = String(x.color || "").trim();
+    if (c) return c;
+    const m = String(x.descripcion || "").match(/\b(blanco|nogal|roble(?:\s+dorado)?|golden|antracita|7016|9016|negro|gris|crema|marr[oó]n|embero|winchester|cerezo|plata|inox)\b/i);
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : "Sin color";
+  };
+  const espesorPanel = (x) => String(x.espesor || (String(x.descripcion || "").match(/(\d{2,3})\s*mm/i) || [])[1] || "").trim();
+  const imprimirPaneles = () => {
+    const pend = (q ? lista : paneles).filter((x) => (x.estado || "pendiente") === "pendiente");
+    if (!pend.length) { alert("No hay paneles pendientes de cortar" + (q ? " con esa búsqueda." : ".")); return; }
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const grupos = {};
+    pend.forEach((x) => { const k = `${colorPanel(x)}|${x.tipo || tipoPanel(x)}`; (grupos[k] = grupos[k] || []).push(x); });
+    const claves = Object.keys(grupos).sort((a, b) => a.localeCompare(b, "es"));
+    const secciones = claves.map((k) => {
+      const [color, tipo] = k.split("|");
+      const xs = grupos[k].sort((a, b) => String(a.expediente).localeCompare(String(b.expediente), "es", { numeric: true }) || (parseFloat(b.alto) || 0) - (parseFloat(a.alto) || 0));
+      const uds = xs.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0);
+      const filas = xs.map((x) => { const o = obraDe(x.expediente) || {}; return `<tr><td class="c">☐</td><td><b>EXP ${esc(numsExpediente(x.expediente)[0] || x.expediente || "—")}</b>${o.nombre ? `<div class="s">${esc(o.nombre)}</div>` : ""}</td><td>${esc(x.ref || "")}</td><td class="m"><b>${esc(x.ancho)} × ${esc(x.alto)}</b></td><td class="n">${esc(x.cantidad || 1)}</td><td>${esc(espesorPanel(x) ? espesorPanel(x) + " mm" : "")}</td><td>${esc(x.descripcion || "")}${x.observaciones ? `<div class="s">${esc(x.observaciones)}</div>` : ""}</td><td>${esc(x.sitio || "")}</td></tr>`; }).join("");
+      return `<h3>${esc(color)} · ${esc(tipo)} <span class="s">(${uds} ud)</span></h3><table><thead><tr><th></th><th>Expediente</th><th>Vivienda</th><th>Ancho × alto (mm)</th><th>Uds</th><th>Espesor</th><th>Descripción</th><th>Sitio</th></tr></thead><tbody>${filas}</tbody></table>`;
+    }).join("");
+    const total = pend.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0);
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Paneles pendientes de cortar</title><style>
+      body{font-family:Arial,sans-serif;margin:12mm;color:#111} h2{font-size:20px;margin:0 0 4px} h3{font-size:15px;margin:14px 0 4px;padding:4px 6px;background:#eee}
+      table{width:100%;border-collapse:collapse;page-break-inside:auto} tr{page-break-inside:avoid} th,td{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top}
+      th{background:#f5f5f5} td.c{width:18px;font-size:16px;text-align:center} td.m{white-space:nowrap;font-size:13px} td.n{text-align:center;font-weight:bold} .s{color:#555;font-size:11px;font-weight:normal}
+      @media print{@page{size:A4 landscape;margin:10mm}}
+    </style></head><body><h2>Paneles pendientes de cortar · ${total} ud</h2><div class="s">Agrupados por color y tipo de panel${q ? ` · búsqueda «${esc(buscar)}»` : ""}</div>${secciones}<p class="s">Impreso ${new Date().toLocaleString("es-ES")}</p></body></html>`;
+    try {
+      const fr = document.createElement("iframe");
+      fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+      document.body.appendChild(fr);
+      const d = fr.contentWindow.document; d.open(); d.write(html); d.close();
+      setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300);
+    } catch (e) { alert("No se pudo preparar la impresión: " + ((e && e.message) || e)); }
+  };
   const guardarForm = () => {
     if (!(parseFloat(form.ancho) > 0) || !(parseFloat(form.alto) > 0)) { alert("Pon el ancho y el alto del panel."); return; }
     guardar([{ ...panelDeLinea({ numeroPedido: "", proveedor: "", fecha: hoy }, { ...form, cantidad: form.cantidad || 1 }), origen: "a mano" }, ...paneles]);
@@ -19139,6 +19302,7 @@ function PanelesPendientes({ cristales = [] }) {
           <b>Paneles pendientes de cortar.</b> Aquí caen los paneles (sándwich, acústicos de las puertas de entrada…) de la confirmación del pedido de cristales, de los listados de vidrios de cada expediente y de los caballetes. Cuando uno está cortado, lo marcas.
         </div>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, color, medida, cliente…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <button onClick={imprimirPaneles} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md text-white hover:opacity-90" style={{ backgroundColor: "#2E8B57" }} title="Hoja para el chico: lo pendiente de cortar, agrupado por color y tipo de panel"><Printer size={13} /> Imprimir para cortar</button>
         <button onClick={() => setForm(form ? null : { expediente: "", ref: "", ancho: "", alto: "", cantidad: 1, descripcion: "", color: "", modelo: "", presupuesto: "" })}
           className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">+ Añadir panel a mano</button>
       </div>
@@ -21778,9 +21942,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Proyectos donde TODO coincide: oficina ha recibido todos los pedidos, fábrica ha
   // confirmado la llegada de todas las líneas, y el checklist "Qué lleva la obra" está
   // completo. Solo cuando las tres cosas cuadran, el proyecto está listo para fabricar.
+  // Obras de Uxcar: el portal da el material por llegado con las DOS confirmaciones (albarán de Uxcar + material en los almacenes).
+  // Si es así, cuenta como llegado aunque no se haya hecho la entrada línea a línea en «Entradas Uxcar» (antes se quedaban atascadas).
+  const uxMaterialCompleto = (p) => uxMaterialCompletoObra(p, uxExpedientes);
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+      if (uxMaterialCompleto(p) || materialCompletoObraPropia(p, pedidos)) return true;
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -21791,7 +21959,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
       return oficinaOk && fabricaOk && checklistOk;
     });
-  }, [proyectos, pedidos]);
+  }, [proyectos, pedidos, uxExpedientes, uxPedidos, cristales, ctxPaneles.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
   // Lo que hay físicamente en el almacén de una obra (caballetes de cristal y persianas), buscado por pedido o por nº de presupuesto
   const matAlmacenObra = (p) => {
@@ -21812,7 +21980,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     const misPed = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
     let faltan = !marcada ? [] : p.origen === "portalUxcar"
-      ? misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : (pd.lineas || []).some((l) => !l.confirmadoFabrica) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): sin confirmar por fábrica`] : [])
+      ? [...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
+          ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "hay material suyo en el almacén, pero la cantidad no cuadra con lo pedido (o confírmalo a mano abajo)", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
       : condicionesPendientesChecklist(p, pedidos);
     // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
     const m = matAlmacenObra(p);
@@ -22109,7 +22278,14 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                 {bloqueadosMaterial.map(({ p, faltan }) => (
                   <div key={p.id} className="px-4 py-2.5">
                     <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
-                    <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}</ul>
+                    <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}
+                      {p.origen === "portalUxcar" ? (() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return null; const c = uxCantidadesObra(e); return <li>En los almacenes: {c.hayCris} de {c.pedCris || "?"} cristales · {c.hayPers} de {c.pedPers || "?"} persianas</li>; })()
+                        : (() => { const c = cantidadesObraPropia(p, pedidos); return c.conCris || c.conPers ? <li>En los almacenes: {c.conCris ? `${c.hayCris} de ${c.pedCris || "?"} cristales` : "sin pedido de cristal"} · {c.conPers ? `${c.hayPers} de ${c.pedPers || "?"} persianas` : "sin pedido de persianas"}</li> : null; })()}
+                    </ul>
+                    {onActualizarProyecto && (
+                      <button onClick={() => { if (window.confirm(`¿Confirmas que ha llegado TODO el material de #${p.numero} (cristales y persianas) y está en fábrica?\n\nPasará a «Listo para fabricar».`)) onActualizarProyecto(p.id, { materialConfirmadoFabrica: new Date().toISOString().slice(0, 10) }); }}
+                        className="mt-1 text-xs font-semibold px-3 py-1 rounded-md bg-[#2E8B57] text-white hover:opacity-90">✓ Fábrica confirma: ha llegado todo</button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -49728,6 +49904,12 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const digitos = (s) => String(s || "").replace(/\D/g, "");
   let e = exp || (numero ? expedientes.find((x) => digitos(x.numero) === digitos(numero) || digitos(x.presupuesto) === digitos(numero)) : null) || null;
   if (!e && !numero) return { avisos: [...avisos, "No he encontrado el número del expediente en los PDF. Elige un expediente de la lista y vuelve a subirlos."], expId: null };
+  // CEPO por Nº DE PRESUPUESTO: si ya hay un expediente con el mismo presupuesto (aunque cambie la versión o vaya con/sin puntos), no se crea otro
+  if (!e && numero) {
+    const base = uxPptoDigitos(numero);
+    const mismo = base.length >= 3 ? expedientes.find((x) => x && x.estado !== "entregado" && [x.numero, ...String(x.presupuesto || "").split(/[·,]/)].some((t) => uxPptoDigitos(t) === base)) : null;
+    if (mismo) return { avisos: [...avisos, `⛔ NO SE HA METIDO: el presupuesto ${numero} ya está metido como expediente ${mismo.numero}. Lo estabas metiendo dos veces. Si es una versión nueva o faltan documentos, ábrelo y súbelos ahí dentro.`], expId: mismo.id };
+  }
   if (exp && numero && digitos(exp.numero) !== digitos(numero) && digitos(exp.presupuesto) !== digitos(numero)) avisos.push(`⚠ Los documentos son del ${numero} y este expediente es el ${exp.numero}. Revisa que no sean de otro.`);
   const patch = {};
   const nuevo = !e;
@@ -49747,6 +49929,15 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       hechas.hojas.forEach((h) => { sets[`hojasCorteAux/${h.presupuesto}`] = h; });
       avisos.push(hechas.hojas.length ? `Hoja de corte del presupuesto ${hechas.join(", ")} leída: pasa a Auxiliares en cuanto se abra el CRM de Ecowin PVC.` : `⚠ No he podido leer la hoja de corte para Auxiliares: ${hechas.errores.join(" · ") || "motivo desconocido"}.`);
     } catch (er) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(er && er.message) || "error"}).`); }
+  }
+  // CEPO: un expediente NUEVO cuya hoja de corte dice «EXPEDIENTE 961» no se crea si ya hay otro expediente con ese mismo EXPEDIENTE
+  // (p. ej. el 961 metido una vez como 6.351-2 y otra como 4.954-2). La referencia se guarda para poder reconocerlo después.
+  const refsHoja = Object.keys(sets).filter((k) => k.startsWith("hojasCorteAux/")).map((k) => String((sets[k] && sets[k].referencia) || "")).filter(Boolean);
+  if (refsHoja.length && !(base.referencia)) sets.referencia = refsHoja[0];
+  if (nuevo) {
+    const expsHoja = new Set(refsHoja.flatMap((t) => (t.match(/\bEXP(?:EDIENTE)?\.?\s*(\d{2,})/gi) || []).map((m) => m.replace(/\D/g, ""))));
+    const yaHay = expsHoja.size ? expedientes.find((x) => x && x.estado !== "entregado" && ([...(uxClaves(x).exps || [])].some((n) => expsHoja.has(n)) || expsHoja.has(String(x.numero || "").replace(/\D/g, "")))) : null;
+    if (yaHay) return { avisos: [...avisos, `⛔ NO SE HA METIDO: estos documentos son del EXPEDIENTE ${[...expsHoja].join(", ")} y ese expediente ya está metido como ${yaHay.numero}. Lo estabas metiendo dos veces. Si son del mismo, ábrelo y súbelos ahí dentro.`], expId: yaHay.id };
   }
   // 2) Carga de material (tipo plano): se guarda y, si no hay hoja de corte, se cuenta con IA
   let recuento = recuentoHoja;
@@ -50149,6 +50340,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
     if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
     if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
+    const repetido = grupos.filter((g) => g.destino === "nuevo").map((g) => ({ g, ya: expMismoPpto(g.numeroNuevo) })).find((x) => x.ya);
+    if (repetido) { alert(`⛔ El presupuesto ${repetido.g.numeroNuevo} ya está metido como expediente ${repetido.ya.numero}. Elige ese expediente en vez de «nuevo».`); return false; }
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
@@ -50208,7 +50401,11 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
       aviso(`Expediente ${e.numero} borrado con sus pedidos`); setVista("lista"); setAbiertoId(null);
     } catch (er) { aviso("No se pudo borrar: " + er.message); }
   };
+  // CEPO por Nº DE PRESUPUESTO (sin versión, con o sin puntos): no se crea un expediente que ya existe
+  const expMismoPpto = (num) => { const b = uxPptoDigitos(num); return b.length >= 3 ? expedientes.find((x) => x && x.estado !== "entregado" && [x.numero, ...String(x.presupuesto || "").split(/[·,]/)].some((t) => uxPptoDigitos(t) === b)) : null; };
   const guardarNuevo = async (f) => {
+    const ya = expMismoPpto(f.numero);
+    if (ya) { alert(`⛔ NO SE HA CREADO: el presupuesto ${f.numero} ya está metido como expediente ${ya.numero}. Lo estabas metiendo dos veces.`); return false; }
     const id = uid();
     const exp = {
       id, numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas,
@@ -50472,7 +50669,7 @@ function UxRapidoArribaReal({ expedientes, abierto, onGuardar, onGuardarSinObra 
   );
 }
 
-function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos, proyectosHuerfanos = [], onBorrarProyectoHuerfano }) {
+function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos, proyectosHuerfanos = [], onBorrarProyectoHuerfano, onBorrarTodosHuerfanos }) {
   const [vista, setVista] = useState(() => { if (uxcNav.discrepancias) { uxcNav.discrepancias = false; return "discrepancias"; } return "lista"; });
   const [abiertoId, setAbiertoId] = useState(null);
   const [avisoStockUx, setAvisoStockUx] = useState("");
@@ -50506,7 +50703,8 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
       </div>
       {isAdmin && proyectosHuerfanos.length > 0 && onBorrarProyectoHuerfano && (
         <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm space-y-2">
-          <div>⚠ Proyectos de Uxcar sin expediente (el expediente se borró y el proyecto sigue sin aceptar). Al borrarlos se va todo lo suyo.</div>
+          <div className="flex flex-wrap items-center gap-2"><span className="mr-auto">⚠ {proyectosHuerfanos.length} proyecto{proyectosHuerfanos.length === 1 ? "" : "s"} de Uxcar sin expediente (el expediente se borró y el proyecto sigue sin aceptar).</span>
+            {onBorrarTodosHuerfanos && proyectosHuerfanos.length > 1 && <button onClick={() => onBorrarTodosHuerfanos(proyectosHuerfanos.map((pr) => pr.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rose-600 text-white hover:bg-rose-700">Borrar todos ({proyectosHuerfanos.length})</button>}</div>
           {proyectosHuerfanos.map((pr) => (
             <div key={pr.id} className="flex flex-wrap items-center gap-3">
               <span className="font-semibold">#{pr.numero} · {pr.nombre}</span>
@@ -51842,9 +52040,74 @@ async function devolverVentanaIncidencia(base, por) {
 
 const tabInicialFabrica = { actual: null };
 
-function calcListoParaFabricar(proyectos, pedidos) {
+// Obra de Uxcar con el material completo, SIN depender del albarán de Uxcar (ahora no se suben): decide FÁBRICA.
+// · A mano: «✓ Fábrica confirma: ha llegado todo» (p.materialConfirmadoFabrica).
+// · Solo: cristales y persianas en los almacenes y la CANTIDAD cuadra con lo pedido (para que no pase con solo una parte).
+//   Si Uxcar sí ha confirmado su albarán y fábrica lo tiene («recibido»), también vale.
+let uxPedidosGlobal = []; // lo rellena App en cada pintado (pedidos del portal de Uxcar)
+function uxCantidadesObra(e) {
+  const K = uxClaves(e);
+  const lineasDe = (tipo) => toArray(uxPedidosGlobal).filter((pd) => pd && pd.tipo === tipo).flatMap((pd) => toArray(pd.expedientes).filter((x) => x.expedienteId === e.id).flatMap((x) => toArray(x.lineas)));
+  const uds = (l) => parseFloat(l.uds || l.cantidad) || 1;
+  const pedPers = lineasDe("Persianas").reduce((t, l) => t + uds(l), 0) || toArray(e.recuento).reduce((t, l) => t + (l && l.persiana ? (parseFloat(l.uds) || 0) * Math.max(1, parseInt(l.juntas, 10) || 1) : 0), 0);
+  const pedCris = lineasDe("Cristales").filter((l) => !esLineaPanel(l)).reduce((t, l) => t + uds(l), 0);
+  const hayPers = toArray(uxAlmacenGlobal.persianas).filter((x) => uxPersianaEs(x, K)).length;
+  const nums = new Set([K.d, ...(K.exps || [])].filter((x) => x && x.length >= 2));
+  const hayCris = toArray(uxAlmacenGlobal.cristales).filter((c) => c && c.estado !== "Retirado" && uxCaballeteEs(c, K)).reduce((t, c) => {
+    const ps = toArray(c.piezas);
+    if (!ps.length) return t + (parseFloat(c.cantidad) || 0);
+    // en un caballete con varias obras, solo cuentan las piezas de esta (o todas si las piezas no dicen de quién son)
+    return t + ps.filter((pz) => { const n = numsExpediente(pz && pz.expediente); return !n.length || n.some((x) => nums.has(x)) || String(pz.presupuesto || "").split(/[·,]/).some((y) => uxPptoCasa(y, K)); }).reduce((a, pz) => a + (parseFloat(pz.cantidad) || 1), 0);
+  }, 0);
+  return { pedPers, hayPers, pedCris, hayCris };
+}
+// Obras PROPIAS: cristales y persianas en los almacenes frente a lo pedido (pedidos de cristal y de persianas de la obra).
+// El material se busca por su pedido o por el nº de presupuesto de la obra (como «Dónde está el material»).
+function cantidadesObraPropia(p, pedidos) {
+  const misPed = toArray(pedidos).filter((pd) => pd && pd.proyectoId === p.id && pd.estado !== "Cancelado");
+  const pedC = misPed.filter((pd) => tipoPedidoMaterial(pd) === "cristal"), pedP = misPed.filter((pd) => tipoPedidoMaterial(pd) === "persianas");
+  const uds = (l) => parseFloat(l.cantidad) || 0;
+  const pedCris = pedC.flatMap((pd) => toArray(pd.lineas)).filter((l) => !esLineaPanel({ descripcion: l.referencia || l.descripcion || "" })).reduce((t, l) => t + uds(l), 0);
+  const pedPers = pedP.flatMap((pd) => toArray(pd.lineas)).reduce((t, l) => t + uds(l), 0);
+  const claves = new Set(); [p.presupuestoNumero, presupuestoDeObra(p)].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) claves.add(d); }));
+  const casa = (t) => String(t || "").split(/[·,;\s]+/).some((x) => claves.has(digitosPresu(x)));
+  const idsC = new Set(pedC.map((pd) => pd.id)), numsP = new Set(pedP.map((pd) => String(pd.numero)));
+  const hayCris = toArray(uxAlmacenGlobal.cristales).filter((c) => c && c.estado !== "Retirado").reduce((t, c) => {
+    const delPedido = c.pedidoId && idsC.has(c.pedidoId);
+    const ps = toArray(c.piezas);
+    if (!ps.length) return t + (delPedido || casa(c.presupuesto) ? parseFloat(c.cantidad) || 0 : 0);
+    return t + ps.filter((pz) => pz && ((delPedido && !(pz.presupuesto || pz.ppto)) || casa(pz.presupuesto || pz.ppto) || (!(pz.presupuesto || pz.ppto) && casa(c.presupuesto)))).reduce((a, pz) => a + (parseFloat(pz.cantidad) || 1), 0);
+  }, 0);
+  const hayPers = toArray(uxAlmacenGlobal.persianas).filter((x) => x && !x.entregada && !x.colocadaVentana && ((x.pedido && numsP.has(String(x.pedido))) || casa(x.presupuesto || x.ppto))).length;
+  return { pedCris, hayCris, pedPers, hayPers, conCris: pedC.length > 0, conPers: pedP.length > 0 };
+}
+// Obra propia con cristales y persianas completos en los almacenes (o confirmada a mano por fábrica)
+function materialCompletoObraPropia(p, pedidos) {
+  if (!p || p.origen === "portalUxcar") return false;
+  if (p.materialConfirmadoFabrica) return true;
+  const c = cantidadesObraPropia(p, pedidos);
+  if (!c.conCris && !c.conPers) return false;
+  return (!c.conCris || (c.pedCris > 0 && c.hayCris >= c.pedCris)) && (!c.conPers || (c.pedPers > 0 && c.hayPers >= c.pedPers));
+}
+function uxMaterialCompletoObra(p, uxExpedientes) {
+  if (!p || p.origen !== "portalUxcar" || !p.uxcarExpedienteId) return false;
+  if (p.materialConfirmadoFabrica) return true;
+  const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId);
+  if (!e) return false;
+  const c = uxCantidadesObra(e);
+  const ok = (k) => {
+    const est = uxEstadoMat(e, k);
+    if (est === "no_lleva" || est === "recibido") return true;
+    if (est !== "en_fabrica") return false;
+    return k === "vidrios" ? c.pedCris > 0 && c.hayCris >= c.pedCris : c.pedPers > 0 && c.hayPers >= c.pedPers;
+  };
+  const est = ["vidrios", "compactos"].map((k) => uxEstadoMat(e, k));
+  return est.some((x) => x !== "no_lleva") && ok("vidrios") && ok("compactos");
+}
+function calcListoParaFabricar(proyectos, pedidos, uxExpedientes) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
+    if (uxMaterialCompletoObra(p, uxExpedientes) || materialCompletoObraPropia(p, pedidos)) return true;
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -53281,7 +53544,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     return out;
   };
   // «Las que tenemos»: obras con el cristal (y la persiana, si la lleva) ya recibidos y confirmados por fábrica, o que ya están en proceso
-  const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos)).map((p) => p.id));
+  const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos), uxExpedientes).map((p) => p.id));
   // Enlace con Fábrica: SIEMPRE por código de presupuesto (con su versión: -1 y -2 son viviendas distintas)
   const presConVersion = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
@@ -54465,7 +54728,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
-  const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos), [proyectos, pedidos]);
+  const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = soloAlmacen ? [
     { id: "cargas", t: "Cargas de hoy", aviso: "" },
