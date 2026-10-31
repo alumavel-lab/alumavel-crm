@@ -21948,7 +21948,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const listoParaFabricar = useMemo(() => {
     return proyectos.filter((p) => {
       if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-      if (uxMaterialCompleto(p)) return true;
+      if (uxMaterialCompleto(p) || materialCompletoObraPropia(p, pedidos)) return true;
       const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
       if (todosPedidos.length === 0) return false;
       // De momento solo se exige que hayan llegado los cristales y los compactos
@@ -22279,9 +22279,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                   <div key={p.id} className="px-4 py-2.5">
                     <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
                     <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}
-                      {p.origen === "portalUxcar" && (() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return null; const c = uxCantidadesObra(e); return <li>En los almacenes: {c.hayCris} de {c.pedCris || "?"} cristales · {c.hayPers} de {c.pedPers || "?"} persianas</li>; })()}
+                      {p.origen === "portalUxcar" ? (() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return null; const c = uxCantidadesObra(e); return <li>En los almacenes: {c.hayCris} de {c.pedCris || "?"} cristales · {c.hayPers} de {c.pedPers || "?"} persianas</li>; })()
+                        : (() => { const c = cantidadesObraPropia(p, pedidos); return c.conCris || c.conPers ? <li>En los almacenes: {c.conCris ? `${c.hayCris} de ${c.pedCris || "?"} cristales` : "sin pedido de cristal"} · {c.conPers ? `${c.hayPers} de ${c.pedPers || "?"} persianas` : "sin pedido de persianas"}</li> : null; })()}
                     </ul>
-                    {p.origen === "portalUxcar" && onActualizarProyecto && (
+                    {onActualizarProyecto && (
                       <button onClick={() => { if (window.confirm(`¿Confirmas que ha llegado TODO el material de #${p.numero} (cristales y persianas) y está en fábrica?\n\nPasará a «Listo para fabricar».`)) onActualizarProyecto(p.id, { materialConfirmadoFabrica: new Date().toISOString().slice(0, 10) }); }}
                         className="mt-1 text-xs font-semibold px-3 py-1 rounded-md bg-[#2E8B57] text-white hover:opacity-90">✓ Fábrica confirma: ha llegado todo</button>
                     )}
@@ -52060,6 +52061,34 @@ function uxCantidadesObra(e) {
   }, 0);
   return { pedPers, hayPers, pedCris, hayCris };
 }
+// Obras PROPIAS: cristales y persianas en los almacenes frente a lo pedido (pedidos de cristal y de persianas de la obra).
+// El material se busca por su pedido o por el nº de presupuesto de la obra (como «Dónde está el material»).
+function cantidadesObraPropia(p, pedidos) {
+  const misPed = toArray(pedidos).filter((pd) => pd && pd.proyectoId === p.id && pd.estado !== "Cancelado");
+  const pedC = misPed.filter((pd) => tipoPedidoMaterial(pd) === "cristal"), pedP = misPed.filter((pd) => tipoPedidoMaterial(pd) === "persianas");
+  const uds = (l) => parseFloat(l.cantidad) || 0;
+  const pedCris = pedC.flatMap((pd) => toArray(pd.lineas)).filter((l) => !esLineaPanel({ descripcion: l.referencia || l.descripcion || "" })).reduce((t, l) => t + uds(l), 0);
+  const pedPers = pedP.flatMap((pd) => toArray(pd.lineas)).reduce((t, l) => t + uds(l), 0);
+  const claves = new Set(); [p.presupuestoNumero, presupuestoDeObra(p)].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) claves.add(d); }));
+  const casa = (t) => String(t || "").split(/[·,;\s]+/).some((x) => claves.has(digitosPresu(x)));
+  const idsC = new Set(pedC.map((pd) => pd.id)), numsP = new Set(pedP.map((pd) => String(pd.numero)));
+  const hayCris = toArray(uxAlmacenGlobal.cristales).filter((c) => c && c.estado !== "Retirado").reduce((t, c) => {
+    const delPedido = c.pedidoId && idsC.has(c.pedidoId);
+    const ps = toArray(c.piezas);
+    if (!ps.length) return t + (delPedido || casa(c.presupuesto) ? parseFloat(c.cantidad) || 0 : 0);
+    return t + ps.filter((pz) => pz && ((delPedido && !(pz.presupuesto || pz.ppto)) || casa(pz.presupuesto || pz.ppto) || (!(pz.presupuesto || pz.ppto) && casa(c.presupuesto)))).reduce((a, pz) => a + (parseFloat(pz.cantidad) || 1), 0);
+  }, 0);
+  const hayPers = toArray(uxAlmacenGlobal.persianas).filter((x) => x && !x.entregada && !x.colocadaVentana && ((x.pedido && numsP.has(String(x.pedido))) || casa(x.presupuesto || x.ppto))).length;
+  return { pedCris, hayCris, pedPers, hayPers, conCris: pedC.length > 0, conPers: pedP.length > 0 };
+}
+// Obra propia con cristales y persianas completos en los almacenes (o confirmada a mano por fábrica)
+function materialCompletoObraPropia(p, pedidos) {
+  if (!p || p.origen === "portalUxcar") return false;
+  if (p.materialConfirmadoFabrica) return true;
+  const c = cantidadesObraPropia(p, pedidos);
+  if (!c.conCris && !c.conPers) return false;
+  return (!c.conCris || (c.pedCris > 0 && c.hayCris >= c.pedCris)) && (!c.conPers || (c.pedPers > 0 && c.hayPers >= c.pedPers));
+}
 function uxMaterialCompletoObra(p, uxExpedientes) {
   if (!p || p.origen !== "portalUxcar" || !p.uxcarExpedienteId) return false;
   if (p.materialConfirmadoFabrica) return true;
@@ -52078,7 +52107,7 @@ function uxMaterialCompletoObra(p, uxExpedientes) {
 function calcListoParaFabricar(proyectos, pedidos, uxExpedientes) {
   return proyectos.filter((p) => {
     if (["Entregado", "Cancelado"].includes(p.estadoTrabajo) || p.estadoTrabajo === "En proceso" || p.estadoTrabajo === "Albarán de carga firmado" || p.estadoTrabajo === "Listo para reparto/recogida") return false;
-    if (uxMaterialCompletoObra(p, uxExpedientes)) return true;
+    if (uxMaterialCompletoObra(p, uxExpedientes) || materialCompletoObraPropia(p, pedidos)) return true;
     const todosPedidos = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
     if (todosPedidos.length === 0) return false;
     // De momento solo se exige que hayan llegado los cristales y los compactos
