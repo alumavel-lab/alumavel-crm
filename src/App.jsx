@@ -19863,18 +19863,20 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setAviso(`${ids.size} repetidas borradas.`);
   };
 
+  // Los bloqueos salen en ventana: el aviso de arriba no se ve cuando estás abajo, junto al botón «Colocar en los carros»
+  const avisarFuerte = (t) => { setAviso(t); window.alert(t); };
   const confirmarEntrada = (lista) => {
     const entrada = Array.isArray(lista) ? lista : entradaConReparto();
     // BLOQUEO 1: ya están en el almacén (mismo expediente, referencia y largo)
     const repes = repetidasEnAlmacen(entrada);
     if (repes.length) {
-      setAviso(`BLOQUEADO: ${repes.length} de ${entrada.length} ${cosa} ya están en el almacén (mismo EXP, referencia y largo), por ejemplo ${repes.slice(0, 3).map((x) => `EXP ${x.expediente} ${x.ref} ${largoPersiana(x)}`).join(" · ")}. No se ha guardado nada. Seguramente ya las habías subido. Si en el borrador hay otras nuevas, pulsa «Quitar las que ya están».`);
+      avisarFuerte(`BLOQUEADO: ${repes.length} de ${entrada.length} ${cosa} ya están en el almacén (mismo EXP, referencia y largo), por ejemplo ${repes.slice(0, 3).map((x) => `EXP ${x.expediente} ${x.ref} ${largoPersiana(x)}`).join(" · ")}. No se ha guardado nada. Seguramente ya las habías subido. Si en el borrador hay otras nuevas, pulsa «Quitar las que ya están».`);
       return;
     }
     // BLOQUEO 2: no caben en el carro elegido (no se reparten solas por otros carros)
     const prueba = colocar(entrada);
     if (prueba.desbordan > 0) {
-      setAviso(`BLOQUEADO: ${prueba.desbordan} ${cosa} no caben en el carro elegido. No se ha guardado nada. Elige otro carro (o «Automático») y vuelve a confirmar.`);
+      avisarFuerte(`BLOQUEADO: ${prueba.desbordan} ${cosa} no caben en el carro elegido. No se ha guardado nada. Elige otro carro (o «Automático») y vuelve a confirmar.`);
       return;
     }
     // Aviso 3: el expediente ya tiene piezas dentro (puede ser una segunda entrega legítima)
@@ -20436,6 +20438,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               </tbody>
             </table>
           </div>
+          {aviso && <div className="mt-3 text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-900">{aviso}</div>}
           <div className="flex gap-2 mt-3">
             <button onClick={() => { setBorrador(null); setCarroDestinoGlobal(""); }} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
             <button onClick={imprimirPrevision} className="text-sm font-semibold px-3.5 py-2 rounded-lg border border-slate-400 text-slate-800 bg-white hover:bg-slate-50">🖨 Imprimir reparto previsto</button>
