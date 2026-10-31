@@ -7943,6 +7943,31 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     Object.entries(cuenta).forEach(([k, nums]) => { if (nums.length > 1) out[k] = nums; });
     return out;
   }, [proyectos]);
+  const [soloDup, setSoloDup] = useState(false);
+  const claveDup = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
+  // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
+  const filasLista = useMemo(() => {
+    const base = soloDup ? filtered.filter(esDup) : filtered;
+    const out = [], hechos = new Set();
+    base.forEach((p) => {
+      if (!esDup(p)) { out.push(p); return; }
+      const k = claveDup(p);
+      if (hechos.has(k)) return;
+      hechos.add(k);
+      base.filter((x) => esDup(x) && claveDup(x) === k).forEach((x) => out.push(x));
+    });
+    return out;
+  }, [filtered, soloDup, duplicadosNombre]); // eslint-disable-line react-hooks/exhaustive-deps
+  const nGruposDup = Object.keys(duplicadosNombre).length;
+  // ✓ verde: este se queda y se borran las demás copias de su grupo (borrado seguro: no toca Uxcar)
+  const quedarseCon = (p) => {
+    const grupo = proyectos.filter((x) => esDup(x) && claveDup(x) === claveDup(p));
+    const otros = grupo.filter((x) => x.id !== p.id);
+    if (!otros.length || !onBorrarDuplicados) return;
+    if (!window.confirm(`Se queda #${p.numero} «${p.nombre}» y se borran ${otros.length} copia${otros.length === 1 ? "" : "s"}.\n\nLo que tengan (pedidos, instalaciones, facturas, presupuestos, enlace con Uxcar) pasa a esta. El expediente de Uxcar y los pedidos NO se borran.\n\n¿Seguro?`)) return;
+    onBorrarDuplicados(otros.map((x) => x.id), p.id);
+  };
   // Expedientes de Uxcar que coinciden con la búsqueda y todavía NO son proyecto (siguen en «Planificación virtual»)
   const uxSinProyecto = (() => {
     const qd = String(q || "").replace(/[^\d]/g, "");
@@ -8089,6 +8114,12 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
       {!estadoTrabajo && !q && proyectos.some((p) => p.estadoTrabajo === "Cancelado") && (
         <p className="text-xs text-slate-400 mb-3">{proyectos.filter((p) => p.estadoTrabajo === "Cancelado").length} proyecto(s) anulado(s) no se muestran aquí — para verlos, elige "Cancelado" en el desplegable de estado.</p>
       )}
+      {nGruposDup > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-900">
+          <b>⚠ {nGruposDup} obra{nGruposDup === 1 ? "" : "s"} repetida{nGruposDup === 1 ? "" : "s"}</b> (las copias salen juntas, con fondo amarillo). En la buena, pulsa <b className="text-emerald-700">✓ Este se queda</b> y se borran las demás.
+          <button onClick={() => setSoloDup(!soloDup)} className="ml-auto text-xs font-semibold px-3 py-1 rounded-md border border-amber-400 bg-white hover:bg-amber-100">{soloDup ? "Ver todas" : "Ver solo las repetidas"}</button>
+        </div>
+      )}
       {dupAbierto && (() => {
         const grupo = proyectos.filter((p) => p.estadoTrabajo !== "Cancelado" && String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ") === dupAbierto);
         if (grupo.length < 2) return null;
@@ -8173,17 +8204,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
             {filtered.length === 0 && uxSinProyecto.length === 0 && (
               <tr><td colSpan={13} className="px-4 py-10 text-center text-slate-400 text-sm">No hay proyectos que coincidan con la búsqueda.</td></tr>
             )}
-            {filtered.map((p) => {
+            {filasLista.map((p, iFila) => {
               const diff = p.fechaEntregado && p.fechaEntregaPrevista ? daysDiff(p.fechaEntregaPrevista, p.fechaEntregado) : null;
+              const dupFila = esDup(p), inicioGrupo = dupFila && (iFila === 0 || claveDup(filasLista[iFila - 1]) !== claveDup(p));
               const previstaVencida = !p.fechaEntregado && p.fechaEntregaPrevista && new Date(p.fechaEntregaPrevista) < new Date();
               return (
                 <tr
                   key={p.id}
                   onClick={() => { setDetailId(p.id); setView("detail"); }}
-                  className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition"
+                  className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition ${dupFila ? "bg-amber-50/60" : ""} ${inicioGrupo ? "border-t-4 border-t-amber-300" : ""}`}
                 >
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; const otros = d ? d.filter((n) => n !== p.numero) : []; return d && p.estadoTrabajo !== "Cancelado" ? <button type="button" onClick={(ev) => { ev.stopPropagation(); setDupQuedar(""); setDupAbierto(String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")); }} className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap hover:bg-amber-200 underline" title="Pulsa para elegir cuál se queda y borrar las copias">⚠ posible duplicado ({otros.length ? otros.map((n) => "#" + n).join(", ") : `${d.length} con el mismo nº`}) · elegir</button> : null; })()}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{dupFila && onBorrarDuplicados && <button type="button" onClick={(ev) => { ev.stopPropagation(); quedarseCon(p); }} title="Este se queda: se borran las demás copias" className="mr-2 inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 align-middle">✓ Este se queda</button>}{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; const otros = d ? d.filter((n) => n !== p.numero) : []; return d && p.estadoTrabajo !== "Cancelado" ? <button type="button" onClick={(ev) => { ev.stopPropagation(); setDupQuedar(""); setDupAbierto(String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")); }} className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap hover:bg-amber-200 underline" title="Pulsa para elegir cuál se queda y borrar las copias">⚠ posible duplicado ({otros.length ? otros.map((n) => "#" + n).join(", ") : `${d.length} con el mismo nº`}) · elegir</button> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
