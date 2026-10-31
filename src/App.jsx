@@ -2125,9 +2125,21 @@ export default function App() {
   const deleteProyecto = async (id) => {
     const pr = proyectos.find((p) => p.id === id);
     if (pr && (pr.origen === "portalUxcar" || pr.uxcarExpedienteId)) { if (!(await limpiarUxcarDeProyecto(pr))) return; }
-    saveProyectos(proyectos.filter((p) => p.id !== id));
+    saveProyectos(toArray(proyectosRef.current).filter((p) => p.id !== id)); // la lista más reciente: si se borran varias seguidas, no «resucita» la anterior
     setProyectoView("list");
     showToast("Proyecto eliminado");
+  };
+  // Borra obras de Uxcar SIN expediente (ya se borró en el portal): solo la ficha y sus copias de pedidos del portal en tu CRM.
+  // No pasa por el borrado completo (que intenta limpiar un expediente que ya no existe y se podía cortar a medias).
+  const borrarProyectosHuerfanos = (ids) => {
+    const set = new Set(ids);
+    const lista = toArray(proyectosRef.current).filter((p) => set.has(p.id));
+    if (!lista.length) return;
+    const pedsCrm = toArray(pedidos).filter((pd) => set.has(pd.proyectoId) && pd.origen === "portalUxcar");
+    if (!window.confirm(`¿Borrar ${lista.length === 1 ? `la obra #${lista[0].numero}` : `estas ${lista.length} obras`} de Uxcar sin expediente?\n\n${lista.map((p) => `#${p.numero} · ${p.nombre}`).join("\n")}\n\nSu expediente ya no existe en el portal.${pedsCrm.length ? ` Se quitan también ${pedsCrm.length} copia(s) de sus pedidos en tu CRM.` : ""} No se puede deshacer.`)) return;
+    if (pedsCrm.length) { const q = new Set(pedsCrm.map((x) => x.id)); savePedidos(toArray(pedidos).filter((x) => !q.has(x.id))); }
+    saveProyectos(toArray(proyectosRef.current).filter((p) => !set.has(p.id)));
+    showToast(`${lista.length} obra${lista.length === 1 ? "" : "s"} de Uxcar sin expediente borrada${lista.length === 1 ? "" : "s"}`);
   };
   // Proyectos de Uxcar «sueltos»: su expediente ya no existe (lo borraron en el portal) y el proyecto sigue sin tocar en «Pendiente de aceptación».
   const uxProyectosHuerfanos = useMemo(() => {
@@ -6951,7 +6963,8 @@ export default function App() {
             onBajaPortal={uxBajaPortal}
             onBorrar={uxBorrar}
             proyectosHuerfanos={uxProyectosHuerfanos}
-            onBorrarProyectoHuerfano={(id) => deleteProyecto(id)}
+            onBorrarProyectoHuerfano={(id) => borrarProyectosHuerfanos([id])}
+            onBorrarTodosHuerfanos={(ids) => borrarProyectosHuerfanos(ids)}
             nHuerfanos={uxPedidosHuerfanos.length}
             onPurgarHuerfanos={uxPurgarHuerfanos}
             onVerProyecto={(id) => { setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); }}
@@ -50600,7 +50613,7 @@ function UxRapidoArribaReal({ expedientes, abierto, onGuardar, onGuardarSinObra 
   );
 }
 
-function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos, proyectosHuerfanos = [], onBorrarProyectoHuerfano }) {
+function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [], proveedores = [], materiales = [], onActualizarPedido, onDarDeBaja, todosProyectos = [], tarifaUx, onGuardarTarifaUx, expedientes, uxPedidos = [], onCambiarControlOtros, onGuardarListadoUx, onGuardarEtiquetasUx, onGuardarSinObra, config, portalUsuarios, proyectos, isAdmin, onCambiarMaterial, onPasarProduccion, onCambiarEstado, onCambiarEntrega, onGuardarTipos, onAltaPortal, onBajaPortal, onVerProyecto, onBorrar, nHuerfanos = 0, onPurgarHuerfanos, proyectosHuerfanos = [], onBorrarProyectoHuerfano, onBorrarTodosHuerfanos }) {
   const [vista, setVista] = useState(() => { if (uxcNav.discrepancias) { uxcNav.discrepancias = false; return "discrepancias"; } return "lista"; });
   const [abiertoId, setAbiertoId] = useState(null);
   const [avisoStockUx, setAvisoStockUx] = useState("");
@@ -50634,7 +50647,8 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
       </div>
       {isAdmin && proyectosHuerfanos.length > 0 && onBorrarProyectoHuerfano && (
         <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm space-y-2">
-          <div>⚠ Proyectos de Uxcar sin expediente (el expediente se borró y el proyecto sigue sin aceptar). Al borrarlos se va todo lo suyo.</div>
+          <div className="flex flex-wrap items-center gap-2"><span className="mr-auto">⚠ {proyectosHuerfanos.length} proyecto{proyectosHuerfanos.length === 1 ? "" : "s"} de Uxcar sin expediente (el expediente se borró y el proyecto sigue sin aceptar).</span>
+            {onBorrarTodosHuerfanos && proyectosHuerfanos.length > 1 && <button onClick={() => onBorrarTodosHuerfanos(proyectosHuerfanos.map((pr) => pr.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-rose-600 text-white hover:bg-rose-700">Borrar todos ({proyectosHuerfanos.length})</button>}</div>
           {proyectosHuerfanos.map((pr) => (
             <div key={pr.id} className="flex flex-wrap items-center gap-3">
               <span className="font-semibold">#{pr.numero} · {pr.nombre}</span>
