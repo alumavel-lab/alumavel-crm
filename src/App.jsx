@@ -19962,14 +19962,19 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [qLista, setQLista] = useState("");
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
+  const [soloSinRevisar, setSoloSinRevisar] = useState(false);
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
   // Fila de una persiana: colocada en obra, dónde está e incidencia / comentario
   const filaPersiana = (x, mostrarSitio = true) => (
-    <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : ""}`}>
+    <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : x.revisada ? "bg-sky-50" : ""}`}>
       <td className="py-1.5 px-2">
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
+      </td>
+      <td className="py-1.5 px-2">
+        <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: está donde dice el CRM" className="w-5 h-5 accent-sky-600 cursor-pointer"
+          onChange={(e) => actualizarPersiana(x.id, { revisada: e.target.checked, fechaRevisada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
       <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
@@ -20004,7 +20009,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   );
   const cabeceraPersianas = (mostrarSitio = true) => (
     <thead><tr className="text-left text-xs text-slate-400 border-b">
-      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
+      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="py-1.5 px-2" title="Revisada en el carro: está donde dice el CRM">Revisada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
       {mostrarSitio && <th className="px-2">Dónde está</th>}<th className="px-2">Incidencia / comentario</th>
     </tr></thead>
   );
@@ -20110,8 +20115,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const usado = es.reduce((a, e) => a + (e.porUds ? Math.min(e.capacidad, ocup.uds[e.key] || 0) : Math.min(e.largo, ocup.usado[e.key] || 0)), 0);
     const exps = new Set();
     es.forEach((e) => (ocup.exps[e.key] || new Set()).forEach((x) => exps.add(x)));
-    const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
-    return { pct: total ? usado / total : 0, exps: [...exps], n };
+    const dentro = activos.filter((x) => x.estante && x.estante.carro === c.numero);
+    const n = dentro.length;
+    const revisadas = dentro.filter((x) => x.revisada).length;
+    return { pct: total ? usado / total : 0, exps: [...exps], n, revisadas, todoRevisado: n > 0 && revisadas === n };
   };
   const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${c.minimo != null && c.minimo !== "" && !isNaN(parseFloat(c.minimo)) ? `desde ${Math.round(parseFloat(c.minimo) / 10)} cm` : ((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
   const opcionesCarro = (excluir) => ordenados.filter((c) => c.numero !== excluir).map((c) => <option key={c.numero} value={c.numero}>{etiquetaCarro(c)}</option>);
@@ -20386,6 +20393,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             ))}
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border-2 border-dashed border-rose-400" /> Movido de su sitio</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> VACÍO (sin persianas)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-sky-100 border-2 border-sky-500" /> Todo revisado</span>
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <button onClick={() => { const ll = ordenados.filter((c) => activos.some((x) => x.estante && x.estante.carro === c.numero)); if (!ll.length) { alert("No hay carros con " + cosa + " dentro."); return; } imprimirCarros(ll); }} className="flex items-center gap-1 font-semibold text-slate-700 border border-slate-400 px-2.5 py-1 rounded-lg hover:bg-slate-50">🖨 Imprimir todos los carros</button>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
@@ -20412,7 +20420,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
-                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
+                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : r.todoRevisado ? "bg-sky-100" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : r.todoRevisado ? "border-sky-500" : "border-slate-200"}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -20424,6 +20432,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
                         {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                       </div>
+                      {!vacioCarro && (r.todoRevisado ? <div className="text-[11px] font-bold text-sky-700 mt-0.5">✓ Todo revisado</div> : r.revisadas > 0 ? <div className="text-[11px] text-sky-700 mt-0.5">{r.revisadas} de {r.n} revisadas</div> : null)}
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
                     </button>
                   );
@@ -20438,6 +20447,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         const nql = qLista.trim().toLowerCase();
         const lista = items.filter((x) => {
           if (soloSinColocar && x.colocada) return false;
+          if (soloSinRevisar && x.revisada) return false;
           if (soloIncidencia && !x.incidencia) return false;
           if (!nql) return true;
           return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql) || coincideExp(x.expediente, qLista);
@@ -20449,6 +20459,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
               <input value={qLista} onChange={(e) => setQLista(e.target.value)} placeholder="Buscar expediente, vivienda, medida, comentario…" className="border border-slate-200 rounded-lg px-3 py-1.5 min-w-[240px]" />
               <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinColocar} onChange={(e) => setSoloSinColocar(e.target.checked)} /> Solo sin colocar</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinRevisar} onChange={(e) => setSoloSinRevisar(e.target.checked)} /> Solo sin revisar</label>
               <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencia} onChange={(e) => setSoloIncidencia(e.target.checked)} /> Solo con incidencia</label>
               <span className="ml-auto text-xs text-slate-500">{colocadas} de {items.length} colocadas{conInc ? <b className="text-rose-600"> · {conInc} con incidencia</b> : null}</span>
             </div>
@@ -20650,7 +20661,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 return Object.entries(porExp).map(([exp, xs]) => (
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s) · <span className={xs.every((x) => x.revisada) ? "font-semibold text-sky-700" : ""}>{xs.filter((x) => x.revisada).length} revisada(s)</span></span>
                     <select value="" onChange={(e) => { if (e.target.value) { moverACarro(xs, e.target.value); setCarroAbierto(null); } }} className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-lg px-2 py-1 bg-white">
                       <option value="">Mover todo el EXP a carro…</option>
                       {opcionesCarro(carroSel.numero)}
