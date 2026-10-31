@@ -2920,6 +2920,7 @@ export default function App() {
   const saveTareasAluminio = (next) => { setTareasAluminio(next); persist("tareasAluminio", next); };
   const savePedidosPersianas = (next) => { setPedidosPersianas(next); persist("pedidosPersianas", next); };
   // El botón "Expediente rápido" (que vive en otras pantallas) lee de aquí lo que hay en los almacenes de cristales y persianas
+  almacenRapido.irFabrica = (t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }; // para saltar al almacén desde la ficha de una obra
   almacenRapido.cristales = cristales; almacenRapido.saveCristales = saveCristales; almacenRapido.persianas = persianasAlmacen; almacenRapido.savePersianas = savePersianasAlmacen; almacenRapido.almacenesPersianas = almacenesPersianas; almacenRapido.materiales = materiales;
   const saveAlmacenesPersianas = (next) => { setAlmacenesPersianas(next); persist("almacenesPersianas", next); };
 
@@ -9050,13 +9051,23 @@ function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
   const destino = (tipo) => tipo === "cristal" ? "Almacén de cristales" : tipo === "persiana" ? "Almacén de persianas" : tipo === "stock" ? "Stock" : "—";
   const nombreLineaPed = (l) => (l.modo === "libre" ? (l.referencia || l.descripcion || "") : ((toArray(almacenRapido.materiales).find((m) => m.id === l.materialId) || {}).descripcion || l.referencia || ""));
   const colorObraPed = colorCarpinteriaDePedidos(lista.flatMap((p) => toArray(p.lineas)), nombreLineaPed);
+  // Saltar al sitio del almacén (caballete o carro) desde la ficha de la obra
+  const ir = (foco, tab) => { if (!almacenRapido.irFabrica || !foco) return; focoAlmacen.actual = foco; almacenRapido.irFabrica(tab); };
+  const focoCab = (c) => (c.ubicacion ? { tipo: "cristal", exp: String(c.expediente || ""), viv: "", ubicacion: c.ubicacion } : { tipo: "cristal", exp: soloDigitos(c.expediente), viv: "" });
+  const focoPers = (x) => (x.estante ? { tipo: "persiana", almacenId: almacenDe(x), carro: x.estante.carro } : { tipo: "persiana", almacenId: almacenDe(x), vista: "sinsitio" });
   const donde = [];
-  if (cabs.length) donde.push({ t: "Cristales", filas: cabs.map((c) => `Caballete ${c.lote || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"} · ${parseFloat(c.cantidad) || toArray(c.piezas).length} ud`) });
+  if (cabs.length) donde.push({ t: "Cristales", filas: cabs.map((c) => ({ texto: `Caballete ${c.lote || "s/n"} · ${c.ubicacion ? ubicacionTexto(c.ubicacion) : c.enPuesto ? "en " + c.enPuesto : "pendiente de ubicar"} · ${parseFloat(c.cantidad) || toArray(c.piezas).length} ud`, irA: c.enPuesto ? null : () => ir(focoCab(c), "cristales") })) });
   if (persOb.length) {
     const g = {};
-    persOb.forEach((x) => { const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar (sin sitio)`; g[k] = (g[k] || 0) + 1; });
-    donde.push({ t: "Persianas", filas: Object.entries(g).map(([k, n]) => `${k} · ${n} ud`) });
+    persOb.forEach((x) => { const k = x.estante ? `${nombreAlm(almacenDe(x))} · Carro ${x.estante.carro}` : x.enPuesto ? `En ${x.enPuesto}` : `${nombreAlm(almacenDe(x))} · pendientes de ubicar (sin sitio)`; if (!g[k]) g[k] = { n: 0, x }; g[k].n++; });
+    donde.push({ t: "Persianas", filas: Object.entries(g).map(([k, v]) => ({ texto: `${k} · ${v.n} ud`, irA: v.x.enPuesto ? null : () => ir(focoPers(v.x), "persianasAlmacen") })) });
   }
+  // Dónde está lo de un pedido concreto (para el enlace de cada línea)
+  const irDePedido = (p, tipo) => {
+    if (tipo === "cristal") { const c = cabs.find((y) => y.pedidoId === p.id && !y.enPuesto) || cabs.find((y) => !y.enPuesto); return c ? () => ir(focoCab(c), "cristales") : null; }
+    if (tipo === "persiana") { const xs = persOb.filter((y) => String(y.pedido || "") === String(p.numero) && !y.enPuesto); const x = xs.find((y) => y.estante) || xs[0] || persOb.find((y) => y.estante); return x ? () => ir(focoPers(x), "persianasAlmacen") : null; }
+    return null;
+  };
   return (
     <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
       <div className="px-4 py-2.5 border-b border-slate-100 text-sm font-bold text-slate-800">📍 Dónde está el material de esta obra</div>
@@ -9088,7 +9099,7 @@ function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
                           <td className="py-1 pr-3 whitespace-nowrap font-mono-num">{l.ancho && l.alto ? `${l.ancho}×${l.alto}` : ""}</td>
                           <td className="py-1 pr-3 text-right">{ped}</td>
                           <td className="py-1 pr-3">{estado}</td>
-                          <td className="py-1 text-slate-500">{l.confirmadoFabrica ? "En: " : "Irá a: "}{destino(tipo)}</td>
+                          <td className="py-1 text-slate-500">{l.confirmadoFabrica ? "En: " : "Irá a: "}{(() => { const f = l.confirmadoFabrica ? irDePedido(p, tipo) : null; return f ? <button type="button" onClick={f} className="text-[#2E8B57] font-semibold underline hover:opacity-80" title="Ir al sitio del almacén">{destino(tipo)} →</button> : destino(tipo); })()}</td>
                         </tr>
                       );
                     })}
@@ -9105,7 +9116,7 @@ function UbicacionMaterialPedidos({ proyecto, pedidos, proveedores }) {
           ? <div className="text-xs text-slate-500">No encuentro cristales ni persianas de esta obra en los almacenes. Puede que aún no hayan llegado, o que estén apuntados con otro número de presupuesto o expediente.</div>
           : donde.map((d) => (
             <div key={d.t} className="mb-1"><span className="text-xs font-bold text-slate-600">{d.t}:</span>
-              <ul className="ml-4 list-disc text-xs text-slate-700">{d.filas.map((f, i) => <li key={i}>{f}</li>)}</ul>
+              <ul className="ml-4 list-disc text-xs text-slate-700">{d.filas.map((f, i) => <li key={i}>{f.irA ? <button type="button" onClick={f.irA} className="text-[#2E8B57] font-semibold underline hover:opacity-80 text-left" title="Ir al sitio del almacén">{f.texto} →</button> : f.texto}</li>)}</ul>
             </div>
           ))}
       </div>
@@ -19108,7 +19119,7 @@ function AlmacenPersianas() {
   const [irA, setIrA] = useState(null);
   useEffect(() => {
     const f = focoAlmacen.actual;
-    if (f && f.tipo === "persiana") { focoAlmacen.actual = null; setSelId(f.almacenId); setIrA({ almacenId: f.almacenId, carro: f.carro, t: Date.now() }); }
+    if (f && f.tipo === "persiana") { focoAlmacen.actual = null; setSelId(f.almacenId); setIrA({ almacenId: f.almacenId, ...(f.carro != null ? { carro: f.carro } : { vista: f.vista || "mapa" }), t: Date.now() }); }
   }, []);
   const almacen = almacenes.find((a) => a.id === selId) || almacenes[0];
   // Busca en TODOS los almacenes: expediente, referencia/vivienda, medidas, color, comentario, incidencia…
