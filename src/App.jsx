@@ -1212,6 +1212,29 @@ export default function App() {
   // "Failed to fetch"). Devuelve { bytes, mimeType }.
   // Lee el presupuesto firmado de la obra (texto de la descripción y de sus PDF) y lo compara con lo que va a fábrica.
   // Devuelve null si no hay presupuesto en el CRM (p. ej. obras de Uxcar) o { obra, presupuestos, lineas } con los avisos.
+  // Auxiliares de la obra (guías de persiana y de mosquitera, solapes, inversores…): cuántas piezas de su hoja de corte faltan por cortar
+  const auxiliaresPendientesObra = (p) => {
+    if (!p) return [];
+    const ux = toArray(uxExpedientes).find((e) => e && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
+    const pptos = new Set([p.presupuestoNumero, presupuestoDeObra(p), ux && ux.presupuesto, ux && ux.presupuestoNumero, ...Object.keys((ux && ux.hojasCorteAux) || {})].map(digitosPresu).filter((d) => d.length >= 3));
+    const mias = {};
+    Object.entries(hojasAuxApp || {}).forEach(([k, h]) => { if (h && pptos.has(digitosPresu(h.presupuesto))) mias[k] = h; });
+    const lleva = accesoriosDeObra(p).grupos.filter((g) => g.lleva).map((g) => g.id);
+    const lineas = [];
+    if (!Object.keys(mias).length) {
+      if (lleva.some((id) => ["mosquitera", "persiana", "postigo"].includes(id))) lineas.push(`⚠ AUXILIARES: no está la hoja de corte de esta obra, así que no sé si están cortadas las guías${lleva.includes("mosquitera") ? " y las piezas de mosquitera" : ""}. Súbela o compruébalo en Auxiliares.`);
+      return lineas;
+    }
+    let r;
+    try { r = auxExpandir(mias, auxCfgDe(auxCfgApp), auxVentanas(proyectos, uxExpedientes, etiquetasSinObra)); } catch (e) { return lineas; }
+    const pend = r.piezas.filter((x) => !(auxPiezasApp && auxPiezasApp[x.id] && auxPiezasApp[x.id].cortada));
+    if (!pend.length) return r.piezas.length ? [] : lineas;
+    const porNombre = {};
+    pend.forEach((x) => { porNombre[x.nombre] = (porNombre[x.nombre] || 0) + 1; });
+    const mosq = Object.keys(porNombre).filter((n) => /mosquit/i.test(n));
+    lineas.push(`⚠ AUXILIARES: faltan por cortar ${pend.length} de ${r.piezas.length} piezas: ${Object.entries(porNombre).map(([n, k]) => `${k} ${n}`).join(", ")}.${mosq.length && lleva.includes("mosquitera") ? " (Lleva mosquitera: sin esas piezas no se puede montar.)" : ""}`);
+    return lineas;
+  };
   const revisarPresupuestoAntesDeFabrica = async (p) => {
     if (!p || p.origen === "portalUxcar") return null;
     const ids = [p.presupuestoId, ...toArray(p.ampliaciones).map((a) => a && a.presupuestoId)].filter(Boolean);
@@ -4186,7 +4209,9 @@ export default function App() {
   const [recuentoStock, setRecuentoStock] = useState(undefined);
   useEffect(() => onValue(ref(fbDb, "recordatorios/recuentoStock"), (snap) => setRecuentoStock(snap.val() || null), () => setRecuentoStock(null)), []);
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
-  const hojasAuxApp = useObjetoFb("auxiliaresHojas"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
+  const hojasAuxApp = useObjetoFb("auxiliaresHojas");
+  const auxPiezasApp = useObjetoFb("auxiliaresPiezas"); // qué piezas de Auxiliares están cortadas (para el aviso al pasar a fábrica)
+  const auxCfgApp = useObjetoFb("auxiliaresConfig"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   // Aviso «han llegado las persianas: corta las guías y demás auxiliares» (a Auxiliares y Pedidos, 2 días para resolverlo).
   // Se crea UNA vez por expediente, con la primera persiana que entra al almacén (solo las que entran desde AVISO_AUX_DESDE).
@@ -6681,10 +6706,13 @@ export default function App() {
               if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
               if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return; }
               // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
-              const rev = await revisarPresupuestoAntesDeFabrica(proyectos.find((p) => p.id === proyectoId));
-              if (rev && rev.lineas.length) {
-                const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${rev.obra}, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}:\n\n${rev.lineas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
-                updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: rev.lineas, aceptado: ok } });
+              const obraF = proyectos.find((p) => p.id === proyectoId);
+              const rev = await revisarPresupuestoAntesDeFabrica(obraF);
+              const auxL = auxiliaresPendientesObra(obraF); // y que Auxiliares lo tenga cortado (guías, mosquiteras…)
+              const todas = [...((rev && rev.lineas) || []), ...auxL];
+              if (todas.length) {
+                const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${obraF.numero}${rev ? `, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}` : ""}:\n\n${todas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
+                updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: todas, aceptado: ok } });
                 if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
               }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
