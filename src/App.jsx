@@ -7800,6 +7800,18 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     return Array.from(set).sort();
   }, [proyectos]);
 
+  // Expediente y presupuestos de cada obra, también los que solo están en su expediente de Uxcar (para buscar y para verlos en la lista)
+  const numerosObra = useMemo(() => {
+    const m = {};
+    proyectos.forEach((p) => {
+      const ux = toArray(uxExpedientes).find((e) => e && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
+      const exps = [...new Set([p.expediente, ux && ux.numero].map((t) => String(t || "").replace(/^EXP(?:EDIENTE)?\.?\s*/i, "").trim()).filter(Boolean))];
+      const pptos = [...new Set([p.presupuestoNumero, presupuestoDeObra(p), ux && ux.presupuesto, ux && ux.presupuestoNumero, ...Object.keys((ux && ux.hojasCorteAux) || {})].map((t) => String(t || "").trim()).filter(Boolean))];
+      m[p.id] = { exps, pptos };
+    });
+    return m;
+  }, [proyectos, uxExpedientes]);
+
   const filtered = useMemo(() => {
     return proyectos.filter((p) => {
       // Los proyectos anulados no estorban en el listado: salen eligiendo el estado "Cancelado" o buscándolos
@@ -7814,13 +7826,14 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         if (r && (!f || f < r[0] || f > r[1])) return false;
       }
       if (!q) return true;
-      const hay = `${p.numero} ${p.nombre} ${clienteNombre(p.clienteId)} ${p.ubicacion} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase();
+      const no = numerosObra[p.id] || { exps: [], pptos: [] };
+      const hay = `${p.numero} ${p.nombre} ${clienteNombre(p.clienteId)} ${p.ubicacion} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)} ${no.exps.join(" ")} ${no.pptos.join(" ")}`.toLowerCase();
       if (hay.includes(q.toLowerCase())) return true;
       // «6897» debe encontrar «6.897-1»: se compara también sin puntos
       const qd = q.replace(/[^\d]/g, "");
       return /^[\d.\s-]+$/.test(q.trim()) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd);
     });
-  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes]);
+  }, [proyectos, q, estadoTrabajo, clienteFiltro, ciudadFiltro, presupuestoFiltro, periodoFiltro, clientes, numerosObra]);
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
   const duplicadosNombre = useMemo(() => {
     const cuenta = {};
@@ -8035,7 +8048,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer transition"
                 >
                   <td className="px-4 py-3 font-mono-num text-slate-500">#{p.numero}</td>
-                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; return d && p.estadoTrabajo !== "Cancelado" ? <span className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap" title={`Mismo nombre que los proyectos ${d.map((n) => "#" + n).join(", ")}`}>⚠ posible duplicado ({d.filter((n) => n !== p.numero).map((n) => "#" + n).join(", ")})</span> : null; })()}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">{p.nombre}{(() => { const no = numerosObra[p.id]; return no && (no.exps.length || no.pptos.length) ? <span className="block text-[11px] font-normal text-slate-500">{[no.exps.length ? `EXP ${no.exps.join(", ")}` : "", no.pptos.length ? `Ppto ${no.pptos.join(", ")}` : ""].filter(Boolean).join(" · ")}</span> : null; })()}{(() => { const d = duplicadosNombre[String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " ")]; return d && p.estadoTrabajo !== "Cancelado" ? <span className="ml-2 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 whitespace-nowrap" title={`Mismo nombre que los proyectos ${d.map((n) => "#" + n).join(", ")}`}>⚠ posible duplicado ({d.filter((n) => n !== p.numero).map((n) => "#" + n).join(", ")})</span> : null; })()}</td>
                   <td className="px-4 py-3 text-slate-600">{clienteNombre(p.clienteId)}</td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <select
