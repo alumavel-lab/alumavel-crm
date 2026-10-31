@@ -17768,6 +17768,9 @@ const soloDigitos = (t) => String(t || "").replace(/\D/g, "");
 const obraCoincideBusqueda = (p, q, uxExpedientes, clientes) => {
   const qq = normBusca(q).trim();
   if (!qq) return true;
+  // Varios números a la vez («8000 10000», «8000, 10000», «8000 y 10000»): sale la obra que coincida con cualquiera
+  const trozos = qq.split(/[\s,;]+|\s+y\s+/).filter((t) => t && t !== "y");
+  if (trozos.length > 1 && trozos.every((t) => /^[\d.]+$/.test(t) && soloDigitos(t).length >= 3)) return trozos.some((t) => obraCoincideBusqueda(p, t, uxExpedientes, clientes));
   const qd = soloDigitos(qq);
   const esNumero = /^[\d.\s]+$/.test(qq) && qd.length > 0;
   const expsUx = toArray(uxExpedientes).filter((e) => e && e.proyectoId === p.id);
@@ -21672,6 +21675,16 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               </div>
             );
           })()}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="🔍 Buscar en la lista: 8000 · varios a la vez: 8000 10000"
+              className="w-full max-w-md px-4 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]" />
+            {busca.trim() && (
+              <>
+                <span className="text-xs text-slate-500">{listoParaFabricar.filter((p) => obraCoincideBusqueda(p, busca, uxExpedientes, clientes)).length} de {listoParaFabricar.length} obras · las marcas se guardan aunque cambies la búsqueda</span>
+                <button onClick={() => setBusca("")} className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">Ver todas</button>
+              </>
+            )}
+          </div>
           {(() => {
             const hDia = parseFloat(configPlanning && configPlanning.horasDia) || 16;
             const marcadas = listoParaFabricar.filter((p) => selListo.includes(p.id));
