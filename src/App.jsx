@@ -19963,6 +19963,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
   const [soloSinRevisar, setSoloSinRevisar] = useState(false);
+  const [revisando, setRevisando] = useState(null); // { id, mano, guia }: panel para confirmar mano y guía antes de dar una persiana por revisada
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
   // Fila de una persiana: colocada en obra, dónde está e incidencia / comentario
@@ -19970,11 +19971,35 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : x.revisada ? "bg-sky-50" : ""}`}>
       <td className="py-1.5 px-2">
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
-          onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
+          onChange={(e) => {
+            const hoyC = new Date().toISOString().slice(0, 10);
+            if (!e.target.checked) { actualizarPersiana(x.id, { colocada: false, fechaColocada: "" }); return; }
+            const quitar = x.estante && window.confirm(`Persiana colocada en obra.\n\n¿La quito también del carro ${x.estante.carro}? (deja su hueco libre)`);
+            actualizarPersiana(x.id, { colocada: true, fechaColocada: hoyC, ...(quitar ? { estante: null, entregada: true, fechaSalida: hoyC } : {}) });
+          }} />
       </td>
-      <td className="py-1.5 px-2">
-        <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: está donde dice el CRM" className="w-5 h-5 accent-sky-600 cursor-pointer"
-          onChange={(e) => actualizarPersiana(x.id, { revisada: e.target.checked, fechaRevisada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
+      <td className="py-1.5 px-2 align-top">
+        <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
+          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
+        {x.revisada && <div className="text-[10px] font-semibold text-sky-700 leading-tight mt-0.5">{x.manoRevisada || "?"}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
+        {revisando && revisando.id === x.id && !x.revisada && (
+          <div className="mt-1 p-2 w-48 rounded-lg border border-sky-300 bg-white shadow text-xs space-y-1.5">
+            <div className="font-semibold text-slate-700">Mano de la persiana</div>
+            <div className="flex gap-1">
+              {["Izquierda", "Derecha"].map((m) => (
+                <button key={m} type="button" onClick={() => setRevisando({ ...revisando, mano: m })}
+                  className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.mano === m ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-700 border-slate-300"}`}>{m}</button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 font-semibold text-slate-700"><input type="checkbox" checked={revisando.guia} onChange={(e) => setRevisando({ ...revisando, guia: e.target.checked })} className="w-4 h-4 accent-sky-600" /> Guía comprobada</label>
+            <div className="flex gap-1">
+              <button type="button" disabled={!revisando.mano || !revisando.guia}
+                onClick={() => { actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true }); setRevisando(null); }}
+                className="flex-1 px-2 py-1.5 rounded-md bg-[#2E8B57] text-white font-semibold disabled:opacity-40">Confirmar</button>
+              <button type="button" onClick={() => setRevisando(null)} className="px-2 py-1.5 rounded-md border border-slate-300 text-slate-600">Cancelar</button>
+            </div>
+          </div>
+        )}
       </td>
       <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
