@@ -2060,7 +2060,10 @@ export default function App() {
     } else {
       // CEPO: no meter dos veces la misma obra (mismo presupuesto con la misma versión, o mismo nombre)
       const normP = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
-      const igual = proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && ((normP(data.presupuestoNumero).length >= 3 && normP(p.presupuestoNumero) === normP(data.presupuestoNumero)) || (String(data.nombre || "").trim() && String(p.nombre || "").trim().toLowerCase() === String(data.nombre || "").trim().toLowerCase())));
+      const mismoPpto = normP(data.presupuestoNumero).length >= 3 ? proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && normP(p.presupuestoNumero) === normP(data.presupuestoNumero)) : null;
+      if (mismoPpto) { alert(`⛔ NO SE HA CREADO: el presupuesto ${data.presupuestoNumero} ya está en la obra #${mismoPpto.numero} «${mismoPpto.nombre}». La estabas metiendo dos veces.`); return; }
+      const baseP = digitosPresu(data.presupuestoNumero);
+      const igual = proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && ((baseP.length >= 3 && digitosPresu(p.presupuestoNumero) === baseP) || (String(data.nombre || "").trim() && String(p.nombre || "").trim().toLowerCase() === String(data.nombre || "").trim().toLowerCase())));
       if (igual && !window.confirm(`⚠ Ya existe la obra #${igual.numero} «${igual.nombre}»${igual.presupuestoNumero ? ` (presupuesto ${igual.presupuestoNumero})` : ""}.\n\nParece que la estás metiendo DOS VECES.\n\nACEPTAR = crearla igualmente.\nCANCELAR = no crearla.`)) return;
       const np = {
         ...data,
@@ -4484,6 +4487,10 @@ export default function App() {
         numero = Math.max(numero, ...frescos.map((p) => (parseInt(p && p.numero, 10) || 0) + 1)); // nº siguiente según lo que hay de verdad en la base de datos
         for (const exp of sinProyecto) {
           if (frescos.some((p) => p && (p.uxcarExpedienteId === exp.id || (exp.proyectoId && p.id === exp.proyectoId)))) continue; // ya tiene su obra
+          // …ni si ya hay una obra con su mismo presupuesto y versión («Uxcar · 6.751-1 · …» o su casilla de presupuesto)
+          const normPV = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
+          const pv = normPV(exp.numero);
+          if (/^\d{3,}-\d+$/.test(pv) && frescos.some((p) => p && p.estadoTrabajo !== "Cancelado" && [p.presupuestoNumero, ...(String(p.nombre || "").match(/\d[\d.]*\s*-\s*\d+/g) || [])].some((t) => normPV(t) === pv))) continue;
           const nuevoId = uid();
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
@@ -49828,6 +49835,12 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
   const digitos = (s) => String(s || "").replace(/\D/g, "");
   let e = exp || (numero ? expedientes.find((x) => digitos(x.numero) === digitos(numero) || digitos(x.presupuesto) === digitos(numero)) : null) || null;
   if (!e && !numero) return { avisos: [...avisos, "No he encontrado el número del expediente en los PDF. Elige un expediente de la lista y vuelve a subirlos."], expId: null };
+  // CEPO por Nº DE PRESUPUESTO: si ya hay un expediente con el mismo presupuesto (aunque cambie la versión o vaya con/sin puntos), no se crea otro
+  if (!e && numero) {
+    const base = uxPptoDigitos(numero);
+    const mismo = base.length >= 3 ? expedientes.find((x) => x && x.estado !== "entregado" && [x.numero, ...String(x.presupuesto || "").split(/[·,]/)].some((t) => uxPptoDigitos(t) === base)) : null;
+    if (mismo) return { avisos: [...avisos, `⛔ NO SE HA METIDO: el presupuesto ${numero} ya está metido como expediente ${mismo.numero}. Lo estabas metiendo dos veces. Si es una versión nueva o faltan documentos, ábrelo y súbelos ahí dentro.`], expId: mismo.id };
+  }
   if (exp && numero && digitos(exp.numero) !== digitos(numero) && digitos(exp.presupuesto) !== digitos(numero)) avisos.push(`⚠ Los documentos son del ${numero} y este expediente es el ${exp.numero}. Revisa que no sean de otro.`);
   const patch = {};
   const nuevo = !e;
@@ -50258,6 +50271,8 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
     if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
     if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
+    const repetido = grupos.filter((g) => g.destino === "nuevo").map((g) => ({ g, ya: expMismoPpto(g.numeroNuevo) })).find((x) => x.ya);
+    if (repetido) { alert(`⛔ El presupuesto ${repetido.g.numeroNuevo} ya está metido como expediente ${repetido.ya.numero}. Elige ese expediente en vez de «nuevo».`); return false; }
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
@@ -50317,7 +50332,11 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
       aviso(`Expediente ${e.numero} borrado con sus pedidos`); setVista("lista"); setAbiertoId(null);
     } catch (er) { aviso("No se pudo borrar: " + er.message); }
   };
+  // CEPO por Nº DE PRESUPUESTO (sin versión, con o sin puntos): no se crea un expediente que ya existe
+  const expMismoPpto = (num) => { const b = uxPptoDigitos(num); return b.length >= 3 ? expedientes.find((x) => x && x.estado !== "entregado" && [x.numero, ...String(x.presupuesto || "").split(/[·,]/)].some((t) => uxPptoDigitos(t) === b)) : null; };
   const guardarNuevo = async (f) => {
+    const ya = expMismoPpto(f.numero);
+    if (ya) { alert(`⛔ NO SE HA CREADO: el presupuesto ${f.numero} ya está metido como expediente ${ya.numero}. Lo estabas metiendo dos veces.`); return false; }
     const id = uid();
     const exp = {
       id, numero: f.numero, tipo: f.tipo, ventanas: f.ventanas, puertas: f.puertas, osciloParalelas: f.osciloParalelas,
