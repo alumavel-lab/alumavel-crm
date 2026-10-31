@@ -50185,17 +50185,22 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         {datos && vista === "lista" && <PortalSubirDocumentos expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} pedidosUx={pedidosUx} proveedoresUx={proveedoresUx} aviso={aviso} onHecho={(i) => { setAbiertoId(i); }} />}
         {datos && vista === "lista" && <PortalRapidoArriba expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} aviso={aviso} />}
         {datos && vista === "lista" && (() => {
-          const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado)).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
-          if (!pend.length) return null;
+          const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado) && !e.sinAvisoDocs).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
+          const quitados = expedientes.filter((e) => e && e.sinAvisoDocs && ["virtual", "produccion"].includes(e.estado));
+          const volverAvisar = () => { if (window.confirm(`¿Volver a avisar de los documentos de ${quitados.map((e) => e.numero).join(", ")}?`)) { const patch = {}; quitados.forEach((e) => { patch[`expedientes/${e.id}/sinAvisoDocs`] = null; }); fbUpdate(ref(fbDb, "portalUxcar"), patch).catch((er) => alert("No se pudo guardar: " + er.message)); } };
+          if (!pend.length) return quitados.length ? <div className="mb-4 text-xs text-slate-500">{quitados.length} expediente{quitados.length === 1 ? "" : "s"} quitado{quitados.length === 1 ? "" : "s"} del aviso de documentos · <button onClick={volverAvisar} className="underline">volver a avisar</button></div> : null;
           return (
             <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
               <p className="font-semibold mb-1">Te faltan documentos antes de que estos expedientes pasen a fábrica:</p>
               <ul className="space-y-1">
                 {pend.map(({ e, faltan }) => (
-                  <li key={e.id}><button onClick={() => { setAbiertoId(e.id); setVista("ficha"); }} className="text-left hover:underline"><b>{e.numero}</b>: falta {faltan.join(" · ")}</button></li>
+                  <li key={e.id} className="flex items-start gap-2"><button onClick={() => { setAbiertoId(e.id); setVista("ficha"); }} className="text-left hover:underline flex-1"><b>{e.numero}</b>: falta {faltan.join(" · ")}</button>
+                    {/* Expedientes antiguos, anulados o que no necesitan esos documentos: se quitan de esta lista (se puede deshacer desde la ficha) */}
+                    <button title="Quitar de esta lista: este expediente ya no necesita estos documentos" onClick={() => { if (window.confirm(`¿Quitar el ${e.numero} de «Te faltan documentos»?\n\nÚsalo si es antiguo, está anulado o no necesita esos documentos. El expediente no se borra.`)) fbUpdate(ref(fbDb, `portalUxcar/expedientes/${e.id}`), { sinAvisoDocs: true }).catch((er) => alert("No se pudo guardar: " + er.message)); }}
+                      className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white hover:bg-amber-100">✕ No avisar</button></li>
                 ))}
               </ul>
-              <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.</p>
+              <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.{quitados.length > 0 && <> · Hay {quitados.length} quitado{quitados.length === 1 ? "" : "s"} de esta lista · <button onClick={volverAvisar} className="underline">volver a avisar</button></>}</p>
               {pend.some(({ e, faltan }) => faltan.some((f) => /mano de obra/.test(f)) && toArray(e.documentos).some((d) => /mano\s*de\s*obra/i.test(`${d.tipo || ""} ${d.nombre || ""}`))) && (
                 <button onClick={(ev) => releerHorasManoObra(pend.filter(({ faltan }) => faltan.some((f) => /mano de obra/.test(f))).map(({ e }) => e), ev.currentTarget)}
                   className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">🔄 Releer las horas de los listados de mano de obra ya subidos</button>
