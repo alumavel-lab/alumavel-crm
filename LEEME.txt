@@ -28,15 +28,15 @@ OPCIÓN B — Subir a Netlify (ya sabes hacerlo, como con tu otro CRM)
 --------------------------------------------------
 IMPORTANTE — Reglas de seguridad de la base de datos
 --------------------------------------------------
-Para que funcionara ya mismo, la base de datos está configurada para que
-cualquiera con la dirección pueda leer y escribir. Esto es suficiente para
-empezar a trabajar mañana, pero NO es lo ideal a largo plazo — cualquiera
-que conociera la dirección de tu base de datos podría, en teoría, acceder
-a los datos directamente sin pasar por el CRM.
+La base de datos solo deja entrar a quien ha iniciado sesión y está en el
+equipo (o es usuario del portal de Uxcar). Las reglas están en
+reglas-firebase.json, y es el archivo que se sube si alguna vez publicas las
+reglas con "firebase deploy". Antes había otro archivo (database.rules.json)
+con las reglas ABIERTAS que se habría subido por error: ya no existe.
 
-Cuando tengas un rato, dile a Claude que quieres reforzar las reglas de
-Firebase (requiere añadir un inicio de sesión de verdad con Firebase
-Authentication, no es inmediato pero sí importante para más adelante).
+Las funciones del servidor que envían correos (enviar-email) y usan la IA
+(anthropic-proxy) también exigen ahora que quien las llama tenga la sesión
+iniciada en el CRM.
 
 --------------------------------------------------
 SI QUIERES VOLVER A ENVIARME CAMBIOS EN EL FUTURO

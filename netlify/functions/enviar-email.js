@@ -8,8 +8,35 @@
 
 import nodemailer from "nodemailer";
 
+// Solo atiende a quien ha iniciado sesión en el CRM: el navegador manda el token del
+// usuario (cabecera Authorization) y aquí se comprueba con Firebase que es válido y que
+// esa persona está en el equipo o es usuario del portal. Sin esto, cualquiera que
+// conociera la dirección podría usar esta función.
+const FIREBASE_DB_URL = "https://crmalumavel-default-rtdb.europe-west1.firebasedatabase.app";
+const FIREBASE_WEB_API_KEY = "AIzaSyBf51Gy2drHdUyJ4kCstNdvvV2h3uYe4RM";
+async function usuarioAutorizado(event) {
+  const token = (event.headers?.authorization || event.headers?.Authorization || "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return false;
+  const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_WEB_API_KEY}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idToken: token }),
+  });
+  const d = await r.json().catch(() => ({}));
+  const uid = r.ok && d.users && d.users[0] && d.users[0].localId;
+  if (!uid) return false;
+  for (const ruta of [`equipo/${uid}`, `portalUsuarios/${uid}`]) {
+    const x = await fetch(`${FIREBASE_DB_URL}/${ruta}.json?auth=${encodeURIComponent(token)}`);
+    if (x.ok && await x.json().catch(() => null)) return true;
+  }
+  return false;
+}
+
 export const handler = async (event) => {
   try {
+    if (!(await usuarioAutorizado(event))) {
+      return { statusCode: 200, body: JSON.stringify({ error: "Sesión caducada o sin permiso. Cierra sesión y vuelve a entrar en el CRM." }) };
+    }
+
     const body = JSON.parse(event.body || "{}");
     const { destinatario, asunto, cuerpo, replyTo, adjuntos, nombreRemitente, cc } = body;
 
