@@ -18347,6 +18347,9 @@ const parseLineaPersiana = (texto) => {
 };
 // Guía de persiana en la hoja de corte: la referencia de «Guía de persiana» de Auxiliares (C.327020); tolerancia para casar la ventana por medida
 const REFS_GUIA_PERSIANA = new Set(["C.327020"]); // la misma que «Guía de persiana» en AUX_CFG_DEFECTO (definido más abajo)
+// De dónde sale la guía según el pedido de la caja: «CJ_DECOR_S/G · Compacto decorativo - guía aparte» = se corta aquí en fábrica
+// (la persiana llega SIN guía); un cajón/compacto sin eso = la manda el proveedor (llega CON guía)
+const guiaSegunPedido = (desc) => { const t = String(desc || ""); if (/S\/G\b|gu[ií]a\s+aparte|sin\s+gu[ií]a/i.test(t)) return "fabrica"; if (/compacto|caj[oó]n|\bCJ_|con\s+gu[ií]a/i.test(t)) return "proveedor"; return ""; };
 const TOL_GUIA_HOJA_MM = 100; // sin verificar con hojas reales: ancho/alto de la ventana frente a largo/alto de la persiana
 const etiquetaMano = (r) => (r === "Izquierda" ? "Recogedor izquierda" : r === "Derecha" ? "Recogedor derecha" : r === "Doble" ? "Doble recogedor" : r === "Eléctrica" ? "Eléctrica (motor)" : "");
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
@@ -19994,7 +19997,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const guias = (m) => toArray(m.filas).filter((f) => REFS_GUIA_PERSIANA.has(String(f.ref || "").toUpperCase()) || (/gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || "")));
     const texto = (m) => (m.cajaSinGuia ? "caja sin guía (guía aparte)" : guias(m).map((f) => `${f.ref}${f.lCorte ? ` · ${f.lCorte} mm` : ""}${f.ud ? ` · ${f.ud} ud` : ""}`).join(" + ") || "la hoja no trae guía para esta ventana");
     const textos = [...new Set(cand.map(texto))];
-    return { estado: textos.length === 1 ? "ok" : "varias", modelos: [...new Set(cand.map((m) => m.modelo))], textos };
+    return { estado: textos.length === 1 ? "ok" : "varias", modelos: [...new Set(cand.map((m) => m.modelo))], textos,
+      cortaGuia: cand.some((m) => guias(m).length > 0), cajaSinGuia: cand.some((m) => m.cajaSinGuia) };
   };
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
@@ -20030,15 +20034,20 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </div>
             <div className="font-semibold text-slate-700 pt-1">Guía</div>
             {(() => {
+              // Pedido de la caja (CJ_DECOR_S/G = guía aparte) + hoja de corte (Auxiliares corta la guía C.327020 aquí)
               const g = guiaDeHoja(x);
-              const enDesc = (String(x.descripcion || "").match(/gu[ií]as?\b[^,;\n]{0,25}/i) || [""])[0].trim();
-              if (g.estado === "ok") return <div className="text-[10px] text-slate-500">Según hoja de corte ({g.modelos.join(", ")}): <b className="text-slate-700">{g.textos[0]}</b></div>;
-              if (g.estado === "varias") return <div className="text-[10px] text-amber-700">La hoja de corte tiene varias ventanas de esta medida con guías distintas: <b>{g.textos.join(" / ")}</b></div>;
-              const falta = g.estado === "sinHoja" ? `Falta documentación: no está la hoja de corte del presupuesto ${g.pptos.join(", ")}` : g.estado === "sinVentana" ? "No encuentro en la hoja de corte una ventana con esta medida" : "Falta documentación: la persiana no tiene nº de presupuesto";
-              return <div className="text-[10px] text-amber-700">{falta}.{enDesc ? <> Etiqueta: <b className="text-slate-700">{enDesc}</b></> : " Compruébala a ojo."}</div>;
+              const ped = guiaSegunPedido(x.descripcion);
+              const hojaFab = g.estado === "ok" || g.estado === "varias" ? (g.cortaGuia || g.cajaSinGuia) : null; // null = no hay hoja / ventana
+              const aux = g.estado === "ok" && g.cortaGuia ? ` (Auxiliares: ${g.textos[0]})` : "";
+              if (ped === "proveedor" && hojaFab && g.cortaGuia) return <div className="text-[10px] font-semibold text-rose-700">⚠ El pedido dice que la caja trae guía, pero la hoja de corte también la corta aquí{aux}: se duplicaría. Avisa en oficina.</div>;
+              if (ped === "fabrica" && hojaFab === false) return <div className="text-[10px] font-semibold text-rose-700">⚠ La caja viene SIN guía (guía aparte) y la hoja de corte no corta guía para esta ventana: faltaría la guía. Avisa en oficina.</div>;
+              if (ped === "fabrica" || hojaFab) return <div className="text-[10px] text-slate-600">Guía <b>cortada aquí en fábrica</b>{aux}. <b>La persiana tiene que venir SIN guía.</b></div>;
+              if (ped === "proveedor" || hojaFab === false) return <div className="text-[10px] text-slate-600">Guía <b>del proveedor</b>. <b>La persiana tiene que venir CON su guía.</b></div>;
+              const falta = g.estado === "sinHoja" ? `no está la hoja de corte del presupuesto ${g.pptos.join(", ")}` : g.estado === "sinVentana" ? "no encuentro esta ventana en la hoja de corte" : "la persiana no tiene nº de presupuesto";
+              return <div className="text-[10px] text-amber-700">Falta documentación: el pedido no dice si la caja lleva guía y {falta}. Compruébala a ojo.</div>;
             })()}
             <div className="flex gap-1">
-              {[["ok", "Guía OK"], ["mal", "No coincide"]].map(([k, t]) => (
+              {[["ok", "Guía bien"], ["mal", "No coincide"]].map(([k, t]) => (
                 <button key={k} type="button" onClick={() => setRevisando({ ...revisando, guia: k })}
                   className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.guia === k ? (k === "ok" ? "bg-sky-600 text-white border-sky-600" : "bg-rose-600 text-white border-rose-600") : "bg-white text-slate-700 border-slate-300"}`}>{t}</button>
               ))}
