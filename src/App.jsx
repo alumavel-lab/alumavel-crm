@@ -4165,6 +4165,33 @@ export default function App() {
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
+  // Aviso «han llegado las persianas: corta las guías y demás auxiliares» (a Auxiliares y Pedidos, 2 días para resolverlo).
+  // Se crea UNA vez por expediente, con la primera persiana que entra al almacén (solo las que entran desde AVISO_AUX_DESDE).
+  const alertasAuxPers = useObjetoFb("alertasAuxPersianas");
+  const avisosAuxCreadosRef = useRef(new Set());
+  const [verAvisosAux, setVerAvisosAux] = useState(() => { try { return !sessionStorage.getItem("avisosAuxVistos"); } catch (e) { return true; } });
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const porExp = {};
+    toArray(persianasAlmacen).forEach((x) => {
+      const e = String(x && x.expediente || "").replace(/\D/g, "");
+      if (!e || x.entregada || !x.fechaEntrada || x.fechaEntrada < AVISO_AUX_DESDE) return;
+      (porExp[e] = porExp[e] || []).push(x);
+    });
+    Object.entries(porExp).forEach(([e, xs]) => {
+      if (alertasAuxPers[e] || avisosAuxCreadosRef.current.has(e)) return;
+      avisosAuxCreadosRef.current.add(e);
+      const r = ref(fbDb, `alertasAuxPersianas/${e}`);
+      // Se mira en la base de datos antes de crear, para no reabrir uno ya resuelto si otro ordenador lo creó antes
+      fbGet(r).then((snap) => {
+        if (snap.exists()) return;
+        const en = Date.now();
+        const pptos = [...new Set(xs.map((x) => String(x.presupuesto || "").trim()).filter(Boolean))].join(", ");
+        const obra = xs.map((x) => x.nombreObra || x.refObra || x.obraUx || x.cliente).find(Boolean) || "";
+        return fbSet(r, { exp: e, presupuesto: pptos, obra, primera: xs.map((x) => x.fechaEntrada).sort()[0], en, limite: en + 2 * 24 * 3600 * 1000, estado: "abierta" });
+      }).catch(() => avisosAuxCreadosRef.current.delete(e));
+    });
+  }, [persianasAlmacen, alertasAuxPers, currentUser?.id, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
   useEffect(() => {
     if (!currentUser) return undefined;
@@ -5923,6 +5950,45 @@ export default function App() {
               <button onClick={() => { if (confirm("¿Ya has recontado y ajustado el stock? El próximo aviso será dentro de 45 días.")) guardar(sumarDiasISO(hoy, 45)); }} className="px-3 py-1 rounded-md bg-violet-600 text-white text-xs font-semibold">Ya está recontado</button>
               <button onClick={() => guardar(sumarDiasISO(hoy, 7))} className="px-3 py-1 rounded-md border border-violet-300 text-xs font-semibold hover:bg-violet-100">Recordármelo en 7 días</button>
             </div>
+          );
+        })()}
+        {(() => {
+          // Persianas llegadas: Auxiliares tiene que cortar las guías y demás auxiliares (2 días). Lo ven Fábrica, administradores y Auxiliares
+          const esAuxiliares = currentUser && (toArray(currentUser.puestosPrep).includes("auxiliares") || currentUser.puestoFijo === "auxiliares");
+          if (!currentUser || !(isAdmin || tieneAcceso("fabrica") || esAuxiliares)) return null;
+          const ab = Object.values(alertasAuxPers || {}).filter((a) => a && a.estado === "abierta").sort((a, b) => (a.limite || 0) - (b.limite || 0));
+          if (!ab.length) return null;
+          const ahora = Date.now();
+          const plazo = (a) => { const ms = (a.limite || 0) - ahora; if (ms <= 0) return "⚠ FUERA DE PLAZO"; const h = Math.floor(ms / 3600000); return h >= 24 ? `quedan ${Math.floor(h / 24)} d ${h % 24} h` : `quedan ${h} h`; };
+          const fuera = ab.some((a) => (a.limite || 0) <= ahora);
+          const quien = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() || currentUser.email || "";
+          const hecho = (a) => { if (window.confirm(`¿Guías y auxiliares del EXP ${a.exp} cortados?`)) fbSet(ref(fbDb, `alertasAuxPersianas/${a.exp}`), { ...a, estado: "resuelta", resueltaPor: quien, resueltaEn: Date.now() }).catch(() => showToast("No se pudo guardar", "error")); };
+          const fila = (a) => (
+            <div key={a.exp} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 rounded-md bg-white border border-amber-200 text-slate-800">
+              <span className="font-bold">EXP {a.exp}</span>
+              <span className="text-xs text-slate-500">{[a.obra, a.presupuesto ? `Ppto ${a.presupuesto}` : "", a.primera ? `llegaron ${fmtDate(a.primera)}` : ""].filter(Boolean).join(" · ")}</span>
+              <span className={`text-xs font-bold ${(a.limite || 0) <= ahora ? "text-rose-700" : "text-amber-700"}`}>{plazo(a)}</span>
+              <button onClick={() => hecho(a)} className="ml-auto px-3 py-1 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Hecho: cortado</button>
+            </div>
+          );
+          const cerrarVentana = () => { setVerAvisosAux(false); try { sessionStorage.setItem("avisosAuxVistos", "1"); } catch (e) { /* sin almacenamiento: volverá a salir */ } };
+          return (
+            <>
+              <details className={`${fuera ? "bg-rose-600" : "bg-amber-500"} text-white`}>
+                <summary className="cursor-pointer px-6 py-2.5 text-sm font-bold">✂ AUXILIARES — han llegado persianas: cortar guías y demás auxiliares · {ab.length} expediente{ab.length === 1 ? "" : "s"}: {ab.slice(0, 4).map((a) => `EXP ${a.exp}`).join(" · ")}{ab.length > 4 ? "…" : ""}{fuera ? " · ⚠ ALGUNO FUERA DE PLAZO" : ""} (toca para ver)</summary>
+                <div className="px-6 pb-3 space-y-1.5 text-sm">{ab.map(fila)}</div>
+              </details>
+              {verAvisosAux && (
+                <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={cerrarVentana}>
+                  <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <h3 className="font-display font-bold text-lg text-slate-900">✂ Han llegado persianas: corta las guías y demás auxiliares</h3>
+                    <p className="text-sm text-slate-600">Para Auxiliares, Fábrica y administración. Hay <b>2 días</b> desde que llegó la primera persiana de cada expediente.</p>
+                    <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">{ab.map(fila)}</div>
+                    <div className="flex justify-end"><button onClick={cerrarVentana} className="px-4 py-2 rounded-md border border-slate-300 text-sm font-semibold">Entendido</button></div>
+                  </div>
+                </div>
+              )}
+            </>
           );
         })()}
         {(() => {
@@ -9655,6 +9721,13 @@ function ProyectoDetail({ puedeEliminar, currentUser, onRecibirPedido, onJustifi
       // Pedido compra de persianas (PDF con texto): se recuentan las medidas del propio PDF y se añade lo que la IA se haya saltado
       try {
         const filasTxt = await leerFilasPedidoCompraPdf(file);
+        // Guía y recogedor de cada línea (columnas que la IA no trae): se añaden a la descripción para que lleguen a la persiana del almacén
+        const mmPed = (t) => parseInt(String(t || "").replace(/\./g, ""), 10) || 0;
+        toArray(filasTxt.guias).forEach((g) => {
+          const l = nuevas.find((y) => mmPed(y.ancho) === g.ancho && mmPed(y.alto) === g.alto && !/Gu[ií]a:/.test(y.referencia));
+          if (!l) return;
+          l.referencia = [l.referencia, g.guia ? `Guía: ${g.guia}` : "", g.recogedor && !new RegExp(g.recogedor, "i").test(l.referencia) ? `Recogedor ${g.recogedor}` : ""].filter(Boolean).join(" · ");
+        });
         if (filasTxt.length) {
           const faltan = lineasQueFaltanPedidoCompra(filasTxt, nuevas);
           if (faltan.length) {
@@ -16941,8 +17014,34 @@ async function leerFilasPedidoCompraPdf(file) {
     }
     const T = paginas.map((p) => p.map((i) => i.s).join(" ")).join(" ").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
     if (!/PEDIDO COMPRA/.test(T)) return [];
-    return filasDePedidoCompra(paginas);
+    const filas = filasDePedidoCompra(paginas);
+    filas.guias = guiasDePedidoCompra(paginas);
+    return filas;
   } catch (e) { return []; }
+}
+// Columnas «Guias» y «Recogedor» del PEDIDO COMPRA de persianas (la IA solo trae descripción y medidas): por cada
+// medida «2.000x2.185», el texto que cae bajo esas columnas en su bloque. Ej.: «Guia sencilla 60 x 78 mm · Guias: Nogal» y «Derecha»
+function guiasDePedidoCompra(paginas) {
+  const medida = /^\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*[xX×]\s*(\d{1,2}(?:\.\d{3})|\d{3,4})\s*$/;
+  const aMm = (t) => parseInt(String(t).replace(/\./g, ""), 10) || 0;
+  const out = [];
+  paginas.forEach((items) => {
+    const its = items.filter((i) => String(i.s).trim());
+    const col = (re) => its.find((i) => re.test(String(i.s).trim()));
+    const cG = col(/^gu[ií]as$/i), cC = col(/^cinta$/i), cA = col(/^acc\.?$/i), cR = col(/^recogedor$/i);
+    if (!cG) return;
+    const finG = cC ? cC.x - 5 : cA ? cA.x - 5 : cR ? cR.x - 5 : Infinity;
+    const meds = its.filter((i) => medida.test(String(i.s))).sort((a, b) => b.y - a.y);
+    meds.forEach((it, k) => {
+      const m = String(it.s).match(medida);
+      const yFin = k + 1 < meds.length ? meds[k + 1].y + 12 : it.y - 40; // el bloque acaba donde empieza la medida siguiente
+      const enBloque = (o) => o.y <= it.y + 6 && o.y > yFin;
+      const guia = its.filter((o) => enBloque(o) && o.x >= cG.x - 15 && o.x < finG).sort((a, b) => b.y - a.y || a.x - b.x).map((o) => String(o.s).trim()).join(" ").replace(/\s+/g, " ").replace(/\s*(Gu[ií]as:)/i, " · $1").trim();
+      const rec = cR ? its.filter((o) => enBloque(o) && o.x >= cR.x - 15 && Math.abs(o.y - it.y) <= 6).map((o) => String(o.s).trim()).join(" ").trim() : "";
+      out.push({ ancho: aMm(m[1]), alto: aMm(m[2]), guia, recogedor: rec });
+    });
+  });
+  return out;
 }
 // Devuelve las líneas que faltan en `nuevas` (las de la IA) según el texto del PDF
 function lineasQueFaltanPedidoCompra(filas, nuevas) {
@@ -18218,6 +18317,7 @@ function estadoOcupacionPersianas(items) {
 // se usa ese sitio si sigue libre. Lo reservado por otros pedidos pendientes también cuenta como ocupado.
 // OJO: el número de caballetes que mandará el proveedor no se sabe hasta el albarán; se reserva UN hueco
 // por pedido de cristales (junto a los de la misma obra) y el resto se colocan al recibirlos.
+const AVISO_AUX_DESDE = "2026-10-31"; // las persianas que entraron antes no lanzan el aviso de cortar guías (si no, saltaría para todo lo que ya había)
 const sumarDiasISO = (iso, dias) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + dias); return d.toISOString().slice(0, 10); };
 function planRepartoPrevisto(pedido, ctx) {
   const tipo = tipoPedidoMaterial(pedido);
@@ -18345,6 +18445,14 @@ const parseLineaPersiana = (texto) => {
   const habitacion = (t.match(/\b(dormitorio\s*\w*|salón|salon|cocina|baño|bano|terraza|comedor|pasillo|despacho|estudio|vestidor|hab(?:itaci[oó]n)?\.?\s*\d*)\b/i) || [""])[0].trim();
   return { ref, recogedor, habitacion };
 };
+// Guía de persiana en la hoja de corte: la referencia de «Guía de persiana» de Auxiliares (C.327020); tolerancia para casar la ventana por medida
+const REFS_GUIA_PERSIANA = new Set(["C.327020"]); // la misma que «Guía de persiana» en AUX_CFG_DEFECTO (definido más abajo)
+// De dónde sale la guía según el pedido de la caja: «CJ_DECOR_S/G · Compacto decorativo - guía aparte» = se corta aquí en fábrica
+// (la persiana llega SIN guía); un cajón/compacto sin eso = la manda el proveedor (llega CON guía)
+// Pero si el pedido dice QUÉ guía («Guía: Guia sencilla 60 x 78 mm · Guias: Nogal»), aunque ponga «guía aparte», la manda el proveedor (aparte, no montada)
+const guiaSegunPedido = (desc) => { const t = String(desc || ""); if (/Gu[ií]a:\s*\S|gu[ií]a\s+(?:sencilla|doble|simple|reforzada)|gu[ií]a[^·,;]{0,20}\d+\s*x\s*\d+/i.test(t)) return "proveedor"; if (/S\/G\b|gu[ií]a\s+aparte|sin\s+gu[ií]a/i.test(t)) return "fabrica"; if (/compacto|caj[oó]n|\bCJ_|con\s+gu[ií]a/i.test(t)) return "proveedor"; return ""; };
+const tipoGuiaPedido = (desc) => ((String(desc || "").match(/Gu[ií]a:\s*([^·]+(?:·\s*Gu[ií]as:\s*[^·]+)?)/i) || [])[1] || "").trim();
+const TOL_GUIA_HOJA_MM = 100; // sin verificar con hojas reales: ancho/alto de la ventana frente a largo/alto de la persiana
 const etiquetaMano = (r) => (r === "Izquierda" ? "Recogedor izquierda" : r === "Derecha" ? "Recogedor derecha" : r === "Doble" ? "Doble recogedor" : r === "Eléctrica" ? "Eléctrica (motor)" : "");
 const expDigitosPers = (t) => { const m = String(t || "").match(/\d{2,}/); return m ? m[0] : String(t || "").trim(); };
 const TOL_PEDIDO_MM = 30; // diferencia de largo que se admite entre lo pedido y lo que llega (sin verificar con packing lists reales)
@@ -19974,7 +20082,27 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
   const [soloSinRevisar, setSoloSinRevisar] = useState(false);
-  const [revisando, setRevisando] = useState(null); // { id, mano, guia }: panel para confirmar mano y guía antes de dar una persiana por revisada
+  const [cambioCarro, setCambioCarro] = useState(null); // { id, carro }: «Cambiar estante» escribiendo el nº de carro, sin bajar por todos
+  const [revisando, setRevisando] = useState(null); // { id, mano, guia: "" | "ok" | "mal" }: panel para confirmar mano y guía antes de dar una persiana por revisada
+  // Guía que le toca a cada persiana según la hoja de corte (auxiliares) de su presupuesto: la ventana se busca por nombre o, si no, por medida
+  const hojasAux = useObjetoFb("auxiliaresHojas");
+  const guiaDeHoja = (x) => {
+    const pptos = [...new Set(String(x.presupuesto || "").split(/[·,;\s]+/).map(digitosPresu).filter((d) => d.length >= 3))];
+    if (!pptos.length) return { estado: "sinPpto" };
+    const hojas = pptos.map((d) => hojasAux[d] || Object.values(hojasAux).find((h) => h && digitosPresu(h.presupuesto) === d)).filter(Boolean);
+    if (!hojas.length) return { estado: "sinHoja", pptos };
+    const L = parseFloat(largoPersiana(x)) || 0, A = parseFloat(x.alto) || 0;
+    const nref = String(x.ref || "").toUpperCase().replace(/\s+/g, "");
+    const modelos = hojas.flatMap((h) => toArray(h.modelos));
+    let cand = nref ? modelos.filter((m) => String(m.modelo || "").toUpperCase().replace(/\s+/g, "") === nref) : [];
+    if (!cand.length) cand = modelos.filter((m) => m.ancho && m.alto && Math.abs(m.ancho - L) <= TOL_GUIA_HOJA_MM && Math.abs(m.alto - A) <= TOL_GUIA_HOJA_MM);
+    if (!cand.length) return { estado: "sinVentana", pptos };
+    const guias = (m) => toArray(m.filas).filter((f) => REFS_GUIA_PERSIANA.has(String(f.ref || "").toUpperCase()) || (/gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || "")));
+    const texto = (m) => (m.cajaSinGuia ? "caja sin guía (guía aparte)" : guias(m).map((f) => `${f.ref}${f.lCorte ? ` · ${f.lCorte} mm` : ""}${f.ud ? ` · ${f.ud} ud` : ""}`).join(" + ") || "la hoja no trae guía para esta ventana");
+    const textos = [...new Set(cand.map(texto))];
+    return { estado: textos.length === 1 ? "ok" : "varias", modelos: [...new Set(cand.map((m) => m.modelo))], textos,
+      cortaGuia: cand.some((m) => guias(m).length > 0), cajaSinGuia: cand.some((m) => m.cajaSinGuia) };
+  };
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
   // Fila de una persiana: colocada en obra, dónde está e incidencia / comentario
@@ -19995,8 +20123,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       </td>
       <td className="py-1.5 px-2 align-top">
         <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
-          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false, manoNoCoincide: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
-        {x.revisada && <div className={`text-[10px] font-semibold leading-tight mt-0.5 ${x.manoNoCoincide ? "text-rose-700" : "text-sky-700"}`}>{x.manoRevisada || "?"}{x.manoNoCoincide ? ` ≠ pedido (${manoDe(x)})` : ""}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
+          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: "" }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false, guiaNoCoincide: false, manoNoCoincide: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
+        {x.revisada && <div className={`text-[10px] font-semibold leading-tight mt-0.5 ${x.manoNoCoincide || x.guiaNoCoincide ? "text-rose-700" : "text-sky-700"}`}>{x.manoRevisada || "?"}{x.manoNoCoincide ? ` ≠ pedido (${manoDe(x)})` : ""}{x.guiaNoCoincide ? " · guía ✗" : x.guiaRevisada ? " · guía ✓" : ""}</div>}
         {revisando && revisando.id === x.id && !x.revisada && (
           <div className="mt-1 p-2 w-48 rounded-lg border border-sky-300 bg-white shadow text-xs space-y-1.5">
             <div className="font-semibold text-slate-700">Mano de la persiana</div>
@@ -20007,17 +20135,37 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.mano === m ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-700 border-slate-300"}`}>{m}</button>
               ))}
             </div>
-            {(() => { const g = (String(x.descripcion || "").match(/gu[ií]as?\b[^,;\n]{0,25}/i) || [""])[0].trim(); return <div className="text-[10px] text-slate-500">{g ? <>Según pedido: <b className="text-slate-700">{g}</b></> : "El pedido no dice la guía: compruébala a ojo"}</div>; })()}
-            <label className="flex items-center gap-1.5 font-semibold text-slate-700"><input type="checkbox" checked={revisando.guia} onChange={(e) => setRevisando({ ...revisando, guia: e.target.checked })} className="w-4 h-4 accent-sky-600" /> Guía comprobada</label>
+            <div className="font-semibold text-slate-700 pt-1">Guía</div>
+            {(() => {
+              // Pedido de la caja (CJ_DECOR_S/G = guía aparte) + hoja de corte (Auxiliares corta la guía C.327020 aquí)
+              const g = guiaDeHoja(x);
+              const ped = guiaSegunPedido(x.descripcion);
+              const hojaFab = g.estado === "ok" || g.estado === "varias" ? (g.cortaGuia || g.cajaSinGuia) : null; // null = no hay hoja / ventana
+              const aux = g.estado === "ok" && g.cortaGuia ? ` (Auxiliares: ${g.textos[0]})` : "";
+              if (ped === "proveedor" && hojaFab && g.cortaGuia) return <div className="text-[10px] font-semibold text-rose-700">⚠ El pedido dice que la caja trae guía, pero la hoja de corte también la corta aquí{aux}: se duplicaría. Avisa en oficina.</div>;
+              if (ped === "fabrica" && hojaFab === false) return <div className="text-[10px] font-semibold text-rose-700">⚠ La caja viene SIN guía (guía aparte) y la hoja de corte no corta guía para esta ventana: faltaría la guía. Avisa en oficina.</div>;
+              if (ped === "fabrica" || hojaFab) return <div className="text-[10px] text-slate-600">Guía <b>cortada aquí en fábrica</b>{aux}. <b>La persiana tiene que venir SIN guía.</b></div>;
+              if (ped === "proveedor" || hojaFab === false) { const tipo = tipoGuiaPedido(x.descripcion); return <div className="text-[10px] text-slate-600">Guía <b>del proveedor</b>{tipo ? <>: <b>{tipo}</b> (puede venir aparte, sin montar)</> : ""}. <b>Comprueba que viene{tipo ? " y que es esa" : " con su guía"}.</b></div>; }
+              const falta = g.estado === "sinHoja" ? `no está la hoja de corte del presupuesto ${g.pptos.join(", ")}` : g.estado === "sinVentana" ? "no encuentro esta ventana en la hoja de corte" : "la persiana no tiene nº de presupuesto";
+              return <div className="text-[10px] text-amber-700">Falta documentación: el pedido no dice si la caja lleva guía y {falta}. Compruébala a ojo.</div>;
+            })()}
+            <div className="flex gap-1">
+              {[["ok", "Guía bien"], ["mal", "No coincide"]].map(([k, t]) => (
+                <button key={k} type="button" onClick={() => setRevisando({ ...revisando, guia: k })}
+                  className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.guia === k ? (k === "ok" ? "bg-sky-600 text-white border-sky-600" : "bg-rose-600 text-white border-rose-600") : "bg-white text-slate-700 border-slate-300"}`}>{t}</button>
+              ))}
+            </div>
             <div className="flex gap-1">
               <button type="button" disabled={!revisando.mano || !revisando.guia}
                 onClick={() => {
                   const esperada = manoDe(x);
                   const noCoincide = !!esperada && esperada !== revisando.mano;
                   if (noCoincide && !window.confirm(`⚠ LA MANO NO COINCIDE CON EL PEDIDO\n\nEXP ${x.expediente || "—"} · ${x.ref || ""}\nPedido: ${etiquetaMano(esperada)}\nEn el carro: recogedor ${revisando.mano.toLowerCase()}\n\nACEPTAR = guardarla como revisada CON INCIDENCIA (la fila se pone en rojo).\nCANCELAR = volver a mirarla.`)) return;
-                  const nota = `Mano no coincide: pedido ${etiquetaMano(esperada).toLowerCase()}, en el carro ${revisando.mano.toLowerCase()}`;
-                  actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true, manoNoCoincide: noCoincide,
-                    ...(noCoincide ? { incidencia: x.incidencia || "Otro", fechaIncidencia: x.fechaIncidencia || new Date().toISOString().slice(0, 10), comentario: [x.comentario, nota].filter(Boolean).join(" · ") } : {}) });
+                  const guiaMal = revisando.guia === "mal";
+                  const g = guiaDeHoja(x);
+                  const notas = [noCoincide ? `Mano no coincide: pedido ${etiquetaMano(esperada).toLowerCase()}, en el carro ${revisando.mano.toLowerCase()}` : "", guiaMal ? `Guía no coincide${g.estado === "ok" ? ` (hoja de corte: ${g.textos[0]})` : ""}` : ""].filter(Boolean);
+                  actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: !guiaMal, guiaNoCoincide: guiaMal, manoNoCoincide: noCoincide,
+                    ...(notas.length ? { incidencia: x.incidencia || "Otro", fechaIncidencia: x.fechaIncidencia || new Date().toISOString().slice(0, 10), comentario: [x.comentario, ...notas].filter(Boolean).join(" · ") } : {}) });
                   setRevisando(null);
                 }}
                 className="flex-1 px-2 py-1.5 rounded-md bg-[#2E8B57] text-white font-semibold disabled:opacity-40">Confirmar</button>
@@ -20045,18 +20193,29 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <option value="">Mover a…</option>
           {opcionesCarro(x.estante.carro)}
         </select>
-        <select value="" onChange={(e) => { if (e.target.value) moverAEstante(x, e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1 py-0.5 bg-white" title="Cambiar de lado o de estante">
-          <option value="">Cambiar estante…</option>
-          {[...new Set(estantes.map((q) => q.carro))].map((c) => (
-            <optgroup key={c} label={`Carro ${c}`}>
-              {estantes.filter((q) => q.carro === c).map((q) => {
-                const n = (ocup.uds && ocup.uds[q.key]) || 0;
-                const aqui = x.estante && x.estante.carro === q.carro && x.estante.lado === q.lado && x.estante.nivel === q.nivel;
-                return <option key={q.key} value={q.key} disabled={aqui}>{`lado ${q.lado} · estante ${q.nivel} (${n} ${n === 1 ? "persiana" : "persianas"}${aqui ? " · está aquí" : ""})`}</option>;
-              })}
-            </optgroup>
-          ))}
-        </select></>)}{x.fechaEntrada && <span className="block text-[10px] text-slate-400">Entró {fmtDate(x.fechaEntrada)}{x.fechaCarro && x.fechaCarro !== x.fechaEntrada ? ` · en carro ${fmtDate(x.fechaCarro)}` : ""}</span>}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
+        {cambioCarro && cambioCarro.id === x.id ? (() => {
+          const numC = String(cambioCarro.carro || "").trim();
+          const delCarro = numC ? estantes.filter((q) => String(q.carro) === numC) : [];
+          return (
+            <span className="ml-1.5 inline-flex flex-wrap items-center gap-1 align-middle">
+              <input type="number" inputMode="numeric" autoFocus value={cambioCarro.carro} onChange={(e) => setCambioCarro({ id: x.id, carro: e.target.value })} placeholder="Carro nº"
+                className="w-20 text-xs font-semibold border border-sky-400 rounded px-1.5 py-1 bg-white" />
+              {delCarro.length > 0 ? (
+                <select value="" onChange={(e) => { if (e.target.value) { moverAEstante(x, e.target.value); setCambioCarro(null); } }} className="text-xs font-semibold text-sky-700 border border-sky-300 rounded px-1 py-1 bg-white">
+                  <option value="">Estante del carro {numC}…</option>
+                  {delCarro.map((q) => {
+                    const n = (ocup.uds && ocup.uds[q.key]) || 0;
+                    const aqui = x.estante && x.estante.carro === q.carro && x.estante.lado === q.lado && x.estante.nivel === q.nivel;
+                    return <option key={q.key} value={q.key} disabled={aqui}>{`lado ${q.lado} · estante ${q.nivel} (${n} ${n === 1 ? "persiana" : "persianas"}${aqui ? " · está aquí" : ""})`}</option>;
+                  })}
+                </select>
+              ) : numC ? <span className="text-[11px] text-rose-600">No hay carro {numC}</span> : null}
+              <button type="button" onClick={() => setCambioCarro(null)} className="text-xs text-slate-500 border border-slate-300 rounded px-1.5 py-1 bg-white">✕</button>
+            </span>
+          );
+        })() : (
+          <button type="button" onClick={() => setCambioCarro({ id: x.id, carro: String(x.estante.carro) })} className="ml-1.5 text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1.5 py-0.5 bg-white" title="Cambiar de lado, de estante o de carro: escribe el nº de carro">Cambiar estante…</button>
+        )}</>)}{x.fechaEntrada && <span className="block text-[10px] text-slate-400">Entró {fmtDate(x.fechaEntrada)}{x.fechaCarro && x.fechaCarro !== x.fechaEntrada ? ` · en carro ${fmtDate(x.fechaCarro)}` : ""}</span>}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
@@ -21478,7 +21637,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Material que está en el almacén (caballetes / carros) y NO pertenece a ninguna obra del CRM, agrupado por nº de presupuesto
   const sinObraAlmacen = useMemo(() => {
     const conocidos = new Set(); const addK = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) conocidos.add(d); });
-    proyectos.forEach((p) => { addK(p.presupuestoNumero); addK(presupuestoDeObra(p)); });
+    proyectos.forEach((p) => {
+      addK(p.presupuestoNumero); addK(presupuestoDeObra(p));
+      // Obras con el nº solo en el nombre («Uxcar · 6644-1», «Uxcar · 6.644-1»): el buscador las encuentra y aquí también tienen que contar
+      (String(p.nombre || "").match(/\b\d\.\d{3}(?:\s*-\s*\d{1,2})?\b|\b\d{4,5}\s*-\s*\d{1,2}\b/g) || []).forEach(addK);
+      // Expediente de Uxcar enlazado desde la obra (no solo desde el expediente)
+      if (p.uxcarExpedienteId) { const e = toArray(uxExpedientes).find((y) => y && y.id === p.uxcarExpedienteId); if (e) { addK(e.presupuesto); addK(e.presupuestoNumero); } }
+    });
     toArray(uxExpedientes).forEach((e) => { if (e && e.proyectoId && proyectos.some((p) => p.id === e.proyectoId)) { addK(e.presupuesto); addK(e.presupuestoNumero); } });
     const idsPed = new Set(pedidos.filter((pd) => pd.proyectoId && proyectos.some((p) => p.id === pd.proyectoId)).map((pd) => pd.id));
     const g = new Map();
@@ -21575,7 +21740,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               {qdBusca.length >= 3 && sinObraAlmacen.filter((o) => o.ppto.includes(qdBusca) || [...o.exps].some((e) => e === qdBusca)).map((o) => (
                 <div key={`sa-${o.ppto}`} className="w-full text-left px-4 py-2.5 flex items-center gap-3">
                   <span className="text-sm font-semibold text-slate-800 flex-1 truncate">Presupuesto {o.ppto}{o.exps.size ? ` · EXP ${[...o.exps].join(", ")}` : ""} — {o.cabs.length} caballete{o.cabs.length === 1 ? "" : "s"}{o.pers ? ` · ${o.pers} persiana${o.pers === 1 ? "" : "s"}` : ""} en el almacén</span>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">Material sin obra en el CRM</span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-rose-50 text-rose-700">Falta documentación: ninguna obra con este presupuesto</span>
                 </div>
               ))}
               {resUx.map((e) => (
@@ -21724,7 +21889,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           </div>
           {sinObraAlmacen.length > 0 && (
             <details className="mb-5 bg-white border border-rose-300 rounded-lg">
-              <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-rose-800">📦 {sinObraAlmacen.length} presupuesto{sinObraAlmacen.length === 1 ? "" : "s"} con material en el almacén y SIN obra en el CRM (por eso no pueden estar en «Listo para fabricar»)</summary>
+              <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-rose-800">📦 {sinObraAlmacen.length} presupuesto{sinObraAlmacen.length === 1 ? "" : "s"} con material en el almacén y FALTA DOCUMENTACIÓN: ninguna obra del CRM lleva ese nº de presupuesto</summary>
               <p className="px-4 pt-2 text-xs text-slate-500">Hay cristales en caballetes (o persianas en carros) con estos presupuestos, pero ninguna obra del CRM lleva ese número. Crea o abre la obra y ponle su nº de presupuesto, o súbela por el pedido, y pasará aquí sola.</p>
               <div className="divide-y divide-slate-100">
                 {sinObraAlmacen.map((o) => (
