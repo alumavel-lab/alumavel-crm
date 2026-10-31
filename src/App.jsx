@@ -5953,8 +5953,9 @@ export default function App() {
           );
         })()}
         {(() => {
-          // Persianas llegadas: Auxiliares tiene que cortar las guías y demás auxiliares (Pedidos lo vigila: 2 días)
-          if (!currentUser) return null;
+          // Persianas llegadas: Auxiliares tiene que cortar las guías y demás auxiliares (2 días). Lo ven Fábrica, administradores y Auxiliares
+          const esAuxiliares = currentUser && (toArray(currentUser.puestosPrep).includes("auxiliares") || currentUser.puestoFijo === "auxiliares");
+          if (!currentUser || !(isAdmin || tieneAcceso("fabrica") || esAuxiliares)) return null;
           const ab = Object.values(alertasAuxPers || {}).filter((a) => a && a.estado === "abierta").sort((a, b) => (a.limite || 0) - (b.limite || 0));
           if (!ab.length) return null;
           const ahora = Date.now();
@@ -5974,14 +5975,14 @@ export default function App() {
           return (
             <>
               <details className={`${fuera ? "bg-rose-600" : "bg-amber-500"} text-white`}>
-                <summary className="cursor-pointer px-6 py-2.5 text-sm font-bold">✂ AUXILIARES / PEDIDOS — han llegado persianas: cortar guías y demás auxiliares · {ab.length} expediente{ab.length === 1 ? "" : "s"}: {ab.slice(0, 4).map((a) => `EXP ${a.exp}`).join(" · ")}{ab.length > 4 ? "…" : ""}{fuera ? " · ⚠ ALGUNO FUERA DE PLAZO" : ""} (toca para ver)</summary>
+                <summary className="cursor-pointer px-6 py-2.5 text-sm font-bold">✂ AUXILIARES — han llegado persianas: cortar guías y demás auxiliares · {ab.length} expediente{ab.length === 1 ? "" : "s"}: {ab.slice(0, 4).map((a) => `EXP ${a.exp}`).join(" · ")}{ab.length > 4 ? "…" : ""}{fuera ? " · ⚠ ALGUNO FUERA DE PLAZO" : ""} (toca para ver)</summary>
                 <div className="px-6 pb-3 space-y-1.5 text-sm">{ab.map(fila)}</div>
               </details>
               {verAvisosAux && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={cerrarVentana}>
                   <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
                     <h3 className="font-display font-bold text-lg text-slate-900">✂ Han llegado persianas: corta las guías y demás auxiliares</h3>
-                    <p className="text-sm text-slate-600">Para Auxiliares y Pedidos. Hay <b>2 días</b> desde que llegó la primera persiana de cada expediente.</p>
+                    <p className="text-sm text-slate-600">Para Auxiliares, Fábrica y administración. Hay <b>2 días</b> desde que llegó la primera persiana de cada expediente.</p>
                     <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">{ab.map(fila)}</div>
                     <div className="flex justify-end"><button onClick={cerrarVentana} className="px-4 py-2 rounded-md border border-slate-300 text-sm font-semibold">Entendido</button></div>
                   </div>
