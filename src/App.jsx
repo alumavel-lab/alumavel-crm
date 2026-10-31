@@ -4946,7 +4946,7 @@ export default function App() {
     const sinFechaLleg = uxPedidos.filter((p) => p && p.id && !p.llegadaPrevista && !p.recibido && !p.recepcion);
     if (sinFechaLleg.length > 0) {
       const hoyL = uxHoy(), patchL = {};
-      sinFechaLleg.forEach((p) => { let f = uxSumarDias(p.fecha || hoyL, UX_DIAS_ENTREGA_PEDIDO); if (f < hoyL) f = uxSumarDias(hoyL, UX_DIAS_ENTREGA_PEDIDO); patchL[`pedidos/${p.id}/llegadaPrevista`] = f; });
+      sinFechaLleg.forEach((p) => { let f = uxSumarDias(p.fecha || hoyL, UX_DIAS_ENTREGA_PEDIDO); if (f < hoyL) f = uxSumarDias(hoyL, UX_DIAS_ENTREGA_PEDIDO); patchL[`pedidos/${p.id}/llegadaPrevista`] = f; if (!uxPedidoYaMandado(p)) patchL[`pedidos/${p.id}/llegadaAuto`] = true; });
       fbUpdate(ref(fbDb, "portalUxcar"), patchL).catch(() => {});
     }
     // La fecha de llegada de la copia de tu CRM sigue a la del portal
@@ -8721,7 +8721,11 @@ function PanelRapido({ rap, setRap }) {
 }
 // Botón naranja "Expediente rápido": se usa fuera de las pestañas (arriba de la obra y arriba de Uxcar) y dentro del recuadro de etiquetas.
 // lotes = los que ya tiene la obra/expediente · onGuardar(lotesNuevos) guarda la lista completa.
-function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno, sinAlmacen }) {
+// «Expediente rápido» (vidrios + hoja de corte + dibujos): oculto en todas partes a petición de Miguel (no lo usan y leía mal las hojas «por grupos»).
+// Para volver a enseñarlo, poner true.
+const MOSTRAR_EXPEDIENTE_RAPIDO = false;
+function BotonExpedienteRapido(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <BotonExpedienteRapidoReal {...props} /> : null; }
+function BotonExpedienteRapidoReal({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno, sinAlmacen }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [rap, setRap] = useState(null); // vista previa: { r, archivos, colores }
@@ -22097,6 +22101,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               </div>
             </details>
           )}
+          <RevisionExpedientesUx uxExpedientes={uxExpedientes} cristales={cristales} persianas={ctxPaneles.persianasAlmacen} />
           {bloqueadosMaterial.length > 0 && (
             <details className="mb-5 bg-white border border-amber-300 rounded-lg">
               <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
@@ -38418,7 +38423,11 @@ const uxClaves = (exp) => {
   const pptos = new Set();
   if (/^\s*[\d.]+\s*-\s*\d+\s*$/.test(num)) pptos.add(uxPptoDigitos(num));
   String((exp && exp.presupuesto) || "").split(/[·,]/).forEach((x) => { const d = uxPptoDigitos(x); if (d.length >= 3) pptos.add(d); });
-  return { d: num.replace(/\D/g, ""), pptos, ver: (num.match(/-\s*(\d+)\s*$/) || [])[1] || "" };
+  // Nº de EXPEDIENTE escrito en la referencia o el nombre («EXPEDIENTE 961 PARA DESCONTAR UXCAR»): el material del almacén suele ir con ese número
+  // aunque el expediente se llame por su presupuesto (4.954-2). Sin esto la fábrica «no lo tenía» aunque estuviera colocado.
+  const exps = new Set();
+  [exp && exp.referencia, exp && exp.nombre].forEach((t) => (String(t || "").match(/\bEXP(?:EDIENTE)?\.?\s*(\d{2,})/gi) || []).forEach((m) => exps.add(m.replace(/\D/g, ""))));
+  return { d: num.replace(/\D/g, ""), pptos, exps, ver: (num.match(/-\s*(\d+)\s*$/) || [])[1] || "" };
 };
 // ¿Este presupuesto del almacén es el de la obra? Si los dos llevan versión (6.994-1 / 6.994-3) tiene que ser la misma: son expedientes distintos.
 const uxPptoCasa = (y, K) => {
@@ -38426,8 +38435,8 @@ const uxPptoCasa = (y, K) => {
   const vy = (String(y).match(/-\s*(\d+)\s*$/) || [])[1];
   return !(vy && K.ver && vy !== K.ver);
 };
-const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || String(c.presupuesto || "").split(/[·,]/).some((x) => uxPptoCasa(x, K));
-const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => uxPptoCasa(y, K))));
+const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || [...toArray(K.exps && [...K.exps])].some((n) => expedientesDeCaballete(c).has(n)) || String(c.presupuesto || "").split(/[·,]/).some((x) => uxPptoCasa(x, K));
+const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (K.exps && K.exps.has(String(x.expediente || "").replace(/\D/g, ""))) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => uxPptoCasa(y, K))));
 // ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
 const uxEnAlmacen = (exp, k) => {
   const K = uxClaves(exp);
@@ -38691,7 +38700,12 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
   const lista = uxOrdenar(expedientes).filter((e) => {
     if (filtro === "activos" && e.estado === "entregado") return false;
     if (filtro !== "activos" && filtro !== "todos" && e.estado !== filtro) return false;
-    if (busca.trim() && !`${e.numero} ${e.presupuesto || ""} ${e.tipo} ${e.observaciones || ""}`.toLowerCase().includes(busca.trim().toLowerCase())) return false;
+    // «4954» tiene que encontrar «4.954-2»: también se compara sin los puntos de los números. Busca además en la referencia («EXPEDIENTE 961…»)
+    if (busca.trim()) {
+      const qb = busca.trim().toLowerCase(), qd = qb.replace(/\D/g, "");
+      const hay = `${e.numero} ${e.presupuesto || ""} ${e.tipo} ${e.observaciones || ""} ${e.referencia || ""} ${e.nombre || ""}`.toLowerCase();
+      if (!hay.includes(qb) && !(/^[\d.\s-]+$/.test(qb) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd))) return false;
+    }
     return true;
   });
   return (
@@ -41613,10 +41627,12 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
             <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir PDF de etiquetas"}
             </button>
-            <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { leerRapido(e.target.files); e.target.value = ""; }} />
+            {MOSTRAR_EXPEDIENTE_RAPIDO && <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { leerRapido(e.target.files); e.target.value = ""; }} />}
+            {MOSTRAR_EXPEDIENTE_RAPIDO && (
             <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Listado de vidrios + hoja de corte + listado de dibujos (selecciona los tres a la vez). Comprueba y SACA los cristales y persianas del almacén." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               <Upload size={14} /> Expediente rápido (vidrios + hoja de corte + dibujos)
             </button>
+            )}
             <span className="text-xs text-slate-500">Se puede subir sin obra y asignarla después.</span>
           </div>
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
@@ -47552,6 +47568,59 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
 }
 
 // Administración de puestos + partes del día (pestaña de Fábrica)
+// ── Revisión de los expedientes de Uxcar pendientes: material que no se encuentra por sus números y expedientes duplicados ──
+function RevisionExpedientesUx({ uxExpedientes, cristales, persianas }) {
+  const filas = useMemo(() => {
+    const exps = toArray(uxExpedientes).filter((e) => e && ["virtual", "produccion"].includes(e.estado));
+    const dig = (t) => String(t || "").replace(/\D/g, "");
+    const out = [];
+    exps.forEach((e) => {
+      const K = uxClaves(e);
+      const ev = uxEstadoMat(e, "vidrios"), ec = uxEstadoMat(e, "compactos");
+      const avisos = [];
+      // Números que salen en el expediente (nº, referencia, nombre, presupuesto): por si el material va con otro de ellos
+      const nums = new Set([e.numero, e.referencia, e.nombre, e.presupuesto].flatMap((t) => (String(t || "").match(/\d[\d.]{2,}/g) || []).map((x) => dig(String(x).split("-")[0]))).filter((x) => x.length >= 3));
+      const posibles = () => {
+        const p = toArray(persianas).filter((x) => x && !x.entregada && (nums.has(dig(x.expediente)) || String(x.presupuesto || "").split(/[·,]/).some((y) => nums.has(uxPptoDigitos(y)))) && !uxPersianaEs(x, K));
+        const c = toArray(cristales).filter((x) => x && ([...expedientesDeCaballete(x)].some((n) => nums.has(n)) || String(x.presupuesto || "").split(/[·,]/).some((y) => nums.has(uxPptoDigitos(y)))) && !uxCaballeteEs(x, K));
+        const etq = (xs, f) => [...new Set(xs.map(f).filter(Boolean))].slice(0, 4).join(" · ");
+        return [p.length ? `${p.length} persiana${p.length === 1 ? "" : "s"} con ${etq(p, (x) => `EXP ${dig(x.expediente) || "—"}${x.presupuesto ? ` / ppto ${x.presupuesto}` : ""}`)}` : "", c.length ? `${c.length} caballete${c.length === 1 ? "" : "s"} con ${etq(c, (x) => `EXP ${x.expediente || "—"}${x.presupuesto ? ` / ppto ${x.presupuesto}` : ""}`)}` : ""].filter(Boolean).join(" · ");
+      };
+      [["vidrios", "Cristales", ev], ["compactos", "Persianas", ec]].forEach(([k, n, est]) => {
+        if (est === "llegado_ux") { const pos = posibles(); avisos.push(`${n}: Uxcar lo confirmó y no encuentro el material en los almacenes con sus números (busco EXP ${[K.d, ...(K.exps || [])].filter(Boolean).join(", ")}${K.pptos.size ? ` · ppto ${[...K.pptos].join(", ")}` : ""}).${pos ? ` Hay ${pos}: si es el suyo, el número está mal en el almacén o en el expediente.` : " Comprueba que ha llegado y que está ubicado."}`); }
+        if (est === "en_fabrica") avisos.push(`${n}: la fábrica ya lo tiene en el almacén, pero Uxcar no ha confirmado su albarán.`);
+      });
+      if (avisos.length) out.push({ e, avisos });
+    });
+    // Duplicados: dos expedientes con el mismo EXPEDIENTE en la referencia o el mismo presupuesto
+    const porClave = {};
+    // (mismo presupuesto con distinta versión, 6.994-1 y 6.994-3, son obras distintas: no cuenta)
+    exps.forEach((e) => { const K = uxClaves(e); [...[...(K.exps || [])].map((x) => `EXP ${x}`), ...[...K.pptos].map((x) => `presupuesto ${x}${K.ver ? `-${K.ver}` : ""}`)].forEach((k) => { (porClave[k] = porClave[k] || new Set()).add(e); }); });
+    const vistos = new Set();
+    Object.entries(porClave).forEach(([k, set]) => {
+      if (set.size < 2) return;
+      const lista = [...set];
+      const clave = lista.map((e) => e.id).sort().join("|");
+      if (vistos.has(clave)) return; vistos.add(clave);
+      out.push({ e: lista[0], dup: true, avisos: [`Posible DUPLICADO: ${lista.map((e) => e.numero).join(" y ")} comparten ${k}. Si son la misma obra, deja uno solo (el que tenga los pedidos) y borra el otro.`] });
+    });
+    return out;
+  }, [uxExpedientes, cristales, persianas]);
+  if (!filas.length) return null;
+  return (
+    <details className="mb-5 bg-white border border-violet-300 rounded-lg">
+      <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-violet-800">🔎 Revisión de expedientes de Uxcar pendientes: {filas.length} con algo que mirar (pulsa para verlos)</summary>
+      <div className="divide-y divide-slate-100">
+        {filas.map((f, i) => (
+          <div key={i} className="px-4 py-2.5 text-sm">
+            <div className="font-semibold text-slate-800">{f.dup ? "⚠ " : ""}Uxcar exp. {f.e.numero}{f.e.referencia ? <span className="font-normal text-slate-500"> · {f.e.referencia}</span> : null}</div>
+            <ul className="text-xs text-slate-700 mt-0.5 list-disc pl-5">{f.avisos.map((t, k) => <li key={k}>{t}</li>)}</ul>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
 // ---------- GENTE NECESARIA POR PUESTO: carga de un día del planning (o escrita a mano) ÷ lo que hace una persona al día ----------
 // Qué cuenta cada puesto, sacado del recuento de ventanas de las obras
 const UNIDADES_CARGA = [
@@ -48488,6 +48557,10 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
   const asunto = `Pedido ${pedido.numero} de ${pedido.tipo || "material"} — Uxcar${listaExp ? ` (${listaExp})` : ""}`;
   const cuerpo = `Buenos días,\n\nOs adjuntamos nuestro pedido de ${String(pedido.tipo || "material").toLowerCase()}${listaExp ? ` (expedientes ${listaExp})` : ""}.${pedido.comentarios ? `\n\n${pedido.comentarios}` : ""}\n\nPor favor, confirmad la recepción y la fecha de entrega.\n\nUn saludo,\n${perfil.nombre || ""}\nUxcar`;
   const e = uxEstadoPedido(pedido);
+  // Antes de darlo por ENVIADO tiene que tener proveedor y la fecha de entrega puesta (o confirmada, si es la automática)
+  const yaEnviado = !!(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual);
+  const faltaEnvio = yaEnviado ? [] : [!(pedido.proveedorNombre || pedido.proveedorId) ? "el PROVEEDOR" : "", !pedido.llegadaPrevista || pedido.llegadaAuto ? "la FECHA DE ENTREGA (ponla o pulsa «✓ Es correcta»)" : ""].filter(Boolean);
+  const comprobarEnvio = (ev) => { if (!faltaEnvio.length) return true; if (ev) ev.preventDefault(); alert(`Antes de mandar el pedido ${pedido.numero} falta:\n\n• ${faltaEnvio.join("\n• ")}`); return false; };
 
   const enviarCorreo = async () => {
     if (!email) return;
@@ -48534,7 +48607,8 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
         <div><div className="text-xs text-slate-400">Fecha</div><div className="font-semibold">{uxFecha(pedido.fecha)}</div></div>
         <div>
           <div className="text-xs text-slate-400">Llegada prevista</div>
-          {onMarcar && !pedido.recibido ? <input type="date" value={pedido.llegadaPrevista || ""} onChange={(ev) => ev.target.value && onMarcar({ llegadaPrevista: ev.target.value })} className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white" /> : <div className="font-semibold">{pedido.llegadaPrevista ? uxFecha(pedido.llegadaPrevista) : "—"}</div>}
+          {onMarcar && !pedido.recibido ? <input type="date" value={pedido.llegadaPrevista || ""} onChange={(ev) => ev.target.value && onMarcar({ llegadaPrevista: ev.target.value, llegadaAuto: null })} className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-sm font-semibold bg-white" /> : <div className="font-semibold">{pedido.llegadaPrevista ? uxFecha(pedido.llegadaPrevista) : "—"}</div>}
+          {onMarcar && !pedido.recibido && pedido.llegadaAuto && pedido.llegadaPrevista && <button onClick={() => onMarcar({ llegadaAuto: null })} className="mt-1 block text-[11px] font-semibold text-amber-800 border border-amber-300 bg-amber-50 rounded px-2 py-0.5">Fecha automática · ✓ Es correcta</button>}
         </div>
         <div><div className="text-xs text-slate-400">Hecho por</div><div className="font-semibold">{pedido.creadoPor || "—"}</div></div>
       </div>
@@ -48542,19 +48616,20 @@ function UxFichaPedido({ pedido, proveedor, proveedores = [], onCambiarProveedor
 
       <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">
         <div className="text-sm font-semibold text-slate-800">Mandar al proveedor</div>
+        {faltaEnvio.length > 0 && <div className="text-sm font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">Para mandarlo falta: {faltaEnvio.join(" · ")}.</div>}
         <div className="flex flex-wrap gap-2">
           {email ? (
-            <a href={`mailto:${email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={() => { onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
+            <a href={`mailto:${email}?${ccMail()}subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(textoWhatsapp)}`} onClick={(ev) => { if (!comprobarEnvio(ev)) return; onMarcar({ enviadoManual: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-slate-400 text-slate-700 hover:bg-slate-100">
               <Mail size={14} /> Abrir en mi correo
             </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene correo puesto.</span>}
           {enlaceWhatsapp ? (
-            <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={() => { onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
+            <a href={enlaceWhatsapp} target="_blank" rel="noreferrer" onClick={(ev) => { if (!comprobarEnvio(ev)) return; onMarcar({ enviadoWhatsapp: new Date().toISOString() }); }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md border border-emerald-600 text-emerald-700 hover:bg-emerald-50">
               <MessageCircle size={14} /> Mandar por WhatsApp
             </a>
           ) : <span className="text-xs text-slate-400 self-center">Este proveedor no tiene móvil puesto.</span>}
           {!(pedido.enviadoEmail || pedido.enviadoWhatsapp || pedido.enviadoManual) && (
-            <button onClick={() => onMarcar({ enviadoManual: new Date().toISOString() })} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
+            <button onClick={() => { if (comprobarEnvio()) onMarcar({ enviadoManual: new Date().toISOString() }); }} className="text-sm font-semibold px-4 py-2 rounded-md text-slate-600 hover:bg-slate-200">Ya lo he pedido de otra forma</button>
           )}
         </div>
         <p className="text-xs text-slate-500">Se abre vuestro propio correo con el mensaje escrito (el CRM no manda correos). Por WhatsApp va el enlace al documento en el mensaje.</p>
@@ -49733,6 +49808,9 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     for (const f of fs) {
       // Un solo pedido de cada tipo por expediente: si ya hay uno ENVIADO al proveedor o recibido no se crea otro; si hay uno sin enviar, se sustituye por este documento
       const previos = toArray(pedidosUx).filter((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && patch[`pedidos/${p.id}`] !== null);
+      // Hasta que el pedido anterior no esté MANDADO al proveedor no se sube otro (el mismo pedido sin enviar sí se puede sustituir)
+      const sinMandar = toArray(pedidosUx).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido && !previos.some((q) => q.id === p.id));
+      if (sinMandar.length) { avisos.push(`⚠ ${f.name}: NO he creado el pedido. Antes tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}. Lo demás del expediente sí se ha guardado.`); continue; }
       const cerrado = previos.find((p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recibido || p.recepcion);
       if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
       previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
@@ -49752,7 +49830,7 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       patch[`pedidos/${pid}`] = JSON.parse(JSON.stringify({
         id: pid, numero: "UX-" + sig, tipo: tipoPed, proveedorId: prov.id || "", proveedorNombre: prov.nombre || "", proveedorEmail: prov.email || "", proveedorMovil: prov.movil || "",
         documento: { nombre: f.name, url }, documentos: [{ nombre: f.name, url }], expedientes: [{ expedienteId: id, numero: base.numero, nombre: "", lineas }], comentarios: "",
-        fecha: hoy, llegadaPrevista: uxSumarDias(hoy, UX_DIAS_ENTREGA_PEDIDO), creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
+        fecha: hoy, llegadaPrevista: uxSumarDias(hoy, UX_DIAS_ENTREGA_PEDIDO), llegadaAuto: true, creadoAt: ahora, creadoPor: nombre, creadoPorUid: authUser.uid, origenSubida: true,
       }));
       const mk = uxMatAlbaran(tipoPed);
       if (mk) matsPatch[mk] = { estado: ((base.materiales || {})[mk] || {}).estado === "recibido" ? "recibido" : "pedido" };
@@ -49962,7 +50040,8 @@ function UxVistaFabrica({ vista, expedientes, pedidos, almacen }) {
     </div>
   );
 }
-function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
+function PortalRapidoArriba(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <PortalRapidoArribaReal {...props} /> : null; }
+function PortalRapidoArribaReal({ expedientes, tipos, nombre, authUser, aviso }) {
   const [sel, setSel] = useState("__nuevo");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
   const exp = sel === "__nuevo" ? null : lista.find((e) => e.id === sel) || null;
@@ -50065,6 +50144,11 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return "UX-" + ((nums.length ? Math.max(...nums) : 0) + 1);
   };
   const guardarPedido = async ({ tipo, proveedorId, archivos, grupos, tipoExp, comentarios, fechaPedido, llegadaPrevista }) => {
+    // Obligatorio: proveedor, fecha de entrega y que no quede ningún pedido sin mandar
+    const sinMandar = pedidosUx.filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
+    if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
+    if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
+    if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
     const prov = proveedoresUx.find((x) => x.id === proveedorId) || {};
     const documentos = [];
     try {
@@ -50185,17 +50269,22 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
         {datos && vista === "lista" && <PortalSubirDocumentos expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} pedidosUx={pedidosUx} proveedoresUx={proveedoresUx} aviso={aviso} onHecho={(i) => { setAbiertoId(i); }} />}
         {datos && vista === "lista" && <PortalRapidoArriba expedientes={expedientes} tipos={tipos} nombre={nombre} authUser={authUser} aviso={aviso} />}
         {datos && vista === "lista" && (() => {
-          const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado)).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
-          if (!pend.length) return null;
+          const pend = expedientes.filter((e) => ["virtual", "produccion"].includes(e.estado) && !e.sinAvisoDocs).map((e) => ({ e, faltan: documentosQueFaltanUx(e, pedidosUx) })).filter((x) => x.faltan.length);
+          const quitados = expedientes.filter((e) => e && e.sinAvisoDocs && ["virtual", "produccion"].includes(e.estado));
+          const volverAvisar = () => { if (window.confirm(`¿Volver a avisar de los documentos de ${quitados.map((e) => e.numero).join(", ")}?`)) { const patch = {}; quitados.forEach((e) => { patch[`expedientes/${e.id}/sinAvisoDocs`] = null; }); fbUpdate(ref(fbDb, "portalUxcar"), patch).catch((er) => alert("No se pudo guardar: " + er.message)); } };
+          if (!pend.length) return quitados.length ? <div className="mb-4 text-xs text-slate-500">{quitados.length} expediente{quitados.length === 1 ? "" : "s"} quitado{quitados.length === 1 ? "" : "s"} del aviso de documentos · <button onClick={volverAvisar} className="underline">volver a avisar</button></div> : null;
           return (
             <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
               <p className="font-semibold mb-1">Te faltan documentos antes de que estos expedientes pasen a fábrica:</p>
               <ul className="space-y-1">
                 {pend.map(({ e, faltan }) => (
-                  <li key={e.id}><button onClick={() => { setAbiertoId(e.id); setVista("ficha"); }} className="text-left hover:underline"><b>{e.numero}</b>: falta {faltan.join(" · ")}</button></li>
+                  <li key={e.id} className="flex items-start gap-2"><button onClick={() => { setAbiertoId(e.id); setVista("ficha"); }} className="text-left hover:underline flex-1"><b>{e.numero}</b>: falta {faltan.join(" · ")}</button>
+                    {/* Expedientes antiguos, anulados o que no necesitan esos documentos: se quitan de esta lista (se puede deshacer desde la ficha) */}
+                    <button title="Quitar de esta lista: este expediente ya no necesita estos documentos" onClick={() => { if (window.confirm(`¿Quitar el ${e.numero} de «Te faltan documentos»?\n\nÚsalo si es antiguo, está anulado o no necesita esos documentos. El expediente no se borra.`)) fbUpdate(ref(fbDb, `portalUxcar/expedientes/${e.id}`), { sinAvisoDocs: true }).catch((er) => alert("No se pudo guardar: " + er.message)); }}
+                      className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white hover:bg-amber-100">✕ No avisar</button></li>
                 ))}
               </ul>
-              <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.</p>
+              <p className="text-xs text-amber-700 mt-1.5">Lo que ya has subido queda guardado. Puedes ir completando el resto otro día.{quitados.length > 0 && <> · Hay {quitados.length} quitado{quitados.length === 1 ? "" : "s"} de esta lista · <button onClick={volverAvisar} className="underline">volver a avisar</button></>}</p>
               {pend.some(({ e, faltan }) => faltan.some((f) => /mano de obra/.test(f)) && toArray(e.documentos).some((d) => /mano\s*de\s*obra/i.test(`${d.tipo || ""} ${d.nombre || ""}`))) && (
                 <button onClick={(ev) => releerHorasManoObra(pend.filter(({ faltan }) => faltan.some((f) => /mano de obra/.test(f))).map(({ e }) => e), ev.currentTarget)}
                   className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">🔄 Releer las horas de los listados de mano de obra ya subidos</button>
@@ -50360,7 +50449,8 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
 }
 
 // Botón naranja arriba de todo en Uxcar: eliges el expediente (por defecto el que tienes abierto) y subes listado de vidrios + hoja de corte
-function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
+function UxRapidoArriba(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <UxRapidoArribaReal {...props} /> : null; }
+function UxRapidoArribaReal({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
   const [sel, setSel] = useState("__sin");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
   const id = abierto && abierto.id ? abierto.id : sel;
