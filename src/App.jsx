@@ -19881,7 +19881,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const hoyEntrada = new Date().toISOString().slice(0, 10);
     const expsNuevos = [...new Set(entrada.map((x) => String(x.expediente || "").replace(/\D/g, "")).filter(Boolean))];
     const yaConPiezas = expsNuevos.filter((e) => todasPersianas().some((y) => !y.entregada && String(y.expediente || "").replace(/\D/g, "") === e));
-    if (yaConPiezas.length && !window.confirm(`El expediente ${yaConPiezas.slice(0, 5).join(", ")} ya tiene ${cosa} en el almacén. ¿Es una entrega distinta y quieres añadirlas igualmente?`)) { setAviso("Entrada cancelada: el expediente ya tenía piezas dentro."); return; }
+    // Dónde están las que ya hay de ese expediente (carro, sin sitio, en un puesto u otro almacén), para decidir con datos
+    const dondeEstanExp = (e) => {
+      const xs = todasPersianas().filter((y) => !y.entregada && String(y.expediente || "").replace(/\D/g, "") === e);
+      const porSitio = {};
+      xs.forEach((y) => { const k = almacenDe(y) !== almacen.id ? "en otro almacén" : y.estante ? `en el carro ${y.estante.carro}` : y.enPuesto ? `en ${y.enPuesto}` : "sin sitio (pendientes de ubicar)"; porSitio[k] = (porSitio[k] || 0) + 1; });
+      return `• EXP ${e}: ya hay ${xs.length} → ${Object.entries(porSitio).map(([k, n]) => `${n} ${k}`).join(", ")}`;
+    };
+    if (yaConPiezas.length && !window.confirm(`OJO: de ${yaConPiezas.length === 1 ? "este expediente" : "estos expedientes"} ya hay ${cosa} metidas en el CRM (no tiene que ver con el carro que has elegido):\n\n${yaConPiezas.slice(0, 5).map(dondeEstanExp).join("\n")}\n\n• Si las que vas a meter ahora son OTRAS (otra entrega, otro portal o vivienda…), pulsa ACEPTAR.\n• Si es el mismo albarán / packing list que ya se metió, pulsa CANCELAR para no duplicarlas.`)) { setAviso("Entrada cancelada: el expediente ya tenía piezas dentro."); return; }
     const { sitio, fallan, desbordan } = prueba;
     const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null, fechaEntrada: resto.fechaEntrada || hoyEntrada, ...(sitio[x.id] ? { fechaCarro: hoyEntrada } : {}) }; });
     guardarItems([...items, ...nuevas]);
