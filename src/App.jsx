@@ -19993,21 +19993,31 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       </td>
       <td className="py-1.5 px-2 align-top">
         <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
-          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
-        {x.revisada && <div className="text-[10px] font-semibold text-sky-700 leading-tight mt-0.5">{x.manoRevisada || "?"}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
+          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false, manoNoCoincide: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
+        {x.revisada && <div className={`text-[10px] font-semibold leading-tight mt-0.5 ${x.manoNoCoincide ? "text-rose-700" : "text-sky-700"}`}>{x.manoRevisada || "?"}{x.manoNoCoincide ? ` ≠ pedido (${manoDe(x)})` : ""}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
         {revisando && revisando.id === x.id && !x.revisada && (
           <div className="mt-1 p-2 w-48 rounded-lg border border-sky-300 bg-white shadow text-xs space-y-1.5">
             <div className="font-semibold text-slate-700">Mano de la persiana</div>
+            <div className="text-[10px] text-slate-500">Según pedido: <b className="text-slate-700">{etiquetaMano(manoDe(x)) || "sin dato"}</b></div>
             <div className="flex gap-1">
               {["Izquierda", "Derecha"].map((m) => (
                 <button key={m} type="button" onClick={() => setRevisando({ ...revisando, mano: m })}
                   className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.mano === m ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-700 border-slate-300"}`}>{m}</button>
               ))}
             </div>
+            {(() => { const g = (String(x.descripcion || "").match(/gu[ií]as?\b[^,;\n]{0,25}/i) || [""])[0].trim(); return <div className="text-[10px] text-slate-500">{g ? <>Según pedido: <b className="text-slate-700">{g}</b></> : "El pedido no dice la guía: compruébala a ojo"}</div>; })()}
             <label className="flex items-center gap-1.5 font-semibold text-slate-700"><input type="checkbox" checked={revisando.guia} onChange={(e) => setRevisando({ ...revisando, guia: e.target.checked })} className="w-4 h-4 accent-sky-600" /> Guía comprobada</label>
             <div className="flex gap-1">
               <button type="button" disabled={!revisando.mano || !revisando.guia}
-                onClick={() => { actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true }); setRevisando(null); }}
+                onClick={() => {
+                  const esperada = manoDe(x);
+                  const noCoincide = !!esperada && esperada !== revisando.mano;
+                  if (noCoincide && !window.confirm(`⚠ LA MANO NO COINCIDE CON EL PEDIDO\n\nEXP ${x.expediente || "—"} · ${x.ref || ""}\nPedido: ${etiquetaMano(esperada)}\nEn el carro: recogedor ${revisando.mano.toLowerCase()}\n\nACEPTAR = guardarla como revisada CON INCIDENCIA (la fila se pone en rojo).\nCANCELAR = volver a mirarla.`)) return;
+                  const nota = `Mano no coincide: pedido ${etiquetaMano(esperada).toLowerCase()}, en el carro ${revisando.mano.toLowerCase()}`;
+                  actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true, manoNoCoincide: noCoincide,
+                    ...(noCoincide ? { incidencia: x.incidencia || "Otro", fechaIncidencia: x.fechaIncidencia || new Date().toISOString().slice(0, 10), comentario: [x.comentario, nota].filter(Boolean).join(" · ") } : {}) });
+                  setRevisando(null);
+                }}
                 className="flex-1 px-2 py-1.5 rounded-md bg-[#2E8B57] text-white font-semibold disabled:opacity-40">Confirmar</button>
               <button type="button" onClick={() => setRevisando(null)} className="px-2 py-1.5 rounded-md border border-slate-300 text-slate-600">Cancelar</button>
             </div>
