@@ -4165,6 +4165,33 @@ export default function App() {
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
+  // Aviso «han llegado las persianas: corta las guías y demás auxiliares» (a Auxiliares y Pedidos, 2 días para resolverlo).
+  // Se crea UNA vez por expediente, con la primera persiana que entra al almacén (solo las que entran desde AVISO_AUX_DESDE).
+  const alertasAuxPers = useObjetoFb("alertasAuxPersianas");
+  const avisosAuxCreadosRef = useRef(new Set());
+  const [verAvisosAux, setVerAvisosAux] = useState(() => { try { return !sessionStorage.getItem("avisosAuxVistos"); } catch (e) { return true; } });
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const porExp = {};
+    toArray(persianasAlmacen).forEach((x) => {
+      const e = String(x && x.expediente || "").replace(/\D/g, "");
+      if (!e || x.entregada || !x.fechaEntrada || x.fechaEntrada < AVISO_AUX_DESDE) return;
+      (porExp[e] = porExp[e] || []).push(x);
+    });
+    Object.entries(porExp).forEach(([e, xs]) => {
+      if (alertasAuxPers[e] || avisosAuxCreadosRef.current.has(e)) return;
+      avisosAuxCreadosRef.current.add(e);
+      const r = ref(fbDb, `alertasAuxPersianas/${e}`);
+      // Se mira en la base de datos antes de crear, para no reabrir uno ya resuelto si otro ordenador lo creó antes
+      fbGet(r).then((snap) => {
+        if (snap.exists()) return;
+        const en = Date.now();
+        const pptos = [...new Set(xs.map((x) => String(x.presupuesto || "").trim()).filter(Boolean))].join(", ");
+        const obra = xs.map((x) => x.nombreObra || x.refObra || x.obraUx || x.cliente).find(Boolean) || "";
+        return fbSet(r, { exp: e, presupuesto: pptos, obra, primera: xs.map((x) => x.fechaEntrada).sort()[0], en, limite: en + 2 * 24 * 3600 * 1000, estado: "abierta" });
+      }).catch(() => avisosAuxCreadosRef.current.delete(e));
+    });
+  }, [persianasAlmacen, alertasAuxPers, currentUser?.id, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   const [uxcEnviados, setUxcEnviados] = useState([]); // expedientes de medición Uxcar (Aena) enviados a oficina
   useEffect(() => {
     if (!currentUser) return undefined;
@@ -5923,6 +5950,44 @@ export default function App() {
               <button onClick={() => { if (confirm("¿Ya has recontado y ajustado el stock? El próximo aviso será dentro de 45 días.")) guardar(sumarDiasISO(hoy, 45)); }} className="px-3 py-1 rounded-md bg-violet-600 text-white text-xs font-semibold">Ya está recontado</button>
               <button onClick={() => guardar(sumarDiasISO(hoy, 7))} className="px-3 py-1 rounded-md border border-violet-300 text-xs font-semibold hover:bg-violet-100">Recordármelo en 7 días</button>
             </div>
+          );
+        })()}
+        {(() => {
+          // Persianas llegadas: Auxiliares tiene que cortar las guías y demás auxiliares (Pedidos lo vigila: 2 días)
+          if (!currentUser) return null;
+          const ab = Object.values(alertasAuxPers || {}).filter((a) => a && a.estado === "abierta").sort((a, b) => (a.limite || 0) - (b.limite || 0));
+          if (!ab.length) return null;
+          const ahora = Date.now();
+          const plazo = (a) => { const ms = (a.limite || 0) - ahora; if (ms <= 0) return "⚠ FUERA DE PLAZO"; const h = Math.floor(ms / 3600000); return h >= 24 ? `quedan ${Math.floor(h / 24)} d ${h % 24} h` : `quedan ${h} h`; };
+          const fuera = ab.some((a) => (a.limite || 0) <= ahora);
+          const quien = `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() || currentUser.email || "";
+          const hecho = (a) => { if (window.confirm(`¿Guías y auxiliares del EXP ${a.exp} cortados?`)) fbSet(ref(fbDb, `alertasAuxPersianas/${a.exp}`), { ...a, estado: "resuelta", resueltaPor: quien, resueltaEn: Date.now() }).catch(() => showToast("No se pudo guardar", "error")); };
+          const fila = (a) => (
+            <div key={a.exp} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 rounded-md bg-white border border-amber-200 text-slate-800">
+              <span className="font-bold">EXP {a.exp}</span>
+              <span className="text-xs text-slate-500">{[a.obra, a.presupuesto ? `Ppto ${a.presupuesto}` : "", a.primera ? `llegaron ${fmtDate(a.primera)}` : ""].filter(Boolean).join(" · ")}</span>
+              <span className={`text-xs font-bold ${(a.limite || 0) <= ahora ? "text-rose-700" : "text-amber-700"}`}>{plazo(a)}</span>
+              <button onClick={() => hecho(a)} className="ml-auto px-3 py-1 rounded-md bg-[#2E8B57] text-white text-xs font-semibold">Hecho: cortado</button>
+            </div>
+          );
+          const cerrarVentana = () => { setVerAvisosAux(false); try { sessionStorage.setItem("avisosAuxVistos", "1"); } catch (e) { /* sin almacenamiento: volverá a salir */ } };
+          return (
+            <>
+              <details className={`${fuera ? "bg-rose-600" : "bg-amber-500"} text-white`}>
+                <summary className="cursor-pointer px-6 py-2.5 text-sm font-bold">✂ AUXILIARES / PEDIDOS — han llegado persianas: cortar guías y demás auxiliares · {ab.length} expediente{ab.length === 1 ? "" : "s"}: {ab.slice(0, 4).map((a) => `EXP ${a.exp}`).join(" · ")}{ab.length > 4 ? "…" : ""}{fuera ? " · ⚠ ALGUNO FUERA DE PLAZO" : ""} (toca para ver)</summary>
+                <div className="px-6 pb-3 space-y-1.5 text-sm">{ab.map(fila)}</div>
+              </details>
+              {verAvisosAux && (
+                <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={cerrarVentana}>
+                  <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <h3 className="font-display font-bold text-lg text-slate-900">✂ Han llegado persianas: corta las guías y demás auxiliares</h3>
+                    <p className="text-sm text-slate-600">Para Auxiliares y Pedidos. Hay <b>2 días</b> desde que llegó la primera persiana de cada expediente.</p>
+                    <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">{ab.map(fila)}</div>
+                    <div className="flex justify-end"><button onClick={cerrarVentana} className="px-4 py-2 rounded-md border border-slate-300 text-sm font-semibold">Entendido</button></div>
+                  </div>
+                </div>
+              )}
+            </>
           );
         })()}
         {(() => {
@@ -18251,6 +18316,7 @@ function estadoOcupacionPersianas(items) {
 // se usa ese sitio si sigue libre. Lo reservado por otros pedidos pendientes también cuenta como ocupado.
 // OJO: el número de caballetes que mandará el proveedor no se sabe hasta el albarán; se reserva UN hueco
 // por pedido de cristales (junto a los de la misma obra) y el resto se colocan al recibirlos.
+const AVISO_AUX_DESDE = "2026-10-31"; // las persianas que entraron antes no lanzan el aviso de cortar guías (si no, saltaría para todo lo que ya había)
 const sumarDiasISO = (iso, dias) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + dias); return d.toISOString().slice(0, 10); };
 function planRepartoPrevisto(pedido, ctx) {
   const tipo = tipoPedidoMaterial(pedido);
