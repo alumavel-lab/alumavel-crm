@@ -38700,7 +38700,12 @@ function UxTabla({ expedientes, onAbrir, filtroInicial = "activos" }) {
   const lista = uxOrdenar(expedientes).filter((e) => {
     if (filtro === "activos" && e.estado === "entregado") return false;
     if (filtro !== "activos" && filtro !== "todos" && e.estado !== filtro) return false;
-    if (busca.trim() && !`${e.numero} ${e.presupuesto || ""} ${e.tipo} ${e.observaciones || ""}`.toLowerCase().includes(busca.trim().toLowerCase())) return false;
+    // «4954» tiene que encontrar «4.954-2»: también se compara sin los puntos de los números. Busca además en la referencia («EXPEDIENTE 961…»)
+    if (busca.trim()) {
+      const qb = busca.trim().toLowerCase(), qd = qb.replace(/\D/g, "");
+      const hay = `${e.numero} ${e.presupuesto || ""} ${e.tipo} ${e.observaciones || ""} ${e.referencia || ""} ${e.nombre || ""}`.toLowerCase();
+      if (!hay.includes(qb) && !(/^[\d.\s-]+$/.test(qb) && qd.length >= 3 && hay.replace(/(\d)\.(?=\d)/g, "$1").includes(qd))) return false;
+    }
     return true;
   });
   return (
