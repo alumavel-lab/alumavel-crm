@@ -21839,7 +21839,10 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       {tab === "comprobarExp" && <ComprobarExpedienteMaterial cristales={cristales} onIrA={(t) => setTab(t)} />}
 
       {tab === "puestos" && (
-        <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
+        <>
+          <GenteNecesariaPuestos proyectos={proyectos} uxExpedientes={uxExpedientes} isAdmin={isAdminFab} />
+          <PuestosTrabajoAdmin usuarios={usuarios} config={configVentanasFab} onSaveConfig={onSaveConfigVentanasFab} isAdmin={isAdminFab} />
+        </>
       )}
 
       {tab === "preparar" && (
@@ -47356,6 +47359,145 @@ function PartesTrabajoPanel({ puestos, titulo = "Partes de trabajo", etiqueta = 
 }
 
 // Administración de puestos + partes del día (pestaña de Fábrica)
+// ---------- GENTE NECESARIA POR PUESTO: carga de un día del planning (o escrita a mano) ÷ lo que hace una persona al día ----------
+// Qué cuenta cada puesto, sacado del recuento de ventanas de las obras
+const UNIDADES_CARGA = [
+  { id: "ventanas", nombre: "Ventanas y puertas" },
+  { id: "hojas", nombre: "Hojas" },
+  { id: "ventanas2h", nombre: "Ventanas de 2 o más hojas" },
+  { id: "puertas", nombre: "Puertas" },
+  { id: "persianas", nombre: "Persianas" },
+  { id: "mosquiteras", nombre: "Mosquiteras" },
+  { id: "fijos", nombre: "Fijos" },
+  { id: "correderas", nombre: "Correderas" },
+];
+// Lo que cuenta cada puesto de la línea si no se ha cambiado (se puede cambiar en la pantalla)
+const UNIDAD_PUESTO_DEF = { soldadora: "ventanas", herraje: "hojas", pilastra: "ventanas2h", colgado: "ventanas", persianaA: "persianas", persianaB: "persianas", lineaPers: "ventanas", puerta: "puertas", cristales: "ventanas", solape: "ventanas2h", especiales: "ventanas", carga: "ventanas" };
+const cargaDeRecuento = (lineas) => {
+  const c = { ventanas: 0, hojas: 0, ventanas2h: 0, puertas: 0, persianas: 0, mosquiteras: 0, fijos: 0, correderas: 0 };
+  toArray(lineas).forEach((l) => {
+    const u = (parseFloat(l.uds) || 0) * (l.tipo === "mosquitera" ? 1 : Math.max(1, parseInt(l.juntas, 10) || 1));
+    const h = parseInt(l.hojas, 10) || 0;
+    if (l.tipo === "mosquitera") { c.mosquiteras += u; return; }
+    if (l.tipo === "otro") return;
+    c.ventanas += u;
+    c.hojas += u * h;
+    if (h >= 2) c.ventanas2h += u;
+    if (l.tipo === "puerta") c.puertas += u;
+    if (l.tipo === "fijo") c.fijos += u;
+    if (l.tipo === "corredera") c.correderas += u;
+    if (l.persiana) c.persianas += u;
+  });
+  return c;
+};
+// «1 persona todo el día + 1 persona 4 h»
+const textoPersonas = (n, horasDia) => {
+  if (!(n > 0)) return "nadie";
+  const enteras = Math.floor(n + 1e-9);
+  const resto = Math.round((n - enteras) * horasDia * 2) / 2; // a la media hora
+  const partes = [];
+  if (enteras > 0) partes.push(`${enteras} persona${enteras === 1 ? "" : "s"} todo el día`);
+  if (resto > 0) partes.push(`1 persona ${String(resto).replace(".", ",")} h`);
+  return partes.join(" + ") || "menos de media hora";
+};
+function GenteNecesariaPuestos({ proyectos, uxExpedientes, isAdmin }) {
+  const plan = usePlanningPublicado();
+  const cfg = useObjetoFb("capacidadPuestosLinea"); // { [puestoId]: { unidad, porDia, horasDia } }
+  const hoy = new Date().toISOString().slice(0, 10);
+  const dias = Object.keys((plan && plan.dias) || {}).sort();
+  const [dia, setDia] = useState("");
+  const [aMano, setAMano] = useState(false);
+  const [manual, setManual] = useState({});
+  const diaSel = dia || (dias.includes(hoy) ? hoy : dias.find((d) => d >= hoy) || "");
+  const guardarPuesto = (id, patch) => fbSet(ref(fbDb, `capacidadPuestosLinea/${id}`), { ...(cfg[id] || {}), ...patch }).catch((e) => alert("No se pudo guardar: " + e.message));
+  const puestos = PUESTOS_LINEA.filter((p) => p.id !== "carga");
+  // Carga del día: cada obra del planning aporta la parte de sus unidades que corresponde a las horas de ese día
+  const { carga, obrasDia } = useMemo(() => {
+    const c = { ventanas: 0, hojas: 0, ventanas2h: 0, puertas: 0, persianas: 0, mosquiteras: 0, fijos: 0, correderas: 0 };
+    const lista = [];
+    if (!plan || !diaSel) return { carga: c, obrasDia: lista };
+    toArray(plan.dias && plan.dias[diaSel]).forEach((t) => {
+      const o = (plan.obras || {})[t.id];
+      if (!o) return;
+      const frac = o.horas > 0 ? Math.min(1, (parseFloat(t.horas) || 0) / o.horas) : 1;
+      const pr = o.proyectoId ? toArray(proyectos).find((p) => p.id === o.proyectoId) : null;
+      const exp = !pr ? toArray(uxExpedientes).find((e) => toArray(o.expNums).includes(String(e.numero || "").replace(/\D/g, ""))) : null;
+      const rec = pr ? ventanasDeObra(pr, uxExpedientes).recuento : exp ? toArray(exp.recuento) : [];
+      const co = cargaDeRecuento(rec);
+      const sinDesglose = !rec.length;
+      if (sinDesglose) co.ventanas = parseFloat(o.ventanas) || 0; // solo se sabe el nº de ventanas
+      Object.keys(c).forEach((k) => { c[k] += co[k] * frac; });
+      lista.push({ nombre: o.nombre || t.nombre, frac, sinDesglose, ventanas: co.ventanas * frac });
+    });
+    return { carga: c, obrasDia: lista };
+  }, [plan, diaSel, proyectos, uxExpedientes]);
+  const cargaUsada = aMano ? Object.fromEntries(UNIDADES_CARGA.map((u) => [u.id, parseFloat(manual[u.id]) || 0])) : carga;
+  // Si varios puestos cuentan lo mismo (Persiana A y B), la carga se reparte entre ellos
+  const unidadDe = (p) => (cfg[p.id] && cfg[p.id].unidad) || UNIDAD_PUESTO_DEF[p.id] || "ventanas";
+  const cuantosConUnidad = (u) => puestos.filter((p) => unidadDe(p) === u && !(cfg[p.id] && cfg[p.id].noCuenta)).length || 1;
+  const fmt = (n) => (Math.round(n * 10) / 10).toLocaleString("es-ES");
+  const sinDesg = obrasDia.filter((o) => o.sinDesglose);
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-6 space-y-3">
+      <h3 className="font-display font-bold text-slate-800">👷 Gente necesaria por puesto</h3>
+      <p className="text-xs text-slate-500">Elige un día del planning confirmado (o escribe tú las cantidades). Para cada puesto pon qué cuenta y cuántas hace UNA persona al día: te dice cuánta gente hace falta.</p>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <label className="flex items-center gap-1.5"><input type="radio" checked={!aMano} onChange={() => setAMano(false)} /> Del planning:</label>
+        <select value={diaSel} disabled={aMano} onChange={(e) => setDia(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white">
+          {!dias.length && <option value="">No hay planning confirmado</option>}
+          {dias.map((d) => <option key={d} value={d}>{fmtDate(d)}{d === hoy ? " (hoy)" : d === addDiasISO(hoy, 1) ? " (mañana)" : ""}</option>)}
+        </select>
+        <label className="flex items-center gap-1.5 ml-3"><input type="radio" checked={aMano} onChange={() => setAMano(true)} /> Escribir a mano</label>
+      </div>
+      {aMano ? (
+        <div className="flex flex-wrap gap-2">
+          {UNIDADES_CARGA.map((u) => (
+            <label key={u.id} className="text-[11px] text-slate-500 flex flex-col gap-0.5">{u.nombre}
+              <input type="number" inputMode="numeric" min="0" value={manual[u.id] || ""} onChange={(e) => setManual({ ...manual, [u.id]: e.target.value })} className="w-24 border border-slate-300 rounded px-2 py-1.5 text-sm" />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-slate-600">
+          {obrasDia.length ? <>Obras de ese día: {obrasDia.map((o) => `${o.nombre}${o.frac < 0.99 ? ` (${Math.round(o.frac * 100)} %)` : ""}`).join(" · ")}</> : "Ese día no tiene obras en el planning."}
+          <div className="mt-1 text-slate-500">Carga: {UNIDADES_CARGA.filter((u) => carga[u.id] > 0).map((u) => `${fmt(carga[u.id])} ${u.nombre.toLowerCase()}`).join(" · ") || "—"}</div>
+          {sinDesg.length > 0 && <div className="mt-1 font-semibold text-amber-700">⚠ Sin recuento de ventanas (solo cuentan como ventanas, sin hojas ni persianas): {sinDesg.map((o) => o.nombre).join(", ")}. Falta documentación.</div>}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b"><th className="py-1.5 pr-2">Puesto</th><th className="pr-2">Cuenta</th><th className="pr-2">Una persona hace al día</th><th className="pr-2">Horas/día</th><th className="pr-2">Hay que hacer</th><th className="pr-2">Gente necesaria</th></tr></thead>
+          <tbody>
+            {puestos.map((p) => {
+              const c = cfg[p.id] || {};
+              const u = unidadDe(p);
+              const porDia = parseFloat(c.porDia) || 0;
+              const horasDia = parseFloat(c.horasDia) || 8;
+              const hacer = c.noCuenta ? 0 : (cargaUsada[u] || 0) / cuantosConUnidad(u);
+              const personas = porDia > 0 ? hacer / porDia : null;
+              return (
+                <tr key={p.id} className={`border-b border-slate-100 ${c.noCuenta ? "text-slate-400" : ""}`}>
+                  <td className="py-1.5 pr-2 font-semibold">{p.nombre}{cuantosConUnidad(u) > 1 && !c.noCuenta ? <span className="block text-[10px] font-normal text-slate-400">reparte con los otros puestos que cuentan lo mismo</span> : null}</td>
+                  <td className="pr-2">
+                    <select value={c.noCuenta ? "" : u} disabled={!isAdmin} onChange={(e) => guardarPuesto(p.id, e.target.value ? { unidad: e.target.value, noCuenta: false } : { noCuenta: true })} className="border border-slate-300 rounded px-1.5 py-1 text-xs bg-white">
+                      {UNIDADES_CARGA.map((x) => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+                      <option value="">— no cuenta —</option>
+                    </select>
+                  </td>
+                  <td className="pr-2"><input key={`pd_${p.id}_${c.porDia || ""}`} type="number" inputMode="numeric" min="0" defaultValue={c.porDia || ""} disabled={!isAdmin || c.noCuenta} placeholder="¿?" onBlur={(e) => { const v = parseFloat(e.target.value) || 0; if (v !== porDia) guardarPuesto(p.id, { porDia: v }); }} className="w-20 border border-slate-300 rounded px-2 py-1 text-sm" /></td>
+                  <td className="pr-2"><input key={`hd_${p.id}_${c.horasDia || ""}`} type="number" min="1" step="0.5" defaultValue={c.horasDia || 8} disabled={!isAdmin || c.noCuenta} onBlur={(e) => { const v = parseFloat(e.target.value) || 8; if (v !== horasDia) guardarPuesto(p.id, { horasDia: v }); }} className="w-16 border border-slate-300 rounded px-2 py-1 text-sm" /></td>
+                  <td className="pr-2 font-mono-num">{c.noCuenta ? "—" : fmt(hacer)}</td>
+                  <td className="pr-2 font-semibold">{c.noCuenta ? "—" : personas == null ? <span className="text-amber-700 font-normal text-xs">pon cuántas hace al día</span> : <span className={personas > 1 ? "text-[#2E8B57]" : ""}>{textoPersonas(personas, horasDia)} <span className="text-xs font-normal text-slate-400">({fmt(personas)})</span></span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-400">La carga de cada obra se reparte por días según las horas del planning (si una obra ocupa 2 días, cada día lleva su parte). Los números son tan buenos como el recuento de ventanas de cada obra y lo que pongas en «una persona hace al día».</p>
+    </div>
+  );
+}
 function PuestosTrabajoAdmin({ usuarios, config, onSaveConfig, isAdmin }) {
   const puestos = puestosDe(config);
   const guardar = (lista) => onSaveConfig({ ...(config || {}), puestos: lista });
