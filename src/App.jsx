@@ -8721,7 +8721,11 @@ function PanelRapido({ rap, setRap }) {
 }
 // Botón naranja "Expediente rápido": se usa fuera de las pestañas (arriba de la obra y arriba de Uxcar) y dentro del recuadro de etiquetas.
 // lotes = los que ya tiene la obra/expediente · onGuardar(lotesNuevos) guarda la lista completa.
-function BotonExpedienteRapido({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno, sinAlmacen }) {
+// «Expediente rápido» (vidrios + hoja de corte + dibujos): oculto en todas partes a petición de Miguel (no lo usan y leía mal las hojas «por grupos»).
+// Para volver a enseñarlo, poner true.
+const MOSTRAR_EXPEDIENTE_RAPIDO = false;
+function BotonExpedienteRapido(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <BotonExpedienteRapidoReal {...props} /> : null; }
+function BotonExpedienteRapidoReal({ lotes: lotesProp, onGuardar, deshabilitado, aviso: avisoExterno, sinAlmacen }) {
   const [leyendo, setLeyendo] = useState(false);
   const [aviso, setAviso] = useState("");
   const [rap, setRap] = useState(null); // vista previa: { r, archivos, colores }
@@ -38418,7 +38422,11 @@ const uxClaves = (exp) => {
   const pptos = new Set();
   if (/^\s*[\d.]+\s*-\s*\d+\s*$/.test(num)) pptos.add(uxPptoDigitos(num));
   String((exp && exp.presupuesto) || "").split(/[·,]/).forEach((x) => { const d = uxPptoDigitos(x); if (d.length >= 3) pptos.add(d); });
-  return { d: num.replace(/\D/g, ""), pptos, ver: (num.match(/-\s*(\d+)\s*$/) || [])[1] || "" };
+  // Nº de EXPEDIENTE escrito en la referencia o el nombre («EXPEDIENTE 961 PARA DESCONTAR UXCAR»): el material del almacén suele ir con ese número
+  // aunque el expediente se llame por su presupuesto (4.954-2). Sin esto la fábrica «no lo tenía» aunque estuviera colocado.
+  const exps = new Set();
+  [exp && exp.referencia, exp && exp.nombre].forEach((t) => (String(t || "").match(/\bEXP(?:EDIENTE)?\.?\s*(\d{2,})/gi) || []).forEach((m) => exps.add(m.replace(/\D/g, ""))));
+  return { d: num.replace(/\D/g, ""), pptos, exps, ver: (num.match(/-\s*(\d+)\s*$/) || [])[1] || "" };
 };
 // ¿Este presupuesto del almacén es el de la obra? Si los dos llevan versión (6.994-1 / 6.994-3) tiene que ser la misma: son expedientes distintos.
 const uxPptoCasa = (y, K) => {
@@ -38426,8 +38434,8 @@ const uxPptoCasa = (y, K) => {
   const vy = (String(y).match(/-\s*(\d+)\s*$/) || [])[1];
   return !(vy && K.ver && vy !== K.ver);
 };
-const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || String(c.presupuesto || "").split(/[·,]/).some((x) => uxPptoCasa(x, K));
-const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => uxPptoCasa(y, K))));
+const uxCaballeteEs = (c, K) => (K.d.length >= 2 && expedientesDeCaballete(c).has(K.d)) || [...toArray(K.exps && [...K.exps])].some((n) => expedientesDeCaballete(c).has(n)) || String(c.presupuesto || "").split(/[·,]/).some((x) => uxPptoCasa(x, K));
+const uxPersianaEs = (x, K) => !x.entregada && ((K.d.length >= 2 && String(x.expediente || "").replace(/\D/g, "") === K.d) || (K.exps && K.exps.has(String(x.expediente || "").replace(/\D/g, ""))) || (!!x.presupuesto && String(x.presupuesto).split(/[·,]/).some((y) => uxPptoCasa(y, K))));
 // ¿Ya están en el almacén de cristales o de persianas los cristales / persianas de este expediente?
 const uxEnAlmacen = (exp, k) => {
   const K = uxClaves(exp);
@@ -41613,10 +41621,12 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
             <button disabled={leyendo} onClick={() => inputRef.current && inputRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir PDF de etiquetas"}
             </button>
-            <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { leerRapido(e.target.files); e.target.value = ""; }} />
+            {MOSTRAR_EXPEDIENTE_RAPIDO && <input ref={rapRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => { leerRapido(e.target.files); e.target.value = ""; }} />}
+            {MOSTRAR_EXPEDIENTE_RAPIDO && (
             <button disabled={leyendo} onClick={() => rapRef.current && rapRef.current.click()} title="Listado de vidrios + hoja de corte + listado de dibujos (selecciona los tres a la vez). Comprueba y SACA los cristales y persianas del almacén." style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md disabled:opacity-60">
               <Upload size={14} /> Expediente rápido (vidrios + hoja de corte + dibujos)
             </button>
+            )}
             <span className="text-xs text-slate-500">Se puede subir sin obra y asignarla después.</span>
           </div>
           {aviso && <p className="text-xs text-amber-700">{aviso}</p>}
@@ -49962,7 +49972,8 @@ function UxVistaFabrica({ vista, expedientes, pedidos, almacen }) {
     </div>
   );
 }
-function PortalRapidoArriba({ expedientes, tipos, nombre, authUser, aviso }) {
+function PortalRapidoArriba(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <PortalRapidoArribaReal {...props} /> : null; }
+function PortalRapidoArribaReal({ expedientes, tipos, nombre, authUser, aviso }) {
   const [sel, setSel] = useState("__nuevo");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
   const exp = sel === "__nuevo" ? null : lista.find((e) => e.id === sel) || null;
@@ -50365,7 +50376,8 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
 }
 
 // Botón naranja arriba de todo en Uxcar: eliges el expediente (por defecto el que tienes abierto) y subes listado de vidrios + hoja de corte
-function UxRapidoArriba({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
+function UxRapidoArriba(props) { return MOSTRAR_EXPEDIENTE_RAPIDO ? <UxRapidoArribaReal {...props} /> : null; }
+function UxRapidoArribaReal({ expedientes, abierto, onGuardar, onGuardarSinObra }) {
   const [sel, setSel] = useState("__sin");
   const lista = [...expedientes].sort((a, b) => String(b.numero).localeCompare(String(a.numero), "es", { numeric: true }));
   const id = abierto && abierto.id ? abierto.id : sel;
