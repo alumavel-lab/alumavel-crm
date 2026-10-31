@@ -1228,7 +1228,14 @@ export default function App() {
     let r;
     try { r = auxExpandir(mias, auxCfgDe(auxCfgApp), auxVentanas(proyectos, uxExpedientes, etiquetasSinObra)); } catch (e) { return lineas; }
     const pend = r.piezas.filter((x) => !(auxPiezasApp && auxPiezasApp[x.id] && auxPiezasApp[x.id].cortada));
-    if (!pend.length) return r.piezas.length ? [] : lineas;
+    // Con mosquitera va el SOLAPE: se dice aparte que hay que cortarlo (o que la hoja no lo trae)
+    if (lleva.includes("mosquitera")) {
+      const esSolape = (x) => /solape/i.test(`${x.nombre || ""}`);
+      const solTot = r.piezas.filter(esSolape), solPend = pend.filter(esSolape);
+      if (!solTot.length) lineas.push("⚠ SOLAPE: la obra lleva mosquitera y en su hoja de corte no sale el solape. Compruébalo: hay que cortarlo.");
+      else if (solPend.length) lineas.push(`⚠ SOLAPE: la obra lleva mosquitera: hay que cortar el solape (${solPend.length} de ${solTot.length} pieza${solTot.length === 1 ? "" : "s"} sin cortar).`);
+    }
+    if (!pend.length) return lineas;
     const porNombre = {};
     pend.forEach((x) => { porNombre[x.nombre] = (porNombre[x.nombre] || 0) + 1; });
     const mosq = Object.keys(porNombre).filter((n) => /mosquit/i.test(n));
