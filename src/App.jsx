@@ -19274,6 +19274,7 @@ function AlmacenPersianas() {
                 <span className={`ml-auto text-xs font-semibold ${x.entregada ? "text-slate-400" : x.estante ? "text-[#2E8B57]" : "text-amber-700"}`}>
                   {x.entregada ? `Salió ${fmtDate(x.fechaSalida)}` : x.enPuesto ? `En ${x.enPuesto}` : x.estante ? `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}${textoEstante(x.estante)}` : `${almacenes.length > 1 ? nombreAlm(almacenDe(x)) + " · " : ""}Sin sitio`}
                 </span>
+                {!x.entregada && !x.estante && !x.enPuesto && <button type="button" onClick={(e) => { e.stopPropagation(); setSelId(almacenDe(x)); setIrA({ almacenId: almacenDe(x), vista: "sinsitio", t: Date.now() }); setBusca(""); }} className="text-xs font-semibold text-white px-2 py-1 rounded hover:opacity-90 bg-[#2E8B57]" title="Abre «Pendientes de ubicar» de su almacén para meterla en un carro">📍 Ubicar en carro</button>}
                 {x.entregada && <button type="button" onClick={(e) => { e.stopPropagation(); recuperarEntregadas([x]); }} className="text-xs font-semibold text-white px-2 py-1 rounded hover:opacity-90" style={{ backgroundColor: "#d97706" }}>↩ Recuperar esta</button>}
                 {x.incidencia && <span className="w-full text-xs text-rose-600">Incidencia: {x.incidencia}</span>}
               </div>
@@ -19410,7 +19411,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   useEffect(() => { abrirFotosPersianas.actual = false; }, []);
   const setVerFotosEtiquetas = (v) => { if (v) { try { localStorage.setItem(CLAVE_ALMACEN_BORRADOR_FOTOS, almacen.id); } catch (e) { /* nada */ } } setVerFotosEtiquetasRaw(v); };
   const inputRef = useRef(null);
-  useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } }, [irA && irA.t]);
+  useEffect(() => { if (irA && irA.carro != null) { setVista("mapa"); setCarroAbierto(irA.carro); } else if (irA && irA.vista) setVista(irA.vista); }, [irA && irA.t]);
 
   // Pedidos de compra: lo pedido al proveedor y aún no llegado. Va aparte del almacén (no cuenta como "dentro").
   const pedidosTodos = toArray(ctxM.pedidosPersianas);
