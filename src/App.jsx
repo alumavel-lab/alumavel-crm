@@ -5341,7 +5341,7 @@ export default function App() {
   }, [currentUser?.id]);
 
   const isAdmin = currentUser?.rol === "Administrador";
-  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null;
+  uxAlmacenGlobal.cristales = cristales; uxAlmacenGlobal.persianas = persianasAlmacen; uxAlmacenGlobal.resumen = null; uxPedidosGlobal = uxPedidos;
   useEffect(() => {
     if (recuentoStock !== null || !currentUser || !isAdmin) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -21959,7 +21959,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       const checklistOk = p.origen === "portalUxcar" ? misPedidos.length > 0 : condicionesPendientesChecklist(p, pedidos).length === 0;
       return oficinaOk && fabricaOk && checklistOk;
     });
-  }, [proyectos, pedidos, uxExpedientes, cristales, ctxPaneles.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [proyectos, pedidos, uxExpedientes, uxPedidos, cristales, ctxPaneles.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
   // Lo que hay físicamente en el almacén de una obra (caballetes de cristal y persianas), buscado por pedido o por nº de presupuesto
   const matAlmacenObra = (p) => {
@@ -21981,7 +21981,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
     let faltan = !marcada ? [] : p.origen === "portalUxcar"
       ? [...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
-          ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "está en el almacén, falta que Uxcar confirme su albarán", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
+          ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "hay material suyo en el almacén, pero la cantidad no cuadra con lo pedido (o confírmalo a mano abajo)", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
       : condicionesPendientesChecklist(p, pedidos);
     // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
     const m = matAlmacenObra(p);
@@ -22278,7 +22278,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                 {bloqueadosMaterial.map(({ p, faltan }) => (
                   <div key={p.id} className="px-4 py-2.5">
                     <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
-                    <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}</ul>
+                    <ul className="text-xs text-amber-800 mt-0.5 list-disc pl-5">{faltan.map((t, k) => <li key={k}>{t}</li>)}
+                      {p.origen === "portalUxcar" && (() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return null; const c = uxCantidadesObra(e); return <li>En los almacenes: {c.hayCris} de {c.pedCris || "?"} cristales · {c.hayPers} de {c.pedPers || "?"} persianas</li>; })()}
+                    </ul>
+                    {p.origen === "portalUxcar" && onActualizarProyecto && (
+                      <button onClick={() => { if (window.confirm(`¿Confirmas que ha llegado TODO el material de #${p.numero} (cristales y persianas) y está en fábrica?\n\nPasará a «Listo para fabricar».`)) onActualizarProyecto(p.id, { materialConfirmadoFabrica: new Date().toISOString().slice(0, 10) }); }}
+                        className="mt-1 text-xs font-semibold px-3 py-1 rounded-md bg-[#2E8B57] text-white hover:opacity-90">✓ Fábrica confirma: ha llegado todo</button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -52033,13 +52039,41 @@ async function devolverVentanaIncidencia(base, por) {
 
 const tabInicialFabrica = { actual: null };
 
-// Obra de Uxcar con el material completo según el portal: cristales y persianas con las DOS confirmaciones (albarán de Uxcar + en los almacenes)
+// Obra de Uxcar con el material completo, SIN depender del albarán de Uxcar (ahora no se suben): decide FÁBRICA.
+// · A mano: «✓ Fábrica confirma: ha llegado todo» (p.materialConfirmadoFabrica).
+// · Solo: cristales y persianas en los almacenes y la CANTIDAD cuadra con lo pedido (para que no pase con solo una parte).
+//   Si Uxcar sí ha confirmado su albarán y fábrica lo tiene («recibido»), también vale.
+let uxPedidosGlobal = []; // lo rellena App en cada pintado (pedidos del portal de Uxcar)
+function uxCantidadesObra(e) {
+  const K = uxClaves(e);
+  const lineasDe = (tipo) => toArray(uxPedidosGlobal).filter((pd) => pd && pd.tipo === tipo).flatMap((pd) => toArray(pd.expedientes).filter((x) => x.expedienteId === e.id).flatMap((x) => toArray(x.lineas)));
+  const uds = (l) => parseFloat(l.uds || l.cantidad) || 1;
+  const pedPers = lineasDe("Persianas").reduce((t, l) => t + uds(l), 0) || toArray(e.recuento).reduce((t, l) => t + (l && l.persiana ? (parseFloat(l.uds) || 0) * Math.max(1, parseInt(l.juntas, 10) || 1) : 0), 0);
+  const pedCris = lineasDe("Cristales").filter((l) => !esLineaPanel(l)).reduce((t, l) => t + uds(l), 0);
+  const hayPers = toArray(uxAlmacenGlobal.persianas).filter((x) => uxPersianaEs(x, K)).length;
+  const nums = new Set([K.d, ...(K.exps || [])].filter((x) => x && x.length >= 2));
+  const hayCris = toArray(uxAlmacenGlobal.cristales).filter((c) => c && c.estado !== "Retirado" && uxCaballeteEs(c, K)).reduce((t, c) => {
+    const ps = toArray(c.piezas);
+    if (!ps.length) return t + (parseFloat(c.cantidad) || 0);
+    // en un caballete con varias obras, solo cuentan las piezas de esta (o todas si las piezas no dicen de quién son)
+    return t + ps.filter((pz) => { const n = numsExpediente(pz && pz.expediente); return !n.length || n.some((x) => nums.has(x)) || String(pz.presupuesto || "").split(/[·,]/).some((y) => uxPptoCasa(y, K)); }).reduce((a, pz) => a + (parseFloat(pz.cantidad) || 1), 0);
+  }, 0);
+  return { pedPers, hayPers, pedCris, hayCris };
+}
 function uxMaterialCompletoObra(p, uxExpedientes) {
   if (!p || p.origen !== "portalUxcar" || !p.uxcarExpedienteId) return false;
+  if (p.materialConfirmadoFabrica) return true;
   const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId);
   if (!e) return false;
+  const c = uxCantidadesObra(e);
+  const ok = (k) => {
+    const est = uxEstadoMat(e, k);
+    if (est === "no_lleva" || est === "recibido") return true;
+    if (est !== "en_fabrica") return false;
+    return k === "vidrios" ? c.pedCris > 0 && c.hayCris >= c.pedCris : c.pedPers > 0 && c.hayPers >= c.pedPers;
+  };
   const est = ["vidrios", "compactos"].map((k) => uxEstadoMat(e, k));
-  return est.some((x) => x === "recibido") && est.every((x) => x === "recibido" || x === "no_lleva");
+  return est.some((x) => x !== "no_lleva") && ok("vidrios") && ok("compactos");
 }
 function calcListoParaFabricar(proyectos, pedidos, uxExpedientes) {
   return proyectos.filter((p) => {
