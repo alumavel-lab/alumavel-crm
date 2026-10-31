@@ -19863,25 +19863,34 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     setAviso(`${ids.size} repetidas borradas.`);
   };
 
+  // Los bloqueos salen en ventana: el aviso de arriba no se ve cuando estás abajo, junto al botón «Colocar en los carros»
+  const avisarFuerte = (t) => { setAviso(t); window.alert(t); };
   const confirmarEntrada = (lista) => {
     const entrada = Array.isArray(lista) ? lista : entradaConReparto();
     // BLOQUEO 1: ya están en el almacén (mismo expediente, referencia y largo)
     const repes = repetidasEnAlmacen(entrada);
     if (repes.length) {
-      setAviso(`BLOQUEADO: ${repes.length} de ${entrada.length} ${cosa} ya están en el almacén (mismo EXP, referencia y largo), por ejemplo ${repes.slice(0, 3).map((x) => `EXP ${x.expediente} ${x.ref} ${largoPersiana(x)}`).join(" · ")}. No se ha guardado nada. Seguramente ya las habías subido. Si en el borrador hay otras nuevas, pulsa «Quitar las que ya están».`);
+      avisarFuerte(`BLOQUEADO: ${repes.length} de ${entrada.length} ${cosa} ya están en el almacén (mismo EXP, referencia y largo), por ejemplo ${repes.slice(0, 3).map((x) => `EXP ${x.expediente} ${x.ref} ${largoPersiana(x)}`).join(" · ")}. No se ha guardado nada. Seguramente ya las habías subido. Si en el borrador hay otras nuevas, pulsa «Quitar las que ya están».`);
       return;
     }
     // BLOQUEO 2: no caben en el carro elegido (no se reparten solas por otros carros)
     const prueba = colocar(entrada);
     if (prueba.desbordan > 0) {
-      setAviso(`BLOQUEADO: ${prueba.desbordan} ${cosa} no caben en el carro elegido. No se ha guardado nada. Elige otro carro (o «Automático») y vuelve a confirmar.`);
+      avisarFuerte(`BLOQUEADO: ${prueba.desbordan} ${cosa} no caben en el carro elegido. No se ha guardado nada. Elige otro carro (o «Automático») y vuelve a confirmar.`);
       return;
     }
     // Aviso 3: el expediente ya tiene piezas dentro (puede ser una segunda entrega legítima)
     const hoyEntrada = new Date().toISOString().slice(0, 10);
     const expsNuevos = [...new Set(entrada.map((x) => String(x.expediente || "").replace(/\D/g, "")).filter(Boolean))];
     const yaConPiezas = expsNuevos.filter((e) => todasPersianas().some((y) => !y.entregada && String(y.expediente || "").replace(/\D/g, "") === e));
-    if (yaConPiezas.length && !window.confirm(`El expediente ${yaConPiezas.slice(0, 5).join(", ")} ya tiene ${cosa} en el almacén. ¿Es una entrega distinta y quieres añadirlas igualmente?`)) { setAviso("Entrada cancelada: el expediente ya tenía piezas dentro."); return; }
+    // Dónde están las que ya hay de ese expediente (carro, sin sitio, en un puesto u otro almacén), para decidir con datos
+    const dondeEstanExp = (e) => {
+      const xs = todasPersianas().filter((y) => !y.entregada && String(y.expediente || "").replace(/\D/g, "") === e);
+      const porSitio = {};
+      xs.forEach((y) => { const k = almacenDe(y) !== almacen.id ? "en otro almacén" : y.estante ? `en el carro ${y.estante.carro}` : y.enPuesto ? `en ${y.enPuesto}` : "sin sitio (pendientes de ubicar)"; porSitio[k] = (porSitio[k] || 0) + 1; });
+      return `• EXP ${e}: ya hay ${xs.length} → ${Object.entries(porSitio).map(([k, n]) => `${n} ${k}`).join(", ")}`;
+    };
+    if (yaConPiezas.length && !window.confirm(`OJO: de ${yaConPiezas.length === 1 ? "este expediente" : "estos expedientes"} ya hay ${cosa} metidas en el CRM (no tiene que ver con el carro que has elegido):\n\n${yaConPiezas.slice(0, 5).map(dondeEstanExp).join("\n")}\n\n• Si las que vas a meter ahora son OTRAS (otra entrega, otro portal o vivienda…), pulsa ACEPTAR.\n• Si es el mismo albarán / packing list que ya se metió, pulsa CANCELAR para no duplicarlas.`)) { setAviso("Entrada cancelada: el expediente ya tenía piezas dentro."); return; }
     const { sitio, fallan, desbordan } = prueba;
     const nuevas = entrada.map((x) => { const { carroDestino, ...resto } = x; return { ...resto, almacenId: almacen.id, estante: sitio[x.id] || null, fechaEntrada: resto.fechaEntrada || hoyEntrada, ...(sitio[x.id] ? { fechaCarro: hoyEntrada } : {}) }; });
     guardarItems([...items, ...nuevas]);
@@ -19986,28 +19995,49 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       </td>
       <td className="py-1.5 px-2 align-top">
         <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
-          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
-        {x.revisada && <div className="text-[10px] font-semibold text-sky-700 leading-tight mt-0.5">{x.manoRevisada || "?"}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
+          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false, manoNoCoincide: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
+        {x.revisada && <div className={`text-[10px] font-semibold leading-tight mt-0.5 ${x.manoNoCoincide ? "text-rose-700" : "text-sky-700"}`}>{x.manoRevisada || "?"}{x.manoNoCoincide ? ` ≠ pedido (${manoDe(x)})` : ""}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
         {revisando && revisando.id === x.id && !x.revisada && (
           <div className="mt-1 p-2 w-48 rounded-lg border border-sky-300 bg-white shadow text-xs space-y-1.5">
             <div className="font-semibold text-slate-700">Mano de la persiana</div>
+            <div className="text-[10px] text-slate-500">Según pedido: <b className="text-slate-700">{etiquetaMano(manoDe(x)) || "sin dato"}</b></div>
             <div className="flex gap-1">
               {["Izquierda", "Derecha"].map((m) => (
                 <button key={m} type="button" onClick={() => setRevisando({ ...revisando, mano: m })}
                   className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.mano === m ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-700 border-slate-300"}`}>{m}</button>
               ))}
             </div>
+            {(() => { const g = (String(x.descripcion || "").match(/gu[ií]as?\b[^,;\n]{0,25}/i) || [""])[0].trim(); return <div className="text-[10px] text-slate-500">{g ? <>Según pedido: <b className="text-slate-700">{g}</b></> : "El pedido no dice la guía: compruébala a ojo"}</div>; })()}
             <label className="flex items-center gap-1.5 font-semibold text-slate-700"><input type="checkbox" checked={revisando.guia} onChange={(e) => setRevisando({ ...revisando, guia: e.target.checked })} className="w-4 h-4 accent-sky-600" /> Guía comprobada</label>
             <div className="flex gap-1">
               <button type="button" disabled={!revisando.mano || !revisando.guia}
-                onClick={() => { actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true }); setRevisando(null); }}
+                onClick={() => {
+                  const esperada = manoDe(x);
+                  const noCoincide = !!esperada && esperada !== revisando.mano;
+                  if (noCoincide && !window.confirm(`⚠ LA MANO NO COINCIDE CON EL PEDIDO\n\nEXP ${x.expediente || "—"} · ${x.ref || ""}\nPedido: ${etiquetaMano(esperada)}\nEn el carro: recogedor ${revisando.mano.toLowerCase()}\n\nACEPTAR = guardarla como revisada CON INCIDENCIA (la fila se pone en rojo).\nCANCELAR = volver a mirarla.`)) return;
+                  const nota = `Mano no coincide: pedido ${etiquetaMano(esperada).toLowerCase()}, en el carro ${revisando.mano.toLowerCase()}`;
+                  actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true, manoNoCoincide: noCoincide,
+                    ...(noCoincide ? { incidencia: x.incidencia || "Otro", fechaIncidencia: x.fechaIncidencia || new Date().toISOString().slice(0, 10), comentario: [x.comentario, nota].filter(Boolean).join(" · ") } : {}) });
+                  setRevisando(null);
+                }}
                 className="flex-1 px-2 py-1.5 rounded-md bg-[#2E8B57] text-white font-semibold disabled:opacity-40">Confirmar</button>
               <button type="button" onClick={() => setRevisando(null)} className="px-2 py-1.5 rounded-md border border-slate-300 text-slate-600">Cancelar</button>
             </div>
           </div>
         )}
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(() => {
+        // Todo lo que se sabe de la etiqueta (según por dónde entró la persiana, viene en un campo u otro)
+        const pp = String(x.presupuesto || "").trim();
+        const datos = [x.nombreObra, x.refObra || x.obraUx, x.habitacion, x.cliente, pp ? `Ppto ${pp}` : "", x.pedidoProv ? `Pedido ${x.pedidoProv}` : x.pedido ? `Pedido ${x.pedido}` : ""].filter(Boolean);
+        const desc = String(x.descripcion || "").trim();
+        return (datos.length > 0 || desc) && (
+          <div className="text-xs font-normal text-slate-600 leading-snug mt-0.5 max-w-[240px]">
+            {datos.length > 0 && <div>{[...new Set(datos)].join(" · ")}</div>}
+            {desc && <div className="text-[11px] text-slate-400 line-clamp-2" title={desc}>{desc}</div>}
+          </div>
+        );
+      })()}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (<>
@@ -20408,6 +20438,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
               </tbody>
             </table>
           </div>
+          {aviso && <div className="mt-3 text-sm px-4 py-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-900">{aviso}</div>}
           <div className="flex gap-2 mt-3">
             <button onClick={() => { setBorrador(null); setCarroDestinoGlobal(""); }} className="text-sm font-semibold text-slate-600 border border-slate-300 bg-white px-3.5 py-2 rounded-lg">Cancelar</button>
             <button onClick={imprimirPrevision} className="text-sm font-semibold px-3.5 py-2 rounded-lg border border-slate-400 text-slate-800 bg-white hover:bg-slate-50">🖨 Imprimir reparto previsto</button>
