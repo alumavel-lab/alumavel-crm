@@ -48224,7 +48224,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             ); })}
           </div>
         )}
-        <h3 className="font-display font-bold text-slate-800 mb-2">Planning — listas para fabricar ({firmes.length})</h3>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <h3 className="font-display font-bold text-slate-800 mr-auto">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+          <button onClick={() => setQuitadas(listasOrd.map((o) => o.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">Vaciar planning (elegir yo una a una)</button>
+          <button onClick={() => setQuitadas([])} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Marcar todas</button>
+        </div>
         <p className="text-xs text-slate-500 mb-2">Solo las obras en verde (todo el material en fábrica), por orden de entrega. Cambia el orden con "Cambiar por…" o quita las que no quieras meter.</p>
         <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 mb-3">
           {listas.length === 0 && <p className="px-4 py-4 text-sm text-slate-400">No hay obras con todo el material ahora mismo.</p>}
@@ -48257,6 +48261,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             <button disabled={publicando} onClick={publicar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md disabled:opacity-60">
               {publicando ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Confirmar planning y avisar a fábrica
             </button>
+            {Object.keys(fechasPlan).length > 0 && (
+              <button onClick={() => { if (!window.confirm(`Quitar los días elegidos a mano en ${Object.keys(fechasPlan).length} obras? El programa las recoloca solo donde haya hueco. Podrás pulsar «Volver a ponerlos».`)) return; guardarCfg({ fechasPlanAnterior: fechasPlan, fechasPlan: {} }); }} className="text-sm font-semibold px-3 py-2 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">↩ Quitar todos los días elegidos ({Object.keys(fechasPlan).length})</button>
+            )}
+            {Object.keys(fechasPlan).length === 0 && cfg.fechasPlanAnterior && Object.keys(cfg.fechasPlanAnterior).length > 0 && (
+              <button onClick={() => guardarCfg({ fechasPlan: cfg.fechasPlanAnterior, fechasPlanAnterior: null })} className="text-sm font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Volver a ponerlos ({Object.keys(cfg.fechasPlanAnterior).length})</button>
+            )}
           </div>
         )}
         {firmes.length > 0 && onIniciarFabricacion && (
