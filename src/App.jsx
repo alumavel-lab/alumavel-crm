@@ -49623,7 +49623,12 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
       previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
       let lineas = [];
-      try { const gs = await uxLeerPedidoConClaude(await uxLeerComoDataUrl(f), f.type || "application/pdf"); lineas = toArray(gs).flatMap((g) => toArray(g.lineas)); } catch (er) { avisos.push(`⚠ ${f.name}: no he podido sacar las líneas; el pedido queda con el documento adjunto.`); }
+      try { const gs = await uxLeerPedidoConClaude(await uxLeerComoDataUrl(f), f.type || "application/pdf"); lineas = toArray(gs).flatMap((g) => toArray(g.lineas));
+        // Guía y recogedor de cada línea (columnas del PEDIDO COMPRA que la IA no trae): se añaden a la descripción
+        if (tipoPed === "Persianas") { try { const ft = await leerFilasPedidoCompraPdf(f); const mm = (t) => parseInt(String(t || "").replace(/\./g, ""), 10) || 0;
+          toArray(ft.guias).forEach((g) => { const l = lineas.find((y) => mm(y.ancho) === g.ancho && mm(y.alto) === g.alto && !/Gu[ií]a:/.test(y.descripcion || "")); if (l) l.descripcion = [l.descripcion, g.guia ? `Guía: ${g.guia}` : "", g.recogedor ? `Recogedor ${g.recogedor}` : ""].filter(Boolean).join(" · "); });
+        } catch (eG) { /* sin texto: se queda lo de la IA */ } }
+      } catch (er) { avisos.push(`⚠ ${f.name}: no he podido sacar las líneas; el pedido queda con el documento adjunto.`); }
       let url;
       try { url = await subirArchivoAStorage(f, "uxcar-pedidos"); } catch (er) { avisos.push(`⚠ No se pudo guardar ${f.name}: ${er.message}`); continue; }
       sig++;
@@ -52090,7 +52095,28 @@ function auxVentanas(proyectos, uxExpedientes, sinObra) {
 const auxModeloDe = (v) => String((v && (v.tipo || v.pos)) || "").trim().toUpperCase().split(".")[0];
 // De cada hoja de corte cargada saca las piezas físicas (una por unidad) de las referencias activas, ventana por ventana
 const auxVent = (p) => (p && p.dib ? `D${p.dib} · ` : "") + ((p && (p.ventanaPos || p.unidad)) || ""); // nombre de la ventana con su nº de dibujo
-function auxExpandir(hojas, cfg, ventanas) {
+// Presupuestos cuyo pedido de persianas dice QUÉ guía manda el proveedor («Guía: Guia sencilla 60 x 78 mm»): esa guía no se corta aquí
+const pedidoTraeGuia = (t) => /Gu[ií]a:\s*\S|gu[ií]a\s+(?:sencilla|doble|simple|reforzada)|gu[ií]a[^·,;]{0,20}\d+\s*x\s*\d+/i.test(String(t || ""));
+function pptosConGuiaProveedor(ctx) {
+  const set = new Set();
+  const add = (ppto) => { const d = digitosPresu(ppto); if (d.length >= 3) set.add(d); };
+  toArray(ctx && ctx.pedidosCrm).forEach((pd) => {
+    if (!pd || pd.estado === "Cancelado" || !toArray(pd.lineas).some((l) => pedidoTraeGuia(`${l.referencia || ""} ${l.descripcion || ""}`))) return;
+    const pr = toArray(ctx.proyectos).find((x) => x.id === pd.proyectoId);
+    if (pr) { add(pr.presupuestoNumero); add(presupuestoDeObra(pr)); }
+  });
+  toArray(ctx && ctx.uxPedidosCtx).forEach((pd) => {
+    if (!pd || pd.tipo !== "Persianas") return;
+    toArray(pd.expedientes).forEach((xe) => {
+      if (!toArray(xe.lineas).some((l) => pedidoTraeGuia(`${l.descripcion || ""} ${l.codigo || ""}`))) return;
+      const e = toArray(ctx.uxExpedientes).find((y) => y && y.id === xe.expedienteId) || {};
+      add(e.presupuesto); add(e.presupuestoNumero);
+    });
+  });
+  toArray(ctx && ctx.persianasAlmacen).forEach((x) => { if (x && pedidoTraeGuia(x.descripcion)) String(x.presupuesto || "").split(/[·,;\s]+/).forEach(add); });
+  return set;
+}
+function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   const activas = new Map(cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).map((r) => [String(r.ref).trim(), r]));
   const piezas = [], avisos = [];
   const clave = (t) => String(t).replace(/[.#$/[\]\s]+/g, "_");
@@ -52104,7 +52130,11 @@ function auxExpandir(hojas, cfg, ventanas) {
       const unidades = mv.length ? mv.map((x) => ({ x, id: x.v.id || `${x.v.pos}-${x.v.num}`, txt: "" })) : Array.from({ length: m.uds || 1 }, (_, i) => ({ x: null, id: `m${i + 1}`, txt: `Modelo ${m.modelo} · ud ${i + 1}/${m.uds || 1}` }));
       if (mv.length && m.uds && mv.length !== m.uds) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: la hoja dice ${m.uds} ud. y en el CRM hay ${mv.length} ventana${mv.length === 1 ? "" : "s"}. Revisa que las etiquetas y la hoja sean de la misma versión.`);
       const filasM = toArray(m.filas);
-      if (m.cajaSinGuia && !filasM.some((f) => /gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || ""))) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: lleva caja de persiana "guía aparte" y la hoja no trae la guía. Revísalo antes de cortar.`);
+      // La guía viene en la hoja por su referencia (C.327020 / la «Guía de persiana» de la configuración) o por el texto. Si el pedido de
+      // persianas dice qué guía manda el proveedor, no hay que cortarla aquí y no se avisa.
+      const refsGuia = new Set([...REFS_GUIA_PERSIANA, ...toArray(cfg && cfg.refs).filter((r) => /gu[ií]a de persiana/i.test(r.nombre || "")).map((r) => String(r.ref || "").trim().toUpperCase())]);
+      const hojaTraeGuia = filasM.some((f) => refsGuia.has(String(f.ref || "").trim().toUpperCase()) || (/gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || "")));
+      if (m.cajaSinGuia && !hojaTraeGuia && !(pptosGuiaProv && pptosGuiaProv.has(ppto))) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: lleva caja de persiana "guía aparte" y la hoja no trae la guía. Revísalo antes de cortar.`);
       const filas = filasM.filter((f) => activas.has(String(f.ref)));
       unidades.forEach((u) => filas.forEach((f) => {
         const rc = activas.get(String(f.ref));
@@ -52225,7 +52255,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
-  const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas), [hojas, cfg, ventanas]);
+  const pptosGuiaProv = useMemo(() => pptosConGuiaProveedor(ctxAux), [ctxAux.pedidosCrm, ctxAux.uxPedidosCtx, ctxAux.persianasAlmacen, ctxAux.proyectos, ctxAux.uxExpedientes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
   // Cruce con el análisis de materiales: lo que el análisis dice que lleva la obra (inversor, guía de persiana…) y la hoja de corte no trae
   const cruce = useMemo(() => {
     const activas = cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim());
