@@ -21478,7 +21478,13 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Material que está en el almacén (caballetes / carros) y NO pertenece a ninguna obra del CRM, agrupado por nº de presupuesto
   const sinObraAlmacen = useMemo(() => {
     const conocidos = new Set(); const addK = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const d = digitosPresu(x); if (d.length >= 3) conocidos.add(d); });
-    proyectos.forEach((p) => { addK(p.presupuestoNumero); addK(presupuestoDeObra(p)); });
+    proyectos.forEach((p) => {
+      addK(p.presupuestoNumero); addK(presupuestoDeObra(p));
+      // Obras con el nº solo en el nombre («Uxcar · 6644-1», «Uxcar · 6.644-1»): el buscador las encuentra y aquí también tienen que contar
+      (String(p.nombre || "").match(/\b\d\.\d{3}(?:\s*-\s*\d{1,2})?\b|\b\d{4,5}\s*-\s*\d{1,2}\b/g) || []).forEach(addK);
+      // Expediente de Uxcar enlazado desde la obra (no solo desde el expediente)
+      if (p.uxcarExpedienteId) { const e = toArray(uxExpedientes).find((y) => y && y.id === p.uxcarExpedienteId); if (e) { addK(e.presupuesto); addK(e.presupuestoNumero); } }
+    });
     toArray(uxExpedientes).forEach((e) => { if (e && e.proyectoId && proyectos.some((p) => p.id === e.proyectoId)) { addK(e.presupuesto); addK(e.presupuestoNumero); } });
     const idsPed = new Set(pedidos.filter((pd) => pd.proyectoId && proyectos.some((p) => p.id === pd.proyectoId)).map((pd) => pd.id));
     const g = new Map();
