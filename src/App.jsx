@@ -21666,13 +21666,30 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           {(() => {
             const hDia = parseFloat(configPlanning && configPlanning.horasDia) || 16;
             const tot = listoParaFabricar.reduce((t, p) => t + horasDeObraListo(p, uxExpedientes, configPlanning).horas, 0);
-            const sinH = listoParaFabricar.filter((p) => !horasDeObraListo(p, uxExpedientes, configPlanning).horas).length;
+            const obrasSinH = listoParaFabricar.filter((p) => !horasDeObraListo(p, uxExpedientes, configPlanning).horas);
+            const sinH = obrasSinH.length;
             return (
+              <>
               <div className="mb-4 px-4 py-3 rounded-lg bg-white border border-slate-200 text-sm text-slate-700 flex flex-wrap gap-x-6 gap-y-1">
                 <span>Horas de fábrica al día: <b>{fmtHoras(hDia)}</b> <span className="text-xs text-slate-400">(las del planning)</span></span>
                 <span>Todo lo listo: <b>{fmtHoras(tot)}</b> ≈ <b>{(tot / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(tot / hDia - 1) < 0.05 ? "" : "s"}</span>
                 {sinH > 0 && <span className="text-amber-700 font-semibold">{sinH} obra{sinH === 1 ? "" : "s"} sin horas calculables</span>}
               </div>
+              {sinH > 0 && (
+                <details className="mb-5 bg-white border border-amber-300 rounded-lg">
+                  <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⏱ {sinH} obra{sinH === 1 ? "" : "s"} sin horas calculables (pulsa para verlas)</summary>
+                  <p className="px-4 pt-2 text-xs text-slate-500">No suman en el total porque no tienen horas puestas a mano, ni horas en el listado de materiales, ni ventanas contadas. Abre la obra y pon las horas o sube su listado.</p>
+                  <div className="divide-y divide-slate-100">
+                    {obrasSinH.map((p) => (
+                      <div key={p.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
+                        <span className="text-xs text-slate-500">{listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              </>
             );
           })()}
           <div className="mb-4 flex flex-wrap items-center gap-2">
