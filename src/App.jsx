@@ -2058,6 +2058,10 @@ export default function App() {
       }
 
     } else {
+      // CEPO: no meter dos veces la misma obra (mismo presupuesto con la misma versión, o mismo nombre)
+      const normP = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
+      const igual = proyectos.find((p) => p && p.estadoTrabajo !== "Cancelado" && ((normP(data.presupuestoNumero).length >= 3 && normP(p.presupuestoNumero) === normP(data.presupuestoNumero)) || (String(data.nombre || "").trim() && String(p.nombre || "").trim().toLowerCase() === String(data.nombre || "").trim().toLowerCase())));
+      if (igual && !window.confirm(`⚠ Ya existe la obra #${igual.numero} «${igual.nombre}»${igual.presupuestoNumero ? ` (presupuesto ${igual.presupuestoNumero})` : ""}.\n\nParece que la estás metiendo DOS VECES.\n\nACEPTAR = crearla igualmente.\nCANCELAR = no crearla.`)) return;
       const np = {
         ...data,
         id: uid(),
@@ -4472,7 +4476,14 @@ export default function App() {
         }
         let numero = parseInt(nextNumeroProyecto(), 10);
         const nuevos = [];
+        // ANTES DE CREAR se vuelven a leer las obras de la base de datos: con varios CRM abiertos, otro ordenador puede haber creado ya
+        // la obra de este expediente y aquí todavía no haber llegado. Por eso salían 2 o 3 copias iguales (mismo nombre y mismo nº).
+        const snapP = await fbGet(ref(fbDb, "proyectos")).catch(() => null);
+        if (!snapP) return; // sin poder comprobarlo, no se crea nada (se reintenta en la siguiente pasada)
+        const frescos = toArray(snapP.val());
+        numero = Math.max(numero, ...frescos.map((p) => (parseInt(p && p.numero, 10) || 0) + 1)); // nº siguiente según lo que hay de verdad en la base de datos
         for (const exp of sinProyecto) {
+          if (frescos.some((p) => p && (p.uxcarExpedienteId === exp.id || (exp.proyectoId && p.id === exp.proyectoId)))) continue; // ya tiene su obra
           const nuevoId = uid();
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
@@ -49836,6 +49847,15 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
       hechas.hojas.forEach((h) => { sets[`hojasCorteAux/${h.presupuesto}`] = h; });
       avisos.push(hechas.hojas.length ? `Hoja de corte del presupuesto ${hechas.join(", ")} leída: pasa a Auxiliares en cuanto se abra el CRM de Ecowin PVC.` : `⚠ No he podido leer la hoja de corte para Auxiliares: ${hechas.errores.join(" · ") || "motivo desconocido"}.`);
     } catch (er) { avisos.push(`⚠ La hoja de corte no se ha guardado para Auxiliares (${(er && er.message) || "error"}).`); }
+  }
+  // CEPO: un expediente NUEVO cuya hoja de corte dice «EXPEDIENTE 961» no se crea si ya hay otro expediente con ese mismo EXPEDIENTE
+  // (p. ej. el 961 metido una vez como 6.351-2 y otra como 4.954-2). La referencia se guarda para poder reconocerlo después.
+  const refsHoja = Object.keys(sets).filter((k) => k.startsWith("hojasCorteAux/")).map((k) => String((sets[k] && sets[k].referencia) || "")).filter(Boolean);
+  if (refsHoja.length && !(base.referencia)) sets.referencia = refsHoja[0];
+  if (nuevo) {
+    const expsHoja = new Set(refsHoja.flatMap((t) => (t.match(/\bEXP(?:EDIENTE)?\.?\s*(\d{2,})/gi) || []).map((m) => m.replace(/\D/g, ""))));
+    const yaHay = expsHoja.size ? expedientes.find((x) => x && x.estado !== "entregado" && ([...(uxClaves(x).exps || [])].some((n) => expsHoja.has(n)) || expsHoja.has(String(x.numero || "").replace(/\D/g, "")))) : null;
+    if (yaHay) return { avisos: [...avisos, `⛔ NO SE HA METIDO: estos documentos son del EXPEDIENTE ${[...expsHoja].join(", ")} y ese expediente ya está metido como ${yaHay.numero}. Lo estabas metiendo dos veces. Si son del mismo, ábrelo y súbelos ahí dentro.`], expId: yaHay.id };
   }
   // 2) Carga de material (tipo plano): se guarda y, si no hay hoja de corte, se cuenta con IA
   let recuento = recuentoHoja;
