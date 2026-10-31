@@ -3442,22 +3442,27 @@ export default function App() {
   // Proyectos DUPLICADOS: se borra solo la ficha repetida. Lo que colgaba de ella (pedidos, instalaciones, facturas, presupuestos,
   // enlace con el expediente de Uxcar) pasa al que se queda. NO se toca el portal ni se borran pedidos (el borrado normal de una obra
   // de Uxcar borra su expediente y sus pedidos, y los duplicados comparten el mismo expediente).
-  const borrarProyectosDuplicados = async (idsBorrar, idQuedar) => {
-    const borrar = new Set(idsBorrar.filter((id) => id && id !== idQuedar));
-    if (!borrar.size || !proyectos.some((p) => p.id === idQuedar)) return;
-    const quedar = proyectos.find((p) => p.id === idQuedar);
-    if (pedidos.some((pd) => borrar.has(pd.proyectoId))) savePedidos(pedidos.map((pd) => (borrar.has(pd.proyectoId) ? { ...pd, proyectoId: idQuedar } : pd)));
-    if (instalaciones.some((i) => borrar.has(i.proyectoId))) saveInstalaciones(instalaciones.map((i) => (borrar.has(i.proyectoId) ? { ...i, proyectoId: idQuedar } : i)));
-    if (facturas.some((f) => toArray(f.proyectosIds).some((id) => borrar.has(id)))) saveFacturas(facturas.map((f) => (toArray(f.proyectosIds).some((id) => borrar.has(id)) ? { ...f, proyectosIds: [...new Set(toArray(f.proyectosIds).map((id) => (borrar.has(id) ? idQuedar : id)))] } : f)));
-    if (presupuestos.some((x) => borrar.has(x.proyectoId))) savePresupuestos(presupuestos.map((x) => (borrar.has(x.proyectoId) ? { ...x, proyectoId: idQuedar } : x)));
+  // mapa: { idQueSeBorra: idQueSeQueda } (puede ser de muchos grupos a la vez: «Limpiar todas»)
+  const borrarDuplicadosMapa = async (mapa) => {
+    const lista = toArray(proyectosRef.current);
+    const m = {}; Object.entries(mapa || {}).forEach(([b, q]) => { if (b && q && b !== q && lista.some((p) => p.id === q) && lista.some((p) => p.id === b)) m[b] = q; });
+    const borrar = new Set(Object.keys(m));
+    if (!borrar.size) return;
+    const a = (id) => m[id] || id;
+    if (pedidos.some((pd) => borrar.has(pd.proyectoId))) savePedidos(pedidos.map((pd) => (borrar.has(pd.proyectoId) ? { ...pd, proyectoId: a(pd.proyectoId) } : pd)));
+    if (instalaciones.some((i) => borrar.has(i.proyectoId))) saveInstalaciones(instalaciones.map((i) => (borrar.has(i.proyectoId) ? { ...i, proyectoId: a(i.proyectoId) } : i)));
+    if (facturas.some((f) => toArray(f.proyectosIds).some((id) => borrar.has(id)))) saveFacturas(facturas.map((f) => (toArray(f.proyectosIds).some((id) => borrar.has(id)) ? { ...f, proyectosIds: [...new Set(toArray(f.proyectosIds).map(a))] } : f)));
+    if (presupuestos.some((x) => borrar.has(x.proyectoId))) savePresupuestos(presupuestos.map((x) => (borrar.has(x.proyectoId) ? { ...x, proyectoId: a(x.proyectoId) } : x)));
     const patchUx = {};
-    toArray(uxExpedientes).forEach((e) => { if (e && borrar.has(e.proyectoId)) patchUx[`expedientes/${e.id}/proyectoId`] = idQuedar; });
+    toArray(uxExpedientes).forEach((e) => { if (e && borrar.has(e.proyectoId)) patchUx[`expedientes/${e.id}/proyectoId`] = a(e.proyectoId); });
     try { if (Object.keys(patchUx).length) await fbUpdate(ref(fbDb, "portalUxcar"), patchUx); } catch (e) { showToast("No se pudo actualizar el enlace con Uxcar: " + e.message, "error"); return; }
     // Si la que se queda no tenía enlace con Uxcar y una borrada sí, se lo lleva
-    const conUx = proyectos.find((p) => borrar.has(p.id) && p.uxcarExpedienteId);
-    saveProyectos(proyectos.filter((p) => !borrar.has(p.id)).map((p) => (p.id === idQuedar && !p.uxcarExpedienteId && conUx ? { ...p, uxcarExpedienteId: conUx.uxcarExpedienteId } : p)));
-    showToast(`${borrar.size} duplicado${borrar.size === 1 ? "" : "s"} borrado${borrar.size === 1 ? "" : "s"}. Se queda #${quedar.numero}.`);
+    const actual = toArray(proyectosRef.current);
+    const uxDe = {}; actual.forEach((p) => { if (borrar.has(p.id) && p.uxcarExpedienteId && !uxDe[m[p.id]]) uxDe[m[p.id]] = p.uxcarExpedienteId; });
+    saveProyectos(actual.filter((p) => !borrar.has(p.id)).map((p) => (uxDe[p.id] && !p.uxcarExpedienteId ? { ...p, uxcarExpedienteId: uxDe[p.id] } : p)));
+    showToast(`${borrar.size} copia${borrar.size === 1 ? "" : "s"} borrada${borrar.size === 1 ? "" : "s"}.`);
   };
+  const borrarProyectosDuplicados = (idsBorrar, idQuedar) => borrarDuplicadosMapa(Object.fromEntries(idsBorrar.filter((id) => id !== idQuedar).map((id) => [id, idQuedar])));
 
   const nextNumeroFactura = () => {
     const nums = facturas.filter((f) => !String(f.numero || "").startsWith("PF-")).map((f) => parseInt(String(f.numero).replace(/\D/g, ""), 10)).filter((n) => !isNaN(n));
@@ -6330,6 +6335,7 @@ export default function App() {
           <ProyectosModulo
             uxExpedientes={uxExpedientes}
             onBorrarDuplicados={borrarProyectosDuplicados}
+            onBorrarDuplicadosMapa={borrarDuplicadosMapa}
             pedidosTodos={pedidos}
             currentUser={currentUser}
             onRecibirPedido={recibirPedido}
@@ -7904,7 +7910,7 @@ function faseObra(p, pedidos, uxExpedientes = []) {
   if (cp.some((pd) => pd.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(pd.estado))) return { txt: "Material pedido · esperando que llegue", cls: "bg-blue-100 text-blue-800" };
   return { txt: "Pedido en espera · sin enviar", cls: "bg-amber-100 text-amber-800" };
 }
-function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, pedidosTodos = [] }) {
+function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso, onMarcarPedidoEnviado, onActualizarPedido, onRecordarProveedorSeccion, onCrearPedidosEspera, onCrearPedidosDocProveedor, onGuardarLlamada, proyectos, clientes, facturas, ingresos, materiales, articulos, pedidos, proveedores, openPedido, view, setView, editId, setEditId, detailId, setDetailId, onUpsert, onDelete, onInlineUpdate, nextNumero, isAdmin, onRegistrarPago, onRemovePago, onUsarArticulo, onQuitarArticuloUsado, onRegistrarIngreso, instalaciones, onVerInstalacion, onGenerarPedidoFaltante, usuarios, onActualizarUnidadPersiana, incidencias, openIncidenciaFromCalendar, uxExpedientes = [], onBorrarDuplicados, onBorrarDuplicadosMapa, pedidosTodos = [] }) {
   const [q, setQ] = useState("");
   const [estadoTrabajo, setEstadoTrabajo] = useState("");
   const [clienteFiltro, setClienteFiltro] = useState("");
@@ -7997,6 +8003,21 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
     return out;
   }, [filtered, soloDup, duplicadosNombre]); // eslint-disable-line react-hooks/exhaustive-deps
   const nGruposDup = Object.keys(duplicadosNombre).length;
+  // Cuál conviene conservar de cada grupo: la enlazada a Uxcar, con más pedidos, etiquetas, documentos, listado y ya empezada
+  const puntosObra = (p) => {
+    const nPed = toArray(pedidosTodos).filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado").length;
+    const enlUx = !!p.uxcarExpedienteId && toArray(uxExpedientes).some((e) => e && e.id === p.uxcarExpedienteId && e.proyectoId === p.id);
+    return (enlUx ? 100 : 0) + nPed * 10 + toArray(p.etiquetasFab).length * 5 + toArray(p.documentos).length + (toArray(p.listadoMateriales && p.listadoMateriales.lineas).length ? 3 : 0) + (p.estadoTrabajo && p.estadoTrabajo !== "Pendiente de aceptación" ? 20 : 0);
+  };
+  const limpiarTodasDup = () => {
+    const grupos = {};
+    proyectos.filter(esDup).forEach((p) => { (grupos[claveDup(p)] = grupos[claveDup(p)] || []).push(p); });
+    const mapa = {}; let n = 0;
+    Object.values(grupos).forEach((g) => { if (g.length < 2) return; const q = [...g].sort((a, b) => puntosObra(b) - puntosObra(a))[0]; g.forEach((p) => { if (p.id !== q.id) { mapa[p.id] = q.id; n++; } }); });
+    if (!n || !onBorrarDuplicadosMapa) return;
+    if (!window.confirm(`Se van a borrar ${n} copias de ${Object.keys(grupos).length} obras repetidas.\n\nDe cada obra se queda la RECOMENDADA (la enlazada a Uxcar, con más pedidos, etiquetas y documentos). Lo que tengan las copias pasa a la que se queda. El expediente de Uxcar y los pedidos NO se borran.\n\nNo se puede deshacer. ¿Seguro?`)) return;
+    onBorrarDuplicadosMapa(mapa);
+  };
   // ✓ verde: este se queda y se borran las demás copias de su grupo (borrado seguro: no toca Uxcar)
   const quedarseCon = (p) => {
     const grupo = proyectos.filter((x) => esDup(x) && claveDup(x) === claveDup(p));
@@ -8155,6 +8176,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-900">
           <b>⚠ {nGruposDup} obra{nGruposDup === 1 ? "" : "s"} repetida{nGruposDup === 1 ? "" : "s"}</b> (las copias salen juntas, con fondo amarillo). En la buena, pulsa <b className="text-emerald-700">✓ Este se queda</b> y se borran las demás.
           <button onClick={() => setSoloDup(!soloDup)} className="ml-auto text-xs font-semibold px-3 py-1 rounded-md border border-amber-400 bg-white hover:bg-amber-100">{soloDup ? "Ver todas" : "Ver solo las repetidas"}</button>
+          {onBorrarDuplicadosMapa && <button onClick={limpiarTodasDup} className="text-xs font-semibold px-3 py-1 rounded-md bg-rose-600 text-white hover:bg-rose-700">Limpiar todas (se queda la recomendada de cada una)</button>}
         </div>
       )}
       {dupAbierto && (() => {
@@ -8179,6 +8201,7 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
                   <input type="radio" checked={quedar === p.id} onChange={() => setDupQuedar(p.id)} />
                   <b>#{p.numero}</b>
                   <span className="text-xs text-slate-600">{p.estadoTrabajo || "—"}</span>
+                  {p.creadoEn && <span className="text-[11px] text-slate-500">creada {new Date(p.creadoEn).toLocaleString("es-ES")}</span>}
                   <span className="text-xs text-slate-600">{i.nPed} pedido{i.nPed === 1 ? "" : "s"} · {i.nDoc} documento{i.nDoc === 1 ? "" : "s"} · {i.nEtq} lote{i.nEtq === 1 ? "" : "s"} de etiquetas · {i.nLis ? "con" : "sin"} listado</span>
                   {i.enlUx && <span className="text-[11px] font-semibold text-violet-700">enlazado a Uxcar</span>}
                   {p.id === recomendado && <span className="text-[11px] font-bold text-emerald-700">★ recomendado (el que más cosas tiene)</span>}
