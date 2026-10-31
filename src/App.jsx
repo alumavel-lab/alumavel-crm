@@ -20015,6 +20015,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
   const [soloSinRevisar, setSoloSinRevisar] = useState(false);
+  const [cambioCarro, setCambioCarro] = useState(null); // { id, carro }: «Cambiar estante» escribiendo el nº de carro, sin bajar por todos
   const [revisando, setRevisando] = useState(null); // { id, mano, guia: "" | "ok" | "mal" }: panel para confirmar mano y guía antes de dar una persiana por revisada
   // Guía que le toca a cada persiana según la hoja de corte (auxiliares) de su presupuesto: la ventana se busca por nombre o, si no, por medida
   const hojasAux = useObjetoFb("auxiliaresHojas");
@@ -20125,18 +20126,29 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <option value="">Mover a…</option>
           {opcionesCarro(x.estante.carro)}
         </select>
-        <select value="" onChange={(e) => { if (e.target.value) moverAEstante(x, e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1 py-0.5 bg-white" title="Cambiar de lado o de estante">
-          <option value="">Cambiar estante…</option>
-          {[...new Set(estantes.map((q) => q.carro))].map((c) => (
-            <optgroup key={c} label={`Carro ${c}`}>
-              {estantes.filter((q) => q.carro === c).map((q) => {
-                const n = (ocup.uds && ocup.uds[q.key]) || 0;
-                const aqui = x.estante && x.estante.carro === q.carro && x.estante.lado === q.lado && x.estante.nivel === q.nivel;
-                return <option key={q.key} value={q.key} disabled={aqui}>{`lado ${q.lado} · estante ${q.nivel} (${n} ${n === 1 ? "persiana" : "persianas"}${aqui ? " · está aquí" : ""})`}</option>;
-              })}
-            </optgroup>
-          ))}
-        </select></>)}{x.fechaEntrada && <span className="block text-[10px] text-slate-400">Entró {fmtDate(x.fechaEntrada)}{x.fechaCarro && x.fechaCarro !== x.fechaEntrada ? ` · en carro ${fmtDate(x.fechaCarro)}` : ""}</span>}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
+        {cambioCarro && cambioCarro.id === x.id ? (() => {
+          const numC = String(cambioCarro.carro || "").trim();
+          const delCarro = numC ? estantes.filter((q) => String(q.carro) === numC) : [];
+          return (
+            <span className="ml-1.5 inline-flex flex-wrap items-center gap-1 align-middle">
+              <input type="number" inputMode="numeric" autoFocus value={cambioCarro.carro} onChange={(e) => setCambioCarro({ id: x.id, carro: e.target.value })} placeholder="Carro nº"
+                className="w-20 text-xs font-semibold border border-sky-400 rounded px-1.5 py-1 bg-white" />
+              {delCarro.length > 0 ? (
+                <select value="" onChange={(e) => { if (e.target.value) { moverAEstante(x, e.target.value); setCambioCarro(null); } }} className="text-xs font-semibold text-sky-700 border border-sky-300 rounded px-1 py-1 bg-white">
+                  <option value="">Estante del carro {numC}…</option>
+                  {delCarro.map((q) => {
+                    const n = (ocup.uds && ocup.uds[q.key]) || 0;
+                    const aqui = x.estante && x.estante.carro === q.carro && x.estante.lado === q.lado && x.estante.nivel === q.nivel;
+                    return <option key={q.key} value={q.key} disabled={aqui}>{`lado ${q.lado} · estante ${q.nivel} (${n} ${n === 1 ? "persiana" : "persianas"}${aqui ? " · está aquí" : ""})`}</option>;
+                  })}
+                </select>
+              ) : numC ? <span className="text-[11px] text-rose-600">No hay carro {numC}</span> : null}
+              <button type="button" onClick={() => setCambioCarro(null)} className="text-xs text-slate-500 border border-slate-300 rounded px-1.5 py-1 bg-white">✕</button>
+            </span>
+          );
+        })() : (
+          <button type="button" onClick={() => setCambioCarro({ id: x.id, carro: String(x.estante.carro) })} className="ml-1.5 text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1.5 py-0.5 bg-white" title="Cambiar de lado, de estante o de carro: escribe el nº de carro">Cambiar estante…</button>
+        )}</>)}{x.fechaEntrada && <span className="block text-[10px] text-slate-400">Entró {fmtDate(x.fechaEntrada)}{x.fechaCarro && x.fechaCarro !== x.fechaEntrada ? ` · en carro ${fmtDate(x.fechaCarro)}` : ""}</span>}</> : <span className="text-amber-700">Sin sitio</span>}</td>}
       <td className="px-2 py-1">
         <IncidenciaCristal
           pieza={{ ...x, ancho: largoPersiana(x), alto: x.alto || "", cantidad: 1, pedido: x.pedido }}
