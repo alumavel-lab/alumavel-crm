@@ -17768,6 +17768,9 @@ const soloDigitos = (t) => String(t || "").replace(/\D/g, "");
 const obraCoincideBusqueda = (p, q, uxExpedientes, clientes) => {
   const qq = normBusca(q).trim();
   if (!qq) return true;
+  // Varios números a la vez («8000 10000», «8000, 10000», «8000 y 10000»): sale la obra que coincida con cualquiera
+  const trozos = qq.split(/[\s,;]+|\s+y\s+/).filter((t) => t && t !== "y");
+  if (trozos.length > 1 && trozos.every((t) => /^[\d.]+$/.test(t) && soloDigitos(t).length >= 3)) return trozos.some((t) => obraCoincideBusqueda(p, t, uxExpedientes, clientes));
   const qd = soloDigitos(qq);
   const esNumero = /^[\d.\s]+$/.test(qq) && qd.length > 0;
   const expsUx = toArray(uxExpedientes).filter((e) => e && e.proyectoId === p.id);
@@ -19956,19 +19959,56 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const actualizarCarro = (numero, patch) => guardarCarros(carros.map((c) => (c.numero === numero ? { ...c, ...patch } : c)));
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
   const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  // Sacar persianas del carro (ya colocadas en obra o cargadas): dejan el hueco libre y pasan a «salió»
+  const quitarDelCarro = (xs) => { const ids = new Set(xs.map((x) => x.id)); const hoyQ = new Date().toISOString().slice(0, 10); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: hoyQ } : y))); };
   const [qLista, setQLista] = useState("");
+  const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
+  const [soloSinRevisar, setSoloSinRevisar] = useState(false);
+  const [revisando, setRevisando] = useState(null); // { id, mano, guia }: panel para confirmar mano y guía antes de dar una persiana por revisada
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
   // Fila de una persiana: colocada en obra, dónde está e incidencia / comentario
   const filaPersiana = (x, mostrarSitio = true) => (
-    <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : ""}`}>
+    <tr key={x.id} className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : x.colocada ? "bg-emerald-50 text-slate-400" : x.revisada ? "bg-sky-50" : ""}`}>
       <td className="py-1.5 px-2">
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
-          onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
+          onChange={(e) => {
+            const hoyC = new Date().toISOString().slice(0, 10);
+            if (!e.target.checked) { actualizarPersiana(x.id, { colocada: false, fechaColocada: "" }); return; }
+            const quitar = x.estante && window.confirm(`Persiana colocada en obra.\n\n¿La quito también del carro ${x.estante.carro}? (deja su hueco libre)`);
+            actualizarPersiana(x.id, { colocada: true, fechaColocada: hoyC, ...(quitar ? { estante: null, entregada: true, fechaSalida: hoyC } : {}) });
+          }} />
+        {x.colocada && x.estante && !x.entregada && (
+          <button type="button" onClick={() => { if (window.confirm(`¿Quitar del carro ${x.estante.carro} esta persiana colocada (EXP ${x.expediente || "—"} · ${x.ref || ""})?`)) quitarDelCarro([x]); }}
+            className="block mt-1 text-[10px] font-semibold text-rose-600 border border-rose-200 rounded px-1.5 py-0.5 bg-white whitespace-nowrap">Quitar del carro</button>
+        )}
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1" title="Parte / vivienda de la obra (P1, P2…): las de la misma parte se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="w-9 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
-      <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-20 border border-transparent hover:border-slate-300 focus:border-[#2E8B57] rounded px-1 py-0.5 text-xs font-semibold bg-transparent" /></td>
+      <td className="py-1.5 px-2 align-top">
+        <input type="checkbox" checked={!!x.revisada} title="Revisada en el carro: hay que confirmar la mano y la guía" className="w-5 h-5 accent-sky-600 cursor-pointer"
+          onChange={(e) => { if (e.target.checked) setRevisando({ id: x.id, mano: x.manoRevisada || "", guia: false }); else { actualizarPersiana(x.id, { revisada: false, fechaRevisada: "", manoRevisada: "", guiaRevisada: false }); if (revisando && revisando.id === x.id) setRevisando(null); } }} />
+        {x.revisada && <div className="text-[10px] font-semibold text-sky-700 leading-tight mt-0.5">{x.manoRevisada || "?"}{x.guiaRevisada ? " · guía ✓" : ""}</div>}
+        {revisando && revisando.id === x.id && !x.revisada && (
+          <div className="mt-1 p-2 w-48 rounded-lg border border-sky-300 bg-white shadow text-xs space-y-1.5">
+            <div className="font-semibold text-slate-700">Mano de la persiana</div>
+            <div className="flex gap-1">
+              {["Izquierda", "Derecha"].map((m) => (
+                <button key={m} type="button" onClick={() => setRevisando({ ...revisando, mano: m })}
+                  className={`flex-1 px-2 py-1.5 rounded-md border font-semibold ${revisando.mano === m ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-700 border-slate-300"}`}>{m}</button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 font-semibold text-slate-700"><input type="checkbox" checked={revisando.guia} onChange={(e) => setRevisando({ ...revisando, guia: e.target.checked })} className="w-4 h-4 accent-sky-600" /> Guía comprobada</label>
+            <div className="flex gap-1">
+              <button type="button" disabled={!revisando.mano || !revisando.guia}
+                onClick={() => { actualizarPersiana(x.id, { revisada: true, fechaRevisada: new Date().toISOString().slice(0, 10), manoRevisada: revisando.mano, guiaRevisada: true }); setRevisando(null); }}
+                className="flex-1 px-2 py-1.5 rounded-md bg-[#2E8B57] text-white font-semibold disabled:opacity-40">Confirmar</button>
+              <button type="button" onClick={() => setRevisando(null)} className="px-2 py-1.5 rounded-md border border-slate-300 text-slate-600">Cancelar</button>
+            </div>
+          </div>
+        )}
+      </td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
+      <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (<>
         <select value="" onChange={(e) => { if (e.target.value) moverACarro([x], e.target.value); }} className="ml-1.5 text-[11px] font-semibold text-violet-700 border border-violet-300 rounded px-1 py-0.5 bg-white">
@@ -20000,7 +20040,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   );
   const cabeceraPersianas = (mostrarSitio = true) => (
     <thead><tr className="text-left text-xs text-slate-400 border-b">
-      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
+      <th className="py-1.5 px-2" title="Colocada en obra">Colocada</th><th className="py-1.5 px-2" title="Revisada en el carro: está donde dice el CRM">Revisada</th><th className="px-2">Expediente</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Largo × alto (mm)</th>
       {mostrarSitio && <th className="px-2">Dónde está</th>}<th className="px-2">Incidencia / comentario</th>
     </tr></thead>
   );
@@ -20106,14 +20146,20 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const usado = es.reduce((a, e) => a + (e.porUds ? Math.min(e.capacidad, ocup.uds[e.key] || 0) : Math.min(e.largo, ocup.usado[e.key] || 0)), 0);
     const exps = new Set();
     es.forEach((e) => (ocup.exps[e.key] || new Set()).forEach((x) => exps.add(x)));
-    const n = activos.filter((x) => x.estante && x.estante.carro === c.numero).length;
-    return { pct: total ? usado / total : 0, exps: [...exps], n };
+    const dentro = activos.filter((x) => x.estante && x.estante.carro === c.numero);
+    const n = dentro.length;
+    const revisadas = dentro.filter((x) => x.revisada).length;
+    return { pct: total ? usado / total : 0, exps: [...exps], n, revisadas, todoRevisado: n > 0 && revisadas === n };
   };
   const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${c.minimo != null && c.minimo !== "" && !isNaN(parseFloat(c.minimo)) ? `desde ${Math.round(parseFloat(c.minimo) / 10)} cm` : ((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
   const opcionesCarro = (excluir) => ordenados.filter((c) => c.numero !== excluir).map((c) => <option key={c.numero} value={c.numero}>{etiquetaCarro(c)}</option>);
 
   return (
     <div className="space-y-4">
+      {/* Nombres ya usados en la casilla de parte / cliente: salen como sugerencia al escribir, para no poner el mismo de dos formas */}
+      <datalist id={idListaPartes}>
+        {[...new Set(items.map((x) => partePersiana(x)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es", { numeric: true })).map((t) => <option key={t} value={t} />)}
+      </datalist>
       <div className="flex flex-wrap items-center gap-2">
         {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["expedientes", "Expedientes con material"], ["sinsitio", `Pendientes de ubicar (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
@@ -20378,6 +20424,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             ))}
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border-2 border-dashed border-rose-400" /> Movido de su sitio</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> VACÍO (sin persianas)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-sky-100 border-2 border-sky-500" /> Todo revisado</span>
             <button onClick={anadirCarro} className="flex items-center gap-1 font-semibold text-[#2E8B57] border border-[#2E8B57] px-2.5 py-1 rounded-lg hover:bg-[#EEF7E4]"><Plus size={12} /> Añadir carro</button>
             <button onClick={() => { const ll = ordenados.filter((c) => activos.some((x) => x.estante && x.estante.carro === c.numero)); if (!ll.length) { alert("No hay carros con " + cosa + " dentro."); return; } imprimirCarros(ll); }} className="flex items-center gap-1 font-semibold text-slate-700 border border-slate-400 px-2.5 py-1 rounded-lg hover:bg-slate-50">🖨 Imprimir todos los carros</button>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[170px]" />
@@ -20404,7 +20451,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
-                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : "border-slate-200"}`}>
+                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : r.todoRevisado ? "bg-sky-100" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : r.todoRevisado ? "border-sky-500" : "border-slate-200"}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -20416,6 +20463,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
                         {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                       </div>
+                      {!vacioCarro && (r.todoRevisado ? <div className="text-[11px] font-bold text-sky-700 mt-0.5">✓ Todo revisado</div> : r.revisadas > 0 ? <div className="text-[11px] text-sky-700 mt-0.5">{r.revisadas} de {r.n} revisadas</div> : null)}
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
                     </button>
                   );
@@ -20430,6 +20478,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         const nql = qLista.trim().toLowerCase();
         const lista = items.filter((x) => {
           if (soloSinColocar && x.colocada) return false;
+          if (soloSinRevisar && x.revisada) return false;
           if (soloIncidencia && !x.incidencia) return false;
           if (!nql) return true;
           return `${x.expediente} ${x.ref} ${largoPersiana(x)} ${x.alto} ${x.incidencia || ""} ${x.comentario || ""} ${x.estante ? textoEstante(x.estante) : ""}`.toLowerCase().includes(nql) || coincideExp(x.expediente, qLista);
@@ -20441,7 +20490,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             <div className="flex flex-wrap items-center gap-3 mb-3 text-sm">
               <input value={qLista} onChange={(e) => setQLista(e.target.value)} placeholder="Buscar expediente, vivienda, medida, comentario…" className="border border-slate-200 rounded-lg px-3 py-1.5 min-w-[240px]" />
               <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinColocar} onChange={(e) => setSoloSinColocar(e.target.checked)} /> Solo sin colocar</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={soloSinRevisar} onChange={(e) => setSoloSinRevisar(e.target.checked)} /> Solo sin revisar</label>
               <label className="flex items-center gap-1 text-rose-600 font-semibold"><input type="checkbox" checked={soloIncidencia} onChange={(e) => setSoloIncidencia(e.target.checked)} /> Solo con incidencia</label>
+              {(() => { const colEnCarro = items.filter((x) => x.colocada && x.estante && !x.entregada); return colEnCarro.length > 0 && (
+                <button type="button" onClick={() => { if (window.confirm(`¿Quitar de los carros las ${colEnCarro.length} ${cosa} que ya están colocadas en obra?\n\n${[...new Set(colEnCarro.map((x) => `EXP ${x.expediente || "—"}`))].join(" · ")}`)) quitarDelCarro(colEnCarro); }}
+                  className="text-xs font-semibold text-rose-600 border border-rose-300 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar de los carros las {colEnCarro.length} colocadas</button>
+              ); })()}
               <span className="ml-auto text-xs text-slate-500">{colocadas} de {items.length} colocadas{conInc ? <b className="text-rose-600"> · {conInc} con incidencia</b> : null}</span>
             </div>
             <div className="overflow-x-auto">
@@ -20642,7 +20696,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                 return Object.entries(porExp).map(([exp, xs]) => (
                   <div key={exp} className="border border-slate-200 rounded-lg px-3 py-2 mb-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s)</span>
+                    <span className="text-sm"><b>EXP {exp}</b> · {xs.length} {cosa} · {xs.filter((x) => x.colocada).length} colocada(s) · <span className={xs.every((x) => x.revisada) ? "font-semibold text-sky-700" : ""}>{xs.filter((x) => x.revisada).length} revisada(s)</span></span>
                     <select value="" onChange={(e) => { if (e.target.value) { moverACarro(xs, e.target.value); setCarroAbierto(null); } }} className="text-xs font-semibold text-[#2E8B57] border border-[#2E8B57] rounded-lg px-2 py-1 bg-white">
                       <option value="">Mover todo el EXP a carro…</option>
                       {opcionesCarro(carroSel.numero)}
@@ -20655,6 +20709,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     )}
                     <button onClick={() => { if (window.confirm(`¿Sacar las ${xs.length} ${cosa} del EXP ${exp} de este carro (cargadas / entregadas)?`)) { const ids = new Set(xs.map((x) => x.id)); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: new Date().toISOString().slice(0, 10) } : y))); } }}
                       className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Sacar del carro</button>
+                    {xs.some((x) => x.colocada) && xs.some((x) => !x.colocada) && (
+                      <button onClick={() => { const col = xs.filter((x) => x.colocada); if (window.confirm(`¿Quitar del carro solo las ${col.length} colocadas del EXP ${exp}?`)) quitarDelCarro(col); }}
+                        className="text-xs font-semibold text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50">Quitar solo las colocadas ({xs.filter((x) => x.colocada).length})</button>
+                    )}
                   </div>
                   <div className="overflow-x-auto mt-2">
                     <table className="w-full text-xs">
@@ -21663,15 +21721,42 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
           {(() => {
             const hDia = parseFloat(configPlanning && configPlanning.horasDia) || 16;
             const tot = listoParaFabricar.reduce((t, p) => t + horasDeObraListo(p, uxExpedientes, configPlanning).horas, 0);
-            const sinH = listoParaFabricar.filter((p) => !horasDeObraListo(p, uxExpedientes, configPlanning).horas).length;
+            const obrasSinH = listoParaFabricar.filter((p) => !horasDeObraListo(p, uxExpedientes, configPlanning).horas);
+            const sinH = obrasSinH.length;
             return (
+              <>
               <div className="mb-4 px-4 py-3 rounded-lg bg-white border border-slate-200 text-sm text-slate-700 flex flex-wrap gap-x-6 gap-y-1">
                 <span>Horas de fábrica al día: <b>{fmtHoras(hDia)}</b> <span className="text-xs text-slate-400">(las del planning)</span></span>
                 <span>Todo lo listo: <b>{fmtHoras(tot)}</b> ≈ <b>{(tot / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(tot / hDia - 1) < 0.05 ? "" : "s"}</span>
                 {sinH > 0 && <span className="text-amber-700 font-semibold">{sinH} obra{sinH === 1 ? "" : "s"} sin horas calculables</span>}
               </div>
+              {sinH > 0 && (
+                <details className="mb-5 bg-white border border-amber-300 rounded-lg">
+                  <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⏱ {sinH} obra{sinH === 1 ? "" : "s"} sin horas calculables (pulsa para verlas)</summary>
+                  <p className="px-4 pt-2 text-xs text-slate-500">No suman en el total porque no tienen horas puestas a mano, ni horas en el listado de materiales, ni ventanas contadas. Abre la obra y pon las horas o sube su listado.</p>
+                  <div className="divide-y divide-slate-100">
+                    {obrasSinH.map((p) => (
+                      <div key={p.id} className="px-4 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <button onClick={() => onVerProyecto && onVerProyecto(p.id)} className="font-semibold text-slate-800 text-sm hover:text-[#2E8B57]">#{p.numero} — {p.nombre}</button>
+                        <span className="text-xs text-slate-500">{listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              </>
             );
           })()}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="🔍 Buscar en la lista: 8000 · varios a la vez: 8000 10000"
+              className="w-full max-w-md px-4 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#2E8B57]" />
+            {busca.trim() && (
+              <>
+                <span className="text-xs text-slate-500">{listoParaFabricar.filter((p) => obraCoincideBusqueda(p, busca, uxExpedientes, clientes)).length} de {listoParaFabricar.length} obras · las marcas se guardan aunque cambies la búsqueda</span>
+                <button onClick={() => setBusca("")} className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">Ver todas</button>
+              </>
+            )}
+          </div>
           {(() => {
             const hDia = parseFloat(configPlanning && configPlanning.horasDia) || 16;
             const marcadas = listoParaFabricar.filter((p) => selListo.includes(p.id));
