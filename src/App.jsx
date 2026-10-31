@@ -1232,7 +1232,9 @@ export default function App() {
     if (lleva.includes("mosquitera")) {
       const esSolape = (x) => /solape/i.test(`${x.nombre || ""}`);
       const solTot = r.piezas.filter(esSolape), solPend = pend.filter(esSolape);
-      if (!solTot.length) lineas.push("⚠ SOLAPE: la obra lleva mosquitera y en su hoja de corte no sale el solape. Compruébalo: hay que cortarlo.");
+      const sh = Object.values(mias).map((h) => solapeEnHoja(h, auxCfgDe(auxCfgApp))).find((x) => x.estado) || solapeEnHoja(null, auxCfgDe(auxCfgApp));
+      if (!solTot.length && sh.estado === "desactivado") lineas.push("⚠ SOLAPE: la obra lleva mosquitera; el solape está en la hoja pero su referencia está DESACTIVADA en Auxiliares → Configuración. Actívala y córtalo.");
+      else if (!solTot.length) lineas.push(`⚠ SOLAPE: la obra lleva mosquitera y no encuentro el solape en lo leído de su hoja de corte (código configurado: ${sh.codigos.join(", ") || "ninguno"}). Si en el papel sí está, el código no coincide: corrígelo en Auxiliares → Configuración. Hay que cortarlo.`);
       else if (solPend.length) lineas.push(`⚠ SOLAPE: la obra lleva mosquitera: hay que cortar el solape (${solPend.length} de ${solTot.length} pieza${solTot.length === 1 ? "" : "s"} sin cortar).`);
     }
     if (!pend.length) return lineas;
@@ -52197,6 +52199,15 @@ function auxVentanas(proyectos, uxExpedientes, sinObra) {
 const auxModeloDe = (v) => String((v && (v.tipo || v.pos)) || "").trim().toUpperCase().split(".")[0];
 // De cada hoja de corte cargada saca las piezas físicas (una por unidad) de las referencias activas, ventana por ventana
 const auxVent = (p) => (p && p.dib ? `D${p.dib} · ` : "") + ((p && (p.ventanaPos || p.unidad)) || ""); // nombre de la ventana con su nº de dibujo
+// ¿Trae solape la hoja de corte de un presupuesto? Se mira todo lo leído de la hoja (no solo las piezas de referencias activas).
+// "activo" = sale a cortar · "desactivado" = está en la hoja pero su referencia está desactivada en Configuración · "" = no se ha leído
+const solapeEnHoja = (hoja, cfg) => {
+  const refsSol = toArray(cfg && cfg.refs).filter((r) => /solape/i.test(r.nombre || ""));
+  const codigos = new Set(refsSol.map((r) => String(r.ref || "").trim()));
+  const hay = toArray(hoja && hoja.modelos).some((m) => toArray(m.filas).some((f) => codigos.has(String(f.ref || "").trim()) || /solape/i.test(f.desc || "")));
+  if (!hay) return { estado: "", codigos: [...codigos] };
+  return { estado: refsSol.some((r) => r.activo !== false) ? "activo" : "desactivado", codigos: [...codigos] };
+};
 // Presupuestos cuyo pedido de persianas dice QUÉ guía manda el proveedor («Guía: Guia sencilla 60 x 78 mm»): esa guía no se corta aquí
 const pedidoTraeGuia = (t) => /Gu[ií]a:\s*\S|gu[ií]a\s+(?:sencilla|doble|simple|reforzada)|gu[ií]a[^·,;]{0,20}\d+\s*x\s*\d+/i.test(String(t || ""));
 function pptosConGuiaProveedor(ctx) {
@@ -52418,10 +52429,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const pendientes = sinCortar.filter((p) => coincide(p) || (q && esSolapePieza(p) && pptosMosqFiltro.has(p.ppto)));
   const todasPend = sinCortar.length;
   // Obras con mosquitera por cortar: cuántos solapes les faltan (o si su hoja no trae solape)
-  const solapesConMosq = [...new Set(sinCortar.filter(esMosqPieza).map((p) => p.ppto))].map((pp) => ({
-    ppto: pp, obra: (sinCortar.find((p) => p.ppto === pp && p.obra) || {}).obra || "",
-    pend: sinCortar.filter((p) => p.ppto === pp && esSolapePieza(p)).length, enHoja: piezas.some((p) => p.ppto === pp && esSolapePieza(p)),
-  })).filter((x) => x.pend > 0 || !x.enHoja);
+  const solapesConMosq = [...new Set(sinCortar.filter(esMosqPieza).map((p) => p.ppto))].map((pp) => {
+    const sh = solapeEnHoja(hojas && (hojas[pp] || Object.values(hojas).find((h) => h && String(h.presupuesto) === String(pp))), cfg);
+    return { ppto: pp, obra: (sinCortar.find((p) => p.ppto === pp && p.obra) || {}).obra || "", pend: sinCortar.filter((p) => p.ppto === pp && esSolapePieza(p)).length,
+      enHoja: piezas.some((p) => p.ppto === pp && esSolapePieza(p)) || sh.estado === "activo", desactivado: sh.estado === "desactivado", codigos: sh.codigos };
+  }).filter((x) => x.pend > 0 || !x.enHoja);
   const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
@@ -52570,7 +52582,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
             <b>✂ Con la mosquitera va el solape:</b>
             <ul className="mt-1 space-y-0.5 text-xs">
-              {solapesConMosq.map((x) => <li key={x.ppto}>Presupuesto {pptoBonito(x.ppto)}{x.obra ? ` · ${x.obra}` : ""}: {x.enHoja ? <>corta también el <b>solape</b> ({x.pend} sin cortar)</> : <b>lleva mosquitera y su hoja no trae solape: compruébalo</b>}</li>)}
+              {solapesConMosq.map((x) => <li key={x.ppto}>Presupuesto {pptoBonito(x.ppto)}{x.obra ? ` · ${x.obra}` : ""}: {x.enHoja ? <>corta también el <b>solape</b> ({x.pend} sin cortar)</> : x.desactivado ? <b>el solape está en la hoja, pero su referencia está DESACTIVADA en Configuración: actívala para que salga a cortar</b> : <b>no encuentro el solape en lo leído de la hoja. Si en el papel sí está, su código no es el de Configuración ({x.codigos.join(", ") || "ninguno"}): pon el código que trae vuestra hoja y vuelve a subirla</b>}</li>)}
             </ul>
             {q && pptosMosqFiltro.size > 0 && <div className="mt-1 text-[11px] text-amber-800">Los solapes de esas obras salen en la lista aunque no coincidan con el filtro.</div>}
           </div>
