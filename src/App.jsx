@@ -19960,6 +19960,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
   const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const [qLista, setQLista] = useState("");
+  const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
   const [soloSinColocar, setSoloSinColocar] = useState(false);
   const [soloIncidencia, setSoloIncidencia] = useState(false);
 
@@ -19970,7 +19971,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <input type="checkbox" checked={!!x.colocada} title="Colocada en obra"
           onChange={(e) => actualizarPersiana(x.id, { colocada: e.target.checked, fechaColocada: e.target.checked ? new Date().toISOString().slice(0, 10) : "" })} />
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(x.refObra || x.cliente || x.pedidoProv) && <div className="text-[10px] font-normal text-slate-500 leading-tight">{[x.refObra, x.cliente, x.pedidoProv ? `Pedido ${x.pedidoProv}` : ""].filter(Boolean).join(" · ")}</div>}</td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (<>
@@ -20117,6 +20118,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
 
   return (
     <div className="space-y-4">
+      {/* Nombres ya usados en la casilla de parte / cliente: salen como sugerencia al escribir, para no poner el mismo de dos formas */}
+      <datalist id={idListaPartes}>
+        {[...new Set(items.map((x) => partePersiana(x)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es", { numeric: true })).map((t) => <option key={t} value={t} />)}
+      </datalist>
       <div className="flex flex-wrap items-center gap-2">
         {[["mapa", "Mapa de carros"], ["lista", `${Cosa} (una a una)`], ["expedientes", "Expedientes con material"], ["sinsitio", `Pendientes de ubicar (${sinSitio.length})`], ["reorganizar", "Reorganizar por expediente"]].map(([id, label]) => (
           <button key={id} onClick={() => setVista(id)} className={`crm-tab px-3.5 py-2 text-sm font-semibold ${vista === id ? "border-[#2E8B57]" : ""}`}>{label}</button>
