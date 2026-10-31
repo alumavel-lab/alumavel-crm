@@ -42,6 +42,25 @@ const fbDb = getDatabase(fbApp);
 // (el equipo) — una vez puestas las reglas de reglas-firebase.json.
 const fbAuth = getAuth(fbApp);
 fbAuth.languageCode = "es";
+// Las funciones del servidor (correo, IA…) solo atienden a quien ha iniciado sesión:
+// a cada llamada a /.netlify/functions/ se le añade el token del usuario (si no lo lleva ya).
+if (typeof window !== "undefined" && !window.__fetchConToken) {
+  window.__fetchConToken = true;
+  const fetchOriginal = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    let url = null;
+    try { url = new URL(typeof input === "string" ? input : input?.url || String(input), window.location.href); } catch { /* url rara: se deja pasar tal cual */ }
+    if (url && url.origin === window.location.origin && url.pathname.startsWith("/.netlify/functions/") && fbAuth.currentUser) {
+      const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      if (!headers.has("Authorization")) {
+        const token = await fbAuth.currentUser.getIdToken().catch(() => "");
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+      }
+      return fetchOriginal(input, { ...init, headers });
+    }
+    return fetchOriginal(input, init);
+  };
+}
 // Segunda instancia solo para dar de alta usuarios y comprobar contraseñas
 // sin cerrar la sesión del administrador que está usando el CRM.
 const fbAppAltas = initializeApp(firebaseConfig, "altas");
@@ -40265,7 +40284,8 @@ function agruparHojaCorte(paginas) {
   partes.forEach((b) => {
     const mm = b.match(/Pos\s*:\s*([A-Za-z]{1,4}\d+[A-Za-z]?)\b/);
     if (!mm) return;
-    modelos.push(analizarBloqueCorte(b, modelo, uds));
+    const uds = parseInt((b.match(/Uds\s*:\s*(\d+)/i) || [])[1], 10) || 1;
+    modelos.push(analizarBloqueCorte(b, mm[1].toUpperCase(), uds));
   });
   return { modelos, presupuesto, version, referencia: ref, cliente };
 }

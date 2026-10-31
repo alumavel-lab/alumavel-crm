@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.netlify/
+.firebase/
+*.log
+.env
+.env.*
+desktop.ini
