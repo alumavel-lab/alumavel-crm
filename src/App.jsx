@@ -52411,8 +52411,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const refDe = (ref) => cfg.refs.find((r) => String(r.ref).trim() === String(ref).trim());
   const q = filtro.trim().toLowerCase();
   const coincide = (p) => !q || [p.ventanaPos, p.grupo, p.cliente, p.obra, p.nombre, p.ref, p.ppto, pptoBonito(p.ppto), p.modelo, p.cod, auxMed(p.lCorte)].join(" ").toLowerCase().includes(q);
-  const pendientes = piezas.filter((p) => !(est[p.id] && est[p.id].cortada) && coincide(p));
-  const todasPend = piezas.filter((p) => !(est[p.id] && est[p.id].cortada)).length;
+  const sinCortar = piezas.filter((p) => !(est[p.id] && est[p.id].cortada));
+  // Con la mosquitera va el SOLAPE: al filtrar por mosquitera salen también los solapes de esas mismas obras, para cortarlos a la vez
+  const esMosqPieza = (p) => /mosquit/i.test(p.nombre || ""), esSolapePieza = (p) => /solape/i.test(p.nombre || "");
+  const pptosMosqFiltro = new Set(sinCortar.filter((p) => coincide(p) && esMosqPieza(p)).map((p) => p.ppto));
+  const pendientes = sinCortar.filter((p) => coincide(p) || (q && esSolapePieza(p) && pptosMosqFiltro.has(p.ppto)));
+  const todasPend = sinCortar.length;
+  // Obras con mosquitera por cortar: cuántos solapes les faltan (o si su hoja no trae solape)
+  const solapesConMosq = [...new Set(sinCortar.filter(esMosqPieza).map((p) => p.ppto))].map((pp) => ({
+    ppto: pp, obra: (sinCortar.find((p) => p.ppto === pp && p.obra) || {}).obra || "",
+    pend: sinCortar.filter((p) => p.ppto === pp && esSolapePieza(p)).length, enHoja: piezas.some((p) => p.ppto === pp && esSolapePieza(p)),
+  })).filter((x) => x.pend > 0 || !x.enHoja);
   const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
@@ -52557,6 +52566,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar <span className="font-normal text-slate-500">({pendientes.length}{q ? ` de ${todasPend}` : ""})</span></div>
+        {solapesConMosq.length > 0 && (
+          <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
+            <b>✂ Con la mosquitera va el solape:</b>
+            <ul className="mt-1 space-y-0.5 text-xs">
+              {solapesConMosq.map((x) => <li key={x.ppto}>Presupuesto {pptoBonito(x.ppto)}{x.obra ? ` · ${x.obra}` : ""}: {x.enHoja ? <>corta también el <b>solape</b> ({x.pend} sin cortar)</> : <b>lleva mosquitera y su hoja no trae solape: compruébalo</b>}</li>)}
+            </ul>
+            {q && pptosMosqFiltro.size > 0 && <div className="mt-1 text-[11px] text-amber-800">Los solapes de esas obras salen en la lista aunque no coincidan con el filtro.</div>}
+          </div>
+        )}
         {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
         {orden === "ventana" ? grupos.map((g) => (
           <div key={g.k} className="mb-3">
