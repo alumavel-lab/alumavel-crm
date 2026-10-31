@@ -19247,6 +19247,43 @@ function PanelesPendientes({ cristales = [] }) {
   const pendientes = paneles.filter((x) => (x.estado || "pendiente") === "pendiente");
   const actualizar = (id, patch) => guardar(paneles.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const dato = (etq, val) => (val || val === 0) ? <div className="min-w-[110px]"><div className="text-[10px] uppercase tracking-wide text-slate-400">{etq}</div><div className="text-sm text-slate-800 break-words">{val}</div></div> : null;
+  // Hoja para el chico: los paneles pendientes de cortar, agrupados por COLOR y por TIPO de panel (sándwich, acústico…)
+  const colorPanel = (x) => {
+    const c = String(x.color || "").trim();
+    if (c) return c;
+    const m = String(x.descripcion || "").match(/\b(blanco|nogal|roble(?:\s+dorado)?|golden|antracita|7016|9016|negro|gris|crema|marr[oó]n|embero|winchester|cerezo|plata|inox)\b/i);
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : "Sin color";
+  };
+  const espesorPanel = (x) => String(x.espesor || (String(x.descripcion || "").match(/(\d{2,3})\s*mm/i) || [])[1] || "").trim();
+  const imprimirPaneles = () => {
+    const pend = (q ? lista : paneles).filter((x) => (x.estado || "pendiente") === "pendiente");
+    if (!pend.length) { alert("No hay paneles pendientes de cortar" + (q ? " con esa búsqueda." : ".")); return; }
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const grupos = {};
+    pend.forEach((x) => { const k = `${colorPanel(x)}|${x.tipo || tipoPanel(x)}`; (grupos[k] = grupos[k] || []).push(x); });
+    const claves = Object.keys(grupos).sort((a, b) => a.localeCompare(b, "es"));
+    const secciones = claves.map((k) => {
+      const [color, tipo] = k.split("|");
+      const xs = grupos[k].sort((a, b) => String(a.expediente).localeCompare(String(b.expediente), "es", { numeric: true }) || (parseFloat(b.alto) || 0) - (parseFloat(a.alto) || 0));
+      const uds = xs.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0);
+      const filas = xs.map((x) => { const o = obraDe(x.expediente) || {}; return `<tr><td class="c">☐</td><td><b>EXP ${esc(numsExpediente(x.expediente)[0] || x.expediente || "—")}</b>${o.nombre ? `<div class="s">${esc(o.nombre)}</div>` : ""}</td><td>${esc(x.ref || "")}</td><td class="m"><b>${esc(x.ancho)} × ${esc(x.alto)}</b></td><td class="n">${esc(x.cantidad || 1)}</td><td>${esc(espesorPanel(x) ? espesorPanel(x) + " mm" : "")}</td><td>${esc(x.descripcion || "")}${x.observaciones ? `<div class="s">${esc(x.observaciones)}</div>` : ""}</td><td>${esc(x.sitio || "")}</td></tr>`; }).join("");
+      return `<h3>${esc(color)} · ${esc(tipo)} <span class="s">(${uds} ud)</span></h3><table><thead><tr><th></th><th>Expediente</th><th>Vivienda</th><th>Ancho × alto (mm)</th><th>Uds</th><th>Espesor</th><th>Descripción</th><th>Sitio</th></tr></thead><tbody>${filas}</tbody></table>`;
+    }).join("");
+    const total = pend.reduce((t, x) => t + (parseFloat(x.cantidad) || 1), 0);
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Paneles pendientes de cortar</title><style>
+      body{font-family:Arial,sans-serif;margin:12mm;color:#111} h2{font-size:20px;margin:0 0 4px} h3{font-size:15px;margin:14px 0 4px;padding:4px 6px;background:#eee}
+      table{width:100%;border-collapse:collapse;page-break-inside:auto} tr{page-break-inside:avoid} th,td{border:1px solid #888;padding:4px 6px;font-size:12px;text-align:left;vertical-align:top}
+      th{background:#f5f5f5} td.c{width:18px;font-size:16px;text-align:center} td.m{white-space:nowrap;font-size:13px} td.n{text-align:center;font-weight:bold} .s{color:#555;font-size:11px;font-weight:normal}
+      @media print{@page{size:A4 landscape;margin:10mm}}
+    </style></head><body><h2>Paneles pendientes de cortar · ${total} ud</h2><div class="s">Agrupados por color y tipo de panel${q ? ` · búsqueda «${esc(buscar)}»` : ""}</div>${secciones}<p class="s">Impreso ${new Date().toLocaleString("es-ES")}</p></body></html>`;
+    try {
+      const fr = document.createElement("iframe");
+      fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+      document.body.appendChild(fr);
+      const d = fr.contentWindow.document; d.open(); d.write(html); d.close();
+      setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300);
+    } catch (e) { alert("No se pudo preparar la impresión: " + ((e && e.message) || e)); }
+  };
   const guardarForm = () => {
     if (!(parseFloat(form.ancho) > 0) || !(parseFloat(form.alto) > 0)) { alert("Pon el ancho y el alto del panel."); return; }
     guardar([{ ...panelDeLinea({ numeroPedido: "", proveedor: "", fecha: hoy }, { ...form, cantidad: form.cantidad || 1 }), origen: "a mano" }, ...paneles]);
@@ -19259,6 +19296,7 @@ function PanelesPendientes({ cristales = [] }) {
           <b>Paneles pendientes de cortar.</b> Aquí caen los paneles (sándwich, acústicos de las puertas de entrada…) de la confirmación del pedido de cristales, de los listados de vidrios de cada expediente y de los caballetes. Cuando uno está cortado, lo marcas.
         </div>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar expediente, color, medida, cliente…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <button onClick={imprimirPaneles} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md text-white hover:opacity-90" style={{ backgroundColor: "#2E8B57" }} title="Hoja para el chico: lo pendiente de cortar, agrupado por color y tipo de panel"><Printer size={13} /> Imprimir para cortar</button>
         <button onClick={() => setForm(form ? null : { expediente: "", ref: "", ancho: "", alto: "", cantidad: 1, descripcion: "", color: "", modelo: "", presupuesto: "" })}
           className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">+ Añadir panel a mano</button>
       </div>
