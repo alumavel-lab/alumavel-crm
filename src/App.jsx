@@ -17737,6 +17737,26 @@ const horasDeTextoManoObra = (texto) => {
   const total = tg ? num(tg[1]) : 0;
   return num(Math.max(suma, total));
 };
+// Horas por ZONA del listado de mano de obra («MO TRONZADORAS: 9,68 Horas», «MO ACABADOS Y CORRECCIONES: 3,62 Horas»…) → [{ zona, horas }]
+const zonasDeTextoManoObra = (texto) => {
+  const t = String(texto || "").replace(/\s+/g, " ");
+  const zonas = new Map();
+  for (const z of t.matchAll(/\bM\.?\s?O\.?\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .\/-]{1,50}?)\s*:\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/g)) {
+    const zona = z[1].trim().replace(/\s+/g, " ");
+    const h = parseFloat(z[2].replace(",", "."));
+    if (/TOTAL|PRES/.test(zona) || zonas.has(zona) || !(h > 0)) continue;
+    zonas.set(zona, h);
+  }
+  return [...zonas].map(([zona, horas]) => ({ zona, horas }));
+};
+// Descarga un archivo ya guardado (Storage) a bytes, por la función del servidor
+async function bytesDeArchivoGuardado(url) {
+  const token = fbAuth.currentUser ? await fbAuth.currentUser.getIdToken() : "";
+  const r = await fetch("/.netlify/functions/descargar-archivo", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ url }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.base64) throw new Error(j.error || `No se pudo descargar (${r.status})`);
+  return Uint8Array.from(atob(j.base64), (c) => c.charCodeAt(0));
+}
 async function textoDePdfBytes(bytes) {
   const lib = await cargarPdfJs();
   const doc = await lib.getDocument({ data: bytes }).promise;
@@ -47945,7 +47965,8 @@ const textoPersonas = (n, horasDia) => {
 };
 function GenteNecesariaPuestos({ proyectos, uxExpedientes, isAdmin }) {
   const plan = usePlanningPublicado();
-  const cfg = useObjetoFb("capacidadPuestosLinea"); // { [puestoId]: { unidad, porDia, horasDia } }
+  const cfg = useObjetoFb("capacidadPuestosLinea"); // { [puestoId]: { unidad, porDia, horasDia } } · __jornadaMO: { horasDia }
+  const zonasObras = useObjetoFb("horasZonasObras"); // { [proyectoId]: [{ zona, horas }] } (obras propias; las de Uxcar van en su expediente)
   const hoy = new Date().toISOString().slice(0, 10);
   const dias = Object.keys((plan && plan.dias) || {}).sort();
   const [dia, setDia] = useState("");
@@ -47970,10 +47991,39 @@ function GenteNecesariaPuestos({ proyectos, uxExpedientes, isAdmin }) {
       const sinDesglose = !rec.length;
       if (sinDesglose) co.ventanas = parseFloat(o.ventanas) || 0; // solo se sabe el nº de ventanas
       Object.keys(c).forEach((k) => { c[k] += co[k] * frac; });
-      lista.push({ nombre: o.nombre || t.nombre, frac, sinDesglose, ventanas: co.ventanas * frac });
+      // Horas por zona del listado de mano de obra: las de la obra o, si es de Uxcar, las de su expediente
+      const expObra = exp || (pr && pr.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e && e.id === pr.uxcarExpedienteId) : null);
+      const zonas = toArray((pr && zonasObras[pr.id]) || (expObra && expObra.horasZonas));
+      const docsMO = [...toArray(expObra && expObra.documentos), ...toArray(pr && pr.documentos)].filter((d) => d && d.url && /mano\s*de\s*obra/i.test(`${d.tipo || ""} ${d.nombre || ""}`));
+      lista.push({ nombre: o.nombre || t.nombre, frac, sinDesglose, ventanas: co.ventanas * frac, zonas, pr, expObra, docsMO });
     });
     return { carga: c, obrasDia: lista };
-  }, [plan, diaSel, proyectos, uxExpedientes]);
+  }, [plan, diaSel, proyectos, uxExpedientes, zonasObras]);
+  // Carga del día por ZONA del listado de mano de obra (horas) → gente = horas ÷ jornada
+  const jornadaMO = parseFloat(cfg.__jornadaMO && cfg.__jornadaMO.horasDia) || 8;
+  const cargaZonas = useMemo(() => {
+    const m = new Map();
+    obrasDia.forEach((o) => o.zonas.forEach((z) => { if (z && z.zona) m.set(z.zona, (m.get(z.zona) || 0) + (parseFloat(z.horas) || 0) * o.frac); }));
+    return [...m].sort((a, b) => b[1] - a[1]);
+  }, [obrasDia]);
+  const sinZonas = obrasDia.filter((o) => !o.zonas.length);
+  const [leyendoZ, setLeyendoZ] = useState("");
+  // Lee las zonas de los listados de mano de obra ya subidos de las obras de ese día que no las tienen
+  const leerZonas = async () => {
+    const mal = [];
+    for (const o of sinZonas) {
+      setLeyendoZ(`Leyendo ${o.nombre}…`);
+      let zonas = [];
+      for (const d of o.docsMO) { try { zonas = zonasDeTextoManoObra(await textoDePdfBytes(await bytesDeArchivoGuardado(d.url))); } catch (er) { /* el siguiente */ } if (zonas.length) break; }
+      if (!zonas.length) { mal.push(o.nombre); continue; }
+      try {
+        if (o.expObra) await fbUpdate(ref(fbDb, `portalUxcar/expedientes/${o.expObra.id}`), { horasZonas: zonas });
+        else if (o.pr) await fbSet(ref(fbDb, `horasZonasObras/${o.pr.id}`), zonas);
+      } catch (er) { mal.push(`${o.nombre} (no se pudo guardar: ${er.message})`); }
+    }
+    setLeyendoZ("");
+    if (mal.length) alert(`No he encontrado las horas por zona en el listado de mano de obra de:\n${mal.join("\n")}\n\nSi no tienen el listado subido, súbelo. Si lo tienen, mándame uno.`);
+  };
   const cargaUsada = aMano ? Object.fromEntries(UNIDADES_CARGA.map((u) => [u.id, parseFloat(manual[u.id]) || 0])) : carga;
   // Si varios puestos cuentan lo mismo (Persiana A y B), la carga se reparte entre ellos
   const unidadDe = (p) => (cfg[p.id] && cfg[p.id].unidad) || UNIDAD_PUESTO_DEF[p.id] || "ventanas";
@@ -48007,6 +48057,39 @@ function GenteNecesariaPuestos({ proyectos, uxExpedientes, isAdmin }) {
           {sinDesg.length > 0 && <div className="mt-1 font-semibold text-amber-700">⚠ Sin recuento de ventanas (solo cuentan como ventanas, sin hojas ni persianas): {sinDesg.map((o) => o.nombre).join(", ")}. Falta documentación.</div>}
         </div>
       )}
+      {!aMano && (
+        <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="font-semibold text-slate-800 text-sm">Según el listado de mano de obra (horas por zona)</h4>
+            <label className="ml-auto text-xs text-slate-600 flex items-center gap-1">Jornada de una persona
+              <input key={`jmo_${jornadaMO}`} type="number" min="1" step="0.5" defaultValue={jornadaMO} disabled={!isAdmin} onBlur={(e) => { const v = parseFloat(e.target.value) || 8; if (v !== jornadaMO) guardarPuesto("__jornadaMO", { horasDia: v }); }} className="w-16 border border-slate-300 rounded px-2 py-1 text-sm" /> h
+            </label>
+          </div>
+          {cargaZonas.length ? (
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b"><th className="py-1.5 pr-2">Zona</th><th className="pr-2">Horas ese día</th><th className="pr-2">Gente necesaria</th></tr></thead>
+              <tbody>
+                {cargaZonas.map(([zona, h]) => (
+                  <tr key={zona} className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 font-semibold">{zona}</td>
+                    <td className="pr-2 font-mono-num">{fmt(h)} h</td>
+                    <td className="pr-2 font-semibold"><span className={h / jornadaMO > 1 ? "text-[#2E8B57]" : ""}>{textoPersonas(h / jornadaMO, jornadaMO)}</span> <span className="text-xs font-normal text-slate-400">({fmt(h / jornadaMO)})</span></td>
+                  </tr>
+                ))}
+                <tr className="font-bold"><td className="py-1.5 pr-2">TOTAL</td><td className="pr-2 font-mono-num">{fmt(cargaZonas.reduce((t, [, h]) => t + h, 0))} h</td><td className="pr-2">{fmt(cargaZonas.reduce((t, [, h]) => t + h, 0) / jornadaMO)} personas</td></tr>
+              </tbody>
+            </table>
+          ) : <p className="text-xs text-slate-500">{obrasDia.length ? "Ninguna obra de ese día tiene todavía las horas por zona leídas." : "Ese día no tiene obras en el planning."}</p>}
+          {sinZonas.length > 0 && (
+            <div className="text-xs text-amber-800">
+              ⚠ Sin horas por zona (no suman aquí): {sinZonas.map((o) => `${o.nombre}${o.docsMO.length ? "" : " (sin listado de mano de obra subido)"}`).join(" · ")}
+              {sinZonas.some((o) => o.docsMO.length) && <button type="button" disabled={!!leyendoZ} onClick={leerZonas} className="ml-2 font-semibold px-2.5 py-1 rounded-md bg-amber-600 text-white hover:opacity-90 disabled:opacity-60">{leyendoZ || "🔄 Leer las zonas de sus listados ya subidos"}</button>}
+            </div>
+          )}
+          <p className="text-[11px] text-slate-400">Cada obra del día aporta sus horas de cada zona del LISTADO MANO DE OBRA, en la parte que le toca ese día según el planning. Gente = horas ÷ jornada.</p>
+        </div>
+      )}
+      <h4 className="font-semibold text-slate-800 text-sm">Por puesto (contando ventanas, hojas, persianas…)</h4>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b"><th className="py-1.5 pr-2">Puesto</th><th className="pr-2">Cuenta</th><th className="pr-2">Una persona hace al día</th><th className="pr-2">Horas/día</th><th className="pr-2">Hay que hacer</th><th className="pr-2">Gente necesaria</th></tr></thead>
@@ -50082,7 +50165,12 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     const horasTxt = [];
     for (const { f, t } of grupos.materiales) {
       if (t !== "mano_obra") continue;
-      try { horasTxt.push(horasDeTextoManoObra(await textoDePdfBytes(new Uint8Array(await f.arrayBuffer())))); } catch (er) { /* sin texto: se queda lo de la IA */ }
+      try {
+        const txt = await textoDePdfBytes(new Uint8Array(await f.arrayBuffer()));
+        horasTxt.push(horasDeTextoManoObra(txt));
+        const zonas = zonasDeTextoManoObra(txt);
+        if (zonas.length) sets.horasZonas = zonas; // para «Gente necesaria por puesto»
+      } catch (er) { /* sin texto: se queda lo de la IA */ }
     }
     const horas = Math.max(0, ...leidos.map((x) => x.horas || 0), ...horasTxt);
     const horasYaGuardadas = parseFloat(base.listadoMateriales && base.listadoMateriales.horas) || 0;
@@ -50172,7 +50260,10 @@ async function releerHorasManoObra(exps, boton) {
         const r = await fetch("/.netlify/functions/descargar-archivo", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ url: d.url }) });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.base64) continue;
-        h = Math.max(h, horasDeTextoManoObra(await textoDePdfBytes(Uint8Array.from(atob(j.base64), (c) => c.charCodeAt(0)))));
+        const txt = await textoDePdfBytes(Uint8Array.from(atob(j.base64), (c) => c.charCodeAt(0)));
+        h = Math.max(h, horasDeTextoManoObra(txt));
+        const zonas = zonasDeTextoManoObra(txt);
+        if (zonas.length) patch[`expedientes/${e.id}/horasZonas`] = zonas;
       } catch (er) { /* sigue con el siguiente */ }
     }
     if (h > 0) {
