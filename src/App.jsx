@@ -54384,6 +54384,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const moverDiaEntero = async () => {
     const ks = Object.keys(asign);
     if (!destDia || destDia === dia || !ks.length) return;
+    if (ks.some((k) => enFabrica.has(k)) && !(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverDiaEntero()); return; }
     if (!window.confirm(`¿Mover las ${ks.length} obras del ${fmtDate(dia)} al ${fmtDate(destDia)}? Se llevan sus marcas, horas y notas.`)) return;
     for (const k of ks) await moverObraDia(k, dia, destDia);
     setDia(destDia); setMesVer(destDia.slice(0, 7)); setDestDia("");
@@ -54433,7 +54434,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   };
   // Documentos «Hoja de corte» que ya tiene la obra o su expediente de Uxcar
   const docsHojaDe = (o) => {
-    const out = []; const add = (d) => { if (d && d.url && /hoja\s*de\s*corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) out.push(d); };
+    const out = []; const add = (d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) out.push(d); };
     const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
     const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
     toArray(e && e.documentos).forEach(add); toArray(p && p.documentos).forEach(add);
@@ -54735,6 +54736,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       if (!f) { alert("Esta obra la planifica Fábrica y no la encuentro en su planning."); return; }
       const oid = f.tipo === "proyecto" ? `p-${f.id}` : f.tipo === "uxcar" ? `u-${f.id}` : f.tipo === "rapido" ? `r-${f.id}` : "";
       if (onMoverDiaFabrica && oid) {
+        if (!(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverObraDia(k, de, a)); return; }
         onMoverDiaFabrica(oid, a);
         try { for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) { const sn = await fbGet(ref(fbDb, `${nodo}/${de}/${k}`)); if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${de}/${k}`), null); } } } catch (e) { /* las marcas se quedan en el día viejo */ }
         return;
@@ -54937,6 +54939,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {grande && estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo…</div>}
                 {grande && !o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mb-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir hoja de corte o carga de material</button>}
                 {!nV && <div className="text-[11px] text-amber-300 px-1">Sin ventanas cargadas</div>}
+                {o.d.tipo !== "pl" && !["etiquetas", "carga", "hoja"].includes(o.fuente) && <div className={`${grande ? "text-sm" : "text-[10px]"} font-bold px-1 mb-1 ${estadoCarga[o.d.key] === "leyendo" ? "text-sky-300" : "text-rose-300"}`}>{estadoCarga[o.d.key] === "leyendo" ? "⏳ Leyendo la hoja de corte…" : (hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error) ? `⚠ Hoja de corte: ${hojasCD[limpia(o.d.key)].error}` : docsHojaDe(o).length ? "⏳ Hoja de corte pendiente de leer" : "⚠ FALTA LA HOJA DE CORTE (súbela con 📎)"}</div>}
                 {grande && o.folio && verFolio ? <div className="bg-slate-100 rounded-lg p-2">{folioDe(o, vivs, true)}</div> : vivs.map(([g, vs]) => (
                   <div key={g} className="mb-1.5">
                     {vivs.length > 1 && <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`${grande ? "text-lg" : "text-[11px]"} font-bold text-sky-300`}>{g}</button>}
@@ -55015,7 +55018,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                     <div key={o.d.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
                       <span className="flex-1 min-w-[10rem] font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? `${datosObraPedido(null, p, uxExpedientes).ppto} · ` : ""}{o.d.nombre}</span>
                       <span className={`text-[11px] font-semibold ${m.ok ? "text-emerald-700" : "text-amber-700"}`}>{p.estadoTrabajo === "En proceso" ? "en fabricación, sin día" : m.ok ? "✓ material" : `⚠ ${m.motivo}`}</span>
-                      <button type="button" disabled={!!meterOcupado} onClick={async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
+                      <button type="button" disabled={!!meterOcupado} onClick={() => pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } })} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
                     </div>
                   ); })}
                   {!cands.length && <div className="px-2 py-2 text-sm text-slate-500">{q ? "No encuentro ninguna obra con eso que no esté ya en el planning." : "No hay obras listas fuera del planning."}</div>}
