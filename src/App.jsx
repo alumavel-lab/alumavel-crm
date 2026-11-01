@@ -53767,6 +53767,19 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     if (vs.length) o.viv.set("Ventanas del planning", vs);
     obras.set(key, o);
   });
+  // Presupuestos (con versión, sin puntos) de una obra según el CRM, y las entradas del PLANING guardado que son suyas
+  // (por su enlace o por el mismo nº de presupuesto: la obra de Uxcar sale dos veces, como obra del CRM y como expediente, y las dos deben ver lo mismo)
+  const mismoPresCD = (a, b) => { if (a === b) return true; const [ba, va] = a.split("-"); const [bb, vb] = b.split("-"); return ba === bb && (!va || !vb); };
+  const presCrmDe = (o) => {
+    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+    if (o.d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === o.d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); const e = p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } } }
+    if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
+    return out;
+  };
+  const planDeObra = (o) => {
+    const k = limpia(o.d.key); const mios = [...presCrmDe(o)];
+    return Object.values(planPres || {}).filter((pr) => pr && (pr.obraKey === k || (mios.length && mios.some((m) => mismoPresCD(m, String(pr.pres || "").replace(/\./g, "").trim())))));
+  };
   // Obras sin ventanas en las etiquetas: se usan las leídas de su «Carga de material» (con dibujo) y, si no, el recuento de la obra (sin dibujo)
   obras.forEach((o) => {
     const g = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
@@ -53784,6 +53797,15 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       return;
     }
     const ent = o.d.tipo === "p" ? toArray(proyectos).find((p) => p.id === o.d.id) : o.d.tipo === "u" ? toArray(uxExpedientes).find((e) => e.id === o.d.id) : null;
+    // Si su PLANING está guardado, sus ventanas (con posición real y dibujo) van ANTES que el recuento («modelo 1/2» no encaja con los dibujos)
+    if (o.d.tipo !== "pl") {
+      const delPlan0 = planDeObra(o).flatMap((pr) => toArray(pr.ventanas));
+      if (delPlan0.length) {
+        const vistos0 = {};
+        o.viv.set("Ventanas del planning", delPlan0.map((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistos0[id]) { vistos0[id]++; id = `${id}_${vistos0[id]}`; } else vistos0[id] = 1; return { id, pos: w.pos || `V${i + 1}`, fab: "", tip: w.pos || "", medida: "", color: w.color || "" }; }));
+        o.fuente = "planning"; return;
+      }
+    }
     const rec = toArray(ent && ent.recuento).filter((l) => l && l.modelo && (parseFloat(l.uds) || 0) > 0 && !["mosquitera"].includes(l.tipo));
     if (rec.length) {
       o.viv.set("Ventanas de la obra", []);
@@ -54100,6 +54122,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     presDeObra.get(k).push(pr);
     if (!planVent.has(k)) planVent.set(k, new Map());
     toArray(pr.ventanas).forEach((w) => planVent.get(k).set(normPosPlan(w.pos), w));
+  });
+  // Lo mismo para cada obra con el mismo nº de presupuesto (la obra de Uxcar sale como obra del CRM y como expediente: las dos ven horas y dibujos)
+  [...obras.values()].forEach((o) => {
+    if (o.d.tipo === "pl") return; const k = limpia(o.d.key);
+    planDeObra(o).forEach((pr) => {
+      if (!presDeObra.has(k)) presDeObra.set(k, []);
+      if (presDeObra.get(k).includes(pr)) return;
+      presDeObra.get(k).push(pr);
+      if (!planVent.has(k)) planVent.set(k, new Map());
+      toArray(pr.ventanas).forEach((w) => { if (!planVent.get(k).has(normPosPlan(w.pos))) planVent.get(k).set(normPosPlan(w.pos), w); });
+    });
   });
   // (va aquí, después de presDeObra: claveEn la usa; antes de esto la pantalla se quedaba en blanco)
   // FÁBRICA MANDA: cada obra del planning de Fábrica sale aquí los días que Fábrica le ha puesto (si ocupa 2 días, los 2).
