@@ -5165,8 +5165,8 @@ export default function App() {
     updateProyectoInline(proyectoId, patch);
     if (p.origen === "portalUxcar" && p.uxcarExpedienteId) {
       const exp = uxExpedientes.find((e) => e.id === p.uxcarExpedienteId);
-      const est = estado === "Entregado" ? "entregado" : estado === "Listo para reparto/recogida" ? "terminado" : null;
-      if (exp && est && exp.estado !== est) uxActualizar(exp, est === "entregado" ? { estado: est, fechaEntregado: hoy } : { estado: est, fechaTerminado: hoy });
+      const est = estado === "Entregado" ? "entregado" : estado === "Listo para reparto/recogida" ? "terminado" : estado === "En proceso" && exp && ["terminado", "entregado"].includes(exp.estado) ? "produccion" : null;
+      if (exp && est && exp.estado !== est) uxActualizar(exp, est === "entregado" ? { estado: est, fechaEntregado: hoy } : est === "produccion" ? { estado: est } : { estado: est, fechaTerminado: hoy });
     }
     showToast(`#${p.numero}: ${estado}`);
   };
@@ -54539,6 +54539,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const vistos = new Set(); const filas = [];
         Object.values(registro || {}).forEach((r) => {
           if (!r || !r.obraKey || vistos.has(r.obraKey)) return; vistos.add(r.obraKey);
+          if (Object.values(registro || {}).some((x) => x && x.obraKey === r.obraKey && x.borrado)) return;
           const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
           const finalV = {}; const cuando = {};
           Object.keys(marcasTodas || {}).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
@@ -54555,12 +54556,29 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         });
     return filas;
   };
+  // DESHACER un «terminada» puesto por error: se quita la fecha, sus ventanas vuelven a pendiente (desde hoy) y, si había pasado a reparto, vuelve a «En proceso»
+  const deshacerHecho = async (ko, nombre) => {
+    const o = obraPorClave.get(ko); const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    const enReparto = !!pr && ["Listo para reparto/recogida", "Entregado"].includes(pr.estadoTrabajo);
+    if (!window.confirm(`¿Deshacer «terminada» de ${nombre}?\n\nSus ventanas vuelven a pendiente${enReparto ? " y la obra vuelve de reparto a «En proceso»" : ""}. Úsalo solo si fue un error.`)) return;
+    try {
+      const upd = {}; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === ko && r.hechoEn) upd[`${rk}/hechoEn`] = null; });
+      if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd);
+      if (o) { const hoyD = new Date().toISOString().slice(0, 10); const ceros = {}; idsDe(o).forEach((i) => { ceros[i] = 0; }); await fbUpdate(ref(fbDb, `controlDia/${hoyD}/${ko}`), ceros); }
+      if (enReparto && onMoverEstado) onMoverEstado(pid, "En proceso");
+    } catch (e) { alert("No se pudo deshacer: " + e.message); }
+  };
+  // QUITAR de la lista una obra metida por error: se deja marcada como «borrada» (si se borrara sin más, volvería a entrar sola)
+  const quitarDelRegistro = async (ko, nombre) => {
+    if (!window.confirm(`¿Quitar ${nombre} de «Todo lo planificado»?\n\nNo toca la obra ni el CRM: solo deja de salir en esta lista y en «Planning terminado».`)) return;
+    try { const upd = {}; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === ko) { upd[`${rk}/borrado`] = true; upd[`${rk}/hechoEn`] = null; } }); if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
+  };
   // Lo que queda HECHO se apunta en el registro con su fecha (hechoEn) y ya no se pierde aunque luego se borren marcas o días
   const firmaHechas = Object.keys(registro || {}).length ? JSON.stringify(Object.keys(marcasTodas || {}).length) + Object.values(registro || {}).filter((r) => r && r.hechoEn).length : "";
   useEffect(() => {
     if (!firmaHechas) return;
     const upd = {};
-    filasRegistro().forEach((f) => { if (!f.hecho || !f.fecha) return; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === f.ko && !r.hechoEn) upd[`${rk}/hechoEn`] = f.fecha; }); });
+    filasRegistro().forEach((f) => { if (!f.hecho || !f.fecha) return; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === f.ko && !r.hechoEn && !r.borrado) upd[`${rk}/hechoEn`] = f.fecha; }); });
     if (Object.keys(upd).length) fbUpdate(ref(fbDb, "controlDiaRegistro"), upd).catch(() => {});
   }, [firmaHechas, marcasTodas, proyectos]); // eslint-disable-line react-hooks/exhaustive-deps
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
@@ -54796,7 +54814,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {(() => {
         // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
         const vistosT = new Set(); const porDia = {};
-        Object.values(registro || {}).forEach((r) => { if (!r || !r.hechoEn || !r.obraKey || vistosT.has(r.obraKey)) return; vistosT.add(r.obraKey); (porDia[r.hechoEn] = porDia[r.hechoEn] || []).push(r); });
+        Object.values(registro || {}).forEach((r) => { if (!r || !r.hechoEn || r.borrado || !r.obraKey || vistosT.has(r.obraKey)) return; vistosT.add(r.obraKey); (porDia[r.hechoEn] = porDia[r.hechoEn] || []).push(r); });
         const diasT = Object.keys(porDia).sort().reverse(); const nT = vistosT.size;
         if (!nT) return null;
         return (
@@ -54807,7 +54825,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {diasT.map((d) => (
                   <div key={d} className="rounded-md bg-white border border-emerald-200 p-2">
                     <div className="text-sm font-bold text-emerald-800 capitalize">{d === "0000-00-00" ? "Sin fecha" : new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })} · {porDia[d].length} obra{porDia[d].length === 1 ? "" : "s"} · {porDia[d].reduce((a, r) => a + (parseInt(r.ventanas, 10) || 0), 0)} ventanas</div>
-                    {porDia[d].map((r) => <div key={r.obraKey} className="text-sm text-slate-700 flex flex-wrap gap-2"><span className="text-emerald-700 font-bold">✓</span><b className="font-mono-num">{r.pres || "—"}</b><span>{r.nombre}</span>{r.ventanas ? <span className="text-xs text-slate-500">· {r.ventanas} ventanas</span> : null}</div>)}
+                    {porDia[d].map((r) => <div key={r.obraKey} className="text-sm text-slate-700 flex flex-wrap items-center gap-2"><span className="text-emerald-700 font-bold">✓</span><b className="font-mono-num">{r.pres || "—"}</b><span>{r.nombre}</span>{r.ventanas ? <span className="text-xs text-slate-500">· {r.ventanas} ventanas</span> : null}
+                      <button type="button" onClick={() => deshacerHecho(r.obraKey, r.nombre || r.pres)} className="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white">↩ Deshacer (error)</button></div>)}
                   </div>
                 ))}
               </div>
@@ -54844,6 +54863,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <span className="text-xs text-slate-600 w-28">{Math.min(f.hechas, f.total)} de {f.total || "?"} ventanas</span>
                       {f.hecho ? <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-600 text-white">✓ HECHO{f.fecha ? ` · ${fmtDate(f.fecha)}` : ""}</span>
                         : <span className="text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">{f.hechas > 0 ? "a medias" : "pendiente"}</span>}
+                      {f.hecho && <button type="button" onClick={() => deshacerHecho(f.ko, f.r.nombre || f.r.pres)} title="Si se marcó terminada por error" className="text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-400 text-amber-800 bg-white">↩ Deshacer</button>}
+                      <button type="button" onClick={() => quitarDelRegistro(f.ko, f.r.nombre || f.r.pres)} title="Quitar de esta lista (metida por error)" className="text-[11px] px-1.5 py-0.5 rounded border border-rose-300 text-rose-700 bg-white">🗑</button>
                     </div>
                   ))}
                   {!vis.length && <div className="px-2 py-2 text-sm text-slate-500">Nada con esa búsqueda.</div>}
