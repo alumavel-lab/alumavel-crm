@@ -1787,6 +1787,18 @@ export default function App() {
     showToast(`#${p.numero} metida en el planning${fecha ? ` (empieza el ${fmtDate(fecha)})` : ""}`);
     return true;
   };
+  // Control del día sube una hoja de corte → se guarda también en los documentos de la obra (propia) o de su expediente (Uxcar). No se vuelve a aplicar a nada.
+  const anadirDocumentoObra = async ({ proyectoId, expId }, doc) => {
+    try {
+      if (expId) {
+        await runTransaction(ref(fbDb, `portalUxcar/expedientes/${expId}/documentos`), (a) => { const arr = toArray(a); if (arr.some((d) => d && d.url === doc.url)) return undefined; return [...arr, JSON.parse(JSON.stringify({ nombre: doc.nombre, url: doc.url, tipo: doc.tipo || "Hoja de corte", fecha: uxHoy() }))]; });
+      } else if (proyectoId) {
+        const lista = proyectosRef.current; const p = toArray(lista).find((x) => x.id === proyectoId);
+        if (p && !toArray(p.documentos).some((d) => d && d.url === doc.url)) saveProyectos(toArray(lista).map((x) => (x.id === proyectoId ? { ...x, documentos: [...toArray(x.documentos), { id: uid(), nombre: `${doc.tipo || "Hoja de corte"} — ${doc.nombre}`, tipo: doc.tipo || "Hoja de corte", url: doc.url, subidoEn: Date.now() }] } : x)));
+      }
+      return true;
+    } catch (e) { showToast("No se ha podido guardar en los documentos de la obra: " + e.message, "error"); return false; }
+  };
   // Control del día mueve una obra de día → cambia el día de inicio en el planning de Fábrica (el mismo dato que «Empezar el»)
   // (sobre el valor más reciente: «Mover todo el día» mueve varias seguidas y no deben pisarse)
   const moverDiaPlanningFab = (oid, fecha) => setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const next = { ...c, planning: { ...pl, fechasPlan: { ...(pl.fechasPlan || {}), [oid]: fecha } } }; persist("configVentanas", next); return next; });
@@ -6912,6 +6924,7 @@ export default function App() {
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
             onMeterEnPlanning={meterObraEnPlanning}
+            onAnadirDocObra={anadirDocumentoObra}
             uxExpedientes={uxExpedientes}
             onCrearPedidosPreparacion={crearPedidosPreparacion}
             configPlanning={configVentanas.planning}
@@ -6962,6 +6975,7 @@ export default function App() {
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
             onMeterEnPlanning={meterObraEnPlanning}
+            onAnadirDocObra={anadirDocumentoObra}
                 usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
                 renderIncidencias={veFabrica ? () => (
                   <IncidenciasFabricaModulo
@@ -15633,8 +15647,9 @@ async function leerEtiquetaPerfilConIA(file) {
   const base64 = dataUrl.split(",")[1];
   const prompt = [
     "Esto es la foto de la etiqueta pegada en un perfil de ventana de PVC (sale de la tronzadora).",
-    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
-    "- presupuesto: el número de presupuesto u obra, con punto de miles y versión si la trae (por ejemplo 4.533 o 4.533-2). Suele ir en la primera línea junto a la posición.",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"expediente\":\"\",\"fabricacion\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
+    "- presupuesto: el número de presupuesto (puede poner «Presupuesto», «Ppto» o ir en la primera línea, p. ej. 4.533 o 6670), con su versión si la trae.",
+    "- expediente: el número de expediente si pone «Expediente» o «EXP» (p. ej. 632). fabricacion: el número de fabricación o lote si pone «Fabricación» o «Fab» (p. ej. 1372).",
     "- posicion: la posición de la ventana (por ejemplo V03, P01.002). cliente: el nombre del cliente u obra. color: el color (por ejemplo Nogal).",
     "- codigo: las cifras impresas bajo el código de barras. Respuesta CORTA: solo el JSON, sin explicaciones.",
     "- La etiqueta puede estar girada: gírala mentalmente antes de leer. Copia SOLO lo que veas. Si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes cifras.",
@@ -15655,10 +15670,10 @@ async function leerEtiquetaPerfilConIA(file) {
   try { r = JSON.parse(ini !== -1 && fin > ini ? limpio.slice(ini, fin + 1) : limpio); } catch (e) {
     // Respuesta cortada: se saca lo que se pueda de lo que llegó
     const campo = (k) => ((limpio.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)`)) || [])[1] || "");
-    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
-    if (!r.presupuesto && !r.cliente) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
+    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), expediente: campo("expediente"), fabricacion: campo("fabricacion"), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
+    if (!r.presupuesto && !r.cliente && !r.expediente && !r.fabricacion && !r.posicion) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
   }
-  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
+  return { presupuesto: t(r.presupuesto), expediente: t(r.expediente).replace(/[^\d]/g, ""), fabricacion: t(r.fabricacion).replace(/[^\d]/g, ""), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
 }
 async function leerPegatinaCristalConIA(file) {
   const dataUrl = await reducirImagenParaIA(file);
@@ -22067,7 +22082,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -22846,7 +22861,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -52026,7 +52041,7 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
     onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar });
   };
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3">
+    <div className="fixed inset-0 z-[120] bg-black/40 flex items-end sm:items-center justify-center p-3">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center gap-2 text-base font-bold text-slate-800"><AlertOctagon size={18} className="text-rose-600" /> Incidencia de fábrica</div>
         {(prefill.ventana || prefill.obra) && (
@@ -52961,16 +52976,32 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   return { piezas, avisos };
 }
 // Primer hueco libre: mejor en un carro donde ya haya piezas de la misma obra
-function auxSitioLibre(cfg, est, ppto) {
+// Sitio en los carros para la siguiente pieza de una obra. La OBRA VA COMPLETA EN UN CARRO: al empezarla se elige un carro con sitio para
+// todas sus piezas (primero el de las obras del mismo día del planning) y ese sitio queda reservado; si ninguno la coge entera, el que tenga más
+// sitio (y se avisa: partida = true). pendPorPpto = piezas que le faltan por cortar a cada obra (incluida la que se va a cortar ahora).
+function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
   const carros = cfg.carros;
   const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro);
   const ocup = new Set(regs.map((e) => `${e.carro}|${e.hueco}`));
-  const orden = [...new Set([...regs.filter((e) => e.ppto === ppto).map((e) => e.carro), ...carros.map((c) => c.id)])];
-  for (const cid of orden) {
-    const c = carros.find((x) => x.id === cid);
-    if (!c) continue;
-    for (let h = 1; h <= (parseInt(c.huecos, 10) || 0); h++) if (!ocup.has(`${cid}|${h}`)) return { carro: cid, carroNombre: c.nombre, hueco: h };
-  }
+  const huecoLibre = (cid) => { const c = carros.find((x) => x.id === cid); if (!c) return null; for (let h = 1; h <= (parseInt(c.huecos, 10) || 0); h++) if (!ocup.has(`${cid}|${h}`)) return { carro: cid, carroNombre: c.nombre, hueco: h }; return null; };
+  // 1) La obra ya está empezada en un carro: sigue en ese carro
+  const suyo = regs.find((e) => e.ppto === ppto);
+  if (suyo) { const h = huecoLibre(suyo.carro); if (h) return h; }
+  // 2) Obra nueva (o su carro está lleno): carro con sitio para TODA la obra, contando lo reservado para las obras ya empezadas en él
+  const necesita = Math.max(1, parseInt(pendPorPpto[ppto], 10) || 1);
+  const libreEfectivo = (c) => {
+    const ocupados = regs.filter((e) => e.carro === c.id).length;
+    const empezadas = [...new Set(regs.filter((e) => e.carro === c.id && e.ppto !== ppto).map((e) => String(e.ppto)))];
+    const reservado = empezadas.reduce((t, pp) => t + (parseInt(pendPorPpto[pp], 10) || 0), 0);
+    return (parseInt(c.huecos, 10) || 0) - ocupados - reservado;
+  };
+  const mismoDia = new Set(toArray(pptosMismoDia).map(String));
+  const conDia = new Set(regs.filter((e) => mismoDia.has(String(e.ppto))).map((e) => e.carro));
+  const orden = [...carros.filter((c) => conDia.has(c.id)), ...carros.filter((c) => !conDia.has(c.id))];
+  for (const c of orden) { if (libreEfectivo(c) >= necesita) { const h = huecoLibre(c.id); if (h) return h; } }
+  // 3) Ninguno la coge entera: el de más sitio libre (la obra quedará partida)
+  const mejor = [...carros].sort((x, y) => libreEfectivo(y) - libreEfectivo(x)).find((c) => huecoLibre(c.id));
+  if (mejor) return { ...huecoLibre(mejor.id), partida: true, necesita };
   return null;
 }
 function imprimirAux(lista, cfg) {
@@ -53090,6 +53121,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     return out;
   }, [proyectos, uxExpedientes, hojas, cfg]);
   const [orden, setOrden] = useState("ventana");
+  const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
+  const [verSinDia, setVerSinDia] = useState(false);
+  const [perfilDia, setPerfilDia] = useState(""); // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
+  const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
   const [leyendo, setLeyendo] = useState(false);
@@ -53150,7 +53185,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p) => {
-    const sitio = auxSitioLibre(cfg, est, p.ppto);
+    const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
+    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto), pendPorPpto);
     if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
@@ -53158,7 +53194,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
-      setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}`);
+      setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
       pitidoCRM(true);
     } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
   };
@@ -53197,6 +53233,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     marcarComp(e.id, true); setMsg(`✓ ${e.nombre} ${auxMed(e.lCorte)} mm · ${auxVent(e) || ""}`); pitidoCRM(true);
   };
   const hojasLista = Object.values(hojas || {}).filter(Boolean).sort((a, b) => auxCmp(a.presupuesto, b.presupuesto));
+  // Día del planning de Fábrica de cada presupuesto (el primero en que se fabrica)
+  const diaPlan = {}; const nombrePlan = {};
+  Object.values((planF && planF.obras) || {}).forEach((f) => { if (!f || !f.inicio) return; toArray(f.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f.inicio < diaPlan[b]) { diaPlan[b] = f.inicio; nombrePlan[b] = String(f.nombre || "").replace(/ · en fabricación$/, ""); } }); });
+  const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
+  // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
+  const obrasAux = [];
+  pendientes.forEach((p) => { let g = obrasAux.find((x) => x.ppto === p.ppto); if (!g) { g = { ppto: p.ppto, obra: p.obra, cliente: p.cliente, dia: diaDe(p.ppto), piezas: [] }; obrasAux.push(g); } g.piezas.push(p); });
+  obrasAux.sort((a, b) => (a.dia ? 0 : 1) - (b.dia ? 0 : 1) || String(a.dia).localeCompare(String(b.dia)) || auxCmp(a.ppto, b.ppto));
+  const diasAux = [...new Set(obrasAux.filter((g) => g.dia).map((g) => g.dia))];
+  const pptosDelDia = (pp) => { const d = diaDe(pp); return d ? obrasAux.filter((g) => g.dia === d).map((g) => g.ppto) : []; };
+  const siguientePieza = orden === "perfil" ? null : (obrasAux[0] && obrasAux[0].piezas[0]) || null;
   const grupos = [];
   if (orden === "ventana") {
     pendientes.forEach((p) => {
@@ -53211,7 +53258,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
-      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
       <button type="button" onClick={() => cortar(p)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
     </div>
   );
@@ -53222,13 +53269,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
-        {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : grupos[0].filas[0])} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
+        {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0])} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {admin && <button type="button" onClick={() => setVerConfig(!verConfig)} className="text-sm font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">{verConfig ? "Cerrar configuración" : "Configuración"}</button>}
       </div>
       {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
       {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
       {hojasLista.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <details className="rounded-md border border-slate-200 bg-white px-3 py-1.5">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-600">📄 Hojas de corte cargadas ({hojasLista.length})</summary>
+        <div className="flex flex-wrap gap-2 mt-2">
           {hojasLista.map((h) => (
             <span key={h.presupuesto} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1">
               Ppto {pptoBonito(h.presupuesto)} v{h.version || "?"} · {h.fecha ? fmtDate(h.fecha) : ""}
@@ -53236,8 +53285,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             </span>
           ))}
         </div>
+        </details>
       )}
-      {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
+      {avisos.length > 0 && <details className="rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs"><summary className="px-3 py-2 font-bold cursor-pointer">⚠ {avisos.length} aviso{avisos.length === 1 ? "" : "s"} de las hojas de corte (pulsa para verlos)</summary><div className="px-3 pb-2 space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div></details>}
       {cruce.length > 0 && (() => {
         const porObra = [];
         cruce.forEach((c) => { let g = porObra.find((x) => x.obra === c.obra); if (!g) { g = { obra: c.obra, ppto: c.ppto, sinHoja: c.sinHoja, items: [] }; porObra.push(g); } g.items.push(c); });
@@ -53282,12 +53332,70 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           </div>
         )}
         {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
-        {orden === "ventana" ? grupos.map((g) => (
-          <div key={g.k} className="mb-3">
-            <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{auxVent(g.p)}{g.p.grupo ? ` · ${g.p.grupo}` : ""}{g.p.cliente ? ` · ${g.p.cliente}` : ""} <span className="font-normal text-xs text-slate-500">· Ppto {pptoBonito(g.p.ppto)} v{g.p.version || "?"}{g.p.obra ? ` · ${g.p.obra}` : ""}</span></div>
-            {g.filas.map((p) => fila(p, false))}
-          </div>
-        )) : planas.map((p) => fila(p, true))}
+        {orden === "ventana" ? (() => {
+          const tarjeta = (g) => {
+            const abierta = abiertaAux === g.ppto; const tipos = {}; g.piezas.forEach((p) => { tipos[p.nombre] = (tipos[p.nombre] || 0) + 1; });
+            const porVent = []; g.piezas.forEach((p) => { const k = `${auxVent(p)}|${p.grupo || ""}`; let x = porVent.find((y) => y.k === k); if (!x) { x = { k, p, filas: [] }; porVent.push(x); } x.filas.push(p); });
+            return (
+              <div key={g.ppto} className={`rounded-xl border-2 ${abierta ? "border-[#2E8B57] col-span-full" : "border-slate-200 hover:border-[#2E8B57]"} bg-white`}>
+                <button type="button" onClick={() => setAbiertaAux(abierta ? "" : g.ppto)} className="w-full text-left p-3">
+                  <div className="flex items-start gap-2"><div className="flex-1"><div className="text-lg font-extrabold text-slate-900">Ppto {pptoBonito(g.ppto)}</div>
+                    <div className="text-xs text-slate-600 leading-tight">{nombrePlan[digitosPresu(String(g.ppto).split("-")[0])] || g.obra || g.cliente || ""}</div></div>
+                    <div className="text-right"><div className="text-2xl font-extrabold text-[#2E8B57] leading-none">{g.piezas.length}</div><div className="text-[10px] text-slate-500">por cortar</div></div></div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}</div>
+                </button>
+                {abierta && (
+                  <div className="px-3 pb-3 border-t border-slate-100">
+                    <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => cortar(g.piezas[0])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
+                    {porVent.map((x) => (
+                      <div key={x.k} className="mb-2">
+                        <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{auxVent(x.p) || "—"}{x.p.grupo ? ` · ${x.p.grupo}` : ""}</div>
+                        {x.filas.map((p) => fila(p, false))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          };
+          const sinDia = obrasAux.filter((g) => !g.dia);
+          // «Cortar por perfil»: todas las piezas de las obras de ese día juntas por referencia y de mayor a menor medida; cada una va al hueco de su obra
+          const vistaPerfil = (gs) => {
+            const refs = []; gs.flatMap((g) => g.piezas).forEach((p) => { const k = `${p.ref}|${p.nombre}|${p.color || ""}`; let r = refs.find((x) => x.k === k); if (!r) { r = { k, p, filas: [] }; refs.push(r); } r.filas.push(p); });
+            refs.forEach((r) => r.filas.sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto)));
+            refs.sort((a, b) => b.filas.length - a.filas.length || auxCmp(a.p.ref, b.p.ref));
+            return (
+              <div className="space-y-2">
+                {refs.map((r) => (
+                  <div key={r.k} className="rounded-xl border-2 border-indigo-200 bg-white p-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                      <button type="button" onClick={() => cortar(r.filas[0])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {r.filas.map((x) => fila(x, true))}
+                  </div>
+                ))}
+              </div>
+            );
+          };
+          const botonPerfil = (k) => <button type="button" onClick={() => setPerfilDia(perfilDia === k ? "" : k)} className={`ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 ${perfilDia === k ? "bg-indigo-600 border-indigo-700 text-white" : "bg-white border-indigo-400 text-indigo-800"}`}>{perfilDia === k ? "✕ Volver a ver por obra" : "✂ Cortar por perfil (todas las obras del día)"}</button>;
+          return (
+            <div className="space-y-4">
+              {diasAux.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); return (
+                <div key={d}>
+                  <div className="flex flex-wrap items-center gap-1 mb-2"><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500 normal-case">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></span>{botonPerfil(d)}</div>
+                  {perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>}
+                </div>
+              ); })}
+              {sinDia.length > 0 && (
+                <div>
+                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
+                  {(verSinDia || !diasAux.length) && <div className="mt-2">{botonPerfil("sin")}</div>}
+                  {(verSinDia || !diasAux.length) && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia)}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
+                </div>
+              )}
+            </div>
+          );
+        })() : null}
+        {orden === "perfil" ? planas.map((p) => fila(p, true)) : null}
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -53789,7 +53897,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -54340,7 +54448,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
   const [verPlanUp, setVerPlanUp] = useState(false); // el PLANING del programa va plegado (opcional)
-  const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null);
+  const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
   const [verTerminado, setVerTerminado] = useState(false);
@@ -54466,7 +54574,13 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
         if (esTextoHojaCorte(t1)) { // es la HOJA DE CORTE: se lee con su lector (dibujos, medidas, accionamiento…)
           let url = ""; try { url = await subirArchivoAStorage(fichero, `documentos-entrega/controlDia-hoja-${limpia(o.d.key)}`); } catch (e) { /* se lee igual */ }
           const rh = await guardarHojaCD(o, bytesH, { nombre: fichero.name, url }, true);
-          if (!rh.ok) { if (rh.motivo !== "cancelado") alert("No he podido leer la hoja de corte: " + rh.motivo); } else alert(`Hoja de corte leída: ${rh.n} modelos (${rh.dibujos} con dibujo).`);
+          let enDocs = false;
+          if (rh.ok && url && onAnadirDocObra) {
+            const pr = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
+            const expId = o.d.tipo === "u" ? o.d.id : pr && pr.uxcarExpedienteId ? pr.uxcarExpedienteId : "";
+            enDocs = await onAnadirDocObra(expId ? { expId } : { proyectoId: pr ? pr.id : "" }, { nombre: fichero.name, url, tipo: "Hoja de corte" });
+          }
+          if (!rh.ok) { if (rh.motivo !== "cancelado") alert("No he podido leer la hoja de corte: " + rh.motivo); } else alert(`Hoja de corte leída: ${rh.n} modelos (${rh.dibujos} con dibujo).${enDocs ? "\nGuardada también en los documentos de la obra." : ""}`);
           return;
         }
       } catch (e) { /* no se ha podido mirar: sigue como carga de material */ }
@@ -54843,6 +54957,24 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     if (!window.confirm(`¿Quitar ${nombre} de «Todo lo planificado»?\n\nNo toca la obra ni el CRM: solo deja de salir en esta lista y en «Planning terminado».`)) return;
     try { const upd = {}; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === ko) { upd[`${rk}/borrado`] = true; upd[`${rk}/hechoEn`] = null; } }); if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
+  // Todo lo que identifica una obra para buscarla: nombre, presupuestos, expediente/referencia, lotes de fabricación y posiciones de sus ventanas
+  const lotesPorObra = () => { const m = new Map(); indice.forEach((h) => { if (!h || !h.dueno || !h.lote) return; const k = limpia(h.dueno.key); if (!m.has(k)) m.set(k, new Set()); m.get(k).add(String(h.lote.fab || "")); }); return m; };
+  const textoBusquedaObra = (o, lotesM) => {
+    const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
+    const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
+    const kE = e ? `u-${e.id}` : ""; const lotes = [...((lotesM && lotesM.get(limpia(o.d.key))) || []), ...((lotesM && kE && lotesM.get(limpia(kE))) || [])];
+    const h = hojaDeObra(o);
+    const partes = [o.d.nombre, p && p.nombre, p && p.presupuestoNumero, p && presupuestoDeObra(p), p && p.referencia, p && p.expediente, ...[...presCrmDe(o)],
+      e && e.numero, e && e.referencia, e && e.expediente, e && e.presupuesto, ...lotes.map((l) => `fab ${l}`),
+      ...[...o.viv.values()].flat().map((v) => v.pos), ...toArray(h && h.modelos).map((m) => m.pos)];
+    const t = partes.filter(Boolean).join(" · ").toLowerCase();
+    return { t, sinPuntos: t.replace(/(\d)\.(?=\d)/g, "$1") };
+  };
+  const coincideBusqueda = (o, q, lotesM) => {
+    const toks = String(q || "").toLowerCase().split(/\s+/).filter(Boolean); if (!toks.length) return true;
+    const { t, sinPuntos } = textoBusquedaObra(o, lotesM);
+    return toks.every((tk) => t.includes(tk) || sinPuntos.includes(tk.replace(/(\d)\.(?=\d)/g, "$1")));
+  };
   // FOTO DE LA ETIQUETA DEL PERFIL → busca la obra: 1) código de barras (si el navegador lo lee y está entre las piezas); 2) la IA lee el texto (presupuesto, cliente)
   const buscarObraPorFoto = async (file) => {
     if (!file) return;
@@ -54859,6 +54991,23 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       // el código impreso también puede ser el de una pieza de la pistola
       const hCod = r.codigo ? [r.codigo, r.codigo.slice(-12), r.codigo.slice(0, 12)].map((k) => indice.get(k)).find(Boolean) : null;
       if (hCod) { setQMeter(String(hCod.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ ${hCod.dueno.nombre} (por el código ${r.codigo})`); return; }
+      // Se prueba con cada dato leído (posición+lote, presupuesto, expediente, lote, posición) y se queda el que encuentre obra
+      const lotesM = lotesPorObra();
+      const presNum = ((r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
+      const intentos = [r.posicion && r.fabricacion ? `${r.posicion} fab ${r.fabricacion}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", r.posicion].filter(Boolean);
+      const todas = [...obras.values()].filter((o) => o.d.tipo !== "pl");
+      for (const q of intentos) {
+        const hits = todas.filter((o) => coincideBusqueda(o, q, lotesM));
+        if (!hits.length) continue;
+        const enPlan = hits.filter((o) => enFabrica.has(limpia(o.d.key)));
+        setQMeter(q);
+        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta (para marcar o poner una incidencia)
+        const yaDia = hits.map((o) => { const ko = limpia(o.d.key); const ds = Object.keys(asignTodas).filter((d) => asignTodas[d][ko]).sort(); const hoyF = new Date().toISOString().slice(0, 10); return { o, ko, d: ds.find((d) => d === hoyF) || ds.find((d) => d >= hoyF) || ds[ds.length - 1] }; }).find((x) => x.d);
+        setFotoObra(hits[0] ? { key: hits[0].d.key, nombre: hits[0].d.nombre, posicion: r.posicion || "" } : null);
+        if (yaDia) { setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false })); setTimeout(() => setIrObra(yaDia.ko), 300); }
+        setMsgFoto(`✓ Etiqueta: ${[r.posicion, r.presupuesto && `presupuesto ${r.presupuesto}`, r.expediente && `expediente ${r.expediente}`, r.fabricacion && `fabricación ${r.fabricacion}`, r.cliente].filter(Boolean).join(" · ")} → ${hits.slice(0, 3).map((o) => o.d.nombre).join(" / ")}${enPlan.length ? ` — OJO: ${enPlan.map((o) => o.d.nombre).join(", ")} ya está en el planning de Fábrica` : ""}`);
+        return;
+      }
       const pres = (r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "";
       if (pres) {
         const base = pres.replace(/\D/g, "").slice(0, 4);
@@ -54949,7 +55098,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className={`${grande ? "text-base" : "text-[11px]"} font-bold text-sky-100`}>{nH}/{nV || "?"}</span>
-                  <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`ml-auto rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
+                  <span className={`ml-auto ${grande ? "" : "scale-90 origin-right"}`}><BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} /></span>
+                  <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-1.5">
@@ -54984,6 +55134,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                                 : ih ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}</div><div className="text-xs">{ih.desc}</div></div> : null}
                             </button>
                             {textoNotaVentana(o, v, true)}
+                            <div className="mt-1 flex justify-center"><BotonIncidenciaFabrica prefill={{ obra: o.d.nombre, ventana: `${v.pos || ""}${v.medida ? " · " + v.medida : ""}`, ventanaId: v.id }} /></div>
                           </div>
                         );
                       })}
@@ -55011,10 +55162,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {onMeterEnPlanning && (() => {
         // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
-        const q = qMeter.trim().toLowerCase(); const qd = q.replace(/[^\d]/g, "");
+        const q = qMeter.trim().toLowerCase(); const qd = q.split(/\s+/).length === 1 ? q.replace(/[^\d]/g, "") : "";
+        const lotesBusq = verMeter && q ? lotesPorObra() : null;
         const cands = [...obras.values()].filter((o) => o.d.tipo === "p").map((o) => ({ o, p: toArray(proyectos).find((x) => x.id === o.d.id) }))
           .filter(({ o, p }) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) && !enFabrica.has(limpia(o.d.key)))
-          .filter(({ o, p }) => (q ? `${o.d.nombre} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase().includes(q) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
+          .filter(({ o, p }) => (q ? coincideBusqueda(o, q, lotesBusq) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
           .slice(0, 30);
         const fechaM = diaMeter || dia;
         return (
@@ -55023,12 +55175,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             {verMeter && (
               <div className="mt-2 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Buscar obra o presupuesto (6510, Juan…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Presupuesto, expediente, fab., ventana o nombre (6670, 632, V01.403…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
                   <input ref={fotoEtqRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; buscarObraPorFoto(f); }} />
                   <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
                   <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
                 </div>
-                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1">{msgFoto}</div>}
+                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1 flex flex-wrap items-center gap-2"><span className="flex-1">{msgFoto}</span>
+                  {fotoObra && <BotonIncidenciaFabrica prefill={{ obra: fotoObra.nombre, ventana: fotoObra.posicion }} />}</div>}
                 <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
                 <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
                   {cands.map(({ o, p }) => { const m = materialObra(o); return (
@@ -55363,6 +55516,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
                 ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
                 : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
+              <BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} />
               {arrastradas[limpia(o.d.key)] && !(asignTodas[dia] || {})[limpia(o.d.key)] ? <span title="No se terminó: sigue saliendo cada día hasta que esté terminada" className="px-2 py-2 text-[11px] font-bold text-amber-700">⏩ Sin terminar desde el {fmtDate(arrastradas[limpia(o.d.key)])}</span>
                 : enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
                 : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
@@ -55606,7 +55760,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
 }
 
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
-  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
@@ -55648,7 +55802,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
