@@ -54114,6 +54114,20 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
   const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta, hechoEn } }
+  // Desde cuándo se cuenta (se empezó de cero el día que se pidió: solo obras del calendario). Lo marcado antes no cuenta.
+  const metaReg = useObjetoFb("controlDiaRegistroMeta"); // { desde: "AAAA-MM-DD", v: 2 }
+  const desdeReg = (metaReg && metaReg.desde) || "9999-12-31";
+  useEffect(() => {
+    (async () => {
+      try {
+        const m = (await fbGet(ref(fbDb, "controlDiaRegistroMeta"))).val();
+        if (m && m.v >= 2) return;
+        // Empezar de cero: fuera lo que entró del PLANING y de cargas sueltas (no había nada terminado)
+        await fbSet(ref(fbDb, "controlDiaRegistro"), null);
+        await fbSet(ref(fbDb, "controlDiaRegistroMeta"), { desde: new Date().toISOString().slice(0, 10), v: 2, en: Date.now() });
+      } catch (e) { /* se reintenta al volver a entrar */ }
+    })();
+  }, []);
   // Día en que quedó TERMINADA cada obra (lo apuntado en el registro, o la fecha en que salió de fábrica en el CRM)
   const terminadaEn = (ko) => {
     const r = Object.values(registro || {}).find((x) => x && x.obraKey === ko && x.hechoEn); if (r) return r.hechoEn;
@@ -54130,7 +54144,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     }));
   }
   const asign = { ...(asignTodas[dia] || {}), ...Object.fromEntries(Object.keys(arrastradas).map((k) => [k, true])) };
-  const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|") + "#" + Object.keys(ventanasGuardadas || {}).sort().join(",");
+  const firmaReg = metaReg && metaReg.v >= 2 ? desdeReg + "#" + Object.entries(asignTodas).filter(([f]) => f >= desdeReg).map(([f, d]) => f + ":" + Object.keys(d).sort().join(",")).join("|") : "";
   // ¿Este presupuesto ya está FABRICADO en el registro? (para no volver a meterlo). Devuelve la fila del registro o null
   const normPresR = (t) => String(t || "").replace(/\./g, "").replace(/\s+/g, "").toLowerCase();
   const yaFabricado = (pres, obraKeyPropia) => {
@@ -54143,10 +54157,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       try {
         const ya = (await fbGet(ref(fbDb, "controlDiaRegistro"))).val() || {};
         const hoyR = new Date().toISOString().slice(0, 10); const upd = {};
-        Object.entries(planPres || {}).forEach(([pk, pr]) => { if (!pr || ya[pk]) return; upd[pk] = { pres: pr.pres || pk, nombre: pr.nombre || `${pr.pres || pk}${pr.cliente ? " · " + String(pr.cliente).replace(/^\d+-/, "") : ""}`, ventanas: toArray(pr.ventanas).length, obraKey: pr.obraKey || limpia(`pl-${pk}`), alta: hoyR }; });
         const conObra = new Set(Object.values({ ...ya, ...upd }).map((r) => r && r.obraKey).filter(Boolean));
-        const obrasCarga = Object.keys(ventanasGuardadas || {}).map((ko) => [hoyR, { [ko]: true }]);
-        [...Object.entries(asignTodas), ...obrasCarga].forEach(([f, d]) => Object.keys(d).forEach((ko) => {
+        // Solo las obras que están en el calendario (días desde que se empezó a contar)
+        Object.entries(asignTodas).filter(([f]) => f >= desdeReg).forEach(([f, d]) => Object.keys(d).forEach((ko) => {
           if (conObra.has(ko) || ya[`o_${ko}`] || upd[`o_${ko}`]) return;
           const o = obras.get ? [...obras.values()].find((x) => limpia(x.d.key) === ko) : null; if (!o) return;
           upd[`o_${ko}`] = { pres: [...presConVersion(o)][0] || "", nombre: o.d.nombre, ventanas: idsDe(o).length, obraKey: ko, alta: f };
@@ -54556,7 +54569,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           if (Object.values(registro || {}).some((x) => x && x.obraKey === r.obraKey && x.borrado)) return;
           const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
           const finalV = {}; const cuando = {};
-          Object.keys(marcasTodas || {}).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
+          Object.keys(marcasTodas || {}).filter((d) => d >= desdeReg).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
           const verdes = new Set(Object.keys(finalV).filter((id) => finalV[id] === 1));
           const ultimo = [...verdes].map((id) => cuando[id]).sort().pop() || "";
           const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
