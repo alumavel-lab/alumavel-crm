@@ -54156,6 +54156,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     })();
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
+  // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
+  const hojasAuxCD = useObjetoFb("auxiliaresHojas");
   const [verTerminado, setVerTerminado] = useState(false);
   const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
@@ -54534,6 +54536,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+  // ¿Qué lleva esta ventana? Se mira su modelo (V01…) en la hoja de corte de su presupuesto y su descripción
+  const extrasVentana = (o, v) => {
+    const pp = pptosPresupuesto(o); const textos = [];
+    const modelo = String((v && (v.tip || v.pos)) || "").trim().toUpperCase().split(".")[0].split(" ")[0];
+    Object.entries(hojasAuxCD || {}).forEach(([k, h]) => {
+      if (!h || !pp.has(digitosPresu(k))) return;
+      toArray(h.modelos).filter((m) => m && String(m.modelo || "").toUpperCase() === modelo).forEach((m) => toArray(m.filas).forEach((f) => textos.push(`${f.desc || ""} ${f.ref || ""}`)));
+    });
+    const inf = infoVent(o, v); if (inf && inf.desc) textos.push(inf.desc);
+    const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
+    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
+  };
   // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
   const filasRegistro = () => {
     const vistos = new Set(); const filas = [];
@@ -55054,6 +55068,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         <div>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-[11px] font-bold opacity-80">{v.tip}</div> : null}
                         {v.medida ? <div className="text-[11px] font-normal opacity-80">{v.medida}</div> : null}
+                        {(() => { const ex = extrasVentana(o, v); return ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null; })()}
                         {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, false)}
