@@ -53156,6 +53156,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [cadena, setCadena] = useState(null); // { tipo: "global" | "obra" | "ref", ppto, k, dias, ultimo: cod, nombre }
   const codigoRef = useRef(null);
   const recienCortadas = useRef(new Set());
+  const codsTanda = useRef(new Set()); // códigos AX impresos en esta cadena (cualquiera de ellos, leído, confirma y sigue)
+  const [ultLectura, setUltLectura] = useState(null); // diagnóstico: { cod, at, como }
   // En cadena, la lectura de la pistola se recoge ESTÉ DONDE ESTÉ EL CURSOR (al imprimir, la ventana de impresión se lo lleva):
   // la pistola teclea muy rápido y acaba en Enter; si lo tecleado es un código AX…, se trata como lectura
   const bufPistola = useRef({ t: "", ult: 0 });
@@ -53164,8 +53166,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     if (!cadena) return undefined;
     const onKey = (e) => {
       if (codigoRef.current && document.activeElement === codigoRef.current) return; // ya lo recoge la casilla
-      const tag = (document.activeElement && document.activeElement.tagName) || "";
-      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return; // escribiendo en otro campo
+      // también si el cursor está en otra casilla: solo cuenta si se teclea muy rápido (pistola) un código AX… y Enter
       const b = bufPistola.current; const ahora = Date.now();
       if (ahora - b.ult > 120) b.t = ""; b.ult = ahora;
       if (e.key === "Enter") { const c = b.t.trim(); b.t = ""; if (/^\*?AX\d{3,}\*?$/i.test(c) && buscarCodigoRef.current) { e.preventDefault(); buscarCodigoRef.current(c); } return; }
@@ -53248,7 +53249,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
-      recienCortadas.current.add(p.id);
+      recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
       setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
@@ -53271,12 +53272,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     }
     return null;
   };
+  // «✓ Hecha · sacar la siguiente» (lo mismo que leer con la pistola la última pegatina)
+  const confirmarYSiguiente = () => { if (cadena && cadena.ultimo) buscarCodigo(cadena.ultimo); };
   const buscarCodigo = (t) => {
     const c = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, "");
     setCodigo("");
     if (!c) return;
-    // Es la pegatina que acaba de salir: queda confirmada y sale la siguiente de la tanda
-    if (cadena && cadena.ultimo && c === String(cadena.ultimo).toUpperCase()) {
+    setUltLectura({ cod: c, at: Date.now() });
+    // Es una pegatina de esta tanda (la última o una anterior sin leer): queda confirmada y sale la siguiente
+    if (cadena && cadena.ultimo && (c === String(cadena.ultimo).toUpperCase() || codsTanda.current.has(c))) {
       const e0 = Object.entries(est || {}).map(([id, x]) => ({ ...x, id })).find((x) => x && String(x.cod).toUpperCase() === c);
       if (e0) guardarLinea(`auxiliaresPiezas/${e0.id}/leida`, { at: Date.now(), por: quien || "" });
       pitidoCRM(true);
@@ -53359,8 +53363,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 text-white">
           <span className="text-lg">🔫</span>
           <span className="flex-1 text-sm font-bold">En cadena: corta «{cadena.nombre}» ({cadena.ultimo}), pégale la etiqueta y pásale la pistola → queda confirmada y sale la siguiente{cadena.tipo === "ref" ? " de esta referencia" : cadena.tipo === "obra" ? ` de la obra ${pptoBonito(cadena.ppto)}` : " del planning"}.</span>
+          <button type="button" onClick={confirmarYSiguiente} className="text-sm font-extrabold px-3 py-2 rounded-lg bg-emerald-500 text-white">✓ Hecha · sacar la siguiente</button>
           <button type="button" onClick={() => { if (codigoRef.current) codigoRef.current.focus(); }} className="text-xs font-bold px-2 py-1 rounded bg-white/15">Poner el cursor en la pistola</button>
-          <button type="button" onClick={() => setCadena(null)} className="text-xs font-bold px-2 py-1 rounded bg-rose-600">Parar cadena</button>
+          <button type="button" onClick={() => { setCadena(null); codsTanda.current = new Set(); }} className="text-xs font-bold px-2 py-1 rounded bg-rose-600">Parar cadena</button>
+          <span className="w-full text-xs text-slate-300">Esperando la lectura de <b className="text-white">{cadena.ultimo}</b> · Última lectura de la pistola: {ultLectura ? <b className={String(ultLectura.cod) === String(cadena.ultimo).toUpperCase() ? "text-emerald-300" : "text-amber-300"}>{ultLectura.cod} ({Math.max(0, Math.round((Date.now() - ultLectura.at) / 1000))} s)</b> : <b className="text-rose-300">ninguna todavía (si pitas y no cambia, la lectura no está llegando al CRM)</b>}</span>
         </div>
       )}
       {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
@@ -53396,7 +53402,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       })()}
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <input ref={codigoRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
+          <input ref={codigoRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); buscarCodigo(e.currentTarget.value); } }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
           <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar ventana, piso, obra, perfil…" className={inputCls + " w-60"} />
           <select value={orden} onChange={(e) => setOrden(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-2 bg-white">
             <option value="ventana">Ordenar por ventana</option>
@@ -53524,7 +53530,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             <option value="">— elige la obra (presupuesto) —</option>
             {obrasComp.map((n) => <option key={n} value={n}>Ppto {pptoBonito(n)}{(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) ? " · " + (hojas[n].referencia || hojas[n].cliente) : ""}</option>)}
           </select>
-          {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") leerComp(codComp); }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
+          {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); leerComp(e.currentTarget.value); } }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
         </div>
         {obraComp && (
           <div className="mt-3">
