@@ -42891,6 +42891,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   }, [codigo]);
   const capC0 = capacidadCaballetes(config);
   const [ventanaEsc, setVentanaEsc] = useState(null); // última ventana leída con la pistola
+  // CARGAR TICANDO (mientras la pistola no lee las etiquetas de las ventanas): palet elegido (por su código o tocándolo) + obra + tocar ventanas
+  const [ticPalet, setTicPalet] = useState(""); const [ticObra, setTicObra] = useState(""); const [ticCod, setTicCod] = useState(""); const [ticAbierto, setTicAbierto] = useState(true);
   const [prepObra, setPrepObra] = useState("");
   const [prepN, setPrepN] = useState("");
   const [busqV, setBusqV] = useState(""); // buscador de ventanas
@@ -43559,6 +43561,74 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   };
   const filtrados = escaneadoId ? lista.filter((c) => c.id === escaneadoId) : lista.filter((c) => (!almacenSel || almacenDe(c) === almacenSel) && (!filtro || (filtro === "libre" ? (c.estado || "libre") === "libre" : c.estado === filtro)));
 
+  // ---- CARGAR TICANDO: mismo dato que la pistola (las ventanas entran en el caballete con colocarVentana) ----
+  const ventanasPorObraTic = (() => {
+    const m = new Map();
+    indicePiezas.forEach((hh) => {
+      if (!hh || !hh.ventana || !hh.dueno || hh.dueno.tipo === "s") return;
+      const v = hh.ventana; if (v.modelo && String(hh.pieza.c) !== baseDe(v)) return; // una entrada por ventana
+      const k = hh.dueno.key; if (!m.has(k)) m.set(k, { dueno: hh.dueno, vs: new Map() });
+      if (!m.get(k).vs.has(v.id)) m.get(k).vs.set(v.id, { v, lote: hh.lote });
+    });
+    return m;
+  })();
+  const panelTicar = () => {
+    const cabs = cabsAhora().filter((c) => (c.estado || "libre") !== "fuera");
+    const palet = cabs.find((c) => c.id === ticPalet) || null;
+    const elegirPaletCod = (t) => { const q = String(t || "").trim().toUpperCase().replace(/^\*|\*$/g, ""); setTicCod(""); if (!q) return; const c = cabs.find((x) => [x.numero, x.codigo, x.id].some((y) => String(y || "").toUpperCase() === q || String(y || "").toUpperCase().replace(/\D/g, "") === q.replace(/\D/g, "") && q.replace(/\D/g, ""))); if (c) { setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); avisar(true, `Palet ${c.numero}`); } else avisar(false, `No encuentro el palet «${q}»`); };
+    const obrasTic = [...ventanasPorObraTic.values()].map((x) => ({ key: x.dueno.key, nombre: obraDeDueno(x.dueno).nombre, n: x.vs.size, dueno: x.dueno, vs: [...x.vs.values()] }))
+      .filter((o) => { const pr = String(o.key).startsWith("p-") ? toArray(proyectos).find((p) => `p-${p.id}` === o.key) : null; return !pr || !["Entregado", "Cancelado"].includes(pr.estadoTrabajo); })
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
+    const obraSel = obrasTic.find((o) => o.key === ticObra) || null;
+    const enCab = (w) => cabs.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w))) || null;
+    const wDe = ({ v, lote }, dueno) => { const total = totalVentana(v); return { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total, persiana: persianaDeDueno(dueno.key), escaneadas: Array.from({ length: total }, (_, i) => `tic${i + 1}`), ticada: true }; };
+    const tocar = (x) => {
+      const w = wDe(x, obraSel.dueno); const ya = enCab(w);
+      if (ya) { if (window.confirm(`${w.pos} está cargada en el palet ${ya.numero}. ¿Quitarla del palet?`)) quitarVentana(w); return; }
+      if (!palet) { avisar(false, "Primero elige el palet (lee su código o tócalo)"); return; }
+      const obra = obraDeDueno(obraSel.dueno);
+      if (palet.obra && palet.obra.key && !cabObraDe(palet, obra) && (palet.estado || "libre") !== "libre") { avisar(false, `El palet ${palet.numero} es de otra obra (${palet.obra.nombre || ""})`); return; }
+      if (!hayHueco(palet, w) && !window.confirm(`El palet ${palet.numero} parece lleno. ¿Meter ${w.pos} igualmente?`)) return;
+      if (colocarVentana(w, obra, palet.id)) avisar(true, `✓ ${w.pos} cargada en ${palet.numero}`);
+    };
+    const nCarg = obraSel ? obraSel.vs.filter((x) => enCab(wDe(x, obraSel.dueno))).length : 0;
+    return (
+      <div className="bg-white border-2 border-emerald-500 rounded-xl p-3 space-y-3">
+        <button type="button" onClick={() => setTicAbierto(!ticAbierto)} className="w-full text-left text-base font-extrabold text-emerald-900">{ticAbierto ? "▼" : "▶"} ✋ Cargar en el palet ticando las ventanas</button>
+        {ticAbierto && (<>
+          <div className="space-y-1">
+            <div className="text-sm font-bold text-slate-700">1. El palet: lee su código de barras o tócalo</div>
+            <input value={ticCod} onChange={(e) => setTicCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); elegirPaletCod(e.currentTarget.value); } }} placeholder="Código del palet (pistola) y Enter" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+            <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+              {cabs.sort(natNum).map((c) => { const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
+                <button key={c.id} type="button" onClick={() => { setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); }} className={`px-2.5 py-1.5 rounded-lg border-2 text-xs font-bold ${sel ? "bg-emerald-600 border-emerald-800 text-white" : libre ? "bg-white border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-900"}`}>{c.numero}{c.obra && c.obra.nombre ? ` · ${String(c.obra.nombre).slice(0, 18)}` : libre ? " · libre" : ""} · {toArray(c.ventanas).length}</button>
+              ); })}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-sm font-bold text-slate-700">2. La obra</div>
+            <select value={ticObra} onChange={(e) => setTicObra(e.target.value)} className="w-full sm:w-96 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+              <option value="">— elige la obra —</option>
+              {obrasTic.map((o) => <option key={o.key} value={o.key}>{o.nombre} ({o.n} ventanas)</option>)}
+            </select>
+          </div>
+          {obraSel && (
+            <div className="space-y-1">
+              <div className="text-sm font-bold text-slate-700">3. Toca cada ventana que entra en el palet {palet ? <span className="text-emerald-700">{palet.numero}</span> : <span className="text-rose-600">(elige antes el palet)</span>} · <span className="text-slate-500">{nCarg} de {obraSel.vs.length} cargadas</span></div>
+              <div className="flex flex-wrap gap-1.5">
+                {[...obraSel.vs].sort((a, b) => String(a.v.pos).localeCompare(String(b.v.pos), "es", { numeric: true })).map((x) => { const w = wDe(x, obraSel.dueno); const c = enCab(w); return (
+                  <button key={x.v.id} type="button" onClick={() => tocar(x)} className={`min-w-[5.5rem] px-2.5 py-2 rounded-lg border-2 text-sm font-bold text-center ${c ? "bg-emerald-600 border-emerald-800 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                    <div>{c ? "✓ " : ""}{x.v.pos || "·"}</div>{x.v.medida ? <div className="text-[10px] font-normal opacity-80">{x.v.medida}</div> : null}{c ? <div className="text-[10px] font-semibold">{c.numero}</div> : null}
+                  </button>
+                ); })}
+              </div>
+            </div>
+          )}
+          <p className="text-[11px] text-slate-500">Es lo mismo que pasar la pistola: la ventana queda cargada en ese palet y cuenta para Salidas y Reparto. Solo salen las obras con etiquetas de la línea cargadas.</p>
+        </>)}
+      </div>
+    );
+  };
   if (editando) {
     const c = editando;
     const setC = (patch) => setEditando({ ...c, ...patch });
@@ -43668,6 +43738,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
         <AvisoBusquedaVentana indice={indicePiezas} ubic={ubicAlm} />
         <PedirVentanaLinea indice={indicePiezas} ubic={ubicAlm} quien="Carga" />
+        {panelTicar()}
         <div className="bg-white border-2 border-slate-300 rounded-xl p-4">
           <div className="text-base font-bold text-slate-800 mb-2">Pasa la pistola por la etiqueta de la ventana</div>
           <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Etiqueta de la ventana…" className="w-full border-2 border-slate-300 focus:border-[#2E8B57] rounded-lg px-4 py-4 text-lg outline-none" />
@@ -43771,6 +43842,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {!almacenes.some((a) => a.dueno === "uxcar") && <p className="text-xs text-slate-500">Para Uxcar: pulsa "Añadir almacén de Uxcar" y ponle el nombre (Valencia, Palma de Mallorca…). Luego sale en cada caballete al elegir almacén.</p>}
         </div>
       )}
+      {panelTicar()}
       <div className="bg-white border-2 border-slate-300 rounded-lg p-3 flex flex-wrap items-center gap-2">
         <span className="text-sm font-semibold text-slate-700">Escanear caballete:</span>
         <input ref={inputScanRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} autoFocus placeholder="Pasa la pistola (caballete o etiqueta de una ventana) o escribe C-03 y pulsa Enter" className="flex-1 min-w-[220px] border border-slate-300 rounded-md px-3 py-2 text-sm" />
