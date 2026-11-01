@@ -52838,7 +52838,7 @@ const AUX_CFG_DEFECTO = {
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
-  bocadoCm: 8, anchoMm: 100, altoMm: 40,
+  bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 3, margenDerMm: 2, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
 };
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
@@ -52850,6 +52850,8 @@ const auxCfgDe = (c) => {
     carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
     bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
+    margenIzqMm: x.margenIzqMm != null && x.margenIzqMm !== "" ? parseFloat(x.margenIzqMm) : 3, margenDerMm: x.margenDerMm != null && x.margenDerMm !== "" ? parseFloat(x.margenDerMm) : 2,
+    margenSupMm: x.margenSupMm != null && x.margenSupMm !== "" ? parseFloat(x.margenSupMm) : 1.5, escalaEt: parseFloat(x.escalaEt) || 100, negativoEt: !!x.negativoEt,
   };
 };
 const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
@@ -53004,29 +53006,37 @@ function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
   if (mejor) return { ...huecoLibre(mejor.id), partida: true, necesita };
   return null;
 }
+// Etiqueta de auxiliares (impresora térmica: solo negro). Lo importante en grande y en negrita; el carro y la posición en un recuadro grueso
+// (o en negativo si se elige: depende de que el navegador imprima fondos). Márgenes y tamaño ajustables en Auxiliares → Configuración.
 function imprimirAux(lista, cfg) {
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const ancho = cfg.anchoMm, alto = cfg.altoMm;
+  const mi = Math.max(0, parseFloat(cfg.margenIzqMm != null ? cfg.margenIzqMm : 3) || 0), md = Math.max(0, parseFloat(cfg.margenDerMm != null ? cfg.margenDerMm : 2) || 0), ms = Math.max(0, parseFloat(cfg.margenSupMm != null ? cfg.margenSupMm : 1.5) || 0);
+  const k = Math.max(0.5, Math.min(1.6, (parseFloat(cfg.escalaEt) || 100) / 100)); const f = (mm) => `${(mm * k).toFixed(2)}mm`;
+  const util = Math.max(20, ancho - mi - md);
+  const neg = !!cfg.negativoEt;
   const etiqueta = (p) => `<html><head><meta charset="utf-8"><title>Etiqueta auxiliar</title><style>
     @page { size: ${ancho}mm ${alto}mm; margin: 0; }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
-    .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: 1.2mm 1.5mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; align-items: center; }
-    .r1 { width: 100%; display: flex; justify-content: space-between; gap: 2mm; white-space: nowrap; font-size: 4.4mm; font-weight: bold; line-height: 1.1; }
-    .med { width: 100%; font-size: 7.5mm; font-weight: bold; line-height: 1.05; white-space: nowrap; }
-    .r2 { width: 100%; font-size: 2.9mm; line-height: 1.1; white-space: nowrap; overflow: hidden; }
-    .sitio { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 2mm; font-size: 5.2mm; font-weight: bold; line-height: 1.15; white-space: nowrap; overflow: hidden; background: #000; color: #fff; padding: 0 1mm; }
-    .sitio .lugar { flex: 0 0 auto; }
-    .sitio .pasos { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 3mm; font-weight: normal; }
-    .bar { margin-top: 0.6mm; line-height: 0; }
-    .dig { font-size: 3mm; letter-spacing: 0.5mm; line-height: 1.1; margin-top: 0.3mm; }
+    .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: ${ms}mm ${md}mm 0.8mm ${mi}mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; }
+    .r1 { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; white-space: nowrap; line-height: 1.05; }
+    .pos { font-size: ${f(6)}; font-weight: 900; }
+    .nom { font-size: ${f(3.6)}; font-weight: bold; overflow: hidden; text-overflow: ellipsis; }
+    .med { font-size: ${f(8.5)}; font-weight: 900; line-height: 1; white-space: nowrap; }
+    .r2 { font-size: ${f(2.8)}; line-height: 1.12; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sitio { margin-top: 0.6mm; display: flex; align-items: center; justify-content: space-between; gap: 2mm; white-space: nowrap; overflow: hidden; border: 0.7mm solid #000; padding: 0.2mm 1.2mm; ${neg ? "background: #000; color: #fff;" : ""} }
+    .sitio .lugar { font-size: ${f(5.4)}; font-weight: 900; }
+    .sitio .pasos { font-size: ${f(3)}; font-weight: bold; overflow: hidden; }
+    .bar { margin-top: 0.6mm; line-height: 0; text-align: center; }
+    .dig { font-size: ${f(2.8)}; letter-spacing: 0.4mm; line-height: 1.1; text-align: center; }
   </style></head><body><div class="et">
-    <div class="r1"><span>${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span><span>${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
+    <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span><span class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
     <div class="med">${esc(auxMed(p.lCorte))} mm</div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""} · Ppto ${pptoBonito(p.ppto)}${p.version ? ` v${p.version}` : ""}${p.fab ? ` · Fab ${p.fab}` : ""}`)}</div>
-    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POSICIÓN ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
-    <div class="bar">${svgCode128Mm(p.cod, 8, 0.5, ancho - 6)}</div>
+    <div class="r2"><b>Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}</b>${esc(`${p.fab ? ` · Fab ${p.fab}` : ""} · Ref ${p.ref}${p.color ? ` · ${p.color}` : ""}`)}</div>
+    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
+    <div class="bar">${svgCode128Mm(p.cod, 7, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
   imprimirSecuencia(lista.map(etiqueta), { sinAviso: true }, "las etiquetas");
@@ -53068,6 +53078,20 @@ function AuxConfigPanel({ cfg, onGuardar }) {
           ))}
         </div>
         <button type="button" onClick={() => setB({ ...b, carros: [...b.carros, { id: uid(), nombre: `Carro ${b.carros.length + 1}`, huecos: 20 }] })} className="mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">+ Añadir carro</button>
+      </div>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+        <div className="text-sm font-bold text-slate-800">🏷 Etiqueta (ajusta si se corta por un lado o sale pequeña)</div>
+        <div className="flex flex-wrap gap-3 text-sm text-slate-700">
+          <label className="flex items-center gap-1">Margen izquierdo <input type="number" step="0.5" value={b.margenIzqMm} onChange={(e) => setB({ ...b, margenIzqMm: e.target.value })} className={campo + " w-16"} /> mm</label>
+          <label className="flex items-center gap-1">Margen derecho <input type="number" step="0.5" value={b.margenDerMm} onChange={(e) => setB({ ...b, margenDerMm: e.target.value })} className={campo + " w-16"} /> mm</label>
+          <label className="flex items-center gap-1">Margen arriba <input type="number" step="0.5" value={b.margenSupMm} onChange={(e) => setB({ ...b, margenSupMm: e.target.value })} className={campo + " w-16"} /> mm</label>
+          <label className="flex items-center gap-1">Tamaño de letra <input type="number" step="5" min="50" max="160" value={b.escalaEt} onChange={(e) => setB({ ...b, escalaEt: e.target.value })} className={campo + " w-16"} /> %</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={!!b.negativoEt} onChange={(e) => setB({ ...b, negativoEt: e.target.checked })} /> Carro y posición en negativo (blanco sobre negro)</label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => imprimirAux([{ cod: "AX000000", ppto: "6510", version: "2", ventanaPos: "V05.204", nombre: "Batiente (Cortizo)", lCorte: 1471, ref: "708000", color: "BLANCO", grupo: "P2", cliente: "VALENCIA - EXPEDIENTE 1072", fechaDoc: "29/10/2026", fab: "5.388", carroNombre: "Carro 2", hueco: 7, pasosTxt: "" }], { ...cfg, ...b, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40 })} className="text-sm font-bold px-3 py-1.5 rounded-md border-2 border-slate-700 bg-white">🖨 Imprimir etiqueta de prueba</button>
+          <span className="text-xs text-slate-500">Se corta por la izquierda → sube el margen izquierdo. Si el negativo sale en blanco: en la ventana de imprimir activa «Gráficos de fondo», o desmárcalo (sale con recuadro).</span>
+        </div>
       </div>
       <div className="flex flex-wrap gap-4 text-sm text-slate-700">
         <label className="flex items-center gap-1.5">Bocado: cm a cada lado del eje <input type="number" value={b.bocadoCm} onChange={(e) => setB({ ...b, bocadoCm: e.target.value })} className={campo + " w-16"} /></label>
@@ -53214,7 +53238,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const guardarCfg = (b) => guardarLinea("auxiliaresConfig", JSON.parse(JSON.stringify({
     refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
-    bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
+    bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40,
+    margenIzqMm: parseFloat(b.margenIzqMm) || 0, margenDerMm: parseFloat(b.margenDerMm) || 0, margenSupMm: parseFloat(b.margenSupMm) || 0, escalaEt: parseFloat(b.escalaEt) || 100, negativoEt: !!b.negativoEt, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
   }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); });
   // ---- COMPROBAR: revisar por obra que todas las piezas están y ticarlas (a mano o con la pistola) ----
   const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(Boolean).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
