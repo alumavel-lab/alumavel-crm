@@ -4281,12 +4281,30 @@ export default function App() {
   useEffect(() => {
     if (!currentUser || loading) return;
     const patch = {};
+    // Proveedor de siempre de cada tipo (Cristales / Persianas): el que más se repite en los pedidos que sí lo tienen.
+    // A los pedidos SIN proveedor se les pone ese (se puede cambiar en el pedido).
+    const habitual = {};
+    ["Cristales", "Persianas"].forEach((tipo) => {
+      const cuenta = new Map();
+      toArray(uxPedidos).forEach((q) => { if (q && q.tipo === tipo && q.proveedorNombre) { const k = String(q.proveedorNombre).trim().toLowerCase(); const c = cuenta.get(k) || { n: 0, q }; c.n++; if ((q.creadoAt || 0) > (c.q.creadoAt || 0)) c.q = q; cuenta.set(k, c); } });
+      const top = [...cuenta.values()].sort((a, b) => b.n - a.n)[0];
+      if (top) habitual[tipo] = top.q;
+    });
+    toArray(uxPedidos).forEach((p) => {
+      if (!p || !p.id || p.recibido || p.proveedorNombre || p.proveedorId || !habitual[p.tipo]) return;
+      const h = habitual[p.tipo];
+      patch[`pedidos/${p.id}/proveedorId`] = h.proveedorId || "";
+      patch[`pedidos/${p.id}/proveedorNombre`] = h.proveedorNombre;
+      patch[`pedidos/${p.id}/proveedorEmail`] = h.proveedorEmail || "";
+      patch[`pedidos/${p.id}/proveedorMovil`] = h.proveedorMovil || "";
+      patch[`pedidos/${p.id}/proveedorAuto`] = "el habitual de " + String(p.tipo || "").toLowerCase();
+    });
     toArray(uxPedidos).forEach((p) => {
       if (!p || !p.id || uxPedidoYaMandado(p) || uxEnviadoAutoRef.current.has(p.id)) return;
       const k = p.tipo === "Cristales" ? "vidrios" : p.tipo === "Persianas" ? "compactos" : "";
       const exps = toArray(p.expedientes).map((x) => toArray(uxExpedientes).find((e) => e && e.id === x.expedienteId)).filter(Boolean);
       const llegado = p.recibido || p.recepcion || (k && exps.length && exps.every((e) => uxEnAlmacen(e, k)));
-      const completo = !!(p.proveedorNombre || p.proveedorId) && !!p.llegadaPrevista;
+      const completo = !!(p.proveedorNombre || p.proveedorId || patch[`pedidos/${p.id}/proveedorNombre`]) && !!p.llegadaPrevista;
       if (!llegado && !completo) return;
       uxEnviadoAutoRef.current.add(p.id);
       patch[`pedidos/${p.id}/enviadoManual`] = new Date().toISOString();
