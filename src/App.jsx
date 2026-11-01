@@ -4578,6 +4578,19 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, proyectos.length, currentUser?.id, loading]);
 
+  // Expediente de Uxcar desenganchado: su obra existe (apunta a él) pero el expediente no apunta a ninguna obra viva
+  // (p. ej. apuntaba a una copia que se borró). Se vuelve a enganchar a esa obra.
+  useEffect(() => {
+    if (!currentUser || loading || !uxCargado) return;
+    const patch = {};
+    toArray(uxExpedientes).forEach((e) => {
+      if (!e || !e.id || proyectos.some((p) => p.id === e.proyectoId)) return;
+      const suya = proyectos.find((p) => p && p.uxcarExpedienteId === e.id && p.estadoTrabajo !== "Cancelado");
+      if (suya) patch[`expedientes/${e.id}/proyectoId`] = suya.id;
+    });
+    if (Object.keys(patch).length) fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
+  }, [uxExpedientes, proyectos, currentUser?.id, loading, uxCargado]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Documentos de Uxcar → ficha del proyecto: todo lo que Uxcar sube a su expediente (hoja de corte,
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
   // Se apuntan las URLs ya copiadas (uxDocsVistos) para no volver a meter uno que el usuario haya quitado.
@@ -22038,9 +22051,11 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo)) return null;
     if (listoParaFabricar.some((x) => x.id === p.id)) return null;
     const misPed = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
-    const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
+    // Las obras de Uxcar salen SIEMPRE aquí mientras no estén listas (antes, sin pedidos en el CRM, no salían en ninguna lista)
+    const marcada = p.origen === "portalUxcar" ? (p.estadoPresupuesto === "Presupuesto aceptado" || misPed.some(esPedidoCristalOCompacto)) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
     let faltan = !marcada ? [] : p.origen === "portalUxcar"
-      ? [...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
+      ? [...(misPed.some(esPedidoCristalOCompacto) ? [] : ["No tiene pedidos de cristal ni de persianas enganchados en el CRM (los sube Uxcar en su portal)"]),
+          ...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
           ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "hay material suyo en el almacén, pero la cantidad no cuadra con lo pedido (o confírmalo a mano abajo)", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
       : condicionesPendientesChecklist(p, pedidos);
     // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
