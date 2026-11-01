@@ -48407,6 +48407,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const [desde, setDesde] = useState(() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); });
   const [verTiempos, setVerTiempos] = useState(false);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
+  const [diaGolpe, setDiaGolpe] = useState("");
   // Las obras que quitas del planning (sin tick) se GUARDAN: antes se volvían a marcar solas al recargar
   const quitadas = toArray(cfg.quitadasPlan);
   const setQuitadas = (arr) => guardarCfg({ quitadasPlan: [...new Set(toArray(arr))] });
@@ -48682,6 +48683,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           <h3 className="font-display font-bold text-slate-800 mr-auto">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
           <button onClick={() => setQuitadas(listasOrd.map((o) => o.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">Vaciar planning (elegir yo una a una)</button>
           <button onClick={() => setQuitadas([])} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Marcar todas</button>
+        </div>
+        {/* De golpe: las que tienen tick empiezan el día que elijas; las que no tienen tick y están en fabricación vuelven al planning virtual */}
+        <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
+          <span className="text-slate-600 font-semibold">Con las que tienen tick ({firmes.length}):</span>
+          <label className="flex items-center gap-1">empezar todas el <input type="date" value={diaGolpe} onChange={(e) => setDiaGolpe(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1" /></label>
+          <button disabled={!diaGolpe || !firmes.length} onClick={() => { if (!window.confirm(`Las ${firmes.length} obras con tick empiezan el ${fmtDate(diaGolpe)} (en su orden; lo que no quepa ese día pasa al siguiente):\n\n${firmes.map((o) => o.nombre).join("\n")}`)) return; const n = { ...fechasPlan }; firmes.forEach((o) => { n[o.id] = diaGolpe; }); guardarCfg({ fechasPlan: n }); }} className="font-semibold px-3 py-1.5 rounded-md bg-[#2E8B57] text-white disabled:opacity-50">📅 Ponerlas ese día</button>
+          {onVolverVirtual && (() => { const sinTick = listasOrd.filter((o) => quitadas.includes(o.id) && o.enCurso && o.ref.tipo !== "rapido"); return sinTick.length > 0 && (
+            <button onClick={() => { if (!window.confirm(`Estas ${sinTick.length} obras SIN tick salen de fabricación y vuelven al PLANNING VIRTUAL (y a «Listo para fabricar»):\n\n${sinTick.map((o) => o.nombre).join("\n")}\n\nEl stock que se descontó al empezarlas NO se devuelve.`)) return; sinTick.forEach((o) => onVolverVirtual(o.ref)); setQuitadas(quitadas.filter((id) => !sinTick.some((o) => o.id === id))); }} className="ml-2 font-semibold px-3 py-1.5 rounded-md border border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100">↩ Las {sinTick.length} sin tick → planning virtual</button>
+          ); })()}
         </div>
         <p className="text-xs text-slate-500 mb-2">Solo las obras en verde (todo el material en fábrica), por orden de entrega. Cambia el orden con "Cambiar por…" o quita las que no quieras meter.</p>
         <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 mb-3">
