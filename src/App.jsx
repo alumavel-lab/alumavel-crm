@@ -52041,7 +52041,7 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
     onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar });
   };
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-3">
+    <div className="fixed inset-0 z-[120] bg-black/40 flex items-end sm:items-center justify-center p-3">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center gap-2 text-base font-bold text-slate-800"><AlertOctagon size={18} className="text-rose-600" /> Incidencia de fábrica</div>
         {(prefill.ventana || prefill.obra) && (
@@ -55063,7 +55063,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className={`${grande ? "text-base" : "text-[11px]"} font-bold text-sky-100`}>{nH}/{nV || "?"}</span>
-                  <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`ml-auto rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
+                  <span className={`ml-auto ${grande ? "" : "scale-90 origin-right"}`}><BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} /></span>
+                  <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-1.5">
@@ -55098,6 +55099,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                                 : ih ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}</div><div className="text-xs">{ih.desc}</div></div> : null}
                             </button>
                             {textoNotaVentana(o, v, true)}
+                            <div className="mt-1 flex justify-center"><BotonIncidenciaFabrica prefill={{ obra: o.d.nombre, ventana: `${v.pos || ""}${v.medida ? " · " + v.medida : ""}`, ventanaId: v.id }} /></div>
                           </div>
                         );
                       })}
