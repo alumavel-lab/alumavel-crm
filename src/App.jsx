@@ -53535,6 +53535,52 @@ async function dibujoDeObjetoPdf(o) {
 }
 const hashTexto = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i += 3) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36) + t.length.toString(36); };
 // Saca los dibujos (a color) de cada ventana del PDF «PLANING» y se los pone a cada ventana (w.dib = clave). Devuelve { clave: dataUrl }
+// ---- HOJA DE CORTE → Control del día: cada modelo (A01.001, V01.002…) con su dibujo, medidas, accionamiento, color y lo que lleva ----
+// Imágenes de una página con su tamaño en la página (para quedarse con el dibujo y no con el logo de la cabecera)
+function imagenesDePagina(ol, OPS) {
+  const out = []; let m = [1, 0, 0, 1, 0, 0]; const st = [];
+  const mul = (a, b) => [a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3], a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5]];
+  ol.fnArray.forEach((fn, i) => {
+    const a = ol.argsArray[i];
+    if (fn === OPS.save) st.push(m.slice()); else if (fn === OPS.restore) m = st.pop() || m; else if (fn === OPS.transform) m = mul(a, m);
+    else if (fn === OPS.paintImageXObject) out.push({ name: a[0], w: Math.hypot(m[0], m[1]), h: Math.hypot(m[2], m[3]) });
+  });
+  return out;
+}
+const esTextoHojaCorte = (t) => /HOJA\s+DE\s+CORTE/i.test(t) && /Modelo\s+Ancho\s+Alto\s+Uds/i.test(t);
+async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
+  const modelos = []; const dibs = {}; let cur = null; let pres = ""; const inicio = Date.now();
+  for (let n = 1; n <= pdfDoc.numPages; n++) {
+    if (onProgreso) onProgreso(`Leyendo la hoja de corte: página ${n} de ${pdfDoc.numPages}…`);
+    const pg = await pdfDoc.getPage(n);
+    const tc = await pg.getTextContent();
+    const t = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ");
+    if (!pres) { const mp = t.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:?\s*\.?\s*(\d+)/i); if (mp) pres = `${mp[1]}-${mp[2]}`; }
+    const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+([A-Z]{1,3}\d{1,3}\.\d{1,4})\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})/);
+    if (!m) { if (cur) cur.texto += " " + t; continue; } // página de continuación del modelo anterior
+    const acc = ((t.match(/Accionamiento\s+Tabla\s+Herraje\s*([\s\S]*?)Observaciones/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
+    const obsCol = ((t.match(/Observaciones\s*([\s\S]*?)Color\s+Descripci/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
+    cur = { pos: m[1], ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
+    modelos.push(cur);
+    if (Date.now() - inicio > 150000) continue; // tiempo máximo para los dibujos
+    try {
+      const ol = await pg.getOperatorList();
+      const imgs = imagenesDePagina(ol, lib.OPS).filter((x) => x.w > 40 && x.h > 40 && x.w / x.h < 2 && x.h / x.w < 2).sort((a, b) => b.w * b.h - a.w * a.h); // el logo es alargado: fuera
+      if (imgs[0]) {
+        const o = await new Promise((res) => { try { pg.objs.get(imgs[0].name, res); } catch (e) { res(null); } setTimeout(() => res(null), 3000); });
+        const url = await dibujoDeObjetoPdf(o).catch(() => "");
+        if (url) { const h = hashTexto(url); dibs[h] = url; cur.dib = h; }
+      }
+    } catch (e) { /* sin dibujo para este modelo */ }
+  }
+  // Lo que lleva cada modelo (un «sin …» no cuenta)
+  modelos.forEach((md) => {
+    const tx = String(md.texto || "").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
+    md.extras = [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(tx)).map(([x]) => x);
+    delete md.texto;
+  });
+  return { pres, modelos, dibs };
+}
 async function extraerDibujosPlaning(lib, pdfDoc, bloques, onProgreso) {
   const dibs = {}; const vs = bloques.flatMap((b) => b.pres.flatMap((p) => p.ventanas));
   const pags = [...new Set(vs.map((v) => v.pag))].filter(Boolean).sort((a, b) => a - b);
@@ -53714,6 +53760,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [cerradas, setCerradas] = useState({});
   const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
+  const hojasCD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
   const pinsMov = useObjetoFb("controlDiaPins"); // chinchetas movidas a mano: { claveObra: { idVentana: { pag, px, py } } }
@@ -53776,6 +53823,13 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     return out;
   };
+  // Hoja de corte leída de esta obra (por su clave o por el mismo nº de presupuesto: la de Uxcar sale como obra del CRM y como expediente)
+  const hojaDeObra = (o) => {
+    const k = limpia(o.d.key); const h0 = hojasCD && hojasCD[k]; if (h0 && toArray(h0.modelos).length) return h0;
+    const mios = [...presCrmDe(o)]; if (!mios.length) return null;
+    return Object.values(hojasCD || {}).find((h) => h && toArray(h.modelos).length && h.pres && mios.some((m) => mismoPresCD(m, String(h.pres).replace(/\./g, "")))) || null;
+  };
+  const infoHoja = (o, v) => { const h = hojaDeObra(o); if (!h) return null; const pb = String((v && v.pos) || "").trim().split(/\s+/)[0].toUpperCase(); return toArray(h.modelos).find((m) => String(m.pos || "").toUpperCase() === pb) || null; };
   const planDeObra = (o) => {
     const k = limpia(o.d.key); const mios = [...presCrmDe(o)];
     return Object.values(planPres || {}).filter((pr) => pr && (pr.obraKey === k || (mios.length && mios.some((m) => mismoPresCD(m, String(pr.pres || "").replace(/\./g, "").trim())))));
@@ -53795,6 +53849,15 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       o.fuente = "carga";
       if (conPins && docP && docP.url) o.folio = { url: docP.url };
       return;
+    }
+    // Hoja de corte leída (lo normal: Control del día la coge sola de los documentos de la obra): cada modelo con su dibujo, medidas y accionamiento
+    if (o.d.tipo !== "pl") {
+      const hc = hojaDeObra(o);
+      if (hc) {
+        const lv = []; const vistosH = {};
+        toArray(hc.modelos).forEach((m) => { const n = Math.min(99, Math.max(1, parseInt(m.uds, 10) || 1)); for (let u = 1; u <= n; u++) { let id = limpia(n > 1 ? `${m.pos}_${u}` : m.pos); if (vistosH[id]) { vistosH[id]++; id = `${id}_${vistosH[id]}`; } else vistosH[id] = 1; lv.push({ id, pos: n > 1 ? `${m.pos} ${u}/${n}` : m.pos, fab: "", tip: m.pos, medida: m.ancho && m.alto ? `${m.ancho} x ${m.alto}` : "", color: m.color || "" }); } });
+        if (lv.length) { o.viv = new Map([["Ventanas de la hoja de corte", lv]]); o.fuente = "hoja"; return; }
+      }
     }
     const ent = o.d.tipo === "p" ? toArray(proyectos).find((p) => p.id === o.d.id) : o.d.tipo === "u" ? toArray(uxExpedientes).find((e) => e.id === o.d.id) : null;
     // Si su PLANING está guardado, sus ventanas (con posición real y dibujo) van ANTES que el recuento («modelo 1/2» no encaja con los dibujos)
@@ -54283,8 +54346,49 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   };
   const siTerminada = (o, act) => { if (idsDe(o).every((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1)) setTimeout(() => mandarAReparto(o), 60); };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
+  // HOJA DE CORTE de una obra → Control del día (dibujos, medidas, accionamiento, color, solape/mosquitera/postigo). Devuelve { ok, motivo, n }
+  const guardarHojaCD = async (o, bytes, meta, manual) => {
+    const ko = limpia(o.d.key);
+    setEstadoCarga((st) => ({ ...st, [o.d.key]: "leyendo" }));
+    try {
+      const lib = await cargarPdfJs(); const pdfDoc = await lib.getDocument({ data: bytes }).promise;
+      const t1 = (await (await pdfDoc.getPage(1)).getTextContent()).items.map((i) => i.str).join(" ");
+      if (!esTextoHojaCorte(t1)) return { ok: false, motivo: "no es una hoja de corte" };
+      const r = await leerHojaCorteControl(lib, pdfDoc, null);
+      if (!r.modelos.length) return { ok: false, motivo: "no encuentro ningún modelo (A01.001, V01.002…) en la hoja" };
+      const mios = [...presCrmDe(o)]; const suyo = String(r.pres || "").replace(/\./g, "");
+      if (suyo && mios.length && !mios.some((m) => mismoPresCD(m, suyo))) {
+        if (!manual) return { ok: false, motivo: `la hoja de corte es del presupuesto ${r.pres} y esta obra es ${mios.join(", ")}` };
+        if (!window.confirm(`Esta hoja de corte es del presupuesto ${r.pres} y la obra es ${mios.join(", ")}.\n\n¿Usarla igualmente?`)) return { ok: false, motivo: "cancelado" };
+      }
+      const ks = Object.keys(r.dibs);
+      for (let i = 0; i < ks.length; i += 40) { const trozo = {}; ks.slice(i, i + 40).forEach((k) => { trozo[k] = r.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
+      await fbSet(ref(fbDb, `controlDiaHojaCorte/${ko}`), JSON.parse(JSON.stringify({ pres: r.pres || "", archivo: (meta && meta.nombre) || "", url: (meta && meta.url) || "", leidoEn: Date.now(), modelos: r.modelos })));
+      return { ok: true, n: r.modelos.length, dibujos: r.modelos.filter((m) => m.dib).length };
+    } catch (e) { return { ok: false, motivo: e.message || String(e) }; }
+    finally { setEstadoCarga((st) => { const n = { ...st }; delete n[o.d.key]; return n; }); }
+  };
+  // Documentos «Hoja de corte» que ya tiene la obra o su expediente de Uxcar
+  const docsHojaDe = (o) => {
+    const out = []; const add = (d) => { if (d && d.url && /hoja\s*de\s*corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) out.push(d); };
+    const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
+    const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
+    toArray(e && e.documentos).forEach(add); toArray(p && p.documentos).forEach(add);
+    return out;
+  };
   const traerCarga = async (o, fichero) => {
     if (fichero) {
+      try {
+        const bytesH = new Uint8Array(await fichero.arrayBuffer());
+        const libH = await cargarPdfJs(); const docH = await libH.getDocument({ data: bytesH.slice() }).promise;
+        const t1 = (await (await docH.getPage(1)).getTextContent()).items.map((i) => i.str).join(" ");
+        if (esTextoHojaCorte(t1)) { // es la HOJA DE CORTE: se lee con su lector (dibujos, medidas, accionamiento…)
+          let url = ""; try { url = await subirArchivoAStorage(fichero, `documentos-entrega/controlDia-hoja-${limpia(o.d.key)}`); } catch (e) { /* se lee igual */ }
+          const rh = await guardarHojaCD(o, bytesH, { nombre: fichero.name, url }, true);
+          if (!rh.ok) { if (rh.motivo !== "cancelado") alert("No he podido leer la hoja de corte: " + rh.motivo); } else alert(`Hoja de corte leída: ${rh.n} modelos (${rh.dibujos} con dibujo).`);
+          return;
+        }
+      } catch (e) { /* no se ha podido mirar: sigue como carga de material */ }
       const r = [...presConVersion(o)].map((c) => yaFabricado(c, limpia(o.d.key))).find(Boolean);
       if (r) { alert(`⛔ NO SE HA SUBIDO: el presupuesto ${r.pres} ya está FABRICADO (hecho el ${fmtDate(r.hechoEn)} · ${r.nombre || ""}).\n\nSi de verdad hay que volver a hacerlo, avisa al administrador.`); return; }
     }
@@ -54412,6 +54516,29 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     });
   // eslint-disable-next-line
   }, [claveLeerCarga]);
+  // La HOJA DE CORTE se lee SOLA de los documentos de la obra (o de su expediente de Uxcar): obras del día que miras y de hoy en adelante.
+  // Una vez por obra (si falla, se apunta el motivo y no se reintenta; se puede subir a mano).
+  const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
+  const hoyHoja = new Date().toISOString().slice(0, 10);
+  const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+  const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
+  useEffect(() => {
+    if (!pendHoja.length || hojaLeyendo.current) return;
+    hojaLeyendo.current = true;
+    (async () => {
+      try {
+        for (const o of pendHoja) {
+          hojaIntentadas.current[o.d.key] = true;
+          const d = docsHojaDe(o)[0];
+          let r;
+          try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
+          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now() }).catch(() => {});
+        }
+      } finally { hojaLeyendo.current = false; }
+    })();
+  // eslint-disable-next-line
+  }, [clavePendHoja]);
   const sumaDias = (f, n) => { const d = new Date(f + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const siguienteLaborable = (f) => { let x = sumaDias(f, 1); while ([0, 6].includes(new Date(x + "T12:00:00").getDay())) x = sumaDias(x, 1); return x; };
   const pasarAlSiguiente = async () => {
@@ -54590,6 +54717,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       toArray(h.modelos).filter((m) => m && String(m.modelo || "").toUpperCase() === modelo).forEach((m) => toArray(m.filas).forEach((f) => textos.push(`${f.desc || ""} ${f.ref || ""}`)));
     });
     const inf = infoVent(o, v); if (inf && inf.desc) textos.push(inf.desc);
+    const ih = infoHoja(o, v); if (ih) textos.push(toArray(ih.extras).join(" "), ih.desc || "");
     const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
   };
@@ -54702,7 +54830,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`w-full text-left rounded-lg px-3 py-2 text-2xl font-extrabold ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : "bg-slate-700"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="text-base font-semibold">· {vals.filter((v) => v === 1).length}/{vals.length}</span></button>
               <div className="mt-1 px-1 text-lg font-bold text-sky-200">{vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}{o.fuente === "recuento" ? <span className="text-sm font-normal text-amber-300"> · del recuento, sin dibujo</span> : null}</div>
               {estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo la carga de material…</div>}
-              {!o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mx-1 mt-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir la carga de material</button>}
+              {!o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mx-1 mt-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir hoja de corte o carga de material</button>}
               {String(estadoCarga[o.d.key] || "").startsWith("error") && <div className="px-1 text-sm text-rose-300">{estadoCarga[o.d.key]}</div>}
               {o.folio && verFolio && <div className="bg-slate-100 rounded-lg p-2 mt-2">{folioDe(o, vivs, true)}</div>}
               {(o.folio && verFolio ? [] : vivs).map(([g, vs]) => (
@@ -55053,7 +55181,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           <div key={o.d.key} id={"obra-" + limpia(o.d.key)} className={`${resalt === limpia(o.d.key) ? "ring-8 ring-rose-400 " : ""}rounded-lg border-2 mb-3 ${papel && papel[limpia(o.d.key)] ? "border-purple-600 bg-purple-50 " : ""}${col === "verde" ? "border-emerald-600" : col === "naranja" ? "border-orange-500" : "border-slate-300"}`}>
             <div className="flex items-center gap-2 p-2">
               <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`flex-1 text-left px-3 py-2.5 rounded-md border-2 font-bold ${estilo[col]}`}>{col === "verde" ? "✓ " : col === "naranja" ? "⚠ " : ""}{o.d.nombre} <span className="font-normal text-xs">· {vals.filter((v) => v === 1).length} de {vals.length}</span></button>
-              {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir la carga de material</button>}
+              {!o.tienePins && <button type="button" onClick={() => pedirPdfCarga(o)} title="Elige el PDF de la Carga de material de esta obra: sale la hoja con una chincheta en cada ventana" className="px-3 py-2 text-xs font-semibold text-sky-800 border border-sky-300 rounded-md bg-sky-50">📎 Subir hoja de corte o carga de material</button>}
               {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
               {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
@@ -55088,6 +55216,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             })()}
             <div className="px-3 pb-1 text-xs font-semibold text-slate-600">
               {vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}
+              {o.fuente === "hoja" ? <span className="font-normal text-emerald-700"> · de la hoja de corte</span> : null}
+              {o.d.tipo !== "pl" && !["etiquetas", "carga", "hoja"].includes(o.fuente) && (() => { const e = hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error; const hay = docsHojaDe(o).length;
+                return <span className="block mt-0.5 text-[11px] font-bold text-rose-700">{estadoCarga[o.d.key] === "leyendo" ? "⏳ Leyendo la hoja de corte…" : e ? `⚠ No he podido leer la hoja de corte (${e}): súbela con «Subir hoja de corte o carga de material»` : hay ? "⏳ La hoja de corte se leerá enseguida" : "⚠ FALTA LA HOJA DE CORTE: pídesela a Uxcar / a oficina, o súbela con «Subir hoja de corte o carga de material»"}</span>; })()}
               {o.fuente === "recuento" ? <span className="font-normal text-amber-700"> · del recuento de la obra, sin dibujo</span> : o.fuente === "planning" ? <span className="font-normal text-amber-700"> · ventanas del PLANING (sube la carga de material para ver los dibujos)</span> : o.fuente === "numero" ? <span className="font-normal text-amber-700"> · solo sé cuántas son: sube la carga de material para ver cuáles</span> : null}
               {estadoCarga[o.d.key] === "leyendo" ? <span className="font-normal text-amber-700"> · leyendo la carga de material…</span> : null}
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
@@ -55120,12 +55251,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <div key={v.id} className="relative flex flex-col items-stretch">
                       {lapizVentana(o, v, false)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 pr-8 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] text-center ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>
-                        {(() => { const inf = infoVent(o, v); return inf && inf.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={inf.dib} alto={90} sinZoomAlTocar /></div> : (v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null); })()}
+                        {(() => { const inf = infoVent(o, v); const ih = infoHoja(o, v); return inf && inf.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={inf.dib} alto={90} sinZoomAlTocar /></div> : ih && ih.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={ih.dib} alto={90} sinZoomAlTocar /></div> : (v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null); })()}
                         <div>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-[11px] font-bold opacity-80">{v.tip}</div> : null}
                         {v.medida ? <div className="text-[11px] font-normal opacity-80">{v.medida}</div> : null}
                         {(() => { const ex = extrasVentana(o, v); return ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null; })()}
-                        {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
+                        {(() => { const inf = infoVent(o, v); if (inf) return <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div>;
+                          const ih = infoHoja(o, v); return ih ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}{ih.ancho ? ` · ${ih.ancho} x ${ih.alto}` : ""}</div><div className="text-[10px] font-normal opacity-90">{ih.desc}{ih.obs ? ` · ${ih.obs}` : ""}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, false)}
                       </div>
