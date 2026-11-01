@@ -4551,6 +4551,11 @@ export default function App() {
           const normPV = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
           const pv = normPV(exp.numero);
           if (/^\d{3,}-\d+$/.test(pv) && frescos.some((p) => p && p.estadoTrabajo !== "Cancelado" && [p.presupuestoNumero, ...(String(p.nombre || "").match(/\d[\d.]*\s*-\s*\d+/g) || [])].some((t) => normPV(t) === pv))) continue;
+          // Candado en la base de datos: el primer CRM que llega crea la obra; los demás no, durante 10 minutos (lo que tarda
+          // en guardarse). Antes, mientras la obra recién creada no estaba guardada, los otros CRM abiertos la veían «borrada»
+          // y creaban otra: así salieron 3 obras #4366 iguales de la 4.954-2.
+          const candado = await runTransaction(ref(fbDb, `obrasUxcarAuto/${exp.id}`), (actual) => (actual && Date.now() - actual < 10 * 60 * 1000 ? undefined : Date.now())).catch(() => null);
+          if (!candado || !candado.committed) continue;
           const nuevoId = uid();
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
@@ -19143,7 +19148,7 @@ const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlan
   if (!p) return null;
   // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
   const v = ventanasDeObra(p, uxExpedientes);
-  const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiemposPlanning, p.listadoMateriales && p.listadoMateriales.horas);
+  const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiemposPlanning, horasListadoDeObra(p, uxExpedientes));
   const cols = coloresPerfilDeObra(p);
   return { obra: `#${p.numero}${p.nombre ? " " + p.nombre : ""}`, horas: r.horas > 0 ? r.horas : null, origenHoras: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas", color: cols[0] || "", otrosColores: cols.slice(1) };
 };
@@ -21758,11 +21763,18 @@ function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarP
 }
 // ── Listas por color en «Listo para fabricar»: blanco, roble dorado, nogal, 7016 y varios ──
 // Horas de fabricación de una obra: las puestas a mano → las del «Listado mano de obra» → estimación por sus ventanas (mismo criterio que el planning)
+// Horas del listado de mano de obra de una obra: las suyas o, en las de Uxcar, las de su expediente (se leen allí)
+const horasListadoDeObra = (p, uxExpedientes) => {
+  const h = parseFloat(p && p.listadoMateriales && p.listadoMateriales.horas) || 0;
+  if (h > 0 || !p || !p.uxcarExpedienteId) return h;
+  const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId);
+  return parseFloat(e && e.listadoMateriales && e.listadoMateriales.horas) || 0;
+};
 const horasDeObraListo = (p, uxExpedientes, cfgPlanning) => {
   try {
     const tiempos = { ...PLANNING_TIEMPOS_DEF, ...((cfgPlanning && cfgPlanning.tiempos) || {}) };
     const v = ventanasDeObra(p, uxExpedientes);
-    const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas);
+    const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes));
     return r.horas > 0 ? { horas: r.horas, origen: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas" } : { horas: 0, origen: "" };
   } catch (e) { return { horas: 0, origen: "" }; }
 };
@@ -42343,7 +42355,7 @@ const finesPlanningFabrica = ({ pedidos, uxExpedientes, uxPedidos, listoParaFabr
   const horasDia = parseFloat(cfg.horasDia) || 16;
   const d0 = new Date(); d0.setDate(d0.getDate() + ((8 - d0.getDay()) % 7 || 7));
   const desde = d0.toISOString().slice(0, 10);
-  const obraP = (p) => { const v = ventanasDeObra(p, uxExpedientes); const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas); return { id: `p-${p.id}`, nombre: `#${p.numero}`, horas: h.horas, entrega: p.fechaEntregaPrevista || "" }; };
+  const obraP = (p) => { const v = ventanasDeObra(p, uxExpedientes); const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes)); return { id: `p-${p.id}`, nombre: `#${p.numero}`, horas: h.horas, entrega: p.fechaEntregaPrevista || "" }; };
   const obraU = (e) => { const h = horasObra(e.recuento, { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, e.horasFabricacion, tiempos, e.listadoMateriales && e.listadoMateriales.horas); return { id: `u-${e.id}`, nombre: `Uxcar ${e.numero}`, horas: h.horas, entrega: e.fechaEntrega || "" }; };
   const orden = toArray(cfg.orden);
   const ordenar = (arr) => [...arr].sort((a, b) => { const ia = orden.indexOf(a.id), ib = orden.indexOf(b.id); if (ia === -1 && ib === -1) return 0; if (ia === -1) return 1; if (ib === -1) return -1; return ia - ib; });
@@ -48294,7 +48306,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Obras listas (en verde): vuestras con todo el material y expedientes de Uxcar en verde
   const obraProyecto = (p) => {
     const v = ventanasDeObra(p, uxExpedientes);
-    const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas);
+    const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes));
     return { id: `p-${p.id}`, ref: { tipo: "proyecto", id: p.id }, nombre: `#${p.numero} ${p.nombre}`, ventanas: v.total, horas: h.horas, aMano: h.aMano, deListado: h.deListado, entrega: p.fechaEntregaPrevista || "", listado: p.listadoMateriales, de: "Ecowin" };
   };
   const obraUx = (e) => {
