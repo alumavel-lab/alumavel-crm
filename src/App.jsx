@@ -53039,7 +53039,7 @@ function imprimirAux(lista, cfg) {
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
     <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""}`)}</div>
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
-    <div class="bar">${svgCode128Mm(p.cod, 5, 0.4, Math.min(util, 60))}</div>
+    <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
   imprimirSecuencia(lista.map(etiqueta), { sinAviso: true }, "las etiquetas");
@@ -53156,7 +53156,25 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [cadena, setCadena] = useState(null); // { tipo: "global" | "obra" | "ref", ppto, k, dias, ultimo: cod, nombre }
   const codigoRef = useRef(null);
   const recienCortadas = useRef(new Set());
-  const enfocarPistola = () => { [200, 900, 2500].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
+  // En cadena, la lectura de la pistola se recoge ESTÉ DONDE ESTÉ EL CURSOR (al imprimir, la ventana de impresión se lo lleva):
+  // la pistola teclea muy rápido y acaba en Enter; si lo tecleado es un código AX…, se trata como lectura
+  const bufPistola = useRef({ t: "", ult: 0 });
+  const buscarCodigoRef = useRef(null);
+  useEffect(() => {
+    if (!cadena) return undefined;
+    const onKey = (e) => {
+      if (codigoRef.current && document.activeElement === codigoRef.current) return; // ya lo recoge la casilla
+      const tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return; // escribiendo en otro campo
+      const b = bufPistola.current; const ahora = Date.now();
+      if (ahora - b.ult > 120) b.t = ""; b.ult = ahora;
+      if (e.key === "Enter") { const c = b.t.trim(); b.t = ""; if (/^\*?AX\d{3,}\*?$/i.test(c) && buscarCodigoRef.current) { e.preventDefault(); buscarCodigoRef.current(c); } return; }
+      if (e.key && e.key.length === 1) b.t += e.key;
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [cadena]);
+  const enfocarPistola = () => { [200, 900, 2500, 5000, 8000].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
@@ -53240,6 +53258,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const reimprimir = (e) => imprimirAux([{ ...e, pasosTxt: auxPasosDe(refDe(e.ref), e).join(" + ") }], cfg);
   const paso = (id, nombre, v) => guardarLinea(`auxiliaresPiezas/${id}/pasos/${auxSlug(nombre)}`, v ? Date.now() : null);
   const deshacer = (e) => { if (window.confirm(`¿Deshacer el corte de ${e.nombre} ${auxMed(e.lCorte)} mm (${e.cod})? Vuelve a «Falta por cortar» y libera su hueco.`)) guardarLinea(`auxiliaresPiezas/${e.id}`, null); };
+  // (la captura global de la pistola llama siempre a la versión actual de buscarCodigo)
   // Siguiente pieza de la misma tanda (la de la cadena)
   const siguienteDeCadena = (cd) => {
     const libres = sinCortar.filter((x) => !recienCortadas.current.has(x.id));
@@ -53270,6 +53289,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const e = Object.entries(est || {}).map(([id, x]) => ({ ...x, id })).find((x) => x && String(x.cod).toUpperCase() === c);
     if (e) { setLectura(e); setMsg(""); pitidoCRM(true); } else { setLectura(null); setMsg(`No conozco el código «${c}». Solo leo las etiquetas de auxiliares (empiezan por AX).`); pitidoCRM(false); }
   };
+  buscarCodigoRef.current = buscarCodigo;
   const guardarCfg = (b) => guardarLinea("auxiliaresConfig", JSON.parse(JSON.stringify({
     refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
