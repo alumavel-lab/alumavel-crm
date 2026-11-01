@@ -53109,6 +53109,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [orden, setOrden] = useState("ventana");
   const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
   const [verSinDia, setVerSinDia] = useState(false);
+  const [perfilDia, setPerfilDia] = useState(""); // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
@@ -53242,7 +53243,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
-      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
       <button type="button" onClick={() => cortar(p)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
     </div>
   );
@@ -53343,18 +53344,37 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             );
           };
           const sinDia = obrasAux.filter((g) => !g.dia);
+          // «Cortar por perfil»: todas las piezas de las obras de ese día juntas por referencia y de mayor a menor medida; cada una va al hueco de su obra
+          const vistaPerfil = (gs) => {
+            const refs = []; gs.flatMap((g) => g.piezas).forEach((p) => { const k = `${p.ref}|${p.nombre}|${p.color || ""}`; let r = refs.find((x) => x.k === k); if (!r) { r = { k, p, filas: [] }; refs.push(r); } r.filas.push(p); });
+            refs.forEach((r) => r.filas.sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto)));
+            refs.sort((a, b) => b.filas.length - a.filas.length || auxCmp(a.p.ref, b.p.ref));
+            return (
+              <div className="space-y-2">
+                {refs.map((r) => (
+                  <div key={r.k} className="rounded-xl border-2 border-indigo-200 bg-white p-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                      <button type="button" onClick={() => cortar(r.filas[0])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {r.filas.map((x) => fila(x, true))}
+                  </div>
+                ))}
+              </div>
+            );
+          };
+          const botonPerfil = (k) => <button type="button" onClick={() => setPerfilDia(perfilDia === k ? "" : k)} className={`ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 ${perfilDia === k ? "bg-indigo-600 border-indigo-700 text-white" : "bg-white border-indigo-400 text-indigo-800"}`}>{perfilDia === k ? "✕ Volver a ver por obra" : "✂ Cortar por perfil (todas las obras del día)"}</button>;
           return (
             <div className="space-y-4">
               {diasAux.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); return (
                 <div key={d}>
-                  <div className="text-base font-extrabold text-slate-800 capitalize mb-2">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></div>
-                  <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>
+                  <div className="flex flex-wrap items-center gap-1 mb-2"><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500 normal-case">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></span>{botonPerfil(d)}</div>
+                  {perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>}
                 </div>
               ); })}
               {sinDia.length > 0 && (
                 <div>
                   <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
-                  {(verSinDia || !diasAux.length) && <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>}
+                  {(verSinDia || !diasAux.length) && <div className="mt-2">{botonPerfil("sin")}</div>}
+                  {(verSinDia || !diasAux.length) && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia)}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
                 </div>
               )}
             </div>
