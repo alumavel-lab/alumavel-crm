@@ -6855,6 +6855,9 @@ export default function App() {
               }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
               updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+              // Obra de Uxcar: su expediente pasa también a «producción» (si no, no entraba en el planning ni Uxcar veía que se fabrica)
+              const expF = obraF && obraF.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === obraF.uxcarExpedienteId) : null;
+              if (expF && !["produccion", "terminado", "entregado"].includes(expF.estado)) uxActualizar(expF, { estado: "produccion", fechaProduccion: uxHoy() }).catch(() => {});
               showToast(desc ? `En fabricación. Stock descontado: ${desc.n} referencia${desc.n === 1 ? "" : "s"}${desc.creados ? ` (${desc.creados} dada${desc.creados === 1 ? "" : "s"} de alta sola${desc.creados === 1 ? "" : "s"} en Stock, en negativo)` : ""}${desc.sinMaterial ? ` · ${desc.sinMaterial} línea${desc.sinMaterial === 1 ? "" : "s"} sin material dado de alta en Stock (no descontadas)` : ""}` : "Proyecto marcado como en fabricación");
             }}
             cristales={cristales}
@@ -48427,10 +48430,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const horasEsp = cfg.horasDiaEsp || {};
   const ocupadoBase = {}; Object.entries(horasEsp).forEach(([f, h]) => { const lib = Math.max(0, parseFloat(h) || 0); ocupadoBase[f] = Math.max(0, horasDia - lib); });
   const sumaPuestos = toArray(puestos).reduce((a, p) => a + (parseFloat(p.horasDia) || 0), 0);
+  const uxProduccionDe = (p) => toArray(uxExpedientes).some((e) => e && e.estado === "produccion" && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
   // Las obras que ya se han empezado a fabricar (En proceso) siguen en el planning, delante de las demás:
   // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
   const enCurso = [
-    ...proyectos.filter((p) => p.origen !== "portalUxcar" && p.estadoTrabajo === "En proceso").map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
+    // Obras de Uxcar mandadas a fábrica desde «Listo para fabricar» cuyo expediente no está en producción: entran como obra
+    ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
     ...toArray(uxExpedientes).filter((e) => e.estado === "produccion").map((e) => ({ ...obraUx(e), nombre: `${obraUx(e).nombre} · en fabricación`, enCurso: true })),
   ];
   const listas = [
@@ -48438,7 +48443,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     ...[
       // Las obras de «Listo para fabricar» ya no entran solas en el planning: entran al pulsar «Empezar a fabricar»
       ...(LISTO_ENTRA_SOLO_EN_PLANNING ? listoParaFabricar.filter((p) => p.origen !== "portalUxcar").map(obraProyecto) : []),
-      ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde").map(obraUx),
+      ...toArray(uxExpedientes).filter((e) => e.estado === "virtual" && uxSemaforo(e) === "verde" && !proyectos.some((p) => p.estadoTrabajo === "En proceso" && (p.uxcarExpedienteId === e.id || p.id === e.proyectoId))).map(obraUx),
       ...rapidos,
     ].sort((a, b) => (a.entrega || "9999").localeCompare(b.entrega || "9999")),
   ];
