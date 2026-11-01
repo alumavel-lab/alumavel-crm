@@ -53671,8 +53671,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
   const horasTodas = useObjetoFb("controlDiaHoras"); // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
-  const asignTodas = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } }
-  const asign = (asignTodas && asignTodas[dia]) || {};
+  const asignTodasCD = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
@@ -53860,11 +53859,21 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica (manda Fábrica): { dias:{fecha:{clave:{nombre,horas}}}, obras:{clave:{nombre,tipo,id,num,inicio,fin}} }
+  // FÁBRICA MANDA: cada obra del planning de Fábrica sale aquí los días que Fábrica le ha puesto (si ocupa 2 días, los 2).
+  // Aquí no se mueve ni se quita: se le pide a Fábrica otra fecha. Lo metido a mano (obras que no están en el planning de Fábrica) se suma.
+  const koDeFab = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, planF && planF.obras); if (k && !koDeFab.has(k)) koDeFab.set(k, limpia(o.d.key)); });
+  const asignFab = {};
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => Object.keys(m || {}).forEach((k) => { const ko = koDeFab.get(k); if (ko) (asignFab[f] = asignFab[f] || {})[ko] = true; }));
+  const enFabrica = new Set(); Object.values(asignFab).forEach((d) => Object.keys(d).forEach((ko) => enFabrica.add(ko)));
+  const asignTodas = {};
+  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  const asign = asignTodas[dia] || {};
   const peticiones = useObjetoFb("controlDiaPeticiones");
   const guardarCopia = async (motivo) => {
     try {
       const en = Date.now();
-      await fbSet(ref(fbDb, `controlDiaObrasCopia/${en}`), { en, motivo, datos: asignTodas || {} });
+      await fbSet(ref(fbDb, `controlDiaObrasCopia/${en}`), { en, motivo, datos: asignTodasCD || {} });
       const ks = Object.keys(copias || {}).sort();
       for (const k of ks.slice(0, Math.max(0, ks.length - 14))) await fbSet(ref(fbDb, `controlDiaObrasCopia/${k}`), null);
     } catch (e) { /* si falla la copia no bloqueamos */ }
@@ -53882,7 +53891,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Obras repetidas: la misma obra metida en más de un día. Se deja en el día donde tiene más marcas de colores (y si empatan, en el primero) y se quita de los demás
   const repetidasPlan = () => {
     const por = {};
-    Object.entries(asignTodas || {}).forEach(([d, o]) => Object.keys(o || {}).forEach((k) => { if (o[k]) (por[k] = por[k] || []).push(d); }));
+    Object.entries(asignTodas || {}).forEach(([d, o]) => Object.keys(o || {}).forEach((k) => { if (o[k] && !enFabrica.has(k)) (por[k] = por[k] || []).push(d); })); // las de Fábrica pueden ocupar varios días a propósito
     const quitar = [];
     Object.entries(por).forEach(([k, dias]) => {
       if (dias.length < 2) return;
@@ -54102,45 +54111,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const nSinMaterial = sinAsignarDia.filter((o) => !materialObra(o).ok).length;
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
-  // Lo que pones en el planning de Fábrica entra SOLO en Control del día, en su día de inicio. Una sola vez por obra
-  // (controlDiaAutoTraidas): si después la quitas o la mueves aquí, se respeta y no vuelve a entrar.
-  const autoTraidas = useObjetoFb("controlDiaAutoTraidas");
-  const traerFabRef = useRef(false);
-  useEffect(() => {
-    const obrasF = (planF && planF.obras) || {};
-    if (traerFabRef.current || !Object.keys(obrasF).length || !asignTodas) return;
-    const asignadas = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) asignadas.add(k); }));
-    const porClave = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, obrasF); if (k && !porClave.has(k)) porClave.set(k, o); });
-    const traer = [];
-    Object.entries(obrasF).forEach(([k, f]) => {
-      const o = porClave.get(k); if (!o || !f || !f.inicio) return;
-      const ko = limpia(o.d.key);
-      if (asignadas.has(ko) || (autoTraidas && autoTraidas[ko])) return;
-      traer.push({ ko, dia: f.inicio });
-    });
-    if (!traer.length) return;
-    traerFabRef.current = true;
-    (async () => {
-      try {
-        // Se vuelve a leer de la base de datos (la pantalla puede no haber cargado aún y creer que no hay nada)
-        const [sA, sO] = await Promise.all([fbGet(ref(fbDb, "controlDiaAutoTraidas")), fbGet(ref(fbDb, "controlDiaObras"))]);
-        const yaT = sA.val() || {}; const yaO = new Set(); Object.values(sO.val() || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) yaO.add(k); }));
-        const pend = traer.filter((t) => !yaT[t.ko] && !yaO.has(t.ko));
-        if (!pend.length) return;
-        // La PRIMERA vez (no hay nada apuntado) solo se apunta lo que ya hay en el planning, sin meterlo: así no entran de golpe obras viejas.
-        // Esas se traen a mano con «Traer a este día»; desde entonces, lo nuevo que entre en el planning de Fábrica entra solo.
-        if (!Object.keys(yaT).length) {
-          const base = { _inicio: new Date().toISOString().slice(0, 10) }; pend.forEach((t) => { base[t.ko] = "inicio"; });
-          await fbUpdate(ref(fbDb, "controlDiaAutoTraidas"), base);
-          return;
-        }
-        for (const t of pend) {
-          const r = await runTransaction(ref(fbDb, `controlDiaAutoTraidas/${t.ko}`), (x) => (x ? undefined : t.dia)).catch(() => null);
-          if (r && r.committed) await fbSet(ref(fbDb, `controlDiaObras/${t.dia}/${t.ko}`), true).catch(() => {});
-        }
-      } catch (e) { /* se reintenta en la siguiente pasada */ } finally { traerFabRef.current = false; }
-    })();
-  }, [planF, asignTodas, autoTraidas, obras.size]); // eslint-disable-line react-hooks/exhaustive-deps
   // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
   const mandarAReparto = (o) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -54394,6 +54364,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const moverObraDia = async (k, de, a) => {
     setPinSel(null);
     if (!k || !de || !a || de === a) return;
+    if (enFabrica.has(k)) { // la fecha la pone Fábrica: se le pide
+      const o = obraPorClave.get(k); const kf = o && claveFabDe(o); const f = kf && planF && planF.obras && planF.obras[kf];
+      if (!f) { alert("Esta obra la planifica Fábrica y no la encuentro en su planning."); return; }
+      try { await fbSet(ref(fbDb, `controlDiaPeticiones/${kf}`), { nombre: f.nombre, fecha: a, de: f.inicio, en: Date.now() }); alert(`La fecha de ${f.nombre} la pone Fábrica.\n\nLe he pedido pasarla al ${fmtDate(a)}: cuando la acepte en su planning, saldrá aquí ese día.`); } catch (e) { alert("No se pudo pedir: " + e.message); }
+      return;
+    }
     try {
       await fbSet(ref(fbDb, `controlDiaObras/${a}/${k}`), true);
       for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) {
@@ -54767,7 +54743,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
                 ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
                 : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
-              <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
+              {enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
+                : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
             </div>
             {(() => {
               const k = claveFabDe(o); const f = k && planF && planF.obras && planF.obras[k];
