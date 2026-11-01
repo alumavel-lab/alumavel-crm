@@ -15622,16 +15622,16 @@ async function leerEtiquetaPerfilConIA(file) {
   const base64 = dataUrl.split(",")[1];
   const prompt = [
     "Esto es la foto de la etiqueta pegada en un perfil de ventana de PVC (sale de la tronzadora).",
-    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\",\"texto\":\"\"}",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
     "- presupuesto: el número de presupuesto u obra, con punto de miles y versión si la trae (por ejemplo 4.533 o 4.533-2). Suele ir en la primera línea junto a la posición.",
     "- posicion: la posición de la ventana (por ejemplo V03, P01.002). cliente: el nombre del cliente u obra. color: el color (por ejemplo Nogal).",
-    "- codigo: las cifras impresas bajo el código de barras. texto: TODO el texto legible en una sola línea.",
+    "- codigo: las cifras impresas bajo el código de barras. Respuesta CORTA: solo el JSON, sin explicaciones.",
     "- La etiqueta puede estar girada: gírala mentalmente antes de leer. Copia SOLO lo que veas. Si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes cifras.",
   ].join("\n");
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 2000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
   });
   if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
   const data = await response.json();
@@ -15639,9 +15639,15 @@ async function leerEtiquetaPerfilConIA(file) {
   const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{"); const fin = limpio.lastIndexOf("}");
-  const r = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
   const t = (x) => String(x || "").trim();
-  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: t(r.texto) };
+  let r = null;
+  try { r = JSON.parse(ini !== -1 && fin > ini ? limpio.slice(ini, fin + 1) : limpio); } catch (e) {
+    // Respuesta cortada: se saca lo que se pueda de lo que llegó
+    const campo = (k) => ((limpio.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)`)) || [])[1] || "");
+    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
+    if (!r.presupuesto && !r.cliente) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
+  }
+  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
 }
 async function leerPegatinaCristalConIA(file) {
   const dataUrl = await reducirImagenParaIA(file);
