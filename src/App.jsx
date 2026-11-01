@@ -9632,6 +9632,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         });
       }
       // Etiquetas y hoja de corte (en ese orden: la hoja de corte se aplica a las ventanas de las etiquetas)
+      let docsCortePend = []; // PDF de la hoja de corte para los documentos de la obra (si no hay onAnadirDocumentos)
       if ((etiquetas.length || cortes.length) && proyecto.origen === "portalUxcar") {
         avisos.push("Las etiquetas y la hoja de corte de Uxcar van en su expediente (módulo Uxcar), no aquí. No las he subido.");
       } else if (etiquetas.length || cortes.length) {
@@ -9664,14 +9665,24 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (cambiado) onGuardarListado(proyecto.id, null, JSON.parse(JSON.stringify({ etiquetasFab: lotes })));
         // Si en esta misma subida va el listado de dibujos, el recuento se corrige después de contarlo (más abajo)
         if (corteLeido) corteParaRecuento = corteLeido;
+        // El PDF de la HOJA DE CORTE se guarda en los documentos de la obra (como en los expedientes de Uxcar): Control del día lo lee solo (dibujos, medidas, solape…)
+        if (cortes.length) {
+          try {
+            const docsCorte = [];
+            for (const f of cortes) docsCorte.push({ id: uid(), nombre: `Hoja de corte — ${f.name}`, tipo: "Hoja de corte", url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
+            if (onAnadirDocumentos) onAnadirDocumentos(docsCorte); else docsCortePend = docsCorte;
+            avisos.push("Hoja de corte guardada en los documentos de la obra (Control del día sacará de ella los dibujos y medidas).");
+          } catch (e) { avisos.push(`⚠ La hoja de corte no se ha podido guardar en los documentos (${(e && e.message) || "error"}).`); }
+        }
       }
       let extraProyecto = {};
+      if (docsCortePend.length) extraProyecto.documentos = [...toArray(proyecto.documentos), ...docsCortePend];
       if (presupuestos.length) {
         const nuevosDocs = [];
         for (const f of presupuestos) nuevosDocs.push({ id: uid(), nombre: f.name, url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
         // Se añaden a lo último guardado (si no, al subir a la vez las hojas de cristales/persianas se perdían)
         if (onAnadirDocumentos) onAnadirDocumentos(nuevosDocs);
-        else extraProyecto.documentos = [...toArray(proyecto.documentos), ...nuevosDocs];
+        else extraProyecto.documentos = [...toArray(extraProyecto.documentos || proyecto.documentos), ...nuevosDocs];
         avisos.push(`Presupuesto guardado en los documentos de la obra (${presupuestos.map((f) => f.name).join(", ")}).`);
       }
       // El recuento de ventanas sale de la HOJA DE CORTE si viene en la subida (siempre igual, sin IA)
