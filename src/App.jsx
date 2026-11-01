@@ -6854,7 +6854,7 @@ export default function App() {
                 if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
               }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
-              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
               // Obra de Uxcar: su expediente pasa también a «producción» (si no, no entraba en el planning ni Uxcar veía que se fabrica)
               const expF = obraF && obraF.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === obraF.uxcarExpedienteId) : null;
               if (expF && !["produccion", "terminado", "entregado"].includes(expF.estado)) uxActualizar(expF, { estado: "produccion", fechaProduccion: uxHoy() }).catch(() => {});
@@ -48394,8 +48394,10 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const hoy = new Date().toISOString().slice(0, 10);
   const [desde, setDesde] = useState(() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); });
   const [verTiempos, setVerTiempos] = useState(false);
-  const [quitadas, setQuitadas] = useState([]);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
+  // Las obras que quitas del planning (sin tick) se GUARDAN: antes se volvían a marcar solas al recargar
+  const quitadas = toArray(cfg.quitadasPlan);
+  const setQuitadas = (arr) => guardarCfg({ quitadasPlan: [...new Set(toArray(arr))] });
   // Obras listas (en verde): vuestras con todo el material y expedientes de Uxcar en verde
   const obraProyecto = (p) => {
     const v = ventanasDeObra(p, uxExpedientes);
@@ -48435,7 +48437,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
   const enCurso = [
     // Obras de Uxcar mandadas a fábrica desde «Listo para fabricar» cuyo expediente no está en producción: entran como obra
-    ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
+    ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).sort((a, b) => (a.fechaEnProceso || 0) - (b.fechaEnProceso || 0)).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
     ...toArray(uxExpedientes).filter((e) => e.estado === "produccion").map((e) => ({ ...obraUx(e), nombre: `${obraUx(e).nombre} · en fabricación`, enCurso: true })),
   ];
   const listas = [
