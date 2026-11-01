@@ -52976,18 +52976,32 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   return { piezas, avisos };
 }
 // Primer hueco libre: mejor en un carro donde ya haya piezas de la misma obra
-function auxSitioLibre(cfg, est, ppto, pptosMismoDia = []) {
+// Sitio en los carros para la siguiente pieza de una obra. La OBRA VA COMPLETA EN UN CARRO: al empezarla se elige un carro con sitio para
+// todas sus piezas (primero el de las obras del mismo día del planning) y ese sitio queda reservado; si ninguno la coge entera, el que tenga más
+// sitio (y se avisa: partida = true). pendPorPpto = piezas que le faltan por cortar a cada obra (incluida la que se va a cortar ahora).
+function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
   const carros = cfg.carros;
   const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro);
   const ocup = new Set(regs.map((e) => `${e.carro}|${e.hueco}`));
-  // Primero el carro donde ya está esa obra; luego el de las obras del MISMO DÍA del planning (todo junto en el mismo carro); luego los demás
+  const huecoLibre = (cid) => { const c = carros.find((x) => x.id === cid); if (!c) return null; for (let h = 1; h <= (parseInt(c.huecos, 10) || 0); h++) if (!ocup.has(`${cid}|${h}`)) return { carro: cid, carroNombre: c.nombre, hueco: h }; return null; };
+  // 1) La obra ya está empezada en un carro: sigue en ese carro
+  const suyo = regs.find((e) => e.ppto === ppto);
+  if (suyo) { const h = huecoLibre(suyo.carro); if (h) return h; }
+  // 2) Obra nueva (o su carro está lleno): carro con sitio para TODA la obra, contando lo reservado para las obras ya empezadas en él
+  const necesita = Math.max(1, parseInt(pendPorPpto[ppto], 10) || 1);
+  const libreEfectivo = (c) => {
+    const ocupados = regs.filter((e) => e.carro === c.id).length;
+    const empezadas = [...new Set(regs.filter((e) => e.carro === c.id && e.ppto !== ppto).map((e) => String(e.ppto)))];
+    const reservado = empezadas.reduce((t, pp) => t + (parseInt(pendPorPpto[pp], 10) || 0), 0);
+    return (parseInt(c.huecos, 10) || 0) - ocupados - reservado;
+  };
   const mismoDia = new Set(toArray(pptosMismoDia).map(String));
-  const orden = [...new Set([...regs.filter((e) => e.ppto === ppto).map((e) => e.carro), ...regs.filter((e) => mismoDia.has(String(e.ppto))).map((e) => e.carro), ...carros.map((c) => c.id)])];
-  for (const cid of orden) {
-    const c = carros.find((x) => x.id === cid);
-    if (!c) continue;
-    for (let h = 1; h <= (parseInt(c.huecos, 10) || 0); h++) if (!ocup.has(`${cid}|${h}`)) return { carro: cid, carroNombre: c.nombre, hueco: h };
-  }
+  const conDia = new Set(regs.filter((e) => mismoDia.has(String(e.ppto))).map((e) => e.carro));
+  const orden = [...carros.filter((c) => conDia.has(c.id)), ...carros.filter((c) => !conDia.has(c.id))];
+  for (const c of orden) { if (libreEfectivo(c) >= necesita) { const h = huecoLibre(c.id); if (h) return h; } }
+  // 3) Ninguno la coge entera: el de más sitio libre (la obra quedará partida)
+  const mejor = [...carros].sort((x, y) => libreEfectivo(y) - libreEfectivo(x)).find((c) => huecoLibre(c.id));
+  if (mejor) return { ...huecoLibre(mejor.id), partida: true, necesita };
   return null;
 }
 function imprimirAux(lista, cfg) {
@@ -53171,7 +53185,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p) => {
-    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto));
+    const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
+    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto), pendPorPpto);
     if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
@@ -53179,7 +53194,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
-      setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}`);
+      setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
       pitidoCRM(true);
     } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
   };
