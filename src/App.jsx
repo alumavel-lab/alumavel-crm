@@ -4275,6 +4275,43 @@ export default function App() {
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas");
   const auxPiezasApp = useObjetoFb("auxiliaresPiezas"); // qué piezas de Auxiliares están cortadas (para el aviso al pasar a fábrica)
+  // Pedidos de Uxcar: cuentan como PEDIDOS en cuanto Uxcar los sube con proveedor y fecha de llegada (decisión de Miguel: no hace
+  // falta pulsar «mandar»). También si su material ya está en fábrica o ya tienen entrada. Se marcan como enviados (anotado como automático).
+  const uxEnviadoAutoRef = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const patch = {};
+    // Proveedor de siempre de cada tipo (Cristales / Persianas): el que más se repite en los pedidos que sí lo tienen.
+    // A los pedidos SIN proveedor se les pone ese (se puede cambiar en el pedido).
+    const habitual = {};
+    ["Cristales", "Persianas"].forEach((tipo) => {
+      const cuenta = new Map();
+      toArray(uxPedidos).forEach((q) => { if (q && q.tipo === tipo && q.proveedorNombre) { const k = String(q.proveedorNombre).trim().toLowerCase(); const c = cuenta.get(k) || { n: 0, q }; c.n++; if ((q.creadoAt || 0) > (c.q.creadoAt || 0)) c.q = q; cuenta.set(k, c); } });
+      const top = [...cuenta.values()].sort((a, b) => b.n - a.n)[0];
+      if (top) habitual[tipo] = top.q;
+    });
+    toArray(uxPedidos).forEach((p) => {
+      if (!p || !p.id || p.recibido || p.proveedorNombre || p.proveedorId || !habitual[p.tipo]) return;
+      const h = habitual[p.tipo];
+      patch[`pedidos/${p.id}/proveedorId`] = h.proveedorId || "";
+      patch[`pedidos/${p.id}/proveedorNombre`] = h.proveedorNombre;
+      patch[`pedidos/${p.id}/proveedorEmail`] = h.proveedorEmail || "";
+      patch[`pedidos/${p.id}/proveedorMovil`] = h.proveedorMovil || "";
+      patch[`pedidos/${p.id}/proveedorAuto`] = "el habitual de " + String(p.tipo || "").toLowerCase();
+    });
+    toArray(uxPedidos).forEach((p) => {
+      if (!p || !p.id || uxPedidoYaMandado(p) || uxEnviadoAutoRef.current.has(p.id)) return;
+      const k = p.tipo === "Cristales" ? "vidrios" : p.tipo === "Persianas" ? "compactos" : "";
+      const exps = toArray(p.expedientes).map((x) => toArray(uxExpedientes).find((e) => e && e.id === x.expedienteId)).filter(Boolean);
+      const llegado = p.recibido || p.recepcion || (k && exps.length && exps.every((e) => uxEnAlmacen(e, k)));
+      const completo = !!(p.proveedorNombre || p.proveedorId || patch[`pedidos/${p.id}/proveedorNombre`]) && !!p.llegadaPrevista;
+      if (!llegado && !completo) return;
+      uxEnviadoAutoRef.current.add(p.id);
+      patch[`pedidos/${p.id}/enviadoManual`] = new Date().toISOString();
+      patch[`pedidos/${p.id}/enviadoAuto`] = llegado ? "el material ya está en fábrica" : "subido por Uxcar con proveedor y fecha de llegada";
+    });
+    if (Object.keys(patch).length) fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
+  }, [uxPedidos, uxExpedientes, cristales, persianasAlmacen, currentUser?.id, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   const auxCfgApp = useObjetoFb("auxiliaresConfig"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   // Aviso «han llegado las persianas: corta las guías y demás auxiliares» (a Auxiliares y Pedidos, 2 días para resolverlo).
@@ -22293,7 +22330,6 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               </div>
             </details>
           )}
-          <RevisionExpedientesUx uxExpedientes={uxExpedientes} cristales={cristales} persianas={ctxPaneles.persianasAlmacen} />
           {bloqueadosMaterial.length > 0 && (
             <details className="mb-5 bg-white border border-amber-300 rounded-lg">
               <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
@@ -50022,9 +50058,6 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     for (const f of fs) {
       // Un solo pedido de cada tipo por expediente: si ya hay uno ENVIADO al proveedor o recibido no se crea otro; si hay uno sin enviar, se sustituye por este documento
       const previos = toArray(pedidosUx).filter((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && patch[`pedidos/${p.id}`] !== null);
-      // Hasta que el pedido anterior no esté MANDADO al proveedor no se sube otro (el mismo pedido sin enviar sí se puede sustituir)
-      const sinMandar = toArray(pedidosUx).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido && !previos.some((q) => q.id === p.id));
-      if (sinMandar.length) { avisos.push(`⚠ ${f.name}: NO he creado el pedido. Antes tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}. Lo demás del expediente sí se ha guardado.`); continue; }
       const cerrado = previos.find((p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recibido || p.recepcion);
       if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
       previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
@@ -50358,9 +50391,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return "UX-" + ((nums.length ? Math.max(...nums) : 0) + 1);
   };
   const guardarPedido = async ({ tipo, proveedorId, archivos, grupos, tipoExp, comentarios, fechaPedido, llegadaPrevista }) => {
-    // Obligatorio: proveedor, fecha de entrega y que no quede ningún pedido sin mandar
-    const sinMandar = pedidosUx.filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
-    if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
+    // Obligatorio: proveedor y fecha de entrega (con eso ya cuenta como pedido)
     if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
     if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
     const repetido = grupos.filter((g) => g.destino === "nuevo").map((g) => ({ g, ya: expMismoPpto(g.numeroNuevo) })).find((x) => x.ya);
@@ -50736,6 +50767,26 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
           ))}
         </div>
       )}
+      {isAdmin && vista === "lista" && (() => {
+        const sinMandar = toArray(uxPedidos).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
+        if (!sinMandar.length) return null;
+        const marcar = (lista) => { if (!window.confirm(`¿Marcar como PEDIDO${lista.length === 1 ? "" : "S"} al proveedor ${lista.map((p) => p.numero).join(", ")}?\n\nÚsalo si ya se pidió (por teléfono, WhatsApp…) y nadie lo marcó.`)) return; const patch = {}; const ahoraIso = new Date().toISOString(); lista.forEach((p) => { patch[`pedidos/${p.id}/enviadoManual`] = ahoraIso; patch[`pedidos/${p.id}/llegadaAuto`] = null; }); fbUpdate(ref(fbDb, "portalUxcar"), patch).catch((e) => alert("No se pudo guardar: " + e.message)); };
+        return (
+          <details className="mb-4 bg-white border border-amber-300 rounded-lg">
+            <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">📦 {sinMandar.length} pedido{sinMandar.length === 1 ? "" : "s"} de Uxcar que todavía no cuenta{sinMandar.length === 1 ? "" : "n"} como pedido (les falta el proveedor o la fecha de llegada) · pulsa para verlos</summary>
+            <div className="px-4 pb-3 space-y-1.5">
+              {sinMandar.length > 1 && <button onClick={() => marcar(sinMandar)} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">Ya están todos pedidos ({sinMandar.length})</button>}
+              {sinMandar.map((p) => (
+                <div key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm border-t border-slate-100 pt-1.5">
+                  <b>{p.numero}</b><span className="text-slate-600">{p.tipo}</span>
+                  <span className="text-xs text-slate-500">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "sin expediente"} · {p.proveedorNombre || "sin proveedor"} · {uxFecha(p.fecha)}</span>
+                  <button onClick={() => marcar([p])} className="ml-auto text-xs font-semibold px-2.5 py-1 rounded-md border border-amber-400 text-amber-800 bg-white hover:bg-amber-50">Ya lo he pedido</button>
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      })()}
       {isAdmin && nHuerfanos > 0 && onPurgarHuerfanos && (
         <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm flex flex-wrap items-center gap-3">
           <span>⚠ Hay <b>{nHuerfanos}</b> pedido{nHuerfanos === 1 ? "" : "s"} de Uxcar sin expediente (se borró el expediente pero no sus pedidos).</span>
