@@ -54090,6 +54090,29 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   const asign = asignTodas[dia] || {};
+  // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
+  // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
+  const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta } }
+  const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|");
+  useEffect(() => {
+    if (!firmaReg || firmaReg === "#") return;
+    (async () => {
+      try {
+        const ya = (await fbGet(ref(fbDb, "controlDiaRegistro"))).val() || {};
+        const hoyR = new Date().toISOString().slice(0, 10); const upd = {};
+        Object.entries(planPres || {}).forEach(([pk, pr]) => { if (!pr || ya[pk]) return; upd[pk] = { pres: pr.pres || pk, nombre: pr.nombre || `${pr.pres || pk}${pr.cliente ? " · " + String(pr.cliente).replace(/^\d+-/, "") : ""}`, ventanas: toArray(pr.ventanas).length, obraKey: pr.obraKey || limpia(`pl-${pk}`), alta: hoyR }; });
+        const conObra = new Set(Object.values({ ...ya, ...upd }).map((r) => r && r.obraKey).filter(Boolean));
+        Object.entries(asignTodas).forEach(([f, d]) => Object.keys(d).forEach((ko) => {
+          if (conObra.has(ko) || ya[`o_${ko}`] || upd[`o_${ko}`]) return;
+          const o = obras.get ? [...obras.values()].find((x) => limpia(x.d.key) === ko) : null; if (!o) return;
+          upd[`o_${ko}`] = { pres: [...presConVersion(o)][0] || "", nombre: o.d.nombre, ventanas: idsDe(o).length, obraKey: ko, alta: f };
+        }));
+        if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd);
+      } catch (e) { /* se reintenta en la siguiente pasada */ }
+    })();
+  }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [verRegistro, setVerRegistro] = useState(false);
+  const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
   const horasDelDia = Object.keys(asign).reduce((a, k) => a + (presDeObra.get(k) || []).reduce((b, pr) => b + (Number(pr.horas) || 0), 0), 0);
   // Vista previa del PDF «PLANING»: reparto por días y cruce con las obras del CRM (por nº de presupuesto)
@@ -54685,6 +54708,57 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         )}
       </div>
+      {Object.keys(registro || {}).length > 0 && (() => {
+        // Lista fija de todo lo planificado: ventanas hechas (marcas en verde de cualquier día) y ✓ HECHO cuando está acabada
+        const lun = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); })();
+        const dom = (() => { const d = new Date(lun + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toLocaleDateString("sv-SE"); })();
+        const vistos = new Set(); const filas = [];
+        Object.values(registro || {}).forEach((r) => {
+          if (!r || !r.obraKey || vistos.has(r.obraKey)) return; vistos.add(r.obraKey);
+          const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
+          const verdes = new Set(); let ultimo = "";
+          Object.entries(marcasTodas || {}).forEach(([d, m]) => { const mo = m && m[ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { if (v === 1) { verdes.add(id); if (d > ultimo) ultimo = d; } }); });
+          const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
+          const hechas = ids ? ids.filter((i) => verdes.has(i)).length : verdes.size;
+          const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+          const fin = !!pr && ["Listo para reparto/recogida", "Entregado"].includes(pr.estadoTrabajo);
+          const hecho = fin || (total > 0 && hechas >= total);
+          const fecha = hecho ? ((fin && pr.fechaTerminadoFabrica) || ultimo) : "";
+          filas.push({ r, ko, o, total, hechas: hecho && fin && hechas < total ? total : hechas, hecho, fecha });
+        });
+        const q = qReg.trim().toLowerCase();
+        const vis = filas.filter((f) => !q || `${f.r.pres} ${f.r.nombre}`.toLowerCase().includes(q)).sort((a, b) => (a.hecho ? 1 : 0) - (b.hecho ? 1 : 0) || String(a.r.pres).localeCompare(String(b.r.pres)));
+        let ventSem = 0; Object.entries(marcasTodas || {}).forEach(([d, m]) => { if (d < lun || d > dom) return; Object.values(m || {}).forEach((mo) => Object.values(mo || {}).forEach((v) => { if (v === 1) ventSem++; })); });
+        const obrasSem = filas.filter((f) => f.hecho && f.fecha >= lun && f.fecha <= dom);
+        const nHechas = filas.filter((f) => f.hecho).length;
+        const ventTot = filas.reduce((a, f) => a + f.total, 0), ventHechas = filas.reduce((a, f) => a + Math.min(f.hechas, f.total), 0);
+        return (
+          <div className="mb-3 rounded-lg border-2 border-emerald-500 bg-white p-2">
+            <button type="button" onClick={() => setVerRegistro(!verRegistro)} className="w-full text-left text-sm font-bold text-emerald-900">
+              {verRegistro ? "▼" : "▶"} 📋 Todo lo planificado: {filas.length} obras · <span className="text-emerald-700">✓ {nHechas} hechas</span> · {ventHechas} de {ventTot} ventanas
+              <span className="ml-2 font-semibold text-slate-600">· Semana del {fmtDate(lun)}: {ventSem} ventanas, {obrasSem.length} obras terminadas</span>
+            </button>
+            {verRegistro && (
+              <div className="mt-2">
+                <input value={qReg} onChange={(e) => setQReg(e.target.value)} placeholder="Buscar presupuesto u obra (6653, 6146…)" className="w-full sm:w-80 border border-slate-300 rounded-md px-2 py-1.5 text-sm mb-2" />
+                <p className="text-[11px] text-slate-500 mb-1">No se borra nunca (ni al borrar el PLANING ni al vaciar días). Se pone ✓ HECHO cuando todas sus ventanas están en verde o la obra ha pasado a reparto.</p>
+                <div className="max-h-96 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-md">
+                  {vis.map((f) => (
+                    <div key={f.ko} className={`flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm ${f.hecho ? "bg-emerald-50" : ""}`}>
+                      <b className="font-mono-num w-20">{f.r.pres || "—"}</b>
+                      <span className="flex-1 min-w-[160px] text-slate-700">{f.r.nombre}</span>
+                      <span className="text-xs text-slate-600 w-28">{Math.min(f.hechas, f.total)} de {f.total || "?"} ventanas</span>
+                      {f.hecho ? <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-600 text-white">✓ HECHO{f.fecha ? ` · ${fmtDate(f.fecha)}` : ""}</span>
+                        : <span className="text-xs font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-600">{f.hechas > 0 ? "a medias" : "pendiente"}</span>}
+                    </div>
+                  ))}
+                  {!vis.length && <div className="px-2 py-2 text-sm text-slate-500">Nada con esa búsqueda.</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {(() => {
         const listasF = (planF && planF.listas) || {};
         if (!Object.keys(listasF).length) return null;
