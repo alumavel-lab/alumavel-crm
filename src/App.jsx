@@ -54822,7 +54822,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {modalNota}
       <div className="flex items-center gap-4 mb-3">
         <b className="text-3xl">Carga de material · {lista.length} obras · {nVerdes} terminadas</b>
-        <span className="text-sm text-slate-300">Toca una ventana para marcarla (gris → verde → naranja → gris). Toca el NOMBRE de una obra para agrandarla (otra vez, a pequeño). «✓ Toda» pone la obra entera en verde.</span>
+        <span className="text-sm text-slate-300">Toca una ventana para marcarla (gris → verde → naranja → gris). Toca el NOMBRE de una obra para verla en toda la pantalla (otra vez, vuelven todas). «✓ Toda» pone la obra entera en verde.</span>
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
@@ -54830,15 +54830,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
       <div className="flex flex-wrap gap-2 content-start">
         {lista.map((o, _i, arr) => {
-          // Sin límite de obras: hasta 8 columnas por fila; si hay más (p. ej. 16 pequeñas), en 2 filas o las que hagan falta. La agrandada ocupa como 3
-          const unidades = arr.length + (tvGrande && arr.some((x) => x.d.key === tvGrande) ? 2 : 0);
+          // Sin límite de obras: hasta 8 columnas por fila; si hay más (p. ej. 16 pequeñas), en 2 filas o las que hagan falta.
+          // La obra agrandada ocupa TODA la pantalla (las demás se esconden hasta volver a tocar su nombre)
+          const hayGrande = !!tvGrande && arr.some((x) => x.d.key === tvGrande);
+          if (hayGrande && o.d.key !== tvGrande) return null;
+          const unidades = hayGrande ? 1 : arr.length;
           const porFila = Math.max(1, Math.min(8, unidades)); const filas = Math.max(1, Math.ceil(unidades / porFila));
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
-            <div key={o.d.key} style={{ flex: `${grande ? 3 : 1} 1 calc(${Math.min(100, (grande ? 300 : 100) / porFila)}% - 0.5rem)`, minWidth: grande ? "22rem" : "7rem", height: `calc((100vh - 7.5rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 7.5rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
-                <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a pequeño" : "Agrandar esta obra"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? "🔍−" : "🔍+"}</span></button>
+                <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className={`${grande ? "text-base" : "text-[11px]"} font-bold text-sky-100`}>{nH}/{nV || "?"}</span>
                   <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`ml-auto rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
