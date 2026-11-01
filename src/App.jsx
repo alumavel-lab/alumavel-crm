@@ -54310,6 +54310,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     })();
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
+  const [verPlanUp, setVerPlanUp] = useState(false); // el PLANING del programa va plegado (opcional)
   const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null);
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
@@ -55012,8 +55013,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      <div className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <details open={verPlanUp || !!planEdmo || !!plan || leyendoPlan} onToggle={(e) => setVerPlanUp(e.currentTarget.open)} className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-600">⚙ PLANING del programa (opcional: solo añade las horas y la descripción larga de cada ventana; los dibujos y medidas ya salen de la hoja de corte)</summary>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <input ref={inputPlanRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leerPlanning(e.target.files[0]); e.target.value = ""; }} />
           <button type="button" disabled={leyendoPlan} onClick={() => inputPlanRef.current && inputPlanRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-bold disabled:opacity-50">{leyendoPlan ? "Leyendo planning…" : "📅 Subir planning (PDF, Excel o foto)"}</button>
           <input ref={inputDibRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) sacarDibujosGuardados(e.target.files[0]); e.target.value = ""; }} />
@@ -55073,7 +55075,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             <button type="button" onClick={() => setPlan(null)} className="ml-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm font-semibold">Descartar</button>
           </div>
         )}
-      </div>
+      </details>
       <div className="mb-3 flex flex-wrap items-start gap-3">
         <div className="rounded-lg border border-slate-300 bg-white p-2 flex-1 min-w-[320px]">
           <div className="flex items-center justify-between mb-1">
