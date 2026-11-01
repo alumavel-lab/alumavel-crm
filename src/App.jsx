@@ -53123,7 +53123,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [orden, setOrden] = useState("ventana");
   const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
   const [verSinDia, setVerSinDia] = useState(false);
-  const [perfilDia, setPerfilDia] = useState(""); // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
+  const [perfilDia, setPerfilDia] = useState("");
+  const [diasSel, setDiasSel] = useState([]); // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
@@ -53186,7 +53187,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p) => {
     const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
-    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto), pendPorPpto);
+    // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
+    const grupoCarro = perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
+    const sitio = auxSitioLibre(cfg, est, p.ppto, grupoCarro, pendPorPpto);
     if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
@@ -53377,14 +53380,43 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             );
           };
           const botonPerfil = (k) => <button type="button" onClick={() => setPerfilDia(perfilDia === k ? "" : k)} className={`ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 ${perfilDia === k ? "bg-indigo-600 border-indigo-700 text-white" : "bg-white border-indigo-400 text-indigo-800"}`}>{perfilDia === k ? "✕ Volver a ver por obra" : "✂ Cortar por perfil (todas las obras del día)"}</button>;
+          // TODA LA SEMANA: de lunes a viernes de cada semana del planning (también los días sin obras)
+          const sumaD = (f, n) => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + n); return x.toLocaleDateString("sv-SE"); };
+          const lunesDe = (f) => sumaD(f, -((new Date(f + "T12:00:00").getDay() + 6) % 7));
+          const semanas = [...new Set(diasAux.map(lunesDe))].sort().map((l) => ({ lunes: l, dias: [0, 1, 2, 3, 4].map((i) => sumaD(l, i)) }));
+          const obrasSel = obrasAux.filter((g) => g.dia && diasSel.includes(g.dia));
+          const togDia = (d) => { setDiasSel((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d].sort())); if (perfilDia === "multi") setPerfilDia(""); };
           return (
             <div className="space-y-4">
-              {diasAux.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); return (
-                <div key={d}>
-                  <div className="flex flex-wrap items-center gap-1 mb-2"><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500 normal-case">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></span>{botonPerfil(d)}</div>
-                  {perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>}
+              {diasSel.length > 0 && (
+                <div className="sticky top-0 z-10 rounded-xl border-2 border-indigo-500 bg-indigo-50 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <b className="text-indigo-900">Elegidos: {diasSel.map((d) => new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric" })).join(", ")} · {obrasSel.length} obras · {obrasSel.reduce((a, g) => a + g.piezas.length, 0)} piezas</b>
+                    <button type="button" onClick={() => setPerfilDia(perfilDia === "multi" ? "" : "multi")} className={`text-sm font-bold px-3 py-1.5 rounded-lg ${perfilDia === "multi" ? "bg-white border-2 border-indigo-600 text-indigo-800" : "bg-indigo-600 text-white"}`}>{perfilDia === "multi" ? "✕ Cerrar" : "✂ Cortar por perfil los días elegidos"}</button>
+                    <button type="button" onClick={() => { setDiasSel([]); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-semibold px-2 py-1 rounded border border-slate-300 bg-white">Quitar selección</button>
+                  </div>
+                  {perfilDia === "multi" && <div className="mt-3">{obrasSel.length ? vistaPerfil(obrasSel) : <div className="text-sm text-slate-500">Esos días no tienen nada por cortar.</div>}</div>}
                 </div>
-              ); })}
+              )}
+              {semanas.map((sem) => (
+                <div key={sem.lunes} className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-1">
+                    <span className="text-sm font-extrabold text-slate-500 uppercase tracking-wide">Semana del {fmtDate(sem.lunes)}</span>
+                    <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
+                  </div>
+                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); return (
+                    <div key={d} className={sel ? "rounded-lg ring-2 ring-indigo-300 p-1" : ""}>
+                      <div className="flex flex-wrap items-center gap-1 mb-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
+                          <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
+                        <span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>
+                        {gs.length > 0 && botonPerfil(d)}
+                      </div>
+                      {gs.length > 0 && (perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
+                    </div>
+                  ); })}
+                </div>
+              ))}
               {sinDia.length > 0 && (
                 <div>
                   <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
