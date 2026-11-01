@@ -53949,6 +53949,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const lote = useObjetoFb("controlDiaLote"); // última planificación de golpe: { dia, claves:[...], en }
   const [selLimp, setSelLimp] = useState({}); // obras marcadas para dar de baja (si no se toca, se marcan solas las que están en verde)
   const [irObra, setIrObra] = useState(null); // clave de la obra a la que saltar (desde el buscador de Limpiar)
+  const [resVent, setResVent] = useState(null); // ventana encontrada con la foto/búsqueda: se pinta en ROJO { ko, pos }
+  const normPosR = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+  const esResaltada = (o, v) => !!resVent && limpia(o.d.key) === resVent.ko && !!resVent.pos && [v.pos, v.tip].some((x) => normPosR(x).startsWith(normPosR(resVent.pos)));
   const [resalt, setResalt] = useState(null);
   useEffect(() => {
     if (!irObra) return undefined;
@@ -55025,18 +55028,28 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       if (hCod) { setQMeter(String(hCod.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ ${hCod.dueno.nombre} (por el código ${r.codigo})`); return; }
       // Se prueba con cada dato leído (posición+lote, presupuesto, expediente, lote, posición) y se queda el que encuentre obra
       const lotesM = lotesPorObra();
-      const presNum = ((r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
-      const intentos = [r.posicion && r.fabricacion ? `${r.posicion} fab ${r.fabricacion}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", r.posicion].filter(Boolean);
+      // La posición se reconoce por su forma (V01.403, P01.002…) esté en el campo que esté (la IA a veces la mezcla con el presupuesto)
+      const reP = /\b[A-Z]{1,2}\d{2}\.\d{3}\b/;
+      const posL = ((`${r.posicion} ${r.presupuesto} ${r.texto || ""}`.toUpperCase().match(reP)) || [])[0] || (reP.test(String(r.posicion).toUpperCase()) ? r.posicion : "");
+      const presTxt = String(r.presupuesto || "").toUpperCase().replace(reP, " ");
+      const presNum = ((presTxt.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
+      r.posicion = posL || r.posicion;
+      const intentos = [posL && r.fabricacion ? `${posL} fab ${r.fabricacion}` : "", posL && presNum ? `${posL} ${presNum}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", posL].filter(Boolean);
       const todas = [...obras.values()].filter((o) => o.d.tipo !== "pl");
       for (const q of intentos) {
         const hits = todas.filter((o) => coincideBusqueda(o, q, lotesM));
         if (!hits.length) continue;
         const enPlan = hits.filter((o) => enFabrica.has(limpia(o.d.key)));
         setQMeter(q);
-        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta (para marcar o poner una incidencia)
+        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta, y la VENTANA queda en ROJO
+        if (posL) hits.sort((a, b) => ([...b.viv.values()].flat().some((v) => normPosR(v.pos).startsWith(normPosR(posL))) ? 1 : 0) - ([...a.viv.values()].flat().some((v) => normPosR(v.pos).startsWith(normPosR(posL))) ? 1 : 0));
         const yaDia = hits.map((o) => { const ko = limpia(o.d.key); const ds = Object.keys(asignTodas).filter((d) => asignTodas[d][ko]).sort(); const hoyF = new Date().toISOString().slice(0, 10); return { o, ko, d: ds.find((d) => d === hoyF) || ds.find((d) => d >= hoyF) || ds[ds.length - 1] }; }).find((x) => x.d);
         setFotoObra(hits[0] ? { key: hits[0].d.key, nombre: hits[0].d.nombre, posicion: r.posicion || "" } : null);
-        if (yaDia) { setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false })); setTimeout(() => setIrObra(yaDia.ko), 300); }
+        if (yaDia) {
+          setResVent({ ko: yaDia.ko, pos: posL || "" }); setVerFolio(false);
+          setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false }));
+          setTimeout(() => { const el = document.querySelector('[data-resaltada="1"]'); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); else setIrObra(yaDia.ko); }, 700);
+        } else setResVent(null);
         setMsgFoto(`✓ Etiqueta: ${[r.posicion, r.presupuesto && `presupuesto ${r.presupuesto}`, r.expediente && `expediente ${r.expediente}`, r.fabricacion && `fabricación ${r.fabricacion}`, r.cliente].filter(Boolean).join(" · ")} → ${hits.slice(0, 3).map((o) => o.d.nombre).join(" / ")}${enPlan.length ? ` — OJO: ${enPlan.map((o) => o.d.nombre).join(", ")} ya está en el planning de Fábrica` : ""}`);
         return;
       }
@@ -55146,7 +55159,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       {vs.map((v) => { const val = valor(o.d.key, v.id); const inf = infoVent(o, v); const ih = infoHoja(o, v); const dib = (inf && inf.dib) || (ih && ih.dib) || ""; const ex = extrasVentana(o, v);
                         const fondo = val === 1 ? "bg-emerald-600 border-emerald-300 text-white" : val === 2 ? "bg-orange-500 border-orange-200 text-white" : "bg-white text-slate-900 border-slate-300";
                         if (!grande) return (
-                          <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} className={`w-full rounded-md border-2 px-1 py-1 text-center ${fondo}`}>
+                          <button key={v.id} type="button" data-resaltada={esResaltada(o, v) ? "1" : undefined} onClick={() => tocaVentana(o, v)} className={`w-full rounded-md border-2 px-1 py-1 text-center ${fondo} ${esResaltada(o, v) ? "ring-4 ring-red-600 outline outline-2 outline-red-300" : ""}`}>
                             {dib ? <div className="flex justify-center"><DibujoPlan hash={dib} alto={48} sinZoomAlTocar /></div> : null}
                             <div className="text-sm font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                             {v.medida ? <div className="text-[10px] font-semibold opacity-80">{v.medida}</div> : null}
@@ -55154,7 +55167,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                           </button>
                         );
                         return (
-                          <div key={v.id} className="relative flex flex-col items-stretch">
+                          <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg p-1 bg-red-900/40" : ""}`}>
+                            {esResaltada(o, v) && <div className="text-sm font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                             {lapizVentana(o, v, true)}
                             <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${fondo}`}>
                               <div className="flex justify-center">{dib ? <DibujoPlan hash={dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />}</div>
@@ -55609,7 +55623,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   {/* Las ventanas ya fabricadas (en verde) salen de esta lista y pasan a «ya fabricadas», debajo */}
                   <div className="flex flex-wrap gap-1.5">
                     {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id); return (
-                      <div key={v.id} className="relative flex flex-col items-stretch">
+                      <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg bg-red-100 p-1" : ""}`}>
+                      {esResaltada(o, v) && <div className="text-xs font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                       {lapizVentana(o, v, false)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 pr-8 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] text-center ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>
                         {(() => { const inf = infoVent(o, v); const ih = infoHoja(o, v); return inf && inf.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={inf.dib} alto={90} sinZoomAlTocar /></div> : ih && ih.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={ih.dib} alto={90} sinZoomAlTocar /></div> : (v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null); })()}
