@@ -54828,12 +54828,15 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {contadorCD}
       {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
-      <div className="flex gap-2 items-stretch" style={{ height: "calc(100vh - 7.5rem)" }}>
-        {lista.map((o) => {
+      <div className="flex flex-wrap gap-2 content-start">
+        {lista.map((o, _i, arr) => {
+          // Sin límite de obras: hasta 8 columnas por fila; si hay más (p. ej. 16 pequeñas), en 2 filas o las que hagan falta. La agrandada ocupa como 3
+          const unidades = arr.length + (tvGrande && arr.some((x) => x.d.key === tvGrande) ? 2 : 0);
+          const porFila = Math.max(1, Math.min(8, unidades)); const filas = Math.max(1, Math.ceil(unidades / porFila));
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
-            <div key={o.d.key} style={{ flex: grande ? "3 1 0" : "1 1 0", minWidth: grande ? "22rem" : "7.5rem" }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+            <div key={o.d.key} style={{ flex: `${grande ? 3 : 1} 1 calc(${Math.min(100, (grande ? 300 : 100) / porFila)}% - 0.5rem)`, minWidth: grande ? "22rem" : "7rem", height: `calc((100vh - 7.5rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
                 <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a pequeño" : "Agrandar esta obra"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? "🔍−" : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
