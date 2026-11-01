@@ -15633,8 +15633,9 @@ async function leerEtiquetaPerfilConIA(file) {
   const base64 = dataUrl.split(",")[1];
   const prompt = [
     "Esto es la foto de la etiqueta pegada en un perfil de ventana de PVC (sale de la tronzadora).",
-    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
-    "- presupuesto: el número de presupuesto u obra, con punto de miles y versión si la trae (por ejemplo 4.533 o 4.533-2). Suele ir en la primera línea junto a la posición.",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"expediente\":\"\",\"fabricacion\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
+    "- presupuesto: el número de presupuesto (puede poner «Presupuesto», «Ppto» o ir en la primera línea, p. ej. 4.533 o 6670), con su versión si la trae.",
+    "- expediente: el número de expediente si pone «Expediente» o «EXP» (p. ej. 632). fabricacion: el número de fabricación o lote si pone «Fabricación» o «Fab» (p. ej. 1372).",
     "- posicion: la posición de la ventana (por ejemplo V03, P01.002). cliente: el nombre del cliente u obra. color: el color (por ejemplo Nogal).",
     "- codigo: las cifras impresas bajo el código de barras. Respuesta CORTA: solo el JSON, sin explicaciones.",
     "- La etiqueta puede estar girada: gírala mentalmente antes de leer. Copia SOLO lo que veas. Si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes cifras.",
@@ -15655,10 +15656,10 @@ async function leerEtiquetaPerfilConIA(file) {
   try { r = JSON.parse(ini !== -1 && fin > ini ? limpio.slice(ini, fin + 1) : limpio); } catch (e) {
     // Respuesta cortada: se saca lo que se pueda de lo que llegó
     const campo = (k) => ((limpio.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)`)) || [])[1] || "");
-    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
-    if (!r.presupuesto && !r.cliente) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
+    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), expediente: campo("expediente"), fabricacion: campo("fabricacion"), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
+    if (!r.presupuesto && !r.cliente && !r.expediente && !r.fabricacion && !r.posicion) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
   }
-  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
+  return { presupuesto: t(r.presupuesto), expediente: t(r.expediente).replace(/[^\d]/g, ""), fabricacion: t(r.fabricacion).replace(/[^\d]/g, ""), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
 }
 async function leerPegatinaCristalConIA(file) {
   const dataUrl = await reducirImagenParaIA(file);
@@ -54843,6 +54844,24 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     if (!window.confirm(`¿Quitar ${nombre} de «Todo lo planificado»?\n\nNo toca la obra ni el CRM: solo deja de salir en esta lista y en «Planning terminado».`)) return;
     try { const upd = {}; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === ko) { upd[`${rk}/borrado`] = true; upd[`${rk}/hechoEn`] = null; } }); if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
+  // Todo lo que identifica una obra para buscarla: nombre, presupuestos, expediente/referencia, lotes de fabricación y posiciones de sus ventanas
+  const lotesPorObra = () => { const m = new Map(); indice.forEach((h) => { if (!h || !h.dueno || !h.lote) return; const k = limpia(h.dueno.key); if (!m.has(k)) m.set(k, new Set()); m.get(k).add(String(h.lote.fab || "")); }); return m; };
+  const textoBusquedaObra = (o, lotesM) => {
+    const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
+    const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
+    const kE = e ? `u-${e.id}` : ""; const lotes = [...((lotesM && lotesM.get(limpia(o.d.key))) || []), ...((lotesM && kE && lotesM.get(limpia(kE))) || [])];
+    const h = hojaDeObra(o);
+    const partes = [o.d.nombre, p && p.nombre, p && p.presupuestoNumero, p && presupuestoDeObra(p), p && p.referencia, p && p.expediente, ...[...presCrmDe(o)],
+      e && e.numero, e && e.referencia, e && e.expediente, e && e.presupuesto, ...lotes.map((l) => `fab ${l}`),
+      ...[...o.viv.values()].flat().map((v) => v.pos), ...toArray(h && h.modelos).map((m) => m.pos)];
+    const t = partes.filter(Boolean).join(" · ").toLowerCase();
+    return { t, sinPuntos: t.replace(/(\d)\.(?=\d)/g, "$1") };
+  };
+  const coincideBusqueda = (o, q, lotesM) => {
+    const toks = String(q || "").toLowerCase().split(/\s+/).filter(Boolean); if (!toks.length) return true;
+    const { t, sinPuntos } = textoBusquedaObra(o, lotesM);
+    return toks.every((tk) => t.includes(tk) || sinPuntos.includes(tk.replace(/(\d)\.(?=\d)/g, "$1")));
+  };
   // FOTO DE LA ETIQUETA DEL PERFIL → busca la obra: 1) código de barras (si el navegador lo lee y está entre las piezas); 2) la IA lee el texto (presupuesto, cliente)
   const buscarObraPorFoto = async (file) => {
     if (!file) return;
@@ -54859,6 +54878,19 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       // el código impreso también puede ser el de una pieza de la pistola
       const hCod = r.codigo ? [r.codigo, r.codigo.slice(-12), r.codigo.slice(0, 12)].map((k) => indice.get(k)).find(Boolean) : null;
       if (hCod) { setQMeter(String(hCod.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ ${hCod.dueno.nombre} (por el código ${r.codigo})`); return; }
+      // Se prueba con cada dato leído (posición+lote, presupuesto, expediente, lote, posición) y se queda el que encuentre obra
+      const lotesM = lotesPorObra();
+      const presNum = ((r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
+      const intentos = [r.posicion && r.fabricacion ? `${r.posicion} fab ${r.fabricacion}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", r.posicion].filter(Boolean);
+      const todas = [...obras.values()].filter((o) => o.d.tipo !== "pl");
+      for (const q of intentos) {
+        const hits = todas.filter((o) => coincideBusqueda(o, q, lotesM));
+        if (!hits.length) continue;
+        const enPlan = hits.filter((o) => enFabrica.has(limpia(o.d.key)));
+        setQMeter(q);
+        setMsgFoto(`✓ Etiqueta: ${[r.posicion, r.presupuesto && `presupuesto ${r.presupuesto}`, r.expediente && `expediente ${r.expediente}`, r.fabricacion && `fabricación ${r.fabricacion}`, r.cliente].filter(Boolean).join(" · ")} → ${hits.slice(0, 3).map((o) => o.d.nombre).join(" / ")}${enPlan.length ? ` — OJO: ${enPlan.map((o) => o.d.nombre).join(", ")} ya está en el planning de Fábrica` : ""}`);
+        return;
+      }
       const pres = (r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "";
       if (pres) {
         const base = pres.replace(/\D/g, "").slice(0, 4);
@@ -55011,10 +55043,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </div>
       {onMeterEnPlanning && (() => {
         // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
-        const q = qMeter.trim().toLowerCase(); const qd = q.replace(/[^\d]/g, "");
+        const q = qMeter.trim().toLowerCase(); const qd = q.split(/\s+/).length === 1 ? q.replace(/[^\d]/g, "") : "";
+        const lotesBusq = verMeter && q ? lotesPorObra() : null;
         const cands = [...obras.values()].filter((o) => o.d.tipo === "p").map((o) => ({ o, p: toArray(proyectos).find((x) => x.id === o.d.id) }))
           .filter(({ o, p }) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) && !enFabrica.has(limpia(o.d.key)))
-          .filter(({ o, p }) => (q ? `${o.d.nombre} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase().includes(q) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
+          .filter(({ o, p }) => (q ? coincideBusqueda(o, q, lotesBusq) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
           .slice(0, 30);
         const fechaM = diaMeter || dia;
         return (
@@ -55023,7 +55056,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             {verMeter && (
               <div className="mt-2 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Buscar obra o presupuesto (6510, Juan…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Presupuesto, expediente, fab., ventana o nombre (6670, 632, V01.403…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
                   <input ref={fotoEtqRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; buscarObraPorFoto(f); }} />
                   <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
                   <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
