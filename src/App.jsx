@@ -9632,6 +9632,7 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         });
       }
       // Etiquetas y hoja de corte (en ese orden: la hoja de corte se aplica a las ventanas de las etiquetas)
+      let docsCortePend = []; // PDF de la hoja de corte para los documentos de la obra (si no hay onAnadirDocumentos)
       if ((etiquetas.length || cortes.length) && proyecto.origen === "portalUxcar") {
         avisos.push("Las etiquetas y la hoja de corte de Uxcar van en su expediente (módulo Uxcar), no aquí. No las he subido.");
       } else if (etiquetas.length || cortes.length) {
@@ -9664,14 +9665,24 @@ function ListadoMaterialesObra({ proyecto, materiales, proveedores, pedidosObra,
         if (cambiado) onGuardarListado(proyecto.id, null, JSON.parse(JSON.stringify({ etiquetasFab: lotes })));
         // Si en esta misma subida va el listado de dibujos, el recuento se corrige después de contarlo (más abajo)
         if (corteLeido) corteParaRecuento = corteLeido;
+        // El PDF de la HOJA DE CORTE se guarda en los documentos de la obra (como en los expedientes de Uxcar): Control del día lo lee solo (dibujos, medidas, solape…)
+        if (cortes.length) {
+          try {
+            const docsCorte = [];
+            for (const f of cortes) docsCorte.push({ id: uid(), nombre: `Hoja de corte — ${f.name}`, tipo: "Hoja de corte", url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
+            if (onAnadirDocumentos) onAnadirDocumentos(docsCorte); else docsCortePend = docsCorte;
+            avisos.push("Hoja de corte guardada en los documentos de la obra (Control del día sacará de ella los dibujos y medidas).");
+          } catch (e) { avisos.push(`⚠ La hoja de corte no se ha podido guardar en los documentos (${(e && e.message) || "error"}).`); }
+        }
       }
       let extraProyecto = {};
+      if (docsCortePend.length) extraProyecto.documentos = [...toArray(proyecto.documentos), ...docsCortePend];
       if (presupuestos.length) {
         const nuevosDocs = [];
         for (const f of presupuestos) nuevosDocs.push({ id: uid(), nombre: f.name, url: await subirArchivoAStorage(f, `documentos-proyectos/${proyecto.id}`), subidoEn: Date.now() });
         // Se añaden a lo último guardado (si no, al subir a la vez las hojas de cristales/persianas se perdían)
         if (onAnadirDocumentos) onAnadirDocumentos(nuevosDocs);
-        else extraProyecto.documentos = [...toArray(proyecto.documentos), ...nuevosDocs];
+        else extraProyecto.documentos = [...toArray(extraProyecto.documentos || proyecto.documentos), ...nuevosDocs];
         avisos.push(`Presupuesto guardado en los documentos de la obra (${presupuestos.map((f) => f.name).join(", ")}).`);
       }
       // El recuento de ventanas sale de la HOJA DE CORTE si viene en la subida (siempre igual, sin IA)
@@ -15622,16 +15633,16 @@ async function leerEtiquetaPerfilConIA(file) {
   const base64 = dataUrl.split(",")[1];
   const prompt = [
     "Esto es la foto de la etiqueta pegada en un perfil de ventana de PVC (sale de la tronzadora).",
-    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\",\"texto\":\"\"}",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\"}",
     "- presupuesto: el número de presupuesto u obra, con punto de miles y versión si la trae (por ejemplo 4.533 o 4.533-2). Suele ir en la primera línea junto a la posición.",
     "- posicion: la posición de la ventana (por ejemplo V03, P01.002). cliente: el nombre del cliente u obra. color: el color (por ejemplo Nogal).",
-    "- codigo: las cifras impresas bajo el código de barras. texto: TODO el texto legible en una sola línea.",
+    "- codigo: las cifras impresas bajo el código de barras. Respuesta CORTA: solo el JSON, sin explicaciones.",
     "- La etiqueta puede estar girada: gírala mentalmente antes de leer. Copia SOLO lo que veas. Si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes cifras.",
   ].join("\n");
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 2000, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
   });
   if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
   const data = await response.json();
@@ -15639,9 +15650,15 @@ async function leerEtiquetaPerfilConIA(file) {
   const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{"); const fin = limpio.lastIndexOf("}");
-  const r = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
   const t = (x) => String(x || "").trim();
-  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: t(r.texto) };
+  let r = null;
+  try { r = JSON.parse(ini !== -1 && fin > ini ? limpio.slice(ini, fin + 1) : limpio); } catch (e) {
+    // Respuesta cortada: se saca lo que se pueda de lo que llegó
+    const campo = (k) => ((limpio.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)`)) || [])[1] || "");
+    r = { presupuesto: campo("presupuesto") || ((limpio.match(/\d\.\d{3}(?:\s*-\s*\d+)?/) || [])[0] || ""), posicion: campo("posicion"), cliente: campo("cliente"), color: campo("color"), codigo: campo("codigo") };
+    if (!r.presupuesto && !r.cliente) throw new Error("la respuesta llegó cortada y no trae el presupuesto");
+  }
+  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: "" };
 }
 async function leerPegatinaCristalConIA(file) {
   const dataUrl = await reducirImagenParaIA(file);
@@ -54384,6 +54401,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const moverDiaEntero = async () => {
     const ks = Object.keys(asign);
     if (!destDia || destDia === dia || !ks.length) return;
+    if (ks.some((k) => enFabrica.has(k)) && !(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverDiaEntero()); return; }
     if (!window.confirm(`¿Mover las ${ks.length} obras del ${fmtDate(dia)} al ${fmtDate(destDia)}? Se llevan sus marcas, horas y notas.`)) return;
     for (const k of ks) await moverObraDia(k, dia, destDia);
     setDia(destDia); setMesVer(destDia.slice(0, 7)); setDestDia("");
@@ -54433,7 +54451,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   };
   // Documentos «Hoja de corte» que ya tiene la obra o su expediente de Uxcar
   const docsHojaDe = (o) => {
-    const out = []; const add = (d) => { if (d && d.url && /hoja\s*de\s*corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) out.push(d); };
+    const out = []; const add = (d) => { if (d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) out.push(d); };
     const p = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
     const e = o.d.tipo === "u" ? toArray(uxExpedientes).find((x) => x.id === o.d.id) : p && p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
     toArray(e && e.documentos).forEach(add); toArray(p && p.documentos).forEach(add);
@@ -54735,6 +54753,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       if (!f) { alert("Esta obra la planifica Fábrica y no la encuentro en su planning."); return; }
       const oid = f.tipo === "proyecto" ? `p-${f.id}` : f.tipo === "uxcar" ? `u-${f.id}` : f.tipo === "rapido" ? `r-${f.id}` : "";
       if (onMoverDiaFabrica && oid) {
+        if (!(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverObraDia(k, de, a)); return; }
         onMoverDiaFabrica(oid, a);
         try { for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) { const sn = await fbGet(ref(fbDb, `${nodo}/${de}/${k}`)); if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${de}/${k}`), null); } } } catch (e) { /* las marcas se quedan en el día viejo */ }
         return;
@@ -54937,6 +54956,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {grande && estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo…</div>}
                 {grande && !o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mb-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir hoja de corte o carga de material</button>}
                 {!nV && <div className="text-[11px] text-amber-300 px-1">Sin ventanas cargadas</div>}
+                {o.d.tipo !== "pl" && !["etiquetas", "carga", "hoja"].includes(o.fuente) && <div className={`${grande ? "text-sm" : "text-[10px]"} font-bold px-1 mb-1 ${estadoCarga[o.d.key] === "leyendo" ? "text-sky-300" : "text-rose-300"}`}>{estadoCarga[o.d.key] === "leyendo" ? "⏳ Leyendo la hoja de corte…" : (hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error) ? `⚠ Hoja de corte: ${hojasCD[limpia(o.d.key)].error}` : docsHojaDe(o).length ? "⏳ Hoja de corte pendiente de leer" : "⚠ FALTA LA HOJA DE CORTE (súbela con 📎)"}</div>}
                 {grande && o.folio && verFolio ? <div className="bg-slate-100 rounded-lg p-2">{folioDe(o, vivs, true)}</div> : vivs.map(([g, vs]) => (
                   <div key={g} className="mb-1.5">
                     {vivs.length > 1 && <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`${grande ? "text-lg" : "text-[11px]"} font-bold text-sky-300`}>{g}</button>}
@@ -55015,7 +55035,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                     <div key={o.d.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
                       <span className="flex-1 min-w-[10rem] font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? `${datosObraPedido(null, p, uxExpedientes).ppto} · ` : ""}{o.d.nombre}</span>
                       <span className={`text-[11px] font-semibold ${m.ok ? "text-emerald-700" : "text-amber-700"}`}>{p.estadoTrabajo === "En proceso" ? "en fabricación, sin día" : m.ok ? "✓ material" : `⚠ ${m.motivo}`}</span>
-                      <button type="button" disabled={!!meterOcupado} onClick={async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
+                      <button type="button" disabled={!!meterOcupado} onClick={() => pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } })} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
                     </div>
                   ); })}
                   {!cands.length && <div className="px-2 py-2 text-sm text-slate-500">{q ? "No encuentro ninguna obra con eso que no esté ya en el planning." : "No hay obras listas fuera del planning."}</div>}
