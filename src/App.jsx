@@ -52838,7 +52838,7 @@ const AUX_CFG_DEFECTO = {
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
-  bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 3, margenDerMm: 2, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
+  bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
 };
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
@@ -52850,7 +52850,7 @@ const auxCfgDe = (c) => {
     carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
     bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
-    margenIzqMm: x.margenIzqMm != null && x.margenIzqMm !== "" ? parseFloat(x.margenIzqMm) : 3, margenDerMm: x.margenDerMm != null && x.margenDerMm !== "" ? parseFloat(x.margenDerMm) : 2,
+    margenIzqMm: x.margenIzqMm != null && x.margenIzqMm !== "" ? parseFloat(x.margenIzqMm) : 6, margenDerMm: x.margenDerMm != null && x.margenDerMm !== "" ? parseFloat(x.margenDerMm) : 3,
     margenSupMm: x.margenSupMm != null && x.margenSupMm !== "" ? parseFloat(x.margenSupMm) : 1.5, escalaEt: parseFloat(x.escalaEt) || 100, negativoEt: !!x.negativoEt,
   };
 };
@@ -53011,7 +53011,7 @@ function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
 function imprimirAux(lista, cfg) {
   const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const ancho = cfg.anchoMm, alto = cfg.altoMm;
-  const mi = Math.max(0, parseFloat(cfg.margenIzqMm != null ? cfg.margenIzqMm : 3) || 0), md = Math.max(0, parseFloat(cfg.margenDerMm != null ? cfg.margenDerMm : 2) || 0), ms = Math.max(0, parseFloat(cfg.margenSupMm != null ? cfg.margenSupMm : 1.5) || 0);
+  const mi = Math.max(0, parseFloat(cfg.margenIzqMm != null ? cfg.margenIzqMm : 6) || 0), md = Math.max(0, parseFloat(cfg.margenDerMm != null ? cfg.margenDerMm : 3) || 0), ms = Math.max(0, parseFloat(cfg.margenSupMm != null ? cfg.margenSupMm : 1.5) || 0);
   const k = Math.max(0.5, Math.min(1.6, (parseFloat(cfg.escalaEt) || 100) / 100)); const f = (mm) => `${(mm * k).toFixed(2)}mm`;
   const util = Math.max(20, ancho - mi - md);
   const neg = !!cfg.negativoEt;
@@ -53020,23 +53020,26 @@ function imprimirAux(lista, cfg) {
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; }
     .et { width: ${ancho}mm; height: ${alto - 0.5}mm; padding: ${ms}mm ${md}mm 0.8mm ${mi}mm; overflow: hidden; page-break-after: always; break-after: page; display: flex; flex-direction: column; }
-    .r1 { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; white-space: nowrap; line-height: 1.05; }
-    .pos { font-size: ${f(6)}; font-weight: 900; }
-    .nom { font-size: ${f(3.6)}; font-weight: bold; overflow: hidden; text-overflow: ellipsis; }
-    .med { font-size: ${f(8.5)}; font-weight: 900; line-height: 1; white-space: nowrap; }
-    .r2 { font-size: ${f(2.8)}; line-height: 1.12; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .r1 { display: flex; justify-content: space-between; align-items: flex-start; gap: 2mm; white-space: nowrap; line-height: 1.05; }
+    .pos { font-size: ${f(5)}; font-weight: 900; }
+    .der { text-align: right; overflow: hidden; }
+    .nom { font-size: ${f(3.4)}; font-weight: bold; overflow: hidden; text-overflow: ellipsis; }
+    .ppto { font-size: ${f(3.6)}; font-weight: 900; }
+    .med { font-size: ${f(7)}; font-weight: 900; line-height: 1; white-space: nowrap; margin-top: 0.3mm; }
+    .r2 { font-size: ${f(3.4)}; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
     .sitio { margin-top: 0.6mm; display: flex; align-items: center; justify-content: space-between; gap: 2mm; white-space: nowrap; overflow: hidden; border: 0.7mm solid #000; padding: 0.2mm 1.2mm; ${neg ? "background: #000; color: #fff;" : ""} }
     .sitio .lugar { font-size: ${f(5.4)}; font-weight: 900; }
     .sitio .pasos { font-size: ${f(3)}; font-weight: bold; overflow: hidden; }
-    .bar { margin-top: 0.6mm; line-height: 0; text-align: center; }
-    .dig { font-size: ${f(2.8)}; letter-spacing: 0.4mm; line-height: 1.1; text-align: center; }
+    .bar { margin-top: 0.5mm; line-height: 0; text-align: center; }
+    .dig { font-size: ${f(2.4)}; letter-spacing: 0.3mm; line-height: 1.05; text-align: center; }
   </style></head><body><div class="et">
-    <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span><span class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</span></div>
+    <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
+      <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
     <div class="med">${esc(auxMed(p.lCorte))} mm</div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    <div class="r2"><b>Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}</b>${esc(`${p.fab ? ` · Fab ${p.fab}` : ""} · Ref ${p.ref}${p.color ? ` · ${p.color}` : ""}`)}</div>
+    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""}`)}</div>
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
-    <div class="bar">${svgCode128Mm(p.cod, 7, 0.5, util)}</div>
+    <div class="bar">${svgCode128Mm(p.cod, 5, 0.4, Math.min(util, 60))}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
   imprimirSecuencia(lista.map(etiqueta), { sinAviso: true }, "las etiquetas");
