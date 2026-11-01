@@ -22064,6 +22064,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   }, [proyectos, pedidos, uxExpedientes, uxPedidos, cristales, ctxPaneles.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
   // Obras que llevan algo marcado pero todavía no pueden fabricarse, con el motivo
   // Lo que hay físicamente en el almacén de una obra (caballetes de cristal y persianas), buscado por pedido o por nº de presupuesto
+  // En las listas de Fábrica la obra se nombra por su nº de PRESUPUESTO (6.509-1), no por el nº interno del CRM (#4298); si no tiene, el del CRM
+  const pptoFab = (p) => datosObraPedido(null, p, uxExpedientes).ppto || `#${p.numero}`;
   const matAlmacenObra = (p) => {
     const ids = new Set(pedidos.filter((pd) => pd.proyectoId === p.id).map((pd) => pd.id));
     const nums = new Set(pedidos.filter((pd) => pd.proyectoId === p.id).map((pd) => String(pd.numero)));
@@ -22441,12 +22443,12 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             if (!marcadas.length) return <div className="mb-4 text-xs text-slate-500">Marca con el tick las obras que quieras meter al planning: aquí te sumo sus horas.</div>;
             return (
               <div className="sticky top-0 z-10 mb-4 px-4 py-3 rounded-lg bg-[#2E8B57] text-white text-sm flex flex-wrap items-center gap-x-6 gap-y-2 shadow">
-                <span><b>{marcadas.length}</b> obra{marcadas.length === 1 ? "" : "s"} marcada{marcadas.length === 1 ? "" : "s"} ({marcadas.map((p) => `#${p.numero}`).join(" · ")})</span>
+                <span><b>{marcadas.length}</b> obra{marcadas.length === 1 ? "" : "s"} marcada{marcadas.length === 1 ? "" : "s"} ({marcadas.map((p) => pptoFab(p)).join(" · ")})</span>
                 <span><b>{fmtHoras(hSel)}</b> ≈ <b>{(hSel / hDia).toLocaleString("es-ES", { maximumFractionDigits: 1 })}</b> día{Math.abs(hSel / hDia - 1) < 0.05 ? "" : "s"} con {fmtHoras(hDia)} al día</span>
                 {sinH > 0 && <span className="font-semibold text-amber-200">{sinH} sin horas (no suman)</span>}
                 <span className="ml-auto flex gap-2">
                   {TALLERES_FAB.map((t) => (
-                    <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`)) { const sinS = marcadas.filter((p) => !salidaDefinida(p)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`); return; } marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
+                    <button key={t} onClick={() => { if (window.confirm(`¿Mandar las ${marcadas.length} obras marcadas al taller de ${t}?\n\n${marcadas.map((p) => `${pptoFab(p)} · #${p.numero} ${p.nombre || ""}`).join("\n")}`)) { const sinS = marcadas.filter((p) => !salidaDefinida(p)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((p) => `#${p.numero} ${p.nombre || ""}`).join("\n")}`); return; } marcadas.forEach((p) => { if (onActualizarProyecto) onActualizarProyecto(p.id, { taller: t }); onIniciarFabricacion(p.id); }); setSelListo([]); } }} className="px-3 py-1.5 rounded-md bg-white text-[#2E8B57] font-semibold text-xs hover:opacity-90">Mandar a {t}</button>
                   ))}
                   <button onClick={() => setSelListo([])} className="px-3 py-1.5 rounded-md border border-white/60 text-white text-xs font-semibold hover:bg-white/10">Quitar marcas</button>
                 </span>
@@ -22464,7 +22466,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                     <span className="inline-block w-3 h-3 rounded-full ring-1 ring-slate-300" style={{ backgroundColor: lc.punto }} />
                     {lc.nombre} <span className="text-xs font-semibold text-slate-400">({obras.length})</span>
                     <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">{fmtHoras(hLista)} · ≈ {(hLista / (parseFloat(configPlanning && configPlanning.horasDia) || 16)).toLocaleString("es-ES", { maximumFractionDigits: 1 })} d</span>
-                    <span className="text-xs font-mono-num text-slate-500 font-normal">{obras.map((o) => `#${o.numero}`).join(" · ")}</span>
+                    <span className="text-xs font-mono-num text-slate-500 font-normal">{obras.map((o) => pptoFab(o)).join(" · ")}</span>
                     {obras.length > 1 && (
                       <button onClick={() => setSelListo((prev) => (obras.every((o) => prev.includes(o.id)) ? prev.filter((id) => !obras.some((o) => o.id === id)) : [...new Set([...prev, ...obras.map((o) => o.id)])]))} className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50">{obras.every((o) => selListo.includes(o.id)) ? "Desmarcar lista" : "Marcar lista"}</button>
                     )}
@@ -22473,7 +22475,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
                         <span className="text-xs text-slate-500 font-normal">Mandar toda la lista a:</span>
                         {TALLERES_FAB.map((t) => (
                           <button key={t}
-                            onClick={() => { if (window.confirm(`¿Mandar las ${obras.length} obras de la lista «${lc.nombre}» al taller de ${t}?\n\n${obras.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`)) { const sinS = obras.filter((o) => !salidaDefinida(o)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`); return; } obras.forEach((o) => { if (onActualizarProyecto) onActualizarProyecto(o.id, { taller: t }); onIniciarFabricacion(o.id); }); } }}
+                            onClick={() => { if (window.confirm(`¿Mandar las ${obras.length} obras de la lista «${lc.nombre}» al taller de ${t}?\n\n${obras.map((o) => `${pptoFab(o)} · #${o.numero} ${o.nombre || ""}`).join("\n")}`)) { const sinS = obras.filter((o) => !salidaDefinida(o)); if (sinS.length) { window.alert(`Antes de mandar, elige la SALIDA (reparto/recogida/instalación) en estas obras:\n\n${sinS.map((o) => `#${o.numero} ${o.nombre || ""}`).join("\n")}`); return; } obras.forEach((o) => { if (onActualizarProyecto) onActualizarProyecto(o.id, { taller: t }); onIniciarFabricacion(o.id); }); } }}
                             style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
                             className="flex items-center gap-1.5 text-xs font-semibold hover:opacity-90 px-3 py-1.5 rounded-md"
                           >
@@ -22488,7 +22490,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               <div key={p.id} className={`bg-white border rounded-lg p-4 flex flex-wrap items-center justify-between gap-3 ${selListo.includes(p.id) ? "border-[#2E8B57] ring-2 ring-[#2E8B57]/30" : "border-emerald-200"}`}>
                 <input type="checkbox" checked={selListo.includes(p.id)} onChange={() => setSelListo((prev) => (prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id]))} title="Marcar para sumar sus horas" className="w-6 h-6 accent-[#2E8B57] cursor-pointer shrink-0" />
                 <div className="flex-1 min-w-[220px]">
-                  <div className="font-semibold text-slate-800">#{p.numero} — {p.nombre}</div>
+                  <div className="font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? <>Ppto {datosObraPedido(null, p, uxExpedientes).ppto} <span className="text-xs font-normal text-slate-400">#{p.numero}</span></> : `#${p.numero}`} — {p.nombre}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Entrega prevista {fmtDate(p.fechaEntregaPrevista)}{p.fechaFabricacion ? ` · Fabricación prevista ${fmtDate(p.fechaFabricacion)}` : ""}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Color: {listaColorDeObra(p).colores.join(" · ") || "sin color en el listado"}{(() => { const h = horasDeObraListo(p, uxExpedientes, configPlanning); return h.horas ? <span className="ml-2 font-bold text-slate-700">⏱ {fmtHoras(h.horas)} <span className="font-normal text-slate-400">({h.origen})</span></span> : <span className="ml-2 font-semibold text-amber-700">⏱ sin horas</span>; })()}</div>
                   <AccesoriosDeLaObra proyecto={p} />
