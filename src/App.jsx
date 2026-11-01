@@ -54976,6 +54976,42 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
         {lista.length > 0 && <span className="inline-flex items-center gap-1"><input type="date" value={destDia} onChange={(e) => setDestDia(e.target.value)} className="border border-slate-300 rounded px-1 py-1 text-sm" /><button type="button" disabled={!destDia} onClick={moverDiaEntero} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold disabled:opacity-40">Mover todo el día a esa fecha</button></span>}
       </div>
+      {onMeterEnPlanning && (() => {
+        // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
+        const q = qMeter.trim().toLowerCase(); const qd = q.replace(/[^\d]/g, "");
+        const cands = [...obras.values()].filter((o) => o.d.tipo === "p").map((o) => ({ o, p: toArray(proyectos).find((x) => x.id === o.d.id) }))
+          .filter(({ o, p }) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) && !enFabrica.has(limpia(o.d.key)))
+          .filter(({ o, p }) => (q ? `${o.d.nombre} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase().includes(q) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
+          .slice(0, 30);
+        const fechaM = diaMeter || dia;
+        return (
+          <div className="mb-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 p-2">
+            <button type="button" onClick={() => setVerMeter(!verMeter)} className="w-full text-left text-base font-extrabold text-indigo-900">{verMeter ? "▼" : "▶"} 🏭 Buscar una obra y meterla en el planning de Fábrica (📷 foto de la etiqueta)</button>
+            {verMeter && (
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Buscar obra o presupuesto (6510, Juan…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  <input ref={fotoEtqRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; buscarObraPorFoto(f); }} />
+                  <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
+                  <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
+                </div>
+                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1">{msgFoto}</div>}
+                <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
+                <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
+                  {cands.map(({ o, p }) => { const m = materialObra(o); return (
+                    <div key={o.d.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
+                      <span className="flex-1 min-w-[10rem] font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? `${datosObraPedido(null, p, uxExpedientes).ppto} · ` : ""}{o.d.nombre}</span>
+                      <span className={`text-[11px] font-semibold ${m.ok ? "text-emerald-700" : "text-amber-700"}`}>{p.estadoTrabajo === "En proceso" ? "en fabricación, sin día" : m.ok ? "✓ material" : `⚠ ${m.motivo}`}</span>
+                      <button type="button" disabled={!!meterOcupado} onClick={async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
+                    </div>
+                  ); })}
+                  {!cands.length && <div className="px-2 py-2 text-sm text-slate-500">{q ? "No encuentro ninguna obra con eso que no esté ya en el planning." : "No hay obras listas fuera del planning."}</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <div className="mb-3 rounded-lg border border-slate-300 bg-white p-2">
         <div className="flex flex-wrap items-center gap-2">
           <input ref={inputPlanRef} type="file" accept={ACEPTA_DOCUMENTOS} className="hidden" onChange={(e) => { if (e.target.files?.[0]) leerPlanning(e.target.files[0]); e.target.value = ""; }} />
@@ -55114,42 +55150,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         </details>
       </div>
-      {onMeterEnPlanning && (() => {
-        // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
-        const q = qMeter.trim().toLowerCase(); const qd = q.replace(/[^\d]/g, "");
-        const cands = [...obras.values()].filter((o) => o.d.tipo === "p").map((o) => ({ o, p: toArray(proyectos).find((x) => x.id === o.d.id) }))
-          .filter(({ o, p }) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) && !enFabrica.has(limpia(o.d.key)))
-          .filter(({ o, p }) => (q ? `${o.d.nombre} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase().includes(q) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
-          .slice(0, 30);
-        const fechaM = diaMeter || dia;
-        return (
-          <div className="mb-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 p-2">
-            <button type="button" onClick={() => setVerMeter(!verMeter)} className="w-full text-left text-sm font-bold text-indigo-900">{verMeter ? "▼" : "▶"} 🏭 Meter una obra en el planning de Fábrica</button>
-            {verMeter && (
-              <div className="mt-2 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Buscar obra o presupuesto (6510, Juan…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-                  <input ref={fotoEtqRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; buscarObraPorFoto(f); }} />
-                  <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
-                  <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
-                </div>
-                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1">{msgFoto}</div>}
-                <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
-                <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
-                  {cands.map(({ o, p }) => { const m = materialObra(o); return (
-                    <div key={o.d.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
-                      <span className="flex-1 min-w-[10rem] font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? `${datosObraPedido(null, p, uxExpedientes).ppto} · ` : ""}{o.d.nombre}</span>
-                      <span className={`text-[11px] font-semibold ${m.ok ? "text-emerald-700" : "text-amber-700"}`}>{p.estadoTrabajo === "En proceso" ? "en fabricación, sin día" : m.ok ? "✓ material" : `⚠ ${m.motivo}`}</span>
-                      <button type="button" disabled={!!meterOcupado} onClick={async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
-                    </div>
-                  ); })}
-                  {!cands.length && <div className="px-2 py-2 text-sm text-slate-500">{q ? "No encuentro ninguna obra con eso que no esté ya en el planning." : "No hay obras listas fuera del planning."}</div>}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })()}
       {(() => {
         // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
         const vistosT = new Set(); const porDia = {};
