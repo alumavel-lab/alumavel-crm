@@ -4275,8 +4275,8 @@ export default function App() {
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas");
   const auxPiezasApp = useObjetoFb("auxiliaresPiezas"); // qué piezas de Auxiliares están cortadas (para el aviso al pasar a fábrica)
-  // Pedidos de Uxcar SIN marcar como enviados cuyo material YA está en fábrica (o ya tienen entrada): se dan por enviados solos.
-  // Si ha llegado, se pidió; así no cuentan como «sin mandar» (ni bloquean subir otro pedido).
+  // Pedidos de Uxcar: cuentan como PEDIDOS en cuanto Uxcar los sube con proveedor y fecha de llegada (decisión de Miguel: no hace
+  // falta pulsar «mandar»). También si su material ya está en fábrica o ya tienen entrada. Se marcan como enviados (anotado como automático).
   const uxEnviadoAutoRef = useRef(new Set());
   useEffect(() => {
     if (!currentUser || loading) return;
@@ -4286,10 +4286,11 @@ export default function App() {
       const k = p.tipo === "Cristales" ? "vidrios" : p.tipo === "Persianas" ? "compactos" : "";
       const exps = toArray(p.expedientes).map((x) => toArray(uxExpedientes).find((e) => e && e.id === x.expedienteId)).filter(Boolean);
       const llegado = p.recibido || p.recepcion || (k && exps.length && exps.every((e) => uxEnAlmacen(e, k)));
-      if (!llegado) return;
+      const completo = !!(p.proveedorNombre || p.proveedorId) && !!p.llegadaPrevista;
+      if (!llegado && !completo) return;
       uxEnviadoAutoRef.current.add(p.id);
       patch[`pedidos/${p.id}/enviadoManual`] = new Date().toISOString();
-      patch[`pedidos/${p.id}/enviadoAuto`] = "el material ya está en fábrica";
+      patch[`pedidos/${p.id}/enviadoAuto`] = llegado ? "el material ya está en fábrica" : "subido por Uxcar con proveedor y fecha de llegada";
     });
     if (Object.keys(patch).length) fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
   }, [uxPedidos, uxExpedientes, cristales, persianasAlmacen, currentUser?.id, loading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -50039,9 +50040,6 @@ async function uxSubirDocumentosExpediente({ files, exp, expedientes, tipos, nom
     for (const f of fs) {
       // Un solo pedido de cada tipo por expediente: si ya hay uno ENVIADO al proveedor o recibido no se crea otro; si hay uno sin enviar, se sustituye por este documento
       const previos = toArray(pedidosUx).filter((p) => p.tipo === tipoPed && toArray(p.expedientes).some((x) => x.expedienteId === id) && patch[`pedidos/${p.id}`] !== null);
-      // Hasta que el pedido anterior no esté MANDADO al proveedor no se sube otro (el mismo pedido sin enviar sí se puede sustituir)
-      const sinMandar = toArray(pedidosUx).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido && !previos.some((q) => q.id === p.id));
-      if (sinMandar.length) { avisos.push(`⚠ ${f.name}: NO he creado el pedido. Antes tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}. Lo demás del expediente sí se ha guardado.`); continue; }
       const cerrado = previos.find((p) => p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual || p.recibido || p.recepcion);
       if (cerrado) { avisos.push(`${f.name}: este expediente ya tiene el pedido ${cerrado.numero} de ${tipoPed.toLowerCase()} enviado al proveedor o recibido; no he creado otro.`); continue; }
       previos.forEach((p) => { patch[`pedidos/${p.id}`] = null; avisos.push(`He sustituido el pedido ${p.numero} (sin enviar) por ${f.name}.`); });
@@ -50375,9 +50373,7 @@ function PortalUxcar({ authUser, perfil, onLogout }) {
     return "UX-" + ((nums.length ? Math.max(...nums) : 0) + 1);
   };
   const guardarPedido = async ({ tipo, proveedorId, archivos, grupos, tipoExp, comentarios, fechaPedido, llegadaPrevista }) => {
-    // Obligatorio: proveedor, fecha de entrega y que no quede ningún pedido sin mandar
-    const sinMandar = pedidosUx.filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
-    if (sinMandar.length) { alert(`Antes de hacer otro pedido tienes que mandar al proveedor (o borrar) ${sinMandar.length === 1 ? "el pedido" : "los pedidos"} ${sinMandar.map((p) => p.numero).join(", ")}.`); return false; }
+    // Obligatorio: proveedor y fecha de entrega (con eso ya cuenta como pedido)
     if (!proveedorId) { alert("Elige el proveedor del pedido."); return false; }
     if (!llegadaPrevista) { alert("Pon la fecha de entrega del pedido."); return false; }
     const repetido = grupos.filter((g) => g.destino === "nuevo").map((g) => ({ g, ya: expMismoPpto(g.numeroNuevo) })).find((x) => x.ya);
@@ -50759,7 +50755,7 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
         const marcar = (lista) => { if (!window.confirm(`¿Marcar como PEDIDO${lista.length === 1 ? "" : "S"} al proveedor ${lista.map((p) => p.numero).join(", ")}?\n\nÚsalo si ya se pidió (por teléfono, WhatsApp…) y nadie lo marcó.`)) return; const patch = {}; const ahoraIso = new Date().toISOString(); lista.forEach((p) => { patch[`pedidos/${p.id}/enviadoManual`] = ahoraIso; patch[`pedidos/${p.id}/llegadaAuto`] = null; }); fbUpdate(ref(fbDb, "portalUxcar"), patch).catch((e) => alert("No se pudo guardar: " + e.message)); };
         return (
           <details className="mb-4 bg-white border border-amber-300 rounded-lg">
-            <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">📦 {sinMandar.length} pedido{sinMandar.length === 1 ? "" : "s"} de Uxcar sin mandar al proveedor (mientras haya alguno, no se puede subir otro pedido) · pulsa para verlos</summary>
+            <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">📦 {sinMandar.length} pedido{sinMandar.length === 1 ? "" : "s"} de Uxcar que todavía no cuenta{sinMandar.length === 1 ? "" : "n"} como pedido (les falta el proveedor o la fecha de llegada) · pulsa para verlos</summary>
             <div className="px-4 pb-3 space-y-1.5">
               {sinMandar.length > 1 && <button onClick={() => marcar(sinMandar)} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">Ya están todos pedidos ({sinMandar.length})</button>}
               {sinMandar.map((p) => (
