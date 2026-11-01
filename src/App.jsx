@@ -4275,6 +4275,24 @@ export default function App() {
   const vistasDiscApp = useObjetoFb("avisosDiscrepancia"); // quién ha abierto el aviso de discrepancias (para que el administrador lo vea)
   const hojasAuxApp = useObjetoFb("auxiliaresHojas");
   const auxPiezasApp = useObjetoFb("auxiliaresPiezas"); // qué piezas de Auxiliares están cortadas (para el aviso al pasar a fábrica)
+  // Pedidos de Uxcar SIN marcar como enviados cuyo material YA está en fábrica (o ya tienen entrada): se dan por enviados solos.
+  // Si ha llegado, se pidió; así no cuentan como «sin mandar» (ni bloquean subir otro pedido).
+  const uxEnviadoAutoRef = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const patch = {};
+    toArray(uxPedidos).forEach((p) => {
+      if (!p || !p.id || uxPedidoYaMandado(p) || uxEnviadoAutoRef.current.has(p.id)) return;
+      const k = p.tipo === "Cristales" ? "vidrios" : p.tipo === "Persianas" ? "compactos" : "";
+      const exps = toArray(p.expedientes).map((x) => toArray(uxExpedientes).find((e) => e && e.id === x.expedienteId)).filter(Boolean);
+      const llegado = p.recibido || p.recepcion || (k && exps.length && exps.every((e) => uxEnAlmacen(e, k)));
+      if (!llegado) return;
+      uxEnviadoAutoRef.current.add(p.id);
+      patch[`pedidos/${p.id}/enviadoManual`] = new Date().toISOString();
+      patch[`pedidos/${p.id}/enviadoAuto`] = "el material ya está en fábrica";
+    });
+    if (Object.keys(patch).length) fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
+  }, [uxPedidos, uxExpedientes, cristales, persianasAlmacen, currentUser?.id, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   const auxCfgApp = useObjetoFb("auxiliaresConfig"); // hojas de corte guardadas para Auxiliares (para el aviso «Faltan documentos»)
   const alertasPrep = useObjetoFb("alertasPrep"); // avisos urgentes de falta de material desde Preparación de material
   // Aviso «han llegado las persianas: corta las guías y demás auxiliares» (a Auxiliares y Pedidos, 2 días para resolverlo).
@@ -22293,7 +22311,6 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
               </div>
             </details>
           )}
-          <RevisionExpedientesUx uxExpedientes={uxExpedientes} cristales={cristales} persianas={ctxPaneles.persianasAlmacen} />
           {bloqueadosMaterial.length > 0 && (
             <details className="mb-5 bg-white border border-amber-300 rounded-lg">
               <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">⚠ {bloqueadosMaterial.length} obra{bloqueadosMaterial.length === 1 ? "" : "s"} esperando material (pulsa para ver qué falta)</summary>
@@ -50736,6 +50753,26 @@ function UxcarModulo({ incidenciasUx = [], stockUx, nombreUsuarioUx, pedidos = [
           ))}
         </div>
       )}
+      {isAdmin && vista === "lista" && (() => {
+        const sinMandar = toArray(uxPedidos).filter((p) => p && !uxPedidoYaMandado(p) && !p.recibido);
+        if (!sinMandar.length) return null;
+        const marcar = (lista) => { if (!window.confirm(`¿Marcar como PEDIDO${lista.length === 1 ? "" : "S"} al proveedor ${lista.map((p) => p.numero).join(", ")}?\n\nÚsalo si ya se pidió (por teléfono, WhatsApp…) y nadie lo marcó.`)) return; const patch = {}; const ahoraIso = new Date().toISOString(); lista.forEach((p) => { patch[`pedidos/${p.id}/enviadoManual`] = ahoraIso; patch[`pedidos/${p.id}/llegadaAuto`] = null; }); fbUpdate(ref(fbDb, "portalUxcar"), patch).catch((e) => alert("No se pudo guardar: " + e.message)); };
+        return (
+          <details className="mb-4 bg-white border border-amber-300 rounded-lg">
+            <summary className="px-4 py-3 cursor-pointer text-sm font-semibold text-amber-800">📦 {sinMandar.length} pedido{sinMandar.length === 1 ? "" : "s"} de Uxcar sin mandar al proveedor (mientras haya alguno, no se puede subir otro pedido) · pulsa para verlos</summary>
+            <div className="px-4 pb-3 space-y-1.5">
+              {sinMandar.length > 1 && <button onClick={() => marcar(sinMandar)} className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-600 text-white hover:opacity-90">Ya están todos pedidos ({sinMandar.length})</button>}
+              {sinMandar.map((p) => (
+                <div key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm border-t border-slate-100 pt-1.5">
+                  <b>{p.numero}</b><span className="text-slate-600">{p.tipo}</span>
+                  <span className="text-xs text-slate-500">{toArray(p.expedientes).map((x) => x.numero).filter(Boolean).join(", ") || "sin expediente"} · {p.proveedorNombre || "sin proveedor"} · {uxFecha(p.fecha)}</span>
+                  <button onClick={() => marcar([p])} className="ml-auto text-xs font-semibold px-2.5 py-1 rounded-md border border-amber-400 text-amber-800 bg-white hover:bg-amber-50">Ya lo he pedido</button>
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      })()}
       {isAdmin && nHuerfanos > 0 && onPurgarHuerfanos && (
         <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-sm flex flex-wrap items-center gap-3">
           <span>⚠ Hay <b>{nHuerfanos}</b> pedido{nHuerfanos === 1 ? "" : "s"} de Uxcar sin expediente (se borró el expediente pero no sus pedidos).</span>
