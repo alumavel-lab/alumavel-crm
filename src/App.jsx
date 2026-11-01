@@ -53173,7 +53173,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       if (e.key && e.key.length === 1) b.t += e.key;
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    // Como en la soldadora: mientras hay cadena, el cursor vuelve SIEMPRE a la casilla de la pistola (cada 300 ms),
+    // salvo que alguien esté escribiendo en otra casilla. Después de imprimir, la ventana de impresión se quedaba el cursor y la 2.ª lectura se perdía.
+    const iv = setInterval(() => {
+      try {
+        const el = codigoRef.current; if (!el) return;
+        const act = document.activeElement; const tag = (act && act.tagName) || "";
+        if (act === el) return;
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) && act !== document.body) return;
+        el.focus();
+      } catch (e) { /* nada */ }
+    }, 300);
+    return () => { window.removeEventListener("keydown", onKey, true); clearInterval(iv); };
   }, [cadena]);
   const enfocarPistola = () => { [200, 900, 2500, 5000, 8000].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
