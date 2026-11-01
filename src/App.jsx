@@ -22765,7 +22765,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -53631,7 +53631,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -54102,6 +54102,53 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const nSinMaterial = sinAsignarDia.filter((o) => !materialObra(o).ok).length;
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
+  // Lo que pones en el planning de Fábrica entra SOLO en Control del día, en su día de inicio. Una sola vez por obra
+  // (controlDiaAutoTraidas): si después la quitas o la mueves aquí, se respeta y no vuelve a entrar.
+  const autoTraidas = useObjetoFb("controlDiaAutoTraidas");
+  const traerFabRef = useRef(false);
+  useEffect(() => {
+    const obrasF = (planF && planF.obras) || {};
+    if (traerFabRef.current || !Object.keys(obrasF).length || !asignTodas) return;
+    const asignadas = new Set(); Object.values(asignTodas || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) asignadas.add(k); }));
+    const porClave = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, obrasF); if (k && !porClave.has(k)) porClave.set(k, o); });
+    const traer = [];
+    Object.entries(obrasF).forEach(([k, f]) => {
+      const o = porClave.get(k); if (!o || !f || !f.inicio) return;
+      const ko = limpia(o.d.key);
+      if (asignadas.has(ko) || (autoTraidas && autoTraidas[ko])) return;
+      traer.push({ ko, dia: f.inicio });
+    });
+    if (!traer.length) return;
+    traerFabRef.current = true;
+    (async () => {
+      try {
+        // Se vuelve a leer de la base de datos (la pantalla puede no haber cargado aún y creer que no hay nada)
+        const [sA, sO] = await Promise.all([fbGet(ref(fbDb, "controlDiaAutoTraidas")), fbGet(ref(fbDb, "controlDiaObras"))]);
+        const yaT = sA.val() || {}; const yaO = new Set(); Object.values(sO.val() || {}).forEach((d) => Object.keys(d || {}).forEach((k) => { if (d[k]) yaO.add(k); }));
+        const pend = traer.filter((t) => !yaT[t.ko] && !yaO.has(t.ko));
+        if (!pend.length) return;
+        // La PRIMERA vez (no hay nada apuntado) solo se apunta lo que ya hay en el planning, sin meterlo: así no entran de golpe obras viejas.
+        // Esas se traen a mano con «Traer a este día»; desde entonces, lo nuevo que entre en el planning de Fábrica entra solo.
+        if (!Object.keys(yaT).length) {
+          const base = { _inicio: new Date().toISOString().slice(0, 10) }; pend.forEach((t) => { base[t.ko] = "inicio"; });
+          await fbUpdate(ref(fbDb, "controlDiaAutoTraidas"), base);
+          return;
+        }
+        for (const t of pend) {
+          const r = await runTransaction(ref(fbDb, `controlDiaAutoTraidas/${t.ko}`), (x) => (x ? undefined : t.dia)).catch(() => null);
+          if (r && r.committed) await fbSet(ref(fbDb, `controlDiaObras/${t.dia}/${t.ko}`), true).catch(() => {});
+        }
+      } catch (e) { /* se reintenta en la siguiente pasada */ } finally { traerFabRef.current = false; }
+    })();
+  }, [planF, asignTodas, autoTraidas, obras.size]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
+  const mandarAReparto = (o) => {
+    const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    if (!onMoverEstado || !p || !["En proceso", "Pendiente de aceptación"].includes(p.estadoTrabajo)) return false;
+    if (window.confirm(`${o.d.nombre}: todas las ventanas hechas.\n\n¿Obra TERMINADA? Pasa a REPARTO («Listo para reparto/recogida»).`)) { onMoverEstado(pid, "Listo para reparto/recogida"); return true; }
+    return false;
+  };
+  const siTerminada = (o, act) => { if (idsDe(o).every((i) => act[i] === 1)) setTimeout(() => mandarAReparto(o), 60); };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
   const traerCarga = async (o, fichero) => {
     const p = toArray(proyectos).find((x) => x.id === o.d.id);
@@ -54368,10 +54415,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const guardarHoras = (dk, h) => { fbSet(ref(fbDb, `controlDiaHoras/${dia}/${limpia(dk)}`), Object.keys(h).length ? h : null).catch(() => {}); };
   const tocaVentana = (o, v) => {
     const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act);
+    if (n === 1) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; if (n) h[v.id] = Date.now(); else delete h[v.id]; guardarHoras(o.d.key, h);
   };
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
-  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act);
+  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
   const notasDia = (notasTodas && notasTodas[dia]) || {};
@@ -54716,6 +54764,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
               {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
+              {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
+                ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
+                : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
               <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
             </div>
             {(() => {
@@ -54986,7 +55037,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
