@@ -17716,9 +17716,21 @@ const horasDeTextoManoObra = (texto) => {
   const m = t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/i)
     || t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i) // un importe en euros no vale
     || t.match(/TOTAL\s+(?:DE\s+)?HORAS[^0-9]{0,20}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i);
-  if (!m) return 0;
-  const n = parseFloat(m[1].replace(",", "."));
-  return Number.isFinite(n) && n > 0 && n < 5000 ? n : 0;
+  const num = (x) => { const n = parseFloat(String(x).replace(",", ".")); return Number.isFinite(n) && n > 0 && n < 5000 ? n : 0; };
+  if (m && num(m[1])) return num(m[1]);
+  // «LISTADO MANO DE OBRA GENERAL»: no trae TOT.MO.PRES, trae un subtotal por zona
+  // («MO ACABADOS Y CORRECCIONES: 3,62 Horas», «MO TRONZADORAS: 9,68 Horas»…). Se suman.
+  const zonas = new Map();
+  for (const z of t.matchAll(/\bM\.?\s?O\.?\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .\/-]{1,50}?)\s*:\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/g)) {
+    const nombre = z[1].trim();
+    if (/TOTAL|PRES/.test(nombre) || zonas.has(nombre)) continue;
+    zonas.set(nombre, num(z[2]));
+  }
+  const suma = Math.round([...zonas.values()].reduce((a, b) => a + b, 0) * 100) / 100;
+  // Si al final trae un total general, vale si es mayor o igual que la suma de zonas.
+  const tg = t.match(/TOTAL\s+(?:GENERAL\s+)?(?:(?:DE\s+)?(?:M\.?\s?O\.?|MANO\s+DE\s+OBRA)\s*)?(?:GENERAL\s*)?:?\s*(\d{1,4}[.,]\d{1,2})\s*Horas/i);
+  const total = tg ? num(tg[1]) : 0;
+  return num(Math.max(suma, total));
 };
 async function textoDePdfBytes(bytes) {
   const lib = await cargarPdfJs();
@@ -17736,7 +17748,7 @@ async function leerListadoMateriales(file) {
     "Primera línea, qué documento es: TIPO|x, donde x es: analisis (ANÁLISIS MATERIALES), cajas (LISTADO CAJAS), mano_obra (LISTADO MANO DE OBRA), dibujos (LISTADO DIBUJOS o tipo plano: dibujos de cada ventana con sus medidas), presupuesto (presupuesto para el cliente con precios de venta), medidas (hoja o foto de medidas de cristales, persianas u otro material para pedir) u otro. Si es dibujos, presupuesto, medidas u otro, responde SOLO la línea TIPO y nada más.",
     "Segunda línea, la cabecera:",
     "CAB|numero|referencia|cliente|fecha|horas|m2_superficies|importe_superficies",
-    '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
+    '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17; si es un LISTADO MANO DE OBRA GENERAL sin TOT.MO.PRES, la SUMA de todos los subtotales «MO <zona>: X Horas» de todas las páginas), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
     "Después, UNA línea por cada línea de material:",
     "L|seccion|codigo|descripcion|color|uds|longitud|ancho|alto|precio_ud|total",
     '- seccion: una de perfiles, refuerzo, herraje, accesorios, persianas, cristal.',
