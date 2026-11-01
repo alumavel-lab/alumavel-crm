@@ -42835,6 +42835,61 @@ function PanelVienenPorLinea({ indice, siempre = false }) {
     </div>
   );
 }
+// Buscador con autocompletado para elegir una opción de una lista larga (obras, clientes…).
+// Ignora tildes, mayúsculas y puntos (6624 encuentra 6.624) y las palabras pueden ir en cualquier orden.
+const normBuscaLista = (t) => String(t == null ? "" : t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCodigo, className = "" }) {
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(false);
+  const [activo, setActivo] = useState(0);
+  const inputRef = useRef(null);
+  const flechas = useRef(false);
+  const elegida = opciones.find((o) => o.key === valor) || null;
+  const terminos = normBuscaLista(q).split(" ").filter(Boolean);
+  const todas = terminos.length ? opciones.filter((o) => o.siempre || terminos.every((t) => normBuscaLista(o.texto).includes(t))) : opciones;
+  const MAX = 40;
+  const visibles = todas.slice(0, MAX);
+  const coincidencias = todas.filter((o) => !o.siempre).length;
+  const cerrar = () => { setAbierto(false); setQ(""); flechas.current = false; if (inputRef.current) inputRef.current.blur(); };
+  const elegir = (o) => { onElegir(o.key); cerrar(); };
+  return (
+    <div className={`relative ${className}`}>
+      <input
+        ref={inputRef}
+        value={abierto ? q : (elegida ? elegida.texto : "")}
+        placeholder={placeholder}
+        autoComplete="off"
+        onFocus={() => { setAbierto(true); setQ(""); setActivo(0); flechas.current = false; }}
+        onBlur={() => { setAbierto(false); setQ(""); }}
+        onChange={(e) => { setQ(e.target.value); setActivo(0); setAbierto(true); flechas.current = false; }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); flechas.current = true; setAbierto(true); setActivo((a) => Math.min(a + 1, visibles.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); flechas.current = true; setActivo((a) => Math.max(a - 1, 0)); }
+          else if (e.key === "Escape") { cerrar(); }
+          else if (e.key === "Enter") {
+            e.preventDefault();
+            const t = q.trim();
+            // Si la pistola ha escrito aquí un código de ventana o caballete, se lee como código y no se busca
+            if (t && esCodigo && onCodigo && esCodigo(t)) { cerrar(); onCodigo(t); return; }
+            if (abierto && visibles[activo] && (t || flechas.current)) elegir(visibles[activo]);
+          }
+        }}
+        className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5 pr-7 bg-white"
+      />
+      {elegida && !abierto && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onElegir("")} title="Quitar la obra elegida" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 text-sm leading-none">✕</button>}
+      {abierto && (
+        <div onMouseDown={(e) => e.preventDefault()} className="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-auto bg-white border border-slate-300 rounded-md shadow-lg">
+          {visibles.map((o, i) => (
+            <div key={o.key} ref={(el) => { if (el && i === activo) el.scrollIntoView({ block: "nearest" }); }} onClick={() => elegir(o)} className={`px-2 py-1.5 text-sm cursor-pointer ${i === activo ? "bg-emerald-100" : "hover:bg-slate-50"} ${o.key === valor ? "font-semibold" : ""}`}>{o.texto}</div>
+          ))}
+          {terminos.length > 0 && coincidencias === 0 && <div className="px-2 py-1.5 text-xs text-slate-500">Ninguna obra coincide con «{q.trim()}»</div>}
+          {todas.length > MAX && <div className="px-2 py-1.5 text-xs text-slate-400">Hay {todas.length - MAX} más. Sigue escribiendo para afinar.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false }) {
   const [verTodo, setVerTodo] = useState(false);
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
@@ -42896,6 +42951,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [prepObra, setPrepObra] = useState("");
   const [prepN, setPrepN] = useState("");
   const [busqV, setBusqV] = useState(""); // buscador de ventanas
+  // ALMACÉN DEL DÍA (calendario como Control del día, pero lo verde es lo que ya está en un palet)
+  const planFabAD = useObjetoFb("planFabrica");
+  const asignManualAD = useObjetoFb("controlDiaObras");
+  const [vistaDia, setVistaDia] = useState(false);
+  const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
+  const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
+  const [tvAD, setTvAD] = useState(false);
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
   const cabsAhora = () => {
     const base = toArray(caballetes); const ids = new Set(base.map((c) => c.id));
@@ -43607,10 +43669,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
           <div className="space-y-1">
             <div className="text-sm font-bold text-slate-700">2. La obra</div>
-            <select value={ticObra} onChange={(e) => setTicObra(e.target.value)} className="w-full sm:w-96 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
-              <option value="">— elige la obra —</option>
-              {obrasTic.map((o) => <option key={o.key} value={o.key}>{o.nombre} ({o.n} ventanas)</option>)}
-            </select>
+            <BuscadorLista
+              opciones={obrasTic.map((o) => ({ key: o.key, texto: `${o.nombre} (${o.n} ventanas)` }))}
+              valor={ticObra}
+              onElegir={(k) => setTicObra(k)}
+              placeholder={"🔎 Escribe para buscar la obra"}
+              esCodigo={(t) => /^(cab[:\s-]*\d{1,4}|c-?\d{1,4})$/i.test(String(t).trim())}
+              onCodigo={elegirPaletCod}
+              className="w-full sm:w-96"
+            />
           </div>
           {obraSel && (
             <div className="space-y-1">
@@ -43629,6 +43696,160 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       </div>
     );
   };
+  // ---- ALMACÉN DEL DÍA: el calendario de Control del día, pero lo que se pone en verde es lo que ya está en un palet ----
+  // Las obras de cada día salen del planning de Fábrica (el mismo que lee Control del día) más las metidas a mano en Control del día.
+  // Ticar una ventana la mete en el palet que sugiere el CRM (igual que pasar la pistola); volver a ticarla pregunta si se quita.
+  const panelDia = () => {
+    const cabs = cabsAhora().filter((c) => (c.estado || "libre") !== "fuera");
+    const hoyAD = new Date().toLocaleDateString("sv-SE");
+    const limpiaAD = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+    const mismoP = (a, b) => { if (a === b) return true; const [ba, va] = a.split("-"); const [bb, vb] = b.split("-"); return ba === bb && (!va || !vb); };
+    const codigosDe = (d) => {
+      const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+      if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); } }
+      if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
+      return [...out];
+    };
+    const enCab = (w) => cabs.find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w))) || null;
+    const wDe = ({ v, lote }, dueno) => { const total = totalVentana(v); return { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total, persiana: persianaDeDueno(dueno.key), escaneadas: Array.from({ length: total }, (_, i) => `tic${i + 1}`), ticada: true }; };
+    const planObras = (planFabAD && planFabAD.obras) || {};
+    const planDias = (planFabAD && planFabAD.dias) || {};
+    const obrasAD = [...ventanasPorObraTic.values()].map((x) => ({ key: x.dueno.key, nombre: obraDeDueno(x.dueno).nombre, dueno: x.dueno, vs: [...x.vs.values()], codigos: codigosDe(x.dueno) }))
+      .filter((o) => { const pr = String(o.key).startsWith("p-") ? toArray(proyectos).find((q) => `p-${q.id}` === o.key) : null; return !pr || !["Entregado", "Cancelado"].includes(pr.estadoTrabajo); });
+    obrasAD.forEach((o) => { o.clavePlan = null; for (const [k, f] of Object.entries(planObras)) { if (toArray(f.pres).some((c) => o.codigos.some((m) => mismoP(m, c)))) { o.clavePlan = k; break; } } });
+    const itemsDia = (f) => {
+      const out = []; const vistas = new Set();
+      Object.keys(planDias[f] || {}).forEach((k) => {
+        const o = obrasAD.find((x) => x.clavePlan === k);
+        if (o) { if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } }
+        else out.push({ sinEtiquetas: String((planObras[k] && planObras[k].nombre) || (planDias[f][k] && planDias[f][k].nombre) || k).replace(/ · en fabricación$/, "") });
+      });
+      const man = (asignManualAD && asignManualAD[f]) || {};
+      Object.keys(man).forEach((ko) => { if (!man[ko]) return; const o = obrasAD.find((x) => limpiaAD(x.key) === ko); if (o && !o.clavePlan && !vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } });
+      return out;
+    };
+    const cacheSt = new Map();
+    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w) }; }); const r = { filas, n: filas.filter((f) => f.c).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
+    const ticarAD = (f, o) => {
+      const w = f.w;
+      if (f.c) { if (window.confirm(`${w.pos} está en el palet ${f.c.numero}. ¿Quitarla del palet?`)) quitarVentana(w); return; }
+      const obra = obraDeDueno(o.dueno);
+      const sug = caballeteSugerido(obra, w);
+      if (sug) { if (colocarVentana(w, obra, sug.id)) avisar(true, `✓ ${w.pos} → ${sug.numero}`); return; }
+      const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${w.pos}`);
+      if (colocarVentana(w, obra, creado.id)) avisar(true, `✓ ${w.pos} → ${creado.numero} (palet nuevo)`);
+    };
+    // calendario
+    const [anio, mes] = mesAD.split("-").map(Number);
+    const offset = (new Date(anio, mes - 1, 1).getDay() + 6) % 7;
+    const diasMes = new Date(anio, mes, 0).getDate();
+    const celdas = []; for (let i = 0; i < offset; i++) celdas.push(null); for (let d = 1; d <= diasMes; d++) celdas.push(`${mesAD}-${String(d).padStart(2, "0")}`);
+    const moverMes = (n) => { const d = new Date(anio, mes - 1 + n, 1); setMesAD(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); };
+    const tituloMes = new Date(anio, mes - 1, 1).toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+    // día elegido
+    const delDia = itemsDia(diaAD);
+    const obrasDelDia = delDia.filter((i) => i.o).map((i) => i.o);
+    const sinEt = delDia.filter((i) => i.sinEtiquetas);
+    const stDia = obrasDelDia.map((o) => ({ o, ...stats(o) }));
+    const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
+    const metidasDia = stDia.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
+    const palesDia = new Map(); stDia.forEach((x) => x.filas.forEach((f) => { if (f.c) palesDia.set(f.c.numero, (palesDia.get(f.c.numero) || 0) + 1); }));
+    const etiquetaDia = new Date(diaAD + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+    const fichaVentana = (f, o, g) => (
+      <button key={f.x.v.id} type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+        <div>{f.c ? "✓ " : ""}{f.x.v.pos || "·"}</div>
+        {f.x.v.medida ? <div className={`${g ? "text-sm" : "text-[10px]"} font-normal opacity-80`}>{f.x.v.medida}</div> : null}
+        {f.c ? <div className={`${g ? "text-lg" : "text-[10px]"} font-semibold`}>{f.c.numero}</div> : null}
+      </button>
+    );
+    const tarjetaObra = (x, g) => {
+      const { o, filas, n, total } = x;
+      const completa = total > 0 && n === total;
+      const pal = new Map(); filas.forEach((f) => { if (f.c) pal.set(f.c.numero, (pal.get(f.c.numero) || 0) + 1); });
+      const ord = [...filas].sort((a, b) => String(a.x.v.pos).localeCompare(String(b.x.v.pos), "es", { numeric: true }));
+      return (
+        <div key={o.key} className={`rounded-xl border-2 p-3 space-y-2 ${completa ? "border-emerald-500 bg-emerald-50" : "border-slate-300 bg-white"}`}>
+          <div className="flex flex-wrap items-baseline gap-x-3">
+            <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{o.nombre}</span>
+            <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
+          </div>
+          <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
+          {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</b></div>}
+          <div className="flex flex-wrap gap-1.5">{ord.map((f) => fichaVentana(f, o, g))}</div>
+        </div>
+      );
+    };
+    const resumen = (g) => (
+      <div className={`${g ? "text-2xl" : "text-sm"} flex flex-wrap items-center gap-x-5 gap-y-1`}>
+        <span><b>{nEn}</b> de <b>{nTot}</b> ventanas en palet</span>
+        {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día</span>}
+        {palesDia.size > 0 && <span className={g ? "text-slate-200" : "text-slate-600"}>Palets: {[...palesDia.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</span>}
+      </div>
+    );
+    const avisoSinEt = sinEt.length > 0 && (
+      <div className={`${g0()} rounded-lg border-2 border-dashed border-amber-400 bg-amber-50 px-3 py-2 text-amber-900`}>
+        ⚠ {sinEt.length === 1 ? "Esta obra del planning no tiene" : `Estas ${sinEt.length} obras del planning no tienen`} etiquetas de la línea cargadas, así que no hay ventanas que ticar: <b>{sinEt.map((i) => i.sinEtiquetas).join(" · ")}</b>
+      </div>
+    );
+    function g0() { return tvAD ? "text-xl" : "text-sm"; }
+    if (tvAD) {
+      return (
+        <div className="fixed inset-0 z-[100] bg-slate-900 text-white overflow-auto p-6 space-y-5">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="text-4xl font-extrabold capitalize">{etiquetaDia}{diaAD === hoyAD ? " · HOY" : ""}</div>
+            <button type="button" onClick={() => setTvAD(false)} className="ml-auto px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
+          </div>
+          {resumen(true)}
+          {avisoSinEt}
+          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">{stDia.map((x) => tarjetaObra(x, true))}</div>}
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>
+          <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
+          <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-1">
+            <button type="button" onClick={() => moverMes(-1)} className="px-2 text-slate-500 text-lg">‹</button>
+            <div className="text-sm font-bold text-slate-700 capitalize">{tituloMes}</div>
+            <button type="button" onClick={() => moverMes(1)} className="px-2 text-slate-500 text-lg">›</button>
+          </div>
+          <p className="text-xs text-slate-500 mb-2">Verde: todas las ventanas de la obra ya están en palet. Ámbar: a medias. Gris: aún nada. Toca un día para verlo.</p>
+          <div className="grid grid-cols-7 gap-1 text-[11px] text-center text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((d) => <div key={d}>{d}</div>)}</div>
+          <div className="grid grid-cols-7 gap-1">
+            {celdas.map((f, i) => {
+              if (!f) return <div key={`v${i}`} />;
+              const its = itemsDia(f);
+              return (
+                <button key={f} type="button" onClick={() => setDiaAD(f)} className={`min-h-[4.5rem] rounded-md border p-1 text-left align-top ${f === diaAD ? "border-slate-900 border-2 bg-slate-50" : "border-slate-200 bg-white"} ${f === hoyAD ? "ring-2 ring-sky-300" : ""}`}>
+                  <div className="text-[11px] font-bold text-slate-600">{Number(f.slice(8))}</div>
+                  <div className="space-y-0.5">
+                    {its.slice(0, 5).map((it, j) => {
+                      if (it.sinEtiquetas) return <div key={j} className="truncate rounded px-1 text-[10px] border border-dashed border-amber-400 text-amber-800 bg-amber-50">📌 {it.sinEtiquetas}</div>;
+                      const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : "bg-slate-200 text-slate-700";
+                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>📌 {it.o.nombre} · {st.n}/{st.total}</div>;
+                    })}
+                    {its.length > 5 && <div className="text-[10px] text-slate-400">+{its.length - 5} más</div>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
+          {resumen(false)}
+          {avisoSinEt}
+          {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
+        </div>
+      </div>
+    );
+  };
+  if (vistaDia && !editando) return panelDia();
   if (editando) {
     const c = editando;
     const setC = (patch) => setEditando({ ...c, ...patch });
@@ -43798,6 +44019,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         })()}
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
+        <button onClick={() => setVistaDia(true)} className="text-sm font-semibold underline text-emerald-700">📅 Almacén del día (calendario y tele)</button>
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
         <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 22:35</div>
       </div>
@@ -43813,6 +44035,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         {pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
         {lista.length > 0 && <button onClick={() => { const todas = almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista; if (confirm(`Se van a imprimir ${todas.length} etiquetas (una por caballete). Para imprimir solo una, usa la impresora de la tarjeta del caballete. ¿Imprimir todas?`)) imprimirYMarcar(todas); }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"><Printer size={13} /> Reimprimir todas</button>}
         <button onClick={nuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Plus size={14} /> Añadir caballete</button>
+        <button onClick={() => setVistaDia(true)} style={{ backgroundColor: "#1F6FEB", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md">📅 Almacén del día</button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => setAlmacenSel("")} className={`px-3 py-1.5 rounded-full text-sm font-semibold border ${!almacenSel ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300"}`}>Todos ({lista.length})</button>
@@ -43905,10 +44128,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
         <div className="text-sm font-semibold text-slate-700">Preparar caballetes de una obra</div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={prepObra} onChange={(e) => { const o = obrasPrep.find((x) => x.key === e.target.value); setPrepObra(e.target.value); setPrepN(o ? String(necesariosObra(o) || "") : ""); }} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
-            <option value="">— Elige la obra, expediente o "Sin asignar" —</option>
-            {obrasPrep.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
-          </select>
+          <BuscadorLista
+            opciones={obrasPrep.map((o) => ({ key: o.key, texto: `${o.nombre}${o.cliente ? ` · ${o.cliente}` : ""}`, siempre: o.key === "s-libre" }))}
+            valor={prepObra}
+            onElegir={(k) => { const o = obrasPrep.find((x) => x.key === k); setPrepObra(k); setPrepN(o ? String(necesariosObra(o) || "") : ""); }}
+            placeholder={'🔎 Escribe para buscar: nº de presupuesto, cliente u obra'}
+            esCodigo={(t) => !!piezaDeTexto(t) || /^(cab[:\s-]*\d{1,4}|c-?\d{1,4})$/i.test(String(t).trim())}
+            onCodigo={buscarCodigo}
+            className="min-w-[220px] flex-1"
+          />
           <input type="number" min="1" value={prepN} onChange={(e) => setPrepN(e.target.value)} placeholder="Nº caballetes" className="w-32 border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
           <button onClick={reservarParaObra} disabled={!obraPrep} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold disabled:opacity-50">Reservar caballetes</button>
         </div>
