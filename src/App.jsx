@@ -54114,6 +54114,20 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
   const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta, hechoEn } }
+  // Desde cuándo se cuenta (se empezó de cero el día que se pidió: solo obras del calendario). Lo marcado antes no cuenta.
+  const metaReg = useObjetoFb("controlDiaRegistroMeta"); // { desde: "AAAA-MM-DD", v: 2 }
+  const desdeReg = (metaReg && metaReg.desde) || "9999-12-31";
+  useEffect(() => {
+    (async () => {
+      try {
+        const m = (await fbGet(ref(fbDb, "controlDiaRegistroMeta"))).val();
+        if (m && m.v >= 2) return;
+        // Empezar de cero: fuera lo que entró del PLANING y de cargas sueltas (no había nada terminado)
+        await fbSet(ref(fbDb, "controlDiaRegistro"), null);
+        await fbSet(ref(fbDb, "controlDiaRegistroMeta"), { desde: new Date().toISOString().slice(0, 10), v: 2, en: Date.now() });
+      } catch (e) { /* se reintenta al volver a entrar */ }
+    })();
+  }, []);
   // Día en que quedó TERMINADA cada obra (lo apuntado en el registro, o la fecha en que salió de fábrica en el CRM)
   const terminadaEn = (ko) => {
     const r = Object.values(registro || {}).find((x) => x && x.obraKey === ko && x.hechoEn); if (r) return r.hechoEn;
@@ -54130,7 +54144,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     }));
   }
   const asign = { ...(asignTodas[dia] || {}), ...Object.fromEntries(Object.keys(arrastradas).map((k) => [k, true])) };
-  const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|") + "#" + Object.keys(ventanasGuardadas || {}).sort().join(",");
+  const firmaReg = metaReg && metaReg.v >= 2 ? desdeReg + "#" + Object.entries(asignTodas).filter(([f]) => f >= desdeReg).map(([f, d]) => f + ":" + Object.keys(d).sort().join(",")).join("|") : "";
   // ¿Este presupuesto ya está FABRICADO en el registro? (para no volver a meterlo). Devuelve la fila del registro o null
   const normPresR = (t) => String(t || "").replace(/\./g, "").replace(/\s+/g, "").toLowerCase();
   const yaFabricado = (pres, obraKeyPropia) => {
@@ -54143,10 +54157,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       try {
         const ya = (await fbGet(ref(fbDb, "controlDiaRegistro"))).val() || {};
         const hoyR = new Date().toISOString().slice(0, 10); const upd = {};
-        Object.entries(planPres || {}).forEach(([pk, pr]) => { if (!pr || ya[pk]) return; upd[pk] = { pres: pr.pres || pk, nombre: pr.nombre || `${pr.pres || pk}${pr.cliente ? " · " + String(pr.cliente).replace(/^\d+-/, "") : ""}`, ventanas: toArray(pr.ventanas).length, obraKey: pr.obraKey || limpia(`pl-${pk}`), alta: hoyR }; });
         const conObra = new Set(Object.values({ ...ya, ...upd }).map((r) => r && r.obraKey).filter(Boolean));
-        const obrasCarga = Object.keys(ventanasGuardadas || {}).map((ko) => [hoyR, { [ko]: true }]);
-        [...Object.entries(asignTodas), ...obrasCarga].forEach(([f, d]) => Object.keys(d).forEach((ko) => {
+        // Solo las obras que están en el calendario (días desde que se empezó a contar)
+        Object.entries(asignTodas).filter(([f]) => f >= desdeReg).forEach(([f, d]) => Object.keys(d).forEach((ko) => {
           if (conObra.has(ko) || ya[`o_${ko}`] || upd[`o_${ko}`]) return;
           const o = obras.get ? [...obras.values()].find((x) => limpia(x.d.key) === ko) : null; if (!o) return;
           upd[`o_${ko}`] = { pres: [...presConVersion(o)][0] || "", nombre: o.d.nombre, ventanas: idsDe(o).length, obraKey: ko, alta: f };
@@ -54156,6 +54169,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     })();
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
+  // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
+  const hojasAuxCD = useObjetoFb("auxiliaresHojas");
   const [verTerminado, setVerTerminado] = useState(false);
   const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
@@ -54534,6 +54549,18 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+  // ¿Qué lleva esta ventana? Se mira su modelo (V01…) en la hoja de corte de su presupuesto y su descripción
+  const extrasVentana = (o, v) => {
+    const pp = pptosPresupuesto(o); const textos = [];
+    const modelo = String((v && (v.tip || v.pos)) || "").trim().toUpperCase().split(".")[0].split(" ")[0];
+    Object.entries(hojasAuxCD || {}).forEach(([k, h]) => {
+      if (!h || !pp.has(digitosPresu(k))) return;
+      toArray(h.modelos).filter((m) => m && String(m.modelo || "").toUpperCase() === modelo).forEach((m) => toArray(m.filas).forEach((f) => textos.push(`${f.desc || ""} ${f.ref || ""}`)));
+    });
+    const inf = infoVent(o, v); if (inf && inf.desc) textos.push(inf.desc);
+    const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
+    return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
+  };
   // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
   const filasRegistro = () => {
     const vistos = new Set(); const filas = [];
@@ -54542,7 +54569,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           if (Object.values(registro || {}).some((x) => x && x.obraKey === r.obraKey && x.borrado)) return;
           const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
           const finalV = {}; const cuando = {};
-          Object.keys(marcasTodas || {}).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
+          Object.keys(marcasTodas || {}).filter((d) => d >= desdeReg).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
           const verdes = new Set(Object.keys(finalV).filter((id) => finalV[id] === 1));
           const ultimo = [...verdes].map((id) => cuando[id]).sort().pop() || "";
           const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
@@ -54552,7 +54579,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           const hechoGuardado = Object.values(registro || {}).find((x) => x && x.obraKey === ko && x.hechoEn);
           const hecho = fin || (total > 0 && hechas >= total) || !!hechoGuardado; // una vez apuntada como HECHA, se queda
           const fecha = hecho ? ((fin && pr.fechaTerminadoFabrica) || ultimo || (hechoGuardado && hechoGuardado.hechoEn) || "") : "";
-          filas.push({ r, ko, o, total, hechas: hecho && fin && hechas < total ? total : hechas, hecho, fecha });
+          const fechasHechas = ids ? ids.filter((i) => verdes.has(i)).map((i) => cuando[i]).filter(Boolean) : [...verdes].map((i) => cuando[i]).filter(Boolean);
+          filas.push({ r, ko, o, total, hechas: hecho && fin && hechas < total ? total : hechas, hecho, fecha, fechasHechas });
         });
     return filas;
   };
@@ -54794,11 +54822,19 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
-        {Object.values(asignTodas || {}).some((d) => d && Object.keys(d).length) && <button type="button" onClick={async () => { try { await guardarCopia("Antes de vaciar todo Control del día"); await fbSet(ref(fbDb, "controlDiaObras"), null); await fbSet(ref(fbDb, "controlDiaLote"), null); } catch (e) { alert("No se pudo vaciar: " + e.message); } }} title="Quita TODAS las obras de TODOS los días. Se guarda copia: puedes volver con «Volver a como estaba». No toca el CRM ni las marcas de ventanas." className="px-3 py-1.5 rounded-md bg-red-700 text-white text-sm font-bold">🗑 Vaciar todo Control del día ({Object.values(asignTodas || {}).reduce((n, d) => n + Object.keys(d || {}).length, 0)} obras)</button>}
-        {Object.keys(planPres || {}).length > 0 && <button type="button" onClick={async () => { try { await guardarCopia("Antes de borrar los datos del PLANING"); await fbSet(ref(fbDb, "controlDiaPlaning"), null); await fbSet(ref(fbDb, "controlDiaPlaningDib"), null); } catch (e) { alert("No se pudo borrar: " + e.message); } }} title="Borra los datos que se guardaron del PDF PLANING (presupuestos, horas, ventanas, dibujos). No toca los días del calendario, ni las marcas, ni el CRM. Se vuelve a rellenar subiendo el PDF. Desaparece al usarlo." className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">🗑 Borrar datos del PLANING ({Object.keys(planPres).length} presupuestos) · un solo uso</button>}
+        <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-600">⚙ Herramientas (borrar, copias de seguridad) — solo para arreglar errores</summary>
+          <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+            <p><b>Quitar del calendario las obras metidas a mano:</b> saca de todos los días las obras que se pusieron a mano aquí. Las del planning de Fábrica NO se quitan (salen solas). Se guarda copia antes.</p>
+            <p><b>Borrar el PLANING subido:</b> borra lo leído del PDF «PLANING» (horas, ventanas y dibujos de cada presupuesto). No borra el registro de obras ni lo hecho. Para volver a tenerlo, se sube otra vez el PDF.</p>
+            <p><b>Copias de seguridad del calendario:</b> antes de cada cambio grande (planificar de golpe, vaciar…) se guarda cómo estaba el calendario. Elige una para volver a como estaba en ese momento.</p>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+        {Object.values(asignTodasCD || {}).some((d) => d && Object.keys(d).length) && <button type="button" onClick={async () => { try { await guardarCopia("Antes de vaciar todo Control del día"); await fbSet(ref(fbDb, "controlDiaObras"), null); await fbSet(ref(fbDb, "controlDiaLote"), null); } catch (e) { alert("No se pudo vaciar: " + e.message); } }} title="Quita TODAS las obras de TODOS los días. Se guarda copia: puedes volver con «Volver a como estaba». No toca el CRM ni las marcas de ventanas." className="px-3 py-1.5 rounded-md bg-red-700 text-white text-sm font-bold">🗑 Quitar del calendario las obras metidas a mano ({Object.values(asignTodasCD || {}).reduce((n, d) => n + Object.keys(d || {}).length, 0)})</button>}
+        {Object.keys(planPres || {}).length > 0 && <button type="button" onClick={async () => { try { await guardarCopia("Antes de borrar los datos del PLANING"); await fbSet(ref(fbDb, "controlDiaPlaning"), null); await fbSet(ref(fbDb, "controlDiaPlaningDib"), null); } catch (e) { alert("No se pudo borrar: " + e.message); } }} title="Borra los datos que se guardaron del PDF PLANING (presupuestos, horas, ventanas, dibujos). No toca los días del calendario, ni las marcas, ni el CRM. Se vuelve a rellenar subiendo el PDF. Desaparece al usarlo." className="px-3 py-1.5 rounded-md bg-amber-600 text-white text-sm font-bold">🗑 Borrar el PLANING subido ({Object.keys(planPres).length} presupuestos: horas, ventanas y dibujos)</button>}
         {Object.keys(copias || {}).length > 0 && (
           <details className="rounded-md border border-slate-300 bg-white px-2 py-1">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-700">⏪ Volver a como estaba ({Object.keys(copias).length} copias)</summary>
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">⏪ Copias de seguridad del calendario ({Object.keys(copias).length}): volver a como estaba</summary>
             <div className="mt-1 flex flex-col gap-1">
               <button type="button" onClick={async () => { if (!window.confirm("¿Borrar TODAS las copias? Ya no podrás volver atrás a ninguna de ellas.")) return; try { await fbSet(ref(fbDb, "controlDiaObrasCopia"), null); } catch (e) { alert("No se pudieron borrar: " + e.message); } }} className="self-start text-xs font-bold px-2 py-1 rounded bg-red-600 text-white">🗑 Borrar todas las copias ({Object.keys(copias).length})</button>
               {Object.keys(copias).sort().reverse().map((k) => { const c = copias[k]; const n = Object.values(c.datos || {}).reduce((a, d) => a + Object.keys(d || {}).length, 0); return (
@@ -54810,6 +54846,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             </div>
           </details>
         )}
+          </div>
+        </details>
       </div>
       {(() => {
         // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
@@ -54841,20 +54879,20 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         const filas = filasRegistro();
         const q = qReg.trim().toLowerCase();
         const vis = filas.filter((f) => !q || `${f.r.pres} ${f.r.nombre}`.toLowerCase().includes(q)).sort((a, b) => (a.hecho ? 1 : 0) - (b.hecho ? 1 : 0) || String(a.r.pres).localeCompare(String(b.r.pres)));
-        let ventSem = 0; Object.entries(marcasTodas || {}).forEach(([d, m]) => { if (d < lun || d > dom) return; Object.values(m || {}).forEach((mo) => Object.values(mo || {}).forEach((v) => { if (v === 1) ventSem++; })); });
+        const ventSem = filas.reduce((a, f) => a + f.fechasHechas.filter((d) => d >= lun && d <= dom).length, 0);
         const obrasSem = filas.filter((f) => f.hecho && f.fecha >= lun && f.fecha <= dom);
         const nHechas = filas.filter((f) => f.hecho).length;
         const ventTot = filas.reduce((a, f) => a + f.total, 0), ventHechas = filas.reduce((a, f) => a + Math.min(f.hechas, f.total), 0);
         return (
           <div className="mb-3 rounded-lg border-2 border-emerald-500 bg-white p-2">
             <button type="button" onClick={() => setVerRegistro(!verRegistro)} className="w-full text-left text-sm font-bold text-emerald-900">
-              {verRegistro ? "▼" : "▶"} 📋 Todo lo planificado: {filas.length} obras · <span className="text-emerald-700">✓ {nHechas} hechas</span> · {ventHechas} de {ventTot} ventanas
-              <span className="ml-2 font-semibold text-slate-600">· Semana del {fmtDate(lun)}: {ventSem} ventanas, {obrasSem.length} obras terminadas</span>
+              {verRegistro ? "▼" : "▶"} 📋 Registro de obras (todo lo que ha pasado por aquí): {filas.length} obras — <span className="text-emerald-700">✓ {nHechas} terminadas</span> · {filas.filter((f) => !f.hecho && f.hechas > 0).length} a medias · {filas.filter((f) => !f.hecho && !f.hechas).length} sin empezar
+              <span className="block font-semibold text-slate-600">Ventanas fabricadas: {ventHechas} de {ventTot} · Esta semana ({fmtDate(lun)} – {fmtDate(dom)}): {ventSem} ventanas fabricadas, {obrasSem.length} obras terminadas</span>
             </button>
             {verRegistro && (
               <div className="mt-2">
                 <input value={qReg} onChange={(e) => setQReg(e.target.value)} placeholder="Buscar presupuesto u obra (6653, 6146…)" className="w-full sm:w-80 border border-slate-300 rounded-md px-2 py-1.5 text-sm mb-2" />
-                <p className="text-[11px] text-slate-500 mb-1">No se borra nunca (ni al borrar el PLANING ni al vaciar días). Se pone ✓ HECHO cuando todas sus ventanas están en verde o la obra ha pasado a reparto.</p>
+                <p className="text-[11px] text-slate-500 mb-1">Aquí entra cada presupuesto del PLANING subido, cada obra con carga de material y cada obra que pasa por un día del calendario. No se borra nunca (ni al borrar el PLANING ni al quitar obras del calendario). Pone ✓ HECHO cuando todas sus ventanas están en verde o la obra ha pasado a reparto.</p>
                 <div className="max-h-96 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-md">
                   {vis.map((f) => (
                     <div key={f.ko} className={`flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm ${f.hecho ? "bg-emerald-50" : ""}`}>
@@ -55054,6 +55092,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         <div>{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-[11px] font-bold opacity-80">{v.tip}</div> : null}
                         {v.medida ? <div className="text-[11px] font-normal opacity-80">{v.medida}</div> : null}
+                        {(() => { const ex = extrasVentana(o, v); return ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null; })()}
                         {(() => { const inf = infoVent(o, v); return inf ? <div className="mt-1 max-w-[15rem] text-left leading-tight"><div className="text-[11px] font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-[10px] font-normal opacity-90">{inf.desc}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, false)}
