@@ -53402,7 +53402,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       })()}
       <div className="bg-white border border-slate-200 rounded-xl p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <input ref={codigoRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscarCodigo(codigo); }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
+          <input ref={codigoRef} value={codigo} onChange={(e) => setCodigo(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); buscarCodigo(e.currentTarget.value); } }} placeholder="Pasa la pistola por una etiqueta de auxiliar (AX…) y Enter" className={inputCls + " flex-1 min-w-[240px]"} />
           <input value={filtro} onChange={(e) => setFiltro(e.target.value)} placeholder="Buscar ventana, piso, obra, perfil…" className={inputCls + " w-60"} />
           <select value={orden} onChange={(e) => setOrden(e.target.value)} className="text-sm border border-slate-300 rounded-md px-2 py-2 bg-white">
             <option value="ventana">Ordenar por ventana</option>
@@ -53530,7 +53530,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             <option value="">— elige la obra (presupuesto) —</option>
             {obrasComp.map((n) => <option key={n} value={n}>Ppto {pptoBonito(n)}{(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) ? " · " + (hojas[n].referencia || hojas[n].cliente) : ""}</option>)}
           </select>
-          {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") leerComp(codComp); }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
+          {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); leerComp(e.currentTarget.value); } }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
         </div>
         {obraComp && (
           <div className="mt-3">
