@@ -53790,6 +53790,27 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       rec.forEach((l, li) => { const n = Math.min(99, Math.round(parseFloat(l.uds) || 1)); for (let u = 1; u <= n; u++) o.viv.get("Ventanas de la obra").push({ id: limpia(`rec${li}_${u}`), pos: n > 1 ? `${l.modelo} ${u}/${n}` : String(l.modelo), fab: "", tip: String(l.modelo), medida: "", color: "" }); });
       o.fuente = "recuento"; return;
     }
+    // Sin carga de material ni recuento: que funcione IGUAL, ventana a ventana. 1) recuento del expediente de Uxcar de la obra;
+    // 2) las ventanas del PLANING de esa obra; 3) tantas ventanas como diga la obra (V1, V2…). Solo si no se sabe nada, la obra entera.
+    const expDeP = o.d.tipo === "p" && ent && ent.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e.id === ent.uxcarExpedienteId) : null;
+    const recUx = toArray(expDeP && expDeP.recuento).filter((l) => l && l.modelo && (parseFloat(l.uds) || 0) > 0 && !["mosquitera"].includes(l.tipo));
+    if (recUx.length) {
+      o.viv.set("Ventanas de la obra", []);
+      recUx.forEach((l, li) => { const n = Math.min(99, Math.round(parseFloat(l.uds) || 1)); for (let u = 1; u <= n; u++) o.viv.get("Ventanas de la obra").push({ id: limpia(`rec${li}_${u}`), pos: n > 1 ? `${l.modelo} ${u}/${n}` : String(l.modelo), fab: "", tip: l.tipo || "", medida: "", color: "" }); });
+      o.fuente = "recuento"; return;
+    }
+    const kObra = limpia(o.d.key);
+    const delPlan = Object.values(planPres || {}).filter((pr) => pr && pr.obraKey === kObra).flatMap((pr) => toArray(pr.ventanas));
+    if (delPlan.length) {
+      const vistosP = {};
+      o.viv.set("Ventanas del planning", delPlan.map((w, i) => { let id = limpia(w.pos || `v${i}`); if (vistosP[id]) { vistosP[id]++; id = `${id}_${vistosP[id]}`; } else vistosP[id] = 1; return { id, pos: w.pos || `V${i + 1}`, fab: "", tip: w.pos || "", medida: "", color: w.color || "" }; }));
+      o.fuente = "planning"; return;
+    }
+    const nV = o.d.tipo === "u" && ent ? uxNum(ent.ventanas) + uxNum(ent.puertas) + uxNum(ent.osciloParalelas) : o.d.tipo === "p" && ent ? ventanasDeObra(ent, uxExpedientes).total : 0;
+    if (nV > 0) {
+      o.viv.set("Ventanas (sin carga de material)", Array.from({ length: Math.min(nV, 300) }, (_, i) => ({ id: `n${i + 1}`, pos: `V${i + 1}`, fab: "", tip: "", medida: "", color: "" })));
+      o.fuente = "numero"; return;
+    }
     o.fuente = "";
   });
   const pptosDe = (o) => {
@@ -54903,7 +54924,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             })()}
             <div className="px-3 pb-1 text-xs font-semibold text-slate-600">
               {vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}
-              {o.fuente === "recuento" ? <span className="font-normal text-amber-700"> · del recuento de la obra, sin dibujo</span> : null}
+              {o.fuente === "recuento" ? <span className="font-normal text-amber-700"> · del recuento de la obra, sin dibujo</span> : o.fuente === "planning" ? <span className="font-normal text-amber-700"> · ventanas del PLANING (sube la carga de material para ver los dibujos)</span> : o.fuente === "numero" ? <span className="font-normal text-amber-700"> · solo sé cuántas son: sube la carga de material para ver cuáles</span> : null}
               {estadoCarga[o.d.key] === "leyendo" ? <span className="font-normal text-amber-700"> · leyendo la carga de material…</span> : null}
               {String(estadoCarga[o.d.key] || "").startsWith("error") ? <span className="font-normal text-rose-700"> · {estadoCarga[o.d.key]}</span> : null}
               {(presDeObra.get(limpia(o.d.key)) || []).map((pr, i) => <div key={i} className="font-normal text-slate-600">Planning: presupuesto {pr.pres} · {fmtHoras(Number(pr.horas) || 0)}{pr.cliente ? ` · ${String(pr.cliente).replace(/^\d+-/, "")}` : ""}{pr.ref ? ` · ${pr.ref}` : ""}</div>)}
