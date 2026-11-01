@@ -54357,7 +54357,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const r = await leerHojaCorteControl(lib, pdfDoc, null);
       if (!r.modelos.length) return { ok: false, motivo: "no encuentro ningún modelo (A01.001, V01.002…) en la hoja" };
       const mios = [...presCrmDe(o)]; const suyo = String(r.pres || "").replace(/\./g, "");
-      if (suyo && mios.length && !mios.some((m) => mismoPresCD(m, suyo))) {
+      // La hoja de fábrica suele venir con otra versión (la obra es la 6.510-1 y la hoja la 6.510-2): vale el mismo nº base,
+      // salvo que haya OTRA obra con esa versión exacta (entonces es de esa otra)
+      const baseIgual = mios.some((m) => m.split("-")[0] === suyo.split("-")[0]);
+      const otraExacta = suyo.includes("-") && [...obras.values()].some((x) => x.d.tipo !== "pl" && limpia(x.d.key) !== ko && [...presCrmDe(x)].includes(suyo) && !mios.includes(suyo));
+      if (suyo && mios.length && !mios.some((m) => mismoPresCD(m, suyo)) && !(baseIgual && !otraExacta)) {
         if (!manual) return { ok: false, motivo: `la hoja de corte es del presupuesto ${r.pres} y esta obra es ${mios.join(", ")}` };
         if (!window.confirm(`Esta hoja de corte es del presupuesto ${r.pres} y la obra es ${mios.join(", ")}.\n\n¿Usarla igualmente?`)) return { ok: false, motivo: "cancelado" };
       }
@@ -54521,7 +54525,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const hojaIntentadas = useRef({}); const hojaLeyendo = useRef(false);
   const hoyHoja = new Date().toISOString().slice(0, 10);
   const pendHoja = [...new Set([...lista.map((o) => limpia(o.d.key)), ...Object.entries(asignTodas).filter(([f]) => f >= hoyHoja).flatMap(([, d]) => Object.keys(d))])]
-    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
+    .map((ko) => [...obras.values()].find((x) => limpia(x.d.key) === ko)).filter((o) => o && o.d.tipo !== "pl" && !hojaDeObra(o) && !(hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error && hojasCD[limpia(o.d.key)].v >= 2) && !hojaIntentadas.current[o.d.key] && docsHojaDe(o).length);
   const clavePendHoja = pendHoja.map((o) => o.d.key).join("|");
   useEffect(() => {
     if (!pendHoja.length || hojaLeyendo.current) return;
@@ -54533,7 +54537,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
           const d = docsHojaDe(o)[0];
           let r;
           try { r = await guardarHojaCD(o, new Uint8Array(await bajarArchivoGuardado(d.url)), { nombre: d.nombre || "", url: d.url }, false); } catch (e) { r = { ok: false, motivo: e.message || String(e) }; }
-          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now() }).catch(() => {});
+          if (!r.ok) await fbSet(ref(fbDb, `controlDiaHojaCorte/${limpia(o.d.key)}`), { error: r.motivo || "no se pudo leer", archivo: d.nombre || "", leidoEn: Date.now(), v: 2 }).catch(() => {});
         }
       } finally { hojaLeyendo.current = false; }
     })();
@@ -54841,11 +54845,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <div key={v.id} className="relative flex flex-col items-stretch">
                       {lapizVentana(o, v, true)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${val === 1 ? "bg-emerald-600 border-emerald-300" : val === 2 ? "bg-orange-500 border-orange-200" : "bg-white text-slate-900 border-slate-300"}`}>
-                        <div className="flex justify-center">{(() => { const inf = infoVent(o, v); return inf && inf.dib ? <DibujoPlan hash={inf.dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />; })()}</div>
+                        <div className="flex justify-center">{(() => { const inf = infoVent(o, v); const ih = infoHoja(o, v); return inf && inf.dib ? <DibujoPlan hash={inf.dib} alto={130} sinZoomAlTocar /> : ih && ih.dib ? <DibujoPlan hash={ih.dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />; })()}</div>
                         <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                         {v.tip && v.tip !== v.pos ? <div className="text-sm font-bold">{v.tip}</div> : null}
                         {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
-                        {(() => { const inf = infoVent(o, v); return inf ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div> : null; })()}
+                        {(() => { const ex = extrasVentana(o, v); return ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null; })()}
+                        {(() => { const inf = infoVent(o, v); if (inf) return <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div>;
+                          const ih = infoHoja(o, v); return ih ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}</div><div className="text-xs">{ih.desc}</div></div> : null; })()}
                       </button>
                       {textoNotaVentana(o, v, true)}
                       </div>
@@ -55216,7 +55222,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             })()}
             <div className="px-3 pb-1 text-xs font-semibold text-slate-600">
               {vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}
-              {o.fuente === "hoja" ? <span className="font-normal text-emerald-700"> · de la hoja de corte</span> : null}
+              {o.fuente === "hoja" ? <span className="font-normal text-emerald-700"> · de la hoja de corte{(() => { const h = hojaDeObra(o); const nd = h ? toArray(h.modelos).filter((m) => m.dib).length : 0; return h && !nd ? <b className="text-rose-700"> (no he podido sacar los dibujos: vuelve a subirla)</b> : h ? ` (${h.pres || ""}, ${nd} dibujos)` : ""; })()}</span> : null}
               {o.d.tipo !== "pl" && !["etiquetas", "carga", "hoja"].includes(o.fuente) && (() => { const e = hojasCD && hojasCD[limpia(o.d.key)] && hojasCD[limpia(o.d.key)].error; const hay = docsHojaDe(o).length;
                 return <span className="block mt-0.5 text-[11px] font-bold text-rose-700">{estadoCarga[o.d.key] === "leyendo" ? "⏳ Leyendo la hoja de corte…" : e ? `⚠ No he podido leer la hoja de corte (${e}): súbela con «Subir hoja de corte o carga de material»` : hay ? "⏳ La hoja de corte se leerá enseguida" : "⚠ FALTA LA HOJA DE CORTE: pídesela a Uxcar / a oficina, o súbela con «Subir hoja de corte o carga de material»"}</span>; })()}
               {o.fuente === "recuento" ? <span className="font-normal text-amber-700"> · del recuento de la obra, sin dibujo</span> : o.fuente === "planning" ? <span className="font-normal text-amber-700"> · ventanas del PLANING (sube la carga de material para ver los dibujos)</span> : o.fuente === "numero" ? <span className="font-normal text-amber-700"> · solo sé cuántas son: sube la carga de material para ver cuáles</span> : null}
