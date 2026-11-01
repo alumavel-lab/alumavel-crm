@@ -1748,6 +1748,45 @@ export default function App() {
   const saveTarifasAluminio = (next) => { setTarifasAluminio(next); persist("tarifasAluminio", next); };
   const saveModelosVentana = (next) => { setModelosVentana(next); persist("modelosVentana", next); };
   const saveConfigVentanas = (next) => { setConfigVentanas(next); persist("configVentanas", next); };
+  // EMPEZAR A FABRICAR una obra (con sus comprobaciones: «Qué lleva», salida, presupuesto firmado, auxiliares). Devuelve true si se hizo.
+  // La usan Fábrica («Listo para fabricar») y Control del día («Meter una obra en el planning»).
+  const iniciarFabricacionObra = async (proyectoId) => {
+    if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return false; }
+    if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return false; }
+    // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
+    const obraF = proyectos.find((p) => p.id === proyectoId);
+    const rev = await revisarPresupuestoAntesDeFabrica(obraF);
+    const auxL = auxiliaresPendientesObra(obraF); // y que Auxiliares lo tenga cortado (guías, mosquiteras…)
+    const todas = [...((rev && rev.lineas) || []), ...auxL];
+    if (todas.length) {
+      const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${obraF.numero}${rev ? `, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}` : ""}:\n\n${todas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
+      updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: todas, aceptado: ok } });
+      // Si el presupuesto lleva montaje y la obra no, se ofrece pasarla a montaje (salida «Instalación») ahora mismo
+      if (rev && rev.montaje === "falta" && window.confirm(`El presupuesto de la obra #${obraF.numero} lleva MONTAJE.\n\n¿La paso a montaje (salida «Instalación») ahora?`)) {
+        updateProyectoInline(proyectoId, { llevaInstalacion: true });
+        showToast(`Obra #${obraF.numero} pasada a montaje (Instalación). Acuérdate de crear la instalación en el Calendario.`);
+      }
+      if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return false; }
+    }
+    const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
+    updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+    // Obra de Uxcar: su expediente pasa también a «producción» (si no, no entraba en el planning ni Uxcar veía que se fabrica)
+    const expF = obraF && obraF.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === obraF.uxcarExpedienteId) : null;
+    if (expF && !["produccion", "terminado", "entregado"].includes(expF.estado)) uxActualizar(expF, { estado: "produccion", fechaProduccion: uxHoy() }).catch(() => {});
+    showToast(desc ? `En fabricación. Stock descontado: ${desc.n} referencia${desc.n === 1 ? "" : "s"}${desc.creados ? ` (${desc.creados} dada${desc.creados === 1 ? "" : "s"} de alta sola${desc.creados === 1 ? "" : "s"} en Stock, en negativo)` : ""}${desc.sinMaterial ? ` · ${desc.sinMaterial} línea${desc.sinMaterial === 1 ? "" : "s"} sin material dado de alta en Stock (no descontadas)` : ""}` : "Proyecto marcado como en fabricación");
+    return true;
+  };
+  // Control del día: meter una obra en el planning de Fábrica en un día. Si no estaba en fabricación, se empieza (con sus comprobaciones);
+  // si estaba quitada del planning (sin tick), se vuelve a poner. El día queda como «Empezar el».
+  const meterObraEnPlanning = async (proyectoId, fecha) => {
+    const p = proyectos.find((x) => x.id === proyectoId); if (!p) return false;
+    if (p.estadoTrabajo !== "En proceso") { const ok = await iniciarFabricacionObra(proyectoId); if (!ok) return false; }
+    const exp = p.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === p.uxcarExpedienteId) : null;
+    const ids = [`p-${proyectoId}`, ...(exp ? [`u-${exp.id}`] : [])];
+    setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const fp = { ...(pl.fechasPlan || {}) }; if (fecha) ids.forEach((i) => { fp[i] = fecha; }); const next = { ...c, planning: { ...pl, fechasPlan: fp, quitadasPlan: toArray(pl.quitadasPlan).filter((i) => !ids.includes(i)) } }; persist("configVentanas", next); return next; });
+    showToast(`#${p.numero} metida en el planning${fecha ? ` (empieza el ${fmtDate(fecha)})` : ""}`);
+    return true;
+  };
   // Control del día mueve una obra de día → cambia el día de inicio en el planning de Fábrica (el mismo dato que «Empezar el»)
   // (sobre el valor más reciente: «Mover todo el día» mueve varias seguidas y no deben pisarse)
   const moverDiaPlanningFab = (oid, fecha) => setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const next = { ...c, planning: { ...pl, fechasPlan: { ...(pl.fechasPlan || {}), [oid]: fecha } } }; persist("configVentanas", next); return next; });
@@ -6848,31 +6887,7 @@ export default function App() {
             onCrearPedidoFaltante={crearPedidoFaltanteDesdeAlbaran}
             onActualizarPedido={actualizarPedido}
             vehiculos={vehiculos} onActualizarProyecto={updateProyectoInline} instalaciones={instalaciones}
-            onIniciarFabricacion={async (proyectoId) => {
-              if (faltaQueLlevaObra(proyectos.find((p) => p.id === proyectoId))) { showToast(`No se puede pasar a fabricación. ${AVISO_QUE_LLEVA}`, "error"); return; }
-              if (!salidaDefinida(proyectos.find((p) => p.id === proyectoId))) { showToast("No se puede empezar a fabricar: falta decidir la SALIDA (reparto, recogida o instalación). Elígela en la tarjeta.", "error"); return; }
-              // Filtro: lo que lleva el presupuesto firmado (mosquitera, postigo, portero…) frente a lo que va a fábrica
-              const obraF = proyectos.find((p) => p.id === proyectoId);
-              const rev = await revisarPresupuestoAntesDeFabrica(obraF);
-              const auxL = auxiliaresPendientesObra(obraF); // y que Auxiliares lo tenga cortado (guías, mosquiteras…)
-              const todas = [...((rev && rev.lineas) || []), ...auxL];
-              if (todas.length) {
-                const ok = window.confirm(`ANTES DE PASAR A FÁBRICA la obra #${obraF.numero}${rev ? `, revisa lo que lleva el presupuesto firmado ${rev.presupuestos}` : ""}:\n\n${todas.join("\n")}\n\nACEPTAR = pasar a fábrica igualmente.\nCANCELAR = no pasar todavía.`);
-                updateProyectoInline(proyectoId, { revisionPresupuestoFab: { fecha: new Date().toISOString().slice(0, 10), avisos: todas, aceptado: ok } });
-                // Si el presupuesto lleva montaje y la obra no, se ofrece pasarla a montaje (salida «Instalación») ahora mismo
-                if (rev && rev.montaje === "falta" && window.confirm(`El presupuesto de la obra #${obraF.numero} lleva MONTAJE.\n\n¿La paso a montaje (salida «Instalación») ahora?`)) {
-                  updateProyectoInline(proyectoId, { llevaInstalacion: true });
-                  showToast(`Obra #${obraF.numero} pasada a montaje (Instalación). Acuérdate de crear la instalación en el Calendario.`);
-                }
-                if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
-              }
-              const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
-              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
-              // Obra de Uxcar: su expediente pasa también a «producción» (si no, no entraba en el planning ni Uxcar veía que se fabrica)
-              const expF = obraF && obraF.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === obraF.uxcarExpedienteId) : null;
-              if (expF && !["produccion", "terminado", "entregado"].includes(expF.estado)) uxActualizar(expF, { estado: "produccion", fechaProduccion: uxHoy() }).catch(() => {});
-              showToast(desc ? `En fabricación. Stock descontado: ${desc.n} referencia${desc.n === 1 ? "" : "s"}${desc.creados ? ` (${desc.creados} dada${desc.creados === 1 ? "" : "s"} de alta sola${desc.creados === 1 ? "" : "s"} en Stock, en negativo)` : ""}${desc.sinMaterial ? ` · ${desc.sinMaterial} línea${desc.sinMaterial === 1 ? "" : "s"} sin material dado de alta en Stock (no descontadas)` : ""}` : "Proyecto marcado como en fabricación");
-            }}
+            onIniciarFabricacion={iniciarFabricacionObra}
             cristales={cristales}
             onAddCristal={addCristal}
             onAddCristalesLote={addCristalesLote}
@@ -6893,6 +6908,7 @@ export default function App() {
             onMoverEstado={moverEstadoProyecto}
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
+            onMeterEnPlanning={meterObraEnPlanning}
             uxExpedientes={uxExpedientes}
             onCrearPedidosPreparacion={crearPedidosPreparacion}
             configPlanning={configVentanas.planning}
@@ -6942,6 +6958,7 @@ export default function App() {
                 onMoverEstado={moverEstadoProyecto}
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
+            onMeterEnPlanning={meterObraEnPlanning}
                 usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
                 renderIncidencias={veFabrica ? () => (
                   <IncidenciasFabricaModulo
@@ -15596,6 +15613,33 @@ function buscarPegatinaCristal(cristales, d) {
   });
   return res.sort((a, b) => b.score - a.score).slice(0, 6);
 }
+// Etiqueta de un PERFIL (la de la tronzadora: «V03 - habitaciones y - 4.533 -FA · cliente · 8001 Nogal · DIMEN.REF · Long · código de barras»)
+async function leerEtiquetaPerfilConIA(file) {
+  const dataUrl = await reducirImagenParaIA(file);
+  const base64 = dataUrl.split(",")[1];
+  const prompt = [
+    "Esto es la foto de la etiqueta pegada en un perfil de ventana de PVC (sale de la tronzadora).",
+    "Devuelve SOLO JSON, sin texto ni ```, con esta forma (los valores son los que LEAS en la foto): {\"presupuesto\":\"\",\"posicion\":\"\",\"cliente\":\"\",\"color\":\"\",\"codigo\":\"\",\"texto\":\"\"}",
+    "- presupuesto: el número de presupuesto u obra, con punto de miles y versión si la trae (por ejemplo 4.533 o 4.533-2). Suele ir en la primera línea junto a la posición.",
+    "- posicion: la posición de la ventana (por ejemplo V03, P01.002). cliente: el nombre del cliente u obra. color: el color (por ejemplo Nogal).",
+    "- codigo: las cifras impresas bajo el código de barras. texto: TODO el texto legible en una sola línea.",
+    "- La etiqueta puede estar girada: gírala mentalmente antes de leer. Copia SOLO lo que veas. Si algo no se lee con seguridad, déjalo en \"\". NUNCA inventes cifras.",
+  ].join("\n");
+  const response = await fetch("/.netlify/functions/anthropic-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }, { type: "text", text: prompt }] }] }),
+  });
+  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "error al leer");
+  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  const limpio = texto.replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{"); const fin = limpio.lastIndexOf("}");
+  const r = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const t = (x) => String(x || "").trim();
+  return { presupuesto: t(r.presupuesto), posicion: t(r.posicion), cliente: t(r.cliente), color: t(r.color), codigo: t(r.codigo).replace(/\D/g, ""), texto: t(r.texto) };
+}
 async function leerPegatinaCristalConIA(file) {
   const dataUrl = await reducirImagenParaIA(file);
   const base64 = dataUrl.split(",")[1];
@@ -22003,7 +22047,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -22782,7 +22826,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -53716,7 +53760,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -54266,6 +54310,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     })();
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
+  const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null);
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
   const [verTerminado, setVerTerminado] = useState(false);
@@ -54766,6 +54811,34 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     if (!window.confirm(`¿Quitar ${nombre} de «Todo lo planificado»?\n\nNo toca la obra ni el CRM: solo deja de salir en esta lista y en «Planning terminado».`)) return;
     try { const upd = {}; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === ko) { upd[`${rk}/borrado`] = true; upd[`${rk}/hechoEn`] = null; } }); if (Object.keys(upd).length) await fbUpdate(ref(fbDb, "controlDiaRegistro"), upd); } catch (e) { alert("No se pudo quitar: " + e.message); }
   };
+  // FOTO DE LA ETIQUETA DEL PERFIL → busca la obra: 1) código de barras (si el navegador lo lee y está entre las piezas); 2) la IA lee el texto (presupuesto, cliente)
+  const buscarObraPorFoto = async (file) => {
+    if (!file) return;
+    setMsgFoto("📷 Leyendo la etiqueta…");
+    try {
+      let porCodigo = null;
+      if ("BarcodeDetector" in window) {
+        try { const bmp = await createImageBitmap(file); const det = new window.BarcodeDetector(); const cods = await det.detect(bmp);
+          for (const c of cods) { const d = String(c.rawValue || "").replace(/\D/g, ""); for (const k of [d, d.slice(-12), d.slice(0, 12)]) { const h = k && indice.get(k); if (h) { porCodigo = h; break; } } if (porCodigo) break; }
+        } catch (e) { /* sigue con la IA */ }
+      }
+      if (porCodigo) { setQMeter(String(porCodigo.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ Código de barras: ${porCodigo.dueno.nombre}${porCodigo.ventana && porCodigo.ventana.pos ? ` · ventana ${porCodigo.ventana.pos}` : ""}`); return; }
+      const r = await leerEtiquetaPerfilConIA(file);
+      // el código impreso también puede ser el de una pieza de la pistola
+      const hCod = r.codigo ? [r.codigo, r.codigo.slice(-12), r.codigo.slice(0, 12)].map((k) => indice.get(k)).find(Boolean) : null;
+      if (hCod) { setQMeter(String(hCod.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ ${hCod.dueno.nombre} (por el código ${r.codigo})`); return; }
+      const pres = (r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "";
+      if (pres) {
+        const base = pres.replace(/\D/g, "").slice(0, 4);
+        const enPlan = [...obras.values()].find((o) => enFabrica.has(limpia(o.d.key)) && [...presCrmDe(o)].some((c) => c.split("-")[0] === base));
+        setQMeter(base);
+        setMsgFoto(`✓ Etiqueta: presupuesto ${pres}${r.posicion ? ` · ${r.posicion}` : ""}${r.cliente ? ` · ${r.cliente}` : ""}${r.color ? ` · ${r.color}` : ""}${enPlan ? ` — OJO: ${enPlan.d.nombre} ya está en el planning de Fábrica` : ""}`);
+        return;
+      }
+      if (r.cliente) { setQMeter(r.cliente.split(/\s+/)[0]); setMsgFoto(`No leo el nº de presupuesto; busco por el cliente «${r.cliente}»`); return; }
+      setMsgFoto("No he podido leer la etiqueta. Haz la foto más cerca y recta, o escribe el número.");
+    } catch (e) { setMsgFoto("No he podido leer la etiqueta: " + (e.message || e)); }
+  };
   // Lo que queda HECHO se apunta en el registro con su fecha (hechoEn) y ya no se pierde aunque luego se borren marcas o días
   const firmaHechas = Object.keys(registro || {}).length ? JSON.stringify(Object.keys(marcasTodas || {}).length) + Object.values(registro || {}).filter((r) => r && r.hechoEn).length : "";
   useEffect(() => {
@@ -55041,6 +55114,42 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         </details>
       </div>
+      {onMeterEnPlanning && (() => {
+        // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
+        const q = qMeter.trim().toLowerCase(); const qd = q.replace(/[^\d]/g, "");
+        const cands = [...obras.values()].filter((o) => o.d.tipo === "p").map((o) => ({ o, p: toArray(proyectos).find((x) => x.id === o.d.id) }))
+          .filter(({ o, p }) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo) && !enFabrica.has(limpia(o.d.key)))
+          .filter(({ o, p }) => (q ? `${o.d.nombre} ${p.presupuestoNumero || ""} ${presupuestoDeObra(p)}`.toLowerCase().includes(q) || (qd.length >= 3 && [...presCrmDe(o)].some((c) => c.replace(/\D/g, "").includes(qd))) : listasSet.has(p.id) || p.estadoTrabajo === "En proceso"))
+          .slice(0, 30);
+        const fechaM = diaMeter || dia;
+        return (
+          <div className="mb-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 p-2">
+            <button type="button" onClick={() => setVerMeter(!verMeter)} className="w-full text-left text-sm font-bold text-indigo-900">{verMeter ? "▼" : "▶"} 🏭 Meter una obra en el planning de Fábrica</button>
+            {verMeter && (
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input value={qMeter} onChange={(e) => setQMeter(e.target.value)} placeholder="Buscar obra o presupuesto (6510, Juan…)" className="flex-1 min-w-[12rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                  <input ref={fotoEtqRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; buscarObraPorFoto(f); }} />
+                  <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
+                  <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
+                </div>
+                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1">{msgFoto}</div>}
+                <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
+                <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
+                  {cands.map(({ o, p }) => { const m = materialObra(o); return (
+                    <div key={o.d.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
+                      <span className="flex-1 min-w-[10rem] font-semibold text-slate-800">{datosObraPedido(null, p, uxExpedientes).ppto ? `${datosObraPedido(null, p, uxExpedientes).ppto} · ` : ""}{o.d.nombre}</span>
+                      <span className={`text-[11px] font-semibold ${m.ok ? "text-emerald-700" : "text-amber-700"}`}>{p.estadoTrabajo === "En proceso" ? "en fabricación, sin día" : m.ok ? "✓ material" : `⚠ ${m.motivo}`}</span>
+                      <button type="button" disabled={!!meterOcupado} onClick={async () => { if (!m.ok && !window.confirm(`${o.d.nombre}: ${m.motivo}.\n\n¿Meterla en el planning igualmente?`)) return; setMeterOcupado(o.d.key); try { await onMeterEnPlanning(p.id, fechaM); } finally { setMeterOcupado(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{meterOcupado === o.d.key ? "Metiendo…" : `➕ Meter el ${fmtDate(fechaM)}`}</button>
+                    </div>
+                  ); })}
+                  {!cands.length && <div className="px-2 py-2 text-sm text-slate-500">{q ? "No encuentro ninguna obra con eso que no esté ya en el planning." : "No hay obras listas fuera del planning."}</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {(() => {
         // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
         const vistosT = new Set(); const porDia = {};
@@ -55463,7 +55572,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
 }
 
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
-  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
@@ -55505,7 +55614,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
