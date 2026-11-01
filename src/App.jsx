@@ -54254,10 +54254,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
       const claves = Object.keys(planEdmo.dibs || {}).filter((k) => usados.has(k));
       for (let i = 0; i < claves.length; i += 40) { const trozo = {}; claves.slice(i, i + 40).forEach((k) => { trozo[k] = planEdmo.dibs[k]; }); await fbUpdate(ref(fbDb, "controlDiaPlaningDib"), trozo); }
       await fbUpdate(ref(fbDb, "controlDiaPlaning"), upd);
-      if (Object.keys(asig).length) await fbUpdate(ref(fbDb, "controlDiaObras"), asig);
-      const primero = edmoCalc.dias[0] && edmoCalc.dias[0][0];
-      if (primero) { setDia(primero); setMesVer(primero.slice(0, 7)); }
+      // Los DÍAS los pone solo el planning de Fábrica: guardar el PLANING solo guarda horas, ventanas y dibujos (no mete obras en el calendario)
       setPlanEdmo(null);
+      alert(`PLANING guardado: ${Object.keys(upd).length} presupuestos con sus horas, ventanas y dibujos.\n\nNo se ha puesto ninguna obra en el calendario: los días los decide el planning de Fábrica.`);
     } catch (e) { alert("No se pudo guardar el planning: " + e.message); }
   };
   const moverDiaEntero = async () => {
@@ -54532,7 +54531,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const guardarPlanning = async () => {
     await guardarCopia("Antes de guardar un planning subido");
     const ok = plan.map((d) => ({ ...d, obras: d.obras.filter((x) => x.incluir) })).filter((d) => d.fecha && d.obras.length);
-    for (const d of ok) for (const ob of d.obras) { try { await fbSet(ref(fbDb, `controlDiaObras/${d.fecha}/${limpia(ob.key)}`), true); } catch (e) { /* nada */ } }
+    // Los días los pone solo el planning de Fábrica: aquí ya no se meten obras en el calendario (solo se guarda la imagen del planning)
     if (planImgPend && ok.length) { for (const m of [...new Set(ok.map((d) => d.fecha.slice(0, 7)))]) { try { await fbSet(ref(fbDb, `controlDiaPlanningImg/${m}`), { url: planImgPend.url, nombre: planImgPend.nombre, subidoEn: Date.now() }); } catch (e) { console.error(e); alert("Las obras se han guardado, pero no se pudo guardar la imagen del planning: " + e.message); } } }
     if (ok.length) { setDia(ok[0].fecha); setMesVer(ok[0].fecha.slice(0, 7)); }
     setPlanImgPend(null); setPlan(null);
