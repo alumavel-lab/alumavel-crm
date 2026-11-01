@@ -54115,7 +54115,13 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
   const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta } }
-  const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|");
+  const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|") + "#" + Object.keys(ventanasGuardadas || {}).sort().join(",");
+  // ¿Este presupuesto ya está FABRICADO en el registro? (para no volver a meterlo). Devuelve la fila del registro o null
+  const normPresR = (t) => String(t || "").replace(/\./g, "").replace(/\s+/g, "").toLowerCase();
+  const yaFabricado = (pres, obraKeyPropia) => {
+    const c = normPresR(pres); if (!/^\d{3,}/.test(c)) return null;
+    return Object.values(registro || {}).find((r) => r && r.hechoEn && r.obraKey !== obraKeyPropia && (() => { const x = normPresR(r.pres); if (!x) return false; if (x === c) return true; const [ba, va] = x.split("-"), [bb, vb] = c.split("-"); return ba === bb && (!va || !vb); })()) || null;
+  };
   useEffect(() => {
     if (!firmaReg || firmaReg === "#") return;
     (async () => {
@@ -54124,7 +54130,8 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
         const hoyR = new Date().toISOString().slice(0, 10); const upd = {};
         Object.entries(planPres || {}).forEach(([pk, pr]) => { if (!pr || ya[pk]) return; upd[pk] = { pres: pr.pres || pk, nombre: pr.nombre || `${pr.pres || pk}${pr.cliente ? " · " + String(pr.cliente).replace(/^\d+-/, "") : ""}`, ventanas: toArray(pr.ventanas).length, obraKey: pr.obraKey || limpia(`pl-${pk}`), alta: hoyR }; });
         const conObra = new Set(Object.values({ ...ya, ...upd }).map((r) => r && r.obraKey).filter(Boolean));
-        Object.entries(asignTodas).forEach(([f, d]) => Object.keys(d).forEach((ko) => {
+        const obrasCarga = Object.keys(ventanasGuardadas || {}).map((ko) => [hoyR, { [ko]: true }]);
+        [...Object.entries(asignTodas), ...obrasCarga].forEach(([f, d]) => Object.keys(d).forEach((ko) => {
           if (conObra.has(ko) || ya[`o_${ko}`] || upd[`o_${ko}`]) return;
           const o = obras.get ? [...obras.values()].find((x) => limpia(x.d.key) === ko) : null; if (!o) return;
           upd[`o_${ko}`] = { pres: [...presConVersion(o)][0] || "", nombre: o.d.nombre, ventanas: idsDe(o).length, obraKey: ko, alta: f };
@@ -54164,7 +54171,12 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const guardarEdmo = async () => {
     if (!edmoCalc) return;
     const upd = {}; const asig = {};
+    // BLOQUEO: un presupuesto que ya está FABRICADO en «Todo lo planificado» no se vuelve a meter
+    const bloq = edmoCalc.filas.map((f) => ({ f, r: yaFabricado(f.p.pres, null) })).filter((x) => x.r);
+    if (bloq.length && !window.confirm(`⛔ ${bloq.length} presupuesto${bloq.length === 1 ? "" : "s"} de este PLANING YA ESTÁ${bloq.length === 1 ? "" : "N"} FABRICADO${bloq.length === 1 ? "" : "S"} y NO se van a volver a meter:\n\n${bloq.map((x) => `${x.f.p.pres} → hecho el ${fmtDate(x.r.hechoEn)} (${x.r.nombre || x.r.pres})`).join("\n")}\n\nACEPTAR = guardar el resto del planning sin esos.\nCANCELAR = no guardar nada.`)) return;
+    const bloqSet = new Set(bloq.map((x) => x.f));
     edmoCalc.filas.forEach((f) => {
+      if (bloqSet.has(f)) return;
       const pk = limpia(f.p.pres);
       upd[pk] = { pres: f.p.pres, cliente: f.p.cliente || "", ref: f.p.ref || "", fab: f.p.fab || "", horas: f.p.horas, nVent: f.p.nVent, obraKey: f.ob ? limpia(f.ob.d.key) : "", nombre: f.ob ? "" : `${f.p.pres} · ${String(f.p.cliente || "").replace(/^\d+-/, "")}${f.p.ref ? " · " + f.p.ref : ""}`, dia: f.dia, ventanas: f.p.ventanas.map((w) => ({ pos: w.pos || "", color: w.color || "", desc: w.desc || "", horas: w.horas || 0, dib: w.dib || "" })), notas: f.p.notas || [] };
       if (f.incluir) {
@@ -54209,6 +54221,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const siTerminada = (o, act) => { if (idsDe(o).every((i) => act[i] === 1)) setTimeout(() => mandarAReparto(o), 60); };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
   const traerCarga = async (o, fichero) => {
+    if (fichero) {
+      const r = [...presConVersion(o)].map((c) => yaFabricado(c, limpia(o.d.key))).find(Boolean);
+      if (r) { alert(`⛔ NO SE HA SUBIDO: el presupuesto ${r.pres} ya está FABRICADO (hecho el ${fmtDate(r.hechoEn)} · ${r.nombre || ""}).\n\nSi de verdad hay que volver a hacerlo, avisa al administrador.`); return; }
+    }
     const p = toArray(proyectos).find((x) => x.id === o.d.id);
     const g0 = ventanasGuardadas && ventanasGuardadas[limpia(o.d.key)];
     const doc = (p && p.documentoEntrega && p.documentoEntrega.url) ? p.documentoEntrega : (g0 && g0.url ? { url: g0.url, nombre: g0.archivo || "" } : null);
@@ -54500,6 +54516,33 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+  // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
+  const filasRegistro = () => {
+    const vistos = new Set(); const filas = [];
+        Object.values(registro || {}).forEach((r) => {
+          if (!r || !r.obraKey || vistos.has(r.obraKey)) return; vistos.add(r.obraKey);
+          const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
+          const verdes = new Set(); let ultimo = "";
+          Object.entries(marcasTodas || {}).forEach(([d, m]) => { const mo = m && m[ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { if (v === 1) { verdes.add(id); if (d > ultimo) ultimo = d; } }); });
+          const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
+          const hechas = ids ? ids.filter((i) => verdes.has(i)).length : verdes.size;
+          const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+          const fin = !!pr && ["Listo para reparto/recogida", "Entregado"].includes(pr.estadoTrabajo);
+          const hechoGuardado = Object.values(registro || {}).find((x) => x && x.obraKey === ko && x.hechoEn);
+          const hecho = fin || (total > 0 && hechas >= total) || !!hechoGuardado; // una vez apuntada como HECHA, se queda
+          const fecha = hecho ? ((fin && pr.fechaTerminadoFabrica) || ultimo || (hechoGuardado && hechoGuardado.hechoEn) || "") : "";
+          filas.push({ r, ko, o, total, hechas: hecho && fin && hechas < total ? total : hechas, hecho, fecha });
+        });
+    return filas;
+  };
+  // Lo que queda HECHO se apunta en el registro con su fecha (hechoEn) y ya no se pierde aunque luego se borren marcas o días
+  const firmaHechas = Object.keys(registro || {}).length ? JSON.stringify(Object.keys(marcasTodas || {}).length) + Object.values(registro || {}).filter((r) => r && r.hechoEn).length : "";
+  useEffect(() => {
+    if (!firmaHechas) return;
+    const upd = {};
+    filasRegistro().forEach((f) => { if (!f.hecho || !f.fecha) return; Object.entries(registro || {}).forEach(([rk, r]) => { if (r && r.obraKey === f.ko && !r.hechoEn) upd[`${rk}/hechoEn`] = f.fecha; }); });
+    if (Object.keys(upd).length) fbUpdate(ref(fbDb, "controlDiaRegistro"), upd).catch(() => {});
+  }, [firmaHechas, marcasTodas, proyectos]); // eslint-disable-line react-hooks/exhaustive-deps
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
   const notasDia = (notasTodas && notasTodas[dia]) || {};
   const ESTADO_INFORME = { 1: { t: "✓ Hecha", c: "bg-emerald-100 text-emerald-800" }, 2: { t: "⚠ Problema", c: "bg-orange-100 text-orange-800" }, 0: { t: "Pendiente", c: "bg-slate-100 text-slate-600" } };
@@ -54734,20 +54777,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         // Lista fija de todo lo planificado: ventanas hechas (marcas en verde de cualquier día) y ✓ HECHO cuando está acabada
         const lun = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); })();
         const dom = (() => { const d = new Date(lun + "T12:00:00"); d.setDate(d.getDate() + 6); return d.toLocaleDateString("sv-SE"); })();
-        const vistos = new Set(); const filas = [];
-        Object.values(registro || {}).forEach((r) => {
-          if (!r || !r.obraKey || vistos.has(r.obraKey)) return; vistos.add(r.obraKey);
-          const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
-          const verdes = new Set(); let ultimo = "";
-          Object.entries(marcasTodas || {}).forEach(([d, m]) => { const mo = m && m[ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { if (v === 1) { verdes.add(id); if (d > ultimo) ultimo = d; } }); });
-          const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
-          const hechas = ids ? ids.filter((i) => verdes.has(i)).length : verdes.size;
-          const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
-          const fin = !!pr && ["Listo para reparto/recogida", "Entregado"].includes(pr.estadoTrabajo);
-          const hecho = fin || (total > 0 && hechas >= total);
-          const fecha = hecho ? ((fin && pr.fechaTerminadoFabrica) || ultimo) : "";
-          filas.push({ r, ko, o, total, hechas: hecho && fin && hechas < total ? total : hechas, hecho, fecha });
-        });
+        const filas = filasRegistro();
         const q = qReg.trim().toLowerCase();
         const vis = filas.filter((f) => !q || `${f.r.pres} ${f.r.nombre}`.toLowerCase().includes(q)).sort((a, b) => (a.hecho ? 1 : 0) - (b.hecho ? 1 : 0) || String(a.r.pres).localeCompare(String(b.r.pres)));
         let ventSem = 0; Object.entries(marcasTodas || {}).forEach(([d, m]) => { if (d < lun || d > dom) return; Object.values(m || {}).forEach((mo) => Object.values(mo || {}).forEach((v) => { if (v === 1) ventSem++; })); });
