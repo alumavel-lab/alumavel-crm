@@ -4551,6 +4551,11 @@ export default function App() {
           const normPV = (t) => String(t || "").replace(/[\s.]/g, "").toLowerCase();
           const pv = normPV(exp.numero);
           if (/^\d{3,}-\d+$/.test(pv) && frescos.some((p) => p && p.estadoTrabajo !== "Cancelado" && [p.presupuestoNumero, ...(String(p.nombre || "").match(/\d[\d.]*\s*-\s*\d+/g) || [])].some((t) => normPV(t) === pv))) continue;
+          // Candado en la base de datos: el primer CRM que llega crea la obra; los demás no, durante 10 minutos (lo que tarda
+          // en guardarse). Antes, mientras la obra recién creada no estaba guardada, los otros CRM abiertos la veían «borrada»
+          // y creaban otra: así salieron 3 obras #4366 iguales de la 4.954-2.
+          const candado = await runTransaction(ref(fbDb, `obrasUxcarAuto/${exp.id}`), (actual) => (actual && Date.now() - actual < 10 * 60 * 1000 ? undefined : Date.now())).catch(() => null);
+          if (!candado || !candado.committed) continue;
           const nuevoId = uid();
           const res = await runTransaction(ref(fbDb, `portalUxcar/expedientes/${exp.id}/proyectoId`), (actual) => (!actual || actual === exp.proyectoId ? nuevoId : undefined)).catch(() => null);
           if (!res || !res.committed) continue;
@@ -4577,6 +4582,19 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uxExpedientes, proyectos.length, currentUser?.id, loading]);
+
+  // Expediente de Uxcar desenganchado: su obra existe (apunta a él) pero el expediente no apunta a ninguna obra viva
+  // (p. ej. apuntaba a una copia que se borró). Se vuelve a enganchar a esa obra.
+  useEffect(() => {
+    if (!currentUser || loading || !uxCargado) return;
+    const patch = {};
+    toArray(uxExpedientes).forEach((e) => {
+      if (!e || !e.id || proyectos.some((p) => p.id === e.proyectoId)) return;
+      const suya = proyectos.find((p) => p && p.uxcarExpedienteId === e.id && p.estadoTrabajo !== "Cancelado");
+      if (suya) patch[`expedientes/${e.id}/proyectoId`] = suya.id;
+    });
+    if (Object.keys(patch).length) fbUpdate(ref(fbDb, "portalUxcar"), patch).catch(() => {});
+  }, [uxExpedientes, proyectos, currentUser?.id, loading, uxCargado]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Documentos de Uxcar → ficha del proyecto: todo lo que Uxcar sube a su expediente (hoja de corte,
   // análisis, dibujos, listados de cristales/persianas...) se copia a "Documentos guardados" del proyecto.
@@ -8018,13 +8036,13 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
   const duplicadosNombre = useMemo(() => {
     const cuenta = {};
-    proyectos.forEach((p) => { if (!p || p.estadoTrabajo === "Cancelado") return; const k = String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " "); if (k && /\d/.test(k)) (cuenta[k] = cuenta[k] || []).push(p.numero); });
+    proyectos.forEach((p) => { if (!p || p.estadoTrabajo === "Cancelado") return; const k = claveDupNombreObra(p); if (k && /\d/.test(k)) (cuenta[k] = cuenta[k] || []).push(p.numero); });
     const out = {};
     Object.entries(cuenta).forEach(([k, nums]) => { if (nums.length > 1) out[k] = nums; });
     return out;
   }, [proyectos]);
   const [soloDup, setSoloDup] = useState(false);
-  const claveDup = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const claveDup = (p) => claveDupNombreObra(p);
   const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
   // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
   const filasLista = useMemo(() => {
@@ -17703,9 +17721,21 @@ const horasDeTextoManoObra = (texto) => {
   const m = t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/i)
     || t.match(/TOT\.?\s*M\.?\s*O\.?\s*PRES\.?[^0-9]{0,30}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i) // un importe en euros no vale
     || t.match(/TOTAL\s+(?:DE\s+)?HORAS[^0-9]{0,20}(\d{1,4}(?:,\d{1,2})?)(?![\d.,])(?!\s*€)/i);
-  if (!m) return 0;
-  const n = parseFloat(m[1].replace(",", "."));
-  return Number.isFinite(n) && n > 0 && n < 5000 ? n : 0;
+  const num = (x) => { const n = parseFloat(String(x).replace(",", ".")); return Number.isFinite(n) && n > 0 && n < 5000 ? n : 0; };
+  if (m && num(m[1])) return num(m[1]);
+  // «LISTADO MANO DE OBRA GENERAL»: no trae TOT.MO.PRES, trae un subtotal por zona
+  // («MO ACABADOS Y CORRECCIONES: 3,62 Horas», «MO TRONZADORAS: 9,68 Horas»…). Se suman.
+  const zonas = new Map();
+  for (const z of t.matchAll(/\bM\.?\s?O\.?\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .\/-]{1,50}?)\s*:\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*Horas/g)) {
+    const nombre = z[1].trim();
+    if (/TOTAL|PRES/.test(nombre) || zonas.has(nombre)) continue;
+    zonas.set(nombre, num(z[2]));
+  }
+  const suma = Math.round([...zonas.values()].reduce((a, b) => a + b, 0) * 100) / 100;
+  // Si al final trae un total general, vale si es mayor o igual que la suma de zonas.
+  const tg = t.match(/TOTAL\s+(?:GENERAL\s+)?(?:(?:DE\s+)?(?:M\.?\s?O\.?|MANO\s+DE\s+OBRA)\s*)?(?:GENERAL\s*)?:?\s*(\d{1,4}[.,]\d{1,2})\s*Horas/i);
+  const total = tg ? num(tg[1]) : 0;
+  return num(Math.max(suma, total));
 };
 async function textoDePdfBytes(bytes) {
   const lib = await cargarPdfJs();
@@ -17723,7 +17753,7 @@ async function leerListadoMateriales(file) {
     "Primera línea, qué documento es: TIPO|x, donde x es: analisis (ANÁLISIS MATERIALES), cajas (LISTADO CAJAS), mano_obra (LISTADO MANO DE OBRA), dibujos (LISTADO DIBUJOS o tipo plano: dibujos de cada ventana con sus medidas), presupuesto (presupuesto para el cliente con precios de venta), medidas (hoja o foto de medidas de cristales, persianas u otro material para pedir) u otro. Si es dibujos, presupuesto, medidas u otro, responde SOLO la línea TIPO y nada más.",
     "Segunda línea, la cabecera:",
     "CAB|numero|referencia|cliente|fecha|horas|m2_superficies|importe_superficies",
-    '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
+    '- numero: el número del documento (p.ej. 5.088); horas: el TOTAL de horas de fabricación si lo trae (LISTADO MANO DE OBRA: TOT.MO.PRES, p.ej. 31,17 Horas → 31.17; si es un LISTADO MANO DE OBRA GENERAL sin TOT.MO.PRES, la SUMA de todos los subtotales «MO <zona>: X Horas» de todas las páginas), si no 0; m2_superficies e importe_superficies: los totales de la sección SUPERFICIES, si no 0.',
     "Después, UNA línea por cada línea de material:",
     "L|seccion|codigo|descripcion|color|uds|longitud|ancho|alto|precio_ud|total",
     '- seccion: una de perfiles, refuerzo, herraje, accesorios, persianas, cristal.',
@@ -19118,7 +19148,7 @@ const horasFabricacionDeExpediente = (exp, proyectos, uxExpedientes, tiemposPlan
   if (!p) return null;
   // Mismo orden que el planning: horas puestas a mano → horas del «Listado mano de obra» → estimación por las ventanas de la obra
   const v = ventanasDeObra(p, uxExpedientes);
-  const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiemposPlanning, p.listadoMateriales && p.listadoMateriales.horas);
+  const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiemposPlanning, horasListadoDeObra(p, uxExpedientes));
   const cols = coloresPerfilDeObra(p);
   return { obra: `#${p.numero}${p.nombre ? " " + p.nombre : ""}`, horas: r.horas > 0 ? r.horas : null, origenHoras: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas", color: cols[0] || "", otrosColores: cols.slice(1) };
 };
@@ -21733,11 +21763,18 @@ function DiscrepanciasPedidos({ pedidos, proveedores, nombreLinea, onActualizarP
 }
 // ── Listas por color en «Listo para fabricar»: blanco, roble dorado, nogal, 7016 y varios ──
 // Horas de fabricación de una obra: las puestas a mano → las del «Listado mano de obra» → estimación por sus ventanas (mismo criterio que el planning)
+// Horas del listado de mano de obra de una obra: las suyas o, en las de Uxcar, las de su expediente (se leen allí)
+const horasListadoDeObra = (p, uxExpedientes) => {
+  const h = parseFloat(p && p.listadoMateriales && p.listadoMateriales.horas) || 0;
+  if (h > 0 || !p || !p.uxcarExpedienteId) return h;
+  const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId);
+  return parseFloat(e && e.listadoMateriales && e.listadoMateriales.horas) || 0;
+};
 const horasDeObraListo = (p, uxExpedientes, cfgPlanning) => {
   try {
     const tiempos = { ...PLANNING_TIEMPOS_DEF, ...((cfgPlanning && cfgPlanning.tiempos) || {}) };
     const v = ventanasDeObra(p, uxExpedientes);
-    const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas);
+    const r = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes));
     return r.horas > 0 ? { horas: r.horas, origen: r.aMano ? "a mano" : r.deListado ? "listado" : "estimadas" } : { horas: 0, origen: "" };
   } catch (e) { return { horas: 0, origen: "" }; }
 };
@@ -21792,6 +21829,8 @@ const extrasDeTextoPresupuesto = (texto) => {
     return new RegExp(x.re, "i").test(limpio);
   });
 };
+// Clave para ver obras repetidas por el nombre: «Uxcar · 6644-1 · 7 ventanas» y «Uxcar · 6.644-1 · 7 ventanas» son la misma
+const claveDupNombreObra = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/(\d)\.(?=\d{3}(?!\d))/g, "$1").replace(/\s+/g, " ");
 const accesoriosDeObra = (p) => {
   const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
   const out = { hayListado: lineas.length > 0, grupos: [] };
@@ -21807,7 +21846,10 @@ const accesoriosDeObra = (p) => {
     const textoSinNeg = texto.replace(reNeg, " ");
     const deTexto = new RegExp(base, "i").test(textoSinNeg);
     const deChecklist = check.some((c) => new RegExp(base, "i").test(c.nombre || "") && c.estado === "si" && !/gu[ií]a/i.test(c.nombre || ""));
-    out.grupos.push({ ...a, lineas: ls, uds: ls.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0), deTexto, deChecklist, lleva: ls.length > 0 || deTexto || deChecklist });
+    // En persianas se cuentan solo los cajones/compactos (una persiana = un cajón); antes se sumaban también las barras de guía,
+    // lamas, etc. y dos obras iguales salían con 6 y 13 «ud.». Si no hay cajones en el listado, no se da número.
+    const lsUds = a.id === "persiana" ? ls.filter((l) => /caj[oó]n|compacto|CJ_/i.test(txtLinea(l)) && !/gu[ií]a|tapa|testero|eje/i.test(txtLinea(l))) : ls;
+    out.grupos.push({ ...a, lineas: ls, uds: lsUds.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0), deTexto, deChecklist, lleva: ls.length > 0 || deTexto || deChecklist });
   });
   return out;
 };
@@ -21822,7 +21864,7 @@ function AccesoriosDeLaObra({ proyecto }) {
     <div className="mt-1.5">
       <div className="flex flex-wrap gap-1.5">
         {a.grupos.map((g) => g.lleva
-          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()}{g.lineas.length > 0 ? ` · ${g.uds} ud.` : g.deTexto ? " · según el nombre de la obra" : " · según el checklist"}</span>
+          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()}{g.lineas.length > 0 ? (g.uds > 0 ? ` · ${g.uds} ${g.id === "persiana" ? (g.uds === 1 ? "persiana" : "persianas") : "ud."}` : "") : g.deTexto ? " · según el nombre de la obra" : " · según el checklist"}</span>
           : <span key={g.id} className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">sin {g.nombre.toLowerCase()}</span>)}
       </div>
       {con.length > 0 && (
@@ -22038,9 +22080,11 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
     if (["Entregado", "Cancelado", "En proceso", "Albarán de carga firmado", "Listo para reparto/recogida"].includes(p.estadoTrabajo)) return null;
     if (listoParaFabricar.some((x) => x.id === p.id)) return null;
     const misPed = pedidos.filter((pd) => pd.proyectoId === p.id && pd.estado !== "Cancelado");
-    const marcada = p.origen === "portalUxcar" ? misPed.some(esPedidoCristalOCompacto) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
+    // Las obras de Uxcar salen SIEMPRE aquí mientras no estén listas (antes, sin pedidos en el CRM, no salían en ninguna lista)
+    const marcada = p.origen === "portalUxcar" ? (p.estadoPresupuesto === "Presupuesto aceptado" || misPed.some(esPedidoCristalOCompacto)) : normalizarChecklist(p.checklistMateriales).some((c) => c.estado === "si");
     let faltan = !marcada ? [] : p.origen === "portalUxcar"
-      ? [...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
+      ? [...(misPed.some(esPedidoCristalOCompacto) ? [] : ["No tiene pedidos de cristal ni de persianas enganchados en el CRM (los sube Uxcar en su portal)"]),
+          ...misPed.filter(esPedidoCristalOCompacto).flatMap((pd) => { const ls = pd.lineas || []; const sin = ls.filter((l) => !l.confirmadoFabrica).length; return !llegadoParaObra(pd) ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): todavía no ha llegado`] : sin ? [`Pedido #${pd.numero} (${pd.tipoUxcar || "material"}): ${sin} de ${ls.length} línea${ls.length === 1 ? "" : "s"} sin confirmar por fábrica (hazle la entrada en «Entradas Uxcar»)`] : []; }),
           ...(() => { const e = toArray(uxExpedientes).find((x) => x && x.id === p.uxcarExpedienteId); if (!e) return ["El expediente de Uxcar de esta obra ya no existe"]; const tx = { llegado_ux: "Uxcar confirmó su albarán, pero no encuentro el material en los almacenes con sus números", en_fabrica: "hay material suyo en el almacén, pero la cantidad no cuadra con lo pedido (o confírmalo a mano abajo)", pendiente: "sin llegar", pedido: "pedido, sin llegar" }; return [["vidrios", "Cristales"], ["compactos", "Persianas"]].map(([k, n]) => { const st = uxEstadoMat(e, k); return tx[st] ? `Portal · ${n}: ${tx[st]}` : ""; }).filter(Boolean); })()]
       : condicionesPendientesChecklist(p, pedidos);
     // Aunque no tenga nada marcado: si hay material suyo en el almacén y la obra no está lista, que salga aquí con el motivo
@@ -42316,7 +42360,7 @@ const finesPlanningFabrica = ({ pedidos, uxExpedientes, uxPedidos, listoParaFabr
   const horasDia = parseFloat(cfg.horasDia) || 16;
   const d0 = new Date(); d0.setDate(d0.getDate() + ((8 - d0.getDay()) % 7 || 7));
   const desde = d0.toISOString().slice(0, 10);
-  const obraP = (p) => { const v = ventanasDeObra(p, uxExpedientes); const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas); return { id: `p-${p.id}`, nombre: `#${p.numero}`, horas: h.horas, entrega: p.fechaEntregaPrevista || "" }; };
+  const obraP = (p) => { const v = ventanasDeObra(p, uxExpedientes); const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes)); return { id: `p-${p.id}`, nombre: `#${p.numero}`, horas: h.horas, entrega: p.fechaEntregaPrevista || "" }; };
   const obraU = (e) => { const h = horasObra(e.recuento, { ventanas: uxNum(e.ventanas), puertas: uxNum(e.puertas), osciloParalelas: uxNum(e.osciloParalelas) }, e.horasFabricacion, tiempos, e.listadoMateriales && e.listadoMateriales.horas); return { id: `u-${e.id}`, nombre: `Uxcar ${e.numero}`, horas: h.horas, entrega: e.fechaEntrega || "" }; };
   const orden = toArray(cfg.orden);
   const ordenar = (arr) => [...arr].sort((a, b) => { const ia = orden.indexOf(a.id), ib = orden.indexOf(b.id); if (ia === -1 && ib === -1) return 0; if (ia === -1) return 1; if (ib === -1) return -1; return ia - ib; });
@@ -48267,7 +48311,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Obras listas (en verde): vuestras con todo el material y expedientes de Uxcar en verde
   const obraProyecto = (p) => {
     const v = ventanasDeObra(p, uxExpedientes);
-    const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, p.listadoMateriales && p.listadoMateriales.horas);
+    const h = horasObra(v.recuento, v.recuento.length ? null : uxTotalesRecuento(p.recuento), p.horasFabricacion, tiempos, horasListadoDeObra(p, uxExpedientes));
     return { id: `p-${p.id}`, ref: { tipo: "proyecto", id: p.id }, nombre: `#${p.numero} ${p.nombre}`, ventanas: v.total, horas: h.horas, aMano: h.aMano, deListado: h.deListado, entrega: p.fechaEntregaPrevista || "", listado: p.listadoMateriales, de: "Ecowin" };
   };
   const obraUx = (e) => {
