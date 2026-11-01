@@ -5168,6 +5168,16 @@ export default function App() {
     showToast(`#${p.numero}: ${estado}`);
   };
 
+  // Obra planificada (en fabricación) que vuelve al planning virtual: deja de estar «En proceso» y, si es de Uxcar, su expediente
+  // vuelve de producción a virtual. Así sale del planning de Fábrica y de Control del día y vuelve a «Listo para fabricar».
+  const volverAPlanningVirtual = (refO) => {
+    const exp0 = refO.tipo === "uxcar" ? uxExpedientes.find((e) => e.id === refO.id) : null;
+    const p = refO.tipo === "proyecto" ? proyectos.find((x) => x.id === refO.id) : exp0 ? proyectos.find((x) => x.id === exp0.proyectoId || x.uxcarExpedienteId === exp0.id) : null;
+    const exp = exp0 || (p && p.uxcarExpedienteId ? uxExpedientes.find((e) => e.id === p.uxcarExpedienteId) : null);
+    if (p && p.estadoTrabajo === "En proceso") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación", fechaEnProceso: 0 });
+    if (exp && exp.estado === "produccion") uxActualizar(exp, { estado: "virtual" });
+    showToast(`${p ? `#${p.numero}` : exp ? `Uxcar ${exp.numero}` : "Obra"}: vuelve al planning virtual${p && p.stockDescontado ? " (el stock que se descontó al empezar NO se ha devuelto)" : ""}`);
+  };
   // Cuando TODAS las instalaciones de un proyecto están "Finalizada", el proyecto pasa
   // solo a "Entregado" (una sola vez: si luego se cambia a mano, se respeta).
   useEffect(() => {
@@ -6878,6 +6888,7 @@ export default function App() {
             uxPedidos={uxPedidos}
             onGuardarRecepcionUx={uxGuardarRecepcion}
             onMoverEstado={moverEstadoProyecto}
+            onVolverVirtual={volverAPlanningVirtual}
             uxExpedientes={uxExpedientes}
             onCrearPedidosPreparacion={crearPedidosPreparacion}
             configPlanning={configVentanas.planning}
@@ -6925,6 +6936,7 @@ export default function App() {
                 onGuardarCaballete={guardarCaballete} onBorrarCaballete={borrarCaballete}
                 config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
                 onMoverEstado={moverEstadoProyecto}
+            onVolverVirtual={volverAPlanningVirtual}
                 usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
                 renderIncidencias={veFabrica ? () => (
                   <IncidenciasFabricaModulo
@@ -21986,7 +21998,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -22358,7 +22370,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
         <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
           lotesSinObra={etiquetasSinObra} puestos={puestosDe(configVentanasFab)}
-          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} />
+          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} onVolverVirtual={onVolverVirtual} />
       )}
       {tab === "preparar" && subPlan === "pvc" && (
         <div className="mt-6">
@@ -48387,7 +48399,7 @@ const lunesDe = (f) => { const d = new Date(f + "T12:00:00"); const k = (d.getDa
 // Preparar material de la semana: se eligen las obras y expedientes que se van a fabricar,
 // se juntan sus listados de materiales (mismo código y color = una línea), se compara el
 // total con el stock y se saca la hoja de preparación y los pedidos de lo que falta.
-function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [] }) {
+function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null }) {
   const cfg = config || {};
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
@@ -48608,6 +48620,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           {fechasPlan[o.id] && <button onClick={() => ponerDia(o.id, "")} className="text-slate-400 hover:text-rose-500" title="Quitar el día elegido">✕</button>}
         </label>
       )}
+      {o.enCurso && onVolverVirtual && o.ref.tipo !== "rapido" && <button onClick={() => { if (window.confirm(`¿Sacar ${o.nombre} de fabricación y volverla al PLANNING VIRTUAL?\n\nSale de este planning y de Control del día, y vuelve a «Listo para fabricar».`)) { onVolverVirtual(o.ref); if (quitadas.includes(o.id)) setQuitadas(quitadas.filter((x) => x !== o.id)); } }} className="text-xs font-semibold px-2 py-1 rounded-md border border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100" title="No se va a fabricar todavía: vuelve al planning virtual">↩ A planning virtual</button>}
       {o.ref.tipo === "rapido" && <button onClick={() => guardarCfg({ planHechos: [...hechos, o.id] })} className="text-xs font-semibold text-slate-500 hover:text-[#2E8B57]" title="Ya está fabricado: se quita del planning">Hecho</button>}
       {lista && lista.length > 1 && (
         <select value="" onChange={(e) => { if (e.target.value) cambiarPor(lista, o.id, e.target.value); }} className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-600" title="Cambiar el orden: intercambiar con otra obra">
