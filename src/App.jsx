@@ -53712,6 +53712,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const horas = (horasTodas && horasTodas[dia]) || {};
   const asignTodasCD = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
+  const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
@@ -54928,8 +54929,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               return (
                 <div key={g} className="px-2 pb-2 pl-5">
                   <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`px-3 py-1.5 mb-1 rounded-md border-2 text-sm font-semibold ${estilo[gc]}`}>{gc === "verde" ? "✓ " : ""}{g} <span className="font-normal text-xs">· {gv.filter((v) => v === 1).length}/{gv.length}</span></button>
+                  {/* Las ventanas ya fabricadas (en verde) salen de esta lista y pasan a «ya fabricadas», debajo */}
                   <div className="flex flex-wrap gap-1.5">
-                    {vs.map((v) => { const val = valor(o.d.key, v.id); return (
+                    {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id); return (
                       <div key={v.id} className="relative flex flex-col items-stretch">
                       {lapizVentana(o, v, false)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 pr-8 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] text-center ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>
@@ -54942,7 +54944,14 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       {textoNotaVentana(o, v, false)}
                       </div>
                     ); })}
+                    {vs.every((v) => valor(o.d.key, v.id) === 1) && <span className="text-xs font-semibold text-emerald-700 py-2">✓ Todas fabricadas</span>}
                   </div>
+                  {(() => { const hv = vs.filter((v) => valor(o.d.key, v.id) === 1); if (!hv.length) return null; const kh = `${o.d.key}|${g}`; return (
+                    <div className="mt-1.5">
+                      <button type="button" onClick={() => setVerHechas((x) => ({ ...x, [kh]: !x[kh] }))} className="text-xs font-semibold text-emerald-800">{verHechas[kh] ? "▼" : "▶"} ✓ {hv.length} ya fabricada{hv.length === 1 ? "" : "s"}</button>
+                      {verHechas[kh] && <div className="mt-1 flex flex-wrap gap-1">{hv.map((v) => <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} title="Tócala para cambiarla (vuelve a la lista si no está hecha)" className="px-2 py-0.5 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-semibold">✓ {v.pos || "·"}{v.medida ? ` · ${v.medida}` : ""}</button>)}</div>}
+                    </div>
+                  ); })()}
                 </div>
               );
             })}
