@@ -54111,10 +54111,25 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const asignTodas = {};
   Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
-  const asign = asignTodas[dia] || {};
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
-  const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta } }
+  const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta, hechoEn } }
+  // Día en que quedó TERMINADA cada obra (lo apuntado en el registro, o la fecha en que salió de fábrica en el CRM)
+  const terminadaEn = (ko) => {
+    const r = Object.values(registro || {}).find((x) => x && x.obraKey === ko && x.hechoEn); if (r) return r.hechoEn;
+    const o = [...obras.values()].find((x) => limpia(x.d.key) === ko); const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    return pr && ["Listo para reparto/recogida", "Entregado"].includes(pr.estadoTrabajo) ? (pr.fechaTerminadoFabrica || "0000-00-00") : "";
+  };
+  // Una obra que NO se ha terminado sigue saliendo los días siguientes (hasta hoy) hasta que se termine
+  const arrastradas = {}; // { claveObra: día en que estaba }
+  if (dia <= new Date().toISOString().slice(0, 10)) {
+    Object.keys(asignTodas).filter((f) => f < dia).sort().forEach((f) => Object.keys(asignTodas[f]).forEach((ko) => {
+      if ((asignTodas[dia] || {})[ko] || arrastradas[ko]) return;
+      const t = terminadaEn(ko); if (t && t < dia) return; // terminada antes de este día: ya no sale
+      arrastradas[ko] = f;
+    }));
+  }
+  const asign = { ...(asignTodas[dia] || {}), ...Object.fromEntries(Object.keys(arrastradas).map((k) => [k, true])) };
   const firmaReg = Object.keys(planPres || {}).sort().join("|") + "#" + Object.values(asignTodas).map((d) => Object.keys(d).sort().join(",")).join("|") + "#" + Object.keys(ventanasGuardadas || {}).sort().join(",");
   // ¿Este presupuesto ya está FABRICADO en el registro? (para no volver a meterlo). Devuelve la fila del registro o null
   const normPresR = (t) => String(t || "").replace(/\./g, "").replace(/\s+/g, "").toLowerCase();
@@ -54141,6 +54156,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     })();
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
+  const [verTerminado, setVerTerminado] = useState(false);
   const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
   const horasDelDia = Object.keys(asign).reduce((a, k) => a + (presDeObra.get(k) || []).reduce((b, pr) => b + (Number(pr.horas) || 0), 0), 0);
@@ -54218,7 +54234,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     if (window.confirm(`${o.d.nombre}: todas las ventanas hechas.\n\n¿Obra TERMINADA? Pasa a REPARTO («Listo para reparto/recogida»).`)) { onMoverEstado(pid, "Listo para reparto/recogida"); return true; }
     return false;
   };
-  const siTerminada = (o, act) => { if (idsDe(o).every((i) => act[i] === 1)) setTimeout(() => mandarAReparto(o), 60); };
+  const siTerminada = (o, act) => { if (idsDe(o).every((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1)) setTimeout(() => mandarAReparto(o), 60); };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
   const traerCarga = async (o, fichero) => {
     if (fichero) {
@@ -54502,19 +54518,21 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const diasMes = (() => { const [y, m] = mesVer.split("-").map(Number); const primero = new Date(y, m - 1, 1); const n = new Date(y, m, 0).getDate(); const hueco = (primero.getDay() + 6) % 7; const arr = Array(hueco).fill(null); for (let i = 1; i <= n; i++) arr.push(`${mesVer}-${String(i).padStart(2, "0")}`); return arr; })();
   const cambiaMes = (n) => { const [y, m] = mesVer.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); setMesVer(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`); };
   const nombreMes = new Date(mesVer + "-01T12:00:00").toLocaleDateString("es-ES", { month: "long", year: "numeric" });
-  const valor = (dk, id) => (marcas[limpia(dk)] || {})[id] || 0;
+  // Lo marcado vale para los días siguientes: si hoy no se ha tocado esa ventana, vale lo último que se marcó antes (una obra que sigue de un día a otro conserva lo hecho)
+  const diasAntes = Object.keys(marcasTodas || {}).filter((d) => d < dia).sort().reverse();
+  const valor = (dk, id) => { const k = limpia(dk); const m = marcas[k]; if (m && m[id] !== undefined) return m[id] || 0; for (const d of diasAntes) { const x = marcasTodas[d] && marcasTodas[d][k]; if (x && x[id] !== undefined) return x[id] || 0; } return 0; };
   const guardarObra = async (dk, nuevo) => { try { await fbSet(ref(fbDb, `controlDia/${dia}/${limpia(dk)}`), Object.keys(nuevo).length ? nuevo : null); } catch (e) { /* nada */ } };
   const colorDe = (vals) => (vals.length && vals.every((v) => v === 1) ? "verde" : vals.some((v) => v === 2) ? "naranja" : vals.some((v) => v === 1) ? "medio" : "gris");
   const estilo = { verde: "bg-emerald-600 border-emerald-800 text-white", naranja: "bg-orange-500 border-orange-700 text-white", medio: "bg-emerald-100 border-emerald-400 text-emerald-900", gris: "bg-white border-slate-300 text-slate-800" };
   // Apunta el momento en que se marca (o se desmarca) cada ventana, aparte de la marca de color
   const guardarHoras = (dk, h) => { fbSet(ref(fbDb, `controlDiaHoras/${dia}/${limpia(dk)}`), Object.keys(h).length ? h : null).catch(() => {}); };
   const tocaVentana = (o, v) => {
-    const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act);
+    const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = (valor(o.d.key, v.id) + 1) % 3; act[v.id] = n; guardarObra(o.d.key, act); // el 0 se guarda: así se puede desmarcar algo marcado otro día
     if (n === 1) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; if (n) h[v.id] = Date.now(); else delete h[v.id]; guardarHoras(o.d.key, h);
   };
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
-  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
+  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
   // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
   const filasRegistro = () => {
@@ -54522,8 +54540,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         Object.values(registro || {}).forEach((r) => {
           if (!r || !r.obraKey || vistos.has(r.obraKey)) return; vistos.add(r.obraKey);
           const ko = r.obraKey; const o = obraPorClave.get(ko); const ids = o ? idsDe(o) : null;
-          const verdes = new Set(); let ultimo = "";
-          Object.entries(marcasTodas || {}).forEach(([d, m]) => { const mo = m && m[ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { if (v === 1) { verdes.add(id); if (d > ultimo) ultimo = d; } }); });
+          const finalV = {}; const cuando = {};
+          Object.keys(marcasTodas || {}).sort().forEach((d) => { const mo = marcasTodas[d] && marcasTodas[d][ko]; if (!mo) return; Object.entries(mo).forEach(([id, v]) => { finalV[id] = v; if (v === 1) cuando[id] = d; }); });
+          const verdes = new Set(Object.keys(finalV).filter((id) => finalV[id] === 1));
+          const ultimo = [...verdes].map((id) => cuando[id]).sort().pop() || "";
           const total = ids && !(ids.length === 1 && ids[0] === "_obra") ? ids.length : (r.ventanas || (ids ? 1 : 0));
           const hechas = ids ? ids.filter((i) => verdes.has(i)).length : verdes.size;
           const pid = o ? proyectoIdDe(o) : ""; const pr = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -54773,6 +54793,28 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </details>
         )}
       </div>
+      {(() => {
+        // PLANNING TERMINADO: cada obra el día en que quedó terminada (no se borra)
+        const vistosT = new Set(); const porDia = {};
+        Object.values(registro || {}).forEach((r) => { if (!r || !r.hechoEn || !r.obraKey || vistosT.has(r.obraKey)) return; vistosT.add(r.obraKey); (porDia[r.hechoEn] = porDia[r.hechoEn] || []).push(r); });
+        const diasT = Object.keys(porDia).sort().reverse(); const nT = vistosT.size;
+        if (!nT) return null;
+        return (
+          <div className="mb-3 rounded-lg border-2 border-emerald-700 bg-emerald-50 p-2">
+            <button type="button" onClick={() => setVerTerminado(!verTerminado)} className="w-full text-left text-sm font-bold text-emerald-900">{verTerminado ? "▼" : "▶"} ✅ Planning terminado: {nT} obra{nT === 1 ? "" : "s"} terminada{nT === 1 ? "" : "s"}</button>
+            {verTerminado && (
+              <div className="mt-2 max-h-[28rem] overflow-y-auto space-y-2">
+                {diasT.map((d) => (
+                  <div key={d} className="rounded-md bg-white border border-emerald-200 p-2">
+                    <div className="text-sm font-bold text-emerald-800 capitalize">{d === "0000-00-00" ? "Sin fecha" : new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })} · {porDia[d].length} obra{porDia[d].length === 1 ? "" : "s"} · {porDia[d].reduce((a, r) => a + (parseInt(r.ventanas, 10) || 0), 0)} ventanas</div>
+                    {porDia[d].map((r) => <div key={r.obraKey} className="text-sm text-slate-700 flex flex-wrap gap-2"><span className="text-emerald-700 font-bold">✓</span><b className="font-mono-num">{r.pres || "—"}</b><span>{r.nombre}</span>{r.ventanas ? <span className="text-xs text-slate-500">· {r.ventanas} ventanas</span> : null}</div>)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {Object.keys(registro || {}).length > 0 && (() => {
         // Lista fija de todo lo planificado: ventanas hechas (marcas en verde de cualquier día) y ✓ HECHO cuando está acabada
         const lun = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv-SE"); })();
@@ -54927,7 +54969,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
                 ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
                 : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
-              {enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
+              {arrastradas[limpia(o.d.key)] && !(asignTodas[dia] || {})[limpia(o.d.key)] ? <span title="No se terminó: sigue saliendo cada día hasta que esté terminada" className="px-2 py-2 text-[11px] font-bold text-amber-700">⏩ Sin terminar desde el {fmtDate(arrastradas[limpia(o.d.key)])}</span>
+                : enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
                 : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
             </div>
             {(() => {
