@@ -5168,6 +5168,16 @@ export default function App() {
     showToast(`#${p.numero}: ${estado}`);
   };
 
+  // Obra planificada (en fabricación) que vuelve al planning virtual: deja de estar «En proceso» y, si es de Uxcar, su expediente
+  // vuelve de producción a virtual. Así sale del planning de Fábrica y de Control del día y vuelve a «Listo para fabricar».
+  const volverAPlanningVirtual = (refO) => {
+    const exp0 = refO.tipo === "uxcar" ? uxExpedientes.find((e) => e.id === refO.id) : null;
+    const p = refO.tipo === "proyecto" ? proyectos.find((x) => x.id === refO.id) : exp0 ? proyectos.find((x) => x.id === exp0.proyectoId || x.uxcarExpedienteId === exp0.id) : null;
+    const exp = exp0 || (p && p.uxcarExpedienteId ? uxExpedientes.find((e) => e.id === p.uxcarExpedienteId) : null);
+    if (p && p.estadoTrabajo === "En proceso") updateProyectoInline(p.id, { estadoTrabajo: "Pendiente de aceptación", fechaEnProceso: 0 });
+    if (exp && exp.estado === "produccion") uxActualizar(exp, { estado: "virtual" });
+    showToast(`${p ? `#${p.numero}` : exp ? `Uxcar ${exp.numero}` : "Obra"}: vuelve al planning virtual${p && p.stockDescontado ? " (el stock que se descontó al empezar NO se ha devuelto)" : ""}`);
+  };
   // Cuando TODAS las instalaciones de un proyecto están "Finalizada", el proyecto pasa
   // solo a "Entregado" (una sola vez: si luego se cambia a mano, se respeta).
   useEffect(() => {
@@ -6854,7 +6864,7 @@ export default function App() {
                 if (!ok) { showToast("No se ha pasado a fábrica: revisa lo que falta del presupuesto.", "error"); return; }
               }
               const desc = descontarStockObra(proyectos.find((p) => p.id === proyectoId));
-              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
+              updateProyectoInline(proyectoId, { estadoTrabajo: "En proceso", fechaEnProceso: Date.now(), ...(desc ? { stockDescontado: true, stockDescontadoFecha: desc.fecha, stockDescontadoLineas: desc.n } : {}) });
               // Obra de Uxcar: su expediente pasa también a «producción» (si no, no entraba en el planning ni Uxcar veía que se fabrica)
               const expF = obraF && obraF.uxcarExpedienteId ? uxExpedientes.find((e) => e && e.id === obraF.uxcarExpedienteId) : null;
               if (expF && !["produccion", "terminado", "entregado"].includes(expF.estado)) uxActualizar(expF, { estado: "produccion", fechaProduccion: uxHoy() }).catch(() => {});
@@ -6878,6 +6888,7 @@ export default function App() {
             uxPedidos={uxPedidos}
             onGuardarRecepcionUx={uxGuardarRecepcion}
             onMoverEstado={moverEstadoProyecto}
+            onVolverVirtual={volverAPlanningVirtual}
             uxExpedientes={uxExpedientes}
             onCrearPedidosPreparacion={crearPedidosPreparacion}
             configPlanning={configVentanas.planning}
@@ -6925,6 +6936,7 @@ export default function App() {
                 onGuardarCaballete={guardarCaballete} onBorrarCaballete={borrarCaballete}
                 config={configVentanas} onSaveConfig={saveConfigVentanas} configPlanning={configVentanas.planning}
                 onMoverEstado={moverEstadoProyecto}
+            onVolverVirtual={volverAPlanningVirtual}
                 usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
                 renderIncidencias={veFabrica ? () => (
                   <IncidenciasFabricaModulo
@@ -21986,7 +21998,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -22358,7 +22370,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
         <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
           lotesSinObra={etiquetasSinObra} puestos={puestosDe(configVentanasFab)}
-          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} />
+          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} onVolverVirtual={onVolverVirtual} />
       )}
       {tab === "preparar" && subPlan === "pvc" && (
         <div className="mt-6">
@@ -22765,7 +22777,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -48387,15 +48399,17 @@ const lunesDe = (f) => { const d = new Date(f + "T12:00:00"); const k = (d.getDa
 // Preparar material de la semana: se eligen las obras y expedientes que se van a fabricar,
 // se juntan sus listados de materiales (mismo código y color = una línea), se compara el
 // total con el stock y se saca la hoja de preparación y los pedidos de lo que falta.
-function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [] }) {
+function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null }) {
   const cfg = config || {};
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
   const hoy = new Date().toISOString().slice(0, 10);
   const [desde, setDesde] = useState(() => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); });
   const [verTiempos, setVerTiempos] = useState(false);
-  const [quitadas, setQuitadas] = useState([]);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
+  // Las obras que quitas del planning (sin tick) se GUARDAN: antes se volvían a marcar solas al recargar
+  const quitadas = toArray(cfg.quitadasPlan);
+  const setQuitadas = (arr) => guardarCfg({ quitadasPlan: [...new Set(toArray(arr))] });
   // Obras listas (en verde): vuestras con todo el material y expedientes de Uxcar en verde
   const obraProyecto = (p) => {
     const v = ventanasDeObra(p, uxExpedientes);
@@ -48435,7 +48449,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
   const enCurso = [
     // Obras de Uxcar mandadas a fábrica desde «Listo para fabricar» cuyo expediente no está en producción: entran como obra
-    ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
+    ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).sort((a, b) => (a.fechaEnProceso || 0) - (b.fechaEnProceso || 0)).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
     ...toArray(uxExpedientes).filter((e) => e.estado === "produccion").map((e) => ({ ...obraUx(e), nombre: `${obraUx(e).nombre} · en fabricación`, enCurso: true })),
   ];
   const listas = [
@@ -48510,7 +48524,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
     const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
-    const listasPub = {}; listasOrd.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
+    // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
+    const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub });
   })();
   const ultimoPublicadoFb = useRef("");
@@ -48605,6 +48620,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           {fechasPlan[o.id] && <button onClick={() => ponerDia(o.id, "")} className="text-slate-400 hover:text-rose-500" title="Quitar el día elegido">✕</button>}
         </label>
       )}
+      {o.enCurso && onVolverVirtual && o.ref.tipo !== "rapido" && <button onClick={() => { if (window.confirm(`¿Sacar ${o.nombre} de fabricación y volverla al PLANNING VIRTUAL?\n\nSale de este planning y de Control del día, y vuelve a «Listo para fabricar».`)) { onVolverVirtual(o.ref); if (quitadas.includes(o.id)) setQuitadas(quitadas.filter((x) => x !== o.id)); } }} className="text-xs font-semibold px-2 py-1 rounded-md border border-amber-400 text-amber-800 bg-amber-50 hover:bg-amber-100" title="No se va a fabricar todavía: vuelve al planning virtual">↩ A planning virtual</button>}
       {o.ref.tipo === "rapido" && <button onClick={() => guardarCfg({ planHechos: [...hechos, o.id] })} className="text-xs font-semibold text-slate-500 hover:text-[#2E8B57]" title="Ya está fabricado: se quita del planning">Hecho</button>}
       {lista && lista.length > 1 && (
         <select value="" onChange={(e) => { if (e.target.value) cambiarPor(lista, o.id, e.target.value); }} className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-600" title="Cambiar el orden: intercambiar con otra obra">
@@ -53628,7 +53644,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -53668,8 +53684,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
   const horasTodas = useObjetoFb("controlDiaHoras"); // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
-  const asignTodas = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } }
-  const asign = (asignTodas && asignTodas[dia]) || {};
+  const asignTodasCD = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
@@ -53857,11 +53872,21 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica (manda Fábrica): { dias:{fecha:{clave:{nombre,horas}}}, obras:{clave:{nombre,tipo,id,num,inicio,fin}} }
+  // FÁBRICA MANDA: cada obra del planning de Fábrica sale aquí los días que Fábrica le ha puesto (si ocupa 2 días, los 2).
+  // Aquí no se mueve ni se quita: se le pide a Fábrica otra fecha. Lo metido a mano (obras que no están en el planning de Fábrica) se suma.
+  const koDeFab = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, planF && planF.obras); if (k && !koDeFab.has(k)) koDeFab.set(k, limpia(o.d.key)); });
+  const asignFab = {};
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => Object.keys(m || {}).forEach((k) => { const ko = koDeFab.get(k); if (ko) (asignFab[f] = asignFab[f] || {})[ko] = true; }));
+  const enFabrica = new Set(); Object.values(asignFab).forEach((d) => Object.keys(d).forEach((ko) => enFabrica.add(ko)));
+  const asignTodas = {};
+  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  const asign = asignTodas[dia] || {};
   const peticiones = useObjetoFb("controlDiaPeticiones");
   const guardarCopia = async (motivo) => {
     try {
       const en = Date.now();
-      await fbSet(ref(fbDb, `controlDiaObrasCopia/${en}`), { en, motivo, datos: asignTodas || {} });
+      await fbSet(ref(fbDb, `controlDiaObrasCopia/${en}`), { en, motivo, datos: asignTodasCD || {} });
       const ks = Object.keys(copias || {}).sort();
       for (const k of ks.slice(0, Math.max(0, ks.length - 14))) await fbSet(ref(fbDb, `controlDiaObrasCopia/${k}`), null);
     } catch (e) { /* si falla la copia no bloqueamos */ }
@@ -53879,7 +53904,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Obras repetidas: la misma obra metida en más de un día. Se deja en el día donde tiene más marcas de colores (y si empatan, en el primero) y se quita de los demás
   const repetidasPlan = () => {
     const por = {};
-    Object.entries(asignTodas || {}).forEach(([d, o]) => Object.keys(o || {}).forEach((k) => { if (o[k]) (por[k] = por[k] || []).push(d); }));
+    Object.entries(asignTodas || {}).forEach(([d, o]) => Object.keys(o || {}).forEach((k) => { if (o[k] && !enFabrica.has(k)) (por[k] = por[k] || []).push(d); })); // las de Fábrica pueden ocupar varios días a propósito
     const quitar = [];
     Object.entries(por).forEach(([k, dias]) => {
       if (dias.length < 2) return;
@@ -54099,6 +54124,14 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const nSinMaterial = sinAsignarDia.filter((o) => !materialObra(o).ok).length;
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
   const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
+  // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
+  const mandarAReparto = (o) => {
+    const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
+    if (!onMoverEstado || !p || !["En proceso", "Pendiente de aceptación"].includes(p.estadoTrabajo)) return false;
+    if (window.confirm(`${o.d.nombre}: todas las ventanas hechas.\n\n¿Obra TERMINADA? Pasa a REPARTO («Listo para reparto/recogida»).`)) { onMoverEstado(pid, "Listo para reparto/recogida"); return true; }
+    return false;
+  };
+  const siTerminada = (o, act) => { if (idsDe(o).every((i) => act[i] === 1)) setTimeout(() => mandarAReparto(o), 60); };
   // Lee el PDF de «Carga de material» de la obra (el que se subió como tipo plano): saca cada ventana (nombre, medida) y guarda sus dibujos. No toca etiquetas ni nada del CRM.
   const traerCarga = async (o, fichero) => {
     const p = toArray(proyectos).find((x) => x.id === o.d.id);
@@ -54344,6 +54377,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const moverObraDia = async (k, de, a) => {
     setPinSel(null);
     if (!k || !de || !a || de === a) return;
+    if (enFabrica.has(k)) { // la fecha la pone Fábrica: se le pide
+      const o = obraPorClave.get(k); const kf = o && claveFabDe(o); const f = kf && planF && planF.obras && planF.obras[kf];
+      if (!f) { alert("Esta obra la planifica Fábrica y no la encuentro en su planning."); return; }
+      try { await fbSet(ref(fbDb, `controlDiaPeticiones/${kf}`), { nombre: f.nombre, fecha: a, de: f.inicio, en: Date.now() }); alert(`La fecha de ${f.nombre} la pone Fábrica.\n\nLe he pedido pasarla al ${fmtDate(a)}: cuando la acepte en su planning, saldrá aquí ese día.`); } catch (e) { alert("No se pudo pedir: " + e.message); }
+      return;
+    }
     try {
       await fbSet(ref(fbDb, `controlDiaObras/${a}/${k}`), true);
       for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) {
@@ -54365,10 +54404,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const guardarHoras = (dk, h) => { fbSet(ref(fbDb, `controlDiaHoras/${dia}/${limpia(dk)}`), Object.keys(h).length ? h : null).catch(() => {}); };
   const tocaVentana = (o, v) => {
     const act = { ...(marcas[limpia(o.d.key)] || {}) }; const n = ((act[v.id] || 0) + 1) % 3; if (n) act[v.id] = n; else delete act[v.id]; guardarObra(o.d.key, act);
+    if (n === 1) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; if (n) h[v.id] = Date.now(); else delete h[v.id]; guardarHoras(o.d.key, h);
   };
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
-  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act);
+  const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => act[i] === 1); ids.forEach((i) => { if (todasVerdes) delete act[i]; else act[i] = 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
   const nVerdes = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde").length;
   const notasDia = (notasTodas && notasTodas[dia]) || {};
@@ -54713,7 +54753,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {o.tienePins && <button type="button" onClick={() => { if (window.confirm("¿Volver a leer el PDF? Las chinchetas se recolocan solas; las que hayas movido a mano se quedan donde las pusiste.")) traerCarga(o); }} title="Vuelve a leer el PDF de esta obra" className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">↻ Releer el PDF</button>}
               {o.d.tipo === "p" && !o.tienePins && toArray(proyectos).some((x) => x.id === o.d.id && x.documentoEntrega && x.documentoEntrega.url) && <button type="button" onClick={() => traerCarga(o)} title="Usa el PDF que ya está en la obra" className="px-3 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md bg-white">📥 Usar el de la obra</button>}
               <button type="button" onClick={() => setCerradas((c) => ({ ...c, [o.d.key]: abierta }))} className="px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-300 rounded-md bg-white">{abierta ? "Cerrar" : "Abrir"}</button>
-              <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>
+              {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
+                ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
+                : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
+              {enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
+                : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
             </div>
             {(() => {
               const k = claveFabDe(o); const f = k && planF && planF.obras && planF.obras[k];
@@ -54983,7 +55027,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
