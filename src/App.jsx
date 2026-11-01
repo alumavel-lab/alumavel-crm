@@ -1787,6 +1787,18 @@ export default function App() {
     showToast(`#${p.numero} metida en el planning${fecha ? ` (empieza el ${fmtDate(fecha)})` : ""}`);
     return true;
   };
+  // Control del día sube una hoja de corte → se guarda también en los documentos de la obra (propia) o de su expediente (Uxcar). No se vuelve a aplicar a nada.
+  const anadirDocumentoObra = async ({ proyectoId, expId }, doc) => {
+    try {
+      if (expId) {
+        await runTransaction(ref(fbDb, `portalUxcar/expedientes/${expId}/documentos`), (a) => { const arr = toArray(a); if (arr.some((d) => d && d.url === doc.url)) return undefined; return [...arr, JSON.parse(JSON.stringify({ nombre: doc.nombre, url: doc.url, tipo: doc.tipo || "Hoja de corte", fecha: uxHoy() }))]; });
+      } else if (proyectoId) {
+        const lista = proyectosRef.current; const p = toArray(lista).find((x) => x.id === proyectoId);
+        if (p && !toArray(p.documentos).some((d) => d && d.url === doc.url)) saveProyectos(toArray(lista).map((x) => (x.id === proyectoId ? { ...x, documentos: [...toArray(x.documentos), { id: uid(), nombre: `${doc.tipo || "Hoja de corte"} — ${doc.nombre}`, tipo: doc.tipo || "Hoja de corte", url: doc.url, subidoEn: Date.now() }] } : x)));
+      }
+      return true;
+    } catch (e) { showToast("No se ha podido guardar en los documentos de la obra: " + e.message, "error"); return false; }
+  };
   // Control del día mueve una obra de día → cambia el día de inicio en el planning de Fábrica (el mismo dato que «Empezar el»)
   // (sobre el valor más reciente: «Mover todo el día» mueve varias seguidas y no deben pisarse)
   const moverDiaPlanningFab = (oid, fecha) => setConfigVentanas((prev) => { const c = prev || {}; const pl = c.planning || {}; const next = { ...c, planning: { ...pl, fechasPlan: { ...(pl.fechasPlan || {}), [oid]: fecha } } }; persist("configVentanas", next); return next; });
@@ -6912,6 +6924,7 @@ export default function App() {
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
             onMeterEnPlanning={meterObraEnPlanning}
+            onAnadirDocObra={anadirDocumentoObra}
             uxExpedientes={uxExpedientes}
             onCrearPedidosPreparacion={crearPedidosPreparacion}
             configPlanning={configVentanas.planning}
@@ -6962,6 +6975,7 @@ export default function App() {
             onVolverVirtual={volverAPlanningVirtual}
             onMoverDiaFabrica={moverDiaPlanningFab}
             onMeterEnPlanning={meterObraEnPlanning}
+            onAnadirDocObra={anadirDocumentoObra}
                 usuarios={usuarios} onAsignarHoras={asignarHorasLinea}
                 renderIncidencias={veFabrica ? () => (
                   <IncidenciasFabricaModulo
@@ -22068,7 +22082,7 @@ function AlbaranFabrica({ pedidos, materiales, proveedores, nombreLinea, onRecib
     </div>
   );
 }
-function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
+function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiales, clientes, onConfirmarLinea, onConfirmarPedidoEntero, onRecibirConAlbaran, onCrearPedidoFaltante, onActualizarPedido, onIniciarFabricacion, vehiculos = [], onActualizarProyecto, instalaciones = [], cristales, onAddCristal, onAddCristalesLote, onDeleteCristalesLote, onUpdateCristal, onDeleteCristal, onUbicarCristal, onLiberarCristal, enviosProceso, onUpsertEnvioProceso, onMarcarRecogidoEnvio, onDeleteEnvioProceso, usuarios, onVerProyecto, onCambiarFechaReparto, uxPedidos = [], onGuardarRecepcionUx, nombreUsuario, onMoverEstado, onVolverVirtual = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, uxExpedientes = [], onCrearPedidosPreparacion, configPlanning, onSaveConfigPlanning, onGuardarHorasPlanning, configVentanasFab, onSaveConfigVentanasFab, isAdminFab, caballetesVentanas = [], onGuardarCaballete, onBorrarCaballete , onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra}) {
   const [subPlan, setSubPlan] = useState("pvc"); // dentro de «Planning»: PVC, Aluminio, Curvas o Montaje
   const [busca, setBusca] = useState("");
   const [selListo, setSelListo] = useState([]); // obras marcadas con el tick en «Listo para fabricar» (suman horas)
@@ -22847,7 +22861,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
       )}
 
       {tab === "paneles" && <PanelesPendientes cristales={cristales} />}
-      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
+      {tab === "controlDiaFab" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={!!isAdminFab} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
 
       {tab === "persianasAlmacen" && (
         <AlmacenPersianas />
@@ -53790,7 +53804,7 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
     </div>
   );
 }
-function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null }) {
+function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin = false, onMoverEstado = null, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null }) {
   const [obraInfo, setObraInfo] = useState(null); // clave de la obra cuya chincheta se ha tocado en el planning (panel de material)
   const [editNota, setEditNota] = useState(null); // { o, v, texto }: nota de ventana que se está escribiendo
   const hoy = new Date().toISOString().slice(0, 10);
@@ -54341,7 +54355,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
   const [verPlanUp, setVerPlanUp] = useState(false); // el PLANING del programa va plegado (opcional)
-  const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null);
+  const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
   const [verTerminado, setVerTerminado] = useState(false);
@@ -54467,7 +54481,13 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
         if (esTextoHojaCorte(t1)) { // es la HOJA DE CORTE: se lee con su lector (dibujos, medidas, accionamiento…)
           let url = ""; try { url = await subirArchivoAStorage(fichero, `documentos-entrega/controlDia-hoja-${limpia(o.d.key)}`); } catch (e) { /* se lee igual */ }
           const rh = await guardarHojaCD(o, bytesH, { nombre: fichero.name, url }, true);
-          if (!rh.ok) { if (rh.motivo !== "cancelado") alert("No he podido leer la hoja de corte: " + rh.motivo); } else alert(`Hoja de corte leída: ${rh.n} modelos (${rh.dibujos} con dibujo).`);
+          let enDocs = false;
+          if (rh.ok && url && onAnadirDocObra) {
+            const pr = o.d.tipo === "p" ? toArray(proyectos).find((x) => x.id === o.d.id) : null;
+            const expId = o.d.tipo === "u" ? o.d.id : pr && pr.uxcarExpedienteId ? pr.uxcarExpedienteId : "";
+            enDocs = await onAnadirDocObra(expId ? { expId } : { proyectoId: pr ? pr.id : "" }, { nombre: fichero.name, url, tipo: "Hoja de corte" });
+          }
+          if (!rh.ok) { if (rh.motivo !== "cancelado") alert("No he podido leer la hoja de corte: " + rh.motivo); } else alert(`Hoja de corte leída: ${rh.n} modelos (${rh.dibujos} con dibujo).${enDocs ? "\nGuardada también en los documentos de la obra." : ""}`);
           return;
         }
       } catch (e) { /* no se ha podido mirar: sigue como carga de material */ }
@@ -54888,6 +54908,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         if (!hits.length) continue;
         const enPlan = hits.filter((o) => enFabrica.has(limpia(o.d.key)));
         setQMeter(q);
+        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta (para marcar o poner una incidencia)
+        const yaDia = hits.map((o) => { const ko = limpia(o.d.key); const ds = Object.keys(asignTodas).filter((d) => asignTodas[d][ko]).sort(); const hoyF = new Date().toISOString().slice(0, 10); return { o, ko, d: ds.find((d) => d === hoyF) || ds.find((d) => d >= hoyF) || ds[ds.length - 1] }; }).find((x) => x.d);
+        setFotoObra(hits[0] ? { key: hits[0].d.key, nombre: hits[0].d.nombre, posicion: r.posicion || "" } : null);
+        if (yaDia) { setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false })); setTimeout(() => setIrObra(yaDia.ko), 300); }
         setMsgFoto(`✓ Etiqueta: ${[r.posicion, r.presupuesto && `presupuesto ${r.presupuesto}`, r.expediente && `expediente ${r.expediente}`, r.fabricacion && `fabricación ${r.fabricacion}`, r.cliente].filter(Boolean).join(" · ")} → ${hits.slice(0, 3).map((o) => o.d.nombre).join(" / ")}${enPlan.length ? ` — OJO: ${enPlan.map((o) => o.d.nombre).join(", ")} ya está en el planning de Fábrica` : ""}`);
         return;
       }
@@ -55061,7 +55085,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   <button type="button" onClick={() => fotoEtqRef.current && fotoEtqRef.current.click()} title="Haz una foto a la etiqueta del perfil y busco la obra" className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📷 Foto de la etiqueta</button>
                   <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaM} onChange={(e) => setDiaMeter(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm" /></label>
                 </div>
-                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1">{msgFoto}</div>}
+                {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1 flex flex-wrap items-center gap-2"><span className="flex-1">{msgFoto}</span>
+                  {fotoObra && <BotonIncidenciaFabrica prefill={{ obra: fotoObra.nombre, ventana: fotoObra.posicion }} />}</div>}
                 <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
                 <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
                   {cands.map(({ o, p }) => { const m = materialObra(o); return (
@@ -55396,6 +55421,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               {col === "verde" && onMoverEstado && (() => { const pr = toArray(proyectos).find((x) => x.id === proyectoIdDe(o)); if (!pr) return null; return ["En proceso", "Pendiente de aceptación"].includes(pr.estadoTrabajo)
                 ? <button type="button" onClick={() => mandarAReparto(o)} title="Todas las ventanas hechas: la obra pasa a Reparto" className="px-3 py-2 text-xs font-bold text-white bg-sky-700 border border-sky-800 rounded-md">🚚 Mandar a reparto</button>
                 : pr.estadoTrabajo === "Listo para reparto/recogida" ? <span className="px-2 py-2 text-xs font-bold text-sky-800">🚚 En reparto</span> : null; })()}
+              <BotonIncidenciaFabrica prefill={{ obra: o.d.nombre }} />
               {arrastradas[limpia(o.d.key)] && !(asignTodas[dia] || {})[limpia(o.d.key)] ? <span title="No se terminó: sigue saliendo cada día hasta que esté terminada" className="px-2 py-2 text-[11px] font-bold text-amber-700">⏩ Sin terminar desde el {fmtDate(arrastradas[limpia(o.d.key)])}</span>
                 : enFabrica.has(limpia(o.d.key)) ? <span title="Este día lo pone el planning de Fábrica: para cambiarlo, pide otra fecha a Fábrica" className="px-2 py-2 text-[11px] font-semibold text-slate-500">🏭 Lo planifica Fábrica</span>
                 : <button type="button" onClick={() => asignar(o, false)} title="Quitar esta obra de este día" className="px-3 py-2 text-xs font-semibold text-rose-700 border border-rose-300 rounded-md bg-white">Quitar</button>}
@@ -55639,7 +55665,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
 }
 
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
-  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
+  onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
@@ -55681,7 +55707,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "puesto" && (
         <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
-      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} />}
+      {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
       {actual.id === "parte" && renderParte && renderParte()}
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
