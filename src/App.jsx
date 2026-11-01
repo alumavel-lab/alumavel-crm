@@ -22454,7 +22454,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
         <Planning proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar.filter((p) => tallerDe(p) === "PVC")}
           materiales={materiales} proveedores={proveedores} config={configPlanning} onSaveConfig={onSaveConfigPlanning} onGuardarHoras={onGuardarHorasPlanning}
           lotesSinObra={etiquetasSinObra} puestos={puestosDe(configVentanasFab)}
-          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} onVolverVirtual={onVolverVirtual} />
+          onIniciarFabricacion={onIniciarFabricacion} onVerProyecto={onVerProyecto} onCrearPedidos={onCrearPedidosPreparacion} onVolverVirtual={onVolverVirtual} onMeterEnPlanning={onMeterEnPlanning} />
       )}
       {tab === "preparar" && subPlan === "pvc" && (
         <div className="mt-6">
@@ -48491,7 +48491,7 @@ const lunesDe = (f) => { const d = new Date(f + "T12:00:00"); const k = (d.getDa
 // Preparar material de la semana: se eligen las obras y expedientes que se van a fabricar,
 // se juntan sus listados de materiales (mismo código y color = una línea), se compara el
 // total con el stock y se saca la hoja de preparación y los pedidos de lo que falta.
-function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null, soloPublicar = false }) {
+function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null, soloPublicar = false, onMeterEnPlanning = null }) {
   const cfg = config || {};
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
@@ -48500,6 +48500,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const [verTiempos, setVerTiempos] = useState(false);
   const guardarCfg = (patch) => onSaveConfig({ ...cfg, ...patch });
   const [diaGolpe, setDiaGolpe] = useState("");
+  const [qPlan, setQPlan] = useState(""); const [diaPlanQ, setDiaPlanQ] = useState(""); const [anadiendo, setAnadiendo] = useState("");
   // Las obras que quitas del planning (sin tick) se GUARDAN: antes se volvían a marcar solas al recargar
   const quitadas = toArray(cfg.quitadasPlan);
   const setQuitadas = (arr) => guardarCfg({ quitadasPlan: [...new Set(toArray(arr))] });
@@ -48777,6 +48778,48 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
         )}
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <h3 className="font-display font-bold text-slate-800 mr-auto">Planning — listas para fabricar ({firmes.length} de {listasOrd.length} elegidas)</h3>
+        </div>
+        {onMeterEnPlanning && (() => {
+          // BUSCADOR: meter en el planning una obra por nº de presupuesto, nº de obra, nombre o expediente
+          const q = qPlan.trim().toLowerCase(); if (!q) return (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border-2 border-indigo-300 bg-indigo-50 p-2">
+              <span className="text-sm font-bold text-indigo-900">🔍 Añadir una obra al planning:</span>
+              <input value={qPlan} onChange={(e) => setQPlan(e.target.value)} placeholder="Nº de presupuesto, nº de obra, nombre o expediente (6510, 4215, Juan…)" className="flex-1 min-w-[16rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            </div>
+          );
+          const enPlan = new Set(firmes.map((o) => o.id));
+          const toks = q.split(/\s+/).filter(Boolean);
+          const textoDe = (p) => { const e = p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null; const t = [`#${p.numero}`, p.numero, p.nombre, p.presupuestoNumero, presupuestoDeObra(p), p.referencia, p.expediente, e && e.numero, e && e.referencia, e && e.expediente, e && e.presupuesto].filter(Boolean).join(" · ").toLowerCase(); return { t, sp: t.replace(/(\d)\.(?=\d)/g, "$1") }; };
+          const res = toArray(proyectos).filter((p) => p && !["Entregado", "Cancelado", "Listo para reparto/recogida"].includes(p.estadoTrabajo)).filter((p) => { const { t, sp } = textoDe(p); return toks.every((tk) => t.includes(tk) || sp.includes(tk.replace(/(\d)\.(?=\d)/g, "$1"))); }).slice(0, 15);
+          const fechaQ = diaPlanQ || desde;
+          return (
+            <div className="mb-3 rounded-lg border-2 border-indigo-300 bg-indigo-50 p-2 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-bold text-indigo-900">🔍 Añadir una obra al planning:</span>
+                <input value={qPlan} onChange={(e) => setQPlan(e.target.value)} placeholder="Nº de presupuesto, nº de obra, nombre o expediente" className="flex-1 min-w-[16rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+                <label className="text-xs text-slate-700 flex items-center gap-1">empieza el <input type="date" value={fechaQ} onChange={(e) => setDiaPlanQ(e.target.value)} className="border border-slate-300 rounded px-1.5 py-1 text-sm bg-white" /></label>
+                <button type="button" onClick={() => setQPlan("")} className="text-xs px-2 py-1 rounded border border-slate-300 bg-white">✕</button>
+              </div>
+              <div className="bg-white rounded-md border border-indigo-200 divide-y divide-indigo-100">
+                {res.map((p) => {
+                  const e = p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null;
+                  const ids = [`p-${p.id}`, ...(e ? [`u-${e.id}`] : [])];
+                  const ya = ids.some((i) => enPlan.has(i)); const quitada = !ya && ids.some((i) => quitadas.includes(i));
+                  const listo = toArray(listoParaFabricar).some((x) => x.id === p.id);
+                  return (
+                    <div key={p.id} className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-sm">
+                      <span className="flex-1 min-w-[12rem] font-semibold text-slate-800">{presupuestoDeObra(p) ? `${presupuestoDeObra(p)} · ` : ""}#{p.numero} {p.nombre}</span>
+                      <span className={`text-[11px] font-semibold ${ya ? "text-sky-700" : listo || p.estadoTrabajo === "En proceso" ? "text-emerald-700" : "text-amber-700"}`}>{ya ? "ya está en el planning" : quitada ? "quitada del planning" : p.estadoTrabajo === "En proceso" ? "en fabricación, sin planning" : listo ? "✓ material listo" : "⚠ material sin completar"}</span>
+                      {!ya && <button type="button" disabled={!!anadiendo} onClick={async () => { if (!listo && p.estadoTrabajo !== "En proceso" && !window.confirm(`#${p.numero}: el material no está completo según el CRM.\n\n¿Añadirla al planning igualmente?`)) return; setAnadiendo(p.id); try { const ok = await onMeterEnPlanning(p.id, fechaQ); if (ok) setQPlan(""); } finally { setAnadiendo(""); } }} className="px-2.5 py-1 rounded-md bg-indigo-600 text-white text-xs font-bold disabled:opacity-50">{anadiendo === p.id ? "Añadiendo…" : `➕ Añadir el ${fmtDate(fechaQ)}`}</button>}
+                    </div>
+                  );
+                })}
+                {!res.length && <div className="px-2 py-2 text-sm text-slate-500">No encuentro ninguna obra con eso (solo obras sin entregar del taller de PVC).</div>}
+              </div>
+            </div>
+          );
+        })()}
+        <div className="flex flex-wrap items-center justify-end gap-2 mb-2">
           <button onClick={() => setQuitadas(listasOrd.map((o) => o.id))} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">Vaciar planning (elegir yo una a una)</button>
           <button onClick={() => setQuitadas([])} className="text-xs font-semibold px-3 py-1.5 rounded-md border border-slate-300 text-slate-700 bg-white hover:bg-slate-50">Marcar todas</button>
         </div>
@@ -53173,7 +53216,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       if (e.key && e.key.length === 1) b.t += e.key;
     };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    // Como en la soldadora: mientras hay cadena, el cursor vuelve SIEMPRE a la casilla de la pistola (cada 300 ms),
+    // salvo que alguien esté escribiendo en otra casilla. Después de imprimir, la ventana de impresión se quedaba el cursor y la 2.ª lectura se perdía.
+    const iv = setInterval(() => {
+      try {
+        const el = codigoRef.current; if (!el) return;
+        const act = document.activeElement; const tag = (act && act.tagName) || "";
+        if (act === el) return;
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) && act !== document.body) return;
+        el.focus();
+      } catch (e) { /* nada */ }
+    }, 300);
+    return () => { window.removeEventListener("keydown", onKey, true); clearInterval(iv); };
   }, [cadena]);
   const enfocarPistola = () => { [200, 900, 2500, 5000, 8000].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
