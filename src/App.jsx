@@ -54486,6 +54486,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
+  const auxPiezasCD = useObjetoFb("auxiliaresPiezas"); // piezas de auxiliares cortadas (carro y hueco): para la ficha de la ventana de la foto
   const [verTerminado, setVerTerminado] = useState(false);
   const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
@@ -55228,6 +55229,47 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 </div>
                 {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1 flex flex-wrap items-center gap-2"><span className="flex-1">{msgFoto}</span>
                   {fotoObra && <BotonIncidenciaFabrica prefill={{ obra: fotoObra.nombre, ventana: fotoObra.posicion }} />}</div>}
+                {fotoObra && (() => {
+                  // FICHA DE LA VENTANA de la foto: lo que lleva, marcarla, dónde está su material y sus auxiliares
+                  const o = (resVent && obraPorClave.get(resVent.ko)) || [...obras.values()].find((x) => x.d.key === fotoObra.key); if (!o) return null;
+                  const pos = (resVent && resVent.pos) || fotoObra.posicion || "";
+                  const v = pos ? [...o.viv.values()].flat().find((w) => [w.pos, w.tip].some((x) => normPosR(x).startsWith(normPosR(pos)))) : null;
+                  const enDia = !!asign[limpia(o.d.key)];
+                  const val = v ? valor(o.d.key, v.id) : 0;
+                  const ex = v ? extrasVentana(o, v) : [];
+                  const inf = v ? infoVent(o, v) : null; const ih = v ? infoHoja(o, v) : null; const dib = (inf && inf.dib) || (ih && ih.dib) || "";
+                  const dm = dondeMaterial(o);
+                  const pp = pptosPresupuesto(o);
+                  const aux = Object.values(auxPiezasCD || {}).filter((e) => e && e.cortada && pp.has(digitosPresu(String(e.ppto || "").split("-")[0])) && (!pos || normPosR(e.ventanaPos).startsWith(normPosR(pos))));
+                  return (
+                    <div className="rounded-xl border-2 border-red-400 bg-white p-3 space-y-2">
+                      <div className="flex flex-wrap items-start gap-3">
+                        {dib ? <DibujoPlan hash={dib} alto={110} /> : null}
+                        <div className="flex-1 min-w-[12rem]">
+                          <div className="text-lg font-extrabold text-slate-900">{v ? v.pos : pos || "Ventana"} <span className="text-sm font-semibold text-slate-500">· {o.d.nombre}</span></div>
+                          {v && v.medida ? <div className="text-sm text-slate-700">{v.medida}{ih && ih.desc ? ` · ${ih.desc}` : inf && inf.desc ? ` · ${inf.desc}` : ""}</div> : null}
+                          {ex.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{ex.map((x) => <span key={x} className="text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div>}
+                          {!v && <div className="text-xs text-amber-700 mt-1">No encuentro esa ventana entre las de la obra (¿falta la hoja de corte?).</div>}
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {v && enDia && <button type="button" onClick={() => { if (val !== 1) { const act = { ...(marcas[limpia(o.d.key)] || {}) }; act[v.id] = 1; guardarObra(o.d.key, act); const h = { ...(horas[limpia(o.d.key)] || {}) }; h[v.id] = Date.now(); guardarHoras(o.d.key, h); siTerminada(o, act); } }} className={`text-sm font-bold px-3 py-2 rounded-lg ${val === 1 ? "bg-emerald-100 text-emerald-800 border border-emerald-400" : "bg-emerald-600 text-white"}`}>{val === 1 ? "✓ Ya está hecha" : "✓ Marcar hecha"}</button>}
+                          {v && !enDia && <span className="text-xs text-slate-500">La obra no está en el día que miras</span>}
+                          <BotonIncidenciaFabrica prefill={{ obra: o.d.nombre, ventana: `${v ? v.pos : pos}${v && v.medida ? " · " + v.medida : ""}`, ventanaId: v ? v.id : "" }} />
+                        </div>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2 text-xs">
+                        <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                          <div className="font-bold text-slate-800 mb-1">📍 Material de la obra</div>
+                          {dm.sinClaves ? <div className="text-slate-500">Sin nº de presupuesto: no puedo buscarlo.</div> : dm.filas.length ? dm.filas.slice(0, 8).map((f, i) => <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>) : <div className="text-slate-500">No encuentro cristales ni persianas de esta obra en los almacenes.</div>}
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                          <div className="font-bold text-slate-800 mb-1">✂ Auxiliares de {pos || "la obra"}</div>
+                          {aux.length ? aux.slice(0, 10).map((e, i) => <div key={i} className="text-slate-700">✓ {e.nombre} {auxMed(e.lCorte)} mm → <b>{e.carroNombre} · hueco {e.hueco}</b></div>) : <div className="text-slate-500">No hay auxiliares cortados de esta ventana (o no lleva).</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
                 <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
                   {cands.map(({ o, p }) => { const m = materialObra(o); return (
