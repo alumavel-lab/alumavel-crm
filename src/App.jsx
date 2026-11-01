@@ -48443,7 +48443,10 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const ponerDia = (id, v) => { const n = { ...fechasPlan }; if (v) n[id] = v; else delete n[id]; guardarCfg({ fechasPlan: n }); };
   // Horas del taller por día: lo normal y, si algún día hay menos gente, ese día concreto (se guarda como "horas ya ocupadas")
   const horasEsp = cfg.horasDiaEsp || {};
-  const ocupadoBase = {}; Object.entries(horasEsp).forEach(([f, h]) => { const lib = Math.max(0, parseFloat(h) || 0); ocupadoBase[f] = Math.max(0, horasDia - lib); });
+  // Un día puede tener MENOS horas (menos gente) o MÁS (p. ej. 157 h para meter 2 h más ese día): se guarda como «ya ocupado», negativo si son más
+  const ocupadoBase = {}; Object.entries(horasEsp).forEach(([f, h]) => { const lib = Math.max(0, parseFloat(h) || 0); ocupadoBase[f] = horasDia - lib; });
+  const ponerHorasDia = (f, v) => { const n = { ...horasEsp }; if (!(v >= 0) || Math.abs(v - horasDia) < 0.01) delete n[f]; else n[f] = v; guardarCfg({ horasDiaEsp: n }); };
+  const [moviendo, setMoviendo] = useState(null); // obra elegida (tocándola) para llevarla a otro día: { id, nombre }
   const sumaPuestos = toArray(puestos).reduce((a, p) => a + (parseFloat(p.horasDia) || 0), 0);
   const uxProduccionDe = (p) => toArray(uxExpedientes).some((e) => e && e.estado === "produccion" && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
   // Las obras que ya se han empezado a fabricar (En proceso) siguen en el planning, delante de las demás:
@@ -48707,11 +48710,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
         {diasFirmes.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {diasFirmes.map((f) => { const d = plan1.dias[f]; const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const pct = Math.min(100, ((d.usadas - bloq) / capF) * 100); return (
-              <div key={f} className="bg-white border border-slate-200 rounded-lg p-3">
-                <div className="text-sm font-bold text-slate-800 capitalize">{fmtDia(f)}</div>
+              <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) { ponerDia(id, f); setMoviendo(null); } }}
+                className={`bg-white border rounded-lg p-3 ${moviendo ? "border-sky-400 ring-1 ring-sky-200" : "border-slate-200"}`}>
+                <div className="flex items-center gap-1">
+                  <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}</div>
+                  {moviendo && <button type="button" onClick={() => { ponerDia(moviendo.id, f); setMoviendo(null); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white">Mover aquí</button>}
+                </div>
                 <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: "#2E8B57" }} /></div>
-                <div className="text-[11px] text-slate-500 mb-1">{Math.round((d.usadas - bloq) * 10) / 10} de {Math.round(capF * 10) / 10} h{bloq > 0 ? " (día con menos gente)" : ""}</div>
-                {d.trozos.map((t, i) => <div key={i} className="text-xs text-slate-700">{t.nombre} <span className="text-slate-400">· {t.horas} h</span></div>)}
+                <div className="text-[11px] text-slate-500 mb-1 flex flex-wrap items-center gap-1">{Math.round((d.usadas - bloq) * 10) / 10} de
+                  <input key={`hd_${f}_${capF}`} type="number" min="0" step="0.5" defaultValue={Math.round(capF * 10) / 10} title="Horas de este día: pon más (p. ej. 157) para meter más ese día, o menos si hay menos gente" onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && Math.abs(v - capF) > 0.01) ponerHorasDia(f, v); }} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-right" /> h
+                  {bloq > 0.01 ? " (menos gente)" : bloq < -0.01 ? <span className="text-sky-700 font-semibold"> (+{Math.round(-bloq * 10) / 10} h)</span> : ""}
+                </div>
+                {d.trozos.map((t, i) => <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)} onClick={() => setMoviendo(moviendo && moviendo.id === t.id ? null : { id: t.id, nombre: t.nombre })}
+                  title="Arrástrala a otro día, o tócala y pulsa «Mover aquí» en el día que quieras" className={`text-xs text-slate-700 cursor-grab rounded px-1 ${moviendo && moviendo.id === t.id ? "bg-sky-100 ring-1 ring-sky-400" : "hover:bg-slate-50"}`}>{t.nombre} <span className="text-slate-400">· {t.horas} h</span></div>)}
               </div>
             ); })}
           </div>
