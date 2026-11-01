@@ -53123,7 +53123,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [orden, setOrden] = useState("ventana");
   const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
   const [verSinDia, setVerSinDia] = useState(false);
-  const [perfilDia, setPerfilDia] = useState(""); // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
+  const [perfilDia, setPerfilDia] = useState("");
+  const [diasSel, setDiasSel] = useState([]); // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
@@ -53186,7 +53187,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p) => {
     const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
-    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto), pendPorPpto);
+    // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
+    const grupoCarro = perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
+    const sitio = auxSitioLibre(cfg, est, p.ppto, grupoCarro, pendPorPpto);
     if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
@@ -53377,14 +53380,43 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             );
           };
           const botonPerfil = (k) => <button type="button" onClick={() => setPerfilDia(perfilDia === k ? "" : k)} className={`ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 ${perfilDia === k ? "bg-indigo-600 border-indigo-700 text-white" : "bg-white border-indigo-400 text-indigo-800"}`}>{perfilDia === k ? "✕ Volver a ver por obra" : "✂ Cortar por perfil (todas las obras del día)"}</button>;
+          // TODA LA SEMANA: de lunes a viernes de cada semana del planning (también los días sin obras)
+          const sumaD = (f, n) => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + n); return x.toLocaleDateString("sv-SE"); };
+          const lunesDe = (f) => sumaD(f, -((new Date(f + "T12:00:00").getDay() + 6) % 7));
+          const semanas = [...new Set(diasAux.map(lunesDe))].sort().map((l) => ({ lunes: l, dias: [0, 1, 2, 3, 4].map((i) => sumaD(l, i)) }));
+          const obrasSel = obrasAux.filter((g) => g.dia && diasSel.includes(g.dia));
+          const togDia = (d) => { setDiasSel((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d].sort())); if (perfilDia === "multi") setPerfilDia(""); };
           return (
             <div className="space-y-4">
-              {diasAux.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); return (
-                <div key={d}>
-                  <div className="flex flex-wrap items-center gap-1 mb-2"><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500 normal-case">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></span>{botonPerfil(d)}</div>
-                  {perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>}
+              {diasSel.length > 0 && (
+                <div className="sticky top-0 z-10 rounded-xl border-2 border-indigo-500 bg-indigo-50 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <b className="text-indigo-900">Elegidos: {diasSel.map((d) => new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric" })).join(", ")} · {obrasSel.length} obras · {obrasSel.reduce((a, g) => a + g.piezas.length, 0)} piezas</b>
+                    <button type="button" onClick={() => setPerfilDia(perfilDia === "multi" ? "" : "multi")} className={`text-sm font-bold px-3 py-1.5 rounded-lg ${perfilDia === "multi" ? "bg-white border-2 border-indigo-600 text-indigo-800" : "bg-indigo-600 text-white"}`}>{perfilDia === "multi" ? "✕ Cerrar" : "✂ Cortar por perfil los días elegidos"}</button>
+                    <button type="button" onClick={() => { setDiasSel([]); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-semibold px-2 py-1 rounded border border-slate-300 bg-white">Quitar selección</button>
+                  </div>
+                  {perfilDia === "multi" && <div className="mt-3">{obrasSel.length ? vistaPerfil(obrasSel) : <div className="text-sm text-slate-500">Esos días no tienen nada por cortar.</div>}</div>}
                 </div>
-              ); })}
+              )}
+              {semanas.map((sem) => (
+                <div key={sem.lunes} className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-1">
+                    <span className="text-sm font-extrabold text-slate-500 uppercase tracking-wide">Semana del {fmtDate(sem.lunes)}</span>
+                    <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
+                  </div>
+                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); return (
+                    <div key={d} className={sel ? "rounded-lg ring-2 ring-indigo-300 p-1" : ""}>
+                      <div className="flex flex-wrap items-center gap-1 mb-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
+                          <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
+                        <span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>
+                        {gs.length > 0 && botonPerfil(d)}
+                      </div>
+                      {gs.length > 0 && (perfilDia === d ? vistaPerfil(gs) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
+                    </div>
+                  ); })}
+                </div>
+              ))}
               {sinDia.length > 0 && (
                 <div>
                   <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
@@ -53917,6 +53949,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const lote = useObjetoFb("controlDiaLote"); // última planificación de golpe: { dia, claves:[...], en }
   const [selLimp, setSelLimp] = useState({}); // obras marcadas para dar de baja (si no se toca, se marcan solas las que están en verde)
   const [irObra, setIrObra] = useState(null); // clave de la obra a la que saltar (desde el buscador de Limpiar)
+  const [resVent, setResVent] = useState(null); // ventana encontrada con la foto/búsqueda: se pinta en ROJO { ko, pos }
+  const normPosR = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+  const esResaltada = (o, v) => !!resVent && limpia(o.d.key) === resVent.ko && !!resVent.pos && [v.pos, v.tip].some((x) => normPosR(x).startsWith(normPosR(resVent.pos)));
   const [resalt, setResalt] = useState(null);
   useEffect(() => {
     if (!irObra) return undefined;
@@ -54451,6 +54486,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
+  const auxPiezasCD = useObjetoFb("auxiliaresPiezas"); // piezas de auxiliares cortadas (carro y hueco): para la ficha de la ventana de la foto
   const [verTerminado, setVerTerminado] = useState(false);
   const [qReg, setQReg] = useState("");
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
@@ -54993,18 +55029,28 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       if (hCod) { setQMeter(String(hCod.dueno.nombre || "").replace(/^#\d+\s*/, "")); setMsgFoto(`✓ ${hCod.dueno.nombre} (por el código ${r.codigo})`); return; }
       // Se prueba con cada dato leído (posición+lote, presupuesto, expediente, lote, posición) y se queda el que encuentre obra
       const lotesM = lotesPorObra();
-      const presNum = ((r.presupuesto.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
-      const intentos = [r.posicion && r.fabricacion ? `${r.posicion} fab ${r.fabricacion}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", r.posicion].filter(Boolean);
+      // La posición se reconoce por su forma (V01.403, P01.002…) esté en el campo que esté (la IA a veces la mezcla con el presupuesto)
+      const reP = /\b[A-Z]{1,2}\d{2}\.\d{3}\b/;
+      const posL = ((`${r.posicion} ${r.presupuesto} ${r.texto || ""}`.toUpperCase().match(reP)) || [])[0] || (reP.test(String(r.posicion).toUpperCase()) ? r.posicion : "");
+      const presTxt = String(r.presupuesto || "").toUpperCase().replace(reP, " ");
+      const presNum = ((presTxt.match(/\d\.?\d{3}(?:\s*-\s*\d+)?/) || [])[0] || "").replace(/\./g, "").split("-")[0];
+      r.posicion = posL || r.posicion;
+      const intentos = [posL && r.fabricacion ? `${posL} fab ${r.fabricacion}` : "", posL && presNum ? `${posL} ${presNum}` : "", presNum, r.expediente, r.fabricacion ? `fab ${r.fabricacion}` : "", posL].filter(Boolean);
       const todas = [...obras.values()].filter((o) => o.d.tipo !== "pl");
       for (const q of intentos) {
         const hits = todas.filter((o) => coincideBusqueda(o, q, lotesM));
         if (!hits.length) continue;
         const enPlan = hits.filter((o) => enFabrica.has(limpia(o.d.key)));
         setQMeter(q);
-        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta (para marcar o poner una incidencia)
+        // Si ya está empezada y en el calendario: se salta a su día y a su tarjeta, y la VENTANA queda en ROJO
+        if (posL) hits.sort((a, b) => ([...b.viv.values()].flat().some((v) => normPosR(v.pos).startsWith(normPosR(posL))) ? 1 : 0) - ([...a.viv.values()].flat().some((v) => normPosR(v.pos).startsWith(normPosR(posL))) ? 1 : 0));
         const yaDia = hits.map((o) => { const ko = limpia(o.d.key); const ds = Object.keys(asignTodas).filter((d) => asignTodas[d][ko]).sort(); const hoyF = new Date().toISOString().slice(0, 10); return { o, ko, d: ds.find((d) => d === hoyF) || ds.find((d) => d >= hoyF) || ds[ds.length - 1] }; }).find((x) => x.d);
         setFotoObra(hits[0] ? { key: hits[0].d.key, nombre: hits[0].d.nombre, posicion: r.posicion || "" } : null);
-        if (yaDia) { setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false })); setTimeout(() => setIrObra(yaDia.ko), 300); }
+        if (yaDia) {
+          setResVent({ ko: yaDia.ko, pos: posL || "" }); setVerFolio(false);
+          setDia(yaDia.d); setMesVer(yaDia.d.slice(0, 7)); setCerradas((c) => ({ ...c, [yaDia.o.d.key]: false }));
+          setTimeout(() => { const el = document.querySelector('[data-resaltada="1"]'); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); else setIrObra(yaDia.ko); }, 700);
+        } else setResVent(null);
         setMsgFoto(`✓ Etiqueta: ${[r.posicion, r.presupuesto && `presupuesto ${r.presupuesto}`, r.expediente && `expediente ${r.expediente}`, r.fabricacion && `fabricación ${r.fabricacion}`, r.cliente].filter(Boolean).join(" · ")} → ${hits.slice(0, 3).map((o) => o.d.nombre).join(" / ")}${enPlan.length ? ` — OJO: ${enPlan.map((o) => o.d.nombre).join(", ")} ya está en el planning de Fábrica` : ""}`);
         return;
       }
@@ -55114,7 +55160,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       {vs.map((v) => { const val = valor(o.d.key, v.id); const inf = infoVent(o, v); const ih = infoHoja(o, v); const dib = (inf && inf.dib) || (ih && ih.dib) || ""; const ex = extrasVentana(o, v);
                         const fondo = val === 1 ? "bg-emerald-600 border-emerald-300 text-white" : val === 2 ? "bg-orange-500 border-orange-200 text-white" : "bg-white text-slate-900 border-slate-300";
                         if (!grande) return (
-                          <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} className={`w-full rounded-md border-2 px-1 py-1 text-center ${fondo}`}>
+                          <button key={v.id} type="button" data-resaltada={esResaltada(o, v) ? "1" : undefined} onClick={() => tocaVentana(o, v)} className={`w-full rounded-md border-2 px-1 py-1 text-center ${fondo} ${esResaltada(o, v) ? "ring-4 ring-red-600 outline outline-2 outline-red-300" : ""}`}>
                             {dib ? <div className="flex justify-center"><DibujoPlan hash={dib} alto={48} sinZoomAlTocar /></div> : null}
                             <div className="text-sm font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
                             {v.medida ? <div className="text-[10px] font-semibold opacity-80">{v.medida}</div> : null}
@@ -55122,7 +55168,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                           </button>
                         );
                         return (
-                          <div key={v.id} className="relative flex flex-col items-stretch">
+                          <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg p-1 bg-red-900/40" : ""}`}>
+                            {esResaltada(o, v) && <div className="text-sm font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                             {lapizVentana(o, v, true)}
                             <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${fondo}`}>
                               <div className="flex justify-center">{dib ? <DibujoPlan hash={dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />}</div>
@@ -55182,6 +55229,47 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 </div>
                 {msgFoto && <div className="text-sm font-semibold text-indigo-900 bg-white border border-indigo-200 rounded px-2 py-1 flex flex-wrap items-center gap-2"><span className="flex-1">{msgFoto}</span>
                   {fotoObra && <BotonIncidenciaFabrica prefill={{ obra: fotoObra.nombre, ventana: fotoObra.posicion }} />}</div>}
+                {fotoObra && (() => {
+                  // FICHA DE LA VENTANA de la foto: lo que lleva, marcarla, dónde está su material y sus auxiliares
+                  const o = (resVent && obraPorClave.get(resVent.ko)) || [...obras.values()].find((x) => x.d.key === fotoObra.key); if (!o) return null;
+                  const pos = (resVent && resVent.pos) || fotoObra.posicion || "";
+                  const v = pos ? [...o.viv.values()].flat().find((w) => [w.pos, w.tip].some((x) => normPosR(x).startsWith(normPosR(pos)))) : null;
+                  const enDia = !!asign[limpia(o.d.key)];
+                  const val = v ? valor(o.d.key, v.id) : 0;
+                  const ex = v ? extrasVentana(o, v) : [];
+                  const inf = v ? infoVent(o, v) : null; const ih = v ? infoHoja(o, v) : null; const dib = (inf && inf.dib) || (ih && ih.dib) || "";
+                  const dm = dondeMaterial(o);
+                  const pp = pptosPresupuesto(o);
+                  const aux = Object.values(auxPiezasCD || {}).filter((e) => e && e.cortada && pp.has(digitosPresu(String(e.ppto || "").split("-")[0])) && (!pos || normPosR(e.ventanaPos).startsWith(normPosR(pos))));
+                  return (
+                    <div className="rounded-xl border-2 border-red-400 bg-white p-3 space-y-2">
+                      <div className="flex flex-wrap items-start gap-3">
+                        {dib ? <DibujoPlan hash={dib} alto={110} /> : null}
+                        <div className="flex-1 min-w-[12rem]">
+                          <div className="text-lg font-extrabold text-slate-900">{v ? v.pos : pos || "Ventana"} <span className="text-sm font-semibold text-slate-500">· {o.d.nombre}</span></div>
+                          {v && v.medida ? <div className="text-sm text-slate-700">{v.medida}{ih && ih.desc ? ` · ${ih.desc}` : inf && inf.desc ? ` · ${inf.desc}` : ""}</div> : null}
+                          {ex.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{ex.map((x) => <span key={x} className="text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div>}
+                          {!v && <div className="text-xs text-amber-700 mt-1">No encuentro esa ventana entre las de la obra (¿falta la hoja de corte?).</div>}
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {v && enDia && <button type="button" onClick={() => { if (val !== 1) { const act = { ...(marcas[limpia(o.d.key)] || {}) }; act[v.id] = 1; guardarObra(o.d.key, act); const h = { ...(horas[limpia(o.d.key)] || {}) }; h[v.id] = Date.now(); guardarHoras(o.d.key, h); siTerminada(o, act); } }} className={`text-sm font-bold px-3 py-2 rounded-lg ${val === 1 ? "bg-emerald-100 text-emerald-800 border border-emerald-400" : "bg-emerald-600 text-white"}`}>{val === 1 ? "✓ Ya está hecha" : "✓ Marcar hecha"}</button>}
+                          {v && !enDia && <span className="text-xs text-slate-500">La obra no está en el día que miras</span>}
+                          <BotonIncidenciaFabrica prefill={{ obra: o.d.nombre, ventana: `${v ? v.pos : pos}${v && v.medida ? " · " + v.medida : ""}`, ventanaId: v ? v.id : "" }} />
+                        </div>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2 text-xs">
+                        <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                          <div className="font-bold text-slate-800 mb-1">📍 Material de la obra</div>
+                          {dm.sinClaves ? <div className="text-slate-500">Sin nº de presupuesto: no puedo buscarlo.</div> : dm.filas.length ? dm.filas.slice(0, 8).map((f, i) => <div key={i} className="text-slate-700"><b>{f.t}:</b> {f.txt}</div>) : <div className="text-slate-500">No encuentro cristales ni persianas de esta obra en los almacenes.</div>}
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-200 p-2">
+                          <div className="font-bold text-slate-800 mb-1">✂ Auxiliares de {pos || "la obra"}</div>
+                          {aux.length ? aux.slice(0, 10).map((e, i) => <div key={i} className="text-slate-700">✓ {e.nombre} {auxMed(e.lCorte)} mm → <b>{e.carroNombre} · hueco {e.hueco}</b></div>) : <div className="text-slate-500">No hay auxiliares cortados de esta ventana (o no lleva).</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <p className="text-[11px] text-slate-500">{q ? "Resultados de la búsqueda" : "Sin buscar salen las obras con el material listo o en fabricación que no están en el planning"}. Al meterla se hacen las comprobaciones de siempre (salida, presupuesto firmado, auxiliares) y entra en el planning de Fábrica ese día.</p>
                 <div className="max-h-72 overflow-y-auto divide-y divide-indigo-100 bg-white rounded-md border border-indigo-200">
                   {cands.map(({ o, p }) => { const m = materialObra(o); return (
@@ -55577,7 +55665,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                   {/* Las ventanas ya fabricadas (en verde) salen de esta lista y pasan a «ya fabricadas», debajo */}
                   <div className="flex flex-wrap gap-1.5">
                     {vs.filter((v) => valor(o.d.key, v.id) !== 1).map((v) => { const val = valor(o.d.key, v.id); return (
-                      <div key={v.id} className="relative flex flex-col items-stretch">
+                      <div key={v.id} data-resaltada={esResaltada(o, v) ? "1" : undefined} className={`relative flex flex-col items-stretch ${esResaltada(o, v) ? "ring-4 ring-red-600 rounded-lg bg-red-100 p-1" : ""}`}>
+                      {esResaltada(o, v) && <div className="text-xs font-extrabold text-white bg-red-600 rounded px-1 mb-1 text-center">👉 ESTA VENTANA</div>}
                       {lapizVentana(o, v, false)}
                       <button type="button" onClick={() => tocaVentana(o, v)} className={`px-3 py-2 pr-8 rounded-md border-2 text-sm font-semibold min-w-[3.5rem] text-center ${val === 1 ? estilo.verde : val === 2 ? estilo.naranja : estilo.gris}`}>
                         {(() => { const inf = infoVent(o, v); const ih = infoHoja(o, v); return inf && inf.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={inf.dib} alto={90} sinZoomAlTocar /></div> : ih && ih.dib ? <div className="flex justify-center mb-1"><DibujoPlan hash={ih.dib} alto={90} sinZoomAlTocar /></div> : (v.fab && v.tip ? <div className="flex justify-center mb-1" onClick={(ev) => ev.stopPropagation()}><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={64} /></div> : null); })()}
