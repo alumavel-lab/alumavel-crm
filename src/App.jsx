@@ -42907,7 +42907,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
   );
 }
 
-function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "" }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false }) {
   const [verTodo, setVerTodo] = useState(false);
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
@@ -42972,7 +42972,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const planFabAD = useObjetoFb("planFabrica");
   const asignManualAD = useObjetoFb("controlDiaObras");
   const marcasCDAD = useObjetoFb("controlDia"); // lo que se tica en Control del día: 1 = verde (hecha en fábrica), 2 = naranja (problema)
-  const [vistaDia, setVistaDia] = useState(false);
+  const [vistaDia, setVistaDia] = useState(soloDia);
   const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
   const [tvAD, setTvAD] = useState(false);
@@ -43906,7 +43906,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className="space-y-4">
         {toastAD}
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>
+          {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
           <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         </div>
@@ -43948,7 +43948,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       </div>
     );
   };
-  if (vistaDia && !editando) return panelDia();
+  if ((vistaDia || soloDia) && !editando) return panelDia();
   if (editando) {
     const c = editando;
     const setC = (patch) => setEditando({ ...c, ...patch });
@@ -44118,7 +44118,6 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         })()}
         <PanelVienenPorLinea indice={indicePiezas} siempre />
         <MapaZonasLinea ids={["espera", "solape"]} indice={indicePiezas} admin={false} />
-        <button onClick={() => setVistaDia(true)} className="text-sm font-semibold underline text-emerald-700">📅 Almacén del día (calendario y tele)</button>
         <button onClick={() => setVerTodo(true)} className="text-xs underline text-slate-500">Ver todo el almacén (caballetes, planning, buscador…)</button>
         <div className="text-[10px] text-slate-400">Versión de la pantalla de carga: 4 oct · 22:35</div>
       </div>
@@ -56404,6 +56403,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
   const tabs = soloAlmacen ? [
     { id: "cargas", t: "Cargas de hoy", aviso: "" },
     { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "" },
+    { id: "almacenDia", t: "📅 Almacén del día", aviso: "" },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
   ] : [
@@ -56415,6 +56415,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     { id: "cargas", t: "Cargas de hoy", aviso: "" },
     ...(verMas ? [
       { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
+      { id: "almacenDia", t: "📅 Almacén del día", aviso: "" },
       { id: "estanterias", t: "Estanterías e informes", aviso: "" },
     ] : []),
   ];
@@ -56445,6 +56446,11 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "almacen" && (
         <AlmacenVentanas simple={soloAlmacen} quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+          proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
+          pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
+      )}
+      {actual.id === "almacenDia" && (
+        <AlmacenVentanas soloDia quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
