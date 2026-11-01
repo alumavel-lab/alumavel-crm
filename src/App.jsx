@@ -53759,6 +53759,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const asignTodasCD = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
   const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
+  const [tvGrande, setTvGrande] = useState(null); // tele: obra agrandada (las demás en pequeño, en columnas)
   const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const hojasCD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
@@ -54821,44 +54822,63 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       {modalNota}
       <div className="flex items-center gap-4 mb-3">
         <b className="text-3xl">Carga de material · {lista.length} obras · {nVerdes} terminadas</b>
-        <span className="text-sm text-slate-300">Toca una ventana: gris → verde → naranja (problema) → gris. Toca el nombre de una obra o vivienda para ponerla toda en verde.</span>
+        <span className="text-sm text-slate-300">Toca una ventana para marcarla (gris → verde → naranja → gris). Toca el NOMBRE de una obra para agrandarla (otra vez, a pequeño). «✓ Toda» pone la obra entera en verde.</span>
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
       {contadorCD}
-      <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(26rem, 1fr))" }}>
+      {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
+      <div className="flex gap-2 items-stretch" style={{ height: "calc(100vh - 7.5rem)" }}>
         {lista.map((o) => {
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
+          const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
-            <div key={o.d.key} style={o.folio && verFolio ? { gridColumn: "1 / -1" } : undefined} className={`rounded-xl border-4 p-3 ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
-              <button type="button" onClick={() => tocaGrupo(o, todosIds)} className={`w-full text-left rounded-lg px-3 py-2 text-2xl font-extrabold ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : "bg-slate-700"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="text-base font-semibold">· {vals.filter((v) => v === 1).length}/{vals.length}</span></button>
-              <div className="mt-1 px-1 text-lg font-bold text-sky-200">{vivs.length ? `${vivs.reduce((a, [, vs]) => a + vs.length, 0)} ventana${vivs.reduce((a, [, vs]) => a + vs.length, 0) === 1 ? "" : "s"}` : "Sin ventanas cargadas"}{o.fuente === "recuento" ? <span className="text-sm font-normal text-amber-300"> · del recuento, sin dibujo</span> : null}</div>
-              {estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo la carga de material…</div>}
-              {!o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mx-1 mt-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir hoja de corte o carga de material</button>}
-              {String(estadoCarga[o.d.key] || "").startsWith("error") && <div className="px-1 text-sm text-rose-300">{estadoCarga[o.d.key]}</div>}
-              {o.folio && verFolio && <div className="bg-slate-100 rounded-lg p-2 mt-2">{folioDe(o, vivs, true)}</div>}
-              {(o.folio && verFolio ? [] : vivs).map(([g, vs]) => (
-                <div key={g} className="mt-2">
-                  <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className="text-lg font-bold text-sky-300 mb-1">{g}</button>
-                  <div className="flex flex-wrap gap-2">
-                    {vs.map((v) => { const val = valor(o.d.key, v.id); return (
-                      <div key={v.id} className="relative flex flex-col items-stretch">
-                      {lapizVentana(o, v, true)}
-                      <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${val === 1 ? "bg-emerald-600 border-emerald-300" : val === 2 ? "bg-orange-500 border-orange-200" : "bg-white text-slate-900 border-slate-300"}`}>
-                        <div className="flex justify-center">{(() => { const inf = infoVent(o, v); const ih = infoHoja(o, v); return inf && inf.dib ? <DibujoPlan hash={inf.dib} alto={130} sinZoomAlTocar /> : ih && ih.dib ? <DibujoPlan hash={ih.dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />; })()}</div>
-                        <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
-                        {v.tip && v.tip !== v.pos ? <div className="text-sm font-bold">{v.tip}</div> : null}
-                        {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
-                        {(() => { const ex = extrasVentana(o, v); return ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null; })()}
-                        {(() => { const inf = infoVent(o, v); if (inf) return <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div>;
-                          const ih = infoHoja(o, v); return ih ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}</div><div className="text-xs">{ih.desc}</div></div> : null; })()}
-                      </button>
-                      {textoNotaVentana(o, v, true)}
-                      </div>
-                    ); })}
-                  </div>
+            <div key={o.d.key} style={{ flex: grande ? "3 1 0" : "1 1 0", minWidth: grande ? "22rem" : "7.5rem" }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+              <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
+                <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a pequeño" : "Agrandar esta obra"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? "🔍−" : "🔍+"}</span></button>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className={`${grande ? "text-base" : "text-[11px]"} font-bold text-sky-100`}>{nH}/{nV || "?"}</span>
+                  <button type="button" onClick={() => tocaGrupo(o, todosIds)} title="Poner (o quitar) toda la obra en verde" className={`ml-auto rounded bg-white/15 font-bold ${grande ? "px-3 py-1 text-sm" : "px-1.5 py-0.5 text-[10px]"}`}>✓ Toda</button>
                 </div>
-              ))}
+              </div>
+              <div className="flex-1 overflow-y-auto p-1.5">
+                {grande && estadoCarga[o.d.key] === "leyendo" && <div className="px-1 text-sm text-amber-300">Leyendo…</div>}
+                {grande && !o.tienePins && estadoCarga[o.d.key] !== "leyendo" && <button type="button" onClick={() => pedirPdfCarga(o)} className="mb-1 px-3 py-1.5 rounded-md bg-sky-600 text-white text-sm font-bold">📎 Subir hoja de corte o carga de material</button>}
+                {!nV && <div className="text-[11px] text-amber-300 px-1">Sin ventanas cargadas</div>}
+                {grande && o.folio && verFolio ? <div className="bg-slate-100 rounded-lg p-2">{folioDe(o, vivs, true)}</div> : vivs.map(([g, vs]) => (
+                  <div key={g} className="mb-1.5">
+                    {vivs.length > 1 && <button type="button" onClick={() => tocaGrupo(o, vs.map((v) => v.id))} className={`${grande ? "text-lg" : "text-[11px]"} font-bold text-sky-300`}>{g}</button>}
+                    <div className={grande ? "flex flex-wrap gap-2" : "flex flex-col gap-1"}>
+                      {vs.map((v) => { const val = valor(o.d.key, v.id); const inf = infoVent(o, v); const ih = infoHoja(o, v); const dib = (inf && inf.dib) || (ih && ih.dib) || ""; const ex = extrasVentana(o, v);
+                        const fondo = val === 1 ? "bg-emerald-600 border-emerald-300 text-white" : val === 2 ? "bg-orange-500 border-orange-200 text-white" : "bg-white text-slate-900 border-slate-300";
+                        if (!grande) return (
+                          <button key={v.id} type="button" onClick={() => tocaVentana(o, v)} className={`w-full rounded-md border-2 px-1 py-1 text-center ${fondo}`}>
+                            {dib ? <div className="flex justify-center"><DibujoPlan hash={dib} alto={48} sinZoomAlTocar /></div> : null}
+                            <div className="text-sm font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
+                            {v.medida ? <div className="text-[10px] font-semibold opacity-80">{v.medida}</div> : null}
+                            {ex.length ? <div className="text-[9px] font-extrabold text-amber-700 bg-amber-200 rounded mt-0.5">{ex.join(" · ")}</div> : null}
+                          </button>
+                        );
+                        return (
+                          <div key={v.id} className="relative flex flex-col items-stretch">
+                            {lapizVentana(o, v, true)}
+                            <button type="button" onClick={() => tocaVentana(o, v)} className={`rounded-lg border-4 p-2 pr-8 text-center min-w-[7rem] ${fondo}`}>
+                              <div className="flex justify-center">{dib ? <DibujoPlan hash={dib} alto={130} sinZoomAlTocar /> : <DibujoCargaVentana fab={v.fab} tip={v.tip} alto={90} />}</div>
+                              <div className="text-2xl font-extrabold leading-tight">{val === 1 ? "✓ " : val === 2 ? "⚠ " : ""}{v.pos || "·"}</div>
+                              {v.tip && v.tip !== v.pos ? <div className="text-sm font-bold">{v.tip}</div> : null}
+                              {v.medida ? <div className="text-sm font-semibold">{v.medida}</div> : null}
+                              {ex.length ? <div className="mt-1 flex flex-wrap justify-center gap-1">{ex.map((x) => <span key={x} className="text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-600">⚠ LLEVA {x}</span>)}</div> : null}
+                              {inf ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold"><ColorVentana texto={inf.color} /> · {fmtHoras(inf.horas)}</div><div className="text-xs">{inf.desc}</div></div>
+                                : ih ? <div className="max-w-[16rem] mx-auto leading-tight"><div className="text-sm font-bold">{ih.color ? <ColorVentana texto={ih.color} /> : null}</div><div className="text-xs">{ih.desc}</div></div> : null}
+                            </button>
+                            {textoNotaVentana(o, v, true)}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           );
         })}
