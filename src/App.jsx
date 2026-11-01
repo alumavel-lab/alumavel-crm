@@ -6796,6 +6796,9 @@ export default function App() {
             isAdmin={isAdmin}
           />
         )}
+        {/* Planning de Fábrica en segundo plano (no se ve): así se recalcula y avisa a Control del día aunque nadie tenga abierta la pantalla del planning */}
+        {currentUser && <Planning soloPublicar proyectos={proyectos.filter((p) => tallerDe(p) === "PVC")} pedidos={pedidos} uxExpedientes={uxExpedientes} uxPedidos={uxPedidos} listoParaFabricar={[]}
+          materiales={materiales} proveedores={proveedores} config={configVentanas.planning} onSaveConfig={() => {}} onGuardarHoras={() => {}} lotesSinObra={etiquetasSinObra} puestos={[]} />}
         {modulo === "informes" && (
           <InformesModulo
             uxExpedientes={uxExpedientes}
@@ -48424,6 +48427,14 @@ const repartirPlanning = (obras, desde, horasDia, ocupado = {}) => {
   const res = {};
   obras.forEach((o) => {
     let h = o.horas > 0 ? o.horas : 0.5;
+    if (o.forzar && o.disponible) {
+      // Día elegido a mano (o metida desde Control del día): entra ENTERA ese día aunque ya no queden horas (cosas atrasadas)
+      const fz = primerLaborableDesde(o.disponible);
+      if (!dias[fz]) dias[fz] = { usadas: 0, trozos: [] };
+      dias[fz].usadas += h; dias[fz].trozos.push({ id: o.id, nombre: o.nombre, horas: Math.round(h * 10) / 10 });
+      res[o.id] = { inicio: fz, fin: fz };
+      return;
+    }
     let f = primerLaborableDesde(o.disponible && o.disponible > desde ? o.disponible : desde);
     let guard = 0;
     while (h > 0.01 && guard++ < 400) {
@@ -48448,7 +48459,7 @@ const lunesDe = (f) => { const d = new Date(f + "T12:00:00"); const k = (d.getDa
 // Preparar material de la semana: se eligen las obras y expedientes que se van a fabricar,
 // se juntan sus listados de materiales (mismo código y color = una línea), se compara el
 // total con el stock y se saca la hoja de preparación y los pedidos de lo que falta.
-function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null }) {
+function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabricar, materiales, proveedores, config, onSaveConfig, onGuardarHoras: onGuardarHorasProp, onIniciarFabricacion, onVerProyecto, onCrearPedidos, lotesSinObra = [], puestos = [], onVolverVirtual = null, soloPublicar = false }) {
   const cfg = config || {};
   const tiempos = { ...PLANNING_TIEMPOS_DEF, ...(cfg.tiempos || {}) };
   const horasDia = parseFloat(cfg.horasDia) || 16;
@@ -48558,7 +48569,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const conDia = firmes.filter((o) => fechasPlan[o.id]).sort((a, b) => fechasPlan[a.id].localeCompare(fechasPlan[b.id]));
   const sinDia = firmes.filter((o) => !fechasPlan[o.id]);
   const desdeEf = [desde, ...conDia.map((o) => fechasPlan[o.id])].sort()[0];
-  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: fechasPlan[o.id] })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
+  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: fechasPlan[o.id], forzar: true })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
   const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
   const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: fechasPlan[o.id] && fechasPlan[o.id] > (o.material ? sigLaborable(o.material) : desde) ? fechasPlan[o.id] : o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
   const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
@@ -48684,6 +48695,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     </div>
   );
 
+  if (soloPublicar) return null; // copia en segundo plano: solo calcula y publica el planning (todos los hooks van antes)
   return (
     <div className="space-y-6">
       {/* Ajustes */}
