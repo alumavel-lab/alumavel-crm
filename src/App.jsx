@@ -53893,16 +53893,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // Copia de seguridad del planning (qué obra está en qué día) antes de cualquier cambio masivo: sirve para «volver a como estaba»
   const copias = useObjetoFb("controlDiaObrasCopia"); // { <timestamp>: { en, motivo, datos } }
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica (manda Fábrica): { dias:{fecha:{clave:{nombre,horas}}}, obras:{clave:{nombre,tipo,id,num,inicio,fin}} }
-  // FÁBRICA MANDA: cada obra del planning de Fábrica sale aquí los días que Fábrica le ha puesto (si ocupa 2 días, los 2).
-  // Aquí no se mueve ni se quita: se le pide a Fábrica otra fecha. Lo metido a mano (obras que no están en el planning de Fábrica) se suma.
-  const koDeFab = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, planF && planF.obras); if (k && !koDeFab.has(k)) koDeFab.set(k, limpia(o.d.key)); });
-  const asignFab = {};
-  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => Object.keys(m || {}).forEach((k) => { const ko = koDeFab.get(k); if (ko) (asignFab[f] = asignFab[f] || {})[ko] = true; }));
-  const enFabrica = new Set(); Object.values(asignFab).forEach((d) => Object.keys(d).forEach((ko) => enFabrica.add(ko)));
-  const asignTodas = {};
-  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
-  Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
-  const asign = asignTodas[dia] || {};
   const peticiones = useObjetoFb("controlDiaPeticiones");
   const guardarCopia = async (motivo) => {
     try {
@@ -54081,6 +54071,17 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     if (!planVent.has(k)) planVent.set(k, new Map());
     toArray(pr.ventanas).forEach((w) => planVent.get(k).set(normPosPlan(w.pos), w));
   });
+  // (va aquí, después de presDeObra: claveEn la usa; antes de esto la pantalla se quedaba en blanco)
+  // FÁBRICA MANDA: cada obra del planning de Fábrica sale aquí los días que Fábrica le ha puesto (si ocupa 2 días, los 2).
+  // Aquí no se mueve ni se quita: se le pide a Fábrica otra fecha. Lo metido a mano (obras que no están en el planning de Fábrica) se suma.
+  const koDeFab = new Map(); [...obras.values()].forEach((o) => { const k = claveEn(o, planF && planF.obras); if (k && !koDeFab.has(k)) koDeFab.set(k, limpia(o.d.key)); });
+  const asignFab = {};
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => Object.keys(m || {}).forEach((k) => { const ko = koDeFab.get(k); if (ko) (asignFab[f] = asignFab[f] || {})[ko] = true; }));
+  const enFabrica = new Set(); Object.values(asignFab).forEach((d) => Object.keys(d).forEach((ko) => enFabrica.add(ko)));
+  const asignTodas = {};
+  Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  const asign = asignTodas[dia] || {};
   const infoVent = (o, v) => { const m = planVent.get(limpia(o.d.key)); return m ? (m.get(normPosPlan(v.pos)) || null) : null; };
   const horasDelDia = Object.keys(asign).reduce((a, k) => a + (presDeObra.get(k) || []).reduce((b, pr) => b + (Number(pr.horas) || 0), 0), 0);
   // Vista previa del PDF «PLANING»: reparto por días y cruce con las obras del CRM (por nº de presupuesto)
