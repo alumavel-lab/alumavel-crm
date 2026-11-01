@@ -48512,7 +48512,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const porId = {}; firmes.forEach((o) => { porId[o.id] = o; });
     const dias = {}; Object.entries(plan1.dias).forEach(([f, d]) => d.trozos.forEach((t) => { const o = porId[t.id]; if (!o) return; if (!dias[f]) dias[f] = {}; dias[f][claveRefFb(o)] = { nombre: o.nombre, horas: t.horas }; }));
     const obrasF = {}; Object.entries(plan1.obras).forEach(([id, r]) => { const o = porId[id]; if (!o) return; obrasF[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), inicio: r.inicio, fin: r.fin, horas: o.horas || 0 }; });
-    const listasPub = {}; listasOrd.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
+    // las quitadas del planning (sin tick) tampoco se ofrecen en Control del día
+    const listasPub = {}; firmes.forEach((o) => { listasPub[claveRefFb(o)] = { nombre: o.nombre, tipo: o.ref.tipo, id: String(o.ref.id), num: o.ref.tipo === "uxcar" ? String(o.nombre).replace(/^Uxcar exp\.\s*/, "").replace(/ · en fabricación$/, "") : "", pres: presFab(o), horas: o.horas || 0, enCurso: !!o.enCurso }; });
     return JSON.stringify({ dias, obras: obrasF, listas: listasPub });
   })();
   const ultimoPublicadoFb = useRef("");
