@@ -42701,6 +42701,23 @@ function PlanningCaballetes({ proyectos, uxExpedientes, clientes, caballetes, co
 const almacenesCaballetes = (config) => (toArray(config && config.almacenesCaballetes).length ? toArray(config.almacenesCaballetes) : [{ id: "fabrica", nombre: "Fábrica", ciudad: "" }])
   .map((a) => (a.dueno === "uxcar" ? { ...a, nombreBase: a.nombre, nombre: `Uxcar · ${a.nombre}` } : a));
 
+// Fija A MANO el estante (1..huecos) de una ventana en una zona (solape / terminadas). Usa los mismos datos que el mapa de estanterías:
+// la ventana queda grabada en ubicacionesLinea y el hueco reservado en ocupacionLinea (con transacción: dos ordenadores no pueden coger el mismo).
+// Una ventana está en una sola zona a la vez: si estaba en otra, se libera. Si el estante ya lo ocupa otra ventana, no cambia nada.
+async function fijarHuecoLinea(zona, cod, hueco, por) {
+  const n = parseInt(hueco, 10);
+  if (!zona) return { ok: false, motivo: "No encuentro esa estantería" };
+  if (!n || n < 1 || n > zona.huecos) return { ok: false, motivo: `El estante va del 1 al ${zona.huecos}` };
+  const prev = (await fbGet(ref(fbDb, `ubicacionesLinea/${cod}`))).val();
+  if (prev && prev.zonaId === zona.id && Number(prev.hueco) === n) return { ok: true };
+  const r = await runTransaction(ref(fbDb, `ocupacionLinea/${zona.id}/${n}_1`), (cur) => (cur && cur !== cod ? undefined : cod));
+  if (!r.committed) { const ocupa = (await fbGet(ref(fbDb, `ocupacionLinea/${zona.id}/${n}_1`))).val(); return { ok: false, motivo: `El estante ${n} ya está ocupado${ocupa ? ` (ventana ${ocupa})` : ""}` }; }
+  if (prev && prev.zonaId) await runTransaction(ref(fbDb, `ocupacionLinea/${prev.zonaId}/${prev.hueco}_${prev.slot || 1}`), (cur) => (cur === cod ? null : undefined));
+  await fbSet(ref(fbDb, `ubicacionesLinea/${cod}`), { zonaId: zona.id, hueco: n, slot: 1, ts: Date.now(), por: por || "" });
+  return { ok: true };
+}
+// Interruptor: ¿el almacén de ventanas pide imprimir etiquetas de caballete? De momento NO (se pedirán más adelante, en todos lados). Poner true para volver a pedirlas.
+const PEDIR_ETIQUETAS = false;
 // Estanterías de ventanas terminadas (36) y solape (36): para saber dónde está cada ventana desde el almacén
 function EstanteriasTerminadas({ indice, isAdmin }) {
   const [q, setQ] = useState("");
@@ -42890,7 +42907,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
   );
 }
 
-function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "" }) {
   const [verTodo, setVerTodo] = useState(false);
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
@@ -42954,16 +42971,27 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   // ALMACÉN DEL DÍA (calendario como Control del día, pero lo verde es lo que ya está en un palet)
   const planFabAD = useObjetoFb("planFabrica");
   const asignManualAD = useObjetoFb("controlDiaObras");
+  const marcasCDAD = useObjetoFb("controlDia"); // lo que se tica en Control del día: 1 = verde (hecha en fábrica), 2 = naranja (problema)
   const [vistaDia, setVistaDia] = useState(false);
   const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
   const [tvAD, setTvAD] = useState(false);
+  const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
+  const registroAD = useObjetoFb(`registroAlmacen/${diaAD}`); // movimientos de ventanas en palets del día elegido
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
   const cabsAhora = () => {
     const base = toArray(caballetes); const ids = new Set(base.map((c) => c.id));
     return [...base.map((c) => overlayCab.current.get(c.id) || c), ...[...overlayCab.current.values()].filter((c) => !ids.has(c.id))];
   };
   const guardarCab = (c) => { overlayCab.current.set(c.id, c); setTimeout(() => overlayCab.current.delete(c.id), 6000); onGuardar(c); };
+  // Registro permanente: cada vez que una ventana entra o sale de un palet se apunta (día, hora, ventana, obra, palet y quién). No se borra nunca desde la app.
+  const anotarRegistro = (accion, w, cab, obra) => {
+    try {
+      const dia = new Date().toLocaleDateString("sv-SE");
+      fbSet(ref(fbDb, `registroAlmacen/${dia}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}`), { ts: Date.now(), accion, ventana: w.pos || "", num: w.num || "", fab: w.fab || "", obra: (obra && obra.nombre) || (cab.obra && cab.obra.nombre) || "", obraKey: w.obraKey || (obra && obra.key) || "", palet: cab.numero || "", paletId: cab.id || "", por: quien || "" })
+        .catch((e) => avisar(false, "No se pudo anotar en el registro del almacén: " + e.message));
+    } catch (e) { /* si falla el registro no se bloquea el trabajo */ }
+  };
   const volverAEscanear = () => setTimeout(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); if (inputScanRef.current) inputScanRef.current.focus(); }, 60);
   // Si el foco se pierde (se pulsó fuera), la pistola escribiría en el vacío: se recupera la caja al teclear
   useEffect(() => {
@@ -43036,7 +43064,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const crearCaballete = (motivo) => {
     const n = cabsAhora().reduce((m, c) => Math.max(m, parseInt(String(c.numero).replace(/\D/g, ""), 10) || 0), 0) + 1;
     const alm = almacenSel || almacenes[0].id;
-    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: true, historial: [{ fecha: hoy, accion: motivo || `Alta en ${nombreAlmacen(alm)}` }] };
+    const cab = { id: uid(), numero: `C-${String(n).padStart(2, "0")}`, almacenId: alm, ubicacion: "", estado: "libre", lineas: [], etiquetaPendiente: PEDIR_ETIQUETAS, historial: [{ fecha: hoy, accion: motivo || `Alta en ${nombreAlmacen(alm)}` }] };
     guardarCab(cab);
     return cab;
   };
@@ -43044,7 +43072,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const cab = crearCaballete();
     setEnfocarCab(cab.id);
     // Se imprime solo la etiqueta del caballete nuevo (no todas)
-    if (confirm(`Caballete ${cab.numero} creado. ¿Imprimir ahora su etiqueta?`)) imprimirYMarcar([cab]);
+    if (PEDIR_ETIQUETAS && confirm(`Caballete ${cab.numero} creado. ¿Imprimir ahora su etiqueta?`)) imprimirYMarcar([cab]);
   };
   // Imprime solo las etiquetas indicadas y las da por impresas (las nuevas dejan de estar pendientes)
   const imprimirYMarcar = (cabs) => {
@@ -43163,11 +43191,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     let d2 = { ...destino, ventanas: [...toArray(destino.ventanas), { ...w, fecha: hoy }], ultimaVentana: new Date().toISOString(), historial: hist(destino, `Entra la ventana ${w.pos} (nº ${w.num}, lote ${w.fab})${origen ? ` desde ${origen.numero}` : ""}`) };
     if (eraLibre) d2 = { ...d2, estado: "cargado", fechaCarga: hoy, obra, reservaPrevia: destino.reserva || null, reserva: null, cargadoPorEscaner: true };
     guardarCab(d2);
+    anotarRegistro("entra", w, destino, obra);
+    if (origen) anotarRegistro("sale", w, origen, obra);
     return true;
   };
   const quitarVentana = (w) => {
     const cab = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
-    if (cab) guardarCab(sinVentana(cab, w, `Quitada la ventana ${w.pos} (nº ${w.num})`));
+    if (cab) { guardarCab(sinVentana(cab, w, `Quitada la ventana ${w.pos} (nº ${w.num})`)); anotarRegistro("sale", w, cab, null); }
   };
   // Caballetes donde se puede meter la ventana de esa obra
   const opcionesDestino = (obra, excluirId) => cabsAhora()
@@ -43714,6 +43744,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const wDe = ({ v, lote }, dueno) => { const total = totalVentana(v); return { id: v.id, pos: v.pos, num: v.num, fab: lote.fab, grupo: v.grupo || "", cliente: v.cliente || "", color: v.color || "", obraKey: dueno.key, proyectoId: dueno.proyectoId || "", total, persiana: persianaDeDueno(dueno.key), escaneadas: Array.from({ length: total }, (_, i) => `tic${i + 1}`), ticada: true }; };
     const planObras = (planFabAD && planFabAD.obras) || {};
     const planDias = (planFabAD && planFabAD.dias) || {};
+    const hechasCD = new Set(); const probCD = new Set();
+    Object.values(marcasCDAD || {}).forEach((dia) => Object.entries(dia || {}).forEach(([ko, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { if (v === 1) hechasCD.add(`${ko}|${id}`); else if (v === 2) probCD.add(`${ko}|${id}`); })));
+    const idCD = (o, x) => `${limpiaAD(o.key)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`;
     const obrasAD = [...ventanasPorObraTic.values()].map((x) => ({ key: x.dueno.key, nombre: obraDeDueno(x.dueno).nombre, dueno: x.dueno, vs: [...x.vs.values()], codigos: codigosDe(x.dueno) }))
       .filter((o) => { const pr = String(o.key).startsWith("p-") ? toArray(proyectos).find((q) => `p-${q.id}` === o.key) : null; return !pr || !["Entregado", "Cancelado"].includes(pr.estadoTrabajo); });
     obrasAD.forEach((o) => { o.clavePlan = null; for (const [k, f] of Object.entries(planObras)) { if (toArray(f.pres).some((c) => o.codigos.some((m) => mismoP(m, c)))) { o.clavePlan = k; break; } } });
@@ -43729,10 +43762,16 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return out;
     };
     const cacheSt = new Map();
-    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w) }; }); const r = { filas, n: filas.filter((f) => f.c).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
+    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); const k = idCD(o, x); return { x, w, c: enCab(w), hecha: hechasCD.has(k), prob: probCD.has(k) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
     const ticarAD = (f, o) => {
       const w = f.w;
-      if (f.c) { if (window.confirm(`${w.pos} está en el palet ${f.c.numero}. ¿Quitarla del palet?`)) quitarVentana(w); return; }
+      if (f.c) {
+        if (!window.confirm(`${w.pos} está en el palet ${f.c.numero}. ¿Quitarla del palet? Quedará apuntado quién la quitó y cuándo.`)) return;
+        // se quita igual que siempre, pero el historial del palet deja constancia de quién la sacó desde esta pantalla (la fecha y hora las pone el historial)
+        const cabAhora = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, w)));
+        if (cabAhora) { guardarCab(sinVentana(cabAhora, w, `Quitada la ventana ${w.pos} (nº ${w.num}) desde Almacén del día${quien ? ` por ${quien}` : ""}`)); anotarRegistro("sale", w, cabAhora, null); }
+        return;
+      }
       const obra = obraDeDueno(o.dueno);
       const sug = caballeteSugerido(obra, w);
       if (sug) { if (colocarVentana(w, obra, sug.id)) avisar(true, `✓ ${w.pos} → ${sug.numero}`); return; }
@@ -43752,29 +43791,66 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const sinEt = delDia.filter((i) => i.sinEtiquetas);
     const stDia = obrasDelDia.map((o) => ({ o, ...stats(o) }));
     const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
+    const nPend = stDia.reduce((a, x) => a + x.pend, 0);
     const metidasDia = stDia.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
     const palesDia = new Map(); stDia.forEach((x) => x.filas.forEach((f) => { if (f.c) palesDia.set(f.c.numero, (palesDia.get(f.c.numero) || 0) + 1); }));
     const etiquetaDia = new Date(diaAD + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
-    const fichaVentana = (f, o, g) => (
-      <button key={f.x.v.id} type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+    const botonVentana = (f, o, g) => (
+      <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
         <div>{f.c ? "✓ " : ""}{f.x.v.pos || "·"}</div>
         {f.x.v.medida ? <div className={`${g ? "text-sm" : "text-[10px]"} font-normal opacity-80`}>{f.x.v.medida}</div> : null}
         {f.c ? <div className={`${g ? "text-lg" : "text-[10px]"} font-semibold`}>{f.c.numero}</div> : null}
+        {!f.c && f.hecha ? <div className={`${g ? "text-sm" : "text-[10px]"} font-semibold`}>hecha · falta palet</div> : null}
+        {!f.c && f.prob && !f.hecha ? <div className={`${g ? "text-sm" : "text-[10px]"} font-semibold`}>problema</div> : null}
       </button>
     );
+    const guardarEstante = async (f, zonaId, el) => {
+      const cod = baseDe(f.x.v); const z = zonasAD.find((q) => q.id === zonaId); const t = String(el.value || "").trim();
+      const u = ubicAlm[cod] || null; const actual = u && u.zonaId === zonaId ? String(u.hueco) : "";
+      if (t === actual) return;
+      try {
+        if (!t) { await liberarCodigoLinea(cod); avisar(true, `${f.x.v.pos}: quitada de ${String(z.nombre).split(" (")[0]}`); return; }
+        const r = await fijarHuecoLinea(z, cod, t, "Almacén del día");
+        if (r.ok) avisar(true, `✓ ${f.x.v.pos} → ${String(z.nombre).split(" (")[0]} · estante ${parseInt(t, 10)}`);
+        else { avisar(false, r.motivo); el.value = actual; }
+      } catch (e) { avisar(false, "No se pudo guardar el estante: " + e.message); el.value = actual; }
+    };
+    const fichaVentana = (f, o, g) => {
+      const cod = baseDe(f.x.v); const u = ubicAlm[cod] || null;
+      const enSol = u && u.zonaId === "solape" ? String(u.hueco) : ""; const enTer = u && u.zonaId === "espera" ? String(u.hueco) : "";
+      const caja = (zonaId, valor, rotulo) => (
+        <label className="flex items-center gap-0.5 text-[10px] text-slate-500">{rotulo}
+          <input key={`${cod}-${zonaId}-${valor}`} defaultValue={valor} inputMode="numeric" maxLength={2} onBlur={(e) => guardarEstante(f, zonaId, e.currentTarget)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} className="w-8 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-center bg-white text-slate-800" />
+        </label>
+      );
+      return (
+        <div key={f.x.v.id} className="space-y-0.5">
+          {botonVentana(f, o, g)}
+          {g ? (u ? <div className="text-xl font-bold text-slate-700 text-center">{enSol ? `Solape ${enSol}` : `Terminada ${enTer}`}</div> : null) : <div className="flex items-center justify-center gap-1.5">{caja("solape", enSol, "Sol")}{caja("espera", enTer, "Ter")}</div>}
+        </div>
+      );
+    };
     const tarjetaObra = (x, g) => {
-      const { o, filas, n, total } = x;
+      const { o, filas, n, total, pend } = x;
       const completa = total > 0 && n === total;
-      const pal = new Map(); filas.forEach((f) => { if (f.c) pal.set(f.c.numero, (pal.get(f.c.numero) || 0) + 1); });
+      const pal = new Map(); filas.forEach((f) => { if (f.c) { const e = pal.get(f.c.id) || { c: f.c, n: 0 }; e.n++; pal.set(f.c.id, e); } });
       const ord = [...filas].sort((a, b) => String(a.x.v.pos).localeCompare(String(b.x.v.pos), "es", { numeric: true }));
+      // dónde está cada palet (campo «ubicación» del caballete; y el almacén si hay más de uno)
+      const ubicDe = (c) => [c.ubicacion, almacenes.length > 1 ? nombreAlmacen(almacenDe(c)) : ""].filter(Boolean).join(" · ");
+      // palet que propone el CRM para la siguiente ventana: el que ya se está llenando de esta obra, o uno vacío/reservado; si no queda ninguno, se crea uno nuevo al ticar
+      const sig = ord.find((f) => !f.c);
+      let propTexto = "";
+      if (sig) { const sug = caballeteSugerido(obraDeDueno(o.dueno), sig.w); const nv = sug ? toArray(sug.ventanas).length : 0; propTexto = sug ? `${sug.numero} · ${nv ? `ya lleva ${nv}` : "vacío"}${ubicDe(sug) ? ` · ${ubicDe(sug)}` : ""}` : "uno nuevo (se crea al ticar la primera ventana)"; }
       return (
         <div key={o.key} className={`rounded-xl border-2 p-3 space-y-2 ${completa ? "border-emerald-500 bg-emerald-50" : "border-slate-300 bg-white"}`}>
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{o.nombre}</span>
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
+            {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold text-sky-700`}>{pend} hecha{pend === 1 ? "" : "s"} en fábrica, falta palet</span>}
           </div>
           <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
-          {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</b></div>}
+          {sig && <div className={`${g ? "text-2xl" : "text-sm"} rounded-md bg-sky-50 border border-sky-300 px-2 py-1 text-sky-900`}>👉 Siguiente palet: <b>{propTexto}</b></div>}
+          {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.values()].map(({ c, n: k }) => `${c.numero} (${k})${ubicDe(c) ? ` · ${ubicDe(c)}` : ""}`).join("   |   ")}</b></div>}
           <div className="flex flex-wrap gap-1.5">{ord.map((f) => fichaVentana(f, o, g))}</div>
         </div>
       );
@@ -43782,31 +43858,53 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const resumen = (g) => (
       <div className={`${g ? "text-2xl" : "text-sm"} flex flex-wrap items-center gap-x-5 gap-y-1`}>
         <span><b>{nEn}</b> de <b>{nTot}</b> ventanas en palet</span>
+        {nPend > 0 && <span className={`font-semibold ${g ? "text-sky-300" : "text-sky-700"}`}>{nPend} hechas en fábrica esperando palet</span>}
         {metidasDia > 0 && <span className="text-emerald-700 font-semibold">{metidasDia} metidas en palet ese día</span>}
         {palesDia.size > 0 && <span className={g ? "text-slate-200" : "text-slate-600"}>Palets: {[...palesDia.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</span>}
       </div>
     );
+    const movsAD = Object.values(registroAD || {}).filter((r) => r && r.ts).sort((a, b) => a.ts - b.ts);
+    const entranAD = movsAD.filter((r) => r.accion === "entra"); const salenAD = movsAD.filter((r) => r.accion === "sale");
+    const porPaletAD = new Map(); entranAD.forEach((r) => porPaletAD.set(r.palet, (porPaletAD.get(r.palet) || 0) + 1));
+    const porPersonaAD = new Map(); entranAD.forEach((r) => { const k = r.por || "sin nombre"; porPersonaAD.set(k, (porPersonaAD.get(k) || 0) + 1); });
+    const horaAD = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    const bloqueRegistro = (g) => (
+      <div className={`rounded-xl border-2 border-slate-300 bg-white p-3 space-y-1 text-slate-800 ${g ? "text-xl" : "text-sm"}`}>
+        <div className="font-extrabold text-slate-900">📋 Registro del día</div>
+        {movsAD.length === 0 ? <div className="text-slate-500">Todavía no se ha movido ninguna ventana en palets este día.</div> : (
+          <>
+            <div><b>{entranAD.length}</b> ventanas metidas en palet · <b>{porPaletAD.size}</b> palets distintos{salenAD.length ? <> · <b>{salenAD.length}</b> sacadas</> : null}</div>
+            <div className="text-slate-600">Por palet: {[...porPaletAD.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</div>
+            <div className="text-slate-600">Por persona: {[...porPersonaAD.entries()].map(([k, v]) => `${k} (${v})`).join(" · ")}</div>
+            {!g && <details className="text-xs text-slate-600"><summary className="cursor-pointer font-semibold">Ver los {movsAD.length} movimientos</summary><ul className="mt-1 space-y-0.5">{movsAD.map((r, i) => <li key={i}>{horaAD(r.ts)} · {r.accion === "entra" ? "entra" : "sale"} <b>{r.ventana}</b>{r.num ? ` (nº ${r.num})` : ""} {r.accion === "entra" ? "→" : "←"} {r.palet}{r.obra ? ` · ${r.obra}` : ""}{r.por ? ` · ${r.por}` : ""}</li>)}</ul></details>}
+          </>
+        )}
+      </div>
+    );
     const avisoSinEt = sinEt.length > 0 && (
       <div className={`${g0()} rounded-lg border-2 border-dashed border-amber-400 bg-amber-50 px-3 py-2 text-amber-900`}>
-        ⚠ {sinEt.length === 1 ? "Esta obra del planning no tiene" : `Estas ${sinEt.length} obras del planning no tienen`} etiquetas de la línea cargadas, así que no hay ventanas que ticar: <b>{sinEt.map((i) => i.sinEtiquetas).join(" · ")}</b>
+        {sinEt.length === 1 ? "Esta obra del planning aún no tiene" : `Estas ${sinEt.length} obras del planning aún no tienen`} ventanas cargadas en el CRM: <b>{sinEt.map((i) => i.sinEtiquetas).join(" · ")}</b>
       </div>
     );
     function g0() { return tvAD ? "text-xl" : "text-sm"; }
+    const toastAD = toastScan ? <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[110] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div> : null;
     if (tvAD) {
       return (
         <div className="fixed inset-0 z-[100] bg-slate-900 text-white overflow-auto p-6 space-y-5">
+          {toastAD}
           <div className="flex flex-wrap items-center gap-4">
             <div className="text-4xl font-extrabold capitalize">{etiquetaDia}{diaAD === hoyAD ? " · HOY" : ""}</div>
             <button type="button" onClick={() => setTvAD(false)} className="ml-auto px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
           </div>
           {resumen(true)}
-          {avisoSinEt}
+          {bloqueRegistro(true)}
           {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">{stDia.map((x) => tarjetaObra(x, true))}</div>}
         </div>
       );
     }
     return (
       <div className="space-y-4">
+        {toastAD}
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
@@ -43818,7 +43916,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <div className="text-sm font-bold text-slate-700 capitalize">{tituloMes}</div>
             <button type="button" onClick={() => moverMes(1)} className="px-2 text-slate-500 text-lg">›</button>
           </div>
-          <p className="text-xs text-slate-500 mb-2">Verde: todas las ventanas de la obra ya están en palet. Ámbar: a medias. Gris: aún nada. Toca un día para verlo.</p>
+          <p className="text-xs text-slate-500 mb-2">Verde: todas las ventanas de la obra ya están en palet. Ámbar: a medias. Azul: hechas en fábrica (Control del día) y aún sin palet; entre paréntesis, cuántas. Gris: aún nada. Toca un día para verlo.</p>
           <div className="grid grid-cols-7 gap-1 text-[11px] text-center text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((d) => <div key={d}>{d}</div>)}</div>
           <div className="grid grid-cols-7 gap-1">
             {celdas.map((f, i) => {
@@ -43830,8 +43928,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                   <div className="space-y-0.5">
                     {its.slice(0, 5).map((it, j) => {
                       if (it.sinEtiquetas) return <div key={j} className="truncate rounded px-1 text-[10px] border border-dashed border-amber-400 text-amber-800 bg-amber-50">📌 {it.sinEtiquetas}</div>;
-                      const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : "bg-slate-200 text-slate-700";
-                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>📌 {it.o.nombre} · {st.n}/{st.total}</div>;
+                      const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : st.pend > 0 ? "bg-sky-200 text-sky-900" : "bg-slate-200 text-slate-700";
+                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>📌 {it.o.nombre} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
                     })}
                     {its.length > 5 && <div className="text-[10px] text-slate-400">+{its.length - 5} más</div>}
                   </div>
@@ -43843,6 +43941,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
           {resumen(false)}
+          {bloqueRegistro(false)}
           {avisoSinEt}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
@@ -44032,7 +44131,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Caballetes con las ventanas terminadas. Al entregar la obra salen con el cliente y quedan <b>pendientes de devolver</b> hasta que vuelvan.</p>
         {onGuardarEtiquetasObra && <button onClick={() => window.dispatchEvent(new CustomEvent("abrir-expediente-rapido"))} style={{ backgroundColor: "#E67E22", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md">⚡ Expediente rápido</button>}
-        {pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
+        {PEDIR_ETIQUETAS && pendientesEtiqueta.length > 0 && <button onClick={() => imprimirYMarcar(pendientesEtiqueta)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Printer size={14} /> Imprimir etiquetas nuevas ({pendientesEtiqueta.length})</button>}
         {lista.length > 0 && <button onClick={() => { const todas = almacenSel ? lista.filter((x) => almacenDe(x) === almacenSel) : lista; if (confirm(`Se van a imprimir ${todas.length} etiquetas (una por caballete). Para imprimir solo una, usa la impresora de la tarjeta del caballete. ¿Imprimir todas?`)) imprimirYMarcar(todas); }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"><Printer size={13} /> Reimprimir todas</button>}
         <button onClick={nuevo} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md"><Plus size={14} /> Añadir caballete</button>
         <button onClick={() => setVistaDia(true)} style={{ backgroundColor: "#1F6FEB", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-md">📅 Almacén del día</button>
@@ -44109,7 +44208,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             ) : (
               <div className="text-sm font-semibold text-amber-900">⚠ No hay ningún caballete reservado con hueco para esta obra. Elige uno (la ventana aún no está asignada):</div>
             )}
-            {ve.creado && cab && cab.etiquetaPendiente && (
+            {PEDIR_ETIQUETAS && ve.creado && cab && cab.etiquetaPendiente && (
               <div className="flex flex-wrap items-center gap-2 rounded-md bg-amber-100 border border-amber-300 px-2 py-1.5 text-sm text-amber-900">
                 <span>No quedaban caballetes libres: se ha <b>creado {cab.numero}</b> automáticamente. Imprime su etiqueta y pégala en el caballete.</span>
                 <button onClick={() => imprimirYMarcar([cab])} className="ml-auto flex items-center gap-1 font-semibold underline"><Printer size={13} /> Imprimir su etiqueta</button>
@@ -44266,7 +44365,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <div className="flex items-center gap-2">
               <span className="text-lg font-extrabold text-slate-900">{c.numero}</span>
               <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${est.c}`}>{est.t}</span>
-              <button onClick={() => imprimirYMarcar([c])} className={`ml-auto hover:text-slate-700 ${c.etiquetaPendiente ? "text-amber-600" : "text-slate-400"}`} title={c.etiquetaPendiente ? "Etiqueta sin imprimir: imprimir solo la de este caballete" : "Imprimir solo la etiqueta de este caballete"}><Printer size={14} /></button>
+              <button onClick={() => imprimirYMarcar([c])} className={`ml-auto hover:text-slate-700 ${PEDIR_ETIQUETAS && c.etiquetaPendiente ? "text-amber-600" : "text-slate-400"}`} title={c.etiquetaPendiente ? "Etiqueta sin imprimir: imprimir solo la de este caballete" : "Imprimir solo la etiqueta de este caballete"}><Printer size={14} /></button>
             </div>
             {c.estado !== "fuera" && (
               <div className="flex gap-1.5">
@@ -56345,7 +56444,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "almacen" && (
-        <AlmacenVentanas simple={soloAlmacen} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+        <AlmacenVentanas simple={soloAlmacen} quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
