@@ -8036,13 +8036,13 @@ function ProyectosModulo({ currentUser, onRecibirPedido, onJustificantesIngreso,
   // Posibles duplicados: dos proyectos (no cancelados) con exactamente el mismo nombre, p. ej. «Uxcar · 6.899-1 · 3 ventanas» dos veces
   const duplicadosNombre = useMemo(() => {
     const cuenta = {};
-    proyectos.forEach((p) => { if (!p || p.estadoTrabajo === "Cancelado") return; const k = String(p.nombre || "").trim().toLowerCase().replace(/\s+/g, " "); if (k && /\d/.test(k)) (cuenta[k] = cuenta[k] || []).push(p.numero); });
+    proyectos.forEach((p) => { if (!p || p.estadoTrabajo === "Cancelado") return; const k = claveDupNombreObra(p); if (k && /\d/.test(k)) (cuenta[k] = cuenta[k] || []).push(p.numero); });
     const out = {};
     Object.entries(cuenta).forEach(([k, nums]) => { if (nums.length > 1) out[k] = nums; });
     return out;
   }, [proyectos]);
   const [soloDup, setSoloDup] = useState(false);
-  const claveDup = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const claveDup = (p) => claveDupNombreObra(p);
   const esDup = (p) => p && p.estadoTrabajo !== "Cancelado" && !!duplicadosNombre[claveDup(p)];
   // Las copias de un mismo proyecto salen juntas, una debajo de otra (donde salía la primera)
   const filasLista = useMemo(() => {
@@ -21829,6 +21829,8 @@ const extrasDeTextoPresupuesto = (texto) => {
     return new RegExp(x.re, "i").test(limpio);
   });
 };
+// Clave para ver obras repetidas por el nombre: «Uxcar · 6644-1 · 7 ventanas» y «Uxcar · 6.644-1 · 7 ventanas» son la misma
+const claveDupNombreObra = (p) => String((p && p.nombre) || "").trim().toLowerCase().replace(/(\d)\.(?=\d{3}(?!\d))/g, "$1").replace(/\s+/g, " ");
 const accesoriosDeObra = (p) => {
   const lineas = toArray(p && p.listadoMateriales && p.listadoMateriales.lineas);
   const out = { hayListado: lineas.length > 0, grupos: [] };
@@ -21844,7 +21846,10 @@ const accesoriosDeObra = (p) => {
     const textoSinNeg = texto.replace(reNeg, " ");
     const deTexto = new RegExp(base, "i").test(textoSinNeg);
     const deChecklist = check.some((c) => new RegExp(base, "i").test(c.nombre || "") && c.estado === "si" && !/gu[ií]a/i.test(c.nombre || ""));
-    out.grupos.push({ ...a, lineas: ls, uds: ls.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0), deTexto, deChecklist, lleva: ls.length > 0 || deTexto || deChecklist });
+    // En persianas se cuentan solo los cajones/compactos (una persiana = un cajón); antes se sumaban también las barras de guía,
+    // lamas, etc. y dos obras iguales salían con 6 y 13 «ud.». Si no hay cajones en el listado, no se da número.
+    const lsUds = a.id === "persiana" ? ls.filter((l) => /caj[oó]n|compacto|CJ_/i.test(txtLinea(l)) && !/gu[ií]a|tapa|testero|eje/i.test(txtLinea(l))) : ls;
+    out.grupos.push({ ...a, lineas: ls, uds: lsUds.reduce((t, l) => t + (parseFloat(l.uds) || 0), 0), deTexto, deChecklist, lleva: ls.length > 0 || deTexto || deChecklist });
   });
   return out;
 };
@@ -21859,7 +21864,7 @@ function AccesoriosDeLaObra({ proyecto }) {
     <div className="mt-1.5">
       <div className="flex flex-wrap gap-1.5">
         {a.grupos.map((g) => g.lleva
-          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()}{g.lineas.length > 0 ? ` · ${g.uds} ud.` : g.deTexto ? " · según el nombre de la obra" : " · según el checklist"}</span>
+          ? <span key={g.id} className={`text-[11px] font-bold px-2 py-0.5 rounded-full ring-1 ${g.color}`}>LLEVA {g.nombre.toLowerCase()}{g.lineas.length > 0 ? (g.uds > 0 ? ` · ${g.uds} ${g.id === "persiana" ? (g.uds === 1 ? "persiana" : "persianas") : "ud."}` : "") : g.deTexto ? " · según el nombre de la obra" : " · según el checklist"}</span>
           : <span key={g.id} className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">sin {g.nombre.toLowerCase()}</span>)}
       </div>
       {con.length > 0 && (
