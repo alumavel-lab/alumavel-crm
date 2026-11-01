@@ -52976,11 +52976,13 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   return { piezas, avisos };
 }
 // Primer hueco libre: mejor en un carro donde ya haya piezas de la misma obra
-function auxSitioLibre(cfg, est, ppto) {
+function auxSitioLibre(cfg, est, ppto, pptosMismoDia = []) {
   const carros = cfg.carros;
   const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro);
   const ocup = new Set(regs.map((e) => `${e.carro}|${e.hueco}`));
-  const orden = [...new Set([...regs.filter((e) => e.ppto === ppto).map((e) => e.carro), ...carros.map((c) => c.id)])];
+  // Primero el carro donde ya está esa obra; luego el de las obras del MISMO DÍA del planning (todo junto en el mismo carro); luego los demás
+  const mismoDia = new Set(toArray(pptosMismoDia).map(String));
+  const orden = [...new Set([...regs.filter((e) => e.ppto === ppto).map((e) => e.carro), ...regs.filter((e) => mismoDia.has(String(e.ppto))).map((e) => e.carro), ...carros.map((c) => c.id)])];
   for (const cid of orden) {
     const c = carros.find((x) => x.id === cid);
     if (!c) continue;
@@ -53105,6 +53107,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     return out;
   }, [proyectos, uxExpedientes, hojas, cfg]);
   const [orden, setOrden] = useState("ventana");
+  const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
+  const [verSinDia, setVerSinDia] = useState(false);
+  const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
   const [leyendo, setLeyendo] = useState(false);
@@ -53165,7 +53170,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p) => {
-    const sitio = auxSitioLibre(cfg, est, p.ppto);
+    const sitio = auxSitioLibre(cfg, est, p.ppto, pptosDelDia(p.ppto));
     if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
@@ -53212,6 +53217,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     marcarComp(e.id, true); setMsg(`✓ ${e.nombre} ${auxMed(e.lCorte)} mm · ${auxVent(e) || ""}`); pitidoCRM(true);
   };
   const hojasLista = Object.values(hojas || {}).filter(Boolean).sort((a, b) => auxCmp(a.presupuesto, b.presupuesto));
+  // Día del planning de Fábrica de cada presupuesto (el primero en que se fabrica)
+  const diaPlan = {}; const nombrePlan = {};
+  Object.values((planF && planF.obras) || {}).forEach((f) => { if (!f || !f.inicio) return; toArray(f.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f.inicio < diaPlan[b]) { diaPlan[b] = f.inicio; nombrePlan[b] = String(f.nombre || "").replace(/ · en fabricación$/, ""); } }); });
+  const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
+  // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
+  const obrasAux = [];
+  pendientes.forEach((p) => { let g = obrasAux.find((x) => x.ppto === p.ppto); if (!g) { g = { ppto: p.ppto, obra: p.obra, cliente: p.cliente, dia: diaDe(p.ppto), piezas: [] }; obrasAux.push(g); } g.piezas.push(p); });
+  obrasAux.sort((a, b) => (a.dia ? 0 : 1) - (b.dia ? 0 : 1) || String(a.dia).localeCompare(String(b.dia)) || auxCmp(a.ppto, b.ppto));
+  const diasAux = [...new Set(obrasAux.filter((g) => g.dia).map((g) => g.dia))];
+  const pptosDelDia = (pp) => { const d = diaDe(pp); return d ? obrasAux.filter((g) => g.dia === d).map((g) => g.ppto) : []; };
+  const siguientePieza = orden === "perfil" ? null : (obrasAux[0] && obrasAux[0].piezas[0]) || null;
   const grupos = [];
   if (orden === "ventana") {
     pendientes.forEach((p) => {
@@ -53237,13 +53253,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
-        {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : grupos[0].filas[0])} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
+        {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0])} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {admin && <button type="button" onClick={() => setVerConfig(!verConfig)} className="text-sm font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">{verConfig ? "Cerrar configuración" : "Configuración"}</button>}
       </div>
       {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
       {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
       {hojasLista.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <details className="rounded-md border border-slate-200 bg-white px-3 py-1.5">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-600">📄 Hojas de corte cargadas ({hojasLista.length})</summary>
+        <div className="flex flex-wrap gap-2 mt-2">
           {hojasLista.map((h) => (
             <span key={h.presupuesto} className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-700 rounded-full px-2.5 py-1">
               Ppto {pptoBonito(h.presupuesto)} v{h.version || "?"} · {h.fecha ? fmtDate(h.fecha) : ""}
@@ -53251,8 +53269,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             </span>
           ))}
         </div>
+        </details>
       )}
-      {avisos.length > 0 && <div className="px-3 py-2 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div>}
+      {avisos.length > 0 && <details className="rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs"><summary className="px-3 py-2 font-bold cursor-pointer">⚠ {avisos.length} aviso{avisos.length === 1 ? "" : "s"} de las hojas de corte (pulsa para verlos)</summary><div className="px-3 pb-2 space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div></details>}
       {cruce.length > 0 && (() => {
         const porObra = [];
         cruce.forEach((c) => { let g = porObra.find((x) => x.obra === c.obra); if (!g) { g = { obra: c.obra, ppto: c.ppto, sinHoja: c.sinHoja, items: [] }; porObra.push(g); } g.items.push(c); });
@@ -53297,12 +53316,51 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           </div>
         )}
         {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
-        {orden === "ventana" ? grupos.map((g) => (
-          <div key={g.k} className="mb-3">
-            <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{auxVent(g.p)}{g.p.grupo ? ` · ${g.p.grupo}` : ""}{g.p.cliente ? ` · ${g.p.cliente}` : ""} <span className="font-normal text-xs text-slate-500">· Ppto {pptoBonito(g.p.ppto)} v{g.p.version || "?"}{g.p.obra ? ` · ${g.p.obra}` : ""}</span></div>
-            {g.filas.map((p) => fila(p, false))}
-          </div>
-        )) : planas.map((p) => fila(p, true))}
+        {orden === "ventana" ? (() => {
+          const tarjeta = (g) => {
+            const abierta = abiertaAux === g.ppto; const tipos = {}; g.piezas.forEach((p) => { tipos[p.nombre] = (tipos[p.nombre] || 0) + 1; });
+            const porVent = []; g.piezas.forEach((p) => { const k = `${auxVent(p)}|${p.grupo || ""}`; let x = porVent.find((y) => y.k === k); if (!x) { x = { k, p, filas: [] }; porVent.push(x); } x.filas.push(p); });
+            return (
+              <div key={g.ppto} className={`rounded-xl border-2 ${abierta ? "border-[#2E8B57] col-span-full" : "border-slate-200 hover:border-[#2E8B57]"} bg-white`}>
+                <button type="button" onClick={() => setAbiertaAux(abierta ? "" : g.ppto)} className="w-full text-left p-3">
+                  <div className="flex items-start gap-2"><div className="flex-1"><div className="text-lg font-extrabold text-slate-900">Ppto {pptoBonito(g.ppto)}</div>
+                    <div className="text-xs text-slate-600 leading-tight">{nombrePlan[digitosPresu(String(g.ppto).split("-")[0])] || g.obra || g.cliente || ""}</div></div>
+                    <div className="text-right"><div className="text-2xl font-extrabold text-[#2E8B57] leading-none">{g.piezas.length}</div><div className="text-[10px] text-slate-500">por cortar</div></div></div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}</div>
+                </button>
+                {abierta && (
+                  <div className="px-3 pb-3 border-t border-slate-100">
+                    <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => cortar(g.piezas[0])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
+                    {porVent.map((x) => (
+                      <div key={x.k} className="mb-2">
+                        <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{auxVent(x.p) || "—"}{x.p.grupo ? ` · ${x.p.grupo}` : ""}</div>
+                        {x.filas.map((p) => fila(p, false))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          };
+          const sinDia = obrasAux.filter((g) => !g.dia);
+          return (
+            <div className="space-y-4">
+              {diasAux.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); return (
+                <div key={d}>
+                  <div className="text-base font-extrabold text-slate-800 capitalize mb-2">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })} <span className="text-sm font-semibold text-slate-500">· {gs.length} obra{gs.length === 1 ? "" : "s"} · {gs.reduce((a, g) => a + g.piezas.length, 0)} piezas</span></div>
+                  <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>
+                </div>
+              ); })}
+              {sinDia.length > 0 && (
+                <div>
+                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
+                  {(verSinDia || !diasAux.length) && <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>}
+                </div>
+              )}
+            </div>
+          );
+        })() : null}
+        {orden === "perfil" ? planas.map((p) => fila(p, true)) : null}
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-center gap-2">
