@@ -19649,6 +19649,11 @@ function PanelesPendientes({ cristales = [] }) {
 // Nº de presupuesto de una persiana/mosquitera del almacén: el que lleva guardado, o el de su proyecto/expediente
 function presupuestoDePersiana(x, ctx) {
   if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
+  // El presupuesto manda sobre el expediente: si el pedido de esa persiana lo trae, se usa ese (varios presupuestos pueden compartir un EXP)
+  try {
+    const ped = toArray(ctx && ctx.pedidosPersianas).find((q) => q && q.presupuesto && (q.recibidaId === (x && x.id) || casaPedidaConPersiana(q, x)));
+    if (ped) return String(ped.presupuesto).replace(/\s+/g, " ").trim();
+  } catch (er) { /* nada */ }
   const nums = numsExpediente(x && x.expediente);
   if (!nums.length) return "";
   const p = toArray(ctx && ctx.proyectos).find((pr) => pr.presupuestoNumero && numsExpediente(pr.numero).some((n) => nums.includes(n)));
