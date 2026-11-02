@@ -18915,7 +18915,7 @@ async function leerPackingPersianas(file) {
 // ---- Pedidos de compra de persianas (lo que se ha pedido al proveedor y todavía no ha llegado) ----
 // Se guardan APARTE (pedidosPersianas), no en persianasAlmacen: así no cuentan como "dentro", no salen en "Sin sitio"
 // y no entran en los cruces con ventanas ni en los puestos. Al llegar (packing list, fotos o a mano) se marcan solas como recibidas.
-const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"recogedor":"","descripcion":""}]}. "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = TODO lo que diga la línea del pedido sobre esa persiana, copiado tal cual y completo (tipo de persiana o compacto, medida del cajón, color, guía, accionamiento o recogedor, motor, observaciones y cualquier otra nota), sin resumir. Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
+const PROMPT_PEDIDO_PERSIANAS = 'Esto es un PEDIDO DE COMPRA de PERSIANAS (compactos / persianas decorativas) que una empresa hace a su proveedor. Devuelve TODAS las persianas, sin saltarte ninguna. Devuelve ÚNICAMENTE un JSON válido, sin texto adicional ni backticks, con esta forma: {"pedido":"","presupuesto":"","referencia":"","expediente":"","cliente":"","proveedor":"","fechaPedido":"","fechaEntrega":"","filas":[{"ref":"","ancho":0,"alto":0,"cantidad":1,"colorCajon":"","colorLama":"","guia":"","colorGuia":"","cinta":"","accionamiento":"","recogedor":"","descripcion":""}]}. COLUMNAS DEL PEDIDO (cada una a su campo, copiadas tal cual): "colorCajon" = columna Color cajon; "colorLama" = columna Lama; "guia" = columna Guias con su tipo y medida (p. ej. Guia mediana (60 x 50mm)); "colorGuia" = el color que va tras Guias: al final de esa celda (p. ej. BLANCO); "cinta" = columna Cinta (p. ej. Inferior); "accionamiento" = columna Acc. (p. ej. Rec. Emp); "recogedor" = columna Recogedor (Derecha o Izquierda; si pone motor o electrica, Electrica). "pedido" = el número del recuadro de la cabecera (junto a la fecha y "Página x de y", p. ej. 5.156) o, si "Número Pedido" viene relleno, ese. "presupuesto" p. ej. 6.412-1. "referencia" = el texto completo que va tras "Referencia:" (p. ej. "EXP 823 PORTAL 33E ESC 06 1A"). "expediente" = SOLO el número que va tras EXP (p. ej. 823). "cliente" = el cliente final de la cabecera. "proveedor" = el proveedor si aparece, vacío si no. "fechaPedido" y "fechaEntrega" en formato AAAA-MM-DD (vacío si no hay). Una fila por cada persiana (cada línea del pedido). "ref" = la vivienda o posición que encabeza la línea (p. ej. V01.217, P03.216); si bajo una misma referencia hay varias persianas, REPITE la referencia en cada fila. "ancho" y "alto" salen de la columna "Ancho/Alto total" (p. ej. "1.500x1.385" = ancho 1500 y alto 1385; el punto es separador de miles) y van EN MILÍMETROS. "recogedor" = Derecha o Izquierda. "cantidad" = la columna Cantidad. "descripcion" = TODO lo que diga la línea del pedido sobre esa persiana, copiado tal cual y completo (tipo de persiana o compacto, medida del cajón, color, guía, accionamiento o recogedor, motor, observaciones y cualquier otra nota), sin resumir. Copia los números EXACTOS. Deja vacío (o 0) lo que no encuentres.';
 const normRefPers = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 // De la línea de un pedido de persianas (la descripción trae algo como "V01.002 · Persiana decorativa 155mm · … Rec. Emp Izquierda · BLANCO")
 // saca la vivienda, el lado del recogedor (la "mano") y, si lo dice, la habitación.
@@ -18990,7 +18990,8 @@ async function leerPedidoPersianas(file) {
     const n = Math.max(1, Math.min(60, parseInt(f.cantidad, 10) || 1));
     for (let k = 0; k < n; k++) {
       filas.push({ id: uid(), ref: String(f.ref || "").trim(), largo: parseFloat(f.ancho) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: /el[eé]ctric|motor/i.test(`${f.recogedor || ""} ${f.descripcion || ""}`) ? "Eléctrica" : /doble/i.test(f.recogedor || "") ? "Doble" : /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim() });
+        recogedor: /el[eé]ctric|motor/i.test(`${f.recogedor || ""} ${f.descripcion || ""}`) ? "Eléctrica" : /doble/i.test(f.recogedor || "") ? "Doble" : /izq/i.test(f.recogedor || "") ? "Izquierda" : /der/i.test(f.recogedor || "") ? "Derecha" : "", descripcion: String(f.descripcion || "").trim(),
+        colorCajon: String(f.colorCajon || "").trim(), colorLama: String(f.colorLama || "").trim(), guia: String(f.guia || "").trim(), colorGuia: String(f.colorGuia || "").trim(), cinta: String(f.cinta || "").trim(), accionamiento: String(f.accionamiento || "").trim(), cantPedido: n });
     }
   });
   return { cab, filas };
@@ -20031,7 +20032,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     let yaLlegadas = 0;
     const nuevas = lista.map((f) => {
       const p = { id: uid(), expediente: expDigitosPers(cab.expediente), parte: normParte(cab.refObra), ref: String(f.ref || "").trim(), largo: parseFloat(f.largo) || 0, alto: parseFloat(f.alto) || 0,
-        recogedor: f.recogedor || "", descripcion: f.descripcion || "", pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
+        recogedor: f.recogedor || "", descripcion: f.descripcion || "", colorCajon: f.colorCajon || "", colorLama: f.colorLama || "", guia: f.guia || "", colorGuia: f.colorGuia || "", cinta: f.cinta || "", accionamiento: f.accionamiento || "", cantPedido: f.cantPedido || 1, pedido: cab.pedido, presupuesto: cab.presupuesto, refObra: cab.refObra, cliente: cab.cliente,
         proveedor: cab.proveedor, fechaPedido: cab.fechaPedido, fechaEntrega: cab.fechaEntrega, fechaAlta: hoy, estado: "pedida" };
       // Si esa persiana ya está en algún almacén (llegó antes de subir el pedido), no se queda "pendiente" para siempre
       const x = enAlmacen.find((y) => !usadas.has(y.id) && casaPedidaConPersiana(p, y));
@@ -20065,6 +20066,16 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // Los datos de cada persiana (mano, descripción, nº de pedido…) salen del PEDIDO de persianas subido (ahí viene todo), no solo de lo que se guardó al meterla en el carro
   const pedidoDe = (x) => { const L = toArray(ctxM.pedidosPersianas); return L.find((q) => q && q.recibidaId === x.id) || L.find((q) => q && casaPedidaConPersiana(q, x)) || null; };
   const descDe = (x) => { const q = pedidoDe(x); return [...new Set([q && q.descripcion, x.descripcion].map((t) => String(t || "").trim()).filter(Boolean))].join(" · "); };
+  // Todo lo que trae el pedido de esa persiana, para el papel: cantidad, color del cajón y de la lama, guía (tipo, medida y color), cinta, accionamiento y la descripción
+  const fichaImpPers = (x) => {
+    const q = pedidoDe(x) || {}; const g = (k) => String(x[k] || q[k] || "").trim();
+    const partes = [
+      g("cantPedido") ? `Cant. ${g("cantPedido")}` : "", g("colorCajon") ? `Cajón ${g("colorCajon")}` : "", g("colorLama") ? `Lama ${g("colorLama")}` : "",
+      g("guia") ? `${g("guia")}${g("colorGuia") ? ` · color guía ${g("colorGuia")}` : ""}` : (g("colorGuia") ? `Color guía ${g("colorGuia")}` : ""),
+      g("cinta") ? `Cinta ${g("cinta")}` : "", g("accionamiento") ? `Acc. ${g("accionamiento")}` : "", descDe(x), (x.pedido || q.pedido) ? `Pedido ${x.pedido || q.pedido}` : "",
+    ].filter(Boolean);
+    return partes.join(" · ").replace(/\s*\n\s*/g, " ");
+  };
   const manoDe = (x) => { const q = pedidoDe(x); return x.recogedor || (q && q.recogedor) || parseLineaPersiana(`${(q && q.descripcion) || ""} ${x.descripcion || ""} ${x.ref || ""} ${x.medidaEtiqueta || ""}`).recogedor || ""; };
   // Lo que se muestra como "expediente": el número; y si en vez de número lo que hay es el nombre del cliente (como en muchos pedidos nuestros), ese nombre.
   const expTexto = (x) => { const r = expedienteRealDe(x); if (r) return r; const raw = String(x.expediente || "").trim(); return raw && !/\d/.test(raw) ? raw : "sin dato"; };
@@ -20815,12 +20826,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   );
   // Imprime uno o varios carros: por lado y estante, con la vivienda, el expediente y la medida de cada persiana (para dárselo al operario)
   const imprimirCarros = (lista) => {
+    const sinMano = activos.filter((x) => x.estante && lista.some((c) => c.numero === x.estante.carro) && !manoDe(x));
+    if (sinMano.length && !window.confirm(`⚠ ${sinMano.length} persiana${sinMano.length === 1 ? "" : "s"} sin la mano (recogedor) en el pedido subido: ${sinMano.slice(0, 8).map((x) => `${x.ref || "?"} (EXP ${x.expediente || "?"})`).join(", ")}${sinMano.length > 8 ? "…" : ""}.\n\nSuele ser que el pedido de esa obra no está subido al CRM o no coincide el expediente/medida. En el papel saldrán marcadas como «MANO SIN DATO». ¿Imprimo igualmente?`)) return;
     const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const secciones = lista.map((c) => {
       const lados = LADOS_CARRO.map((lado) => {
         const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
           const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}${x.refObra ? ` · ${esc(x.refObra)}` : ""}${x.cliente ? ` · ${esc(x.cliente)}` : ""} · <b>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "MANO SIN DATO")}</b>${descDe(x) ? `<div class="d">${esc(descDe(x).replace(/\s*\n\s*/g, " "))}${(x.pedido || (pedidoDe(x) || {}).pedido) ? ` · Pedido ${esc(x.pedido || (pedidoDe(x) || {}).pedido)}` : ""}</div>` : ""}</div>`).join("") : '<i class="v">vacío</i>';
+          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}${x.refObra ? ` · ${esc(x.refObra)}` : ""}${x.cliente ? ` · ${esc(x.cliente)}` : ""} · <b>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "⚠ MANO SIN DATO (falta el pedido)")}</b>${fichaImpPers(x) ? `<div class="d">${esc(fichaImpPers(x))}</div>` : ""}</div>`).join("") : '<i class="v">vacío</i>';
           return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
         }).join("");
         return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
@@ -43046,6 +43059,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
   const [tvAD, setTvAD] = useState(false);
+  const [verDiaAD, setVerDiaAD] = useState(null); // día cuyo «+N más» se ha tocado: lista completa de sus obras
   const [quitarAD, setQuitarAD] = useState(null); // ventana que se va a sacar de un palet: { f, o } → pregunta a dónde va
   const incCtxAD = React.useContext(IncFabricaCtx);
   const salidaRefAD = useRef([]); // obras completas, con todos sus palets ya en su almacén (las rellena el panel del día en cada pintado)
@@ -43919,9 +43933,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         plus[d] = (plus[d] || 0) + h; mueve.push({ o, d, h });
       });
       if (!mueve.length) { avisar(true, `Este día ya cabe en ${cap160} h (lleva ${Math.round(cur)} h).`); return; }
+      const sin0 = obs.filter((o) => !(horasObraAD(o) > 0));
       const porDia = {}; mueve.forEach((m) => { (porDia[m.d] = porDia[m.d] || []).push(m); });
       const resumen = Object.keys(porDia).sort().map((d) => `${fmtDate(d)}: ${porDia[d].map((m) => `${nombreAD(m.o)} (${Math.round(m.h)} h)`).join(", ")}`).join("\n");
-      if (!window.confirm(`Este día se queda con ${Math.round(cur)} h y se mueven ${mueve.length} obras:\n\n${resumen}\n\nSe guarda una copia por si hay que volver atrás. ¿Lo hago?`)) return;
+      if (!window.confirm(`Este día se queda con ${Math.round(cur)} h y se mueven ${mueve.length} obras:\n\n${resumen}\n\n${sin0.length ? `\n⚠ ${sin0.length} obra${sin0.length === 1 ? "" : "s"} con 0 HORAS (no se pueden mover ni contar): ${sin0.map((o) => nombreAD(o)).join(", ")}\n` : ""}\nSe guarda una copia por si hay que volver atrás. ¿Lo hago?`)) return;
       const upd = {}; const updMn = {}; const updMarcas = {};
       mueve.forEach(({ o, d }) => {
         const ko = limpiaAD(o.key);
@@ -43938,6 +43953,61 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         .then(() => avisar(true, `${mueve.length} obra${mueve.length === 1 ? "" : "s"} repartida${mueve.length === 1 ? "" : "s"} en días de ${cap160} h.`))
         .catch((e) => avisar(false, "No se pudo repartir: " + e.message));
     };
+    // Cambia UNA obra de día (las de Fábrica no: allí manda Fábrica). Lo ya ticado en Control del día viaja con ella.
+    const moverObraDia = (o, desde, hasta) => {
+      if (!hasta || hasta === desde) return;
+      const ko = limpiaAD(o.key); const ex = (extraAD && extraAD[desde]) || {}; const mn = (asignManualAD && asignManualAD[desde]) || {};
+      const hO = horasObraAD(o); const ya = horasDiaAD(hasta);
+      const tareas = [];
+      if (ex[ko]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${hasta}/${ko}`]: true, [`${desde}/${ko}`]: null }));
+      if (mn[ko]) {
+        tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${ko}`]: true, [`${desde}/${ko}`]: null }));
+        const mk = marcasCDAD && marcasCDAD[desde] && marcasCDAD[desde][ko];
+        if (mk) tareas.push(fbUpdate(ref(fbDb, "controlDia"), { [`${hasta}/${ko}`]: mk, [`${desde}/${ko}`]: null }));
+      }
+      if (!tareas.length) { avisar(false, "Esta obra viene del planning de Fábrica: su día se cambia en Fábrica."); return; }
+      Promise.all(tareas).then(() => avisar(true, `${nombreAD(o)} → ${fmtDate(hasta)} (${hO > 0 ? Math.round(hO) + " h" : "sin horas"}; ese día ya llevaba ${Math.round(ya)} h de ${cap160}${ya + hO > cap160 ? " ⚠ se pasa" : ""})`)).catch((e) => avisar(false, "No se pudo cambiar: " + e.message));
+    };
+    const modalDiaAD = () => verDiaAD ? (() => {
+      const f = verDiaAD; const its = itemsDia(f);
+      const ex = (extraAD && extraAD[f]) || {}; const mn = (asignManualAD && asignManualAD[f]) || {};
+      return (
+        <div className="fixed inset-0 z-[110] bg-black/50 flex items-start justify-center p-3 overflow-y-auto" onClick={() => setVerDiaAD(null)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-4 space-y-2 my-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <div className="text-base font-extrabold text-slate-900 capitalize">{new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
+              <div className="text-sm text-slate-600">· {its.length} obras · <b>{Math.round(horasDiaAD(f))} h</b> de {cap160}</div>
+              <button type="button" onClick={() => setVerDiaAD(null)} className="ml-auto px-3 py-1 rounded border border-slate-300 text-sm font-semibold">Cerrar</button>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {its.map((it, i) => {
+                if (!it.o) return <div key={i} className="py-2 text-sm text-amber-800">📌 {it.sinEtiquetas} <span className="text-xs">· sin ventanas cargadas (planning de Fábrica)</span></div>;
+                const o = it.o; const ko = limpiaAD(o.key); const st = stats(o);
+                const t = o.clavePlan && planDias[f] && planDias[f][o.clavePlan]; const h = t && Number(t.horas) > 0 ? Number(t.horas) : horasObraAD(o);
+                const movible = !!(ex[ko] || mn[ko]);
+                const origen = o.clavePlan ? "Planning de Fábrica" : mn[ko] ? "Control del día" : ex[ko] ? "Añadida desde aquí" : it.terminada ? "Terminada en fábrica" : "";
+                return (
+                  <div key={o.key + i} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-900">{nombreAD(o)}</div>
+                      <div className="text-xs text-slate-500">{st.n}/{st.total} en palet{st.pend > 0 ? ` · ${st.pend} hechas sin palet` : ""} · {h > 0 ? `${Math.round(h)} h` : "⚠ 0 HORAS"}{origen ? ` · ${origen}` : ""}{situacionAD(o).estado ? ` · ${situacionAD(o).estado}` : ""}</div>
+                    </div>
+                    <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={() => { setDiaAD(f); setVerDiaAD(null); }} className="px-2 py-1 rounded bg-slate-800 text-white text-xs font-bold">Abrir la obra</button>
+                      {movible
+                        ? <label className="text-xs text-slate-600 flex items-center gap-1">Cambiar a
+                            <input type="date" defaultValue={f} onChange={(e) => { if (e.target.value) { moverObraDia(o, f, e.target.value); setVerDiaAD(null); } }} className="border border-slate-300 rounded px-1 py-0.5 text-xs" /></label>
+                        : <span className="text-[11px] text-slate-400">su día se cambia en Fábrica</span>}
+                      {ex[ko] && <button type="button" onClick={() => { fbSet(ref(fbDb, `almacenDiaObras/${f}/${ko}`), null).catch(() => {}); }} className="text-xs text-rose-600 underline">quitar de este día</button>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    })() : null;
     const nombreAD = (o) => { const r = refObraAD(o); const n = String(o.nombre || "").replace(/^#\d+\s*/, "").replace(/^Uxcar exp\.\s*\S+\s*/i, "").trim(); return r ? `${r}${n ? " · " + n : ""}` : (o.nombre || ""); };
     const terminadaEl = (o) => {
       const d = o.dueno || {};
@@ -44225,7 +44295,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     return (
       <div className="space-y-4">
-        {toastAD}{modalIncAD}{modalQuitarAD}
+        {toastAD}{modalIncAD}{modalQuitarAD}{modalDiaAD()}
         <div className="flex flex-wrap items-center gap-3">
           {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
@@ -44251,6 +44321,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               const sit = o ? situacionAD(o) : null;
               if (sit && sit.dias.length) { setDiaAD(sit.dias.includes(diaAD) ? diaAD : sit.dias[0]); avisar(true, `${nombreAD(o)} YA ESTÁ EN PLANNING: ${sit.dias.map((d) => fmtDate(d)).join(", ")}${sit.estado ? ` · estado: ${sit.estado}` : ""}. Te llevo a ese día.`); return; }
               const hO = horasObraAD(o); const diaDest = diaLibreAD(hO, diaAD);
+              if (!(hO > 0)) window.alert(`⚠ ${nombreAD(o)} sale con 0 HORAS: no está en el planning de Fábrica, ni en el PDF «PLANING», ni tiene listado de mano de obra. La he puesto en ${fmtDate(diaDest)} sin poder contar sus horas; ese día puede pasarse de ${cap160} h sin que lo sepas. Ponle las horas (Fábrica) o sube su listado.`);
               fbSet(ref(fbDb, `almacenDiaObras/${diaDest}/${limpiaAD(k)}`), true).catch(() => {});
               if (diaDest !== diaAD) { setDiaAD(diaDest); setMesAD(diaDest.slice(0, 7)); }
               avisar(true, `Obra añadida al ${fmtDate(diaDest)} (${hO > 0 ? `${Math.round(hO)} h` : "sin horas calculadas"}; ese día ya llevaba ${Math.round(horasDiaAD(diaDest))} h de ${cap160})${sit && sit.estado ? ` · estado: ${sit.estado}` : ""}`);
@@ -44280,7 +44351,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                       const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : st.pend > 0 ? "bg-sky-200 text-sky-900" : "bg-slate-200 text-slate-700";
                       return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>{it.terminada ? "🏁" : "📌"} {nombreAD(it.o)} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
                     })}
-                    {its.length > 5 && <div className="text-[10px] text-slate-400">+{its.length - 5} más</div>}
+                    {its.length > 5 && <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); setDiaAD(f); setVerDiaAD(f); }} className="block text-[11px] font-bold text-sky-700 underline cursor-pointer">+{its.length - 5} más · ver todas</span>}
                   </div>
                 </button>
               );
@@ -49386,7 +49457,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const nombrePorId = Object.fromEntries(todasObras.map((o) => [o.id, o]));
   const totalFirmes = firmes.reduce((a, o) => a + o.horas, 0);
   // Obras (y sus horas) que se han ido añadiendo a un día desde «Almacén del día»: se ven aquí también, para llevarlo todo controlado
-  const extraAlm = useObjetoFb("almacenDiaObras");
+  const extraAlm0 = useObjetoFb("almacenDiaObras");
+  const mnAlm = useObjetoFb("controlDiaObras"); // obras que se meten a un día desde Control del día / Almacén del día
+  const extraAlm = (() => { const r = {}; [extraAlm0, mnAlm].forEach((m) => Object.entries(m || {}).forEach(([f, o]) => Object.entries(o || {}).forEach(([k, v]) => { if (v) { (r[f] = r[f] || {})[k] = true; } }))); return r; })();
   const limpiaK = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
   const porKeyAlm = {}; todasObras.forEach((o) => { if (o.ref) porKeyAlm[`${o.ref.tipo === "uxcar" ? "u" : "p"}-${limpiaK(o.ref.id)}`] = o; });
   const extrasDiaAlm = (f) => Object.keys((extraAlm && extraAlm[f]) || {}).filter((k) => extraAlm[f][k]).map((k) => {
@@ -49622,8 +49695,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   title="Arrástrala a otro día, o tócala y pulsa «Mover aquí» en el día que quieras" className={`text-xs text-slate-700 cursor-grab rounded px-1 ${moviendo && moviendo.id === t.id ? "bg-sky-100 ring-1 ring-sky-400" : "hover:bg-slate-50"}`}>{t.nombre} <span className="text-slate-400">· {t.horas} h</span></div>)}
                 {exA.length > 0 && (
                   <div className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-1.5 py-1">
-                    <div className="text-[10px] font-bold text-amber-900">➕ Añadidas desde Almacén del día</div>
-                    {exA.map((x) => <div key={x.k} className="text-xs text-amber-900">{x.nombre} <span className="text-amber-700">· {x.horas > 0 ? `${Math.round(x.horas * 10) / 10} h` : "sin horas"}</span></div>)}
+                    <div className="text-[10px] font-bold text-amber-900">➕ Metidas desde Control del día / Almacén del día</div>
+                    {exA.map((x) => <div key={x.k} className="text-xs text-amber-900">{x.nombre} <span className="text-amber-700">· {x.horas > 0 ? `${Math.round(x.horas * 10) / 10} h` : <b className="text-rose-700">⚠ 0 HORAS</b>}</span></div>)}
                     <div className="text-[11px] font-bold text-amber-900 mt-0.5">Con esto el día lleva {Math.round((d.usadas - bloq + hExA) * 10) / 10} h de {Math.round(capF * 10) / 10}{d.usadas - bloq + hExA > capF + 0.01 ? " ⚠ pasa de las horas" : ""}</div>
                   </div>
                 )}
