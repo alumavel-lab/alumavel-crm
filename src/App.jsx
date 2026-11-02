@@ -54231,6 +54231,7 @@ function imprimirAux(lista, cfg) {
     .ppto { font-size: ${f(3.6)}; font-weight: 900; }
     .med { font-size: ${f(7)}; font-weight: 900; line-height: 1; white-space: nowrap; margin-top: 0.3mm; display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; }
     .med .refp { font-size: ${f(4.6)}; font-weight: 900; }
+    .med .ejeb { font-size: ${f(5)}; font-weight: 900; border: 0.6mm solid #000; padding: 0 1.2mm; line-height: 1.1; ${neg ? "background:#000;color:#fff;" : ""} }
     .r2 { font-size: ${f(3.4)}; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
     .sitio { margin-top: 0.6mm; display: flex; align-items: center; justify-content: space-between; gap: 2mm; white-space: nowrap; overflow: hidden; border: 0.7mm solid #000; padding: 0.2mm 1.2mm; ${neg ? "background: #000; color: #fff;" : ""} }
     .sitio .lugar { font-size: ${f(5.4)}; font-weight: 900; }
@@ -54240,9 +54241,9 @@ function imprimirAux(lista, cfg) {
   </style></head><body><div class="et">
     <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
-    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span><span class="refp">${esc(p.ref || "")}</span></div>
+    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb">${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    ${p.ejeTxt || p.color ? `<div class="r2"${p.ejeTxt ? ' style="font-size:' + f(4.6) + ';font-weight:900"' : ""}>${esc([p.ejeTxt, p.color].filter(Boolean).join(" · "))}</div>` : ""}
+    ${p.color ? `<div class="r2">${esc(p.color)}</div>` : ""}
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
@@ -54475,7 +54476,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       pitidoCRM(true);
     } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
   };
-  const reimprimir = (e) => imprimirAux([{ ...e, pasosTxt: auxPasosTxt(refDe(e.ref), e), ejeTxt: auxEjeTxt(refDe(e.ref), e) }], cfg);
+  const reimprimir = (e0) => {
+    const q = !e0.eje ? piezas.find((y) => y.id === e0.id) : null;
+    const e = q && q.eje ? { ...e0, eje: q.eje, ejeLado: q.ejeLado || "" } : e0;
+    imprimirAux([{ ...e, pasosTxt: auxPasosTxt(refDe(e.ref), e), ejeTxt: auxEjeTxt(refDe(e.ref), e) }], cfg);
+  };
   const paso = (id, nombre, v) => guardarLinea(`auxiliaresPiezas/${id}/pasos/${auxSlug(nombre)}`, v ? Date.now() : null);
   const deshacer = (e) => { if (window.confirm(`¿Deshacer el corte de ${e.nombre} ${auxMed(e.lCorte)} mm (${e.cod})? Vuelve a «Falta por cortar» y libera su hueco.`)) guardarLinea(`auxiliaresPiezas/${e.id}`, null); };
   // (la captura global de la pistola llama siempre a la versión actual de buscarCodigo)
