@@ -53935,7 +53935,9 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     });
     const texto = b.lineas.join("\n");
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
-    return { modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas };
+    const eje = ((texto.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
+    const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
+    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas };
   });
   return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
 }
@@ -53989,7 +53991,9 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
     filas.forEach((f) => { if (f.lCorte != null && f.lCorte < 10) { f.lCorte = Math.round(f.lCorte * 1000); f.lFinal = f.lFinal != null ? Math.round(f.lFinal * 1000) : null; f.enMetros = true; } });
     // La caja "Compacto decorativo - guía aparte" (CJ_DECOR_S/G) viene sin guía: se anota para avisar si falta la guía en la hoja
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(b) || /gu[ií]a aparte/i.test(b);
-    modelos.push({ modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas });
+    const eje = ((b.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
+    const ejeLado = ({ D: "derecha", I: "izquierda" })[(b.match(/EJELADO:([DI])/) || [])[1]] || "";
+    modelos.push({ eje, ejeLado, modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas });
   });
   return { presupuesto, version, referencia, cliente, modelos };
 }
@@ -54033,7 +54037,17 @@ const auxCfgDe = (c) => {
 };
 const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 const auxMed = (n) => (n == null ? "?" : String(Math.round(n * 10) / 10).replace(".", ","));
-const auxPasosDe = (rc, reg) => String((rc && rc.pasos) || "").split(",").map((s) => s.trim()).filter(Boolean).filter((n) => !(reg && reg.sinBocado && /bocado/i.test(n)));
+const auxPasosDe = (rc, reg) => {
+  const ps = String((rc && rc.pasos) || "").split(",").map((x) => x.trim()).filter(Boolean);
+  const fel = ps.find((n) => /felpudo/i.test(n)), boc = ps.find((n) => /bocado/i.test(n));
+  // Guía doble (1/2 y 2/2): las dos llevan felpudo; el bocado solo la del lado del eje. Con motor no hay bocado: las dos solo felpudo.
+  if (fel && boc && reg && reg.n === 2) return reg.sinBocado || reg.k !== 1 ? [fel] : [fel, boc];
+  return ps.filter((n) => !(reg && reg.sinBocado && /bocado/i.test(n)));
+};
+// Texto del proceso para la etiqueta y la lista: el bocado lleva siempre el eje (distancia a la que se hace)
+const auxPasosTxt = (rc, reg) => auxPasosDe(rc, reg).join(" + ");
+const auxEjeTxt = (rc, reg) => (auxPasosDe(rc, reg).some((n) => /bocado/i.test(n)) ? `EJE ${reg && reg.ejeLado ? String(reg.ejeLado).toUpperCase() + " " : ""}${(reg && reg.eje) || "?"}` : "");
+const auxPasosEje = (rc, reg) => [auxPasosTxt(rc, reg), auxEjeTxt(rc, reg)].filter(Boolean).join(" · ");
 const auxLista = (rc, reg) => !!(reg && reg.cortada) && auxPasosDe(rc, reg).every((n) => reg.pasos && reg.pasos[auxSlug(n)]);
 const auxCmp = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { numeric: true });
 // Guarda para Auxiliares las hojas de corte que vengan entre los PDF del Expediente rápido (los demás PDF se saltan). Devuelve los presupuestos guardados.
@@ -54067,7 +54081,19 @@ async function leerHojaAuxPdf(file, refs) {
   for (let n = 1; n <= doc.numPages; n++) {
     const pg = await doc.getPage(n);
     const tc = await pg.getTextContent();
-    paginas.push(tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")));
+    let lado = "";
+    try {
+      const its = tc.items.filter((i) => i && i.str && i.str.trim() && i.transform);
+      const ejeIt = its.find((i) => /\d{2,4}\s*Eje\b/i.test(i.str)) || its.find((i) => /^\s*Eje\b/i.test(i.str));
+      if (ejeIt) {
+        // centro de la ventana = la cota (3-4 cifras) que se repite arriba y abajo en la misma vertical
+        const cuenta = {};
+        its.forEach((i) => { const t = i.str.trim(); if (/^\d{3,4}$/.test(t)) (cuenta[t] = cuenta[t] || []).push([i.transform[4], i.transform[5]]); });
+        const cand = Object.entries(cuenta).map(([t, v]) => ({ t: +t, v })).filter((c) => c.v.length >= 2 && Math.abs(c.v[0][0] - c.v[1][0]) < 40 && Math.abs(c.v[0][1] - c.v[1][1]) > 100).sort((a, b) => b.t - a.t)[0];
+        if (cand) { const cx = (cand.v[0][0] + cand.v[1][0]) / 2; lado = ejeIt.transform[4] > cx ? "D" : "I"; }
+      }
+    } catch (er) { /* nada */ }
+    paginas.push([...tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")), lado ? `\nEJELADO:${lado}\n` : ""]);
   }
   const sinTexto = paginas.every((p) => !p.join("").trim());
   return { sinTexto, r: sinTexto ? null : leerAuxiliaresHojaCorte(paginas, refs) };
@@ -54145,7 +54171,7 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
           piezas.push({
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
             lCorte: f.lCorte, color: f.color || "", k, n,
-            ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
+            eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
             referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
         }
@@ -54203,19 +54229,20 @@ function imprimirAux(lista, cfg) {
     .der { text-align: right; overflow: hidden; }
     .nom { font-size: ${f(3.4)}; font-weight: bold; overflow: hidden; text-overflow: ellipsis; }
     .ppto { font-size: ${f(3.6)}; font-weight: 900; }
-    .med { font-size: ${f(7)}; font-weight: 900; line-height: 1; white-space: nowrap; margin-top: 0.3mm; }
+    .med { font-size: ${f(7)}; font-weight: 900; line-height: 1; white-space: nowrap; margin-top: 0.3mm; display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; }
+    .med .refp { font-size: ${f(4.6)}; font-weight: 900; }
     .r2 { font-size: ${f(3.4)}; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
     .sitio { margin-top: 0.6mm; display: flex; align-items: center; justify-content: space-between; gap: 2mm; white-space: nowrap; overflow: hidden; border: 0.7mm solid #000; padding: 0.2mm 1.2mm; ${neg ? "background: #000; color: #fff;" : ""} }
     .sitio .lugar { font-size: ${f(5.4)}; font-weight: 900; }
-    .sitio .pasos { font-size: ${f(3)}; font-weight: bold; overflow: hidden; }
+    .sitio .pasos { font-size: ${f(3.4)}; font-weight: 900; overflow: hidden; }
     .bar { margin-top: 0.5mm; line-height: 0; text-align: center; }
     .dig { font-size: ${f(2.4)}; letter-spacing: 0.3mm; line-height: 1.05; text-align: center; }
   </style></head><body><div class="et">
     <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
-    <div class="med">${esc(auxMed(p.lCorte))} mm</div>
+    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span><span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    <div class="r2">${esc(`Ref ${p.ref}${p.color ? ` · ${p.color}` : ""}`)}</div>
+    ${p.ejeTxt || p.color ? `<div class="r2"${p.ejeTxt ? ' style="font-size:' + f(4.6) + ';font-weight:900"' : ""}>${esc([p.ejeTxt, p.color].filter(Boolean).join(" · "))}</div>` : ""}
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
@@ -54438,9 +54465,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
-      imprimirAux([{ ...reg, pasosTxt: auxPasosDe(refDe(p.ref), reg).join(" + ") }], cfg);
+      imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
       setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
@@ -54448,7 +54475,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       pitidoCRM(true);
     } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
   };
-  const reimprimir = (e) => imprimirAux([{ ...e, pasosTxt: auxPasosDe(refDe(e.ref), e).join(" + ") }], cfg);
+  const reimprimir = (e) => imprimirAux([{ ...e, pasosTxt: auxPasosTxt(refDe(e.ref), e), ejeTxt: auxEjeTxt(refDe(e.ref), e) }], cfg);
   const paso = (id, nombre, v) => guardarLinea(`auxiliaresPiezas/${id}/pasos/${auxSlug(nombre)}`, v ? Date.now() : null);
   const deshacer = (e) => { if (window.confirm(`¿Deshacer el corte de ${e.nombre} ${auxMed(e.lCorte)} mm (${e.cod})? Vuelve a «Falta por cortar» y libera su hueco.`)) guardarLinea(`auxiliaresPiezas/${e.id}`, null); };
   // (la captura global de la pistola llama siempre a la versión actual de buscarCodigo)
@@ -54538,7 +54565,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
-      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}{p.ref}{p.color ? ` · ${p.color}` : ""}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
       <button type="button" onClick={() => cortar(p, ctx)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
     </div>
   );
