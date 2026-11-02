@@ -54037,16 +54037,30 @@ const auxCfgDe = (c) => {
 };
 const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 const auxMed = (n) => (n == null ? "?" : String(Math.round(n * 10) / 10).replace(".", ","));
+const auxEjesDe = (r) => {
+  let I = String((r && r.ejeI) || ""), D = String((r && r.ejeD) || "");
+  const e = r && r.eje ? String(r.eje) : "";
+  if (!I && !D && e) { if (r.ejeLado === "izquierda") I = e; else if (r.ejeLado === "derecha") D = e; }
+  return { I, D, sin: !I && !D ? e : "" };
+};
 const auxPasosDe = (rc, reg) => {
   const ps = String((rc && rc.pasos) || "").split(",").map((x) => x.trim()).filter(Boolean);
   const fel = ps.find((n) => /felpudo/i.test(n)), boc = ps.find((n) => /bocado/i.test(n));
   // Guía doble (1/2 y 2/2): las dos llevan felpudo; el bocado solo la del lado del eje. Con motor no hay bocado: las dos solo felpudo.
-  if (fel && boc && reg && reg.n === 2) return reg.sinBocado || reg.k !== 1 ? [fel] : [fel, boc];
+  if (fel && boc && reg && reg.n === 2) { const ej = auxEjesDe(reg); return reg.sinBocado || (reg.k !== 1 && !(ej.I && ej.D)) ? [fel] : [fel, boc]; } // eje en los dos lados: las dos guías llevan bocado
   return ps.filter((n) => !(reg && reg.sinBocado && /bocado/i.test(n)));
 };
 // Texto del proceso para la etiqueta y la lista: el bocado lleva siempre el eje (distancia a la que se hace)
+const auxEjeKey = (p) => String(`${p.ppto}_${p.modelo}`).replace(/[.#$/[\]\s]+/g, "_"); // el eje se guarda por obra y modelo de ventana
 const auxPasosTxt = (rc, reg) => auxPasosDe(rc, reg).join(" + ");
-const auxEjeTxt = (rc, reg) => (auxPasosDe(rc, reg).some((n) => /bocado/i.test(n)) ? `EJE ${reg && reg.ejeLado ? String(reg.ejeLado).toUpperCase() + " " : ""}${(reg && reg.eje) || "?"}` : "");
+const auxEjeTxt = (rc, reg) => {
+  if (!auxPasosDe(rc, reg).some((n) => /bocado/i.test(n))) return "";
+  const ej = auxEjesDe(reg || {});
+  if (ej.I && ej.D) return reg.n === 2 ? (reg.k === 1 ? `EJE IZQUIERDA ${ej.I}` : `EJE DERECHA ${ej.D}`) : `EJE IZQ. ${ej.I} · DER. ${ej.D}`;
+  if (ej.I) return `EJE IZQUIERDA ${ej.I}`;
+  if (ej.D) return `EJE DERECHA ${ej.D}`;
+  return `EJE ${ej.sin || "?"}`;
+};
 const auxPasosEje = (rc, reg) => [auxPasosTxt(rc, reg), auxEjeTxt(rc, reg)].filter(Boolean).join(" · ");
 const auxLista = (rc, reg) => !!(reg && reg.cortada) && auxPasosDe(rc, reg).every((n) => reg.pasos && reg.pasos[auxSlug(n)]);
 const auxCmp = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { numeric: true });
@@ -54328,7 +54342,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
   const pptosGuiaProv = useMemo(() => pptosConGuiaProveedor(ctxAux), [ctxAux.pedidosCrm, ctxAux.uxPedidosCtx, ctxAux.persianasAlmacen, ctxAux.proyectos, ctxAux.uxExpedientes]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { piezas, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
+  const ejesOv = useObjetoFb("auxiliaresEjes"); // eje (mm) y lado escritos a mano, por obra y modelo: mandan sobre lo leído de la hoja
+  const { piezas: piezasBase, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
+  const piezas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
+  const guardarEje = (x, patch) => { const a = auxEjesDe(x); const n = { izq: patch.izq !== undefined ? patch.izq : a.I, der: patch.der !== undefined ? patch.der : a.D }; guardarLinea(`auxiliaresEjes/${auxEjeKey(x)}`, n.izq || n.der ? n : null); };
   // Cruce con el análisis de materiales: lo que el análisis dice que lleva la obra (inversor, guía de persiana…) y la hoja de corte no trae
   const cruce = useMemo(() => {
     const activas = cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim());
@@ -54466,7 +54483,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
@@ -54477,8 +54494,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
   };
   const reimprimir = (e0) => {
-    const q = !e0.eje ? piezas.find((y) => y.id === e0.id) : null;
-    const e = q && q.eje ? { ...e0, eje: q.eje, ejeLado: q.ejeLado || "" } : e0;
+    const q = piezas.find((y) => y.id === e0.id); const ov = ejesOv && ejesOv[auxEjeKey(e0)];
+    const e = q && (q.eje || q.ejeLado || q.ejeI || q.ejeD) && (ov || !(e0.eje || e0.ejeI || e0.ejeD)) ? { ...e0, eje: q.eje || e0.eje || "", ejeLado: q.ejeLado || e0.ejeLado || "", ejeI: q.ejeI || "", ejeD: q.ejeD || "" } : e0;
     imprimirAux([{ ...e, pasosTxt: auxPasosTxt(refDe(e.ref), e), ejeTxt: auxEjeTxt(refDe(e.ref), e) }], cfg);
   };
   const paso = (id, nombre, v) => guardarLinea(`auxiliaresPiezas/${id}/pasos/${auxSlug(nombre)}`, v ? Date.now() : null);
@@ -54570,7 +54587,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
-      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}
+        {auxPasosDe(refDe(p.ref), p).some((n) => /bocado/i.test(n)) && (
+          <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap">
+            {(() => { const a = auxEjesDe(p); return (<>
+              <b className={a.I || a.D || a.sin ? "text-slate-700" : "text-rose-700"}>Eje (mm)</b>
+              <span className="text-slate-500">izq.</span>
+              <input key={`eji_${auxEjeKey(p)}_${a.I}`} type="number" defaultValue={a.I} placeholder="—" onBlur={(ev) => { if (String(ev.target.value) !== a.I) guardarEje(p, { izq: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
+              <span className="text-slate-500">der.</span>
+              <input key={`ejd_${auxEjeKey(p)}_${a.D}`} type="number" defaultValue={a.D} placeholder={a.sin || "283"} onBlur={(ev) => { if (String(ev.target.value) !== a.D) guardarEje(p, { der: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
+            </>); })()}
+          </span>
+        )}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
       <button type="button" onClick={() => cortar(p, ctx)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
     </div>
   );
@@ -54841,7 +54869,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           const pasos = auxPasosDe(rc, e);
           const lista = auxLista(rc, e);
           const conBocado = String((rc && rc.pasos) || "").split(",").some((n) => /bocado/i.test(n));
-          const eje = parseFloat(e.eje);
+          const eje = (() => { const v = parseFloat(e.eje); return Number.isFinite(v) ? (v < 100 ? v * 10 : v) : NaN; })();
           return (
             <div key={e.id} className="py-2 border-b border-slate-100 last:border-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -54873,9 +54901,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   ))}
                   {conBocado && <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={!!e.sinBocado} onChange={(ev) => guardarLinea(`auxiliaresPiezas/${e.id}/sinBocado`, ev.target.checked ? true : null)} /> Sin bocado (motor)</label>}
                   {conBocado && !e.sinBocado && (
-                    <label className="flex items-center gap-1.5 text-xs text-slate-600">Eje (cm)
+                    <label className="flex items-center gap-1.5 text-xs text-slate-600">Eje (mm)
                       <input type="number" defaultValue={e.eje ?? ""} onBlur={(ev) => guardarLinea(`auxiliaresPiezas/${e.id}/eje`, ev.target.value === "" ? null : parseFloat(ev.target.value))} className="border border-slate-300 rounded px-1.5 py-0.5 w-20 text-sm" />
-                      {Number.isFinite(eje) && <span className="text-slate-500">bocado de {eje - parseFloat(cfg.bocadoCm)} a {eje + parseFloat(cfg.bocadoCm)} cm</span>}
+                      {Number.isFinite(eje) && <span className="text-slate-500">bocado de {eje - 10 * parseFloat(cfg.bocadoCm)} a {eje + 10 * parseFloat(cfg.bocadoCm)} mm</span>}
                     </label>
                   )}
                 </div>
