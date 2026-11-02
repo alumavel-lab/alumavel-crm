@@ -49722,6 +49722,10 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   }).filter(Boolean);
   const hoyAlm = new Date().toLocaleDateString("sv-SE");
   const diasVer = [...new Set([...diasFirmes, ...Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm && extrasDiaAlm(f).length)])].sort();
+  // Lo metido a mano en un día (Control del día / Almacén del día) también se comunica a Auxiliares: mismo planning en los dos sitios
+  const extrasPubFb = (() => { const r = {}; try { Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm).forEach((f) => extrasDiaAlm(f).forEach((x) => { (r[f] = r[f] || {})[limpiaFb(x.k)] = { nombre: x.nombre, pres: presFab({ ref: x.ref }) }; })); } catch (e) { /* nada */ } return JSON.stringify(r); })();
+  const ultimoExtrasFb = useRef("");
+  useEffect(() => { if (extrasPubFb === ultimoExtrasFb.current) return; ultimoExtrasFb.current = extrasPubFb; fbSet(ref(fbDb, "planFabricaExtras"), { ...JSON.parse(extrasPubFb), en: Date.now() }).catch(() => {}); }, [extrasPubFb]);
 
   // Confirmar: se guarda el planning (con el material de cada obra y dónde está) para el
   // aviso diario automático, y se manda ya el correo de la semana.
@@ -49933,18 +49937,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
         )}
         {diasVer.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            {diasVer.map((f) => { const d = plan1.dias[f] || { usadas: 0, trozos: [] }; const exA = extrasDiaAlm(f); const hExA = exA.reduce((a, x) => a + x.horas, 0); const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const pct = Math.min(100, ((d.usadas - bloq) / capF) * 100); return (
+            {diasVer.map((f) => { const d = plan1.dias[f] || { usadas: 0, trozos: [] }; const exA = extrasDiaAlm(f); const hExA = exA.reduce((a, x) => a + x.horas, 0); const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const totH = d.usadas - bloq + hExA; const pasaH = totH > capF + 0.01; const pct = Math.min(100, (totH / capF) * 100); return (
               <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) { ponerDia(id, f); setMoviendo(null); } }}
                 className={`bg-white border rounded-lg p-3 ${moviendo ? "border-sky-400 ring-1 ring-sky-200" : "border-slate-200"}`}>
                 <div className="flex items-center gap-1">
                   <div className="text-sm font-bold text-slate-800 capitalize mr-auto">{fmtDia(f)}</div>
                   {moviendo && <button type="button" onClick={() => { ponerDia(moviendo.id, f); setMoviendo(null); }} className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-600 text-white">Mover aquí</button>}
                 </div>
-                <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: "#2E8B57" }} /></div>
-                <div className="text-[11px] text-slate-500 mb-1 flex flex-wrap items-center gap-1">{Math.round((d.usadas - bloq) * 10) / 10} de
+                <div className="h-1.5 bg-slate-100 rounded mt-1 mb-2"><div className="h-1.5 rounded" style={{ width: `${pct}%`, backgroundColor: pasaH ? "#dc2626" : "#2E8B57" }} /></div>
+                <div className={`text-[11px] mb-1 flex flex-wrap items-center gap-1 ${pasaH ? "text-rose-700 font-bold" : "text-slate-500"}`}>{Math.round(totH * 10) / 10} de
                   <input key={`hd_${f}_${capF}`} type="number" min="0" step="0.5" defaultValue={Math.round(capF * 10) / 10} title="Horas de este día: pon más (p. ej. 157) para meter más ese día, o menos si hay menos gente" onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && Math.abs(v - capF) > 0.01) ponerHorasDia(f, v); }} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-right" /> h
                   {bloq > 0.01 ? " (menos gente)" : bloq < -0.01 ? <span className="text-sky-700 font-semibold"> (+{Math.round(-bloq * 10) / 10} h)</span> : ""}
                 </div>
+                {pasaH && <div className="text-[11px] mb-1 rounded px-1.5 py-0.5 bg-rose-600 text-white font-bold">⚠ PASA POR {Math.round((totH - capF) * 10) / 10} h (incluye las metidas a mano)</div>}
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
@@ -54353,6 +54358,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   }, [cadena]);
   const enfocarPistola = () => { [200, 900, 2500, 5000, 8000].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
+  const planFx = useObjetoFb("planFabricaExtras"); // lo metido a mano en un día desde Control del día / Almacén del día
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
   const [leyendo, setLeyendo] = useState(false);
@@ -54500,6 +54506,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   // Día del planning de Fábrica de cada presupuesto (el primero en que se fabrica)
   const diaPlan = {}; const nombrePlan = {};
   Object.values((planF && planF.obras) || {}).forEach((f) => { if (!f || !f.inicio) return; toArray(f.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f.inicio < diaPlan[b]) { diaPlan[b] = f.inicio; nombrePlan[b] = String(f.nombre || "").replace(/ · en fabricación$/, ""); } }); });
+  Object.entries(planFx || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.values(m || {}).forEach((e) => { if (!e) return; toArray(e.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f < diaPlan[b]) { diaPlan[b] = f; nombrePlan[b] = String(e.nombre || ""); } }); }); });
   const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
   // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
   const obrasAux = [];
