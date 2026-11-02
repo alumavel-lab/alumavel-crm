@@ -49768,7 +49768,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const hoyAlm = new Date().toLocaleDateString("sv-SE");
   const hechasDiaPl = (f) => Object.entries(hechasPl || {}).filter(([, h]) => h && h.dia === f).map(([k, h]) => ({ k, ...h }));
   const diasVer = [...new Set([...diasFirmes, ...Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm && extrasDiaAlm(f).length), ...Object.values(hechasPl || {}).filter((h) => h && h.dia && h.dia >= hoyAlm).map((h) => h.dia)])].sort();
-  const _nq = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[#.\s]+/g, " ").trim();
+  const _nq = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[#.]/g, "").replace(/\s+/g, " ").trim();
   const qN = _nq(qObraPl);
   const coincideQ = (...txts) => !qN || qN.split(" ").every((w) => txts.some((t) => _nq(t).includes(w)));
   const textoTrozo = (t) => { const o = nombrePorId[t.id]; let pr = []; try { pr = o ? presFab(o) : []; } catch (e) { /* nada */ } return [t.nombre, o && o.nombre, o && o.cliente, pr.join(" "), o ? pptoTxt(o) : ""]; };
@@ -50035,9 +50035,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN && hallados.length ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className="block w-full text-left text-sm font-bold text-slate-800 hover:text-[#2E8B57]">{o ? pptoTxt(o) : t.nombre}</button>
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
                       <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
                       <button type="button" onClick={() => { if (window.confirm(`¿Quitar ${o ? pptoTxt(o) : t.nombre} de este planning?\n\nQueda sin tick en la lista de arriba: puedes volver a ponerla marcándola.`)) setQuitadas([...quitadas, t.id]); }} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
@@ -50054,7 +50054,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   <div className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-1.5 py-1">
                     <div className="text-[10px] font-bold text-amber-900">➕ Metidas desde Control del día / Almacén del día <span className="font-normal">(se cambian igual en los tres sitios)</span></div>
                     {exA.map((x) => (
-                      <div key={x.k} className={`mt-1 rounded-md border border-amber-400 px-2 py-1.5 ${qN ? (coincideQ(x.ppto, x.nombre) ? "bg-yellow-100 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"}`}>
+                      <div key={x.k} className={`mt-1 rounded-md border border-amber-400 px-2 py-1.5 ${qN && hallados.length ? (coincideQ(x.ppto, x.nombre) ? "bg-yellow-100 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"}`}>
                         <button type="button" onClick={() => abrirObraRef(x.ref)} className="block w-full text-left text-sm font-bold text-amber-900 hover:text-[#2E8B57]" title="Abrir el proyecto">{x.ppto || x.nombre}</button>
                         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-amber-800">
                           <span>{x.ventanas ? `${x.ventanas} ventana${x.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span>
