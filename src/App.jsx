@@ -42977,6 +42977,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
   const [tvAD, setTvAD] = useState(false);
   const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
+  const hojasAD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra (la misma que usa Control del día)
   const snapCD = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra tal como las ve Control del día
   const extraAD = useObjetoFb("almacenDiaObras"); // obras añadidas a mano a un día del Almacén del día: { fecha: { claveObra: true } }
   const registroAD = useObjetoFb(`registroAlmacen/${diaAD}`); // movimientos de ventanas en palets del día elegido
@@ -43753,12 +43754,22 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const deCD = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.ventanas).length).map((sn) => {
       const key = `${sn.tipo}-${sn.id}`; const kk = limpiaAD(key);
       const dueno = { key, tipo: sn.tipo, id: sn.id, proyectoId: sn.proyectoId || "", nombre: sn.nombre };
-      const vs = toArray(sn.ventanas).map((w) => ({ v: { id: w.id, pos: w.pos, num: "", grupo: w.g === "Sin vivienda" ? "" : (w.g || ""), color: w.color, tipo: w.tip, medida: w.medida, piezas: [{ c: `CD-${kk}-${w.id}`, t: w.pos }] }, lote: { fab: w.fab } }));
+      const vs = toArray(sn.ventanas).map((w) => ({ v: { id: w.id, pos: w.pos, num: "", grupo: w.g === "Sin vivienda" ? "" : (w.g || ""), color: w.color, tipo: w.tip, medida: w.medida, dib: w.dib || "", desc: w.desc || "", extras: toArray(w.ex), piezas: [{ c: `CD-${kk}-${w.id}`, t: w.pos }] }, lote: { fab: w.fab } }));
       return { key, nombre: sn.nombre || obraDeDueno(dueno).nombre, dueno, vs, codigos: [...new Set([...toArray(sn.codigos), ...codigosDe(dueno)])] };
     });
     const clavesCD = new Set(deCD.map((o) => o.key));
+    const deHoja = Object.entries(hojasAD || {}).filter(([k, h]) => h && toArray(h.modelos).length && !clavesCD.has(k)).map(([k, h]) => {
+      const tipo = k.startsWith("pl-") ? "pl" : k.startsWith("u-") ? "u" : "p"; const id = k.replace(/^(pl|p|u)-/, "");
+      const pr = tipo === "p" ? toArray(proyectos).find((x) => limpiaAD(x.id) === id) : null; const ex = tipo === "u" ? toArray(uxExpedientes).find((x) => limpiaAD(x.id) === id) : null;
+      const dueno = { key: k, tipo, id: pr ? pr.id : ex ? ex.id : id, proyectoId: tipo === "p" ? (pr ? pr.id : id) : (ex && ex.proyectoId) || "", nombre: pr ? `#${pr.numero} ${pr.nombre || ""}`.trim() : ex ? `Uxcar exp. ${ex.numero}` : (h.pres ? `Pres. ${h.pres}` : k) };
+      const vistos = {}; const vs = [];
+      toArray(h.modelos).forEach((m) => { const n = Math.min(99, Math.max(1, parseInt(m.uds, 10) || 1)); for (let u = 1; u <= n; u++) { let vid = limpiaAD(n > 1 ? `${m.pos}_${u}` : m.pos); if (vistos[vid]) { vistos[vid]++; vid = `${vid}_${vistos[vid]}`; } else vistos[vid] = 1;
+        vs.push({ v: { id: vid, pos: n > 1 ? `${m.pos} ${u}/${n}` : String(m.pos), num: "", grupo: "", color: m.color || "", tipo: String(m.pos), medida: m.ancho && m.alto ? `${m.ancho} x ${m.alto}` : "", dib: m.dib || "", desc: `${m.desc || ""}${m.obs ? ` · ${m.obs}` : ""}`, extras: toArray(m.extras), piezas: [{ c: `CD-${limpiaAD(k)}-${vid}`, t: String(m.pos) }] }, lote: { fab: "" } }); } });
+      return { key: k, nombre: dueno.nombre, dueno, vs, codigos: [...new Set([String(h.pres || "").replace(/\./g, "").trim(), ...codigosDe(dueno)].filter(Boolean))] };
+    }).filter((o) => o.vs.length);
+    deHoja.forEach((o) => clavesCD.add(o.key));
     const deEtiq = [...ventanasPorObraTic.values()].filter((x) => !clavesCD.has(x.dueno.key)).map((x) => ({ key: x.dueno.key, nombre: obraDeDueno(x.dueno).nombre, dueno: x.dueno, vs: [...x.vs.values()], codigos: codigosDe(x.dueno) }));
-    const obrasAD = [...deCD, ...deEtiq]
+    const obrasAD = [...deCD, ...deHoja, ...deEtiq]
       .filter((o) => { const pr = String(o.key).startsWith("p-") ? toArray(proyectos).find((q) => `p-${q.id}` === o.key) : null; if (pr) return !["Entregado", "Cancelado"].includes(pr.estadoTrabajo); const ex = String(o.key).startsWith("u-") ? toArray(uxExpedientes).find((q) => `u-${q.id}` === o.key) : null; return !ex || ex.estado !== "entregado"; });
     obrasAD.forEach((o) => { o.clavePlan = null; for (const [k, f] of Object.entries(planObras)) { if (toArray(f.pres).some((c) => o.codigos.some((m) => mismoP(m, c)))) { o.clavePlan = k; break; } } });
     const terminadaEl = (o) => {
@@ -43782,7 +43793,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return out;
     };
     const cacheSt = new Map();
-    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? obrasAD.filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((q) => set.has(idCD(q, x))); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
+    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? [...obrasAD.map((q) => ({ key: q.key, codigos: q.codigos })), ...toArray(proyectos).map((q) => ({ key: `p-${q.id}`, codigos: codigosDe({ tipo: "p", id: q.id }) })), ...toArray(uxExpedientes).map((q) => ({ key: `u-${q.id}`, codigos: codigosDe({ tipo: "u", id: q.id }) }))].filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))).map((q) => q.key) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((kq) => set.has(`${limpiaAD(kq)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`)); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
     const ticarAD = (f, o) => {
       const w = f.w;
       if (f.c) {
@@ -43845,8 +43856,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       );
       return (
         <div key={f.x.v.id} className="space-y-0.5 flex flex-col items-center">
-          <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} />
+          {f.x.v.dib ? <DibujoPlan hash={f.x.v.dib} alto={g ? 130 : 70} /> : f.x.lote.fab ? <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} /> : null}
           {botonVentana(f, o, g)}
+          {toArray(f.x.v.extras).length > 0 && <div className="flex flex-wrap justify-center gap-1">{toArray(f.x.v.extras).map((x) => <span key={x} className={`${g ? "text-base px-2 py-0.5" : "text-[10px] px-1.5 py-0.5"} font-extrabold rounded bg-amber-400 text-amber-950 border border-amber-600`}>⚠ LLEVA {x}</span>)}</div>}
+          {(f.x.v.color || f.x.v.desc) && <div className={`${g ? "text-base max-w-[16rem]" : "text-[10px] max-w-[11rem]"} text-left leading-tight ${g ? "text-slate-200" : "text-slate-700"}`}>{f.x.v.color ? <div className="font-bold"><ColorVentana texto={f.x.v.color} /></div> : null}{f.x.v.desc ? <div className="opacity-90">{f.x.v.desc}</div> : null}</div>}
           {g ? (u ? <div className="text-xl font-bold text-slate-700 text-center">{enSol ? `Solape ${enSol}` : `Terminada ${enTer}`}</div> : null) : <div className="flex items-center justify-center gap-1.5">{caja("solape", enSol, "Sol")}{caja("espera", enTer, "Ter")}</div>}
         </div>
       );
@@ -54694,23 +54707,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
     }
     o.fuente = "";
   });
-  // El «Almacén del día» usa EXACTAMENTE estas ventanas: se publican (solo las obras que cambian) para que esa pantalla las lea sin recalcular
-  const publicadoVentCD = useRef({});
-  useEffect(() => {
-    obras.forEach((o) => {
-      const vs = [...o.viv.entries()].flatMap(([g, arr]) => arr.map((v) => ({ id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida: v.medida || "", color: v.color || "", g })));
-      if (!vs.length || vs.length > 400) return;
-      const k = limpia(o.d.key);
-      const codigos = [...presCrmDe(o)];
-      if (o.d.tipo === "pl") { const pr = planPres && planPres[o.d.id]; if (pr && pr.pres) codigos.push(String(pr.pres).replace(/\./g, "").trim()); }
-      const ent = o.d.tipo === "u" ? toArray(uxExpedientes).find((e) => e.id === o.d.id) : null;
-      const dato = { nombre: o.d.nombre || "", tipo: o.d.tipo, id: String(o.d.id), proyectoId: o.d.tipo === "p" ? String(o.d.id) : String((ent && ent.proyectoId) || ""), codigos, ventanas: vs, fuente: o.fuente || "" };
-      const h = JSON.stringify(dato);
-      if (publicadoVentCD.current[k] === h) return;
-      publicadoVentCD.current[k] = h;
-      fbSet(ref(fbDb, `controlDiaVentanasObra/${k}`), dato).catch(() => {});
-    });
-  }, [ventanasGuardadas, hojasCD, planPres, pinsMov, indice, proyectos, uxExpedientes]);
   const pptosDe = (o) => {
     const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const dg = digitosPresu(x); if (dg.length >= 3) out.add(dg); });
     if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(p.presupuestoNumero); add(presupuestoDeObra(p)); codigosDeProyecto(p).forEach((n) => out.add(n)); numsExpediente(p.numero).forEach((n) => out.add(n)); } }
@@ -55549,6 +55545,31 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     const t = textos.join(" · ").replace(/\b(sin|no\s+lleva)\s+(solape|mosquiter\w*|postigo)/gi, " ");
     return [["SOLAPE", /solape/i], ["MOSQUITERA", /mosquit|PLX|con\s+tela/i], ["POSTIGO", /postigo|contraventana/i]].filter(([, re]) => re.test(t)).map(([n]) => n);
   };
+  // El «Almacén del día» usa EXACTAMENTE estas ventanas (con su dibujo, color, medidas y lo que lleva: solape, mosquitera, postigo…): se publican solo las obras que cambian
+  const publicadoVentCD = useRef({});
+  useEffect(() => {
+    const seguro = (fn, dev) => { try { const r = fn(); return r === undefined || r === null ? dev : r; } catch (e) { return dev; } };
+    obras.forEach((o) => {
+      const vs = [...o.viv.entries()].flatMap(([g, arr]) => arr.map((v) => {
+        const inf = seguro(() => infoVent(o, v), null); const ih = seguro(() => infoHoja(o, v), null);
+        const dib = (inf && inf.dib) || (ih && ih.dib) || "";
+        const desc = inf ? String(inf.desc || "") : ih ? `${ih.desc || ""}${ih.obs ? ` · ${ih.obs}` : ""}` : "";
+        const color = (inf && inf.color) || (ih && ih.color) || v.color || "";
+        const medida = v.medida || (ih && ih.ancho ? `${ih.ancho} x ${ih.alto}` : "");
+        return { id: String(v.id), pos: v.pos || "", fab: v.fab || "", tip: v.tip || "", medida, color, g, dib, desc, ex: seguro(() => extrasVentana(o, v), []) };
+      }));
+      if (!vs.length || vs.length > 400) return;
+      const k = limpia(o.d.key);
+      const codigos = [...presCrmDe(o)];
+      if (o.d.tipo === "pl") { const pr = planPres && planPres[o.d.id]; if (pr && pr.pres) codigos.push(String(pr.pres).replace(/\./g, "").trim()); }
+      const ent = o.d.tipo === "u" ? toArray(uxExpedientes).find((e) => e.id === o.d.id) : null;
+      const dato = { nombre: o.d.nombre || "", tipo: o.d.tipo, id: String(o.d.id), proyectoId: o.d.tipo === "p" ? String(o.d.id) : String((ent && ent.proyectoId) || ""), codigos, ventanas: vs, fuente: o.fuente || "" };
+      const h = JSON.stringify(dato);
+      if (publicadoVentCD.current[k] === h) return;
+      publicadoVentCD.current[k] = h;
+      fbSet(ref(fbDb, `controlDiaVentanasObra/${k}`), dato).catch(() => {});
+    });
+  }, [ventanasGuardadas, hojasCD, planPres, pinsMov, indice, proyectos, uxExpedientes, hojasAuxCD]);
   // Filas de «Todo lo planificado»: ventanas hechas de cada obra del registro y si está HECHA (y desde cuándo)
   const filasRegistro = () => {
     const vistos = new Set(); const filas = [];
