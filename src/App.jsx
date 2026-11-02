@@ -20864,7 +20864,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
           const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
           const mano = manoDe(x);
-          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}</td><td>EXP ${esc(x.expediente || "—")}<br><span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}</td><td>${expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${(x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc(x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
       }).join("");
       return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
@@ -21081,13 +21081,13 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             return (
               <div className="mt-2 text-xs rounded bg-emerald-50 border border-emerald-300 text-emerald-900 px-2 py-2">
                 <div className="font-bold mb-1">Ese pedido YA está recibido ({ya.length} persiana{ya.length === 1 ? "" : "s"}{ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Toca una para ir a su carro:</div>
-                {dentro.length === 0 && <div className="text-slate-600">No la encuentro colocada en ningún carro (mira «Pendientes de ubicar»).</div>}
+                {dentro.length === 0 && <div className="text-slate-600">No encuentro estas persianas en el almacén: el pedido está dado por recibido pero no hay persiana física registrada. <button type="button" onClick={() => setVista("sinsitio")} className="underline font-semibold">Ver «Pendientes de ubicar»</button></div>}
                 <div className="flex flex-col gap-1 items-start">
                   {dentro.map((x) => x.estante ? (
                     <button key={x.id} type="button" onClick={() => { setVista("mapa"); setCarroAbierto(x.estante.carro); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-emerald-400 hover:bg-emerald-100 rounded px-2 py-1">
                       {x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} → <b>Carro {x.estante.carro}</b> · {textoEstante(x.estante)} <span className="underline">Ver carro</span>
                     </button>
-                  ) : <div key={x.id} className="bg-white border border-amber-300 rounded px-2 py-1">{x.ref || "—"} · sin sitio en carro (pendiente de ubicar)</div>)}
+                  ) : <button key={x.id} type="button" onClick={() => { setVista("sinsitio"); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-amber-400 hover:bg-amber-50 rounded px-2 py-1">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · todavía sin carro → <span className="underline">ir a «Pendientes de ubicar» para colocarla</span></button>)}
                 </div>
               </div>
             );
