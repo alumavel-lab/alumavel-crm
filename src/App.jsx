@@ -9216,6 +9216,16 @@ const presupuestoDeObra = (proyecto) => {
   if (guardado) return guardado;
   return ((String(proyecto.nombre || "").match(/presupuesto\s*(\d[\d.]*(?:\s*-\s*\d+)?)/i) || [])[1] || "").replace(/\s+/g, "");
 };
+const pptoObraAmplio = (pr, uxExpedientes) => {
+  if (!pr) return "";
+  const t = String(presupuestoDeObra(pr) || "").trim(); if (t) return t;
+  const ux = toArray(uxExpedientes).find((e) => e && (e.id === pr.uxcarExpedienteId || e.proyectoId === pr.id));
+  const uxP = ux && (ux.presupuesto || ux.presupuestoNumero); if (uxP) return String(uxP).trim();
+  const cnt = {};
+  toArray(pr.etiquetasFab).forEach((l) => toArray(l && l.ventanas).forEach((v) => { const c = v && v.corte && v.corte.presupuesto ? String(v.corte.presupuesto).replace(/\D/g, "") : String((v && v.num) || "").replace(/\D/g, ""); if (c.length >= 4 && c.length <= 6) cnt[c] = (cnt[c] || 0) + 1; }));
+  const best = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]; if (best) return best[0];
+  const k = Object.keys((ux && ux.hojasCorteAux) || {})[0]; return k ? String(k) : "";
+};
 // Los dos datos con los que se identifica una obra en las listas: nº de presupuesto (con versión) y referencia / expediente
 function datosObraPedido(pedido, proyecto, uxExpedientes) {
   const exp = pedido && pedido.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e.id === pedido.uxcarExpedienteId) : (proyecto && proyecto.uxcarExpedienteId ? toArray(uxExpedientes).find((e) => e.id === proyecto.uxcarExpedienteId) : null);
@@ -43205,7 +43215,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
   );
 }
 
-function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false }) {
+function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false, onMoverDiaFabrica = null }) {
   const [verTodo, setVerTodo] = useState(false);
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
@@ -43282,9 +43292,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   useEffect(() => {
     const act = new Set(salidaRefAD.current.map((x) => x.pid));
     avanzadasAD.current.forEach((pid) => { if (!act.has(pid)) avanzadasAD.current.delete(pid); });
-    salidaRefAD.current.forEach(({ pid, estado }) => {
+    salidaRefAD.current.forEach(({ pid, estado, key, clave, nombre }) => {
       if (avanzadasAD.current.has(pid)) return;
       avanzadasAD.current.add(pid);
+      if (estado === "En proceso" && onMoverEstado) {
+        try { // el planning de Fábrica la pone en verde en el día que tenía
+          const kk = String(key || pid).replace(/[.#$\/\[\]]/g, "_"); const dd = (planFabAD && planFabAD.dias) || {}; const ee = extraAD || {};
+          let dia = Object.keys(dd).sort().find((f) => clave && dd[f] && dd[f][clave]) || Object.keys(ee).sort().find((f) => ee[f] && ee[f][kk]) || new Date().toLocaleDateString("sv-SE");
+          const fo = clave && planFabAD && planFabAD.obras && planFabAD.obras[clave];
+          fbSet(ref(fbDb, `planFabricaHechas/${kk}`), { nombre: nombre || "", pres: fo && fo.pres ? fo.pres : [], dia, en: Date.now() }).catch(() => {});
+        } catch (e) { /* nada */ }
+      }
       if (estado === "En proceso" && onMoverEstado) onMoverEstado(pid, "Listo para reparto/recogida"); // paletizada y en su almacén: sigue su camino (reparto / recogida / montaje)
     });
   });
@@ -43295,7 +43313,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const snapCD = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra tal como las ve Control del día
   const planingAD = useObjetoFb("controlDiaPlaning"); // horas de cada obra según el PDF «PLANING»
   const [capAD, setCapAD] = useState(160); // horas por día al ir metiendo obras (si luego metes más a mano en un día, no pasa nada)
-  const extraAD = useObjetoFb("almacenDiaObras"); // obras añadidas a mano a un día del Almacén del día: { fecha: { claveObra: true } }
+  const { pedirPin: pedirPinAD, modalPin: modalPinAD } = usePinCristales();
+  const extraAD = useObjetoFb("controlDiaObras"); // obras añadidas a mano a un día del Almacén del día: { fecha: { claveObra: true } }
   const registroAD = useObjetoFb(`registroAlmacen/${diaAD}`); // movimientos de ventanas en palets del día elegido
   const overlayCab = useRef(new Map()); // lo último guardado, por si se escanea más rápido de lo que llega de Firebase
   const cabsAhora = () => {
@@ -44164,7 +44183,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       });
       const copia = { en: Date.now(), dia: diaAD, almacenDiaObras: ex, controlDiaObras: mn, marcas: Object.fromEntries(Object.keys(mn).filter((k) => marcasCDAD && marcasCDAD[diaAD] && marcasCDAD[diaAD][k]).map((k) => [k, marcasCDAD[diaAD][k]])) };
       fbSet(ref(fbDb, `copiaRepartoDia/${Date.now()}`), copia)
-        .then(() => Promise.all([Object.keys(upd).length ? fbUpdate(ref(fbDb, "almacenDiaObras"), upd) : null, Object.keys(updMn).length ? fbUpdate(ref(fbDb, "controlDiaObras"), updMn) : null, Object.keys(updMarcas).length ? fbUpdate(ref(fbDb, "controlDia"), updMarcas) : null]))
+        .then(() => Promise.all([Object.keys(upd).length ? fbUpdate(ref(fbDb, "controlDiaObras"), upd) : null, Object.keys(updMn).length ? fbUpdate(ref(fbDb, "controlDiaObras"), updMn) : null, Object.keys(updMarcas).length ? fbUpdate(ref(fbDb, "controlDia"), updMarcas) : null]))
         .then(() => avisar(true, `${mueve.length} obra${mueve.length === 1 ? "" : "s"} repartida${mueve.length === 1 ? "" : "s"} en días de ${cap160} h.`))
         .catch((e) => avisar(false, "No se pudo repartir: " + e.message));
     };
@@ -44174,11 +44193,23 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       const ko = limpiaAD(o.key); const ex = (extraAD && extraAD[desde]) || {}; const mn = (asignManualAD && asignManualAD[desde]) || {};
       const hO = horasObraAD(o); const ya = horasDiaAD(hasta);
       const tareas = [];
-      if (ex[ko]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${hasta}/${ko}`]: true, [`${desde}/${ko}`]: null }));
+      if (ex[ko]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${ko}`]: true, [`${desde}/${ko}`]: null }));
       if (mn[ko]) {
         tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${ko}`]: true, [`${desde}/${ko}`]: null }));
         const mk = marcasCDAD && marcasCDAD[desde] && marcasCDAD[desde][ko];
         if (mk) tareas.push(fbUpdate(ref(fbDb, "controlDia"), { [`${hasta}/${ko}`]: mk, [`${desde}/${ko}`]: null }));
+      }
+      if (!tareas.length && o.clavePlan && onMoverDiaFabrica) {
+        const fo = planFabAD && planFabAD.obras && planFabAD.obras[o.clavePlan];
+        const oid = fo ? (fo.tipo === "proyecto" ? `p-${fo.id}` : fo.tipo === "uxcar" ? `u-${fo.id}` : "") : "";
+        if (oid) {
+          pedirPinAD(true, "", async () => {
+            onMoverDiaFabrica(oid, hasta);
+            try { for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) { const sn = await fbGet(ref(fbDb, `${nodo}/${desde}/${ko}`)); if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${hasta}/${ko}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${desde}/${ko}`), null); } } } catch (e) { /* las marcas se quedan en el día viejo */ }
+            avisar(true, `${nombreAD(o)} → ${fmtDate(hasta)} (cambiado en el planning de Fábrica; sale igual en Control del día)`);
+          });
+          return;
+        }
       }
       if (!tareas.length) { avisar(false, "Esta obra viene del planning de Fábrica: su día se cambia en Fábrica."); return; }
       Promise.all(tareas).then(() => avisar(true, `${nombreAD(o)} → ${fmtDate(hasta)} (${hO > 0 ? Math.round(hO) + " h" : "sin horas"}; ese día ya llevaba ${Math.round(ya)} h de ${cap160}${ya + hO > cap160 ? " ⚠ se pasa" : ""})`)).catch((e) => avisar(false, "No se pudo cambiar: " + e.message));
@@ -44199,7 +44230,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                 if (!it.o) return <div key={i} className="py-2 text-sm text-amber-800">📌 {it.sinEtiquetas} <span className="text-xs">· sin ventanas cargadas (planning de Fábrica)</span></div>;
                 const o = it.o; const ko = limpiaAD(o.key); const st = stats(o);
                 const t = o.clavePlan && planDias[f] && planDias[f][o.clavePlan]; const h = t && Number(t.horas) > 0 ? Number(t.horas) : horasObraAD(o);
-                const movible = !!(ex[ko] || mn[ko]);
+                const movible = !!(ex[ko] || mn[ko] || (o.clavePlan && onMoverDiaFabrica));
                 const origen = o.clavePlan ? "Planning de Fábrica" : mn[ko] ? "Control del día" : ex[ko] ? "Añadida desde aquí" : it.terminada ? "Terminada en fábrica" : "";
                 return (
                   <div key={o.key + i} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -44213,7 +44244,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                         ? <label className="text-xs text-slate-600 flex items-center gap-1">Cambiar a
                             <input type="date" defaultValue={f} onChange={(e) => { if (e.target.value) { moverObraDia(o, f, e.target.value); setVerDiaAD(null); } }} className="border border-slate-300 rounded px-1 py-0.5 text-xs" /></label>
                         : <span className="text-[11px] text-slate-400">su día se cambia en Fábrica</span>}
-                      {ex[ko] && <button type="button" onClick={() => { fbSet(ref(fbDb, `almacenDiaObras/${f}/${ko}`), null).catch(() => {}); }} className="text-xs text-rose-600 underline">quitar de este día</button>}
+                      {ex[ko] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${f}/${ko}`), null).catch(() => {}); }} className="text-xs text-rose-600 underline">quitar de este día</button>}
                     </div>
                   </div>
                 );
@@ -44306,7 +44337,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     // la misma obra dos veces (por proyecto y por expediente de Uxcar): se queda la que tiene más ventanas en palet
     const gemelaMejor = (x) => stDiaAll.some((y) => y.o.key !== x.o.key && y.n > x.n && y.o.codigos.some((c) => x.o.codigos.some((m) => mismoP(m, c))));
     const stDia = stDiaAll.filter((x) => !gemelaMejor(x));
-    salidaRefAD.current = stDiaAll.filter((x) => salidaOk(x.o)).map((x) => { const pr = proyectoDeObra(x.o); return pr ? { pid: pr.id, estado: pr.estadoTrabajo } : null; }).filter(Boolean);
+    salidaRefAD.current = stDiaAll.filter((x) => salidaOk(x.o)).map((x) => { const pr = proyectoDeObra(x.o); return pr ? { pid: pr.id, estado: pr.estadoTrabajo, key: x.o.key, clave: x.o.clavePlan || "", nombre: nombreAD(x.o) } : null; }).filter(Boolean);
     const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
     const nPend = stDia.reduce((a, x) => a + x.pend, 0);
     const metidasDia = stDiaAll.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
@@ -44411,7 +44442,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold text-sky-700`}>{pend} hecha{pend === 1 ? "" : "s"} en fábrica, falta palet</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
-            {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `almacenDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
+            {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
           </div>
           <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
           {completa && (() => {
@@ -44474,7 +44505,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       const t = window.prompt(`Vas a BORRAR TODOS los palets (${todos.length}, ${conV} con ventanas), los números de estante de Solape y Terminada (${codsEst.length} ventanas), el registro del Almacén del día y las obras añadidas a mano.\nNo se puede deshacer.\n\nPara confirmar escribe BORRAR:`);
       if (t === null) return;
       if (String(t).trim().toUpperCase() !== "BORRAR") { avisar(false, "No se ha borrado nada"); return; }
-      try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "almacenDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
+      try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "controlDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
       catch (e) { avisar(false, "No se pudo borrar: " + e.message); }
     };
     const modalIncAD = verIncAD ? (
@@ -44510,7 +44541,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     return (
       <div className="space-y-4">
-        {toastAD}{modalIncAD}{modalQuitarAD}{modalDiaAD()}
+        {toastAD}{modalIncAD}{modalQuitarAD}{modalDiaAD()}{modalPinAD}
         <div className="flex flex-wrap items-center gap-3">
           {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
@@ -44537,7 +44568,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               if (sit && sit.dias.length) { setDiaAD(sit.dias.includes(diaAD) ? diaAD : sit.dias[0]); avisar(true, `${nombreAD(o)} YA ESTÁ EN PLANNING: ${sit.dias.map((d) => fmtDate(d)).join(", ")}${sit.estado ? ` · estado: ${sit.estado}` : ""}. Te llevo a ese día.`); return; }
               const hO = horasObraAD(o); const diaDest = diaLibreAD(hO, diaAD);
               if (!(hO > 0)) window.alert(`⚠ ${nombreAD(o)} sale con 0 HORAS: no está en el planning de Fábrica, ni en el PDF «PLANING», ni tiene listado de mano de obra. La he puesto en ${fmtDate(diaDest)} sin poder contar sus horas; ese día puede pasarse de ${cap160} h sin que lo sepas. Ponle las horas (Fábrica) o sube su listado.`);
-              fbSet(ref(fbDb, `almacenDiaObras/${diaDest}/${limpiaAD(k)}`), true).catch(() => {});
+              fbSet(ref(fbDb, `controlDiaObras/${diaDest}/${limpiaAD(k)}`), true).catch(() => {});
               if (diaDest !== diaAD) { setDiaAD(diaDest); setMesAD(diaDest.slice(0, 7)); }
               avisar(true, `Obra añadida al ${fmtDate(diaDest)} (${hO > 0 ? `${Math.round(hO)} h` : "sin horas calculadas"}; ese día ya llevaba ${Math.round(horasDiaAD(diaDest))} h de ${cap160})${sit && sit.estado ? ` · estado: ${sit.estado}` : ""}`);
             }}
@@ -49570,6 +49601,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Un día puede tener MENOS horas (menos gente) o MÁS (p. ej. 157 h para meter 2 h más ese día): se guarda como «ya ocupado», negativo si son más
   const ocupadoBase = {}; Object.entries(horasEsp).forEach(([f, h]) => { const lib = Math.max(0, parseFloat(h) || 0); ocupadoBase[f] = horasDia - lib; });
   const ponerHorasDia = (f, v) => { const n = { ...horasEsp }; if (!(v >= 0) || Math.abs(v - horasDia) < 0.01) delete n[f]; else n[f] = v; guardarCfg({ horasDiaEsp: n }); };
+  const [qObraPl, setQObraPl] = useState(""); // buscador de obra en los días del planning
   const [moviendo, setMoviendo] = useState(null); // obra elegida (tocándola) para llevarla a otro día: { id, nombre }
   const sumaPuestos = toArray(puestos).reduce((a, p) => a + (parseFloat(p.horasDia) || 0), 0);
   const uxProduccionDe = (p) => toArray(uxExpedientes).some((e) => e && e.estado === "produccion" && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
@@ -49644,7 +49676,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Códigos de presupuesto de la obra (con versión: 6633-1 y 6633-2 son viviendas distintas): es lo que enlaza Fábrica con Control del día
   const presFab = (o) => {
     const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
-    if (o.ref.tipo === "proyecto") { const p = toArray(proyectos).find((x) => x.id === o.ref.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); } }
+    if (o.ref.tipo === "proyecto") { const p = toArray(proyectos).find((x) => x.id === o.ref.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); try { add(pptoObraAmplio(p, uxExpedientes)); } catch (e) { /* nada */ } } }
     if (o.ref.tipo === "uxcar") { const e = toArray(uxExpedientes).find((x) => x.id === o.ref.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     return [...out];
   };
@@ -49672,7 +49704,15 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const nombrePorId = Object.fromEntries(todasObras.map((o) => [o.id, o]));
   const totalFirmes = firmes.reduce((a, o) => a + o.horas, 0);
   // Obras (y sus horas) que se han ido añadiendo a un día desde «Almacén del día»: se ven aquí también, para llevarlo todo controlado
-  const extraAlm0 = useObjetoFb("almacenDiaObras");
+  const extraAlm0 = useObjetoFb("controlDiaObras");
+  const hechasPl = useObjetoFb("planFabricaHechas"); // obras ya dadas de baja en Almacén del día: { clave: { nombre, pres, dia } }
+  const legacyAlmDia = useObjetoFb("almacenDiaObras"); // antiguo sitio del Almacén del día: se pasa a «controlDiaObras» y se vacía
+  useEffect(() => {
+    if (!soloPublicar || !legacyAlmDia || typeof legacyAlmDia !== "object") return;
+    const upd = {}; Object.entries(legacyAlmDia).forEach(([f, o]) => { if (o && typeof o === "object") Object.entries(o).forEach(([k, v]) => { if (v === true) upd[`${f}/${k}`] = true; }); });
+    if (!Object.keys(upd).length) return;
+    (async () => { try { await fbSet(ref(fbDb, `copiaAlmacenDiaObras/${Date.now()}`), legacyAlmDia); await fbUpdate(ref(fbDb, "controlDiaObras"), upd); await fbSet(ref(fbDb, "almacenDiaObras"), null); } catch (e) { /* se reintenta al recargar */ } })();
+  }, [JSON.stringify(legacyAlmDia || {})]);
   const marcasCDPl = useObjetoFb("controlDia");
   const mnAlm = useObjetoFb("controlDiaObras"); // obras que se meten a un día desde Control del día / Almacén del día
   const extraAlm = (() => { const r = {}; [extraAlm0, mnAlm].forEach((m) => Object.entries(m || {}).forEach(([f, o]) => Object.entries(o || {}).forEach(([k, v]) => { if (v) { (r[f] = r[f] || {})[k] = true; } }))); return r; })();
@@ -49684,7 +49724,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const moverExtraDia = (k, desde, hasta) => {
     if (!hasta || hasta === desde) return;
     const tareas = [];
-    if (extraAlm0 && extraAlm0[desde] && extraAlm0[desde][k]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${hasta}/${k}`]: true, [`${desde}/${k}`]: null }));
+    if (extraAlm0 && extraAlm0[desde] && extraAlm0[desde][k]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${k}`]: true, [`${desde}/${k}`]: null }));
     if (mnAlm && mnAlm[desde] && mnAlm[desde][k]) {
       tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${k}`]: true, [`${desde}/${k}`]: null }));
       const mk = marcasCDPl && marcasCDPl[desde] && marcasCDPl[desde][k];
@@ -49695,7 +49735,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const quitarExtraDia = (k, f) => {
     if (!window.confirm("¿Quitar esta obra de este día?")) return;
     const tareas = [];
-    if (extraAlm0 && extraAlm0[f] && extraAlm0[f][k]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${f}/${k}`]: null }));
+    if (extraAlm0 && extraAlm0[f] && extraAlm0[f][k]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${f}/${k}`]: null }));
     if (mnAlm && mnAlm[f] && mnAlm[f][k]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${f}/${k}`]: null }));
     Promise.all(tareas).catch((e) => window.alert("No se pudo quitar: " + e.message));
   };
@@ -49720,13 +49760,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     const o = porKeyAlm[k];
     if (o) { if (plan1.dias[f] && plan1.dias[f].trozos.some((t) => t.id === o.id)) return null; return { k, nombre: o.nombre, horas: Number(o.horas) || 0, ref: o.ref, ventanas: o.ventanas, ppto: pptoTxt(o), delPlan: true }; }
     const pr = toArray(proyectos).find((q) => `p-${limpiaK(q.id)}` === k);
-    if (pr) { let nv = 0; try { nv = ventanasDeObra(pr, uxExpedientes).total || 0; } catch (e) { /* nada */ } let pp = ""; try { pp = String(presupuestoDeObra(pr) || pr.presupuestoNumero || "").trim(); } catch (e) { /* nada */ } return { k, nombre: `#${pr.numero} ${pr.nombre || ""}`.trim(), horas: horasDeObraListo(pr, uxExpedientes, null).horas || 0, ref: { tipo: "proyecto", id: pr.id }, ventanas: nv, ppto: pp ? `Ppto ${pp}` : `#${pr.numero}` }; }
+    if (pr) { let nv = 0; try { nv = ventanasDeObra(pr, uxExpedientes).total || 0; } catch (e) { /* nada */ } let pp = ""; try { pp = String(presupuestoDeObra(pr) || pr.presupuestoNumero || "").trim(); if (!pp) { const q = pptoObraAmplio(pr, uxExpedientes); pp = q && /^\d+$/.test(q) ? pptoBonito(q) : q; } } catch (e) { /* nada */ } return { k, nombre: `#${pr.numero} ${pr.nombre || ""}`.trim(), horas: horasDeObraListo(pr, uxExpedientes, null).horas || 0, ref: { tipo: "proyecto", id: pr.id }, ventanas: nv, ppto: pp ? `Ppto ${pp}` : `#${pr.numero} ⚠ sin nº de presupuesto` }; }
     const ex = toArray(uxExpedientes).find((q) => `u-${limpiaK(q.id)}` === k);
     if (ex) { const pe = ex.proyectoId ? toArray(proyectos).find((q) => q.id === ex.proyectoId) : null; return { k, nombre: `Uxcar exp. ${ex.numero}`, horas: pe ? (horasDeObraListo(pe, uxExpedientes, null).horas || 0) : 0, ref: { tipo: "uxcar", id: ex.id, proyectoId: ex.proyectoId || null }, ventanas: uxNum(ex.ventanas) + uxNum(ex.puertas) + uxNum(ex.osciloParalelas), ppto: ex.presupuesto ? `Ppto ${ex.presupuesto}` : `Uxcar ${ex.numero}` }; }
     return null;
   }).filter(Boolean);
   const hoyAlm = new Date().toLocaleDateString("sv-SE");
-  const diasVer = [...new Set([...diasFirmes, ...Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm && extrasDiaAlm(f).length)])].sort();
+  const hechasDiaPl = (f) => Object.entries(hechasPl || {}).filter(([, h]) => h && h.dia === f).map(([k, h]) => ({ k, ...h }));
+  const diasVer = [...new Set([...diasFirmes, ...Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm && extrasDiaAlm(f).length), ...Object.values(hechasPl || {}).filter((h) => h && h.dia && h.dia >= hoyAlm).map((h) => h.dia)])].sort();
+  const _nq = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[#.\s]+/g, " ").trim();
+  const qN = _nq(qObraPl);
+  const coincideQ = (...txts) => !qN || qN.split(" ").every((w) => txts.some((t) => _nq(t).includes(w)));
+  const textoTrozo = (t) => { const o = nombrePorId[t.id]; let pr = []; try { pr = o ? presFab(o) : []; } catch (e) { /* nada */ } return [t.nombre, o && o.nombre, o && o.cliente, pr.join(" "), o ? pptoTxt(o) : ""]; };
+  const hallados = qN ? diasVer.flatMap((f) => { const d = plan1.dias[f] || { trozos: [] }; const a = d.trozos.filter((t) => coincideQ(...textoTrozo(t))).map((t) => ({ f, txt: (nombrePorId[t.id] ? pptoTxt(nombrePorId[t.id]) : t.nombre), extra: false })); const b = extrasDiaAlm(f).filter((x) => coincideQ(x.ppto, x.nombre)).map((x) => ({ f, txt: x.ppto || x.nombre, extra: true })); return [...a, ...b]; }) : [];
   // Lo metido a mano en un día (Control del día / Almacén del día) también se comunica a Auxiliares: mismo planning en los dos sitios
   const extrasPubFb = (() => { const r = {}; try { Object.keys(extraAlm || {}).filter((f) => f >= hoyAlm).forEach((f) => extrasDiaAlm(f).forEach((x) => { (r[f] = r[f] || {})[limpiaFb(x.k)] = { nombre: x.nombre, pres: presFab({ ref: x.ref }) }; })); } catch (e) { /* nada */ } return JSON.stringify(r); })();
   const ultimoExtrasFb = useRef("");
@@ -49734,6 +49780,9 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
 
   // Confirmar: se guarda el planning (con el material de cada obra y dónde está) para el
   // aviso diario automático, y se manda ya el correo de la semana.
+  const [pvAbiertos, setPvAbiertos] = useState({}); // planning virtual en calendario: días abiertos con «+»
+  const [pvTodos, setPvTodos] = useState(false);
+  const cortoPV = (o, t) => { try { const l = presFab(o); if (l.length) return l[0]; } catch (e) { /* nada */ } const nm = String((o && o.nombre) || t.id); const m = nm.match(/^(#\d+|Uxcar exp\. [\w.-]+)/); return m ? m[1] : nm.slice(0, 12); };
   const [publicando, setPublicando] = useState(false);
   const publicar = async () => {
     if (!cfg.emailFabrica) { alert("Pon primero el correo de fábrica (arriba, en los ajustes)."); return; }
@@ -49941,6 +49990,19 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
           </div>
         )}
         {diasVer.length > 0 && (
+          <div className="mb-2">
+            <div className="flex items-center gap-2">
+              <input type="search" value={qObraPl} onChange={(e) => setQObraPl(e.target.value)} placeholder="🔍 Buscar obra: presupuesto, expediente, cliente o nombre…" className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm" />
+              {qObraPl && <button type="button" onClick={() => setQObraPl("")} className="text-xs font-semibold text-slate-600 border border-slate-300 rounded px-2 py-1 bg-white">Borrar</button>}
+            </div>
+            {qN && (
+              <div className={`mt-1 text-xs rounded px-2 py-1 ${hallados.length ? "bg-yellow-50 border border-yellow-300 text-yellow-900" : "bg-slate-100 text-slate-600"}`}>
+                {hallados.length ? <>Encontrada en: {hallados.map((h, i) => <span key={i} className="inline-block mr-2 font-bold capitalize">{fmtDia(h.f)} · {h.txt}{h.extra ? " (metida)" : ""}</span>)}</> : "No aparece en estos días (puede estar sin día asignado, más abajo)."}
+              </div>
+            )}
+          </div>
+        )}
+        {diasVer.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {diasVer.map((f) => { const d = plan1.dias[f] || { usadas: 0, trozos: [] }; const exA = extrasDiaAlm(f); const hExA = exA.reduce((a, x) => a + x.horas, 0); const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const totH = d.usadas - bloq + hExA; const pasaH = totH > capF + 0.01; const pct = Math.min(100, (totH / capF) * 100); return (
               <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) { ponerDia(id, f); setMoviendo(null); } }}
@@ -49958,7 +50020,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
-                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 bg-white cursor-grab ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 cursor-grab ${qN ? (coincideQ(...textoTrozo(t)) ? "bg-yellow-100 border-yellow-500 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"} ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className="block w-full text-left text-sm font-bold text-slate-800 hover:text-[#2E8B57]">{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex items-center gap-2 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
@@ -49966,16 +50028,22 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                     </div>
                   </div>
                 ); })}
+                {hechasDiaPl(f).length > 0 && (
+                  <div className="mt-1.5 rounded border border-emerald-400 bg-emerald-50 px-1.5 py-1">
+                    <div className="text-[10px] font-bold text-emerald-800">✅ Terminadas y dadas de baja en Almacén del día</div>
+                    {hechasDiaPl(f).map((h) => <div key={h.k} className="mt-0.5 rounded bg-emerald-600 text-white px-2 py-1 text-xs font-bold">{toArray(h.pres).length ? `Ppto ${toArray(h.pres)[0]}` : h.nombre}</div>)}
+                  </div>
+                )}
                 {exA.length > 0 && (
                   <div className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-1.5 py-1">
-                    <div className="text-[10px] font-bold text-amber-900">➕ Metidas desde Control del día / Almacén del día</div>
+                    <div className="text-[10px] font-bold text-amber-900">➕ Metidas desde Control del día / Almacén del día <span className="font-normal">(se cambian igual en los tres sitios)</span></div>
                     {exA.map((x) => (
-                      <div key={x.k} className="mt-1 rounded-md border border-amber-400 bg-white px-2 py-1.5">
+                      <div key={x.k} className={`mt-1 rounded-md border border-amber-400 px-2 py-1.5 ${qN ? (coincideQ(x.ppto, x.nombre) ? "bg-yellow-100 ring-2 ring-yellow-400" : "bg-white opacity-30") : "bg-white"}`}>
                         <button type="button" onClick={() => abrirObraRef(x.ref)} className="block w-full text-left text-sm font-bold text-amber-900 hover:text-[#2E8B57]" title="Abrir el proyecto">{x.ppto || x.nombre}</button>
                         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-amber-800">
                           <span>{x.ventanas ? `${x.ventanas} ventana${x.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span>
                           <span>· {x.horas > 0 ? `${Math.round(x.horas * 10) / 10} h` : <b className="text-rose-700">⚠ 0 HORAS</b>}</span>
-                          <input type="date" value={f} min={hoyAlm} title="Cambiar de día" onChange={(e) => moverExtraDia(x.k, f, e.target.value)} className="ml-auto border border-amber-300 rounded px-1 py-0.5 text-[11px] bg-white" />
+                          <input type="date" value={f} min={hoyAlm} title="Cambiar de día (se cambia también en Control del día y Almacén del día)" onChange={(e) => moverExtraDia(x.k, f, e.target.value)} className="ml-auto border border-amber-300 rounded px-1 py-0.5 text-[11px] bg-white" />
                           <button type="button" onClick={() => quitarExtraDia(x.k, f)} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
                         </div>
                       </div>
@@ -50012,6 +50080,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
       {/* Planning virtual */}
       <div>
         <h3 className="font-display font-bold text-slate-800 mb-2">Planning virtual — próximas semanas ({esperando.length} esperando material)</h3>
+        <div className="mb-2"><button type="button" onClick={() => setPvTodos(!pvTodos)} className="text-xs font-bold px-3 py-1.5 rounded-md border border-amber-400 bg-white text-amber-900">{pvTodos ? "− Cerrar todos" : "+ Abrir todos"}</button></div>
         <p className="text-xs text-slate-500 mb-2">Obras que todavía esperan material. Se colocan detrás de las listas, a partir del día siguiente a la llegada prevista de su último pedido. Se mueve solo según vayan llegando los materiales.</p>
         {Object.keys(semanas).length === 0 ? <p className="text-sm text-slate-400">No hay obras esperando material.</p> : (
           <div className="space-y-2">
@@ -50021,18 +50090,31 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   <div className="text-sm font-bold text-slate-800">Semana del {fmtDate(l)}</div>
                   <div className="text-xs text-slate-500 ml-auto">{Math.round(sm.horas * 10) / 10} h de {cap} h</div>
                 </div>
-                <div className="space-y-2">
-                  {Object.keys(sm.porDia || {}).sort().map((f) => { const dd = sm.porDia[f]; return (
-                    <div key={f} className="border-l-4 border-amber-300 pl-2">
-                      <div className="text-xs font-bold text-slate-700 capitalize">{new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })} <span className="font-normal text-slate-500">· {Math.round(dd.usadas * 10) / 10} h de {horasDia} h</span></div>
-                      <div className="flex flex-col gap-1.5 mt-1 max-w-sm">
-                        {dd.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
-                          <button type="button" key={`${t.id}-${i}`} onClick={() => o && abrirObraRef(o.ref)} title="Abrir el proyecto" className="text-left bg-amber-50 border border-amber-300 hover:border-[#2E8B57] text-amber-900 rounded-md px-2.5 py-1.5">
-                            <div className="text-sm font-bold">{o ? pptoTxt(o) : t.id}</div>
-                            <div className="text-[11px] text-amber-800">{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"} · {Math.round(t.horas * 10) / 10} h</div>
-                          </button>
-                        ); })}
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[0, 1, 2, 3, 4].map((di) => { const f = new Date(new Date(l + "T12:00:00").getTime() + di * 864e5).toLocaleDateString("sv-SE"); const dd = (sm.porDia || {})[f]; const n = dd ? dd.trozos.length : 0; const abierto = pvTodos || !!pvAbiertos[f]; return (
+                    <div key={f} className={`rounded-md border p-1.5 min-w-0 ${dd ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-slate-50"}`}>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[11px] font-bold text-slate-700 capitalize">{new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric" })}</span>
+                        {dd && <span className="text-[10px] text-slate-500">{Math.round(dd.usadas)}h</span>}
+                        {n > 0 && <button type="button" onClick={() => setPvAbiertos((x) => ({ ...x, [f]: !x[f] }))} title={abierto ? "Cerrar" : "Ver las obras de este día"} className="ml-auto text-[12px] font-bold w-5 h-5 leading-none rounded border border-amber-400 bg-white text-amber-900">{abierto ? "−" : "+"}</button>}
                       </div>
+                      {n > 0 && !abierto && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {dd.trozos.map((t, i2) => { const o = nombrePorId[t.id]; return (
+                            <button type="button" key={`${t.id}-${i2}`} onClick={() => o && abrirObraRef(o.ref)} title={o ? o.nombre : t.id} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 hover:border-[#2E8B57] max-w-full truncate">{o ? cortoPV(o, t) : t.id}</button>
+                          ); })}
+                        </div>
+                      )}
+                      {n > 0 && abierto && (
+                        <div className="flex flex-col gap-1 mt-1">
+                          {dd.trozos.map((t, i2) => { const o = nombrePorId[t.id]; return (
+                            <button type="button" key={`${t.id}-${i2}`} onClick={() => o && abrirObraRef(o.ref)} title="Abrir el proyecto" className="text-left bg-amber-50 border border-amber-300 hover:border-[#2E8B57] text-amber-900 rounded-md px-1.5 py-1">
+                              <div className="text-[11px] font-bold break-words">{o ? pptoTxt(o) : t.id}</div>
+                              <div className="text-[10px] text-amber-800">{o && o.ventanas ? `${o.ventanas} vent.` : "— vent."} · {Math.round(t.horas * 10) / 10} h</div>
+                            </button>
+                          ); })}
+                        </div>
+                      )}
                     </div>
                   ); })}
                 </div>
@@ -55951,7 +56033,6 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const moverDiaEntero = async () => {
     const ks = Object.keys(asign);
     if (!destDia || destDia === dia || !ks.length) return;
-    if (ks.some((k) => enFabrica.has(k)) && !(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverDiaEntero()); return; }
     if (!window.confirm(`¿Mover las ${ks.length} obras del ${fmtDate(dia)} al ${fmtDate(destDia)}? Se llevan sus marcas, horas y notas.`)) return;
     for (const k of ks) await moverObraDia(k, dia, destDia);
     setDia(destDia); setMesVer(destDia.slice(0, 7)); setDestDia("");
@@ -56309,7 +56390,6 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       if (!f) { alert("Esta obra la planifica Fábrica y no la encuentro en su planning."); return; }
       const oid = f.tipo === "proyecto" ? `p-${f.id}` : f.tipo === "uxcar" ? `u-${f.id}` : f.tipo === "rapido" ? `r-${f.id}` : "";
       if (onMoverDiaFabrica && oid) {
-        if (!(admin || Date.now() < pinCristalesValidoHasta)) { pedirPin(false, "🔒 Cambiar el planning de Fábrica necesita el PIN (el administrador lo pone en Administración).", () => moverObraDia(k, de, a)); return; }
         onMoverDiaFabrica(oid, a);
         try { for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) { const sn = await fbGet(ref(fbDb, `${nodo}/${de}/${k}`)); if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${de}/${k}`), null); } } } catch (e) { /* las marcas se quedan en el día viejo */ }
         return;
@@ -56641,6 +56721,24 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         {lista.length > 0 && <button type="button" onClick={pasarAlSiguiente} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold">Pasar las no terminadas al {fmtDate(siguienteLaborable(dia))}</button>}
         {lista.length > 0 && <span className="inline-flex items-center gap-1"><input type="date" value={destDia} onChange={(e) => setDestDia(e.target.value)} className="border border-slate-300 rounded px-1 py-1 text-sm" /><button type="button" disabled={!destDia} onClick={moverDiaEntero} className="px-3 py-1.5 rounded-md border border-slate-400 bg-white text-sm font-semibold disabled:opacity-40">Mover todo el día a esa fecha</button></span>}
       </div>
+      {(() => {
+        // AVISO: obras que Fábrica tiene en este día y que aquí no se han podido enlazar (si no, desaparecían sin decir nada)
+        const delDia = (planF && planF.dias && planF.dias[dia]) || {};
+        const sinEnlace = Object.keys(delDia).filter((k) => !koDeFab.has(k));
+        const hace = planF && planF.en ? Math.round((Date.now() - planF.en) / 60000) : null;
+        if (!planF || !planF.dias) return <div className="mb-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-800">⚠ Fábrica todavía no ha publicado su planning: abre Fábrica → Planning una vez y vuelve.</div>;
+        return (
+          <>
+            {sinEnlace.length > 0 && (
+              <div className="mb-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-1.5 text-xs text-rose-900">
+                <b>⚠ Fábrica tiene {sinEnlace.length} obra{sinEnlace.length === 1 ? "" : "s"} este día que aquí no aparece{sinEnlace.length === 1 ? "" : "n"} (no encuentro su hoja/presupuesto en Control del día):</b>
+                {sinEnlace.map((k) => { const ob = (planF.obras && planF.obras[k]) || {}; return <div key={k} className="mt-0.5">· {toArray(ob.pres).length ? `Ppto ${toArray(ob.pres).join(" / ")}` : "sin presupuesto"} — {(delDia[k] && delDia[k].nombre) || ob.nombre || k} · {(delDia[k] && delDia[k].horas) || 0} h</div>; })}
+              </div>
+            )}
+            {hace !== null && hace > 180 && <div className="mb-2 text-[11px] text-amber-700">Planning de Fábrica publicado hace {hace >= 1440 ? `${Math.round(hace / 1440)} día(s)` : `${Math.round(hace / 60)} h`}: si has cambiado algo en Fábrica y no sale, abre Fábrica → Planning.</div>}
+          </>
+        );
+      })()}
       {onMeterEnPlanning && (() => {
         // METER UNA OBRA EN EL PLANNING DE FÁBRICA (una que está por aquí y no está planificada)
         const q = qMeter.trim().toLowerCase(); const qd = q.split(/\s+/).length === 1 ? q.replace(/[^\d]/g, "") : "";
@@ -57021,7 +57119,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           </div>
         );
       })()}
-      {!informe && lista.filter((o) => filtroPapel === "todas" || (filtroPapel === "morado") === !!(papel && papel[limpia(o.d.key)])).map((o) => {
+      {!informe && (() => { const vs = lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) === "verde"); return vs.length > 0 ? (
+        <details className="mb-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-900">
+          <summary className="cursor-pointer font-bold">✅ {vs.length} obra{vs.length === 1 ? "" : "s"} terminada{vs.length === 1 ? "" : "s"} aquí: ya solo salen en Almacén del día</summary>
+          {vs.map((o) => <div key={o.d.key} className="mt-0.5">· {o.d.nombre}</div>)}
+        </details>) : null; })()}
+      {!informe && lista.filter((o) => colorDe(idsDe(o).map((i) => valor(o.d.key, i))) !== "verde").filter((o) => filtroPapel === "todas" || (filtroPapel === "morado") === !!(papel && papel[limpia(o.d.key)])).map((o) => {
         const vivs = [...o.viv.entries()];
         const todosIds = idsDe(o);
         const vals = todosIds.map((i) => valor(o.d.key, i));
@@ -57333,12 +57436,12 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
       {actual.id === "incidencias" && renderIncidencias && renderIncidencias()}
       {actual.id === "auxiliares" && <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} admin={admin} />}
       {actual.id === "almacen" && (
-        <AlmacenVentanas simple={soloAlmacen} quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+        <AlmacenVentanas onMoverDiaFabrica={onMoverDiaFabrica} simple={soloAlmacen} quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
       {actual.id === "almacenDia" && (
-        <AlmacenVentanas soloDia quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
+        <AlmacenVentanas onMoverDiaFabrica={onMoverDiaFabrica} soloDia quien={quien} onGuardarEtiquetasObra={onGuardarEtiquetasObra} etiquetasSinObra={etiquetasSinObra} onGuardarSinObra={onGuardarSinObra} onBorrarSinObra={onBorrarSinObra} caballetes={caballetes}
           proyectos={proyectos} clientes={clientes} uxExpedientes={uxExpedientes} onGuardar={onGuardarCaballete} onBorrar={onBorrarCaballete} isAdmin={admin} config={config} onSaveConfig={onSaveConfig} onMoverEstado={onMoverEstado}
           pedidos={pedidos} uxPedidos={uxPedidos} listoParaFabricar={listoParaFabricar} configPlanning={configPlanning} />
       )}
