@@ -49782,6 +49782,21 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // aviso diario automático, y se manda ya el correo de la semana.
   const [pvAbiertos, setPvAbiertos] = useState({}); // planning virtual en calendario: días abiertos con «+»
   const [pvTodos, setPvTodos] = useState(false);
+  const soltarPV = (id, f) => {
+    const o = nombrePorId[id]; if (!o || !f) return;
+    const min = o.material ? sigLaborable(o.material) : desde;
+    if (f < min) { window.alert(`${pptoTxt(o)}: el material llega el ${fmtDate(o.material)}, así que no puede ponerse antes del ${fmtDate(min)}.`); return; }
+    ponerDia(id, f);
+  };
+  const pasarAFabricarPV = async (o, f) => {
+    if (!onMeterEnPlanning) { window.alert("Desde aquí no se puede pasar a fabricar. Hazlo en «Listo para fabricar»."); return; }
+    let pid = o.ref.tipo === "proyecto" ? o.ref.id : null;
+    if (o.ref.tipo === "uxcar") { const e = toArray(uxExpedientes).find((x) => x && x.id === o.ref.id); pid = e && e.proyectoId ? e.proyectoId : null; }
+    if (!pid) { window.alert("Esta obra de Uxcar no tiene proyecto asociado: pásala a producción desde el módulo de Uxcar."); return; }
+    const falta = o.material === null ? "sin fecha de llegada del material" : o.material ? `el material llega el ${fmtDate(o.material)}` : "";
+    if (!window.confirm(`¿Pasar ${pptoTxt(o)} a FABRICAR ahora?\n\n${falta ? `⚠ Todavía espera material (${falta}).\n` : ""}Se marca «En proceso» y se descuenta el stock. Empezará el ${fmtDate(f)}.`)) return;
+    try { await onMeterEnPlanning(pid, f); } catch (e) { window.alert("No se pudo pasar a fabricar: " + e.message); }
+  };
   const cortoPV = (o, t) => { try { const l = presFab(o); if (l.length) return l[0]; } catch (e) { /* nada */ } const nm = String((o && o.nombre) || t.id); const m = nm.match(/^(#\d+|Uxcar exp\. [\w.-]+)/); return m ? m[1] : nm.slice(0, 12); };
   const [publicando, setPublicando] = useState(false);
   const publicar = async () => {
@@ -50024,7 +50039,8 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                     <button type="button" onClick={() => o && abrirObraRef(o.ref)} className="block w-full text-left text-sm font-bold text-slate-800 hover:text-[#2E8B57]">{o ? pptoTxt(o) : t.nombre}</button>
                     <div className="flex items-center gap-2 text-[11px] text-slate-500">
                       <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
-                      <button type="button" onClick={() => setMoviendo(moviendo && moviendo.id === t.id ? null : { id: t.id, nombre: t.nombre })} className="ml-auto text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1.5 py-0.5 bg-white">{moviendo && moviendo.id === t.id ? "Cancelar" : "Mover"}</button>
+                      <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
+                      <button type="button" onClick={() => { if (window.confirm(`¿Quitar ${o ? pptoTxt(o) : t.nombre} de este planning?\n\nQueda sin tick en la lista de arriba: puedes volver a ponerla marcándola.`)) setQuitadas([...quitadas, t.id]); }} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
                     </div>
                   </div>
                 ); })}
@@ -50092,7 +50108,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                 </div>
                 <div className="grid grid-cols-5 gap-1.5">
                   {[0, 1, 2, 3, 4].map((di) => { const f = new Date(new Date(l + "T12:00:00").getTime() + di * 864e5).toLocaleDateString("sv-SE"); const dd = (sm.porDia || {})[f]; const n = dd ? dd.trozos.length : 0; const abierto = pvTodos || !!pvAbiertos[f]; return (
-                    <div key={f} className={`rounded-md border p-1.5 min-w-0 ${dd ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-slate-50"}`}>
+                    <div key={f} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) soltarPV(id, f); }} className={`rounded-md border p-1.5 min-w-0 ${dd ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-slate-50"}`}>
                       <div className="flex items-center gap-1">
                         <span className="text-[11px] font-bold text-slate-700 capitalize">{new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric" })}</span>
                         {dd && <span className="text-[10px] text-slate-500">{Math.round(dd.usadas)}h</span>}
@@ -50101,17 +50117,20 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                       {n > 0 && !abierto && (
                         <div className="flex flex-wrap gap-1 mt-1">
                           {dd.trozos.map((t, i2) => { const o = nombrePorId[t.id]; return (
-                            <button type="button" key={`${t.id}-${i2}`} onClick={() => o && abrirObraRef(o.ref)} title={o ? o.nombre : t.id} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 hover:border-[#2E8B57] max-w-full truncate">{o ? cortoPV(o, t) : t.id}</button>
+                            <button type="button" draggable key={`${t.id}-${i2}`} onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)} onClick={() => o && abrirObraRef(o.ref)} title={(o ? o.nombre : t.id) + " — arrástrala a otro día"} className="cursor-grab text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 hover:border-[#2E8B57] max-w-full truncate">{o ? cortoPV(o, t) : t.id}</button>
                           ); })}
                         </div>
                       )}
                       {n > 0 && abierto && (
                         <div className="flex flex-col gap-1 mt-1">
                           {dd.trozos.map((t, i2) => { const o = nombrePorId[t.id]; return (
-                            <button type="button" key={`${t.id}-${i2}`} onClick={() => o && abrirObraRef(o.ref)} title="Abrir el proyecto" className="text-left bg-amber-50 border border-amber-300 hover:border-[#2E8B57] text-amber-900 rounded-md px-1.5 py-1">
-                              <div className="text-[11px] font-bold break-words">{o ? pptoTxt(o) : t.id}</div>
-                              <div className="text-[10px] text-amber-800">{o && o.ventanas ? `${o.ventanas} vent.` : "— vent."} · {Math.round(t.horas * 10) / 10} h</div>
-                            </button>
+                            <div key={`${t.id}-${i2}`} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)} className="cursor-grab bg-amber-50 border border-amber-300 hover:border-[#2E8B57] text-amber-900 rounded-md px-1.5 py-1">
+                              <button type="button" onClick={() => o && abrirObraRef(o.ref)} title="Abrir el proyecto (o arrástrala a otro día)" className="block w-full text-left">
+                                <div className="text-[11px] font-bold break-words">{o ? pptoTxt(o) : t.id}</div>
+                                <div className="text-[10px] text-amber-800">{o && o.ventanas ? `${o.ventanas} vent.` : "— vent."} · {Math.round(t.horas * 10) / 10} h</div>
+                              </button>
+                              {o && <button type="button" onClick={() => pasarAFabricarPV(o, f)} className="mt-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#2E8B57] text-white">➜ Pasar a fabricar</button>}
+                            </div>
                           ); })}
                         </div>
                       )}
