@@ -54636,9 +54636,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-sm font-bold text-slate-800">Comprobar una obra</div>
-          <SelectBuscable value={obraComp} onChange={(e) => { setObraComp(e.target.value); setMsg(""); }} className="min-w-[260px]">
+          <SelectBuscable value={obraComp} onChange={(e) => { setObraComp(e.target.value); setMsg(""); }} className="min-w-[320px] flex-1 max-w-xl" placeholder="🔍 Escribe el nº de presupuesto, el expediente o el nombre de la obra…">
             <option value="">— elige la obra (presupuesto) —</option>
-            {obrasComp.map((n) => <option key={n} value={n}>Ppto {pptoBonito(n)}{(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) ? " · " + (hojas[n].referencia || hojas[n].cliente) : ""}</option>)}
+            {obrasComp.map((n) => { const pr = toArray(proyectos).find((q) => digitosPresu(q.presupuestoNumero) === n || digitosPresu(presupuestoDeObra(q)) === n); const ex = !pr ? toArray(uxExpedientes).find((q) => digitosPresu(q.presupuesto) === n || digitosPresu(q.presupuestoNumero) === n) : null;
+              const extra = [(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) || "", pr ? `#${pr.numero} ${pr.nombre || ""}`.trim() : "", ex ? `Uxcar exp. ${ex.numero}` : ""].filter(Boolean).join(" · ");
+              return <option key={n} value={n}>Ppto {pptoBonito(n)}{extra ? " · " + extra : ""}</option>; })}
           </SelectBuscable>
           {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); leerComp(e.currentTarget.value); } }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
         </div>
