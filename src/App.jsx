@@ -20203,6 +20203,28 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   }, [ctxM.pedidosPersianas, ctxM.persianasAlmacen]);
 
   const [qPend, setQPend] = useState("");
+  // ── Cruce con AUXILIARES: la guía (y la mosquitera) de cada obra, ¿está cortada? Se lee de lo que se marca en Auxiliares ──
+  const auxHojasP = useObjetoFb("auxiliaresHojas");
+  const auxEstP = useObjetoFb("auxiliaresPiezas");
+  const auxCfgP = useObjetoFb("auxiliaresConfig");
+  const auxPorPpto = useMemo(() => {
+    const r = {};
+    try {
+      if (!auxHojasP || !Object.keys(auxHojasP).length) return r;
+      const cfg = auxCfgDe(auxCfgP);
+      const vent = auxVentanas(ctxM.proyectos, ctxM.uxExpedientes, ctxM.etiquetasSinObra || []);
+      const { piezas } = auxExpandir(auxHojasP, cfg, vent, pptosConGuiaProveedor(ctxM));
+      piezas.forEach((pz) => {
+        const k = digitosPresu(pz.ppto); if (!k) return;
+        const t = /mosquit/i.test(pz.nombre || "") ? "mosq" : (/gu[ií]a/i.test(pz.nombre || "") ? "guia" : "");
+        if (!t) return;
+        const o = (r[k] = r[k] || { guia: { n: 0, ok: 0 }, mosq: { n: 0, ok: 0 } });
+        o[t].n++; if (auxEstP && auxEstP[pz.id] && auxEstP[pz.id].cortada) o[t].ok++;
+      });
+    } catch (er) { /* sin datos de auxiliares */ }
+    return r;
+  }, [auxHojasP, auxEstP, auxCfgP, ctxM.proyectos, ctxM.uxExpedientes, ctxM.etiquetasSinObra, ctxM.pedidosCrm, ctxM.uxPedidosCtx, ctxM.persianasAlmacen]); // eslint-disable-line react-hooks/exhaustive-deps
+  const auxDePersiana = (x) => { const k = digitosPresu(presupuestoDePersiana(x, ctxM)); return k ? { k, a: auxPorPpto[k] || null } : { k: "", a: null }; };
   const [carroPpto, setCarroPpto] = useState({});
   const [carroFila, setCarroFila] = useState({});
   const activos = items.filter((x) => !x.entregada);
@@ -20692,6 +20714,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const plan = useMemo(() => planReorganizarPersianas(items, carros), [items, carros]);
   const actualizarPersiana = (id, patch) => guardarItems(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   // Sacar persianas del carro (ya colocadas en obra o cargadas): dejan el hueco libre y pasan a «salió»
+  // Deshacer un «salió / entregada» puesto por error: vuelven al almacén, sin carro (salen en «Pendientes de ubicar» para colocarlas)
+  const retrocederSalida = (xs) => {
+    if (!xs.length) return;
+    if (!window.confirm(`¿Retroceder ${xs.length === 1 ? "esta persiana" : `las ${xs.length} persianas`}? Dejan de constar como salidas/entregadas y vuelven al almacén sin carro: las verás en «Pendientes de ubicar» para colocarlas.`)) return;
+    const ids = new Set(xs.map((x) => x.id));
+    guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, entregada: false, fechaSalida: "", estante: null, enPuesto: "", pendienteUbicar: true, ...(y.fechaColocada && y.fechaColocada === y.fechaSalida ? { colocada: false, fechaColocada: "" } : {}), notaRetroceso: `Salida retrocedida el ${new Date().toLocaleDateString("es-ES")}` } : y)));
+    setAviso(`${xs.length} persiana${xs.length === 1 ? "" : "s"} de vuelta en el almacén. Colócalas desde «Pendientes de ubicar».`);
+  };
   const quitarDelCarro = (xs) => { const ids = new Set(xs.map((x) => x.id)); const hoyQ = new Date().toISOString().slice(0, 10); guardarItems(items.map((y) => (ids.has(y.id) ? { ...y, estante: null, entregada: true, fechaSalida: hoyQ } : y))); };
   const [qLista, setQLista] = useState("");
   const idListaPartes = `partes-persianas-${(almacen && almacen.id) || "uno"}`;
@@ -20960,7 +20990,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const dentro = activos.filter((x) => x.estante && x.estante.carro === c.numero);
     const n = dentro.length;
     const revisadas = dentro.filter((x) => x.revisada).length;
-    return { pct: total ? usado / total : 0, exps: [...exps], n, revisadas, todoRevisado: n > 0 && revisadas === n };
+    let faltaGuia = new Set(), faltaMosq = new Set(), sinHoja = new Set(), guiasOk = 0;
+    if (!esMosq) dentro.forEach((x) => { const { k, a } = auxDePersiana(x); const tag = k || String(x.expediente || "?");
+      if (!a || !a.guia.n) { sinHoja.add(tag); return; }
+      if (a.guia.ok < a.guia.n) faltaGuia.add(tag); else guiasOk++;
+      if (a.mosq.n && a.mosq.ok < a.mosq.n) faltaMosq.add(tag); });
+    return { pct: total ? usado / total : 0, exps: [...exps], n, revisadas, todoRevisado: n > 0 && revisadas === n, faltaGuia: [...faltaGuia], faltaMosq: [...faltaMosq], sinHoja: [...sinHoja], guiasOk };
   };
   const etiquetaCarro = (c) => { const r = resumenCarro(c); return `Carro ${c.numero} · ${c.minimo != null && c.minimo !== "" && !isNaN(parseFloat(c.minimo)) ? `desde ${Math.round(parseFloat(c.minimo) / 10)} cm` : ((TIPOS_CARRO_PERSIANA[c.tipo] || {}).corto || "")} · ${r.n === 0 ? "VACÍO" : `${Math.round(r.pct * 100)} %`}`; };
   const opcionesCarro = (excluir) => ordenados.filter((c) => c.numero !== excluir).map((c) => <option key={c.numero} value={c.numero}>{etiquetaCarro(c)}</option>);
@@ -21088,6 +21123,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   </div>
                 )}
                 <div className="font-bold mb-1">Ese pedido YA está recibido ({ya.length} persiana{ya.length === 1 ? "" : "s"}{ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Toca una para ir a su carro:</div>
+                {dentro.filter((x) => x.entregada).length > 0 && (
+                  <button type="button" onClick={() => retrocederSalida(dentro.filter((x) => x.entregada))} className="mb-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded px-3 py-1.5">↩ Retroceder las {dentro.filter((x) => x.entregada).length} que constan como salidas (siguen en el almacén)</button>
+                )}
                 {dentro.length === 0 && <div className="text-slate-600">No encuentro estas persianas en el almacén: el pedido está dado por recibido pero no hay persiana física registrada. <button type="button" onClick={() => { setVista("sinsitio"); setQPend(qPedidas.trim()); setTimeout(() => { try { const el = document.getElementById("lista-sin-sitio"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (er) { /* nada */ } }, 150); }} className="underline font-semibold">Ver «Pendientes de ubicar»</button></div>}
                 <div className="flex flex-col gap-1 items-start">
                   {dentro.map((x) => x.estante ? (
@@ -21095,7 +21133,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                       {x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} → <b>Carro {x.estante.carro}</b> · {textoEstante(x.estante)} <span className="underline">Ver carro</span>
                     </button>
                   ) : x.entregada ? (
-                    <div key={x.id} className="bg-white border border-slate-300 rounded px-2 py-1 text-slate-700">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>YA SALIÓ</b>{x.fechaSalida ? ` el ${fmtDate(x.fechaSalida)}` : ""} (cargada / entregada): no está en el almacén porque ya se ha ido.</div>
+                    <div key={x.id} className="bg-white border border-slate-300 rounded px-2 py-1 text-slate-700">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>YA SALIÓ</b>{x.fechaSalida ? ` el ${fmtDate(x.fechaSalida)}` : ""} (cargada / entregada): no está en el almacén porque ya se ha ido. <button type="button" onClick={() => retrocederSalida([x])} className="ml-1 font-bold text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white hover:bg-rose-50">↩ Retroceder: sigue en el almacén</button></div>
                   ) : x.enPuesto ? (
                     <div key={x.id} className="bg-white border border-sky-300 rounded px-2 py-1 text-sky-800">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>está en {x.enPuesto}</b> (en la línea), no en un carro.</div>
                   ) : almacenDe(x) !== almacen.id ? (
@@ -21307,7 +21345,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   const vacioCarro = r.n === 0;
                   return (
                     <button key={c.numero} onClick={() => setCarroAbierto(c.numero)}
-                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : r.todoRevisado ? "bg-sky-100" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : r.todoRevisado ? "border-sky-500" : "border-slate-200"}`}>
+                      className={`w-[150px] shrink-0 text-left rounded-lg border-2 p-2 hover:shadow ${vacioCarro ? "bg-slate-200" : (r.faltaGuia.length || r.faltaMosq.length) ? "bg-rose-50" : r.todoRevisado ? "bg-sky-100" : "bg-white"} ${resaltado ? "border-amber-500 ring-2 ring-amber-200" : (r.faltaGuia.length || r.faltaMosq.length) ? "border-rose-500" : c.movido ? "border-dashed border-rose-400" : vacioCarro ? "border-slate-400" : r.todoRevisado ? "border-sky-500" : "border-slate-200"}`}>
                       <div className="flex items-center justify-between">
                         <span className="font-display font-extrabold text-lg text-slate-900">{c.numero}</span>
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: t.color, color: t.texto }}>{t.corto}</span>
@@ -21320,6 +21358,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         {r.exps.length ? r.exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (r.exps.length > 3 ? ` +${r.exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                       </div>
                       {!vacioCarro && (r.todoRevisado ? <div className="text-[11px] font-bold text-sky-700 mt-0.5">✓ Todo revisado</div> : r.revisadas > 0 ? <div className="text-[11px] text-sky-700 mt-0.5">{r.revisadas} de {r.n} revisadas</div> : null)}
+                      {!vacioCarro && r.faltaGuia.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight" title="Auxiliares todavía no tiene cortada la guía de estas obras">⚠ FALTA GUÍA · {r.faltaGuia.slice(0, 2).join(" · ")}{r.faltaGuia.length > 2 ? ` +${r.faltaGuia.length - 2}` : ""}</div>}
+                      {!vacioCarro && r.faltaMosq.length > 0 && <div className="text-[11px] font-extrabold text-rose-700 mt-0.5 leading-tight">⚠ FALTA MOSQUITERA · {r.faltaMosq.slice(0, 2).join(" · ")}</div>}
+                      {!vacioCarro && !r.faltaGuia.length && !r.faltaMosq.length && r.guiasOk > 0 && r.sinHoja.length === 0 && <div className="text-[11px] font-bold text-emerald-700 mt-0.5">✓ Guías cortadas</div>}
+                      {!vacioCarro && !r.faltaGuia.length && r.sinHoja.length > 0 && !esMosq && <div className="text-[10px] text-amber-700 mt-0.5 leading-tight">Guía sin comprobar (sin hoja en Auxiliares): {r.sinHoja.slice(0, 2).join(" · ")}{r.sinHoja.length > 2 ? "…" : ""}</div>}
                       {c.movido && <div className="text-[10px] text-rose-600 font-semibold truncate">Movido{c.notaSitio ? `: ${c.notaSitio}` : ""}</div>}
                     </button>
                   );
