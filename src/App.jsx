@@ -21078,16 +21078,23 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const todosIt = toArray(items);
             let dentro = todosIt.filter((x) => ya.some((pp) => pp.recibidaId === x.id));
             if (!dentro.length) dentro = todosIt.filter((x) => ya.some((pp) => { try { return casaPedidaConPersiana(pp, x); } catch (er) { return false; } }));
+            const faltan = ya.filter((pp) => !todosIt.some((x) => x.id === pp.recibidaId || (() => { try { return casaPedidaConPersiana(pp, x); } catch (er) { return false; } })()));
             return (
               <div className="mt-2 text-xs rounded bg-emerald-50 border border-emerald-300 text-emerald-900 px-2 py-2">
+                {faltan.length > 0 && (
+                  <div className="mb-2 rounded border-2 border-rose-400 bg-rose-50 text-rose-800 px-2 py-1.5 font-bold">
+                    {faltan.length === ya.length ? "⚠ FALTA PERSIANA: el pedido consta como recibido pero no hay ninguna en el almacén." : `⚠ FALTAN ${faltan.length} PERSIANAS de ${ya.length}: constan como recibidas pero no están en el almacén.`}
+                    <div className="font-semibold mt-0.5">{faltan.map((pp) => `${pp.ref || "—"} (${largoPersiana(pp)}${pp.alto ? `×${pp.alto}` : ""})`).join(" · ")}</div>
+                  </div>
+                )}
                 <div className="font-bold mb-1">Ese pedido YA está recibido ({ya.length} persiana{ya.length === 1 ? "" : "s"}{ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Toca una para ir a su carro:</div>
-                {dentro.length === 0 && <div className="text-slate-600">No encuentro estas persianas en el almacén: el pedido está dado por recibido pero no hay persiana física registrada. <button type="button" onClick={() => setVista("sinsitio")} className="underline font-semibold">Ver «Pendientes de ubicar»</button></div>}
+                {dentro.length === 0 && <div className="text-slate-600">No encuentro estas persianas en el almacén: el pedido está dado por recibido pero no hay persiana física registrada. <button type="button" onClick={() => { setVista("sinsitio"); setQPend(qPedidas.trim()); setTimeout(() => { try { const el = document.getElementById("lista-sin-sitio"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (er) { /* nada */ } }, 150); }} className="underline font-semibold">Ver «Pendientes de ubicar»</button></div>}
                 <div className="flex flex-col gap-1 items-start">
                   {dentro.map((x) => x.estante ? (
                     <button key={x.id} type="button" onClick={() => { setVista("mapa"); setCarroAbierto(x.estante.carro); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-emerald-400 hover:bg-emerald-100 rounded px-2 py-1">
                       {x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} → <b>Carro {x.estante.carro}</b> · {textoEstante(x.estante)} <span className="underline">Ver carro</span>
                     </button>
-                  ) : <button key={x.id} type="button" onClick={() => { setVista("sinsitio"); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-amber-400 hover:bg-amber-50 rounded px-2 py-1">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · todavía sin carro → <span className="underline">ir a «Pendientes de ubicar» para colocarla</span></button>)}
+                  ) : <button key={x.id} type="button" onClick={() => { setVista("sinsitio"); setQPend(qPedidas.trim()); setTimeout(() => { try { const el = document.getElementById("lista-sin-sitio"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (er) { /* nada */ } }, 150); }} className="text-left font-semibold bg-white border border-amber-400 hover:bg-amber-50 rounded px-2 py-1">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · todavía sin carro → <span className="underline">ir a «Pendientes de ubicar» para colocarla</span></button>)}
                 </div>
               </div>
             );
@@ -21387,7 +21394,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           setAviso(n === xs.length ? `${n} ubicadas en el carro ${carroN}.` : `${n} de ${xs.length} ubicadas en el carro ${carroN}; el resto no cabe ahí: prueba otro carro.`);
         };
         return (
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
+          <div id="lista-sin-sitio" className="bg-white border border-slate-200 rounded-xl p-4">
             <p className="text-sm text-slate-600 mb-2">{Cosa} que han entrado y <b>todavía no tienen sitio</b>. No se colocan solas: elige el carro y pulsa <b>Ubicar</b>. Se agrupan por <b>nº de presupuesto</b>.</p>
             <input value={qPend} onChange={(e) => setQPend(e.target.value)} placeholder="🔍 Buscar por nº de presupuesto (también expediente, vivienda…)" className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm mb-3" />
             {sinSitio.length === 0 ? <p className="text-sm text-slate-400">No hay nada pendiente de ubicar.</p> : lista.length === 0 ? <p className="text-sm text-slate-400">Nada coincide con esa búsqueda.</p> : (
