@@ -680,7 +680,10 @@ const conMayuscula = (props, esTextarea) => {
   };
 };
 function TextInput(props) { return <input {...conMayuscula(props, false)} className={inputCls + " " + (props.className || "")} />; }
-function Select({ children, ...props }) { return <select {...props} className={inputCls + " " + (props.className || "")}>{children}</select>; }
+function Select({ children, ...props }) {
+  if (!props.multiple && !props.size && opcionesDeSelect(children).length >= 15) return <SelectBuscable {...props}>{children}</SelectBuscable>;
+  return <select {...props} className={inputCls + " " + (props.className || "")}>{children}</select>;
+}
 
 // Selector con buscador para listas largas (materiales, artículos...) donde un <select>
 // normal se vuelve inmanejable con cientos o miles de opciones. Escribes y filtra por
@@ -762,6 +765,7 @@ export default function App() {
   const [uxPortalUsuarios, setUxPortalUsuarios] = useState([]);
   useEffect(() => onAuthStateChanged(fbAuth, (u) => setAuthUser(u || null)), []);
   const [clientes, setClientes] = useState([]);
+  _clientesBusca = new Map(toArray(clientes).map((c) => [c.id, c.nombre]));
   const [proyectos, setProyectos] = useState([]);
   const [proveedores, setProveedores] = useState([]);
   const [materiales, setMateriales] = useState([]);
@@ -886,6 +890,7 @@ export default function App() {
   const [tarifasAluminio, setTarifasAluminio] = useState([]);
   const [modelosVentana, setModelosVentana] = useState([]);
   const [configVentanas, setConfigVentanas] = useState({});
+  _almacenesDestino = almacenesCaballetes(configVentanas);
   const [tarifasCristal, setTarifasCristal] = useState([]);
   // Lista de partidas calculadas (ventanas, persianas...) pendientes de juntar en un
   // presupuesto. Es de este dispositivo (no se comparte), se guarda en el navegador.
@@ -8497,6 +8502,11 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
       alert("Falta la fecha de aceptación del presupuesto: es obligatoria cuando el presupuesto está aceptado.");
       return;
     }
+    if ((f.estadoLogistica === "Reparto (camión)" || f.estadoLogistica === "Recogida en fábrica" || f.llevaInstalacion) && _almacenesDestino.length && !f.almacenDestinoId) {
+      setErrorMsg("Elige el almacén de destino: es obligatorio (a dónde va esta obra cuando esté terminada).");
+      alert("Elige el almacén de destino: es obligatorio. Si va a Valencia, el de Valencia; si lleva montaje, el de montaje.");
+      return;
+    }
     if (!f.fechaEntregaPrevista) {
       setErrorMsg("Pon la fecha de entrega prevista. Es obligatoria: pon una aproximada y luego la cambias si hace falta.");
       alert("Pon la fecha de entrega prevista (es obligatoria; puede ser aproximada y luego se cambia).");
@@ -8586,6 +8596,16 @@ function ProyectoForm({ initial, clientes, proyectos, nextNumero, onCancel, onSa
             </Select>
           </Field>
         </div>
+
+        {(f.estadoLogistica === "Reparto (camión)" || f.estadoLogistica === "Recogida en fábrica" || f.llevaInstalacion) && _almacenesDestino.length > 0 && (
+          <Field label="Almacén de destino (a dónde va cuando esté terminada)" required>
+            <Select value={f.almacenDestinoId || ""} onChange={set("almacenDestinoId")}>
+              <option value="">— Elige el almacén —</option>
+              {_almacenesDestino.map((a) => <option key={a.id} value={a.id}>{a.nombre}{a.ciudad ? ` · ${a.ciudad}` : ""}</option>)}
+            </Select>
+            {!f.almacenDestinoId && almacenSugeridoDe(f) && <button type="button" onClick={() => setF({ ...f, almacenDestinoId: almacenSugeridoDe(f).id })} className="mt-1 text-xs font-semibold text-emerald-700 underline">Sugerido: {almacenSugeridoDe(f).nombre} · usarlo</button>}
+          </Field>
+        )}
 
         {f.estadoPresupuesto === "Presupuesto aceptado" && (
           <div className="grid grid-cols-3 gap-4">
@@ -13740,7 +13760,7 @@ function PedidoForm({ initial, proveedores, materiales, articulos, proyectos, ne
         <Field label="Proyecto / obra de este pedido">
           <Select value={f.proyectoId} onChange={set("proyectoId")}>
             <option value="">Stock (sin proyecto asociado)</option>
-            {proyectos.map((pr) => <option key={pr.id} value={pr.id}>#{pr.numero} — {pr.nombre}</option>)}
+            {proyectos.map((pr) => <option key={pr.id} value={pr.id} data-buscar={textoBuscaProyecto(pr)}>#{pr.numero} — {pr.nombre}{clienteDeProyecto(pr) ? ` · ${clienteDeProyecto(pr)}` : ""}</option>)}
           </Select>
           <p className="text-xs text-slate-400 mt-1">Todas las líneas de este pedido quedarán vinculadas a este proyecto.</p>
         </Field>
@@ -14878,7 +14898,7 @@ function SolicitudPedidoForm({ initial, proyectos, onCancel, onSave }) {
         <Field label="Proyecto relacionado (si aplica)">
           <Select value={f.proyectoId} onChange={set("proyectoId")}>
             <option value="">General / Stock (sin proyecto)</option>
-            {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
         </Field>
 
@@ -16883,7 +16903,7 @@ function CrearIncidenciaCristalModal({ pieza, cristal, tipo, onCerrar, onHecho, 
           <Field label="Obra" required>
             <Select value={proyectoId} onChange={(e) => setProyectoId(e.target.value)}>
               <option value="">— Elige la obra —</option>
-              {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+              {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
             </Select>
           </Field>
           <Field label="Responsable (encargado de incidencias)">
@@ -23509,7 +23529,7 @@ function ProcesoExternoTab({ envios, proyectos, proveedores, clientes, usuarios,
           <Field label="Obra / proyecto (opcional)">
             <Select value={f.proyectoId} onChange={set("proyectoId")}>
               <option value="">Material general (sin obra)</option>
-              {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+              {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
             </Select>
           </Field>
         </div>
@@ -24409,7 +24429,7 @@ function InstalacionForm({ proyectos, clientes, onCancel, onSave }) {
         <Field label="Proyecto (opcional)">
           <Select value={f.proyectoId} onChange={set("proyectoId")}>
             <option value="">Sin proyecto — instalación suelta</option>
-            {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
           <p className="text-xs text-slate-400 mt-1">Si la eliges de un proyecto, se usa su nombre y su cliente automáticamente.</p>
         </Field>
@@ -29569,7 +29589,7 @@ function IncidenciaForm({ initial, proyectos, clientes, nextNumero, onCancel, on
       <form onSubmit={submit} className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
         <Field label="Proyecto asociado" required>
           <Select value={f.proyectoId} onChange={set("proyectoId")} required>
-            {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
         </Field>
 
@@ -35973,7 +35993,7 @@ function VincularProyectoSelect({ proyectos, onVincular }) {
     <div className="flex items-center gap-1.5">
       <Select value={sel} onChange={(e) => setSel(e.target.value)} className="max-w-[160px] !py-1 !text-xs">
         <option value="">Vincular a...</option>
-        {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+        {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
       </Select>
       <button
         onClick={() => sel && onVincular(sel)}
@@ -36126,7 +36146,7 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
         <Field label="Proyecto (déjalo en blanco si todavía no existe)">
           <Select value={f.proyectoId || ""} onChange={set("proyectoId")}>
             <option value="">Sin proyecto todavía</option>
-            {proyectos.map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+            {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
           <p className="text-xs text-slate-400 mt-1">Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura.</p>
         </Field>
@@ -37519,7 +37539,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
           <Field label="Vincular a obra existente (opcional)">
             <Select value={f.proyectoId} onChange={set("proyectoId")}>
               <option value="">Ninguna — presupuesto independiente</option>
-              {(proyectos || []).map((p) => <option key={p.id} value={p.id}>#{p.numero} — {p.nombre}</option>)}
+              {(proyectos || []).map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
             </Select>
             <p className="text-xs text-slate-400 mt-1">Si la obra tiene marcado "Contrato ya firmado con constructora", este presupuesto se manda a firmar al responsable interno, no al cliente.</p>
           </Field>
@@ -40020,10 +40040,10 @@ function UxIncidencias({ incidencias, expedientes = [], nombre, aviso, modo = "p
         <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-2 max-w-2xl">
           <div className="text-sm font-semibold text-slate-800">Poner una incidencia</div>
           <p className="text-xs text-slate-500">Algo que ha llegado mal, roto, que falta, o cualquier problema con un expediente. Ecowin PVC la ve al momento.</p>
-          <select value={exp} onChange={(e) => setExp(e.target.value)} className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+          <SelectBuscable value={exp} onChange={(e) => setExp(e.target.value)} className="w-full">
             <option value="">— Expediente (si es de uno) —</option>
             {toArray(expedientes).map((e) => <option key={e.id} value={e.numero}>{e.numero}</option>)}
-          </select>
+          </SelectBuscable>
           <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} placeholder="Qué ha pasado" className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-xs font-semibold text-violet-700 cursor-pointer border border-violet-300 rounded px-2.5 py-1.5 hover:bg-violet-50">📷 {foto ? foto.name : "Añadir foto"}<input type="file" accept="image/*" className="hidden" onChange={(e) => setFoto((e.target.files && e.target.files[0]) || null)} /></label>
@@ -41816,6 +41836,7 @@ function imprimirEtiquetasCaballetes(lista) {
     const sitio = [c.almacenNombre, c.ubicacion].filter(Boolean).join(" · ");
     return `<div class="et"><div class="marco">
       <div class="cab">ECOWIN PVC · CABALLETE</div>
+      ${c.obraTxt ? `<div class="obra">${esc(c.obraTxt)}</div>` : ""}
       <div class="medio">
         <div class="num" style="font-size:${tam}mm">${esc(num)}</div>
         <div class="bar">${svgCode128Mm(codigoCaballete(c), 18, 0.5, 52)}</div>
@@ -41831,6 +41852,7 @@ function imprimirEtiquetasCaballetes(lista) {
     .et:last-child { page-break-after: auto; break-after: auto; }
     .marco { height: 100%; border: 0.4mm solid #000; border-radius: 1.5mm; padding: 1mm 2mm; display: flex; flex-direction: column; }
     .cab { font-size: 2.6mm; letter-spacing: 0.4mm; text-align: center; line-height: 1; }
+    .obra { font-size: 3.2mm; font-weight: bold; text-align: center; line-height: 1.1; white-space: nowrap; overflow: hidden; margin-top: 0.6mm; }
     .medio { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 2mm; min-height: 0; }
     .num { font-weight: bold; line-height: 1; white-space: nowrap; flex: 1; text-align: center; }
     .bar { flex: none; line-height: 0; }
@@ -42101,10 +42123,10 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                 <button onClick={() => guardar("")} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-3 py-1.5 rounded-md text-sm font-semibold">Guardar SIN obra (la asigno luego)</button>
                 {pend.rapido && <button onClick={() => guardar(pend.obraKey, true)} disabled={!pend.obraKey} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white disabled:opacity-50">Guardar e imprimir pegatinas</button>}
                 <span className="text-xs text-slate-500">o</span>
-                <select value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="text-sm border border-slate-300 rounded-md px-2 py-1.5 bg-white min-w-[220px] flex-1">
+                <SelectBuscable value={pend.obraKey} onChange={(e) => setPend({ ...pend, obraKey: e.target.value })} className="min-w-[220px] flex-1">
                   <option value="">— Guardar directamente en una obra… —</option>
                   {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
-                </select>
+                </SelectBuscable>
                 <button onClick={() => guardar(pend.obraKey)} disabled={!pend.obraKey} className="px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-300 bg-white disabled:opacity-50">Guardar en esa obra</button>
                 <button onClick={() => setPend(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
               </div>
@@ -42117,10 +42139,10 @@ function SubirEtiquetasAlmacen({ obras, lotesTodos, sinObra, onSubir, onQuitar, 
                 <div key={l.fab} className="flex flex-wrap items-center gap-2 text-xs">
                   <b className="text-slate-800">Lote {l.fab}</b><span className="text-slate-600">{nVent(l)} ventanas/puertas{l.expediente ? ` · exp. ${l.expediente}` : ""}{l.archivo ? ` · ${l.archivo}` : ""}</span>
                   <div className="w-full"><ViviendasResumen ventanas={l.ventanas} /></div>
-                  <select value={selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente)} onChange={(e) => setSelAsignar({ ...selAsignar, [l.fab]: e.target.value })} className="ml-auto text-xs border border-slate-300 rounded px-1.5 py-1 bg-white min-w-[180px]">
+                  <SelectBuscable value={selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente)} onChange={(e) => setSelAsignar({ ...selAsignar, [l.fab]: e.target.value })} className="ml-auto min-w-[220px]">
                     <option value="">— Asignar a la obra… —</option>
                     {obras.map((o) => <option key={o.key} value={o.key}>{o.nombre}{o.cliente ? ` · ${o.cliente}` : ""}</option>)}
-                  </select>
+                  </SelectBuscable>
                   <button onClick={() => { const k = selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente); if (k) onAsignar(l.fab, k); }} disabled={!(selAsignar[l.fab] !== undefined ? selAsignar[l.fab] : sugerir(l.expediente))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="px-2.5 py-1 rounded font-semibold disabled:opacity-50">Asignar</button>
                   <button onClick={() => reimprimirLote(l)} className="text-slate-700 hover:underline" title="Imprime en la Honeywell etiquetas nuevas con el código bien negro">🖨 Etiquetas legibles</button>
                   <button onClick={() => quitar(`s-${l.fab}`, "sin obra", l.fab)} className="text-rose-600 hover:underline">Eliminar</button>
@@ -42854,8 +42876,38 @@ function PanelVienenPorLinea({ indice, siempre = false }) {
 }
 // Buscador con autocompletado para elegir una opción de una lista larga (obras, clientes…).
 // Ignora tildes, mayúsculas y puntos (6624 encuentra 6.624) y las palabras pueden ir en cualquier orden.
+let _almacenesDestino = []; // almacenes dados de alta en Almacén de ventanas (lo rellena App en cada pintado)
+// Almacén al que debe ir una obra: el elegido en el proyecto; si no, el de su ciudad de reparto, el de montaje o la fábrica (recogida)
+const almacenSugeridoDe = (p, L = _almacenesDestino) => {
+  if (!p || !toArray(L).length) return null;
+  const n = (t) => String(t == null ? "" : t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  if (p.estadoLogistica === "Reparto (camión)") { const ciudad = p.provinciaReparto === "Otra ciudad..." ? p.ciudadRepartoManual : p.provinciaReparto; return ciudad ? (L.find((a) => n(a.ciudad) === n(ciudad) || n(a.nombre).includes(n(ciudad))) || null) : null; }
+  if (p.llevaInstalacion) return L.find((a) => /montaje|instal/i.test(a.nombre)) || null;
+  if (p.estadoLogistica === "Recogida en fábrica") return L[0] || null;
+  return null;
+};
+const almacenDestinoDe = (p, L = _almacenesDestino) => (p && toArray(L).find((a) => a.id === p.almacenDestinoId)) || almacenSugeridoDe(p, L);
+let _clientesBusca = new Map(); // id de cliente -> nombre (lo rellena App en cada pintado) para poder buscar una obra por el nombre de su cliente
+const clienteDeProyecto = (p) => (p && (_clientesBusca.get(p.clienteId) || p.clienteNombre)) || "";
+const textoBuscaProyecto = (p) => (p ? [p.numero, p.nombre, p.referencia, p.expediente, p.presupuestoNumero, presupuestoDeObra(p), p.direccion, clienteDeProyecto(p)].filter(Boolean).join(" ") : "");
+function textoDeNodo(n) { if (n == null || n === false || n === true) return ""; if (typeof n === "string" || typeof n === "number") return String(n); if (Array.isArray(n)) return n.map(textoDeNodo).join(""); if (n.props) return textoDeNodo(n.props.children); return ""; }
+function opcionesDeSelect(children) {
+  const out = [];
+  const rec = (ch) => React.Children.forEach(ch, (c) => {
+    if (!c || !c.props) return;
+    if (c.type === "option") out.push({ key: String(c.props.value !== undefined ? c.props.value : textoDeNodo(c.props.children)), texto: textoDeNodo(c.props.children).replace(/\s+/g, " ").trim(), buscar: c.props["data-buscar"] || "", disabled: !!c.props.disabled });
+    else if (c.type === "optgroup" || c.type === React.Fragment) rec(c.props.children);
+  });
+  rec(children);
+  return out;
+}
+function SelectBuscable({ children, value, onChange, className = "", disabled, placeholder }) {
+  const ops = opcionesDeSelect(children).filter((o) => !o.disabled);
+  const vacia = ops.find((o) => o.key === "");
+  return <BuscadorLista className={className} opciones={ops} valor={String(value == null ? "" : value)} placeholder={placeholder || (vacia ? vacia.texto : "Buscar…")} disabled={disabled} onElegir={(k) => { if (onChange) onChange({ target: { value: k }, currentTarget: { value: k } }); }} />;
+}
 const normBuscaLista = (t) => String(t == null ? "" : t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
-function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCodigo, className = "" }) {
+function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCodigo, className = "", disabled = false }) {
   const [q, setQ] = useState("");
   const [abierto, setAbierto] = useState(false);
   const [activo, setActivo] = useState(0);
@@ -42863,7 +42915,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
   const flechas = useRef(false);
   const elegida = opciones.find((o) => o.key === valor) || null;
   const terminos = normBuscaLista(q).split(" ").filter(Boolean);
-  const todas = terminos.length ? opciones.filter((o) => o.siempre || terminos.every((t) => normBuscaLista(o.texto).includes(t))) : opciones;
+  const todas = terminos.length ? opciones.filter((o) => o.siempre || terminos.every((t) => normBuscaLista(`${o.texto} ${o.buscar || ""}`).includes(t))) : opciones;
   const MAX = 40;
   const visibles = todas.slice(0, MAX);
   const coincidencias = todas.filter((o) => !o.siempre).length;
@@ -42873,6 +42925,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
     <div className={`relative ${className}`}>
       <input
         ref={inputRef}
+        disabled={disabled}
         value={abierto ? q : (elegida ? elegida.texto : "")}
         placeholder={placeholder}
         autoComplete="off"
@@ -42977,6 +43030,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
   const [tvAD, setTvAD] = useState(false);
   const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
+  const incsFabAD = useObjetoFb("incidenciasFabrica"); // las mismas incidencias de fábrica de siempre
+  const [verIncAD, setVerIncAD] = useState(null); // { titulo, ids:[...] } de la ventana cuya incidencia se está viendo
   const hojasAD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra (la misma que usa Control del día)
   const snapCD = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra tal como las ve Control del día
   const extraAD = useObjetoFb("almacenDiaObras"); // obras añadidas a mano a un día del Almacén del día: { fecha: { claveObra: true } }
@@ -43820,12 +43875,21 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const delDia = itemsDia(diaAD);
     const obrasDelDia = delDia.filter((i) => i.o).map((i) => i.o);
     const sinEt = delDia.filter((i) => i.sinEtiquetas);
-    const stDia = obrasDelDia.map((o) => ({ o, ...stats(o) }));
+    const stDia = obrasDelDia.map((o) => ({ o, ...stats(o) })).sort((a, b) => (b.pend > 0 ? 1 : 0) - (a.pend > 0 ? 1 : 0));
     const nEn = stDia.reduce((a, x) => a + x.n, 0); const nTot = stDia.reduce((a, x) => a + x.total, 0);
     const nPend = stDia.reduce((a, x) => a + x.pend, 0);
     const metidasDia = stDia.reduce((a, x) => a + x.filas.filter((f) => f.c && toArray(f.c.ventanas).some((v) => mismaVentana(v, f.w) && v.fecha === diaAD)).length, 0);
     const palesDia = new Map(); stDia.forEach((x) => x.filas.forEach((f) => { if (f.c) palesDia.set(f.c.numero, (palesDia.get(f.c.numero) || 0) + 1); }));
     const etiquetaDia = new Date(diaAD + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+    const incsAbiertasAD = toArray(incsFabAD).filter((i) => i && i.estado !== "Resuelta");
+    const posBaseAD = (t) => String(t || "").trim().split(/[\s·]+/)[0].toUpperCase();
+    const incsDeVentana = (o, v) => incsAbiertasAD.filter((i) => {
+      const ob = normBuscaLista(i.obra || "");
+      const obraOk = !ob || ob === normBuscaLista(o.nombre) || normBuscaLista(o.nombre).includes(ob) || toArray(o.codigos).some((c) => ob.includes(normBuscaLista(c)));
+      const pi = String(i.ventana || "").split(" · ")[0].trim().toUpperCase().replace(/\s+/g, " "); const pv = String(v.pos || "").trim().toUpperCase().replace(/\s+/g, " ");
+      const posOk = !!pi && (pi === pv || (!/\d+\s*\/\s*\d+/.test(pi) && posBaseAD(pi) === posBaseAD(pv)));
+      return obraOk && (i.ventanaId === v.id || posOk);
+    });
     const botonVentana = (f, o, g) => (
       <button type="button" onClick={() => ticarAD(f, o)} className={`${g ? "min-w-[8rem] px-4 py-3 text-2xl" : "min-w-[5.5rem] px-2.5 py-2 text-sm"} rounded-lg border-2 font-bold text-center ${f.c ? "bg-emerald-600 border-emerald-800 text-white" : f.prob ? "bg-orange-100 border-orange-500 text-orange-900" : f.hecha ? "bg-sky-100 border-sky-500 text-sky-900" : "bg-white border-slate-300 text-slate-800"}`}>
         <div>{f.c ? "✓ " : ""}{f.x.v.pos || "·"}</div>
@@ -43850,19 +43914,50 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       const cod = baseDe(f.x.v); const u = ubicAlm[cod] || null;
       const enSol = u && u.zonaId === "solape" ? String(u.hueco) : ""; const enTer = u && u.zonaId === "espera" ? String(u.hueco) : "";
       const caja = (zonaId, valor, rotulo) => (
-        <label className="flex items-center gap-0.5 text-[10px] text-slate-500">{rotulo}
+        <label className="flex flex-col items-center gap-0.5 text-[11px] font-semibold text-slate-600" title={zonaId === "solape" ? "Nº de estante en la estantería de SOLAPE" : "Nº de estante en la estantería de VENTANA TERMINADA"}>{rotulo}
           <input key={`${cod}-${zonaId}-${valor}`} defaultValue={valor} inputMode="numeric" maxLength={2} onBlur={(e) => guardarEstante(f, zonaId, e.currentTarget)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} className="w-8 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-center bg-white text-slate-800" />
         </label>
       );
       return (
-        <div key={f.x.v.id} className="space-y-0.5 flex flex-col items-center">
+        <div key={f.x.v.id} className={`space-y-0.5 flex flex-col items-center ${incsDeVentana(o, f.x.v).length ? "ring-2 ring-rose-500 rounded-lg p-0.5 bg-rose-50" : ""}`}>
+          {incsDeVentana(o, f.x.v).length > 0 && (g
+            ? <div className="text-xl font-extrabold text-rose-300">⚠ INCIDENCIA</div>
+            : <button type="button" onClick={() => setVerIncAD({ titulo: `${f.x.v.pos} · ${o.nombre}`, ids: incsDeVentana(o, f.x.v).map((i) => i.id) })} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ INCIDENCIA ({incsDeVentana(o, f.x.v).length}) · ver</button>)}
           {f.x.v.dib ? <DibujoPlan hash={f.x.v.dib} alto={g ? 130 : 70} /> : f.x.lote.fab ? <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} /> : null}
           {botonVentana(f, o, g)}
+          {!g && <BotonIncidenciaFabrica prefill={{ ventanaId: f.x.v.id, ventana: `${f.x.v.pos}${f.x.v.medida ? " · " + f.x.v.medida : ""}`, obra: o.nombre }} />}
           {toArray(f.x.v.extras).length > 0 && <div className="flex flex-wrap justify-center gap-1">{toArray(f.x.v.extras).map((x) => <span key={x} className={`${g ? "text-base px-2 py-0.5" : "text-[10px] px-1.5 py-0.5"} font-extrabold rounded bg-amber-400 text-amber-950 border border-amber-600`}>⚠ LLEVA {x}</span>)}</div>}
           {(f.x.v.color || f.x.v.desc) && <div className={`${g ? "text-base max-w-[16rem]" : "text-[10px] max-w-[11rem]"} text-left leading-tight ${g ? "text-slate-200" : "text-slate-700"}`}>{f.x.v.color ? <div className="font-bold"><ColorVentana texto={f.x.v.color} /></div> : null}{f.x.v.desc ? <div className="opacity-90">{f.x.v.desc}</div> : null}</div>}
-          {g ? (u ? <div className="text-xl font-bold text-slate-700 text-center">{enSol ? `Solape ${enSol}` : `Terminada ${enTer}`}</div> : null) : <div className="flex items-center justify-center gap-1.5">{caja("solape", enSol, "Sol")}{caja("espera", enTer, "Ter")}</div>}
+          {g ? (u ? <div className="text-xl font-bold text-slate-700 text-center">{enSol ? `Solape ${enSol}` : `Terminada ${enTer}`}</div> : null) : <div className="flex items-start justify-center gap-2">{caja("solape", enSol, "Solape")}{caja("espera", enTer, "Terminada")}</div>}
         </div>
       );
+    };
+    const asignarEImprimir = (o, w) => {
+      const obra = obraDeDueno(o.dueno);
+      const sug = caballeteSugerido(obra, w);
+      const cli = obra.cliente ? ` · ${obra.cliente}` : "";
+      const txt = sug ? `${sug.numero} (${(sug.estado || "libre") === "libre" ? "vacío" : `ya lleva ${toArray(sug.ventanas).length}`})` : "un palet NUEVO";
+      if (!window.confirm(`${txt}\n\nSe reserva para ${obra.nombre}${cli} y se imprime su etiqueta.\n¿Seguimos?`)) return;
+      const c = sug || crearCaballete(`Alta automática desde Almacén del día para ${obra.nombre}`);
+      let cc = c;
+      if ((c.estado || "libre") === "libre") {
+        cc = { ...c, reserva: { key: obra.key, proyectoId: obra.proyectoId || "", nombre: obra.nombre, cliente: obra.cliente || "", direccion: obra.direccion || "", fecha: hoy }, etiquetaPendiente: false, historial: hist(c, `Reservado para ${obra.nombre} desde Almacén del día${quien ? ` por ${quien}` : ""} (etiqueta impresa)`) };
+        guardarCab(cc);
+      }
+      imprimirEtiquetasCaballetes([{ ...cc, almacenNombre: nombreAlmacen(almacenDe(cc)), obraTxt: `${obra.nombre}${cli}` }]);
+      avisar(true, `${cc.numero} reservado para ${obra.nombre}`);
+    };
+    const proyectoDeObra = (o) => { const d = o.dueno || {}; return d.tipo === "p" ? toArray(proyectos).find((q) => q.id === d.id) : toArray(proyectos).find((q) => q.id === (d.proyectoId || "§")); };
+    const enviarPalets = (o, palets, dest0) => {
+      let dest = dest0;
+      if (!dest) {
+        const t = window.prompt(`${o.nombre}: no tiene almacén de destino elegido.\n¿A cuál van sus palets?\n` + almacenes.map((a, i) => `${i + 1}. ${a.nombre}${a.ciudad ? ` · ${a.ciudad}` : ""}`).join("\n") + `\n\nEscribe el número:`);
+        if (t === null) return; dest = almacenes[parseInt(t, 10) - 1];
+        if (!dest) { avisar(false, "Ese número no existe"); return; }
+      }
+      if (!window.confirm(`Mover ${palets.map((c) => c.numero).join(", ")} a «${dest.nombre}»?`)) return;
+      palets.forEach((c) => { const cur = cabsAhora().find((z) => z.id === c.id) || c; guardarCab({ ...cur, almacenId: dest.id, historial: hist(cur, `Enviado a ${dest.nombre} desde Almacén del día${quien ? ` por ${quien}` : ""}`) }); });
+      avisar(true, `${palets.length} palet${palets.length === 1 ? "" : "s"} → ${dest.nombre}`);
     };
     const tarjetaObra = (x, g) => {
       const { o, filas, n, total, pend } = x;
@@ -43881,12 +43976,27 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{o.nombre}</span>
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold text-sky-700`}>{pend} hecha{pend === 1 ? "" : "s"} en fábrica, falta palet</span>}
+            {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
             {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `almacenDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
           </div>
           <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
-          {sig && <div className={`${g ? "text-2xl" : "text-sm"} rounded-md bg-sky-50 border border-sky-300 px-2 py-1 text-sky-900`}>👉 Siguiente palet: <b>{propTexto}</b></div>}
+          {completa && (() => {
+            const palets = [...pal.values()].map((e) => e.c); const dest = almacenDestinoDe(proyectoDeObra(o), almacenes);
+            const todosAlli = !!dest && palets.every((c) => almacenDe(c) === dest.id);
+            if (todosAlli) return <div className={`${g ? "text-2xl text-emerald-300" : "text-sm text-emerald-800"} font-bold`}>✓ Obra completa · palets ya en {dest.nombre}</div>;
+            return g
+              ? <div className="text-2xl font-bold text-amber-300">Obra completa · destino: {dest ? dest.nombre : "sin elegir"}</div>
+              : <button type="button" onClick={() => enviarPalets(o, palets, dest)} className="w-full text-left text-sm rounded-md bg-emerald-600 text-white font-bold px-3 py-2">🚚 Obra completa · enviar los palets a: {dest ? dest.nombre : "(elegir almacén)"}</button>;
+          })()}
+          {sig && (g
+            ? <div className="text-2xl rounded-md bg-sky-50 border border-sky-300 px-2 py-1 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b></div>
+            : <button type="button" onClick={() => asignarEImprimir(o, sig.w)} className="w-full text-left text-sm rounded-md bg-sky-50 border border-sky-300 hover:bg-sky-100 px-2 py-1.5 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b><span className="ml-2 font-semibold underline">🖨 Tocar: reservarlo para esta obra e imprimir su etiqueta</span></button>)}
           {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.values()].map(({ c, n: k }) => `${c.numero} (${k})${ubicDe(c) ? ` · ${ubicDe(c)}` : ""}`).join("   |   ")}</b></div>}
-          <div className="flex flex-wrap gap-1.5">{ord.map((f) => fichaVentana(f, o, g))}</div>
+          {(() => {
+            const A = ord.filter((f) => !f.c && f.hecha); const B = ord.filter((f) => f.c); const C = ord.filter((f) => !f.c && !f.hecha);
+            const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className="flex flex-wrap gap-1.5">{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
+            return <div className="space-y-2">{bloque("✓ Hechas en fábrica · listas para palet", A, g ? "text-sky-300" : "text-sky-700")}{bloque("Aún sin hacer en fábrica", C, g ? "text-slate-300" : "text-slate-500")}{bloque("Ya en palet", B, g ? "text-emerald-300" : "text-emerald-700")}</div>;
+          })()}
         </div>
       );
     };
@@ -43924,11 +44034,36 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       </div>
     );
     function g0() { return tvAD ? "text-xl" : "text-sm"; }
+    const limpiarPrueba = async () => {
+      const todos = cabsAhora(); const conV = todos.filter((c) => toArray(c.ventanas).length).length;
+      const codsEst = Object.entries(ubicAlm || {}).filter(([k, u]) => u && (u.zonaId === "solape" || u.zonaId === "espera")).map(([k]) => k);
+      const t = window.prompt(`Vas a BORRAR TODOS los palets (${todos.length}, ${conV} con ventanas), los números de estante de Solape y Terminada (${codsEst.length} ventanas), el registro del Almacén del día y las obras añadidas a mano.\nNo se puede deshacer.\n\nPara confirmar escribe BORRAR:`);
+      if (t === null) return;
+      if (String(t).trim().toUpperCase() !== "BORRAR") { avisar(false, "No se ha borrado nada"); return; }
+      try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "almacenDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
+      catch (e) { avisar(false, "No se pudo borrar: " + e.message); }
+    };
+    const modalIncAD = verIncAD ? (
+      <div className="fixed inset-0 z-[120] bg-black/40 flex items-center justify-center p-3" onClick={() => setVerIncAD(null)}>
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between gap-2"><div className="text-base font-bold text-slate-800">⚠ Incidencia · {verIncAD.titulo}</div><button type="button" onClick={() => setVerIncAD(null)} className="text-sm font-semibold text-slate-500 border border-slate-300 rounded px-2 py-1">Cerrar</button></div>
+          {verIncAD.ids.map((id) => { const i = toArray(incsFabAD).find((x) => x && x.id === id); if (!i) return null; return (
+            <div key={id} className="border border-rose-200 bg-rose-50 rounded-md p-3 text-sm text-slate-800 space-y-1">
+              <div className="font-semibold">{i.tipo ? `${i.tipo} · ` : ""}{i.estado || "Abierta"}</div>
+              <div>{i.texto}</div>
+              {i.puesto ? <div className="text-xs text-slate-600">Puesto: {i.puesto}</div> : null}
+              <div className="text-xs text-slate-500">Creada por {(i.creadaPor && i.creadaPor.nombre) || "—"}{i.creadaTs ? ` · ${new Date(i.creadaTs).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : ""}</div>
+              {i.foto ? <img src={i.foto} alt="" className="max-h-48 rounded border border-slate-200" /> : null}
+            </div>); })}
+          <p className="text-xs text-slate-500">Las incidencias se resuelven y se reasignan en la pestaña «Incidencias» (oficina). Para crear otra, usa el botón «Incidencia» de la ventana.</p>
+        </div>
+      </div>
+    ) : null;
     const toastAD = toastScan ? <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[110] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div> : null;
     if (tvAD) {
       return (
         <div className="fixed inset-0 z-[100] bg-slate-900 text-white overflow-auto p-6 space-y-5">
-          {toastAD}
+          {toastAD}{modalIncAD}
           <div className="flex flex-wrap items-center gap-4">
             <div className="text-4xl font-extrabold capitalize">{etiquetaDia}{diaAD === hoyAD ? " · HOY" : ""}</div>
             <button type="button" onClick={() => setTvAD(false)} className="ml-auto px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
@@ -43941,11 +44076,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     return (
       <div className="space-y-4">
-        {toastAD}
+        {toastAD}{modalIncAD}
         <div className="flex flex-wrap items-center gap-3">
           {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
           <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
+          {isAdmin && <button type="button" onClick={limpiarPrueba} className="px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 text-xs font-semibold">🧹 Borrar palets de prueba</button>}
         </div>
         {bloqueRegistro(false)}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-1">
@@ -45741,10 +45877,10 @@ function PegatinasSoldadora({ indice, escaneos }) {
       <div className="flex flex-wrap items-end gap-3 mb-3">
         <div className="flex-1 min-w-[220px]">
           <label className="text-xs text-slate-500">Obra</label>
-          <select value={obraKey} onChange={(e) => setObraKey(e.target.value)} className="w-full border border-slate-300 rounded-md px-2 py-2 text-sm">
+          <SelectBuscable value={obraKey} onChange={(e) => setObraKey(e.target.value)} className="w-full">
             <option value="">Elige la obra…</option>
             {obras.map((o) => <option key={o.dueno.key} value={o.dueno.key}>{o.dueno.nombre} ({o.ventanas.size} ventanas)</option>)}
-          </select>
+          </SelectBuscable>
         </div>
         <div>
           <label className="text-xs text-slate-500">Etiqueta (mm)</label>
@@ -54024,10 +54160,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-sm font-bold text-slate-800">Comprobar una obra</div>
-          <select value={obraComp} onChange={(e) => { setObraComp(e.target.value); setMsg(""); }} className="text-sm border border-slate-300 rounded-md px-2 py-2 bg-white">
+          <SelectBuscable value={obraComp} onChange={(e) => { setObraComp(e.target.value); setMsg(""); }} className="min-w-[260px]">
             <option value="">— elige la obra (presupuesto) —</option>
             {obrasComp.map((n) => <option key={n} value={n}>Ppto {pptoBonito(n)}{(hojas && hojas[n] && (hojas[n].referencia || hojas[n].cliente)) ? " · " + (hojas[n].referencia || hojas[n].cliente) : ""}</option>)}
-          </select>
+          </SelectBuscable>
           {obraComp && <input value={codComp} onChange={(e) => setCodComp(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); leerComp(e.currentTarget.value); } }} placeholder="Pistola: lee cada etiqueta AX… y Enter" className={inputCls + " flex-1 min-w-[220px]"} />}
         </div>
         {obraComp && (
@@ -56140,7 +56276,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <button type="button" onClick={imprimirInforme} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">🖨 Imprimir / PDF</button>
             </div>
             <div className="flex flex-wrap gap-2 mb-3">
-              <select value={fObra} onChange={(e) => { setFObra(e.target.value); setFViv(""); }} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todas las obras</option>{lista.map((o) => <option key={o.d.key} value={o.d.key}>{o.d.nombre}</option>)}</select>
+              <SelectBuscable value={fObra} onChange={(e) => { setFObra(e.target.value); setFViv(""); }} className="min-w-[14rem]"><option value="">Todas las obras</option>{lista.map((o) => <option key={o.d.key} value={o.d.key}>{o.d.nombre}</option>)}</SelectBuscable>
               <select value={fViv} onChange={(e) => setFViv(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todas las viviendas</option>{vivsInforme.map((g) => <option key={g} value={g}>{g}</option>)}</select>
               <select value={fEst} onChange={(e) => setFEst(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todos los estados</option><option value="1">✓ Hechas</option><option value="2">⚠ Con problema</option><option value="0">Pendientes</option></select>
               <input value={fVent} onChange={(e) => setFVent(e.target.value)} placeholder="Ventana, medida o nota…" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm flex-1 min-w-[12rem]" />
@@ -56468,13 +56604,13 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
 function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
-  const [tab, setTab] = useState(soloAlmacen ? "almacen" : "puesto");
+  const [tab, setTab] = useState(soloAlmacen ? "almacenDia" : "puesto");
   const listoParaFabricar = useMemo(() => calcListoParaFabricar(proyectos, pedidos, uxExpedientes), [proyectos, pedidos, uxExpedientes]);
   const fuera = toArray(caballetes).filter((c) => c.estado === "fuera").length;
   const tabs = soloAlmacen ? [
+    { id: "almacenDia", t: "📅 Almacén del día", aviso: "" },
     { id: "cargas", t: "Cargas de hoy", aviso: "" },
     { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "" },
-    { id: "almacenDia", t: "📅 Almacén del día", aviso: "" },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
   ] : [
