@@ -20829,22 +20829,27 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const sinMano = activos.filter((x) => x.estante && lista.some((c) => c.numero === x.estante.carro) && !manoDe(x));
     if (sinMano.length && !window.confirm(`⚠ ${sinMano.length} persiana${sinMano.length === 1 ? "" : "s"} sin la mano (recogedor) en el pedido subido: ${sinMano.slice(0, 8).map((x) => `${x.ref || "?"} (EXP ${x.expediente || "?"})`).join(", ")}${sinMano.length > 8 ? "…" : ""}.\n\nSuele ser que el pedido de esa obra no está subido al CRM o no coincide el expediente/medida. En el papel saldrán marcadas como «MANO SIN DATO». ¿Imprimo igualmente?`)) return;
     const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    const secciones = lista.map((c) => {
-      const lados = LADOS_CARRO.map((lado) => {
-        const filasE = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
-          const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
-          const cel = dentro.length ? dentro.map((x) => `<div class="p"><b>${esc(x.ref || "—")}</b> · EXP ${esc(x.expediente || "—")}${partePersiana(x) ? ` · <b>${esc(partePersiana(x))}</b>` : ""} · ${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}${x.refObra ? ` · ${esc(x.refObra)}` : ""}${x.cliente ? ` · ${esc(x.cliente)}` : ""} · <b>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "⚠ MANO SIN DATO (falta el pedido)")}</b>${fichaImpPers(x) ? `<div class="d">${esc(fichaImpPers(x))}</div>` : ""}</div>`).join("") : '<i class="v">vacío</i>';
-          return `<tr><td class="n">${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</td><td>${cel}</td></tr>`;
+    const secciones = lista.flatMap((c) => LADOS_CARRO.map((lado) => {
+      const filas = estantes.filter((e) => e.carro === c.numero && e.lado === lado).map((e) => {
+        const dentro = activos.filter((x) => x.estante && x.estante.carro === e.carro && x.estante.lado === lado && x.estante.nivel === e.nivel).sort((a, b) => partePersiana(a).localeCompare(partePersiana(b)) || String(a.ref || "").localeCompare(String(b.ref || "")));
+        const cab = `<tr class="eh"><td colspan="11"><b>${e.porUds ? "Hueco" : "Estante"} ${esc(e.nivel)}</b> · ${dentro.length ? dentro.length + (dentro.length === 1 ? " persiana" : " persianas") : "vacío"}</td></tr>`;
+        return cab + dentro.map((x) => {
+          const q = pedidoDe(x) || {}; const g = (k) => String(x[k] || q[k] || "").trim();
+          const desc = descDe(x);
+          const cinta = g("cinta") || ((desc.match(/\b(inferior|exterior)\b/i) || [])[1] || "");
+          const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
+          const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
+          const mano = manoDe(x);
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}</td><td>EXP ${esc(x.expediente || "—")}${x.pedido || q.pedido ? `<br><span class="d">Pedido ${esc(x.pedido || q.pedido)}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
-        return `<div class="lado"><h3>Lado ${lado}</h3><table>${filasE}</table></div>`;
       }).join("");
-      return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""}</h2><div class="lados">${lados}</div></section>`;
-    }).join("");
+      return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
+    })).join("");
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Carros de ${cosa}</title><style>
       body{font-family:Arial,sans-serif;margin:14mm;color:#111} h2{font-size:22px;margin:0 0 8px} h3{font-size:16px;margin:8px 0 4px}
       section{page-break-after:always} section:last-child{page-break-after:auto}
-      .lados{display:flex;gap:16px}.lado{flex:1} table{width:100%;border-collapse:collapse} td{border:1px solid #888;padding:5px 6px;vertical-align:top;font-size:13px}
-      td.n{width:70px;font-weight:bold;background:#eee}.p{margin:3px 0;padding-bottom:2px;border-bottom:1px dotted #bbb}.d{font-size:11px;color:#333;margin-left:8px}.v{color:#999}
+      table{width:100%;border-collapse:collapse} td,th{border:1px solid #888;padding:3px 4px;vertical-align:top;font-size:11px;text-align:left} th{background:#ddd}
+      tr.eh td{background:#eee;font-size:13px}.d{font-size:10px;color:#333}.v{color:#999}
       @media print{@page{size:A4 landscape;margin:10mm}}
     </style></head><body>${secciones}<p style="font-size:10px;color:#666">Impreso ${new Date().toLocaleString("es-ES")}</p></body></html>`;
     try {
@@ -49458,17 +49463,39 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const totalFirmes = firmes.reduce((a, o) => a + o.horas, 0);
   // Obras (y sus horas) que se han ido añadiendo a un día desde «Almacén del día»: se ven aquí también, para llevarlo todo controlado
   const extraAlm0 = useObjetoFb("almacenDiaObras");
+  const marcasCDPl = useObjetoFb("controlDia");
   const mnAlm = useObjetoFb("controlDiaObras"); // obras que se meten a un día desde Control del día / Almacén del día
   const extraAlm = (() => { const r = {}; [extraAlm0, mnAlm].forEach((m) => Object.entries(m || {}).forEach(([f, o]) => Object.entries(o || {}).forEach(([k, v]) => { if (v) { (r[f] = r[f] || {})[k] = true; } }))); return r; })();
   const limpiaK = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
   const porKeyAlm = {}; todasObras.forEach((o) => { if (o.ref) porKeyAlm[`${o.ref.tipo === "uxcar" ? "u" : "p"}-${limpiaK(o.ref.id)}`] = o; });
+  const abrirObraRef = (r) => { if (!r || !onVerProyecto) return; if (r.tipo === "proyecto") onVerProyecto(r.id); else if (r.tipo === "uxcar" && r.proyectoId) onVerProyecto(r.proyectoId); };
+  const pptoTxt = (o) => { try { const l = presFab(o); return l.length ? `Ppto ${l[0]}` : o.nombre; } catch (e) { return o.nombre; } };
+  // Cambiar de día una obra metida desde Control del día / Almacén del día (lo de Fábrica se cambia arrastrando)
+  const moverExtraDia = (k, desde, hasta) => {
+    if (!hasta || hasta === desde) return;
+    const tareas = [];
+    if (extraAlm0 && extraAlm0[desde] && extraAlm0[desde][k]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${hasta}/${k}`]: true, [`${desde}/${k}`]: null }));
+    if (mnAlm && mnAlm[desde] && mnAlm[desde][k]) {
+      tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${hasta}/${k}`]: true, [`${desde}/${k}`]: null }));
+      const mk = marcasCDPl && marcasCDPl[desde] && marcasCDPl[desde][k];
+      if (mk) tareas.push(fbUpdate(ref(fbDb, "controlDia"), { [`${hasta}/${k}`]: mk, [`${desde}/${k}`]: null }));
+    }
+    Promise.all(tareas).catch((e) => window.alert("No se pudo cambiar de día: " + e.message));
+  };
+  const quitarExtraDia = (k, f) => {
+    if (!window.confirm("¿Quitar esta obra de este día?")) return;
+    const tareas = [];
+    if (extraAlm0 && extraAlm0[f] && extraAlm0[f][k]) tareas.push(fbUpdate(ref(fbDb, "almacenDiaObras"), { [`${f}/${k}`]: null }));
+    if (mnAlm && mnAlm[f] && mnAlm[f][k]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${f}/${k}`]: null }));
+    Promise.all(tareas).catch((e) => window.alert("No se pudo quitar: " + e.message));
+  };
   const extrasDiaAlm = (f) => Object.keys((extraAlm && extraAlm[f]) || {}).filter((k) => extraAlm[f][k]).map((k) => {
     const o = porKeyAlm[k];
-    if (o) { if (plan1.dias[f] && plan1.dias[f].trozos.some((t) => t.id === o.id)) return null; return { k, nombre: o.nombre, horas: Number(o.horas) || 0 }; }
+    if (o) { if (plan1.dias[f] && plan1.dias[f].trozos.some((t) => t.id === o.id)) return null; return { k, nombre: o.nombre, horas: Number(o.horas) || 0, ref: o.ref, ventanas: o.ventanas, ppto: pptoTxt(o), delPlan: true }; }
     const pr = toArray(proyectos).find((q) => `p-${limpiaK(q.id)}` === k);
-    if (pr) return { k, nombre: `#${pr.numero} ${pr.nombre || ""}`.trim(), horas: horasDeObraListo(pr, uxExpedientes, null).horas || 0 };
+    if (pr) { let nv = 0; try { nv = ventanasDeObra(pr, uxExpedientes).total || 0; } catch (e) { /* nada */ } let pp = ""; try { pp = String(presupuestoDeObra(pr) || pr.presupuestoNumero || "").trim(); } catch (e) { /* nada */ } return { k, nombre: `#${pr.numero} ${pr.nombre || ""}`.trim(), horas: horasDeObraListo(pr, uxExpedientes, null).horas || 0, ref: { tipo: "proyecto", id: pr.id }, ventanas: nv, ppto: pp ? `Ppto ${pp}` : `#${pr.numero}` }; }
     const ex = toArray(uxExpedientes).find((q) => `u-${limpiaK(q.id)}` === k);
-    if (ex) { const pe = ex.proyectoId ? toArray(proyectos).find((q) => q.id === ex.proyectoId) : null; return { k, nombre: `Uxcar exp. ${ex.numero}`, horas: pe ? (horasDeObraListo(pe, uxExpedientes, null).horas || 0) : 0 }; }
+    if (ex) { const pe = ex.proyectoId ? toArray(proyectos).find((q) => q.id === ex.proyectoId) : null; return { k, nombre: `Uxcar exp. ${ex.numero}`, horas: pe ? (horasDeObraListo(pe, uxExpedientes, null).horas || 0) : 0, ref: { tipo: "uxcar", id: ex.id, proyectoId: ex.proyectoId || null }, ventanas: uxNum(ex.ventanas) + uxNum(ex.puertas) + uxNum(ex.osciloParalelas), ppto: ex.presupuesto ? `Ppto ${ex.presupuesto}` : `Uxcar ${ex.numero}` }; }
     return null;
   }).filter(Boolean);
   const hoyAlm = new Date().toLocaleDateString("sv-SE");
@@ -49691,12 +49718,30 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   <input key={`hd_${f}_${capF}`} type="number" min="0" step="0.5" defaultValue={Math.round(capF * 10) / 10} title="Horas de este día: pon más (p. ej. 157) para meter más ese día, o menos si hay menos gente" onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && Math.abs(v - capF) > 0.01) ponerHorasDia(f, v); }} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-right" /> h
                   {bloq > 0.01 ? " (menos gente)" : bloq < -0.01 ? <span className="text-sky-700 font-semibold"> (+{Math.round(-bloq * 10) / 10} h)</span> : ""}
                 </div>
-                {d.trozos.map((t, i) => <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)} onClick={() => setMoviendo(moviendo && moviendo.id === t.id ? null : { id: t.id, nombre: t.nombre })}
-                  title="Arrástrala a otro día, o tócala y pulsa «Mover aquí» en el día que quieras" className={`text-xs text-slate-700 cursor-grab rounded px-1 ${moviendo && moviendo.id === t.id ? "bg-sky-100 ring-1 ring-sky-400" : "hover:bg-slate-50"}`}>{t.nombre} <span className="text-slate-400">· {t.horas} h</span></div>)}
+                {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
+                  <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
+                    title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 bg-white cursor-grab ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
+                    <button type="button" onClick={() => o && abrirObraRef(o.ref)} className="block w-full text-left text-sm font-bold text-slate-800 hover:text-[#2E8B57]">{o ? pptoTxt(o) : t.nombre}</button>
+                    <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                      <span>{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span><span>· {t.horas} h</span>
+                      <button type="button" onClick={() => setMoviendo(moviendo && moviendo.id === t.id ? null : { id: t.id, nombre: t.nombre })} className="ml-auto text-[11px] font-semibold text-sky-700 border border-sky-300 rounded px-1.5 py-0.5 bg-white">{moviendo && moviendo.id === t.id ? "Cancelar" : "Mover"}</button>
+                    </div>
+                  </div>
+                ); })}
                 {exA.length > 0 && (
                   <div className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-1.5 py-1">
                     <div className="text-[10px] font-bold text-amber-900">➕ Metidas desde Control del día / Almacén del día</div>
-                    {exA.map((x) => <div key={x.k} className="text-xs text-amber-900">{x.nombre} <span className="text-amber-700">· {x.horas > 0 ? `${Math.round(x.horas * 10) / 10} h` : <b className="text-rose-700">⚠ 0 HORAS</b>}</span></div>)}
+                    {exA.map((x) => (
+                      <div key={x.k} className="mt-1 rounded-md border border-amber-400 bg-white px-2 py-1.5">
+                        <button type="button" onClick={() => abrirObraRef(x.ref)} className="block w-full text-left text-sm font-bold text-amber-900 hover:text-[#2E8B57]" title="Abrir el proyecto">{x.ppto || x.nombre}</button>
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-amber-800">
+                          <span>{x.ventanas ? `${x.ventanas} ventana${x.ventanas === 1 ? "" : "s"}` : "— ventanas"}</span>
+                          <span>· {x.horas > 0 ? `${Math.round(x.horas * 10) / 10} h` : <b className="text-rose-700">⚠ 0 HORAS</b>}</span>
+                          <input type="date" value={f} min={hoyAlm} title="Cambiar de día" onChange={(e) => moverExtraDia(x.k, f, e.target.value)} className="ml-auto border border-amber-300 rounded px-1 py-0.5 text-[11px] bg-white" />
+                          <button type="button" onClick={() => quitarExtraDia(x.k, f)} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
+                        </div>
+                      </div>
+                    ))}
                     <div className="text-[11px] font-bold text-amber-900 mt-0.5">Con esto el día lleva {Math.round((d.usadas - bloq + hExA) * 10) / 10} h de {Math.round(capF * 10) / 10}{d.usadas - bloq + hExA > capF + 0.01 ? " ⚠ pasa de las horas" : ""}</div>
                   </div>
                 )}
@@ -49742,11 +49787,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   {Object.keys(sm.porDia || {}).sort().map((f) => { const dd = sm.porDia[f]; return (
                     <div key={f} className="border-l-4 border-amber-300 pl-2">
                       <div className="text-xs font-bold text-slate-700 capitalize">{new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })} <span className="font-normal text-slate-500">· {Math.round(dd.usadas * 10) / 10} h de {horasDia} h</span></div>
-                      <div className="flex flex-wrap gap-1.5 mt-1">
-                        {dd.trozos.map((t, i) => { const o = nombrePorId[t.id]; const r = plan2.obras[t.id]; return (
-                          <span key={`${t.id}-${i}`} className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded px-2 py-1">
-                            {o ? o.nombre : t.id} · {Math.round(t.horas * 10) / 10} h{r && r.inicio !== r.fin ? ` (de ${fmtDia(r.inicio)} a ${fmtDia(r.fin)})` : ""}{o && o.material ? ` · material ${fmtDate(o.material)}` : o && o.material === null ? " · sin fecha de material" : ""}
-                          </span>
+                      <div className="flex flex-col gap-1.5 mt-1 max-w-sm">
+                        {dd.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
+                          <button type="button" key={`${t.id}-${i}`} onClick={() => o && abrirObraRef(o.ref)} title="Abrir el proyecto" className="text-left bg-amber-50 border border-amber-300 hover:border-[#2E8B57] text-amber-900 rounded-md px-2.5 py-1.5">
+                            <div className="text-sm font-bold">{o ? pptoTxt(o) : t.id}</div>
+                            <div className="text-[11px] text-amber-800">{o && o.ventanas ? `${o.ventanas} ventana${o.ventanas === 1 ? "" : "s"}` : "— ventanas"} · {Math.round(t.horas * 10) / 10} h</div>
+                          </button>
                         ); })}
                       </div>
                     </div>
