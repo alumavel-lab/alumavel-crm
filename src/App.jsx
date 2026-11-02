@@ -21559,6 +21559,37 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             </label>
             {carroSel.movido && <TextInput value={carroSel.notaSitio || ""} onChange={(e) => actualizarCarro(carroSel.numero, { notaSitio: e.target.value })} placeholder="¿Dónde está? Ej: en la zona de carga" />}
 
+            {(() => {
+              // Pedidos de compra (el documento) de las obras que hay en este carro, para revisarlos rápido
+              const enCarro = activos.filter((x) => x.estante && x.estante.carro === carroSel.numero);
+              const grupos = new Map();
+              enCarro.forEach((x) => { const pres = presupuestoDePersiana(x, ctxM); const k = pres || ("EXP " + (x.expediente || "?")); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(x); });
+              const docsDe = (x) => {
+                const out = [];
+                try {
+                  const nums = numsExpediente(x.expediente);
+                  const dp = digitosPresu(presupuestoDePersiana(x, ctxM));
+                  const pr = toArray(ctxM.proyectos).find((q) => (dp && (digitosPresu(q.presupuestoNumero) === dp || digitosPresu(presupuestoDeObra(q)) === dp)) || (q.presupuestoNumero && nums.length && numsExpediente(q.numero).some((n) => nums.includes(n))));
+                  if (pr) toArray(pr.documentos).filter((d) => d && d.url && /persiana|compacto/i.test(`${d.tipo || ""} ${d.nombre || ""}`)).forEach((d) => out.push({ nombre: d.nombre || "Pedido de persianas", url: d.url }));
+                  toArray(ctxM.uxPedidosCtx).filter((pd) => pd && /persiana/i.test(pd.tipo || "") && toArray(pd.expedientes).some((e) => e && numsExpediente(e.numero).some((n) => nums.includes(n)))).forEach((pd) => uxDocsPedido(pd).forEach((d) => d && d.url && out.push({ nombre: d.nombre || `Pedido ${pd.numero}`, url: d.url })));
+                } catch (er) { /* sin documento */ }
+                return [...new Map(out.map((d) => [d.url, d])).values()];
+              };
+              if (!grupos.size) return null;
+              return (
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-xs font-bold text-slate-700 mb-1">📄 Pedidos de compra de este carro</div>
+                  <div className="flex flex-col gap-1">
+                    {[...grupos.entries()].map(([k, xs]) => { const ds = docsDe(xs[0]); return (
+                      <div key={k} className="text-xs flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <b>{/^\d/.test(k) ? `Ppto ${k}` : k}</b><span className="text-slate-500">· {xs.length} persiana{xs.length === 1 ? "" : "s"}</span>
+                        {ds.length ? ds.map((d, i) => <a key={i} href={d.url} target="_blank" rel="noreferrer" className="font-semibold text-[#2E8B57] underline">Abrir {d.nombre}</a>) : <span className="text-amber-700">no hay documento del pedido guardado en el CRM (súbelo en los documentos de la obra)</span>}
+                      </div>
+                    ); })}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
               {LADOS_CARRO.map((lado) => (
                 <div key={lado}>
