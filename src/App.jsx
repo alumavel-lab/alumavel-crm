@@ -21094,6 +21094,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <button key={x.id} type="button" onClick={() => { setVista("mapa"); setCarroAbierto(x.estante.carro); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-emerald-400 hover:bg-emerald-100 rounded px-2 py-1">
                       {x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} → <b>Carro {x.estante.carro}</b> · {textoEstante(x.estante)} <span className="underline">Ver carro</span>
                     </button>
+                  ) : x.entregada ? (
+                    <div key={x.id} className="bg-white border border-slate-300 rounded px-2 py-1 text-slate-700">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>YA SALIÓ</b>{x.fechaSalida ? ` el ${fmtDate(x.fechaSalida)}` : ""} (cargada / entregada): no está en el almacén porque ya se ha ido.</div>
+                  ) : x.enPuesto ? (
+                    <div key={x.id} className="bg-white border border-sky-300 rounded px-2 py-1 text-sky-800">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>está en {x.enPuesto}</b> (en la línea), no en un carro.</div>
+                  ) : almacenDe(x) !== almacen.id ? (
+                    <div key={x.id} className="bg-white border border-violet-300 rounded px-2 py-1 text-violet-800">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · <b>está en otro almacén</b> de persianas.</div>
                   ) : <button key={x.id} type="button" onClick={() => { setVista("sinsitio"); setQPend(qPedidas.trim()); setTimeout(() => { try { const el = document.getElementById("lista-sin-sitio"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (er) { /* nada */ } }, 150); }} className="text-left font-semibold bg-white border border-amber-400 hover:bg-amber-50 rounded px-2 py-1">{x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} · todavía sin carro → <span className="underline">ir a «Pendientes de ubicar» para colocarla</span></button>)}
                 </div>
               </div>
@@ -21378,7 +21384,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       {vista === "sinsitio" && (() => {
         const presuDe = (x) => presupuestoDePersiana(x, ctxM);
         const nb = limpiaExp(qPend);
-        const lista = sinSitio.filter((x) => !nb || limpiaExp(presuDe(x)).includes(nb) || limpiaExp(x.expediente).includes(nb) || limpiaExp(`${x.ref || ""} ${x.refObra || ""} ${x.cliente || ""}`).includes(nb));
+        const lista = sinSitio.filter((x) => !nb || limpiaExp(presuDe(x)).includes(nb) || limpiaExp(x.expediente).includes(nb) || limpiaExp(`${x.presupuesto || ""} ${x.pedido || ""}`).includes(nb) || limpiaExp(`${x.ref || ""} ${x.refObra || ""} ${x.cliente || ""}`).includes(nb));
         const grupos = {};
         lista.forEach((x) => { const k = presuDe(x) || ("EXP " + (x.expediente || "—")); (grupos[k] = grupos[k] || []).push(x); });
         const ubicar = (xs, carroN) => {
