@@ -49489,6 +49489,23 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
     if (mnAlm && mnAlm[f] && mnAlm[f][k]) tareas.push(fbUpdate(ref(fbDb, "controlDiaObras"), { [`${f}/${k}`]: null }));
     Promise.all(tareas).catch((e) => window.alert("No se pudo quitar: " + e.message));
   };
+  const LIM_PERS_DIA = 45; // ventanas con persiana por día: por encima se avisa
+  const persDeRef = (r) => {
+    try {
+      const pr = r && r.tipo === "proyecto" ? toArray(proyectos).find((q) => q.id === r.id) : (r && r.tipo === "uxcar" ? toArray(proyectos).find((q) => q.id === r.proyectoId) : null);
+      if (!pr) return 0;
+      const rec = ventanasDeObra(pr, uxExpedientes).recuento;
+      let n = rec.filter((l) => l && l.persiana).reduce((a, l) => a + (parseFloat(l.uds) || 0) * Math.max(1, parseInt(l.juntas, 10) || 1), 0);
+      if (!n) n = toArray(pr.listadoMateriales && pr.listadoMateriales.lineas).filter((l) => l && l.seccion === "persianas" && !/mosquit|con tela|\btela\b/i.test(`${l.codigo || ""} ${l.descripcion || ""}`) && /CJ_|compacto|persiana/i.test(`${l.codigo || ""} ${l.descripcion || ""}`)).reduce((a, l) => a + (parseFloat(l.uds) || 0), 0);
+      return n;
+    } catch (e) { return 0; }
+  };
+  const persDia = (f) => {
+    const d = plan1.dias[f]; let n = 0;
+    ((d && d.trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; if (!o) return; const tot = Number(o.horas) || 0; n += persDeRef(o.ref) * (tot > 0 ? Math.min(1, t.horas / tot) : 1); });
+    extrasDiaAlm(f).forEach((x) => { n += persDeRef(x.ref); });
+    return Math.round(n);
+  };
   const extrasDiaAlm = (f) => Object.keys((extraAlm && extraAlm[f]) || {}).filter((k) => extraAlm[f][k]).map((k) => {
     const o = porKeyAlm[k];
     if (o) { if (plan1.dias[f] && plan1.dias[f].trozos.some((t) => t.id === o.id)) return null; return { k, nombre: o.nombre, horas: Number(o.horas) || 0, ref: o.ref, ventanas: o.ventanas, ppto: pptoTxt(o), delPlan: true }; }
@@ -49704,6 +49721,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             {rapidosHechos.map((o) => <div key={o.id} className="flex items-center gap-2 py-0.5">{o.nombre} · {o.ventanas} ventanas <button onClick={() => guardarCfg({ planHechos: hechos.filter((x) => x !== o.id) })} className="text-[#2E8B57] font-semibold hover:underline">Volver a ponerlo</button></div>)}
           </details>
         )}
+        {diasVer.some((f) => persDia(f) > LIM_PERS_DIA) && (
+          <div className="mb-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-800">
+            ⚠ Pasan de {LIM_PERS_DIA} ventanas con persiana: {diasVer.filter((f) => persDia(f) > LIM_PERS_DIA).map((f) => `${fmtDia(f)} (${persDia(f)})`).join(" · ")}
+          </div>
+        )}
         {diasVer.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {diasVer.map((f) => { const d = plan1.dias[f] || { usadas: 0, trozos: [] }; const exA = extrasDiaAlm(f); const hExA = exA.reduce((a, x) => a + x.horas, 0); const bloq = ocupadoBase[f] || 0; const capF = Math.max(0.01, horasDia - bloq); const pct = Math.min(100, ((d.usadas - bloq) / capF) * 100); return (
@@ -49718,6 +49740,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                   <input key={`hd_${f}_${capF}`} type="number" min="0" step="0.5" defaultValue={Math.round(capF * 10) / 10} title="Horas de este día: pon más (p. ej. 157) para meter más ese día, o menos si hay menos gente" onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && Math.abs(v - capF) > 0.01) ponerHorasDia(f, v); }} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-[11px] text-right" /> h
                   {bloq > 0.01 ? " (menos gente)" : bloq < -0.01 ? <span className="text-sky-700 font-semibold"> (+{Math.round(-bloq * 10) / 10} h)</span> : ""}
                 </div>
+                {(() => { const np = persDia(f); return np > 0 ? <div className={`text-[11px] mb-1 rounded px-1.5 py-0.5 ${np > LIM_PERS_DIA ? "bg-rose-600 text-white font-bold" : "bg-emerald-50 text-emerald-800"}`}>🪟 {np} ventanas con persiana de {LIM_PERS_DIA}{np > LIM_PERS_DIA ? ` ⚠ PASA POR ${np - LIM_PERS_DIA}` : ""}</div> : null; })()}
                 {d.trozos.map((t, i) => { const o = nombrePorId[t.id]; return (
                   <div key={i} draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)}
                     title="Arrástrala a otro día, o pulsa «Mover» y elige el día. Pulsa el nombre para abrir el proyecto." className={`mb-1.5 rounded-md border px-2 py-1.5 bg-white cursor-grab ${moviendo && moviendo.id === t.id ? "bg-sky-100 border-sky-400 ring-1 ring-sky-400" : "border-slate-300 hover:border-[#2E8B57]"}`}>
