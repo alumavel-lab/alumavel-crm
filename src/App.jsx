@@ -54266,12 +54266,21 @@ function imprimirAux(lista, cfg) {
 }
 
 function AuxConfigPanel({ cfg, onGuardar }) {
-  const [b, setB] = useState(() => JSON.parse(JSON.stringify(cfg)));
+  const BORRADOR = "auxCfgBorrador";
+  const [b, setB] = useState(() => { try { const d = JSON.parse(localStorage.getItem(BORRADOR) || "null"); if (d && Array.isArray(d.refs)) return d; } catch (e) { /* nada */ } return JSON.parse(JSON.stringify(cfg)); });
+  const [recuperado] = useState(() => { try { return !!localStorage.getItem(BORRADOR); } catch (e) { return false; } });
+  const sucio = JSON.stringify(b) !== JSON.stringify(cfg);
+  useEffect(() => { try { if (sucio) localStorage.setItem(BORRADOR, JSON.stringify(b)); else localStorage.removeItem(BORRADOR); } catch (e) { /* nada */ } }, [b, sucio]);
+  const guardar = () => onGuardar(b);
   const upRef = (i, p) => setB({ ...b, refs: b.refs.map((r, j) => (j === i ? { ...r, ...p } : r)) });
   const upCarro = (i, p) => setB({ ...b, carros: b.carros.map((c, j) => (j === i ? { ...c, ...p } : c)) });
   const campo = "border border-slate-300 rounded px-2 py-1 text-sm bg-white";
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 bg-white border-b border-slate-200 -mx-4 -mt-4 px-4 py-2 rounded-t-xl">
+        <button type="button" onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar configuración</button>
+        {sucio ? <span className="text-xs font-bold text-amber-700">● Cambios SIN guardar: no se guardan hasta que pulses este botón{recuperado ? " (he recuperado lo que tenías escrito)" : ""}</span> : <span className="text-xs text-slate-500">Todo guardado</span>}
+      </div>
       <div>
         <div className="text-sm font-bold text-slate-800 mb-1">Perfiles auxiliares (los que se cortan en la doble cabeza)</div>
         <div className="text-xs text-slate-500 mb-2">Pon, quita o cambia lo que quieras. «Referencia real» es la que sale en la etiqueta; «La que sustituye» es la otra con la que puede venir en la hoja (p. ej. real 13501, sustituye 7037): si viene una u otra se corta igual y sale siempre la real. «Pasos» son los procesos que se ticaban después de cortar (separados por comas, p. ej. «Felpudo, Bocado»). Si añades una referencia nueva, vuelve a subir la hoja de corte para que la lea.</div>
@@ -54321,7 +54330,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
         <label className="flex items-center gap-1.5">Bocado: cm a cada lado del eje <input type="number" value={b.bocadoCm} onChange={(e) => setB({ ...b, bocadoCm: e.target.value })} className={campo + " w-16"} /></label>
         <label className="flex items-center gap-1.5">Etiqueta (mm) <input type="number" value={b.anchoMm} onChange={(e) => setB({ ...b, anchoMm: e.target.value })} className={campo + " w-16"} /> x <input type="number" value={b.altoMm} onChange={(e) => setB({ ...b, altoMm: e.target.value })} className={campo + " w-16"} /></label>
       </div>
-      <button type="button" onClick={() => onGuardar(b)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar configuración</button>
+      <button type="button" onClick={guardar} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-md"><Save size={14} /> Guardar configuración</button>
     </div>
   );
 }
@@ -54535,12 +54544,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     if (e) { setLectura(e); setMsg(""); pitidoCRM(true); } else { setLectura(null); setMsg(`No conozco el código «${c}». Solo leo las etiquetas de auxiliares (empiezan por AX).`); pitidoCRM(false); }
   };
   buscarCodigoRef.current = buscarCodigo;
-  const guardarCfg = (b) => guardarLinea("auxiliaresConfig", JSON.parse(JSON.stringify({
+  const guardarCfg = (b) => (b.refs.some((r) => !String(r.ref || "").trim() && String(r.nombre || "").trim()) && !window.confirm("Hay perfiles con nombre pero SIN referencia: esos no se guardarían. ¿Guardar de todas formas?")) ? Promise.resolve(false) : fbSet(ref(fbDb, "auxiliaresConfig"), JSON.parse(JSON.stringify({
     refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
     bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40,
     margenIzqMm: parseFloat(b.margenIzqMm) || 0, margenDerMm: parseFloat(b.margenDerMm) || 0, margenSupMm: parseFloat(b.margenSupMm) || 0, escalaEt: parseFloat(b.escalaEt) || 100, negativoEt: !!b.negativoEt, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
-  }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); });
+  }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); try { localStorage.removeItem("auxCfgBorrador"); } catch (e) { /* nada */ } return true; }).catch((e) => { alert(`No se pudo guardar la configuración: ${(e && e.message) || e}. Lo que escribiste NO se ha perdido, sigue en pantalla. Si pone "permission denied", hay que abrir las reglas de Firebase para auxiliaresConfig.`); return false; });
   // ---- COMPROBAR: revisar por obra que todas las piezas están y ticarlas (a mano o con la pistola) ----
   const obrasComp = Array.from(new Set([...piezas.map((p) => p.ppto), ...Object.values(est || {}).filter(Boolean).map((e) => e.ppto)].filter(Boolean))).sort(auxCmp);
   const filasComp = obraComp ? [
