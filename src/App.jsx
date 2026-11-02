@@ -54756,6 +54756,21 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             <div className={`px-3 py-2 rounded-md text-sm font-bold border ${faltanComp.length === 0 && filasComp.length > 0 ? "bg-emerald-50 border-emerald-300 text-emerald-800" : "bg-amber-50 border-amber-300 text-amber-900"}`}>
               {filasComp.length === 0 ? "Esta obra no tiene piezas de auxiliares." : faltanComp.length === 0 ? `✓ Todo comprobado: ${okComp} de ${filasComp.length}. La producción puede salir.` : `Comprobadas ${okComp} de ${filasComp.length} · faltan ${faltanComp.length}`}
             </div>
+            {(() => {
+              const n = obraComp; const pr = toArray(proyectos).find((q) => digitosPresu(q.presupuestoNumero) === n || digitosPresu(presupuestoDeObra(q)) === n);
+              const ex = pr && pr.uxcarExpedienteId ? toArray(uxExpedientes).find((q) => q.id === pr.uxcarExpedienteId) : toArray(uxExpedientes).find((q) => digitosPresu(q.presupuesto) === n || digitosPresu(q.presupuestoNumero) === n);
+              const cli = (pr && (toArray(ctxAux.clientes).find((c) => c.id === pr.clienteId) || {}).nombre) || (hojas && hojas[n] && hojas[n].cliente) || "";
+              const ref = (hojas && hojas[n] && hojas[n].referencia) || "";
+              return (
+                <div className="mt-1 rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 flex flex-wrap gap-x-4 gap-y-0.5">
+                  <span><b>Ppto</b> {pptoBonito(n)}</span>
+                  <span><b>Expediente</b> {ex ? ex.numero : <i className="text-slate-500">sin expediente</i>}</span>
+                  <span><b>Cliente</b> {cli || <i className="text-slate-500">—</i>}</span>
+                  {pr && <span><b>Obra</b> #{pr.numero} {pr.nombre || ""}</span>}
+                  {ref && <span><b>Ref.</b> {ref}</span>}
+                </div>
+              );
+            })()}
             {faltanComp.length > 0 && filasComp.length > 0 && <div className="mt-1 text-xs text-slate-500">Lo que falta aparece primero. «Sin cortar» significa que ni siquiera se ha cortado todavía.</div>}
             <div className="mt-2">
               {[...faltanComp, ...filasComp.filter((e) => !(e.sinCortar || !e.comprobada))].map((e) => (
