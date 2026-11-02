@@ -20025,7 +20025,30 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     if (!String(cab.expediente).trim()) { setAviso("Pon el expediente del pedido."); return; }
     if (!lista.length) { setAviso("No queda ninguna persiana con medida en el pedido."); return; }
     const yaEsta = cab.pedido && pedidosTodos.some((p) => p.pedido === cab.pedido && expDigitosPers(p.expediente) === expDigitosPers(cab.expediente));
-    if (yaEsta && !window.confirm(`El pedido ${cab.pedido} del EXP ${cab.expediente} YA está guardado. Si lo guardas otra vez saldrá duplicado.\n\nAceptar = guardarlo igualmente.\nCancelar = no guardar nada.`)) return;
+    if (yaEsta) {
+      // Pedido ya guardado (de antes de que se leyeran lama, guía, cinta…): se ACTUALIZA con lo leído ahora, sin duplicar nada
+      if (!window.confirm(`El pedido ${cab.pedido} del EXP ${cab.expediente} YA está guardado.\n\nAceptar = ACTUALIZAR ese pedido con los datos nuevos (mano, cajón, lama, guía, cinta, descripción…). No se duplica nada.\nCancelar = no hacer nada.`)) return;
+      const nr = (t) => String(t || "").replace(/\s+/g, "").toUpperCase();
+      const usadasA = new Set(); let n = 0;
+      const campos = ["recogedor", "descripcion", "colorCajon", "colorLama", "guia", "colorGuia", "cinta", "accionamiento", "cantPedido"];
+      const act = pedidosTodos.map((q) => {
+        if (!(q.pedido === cab.pedido && expDigitosPers(q.expediente) === expDigitosPers(cab.expediente))) return q;
+        const i = lista.findIndex((f, j) => !usadasA.has(j) && nr(f.ref) === nr(q.ref) && Math.abs((parseFloat(f.largo) || 0) - (parseFloat(q.largo) || 0)) < 2);
+        const k = i >= 0 ? i : lista.findIndex((f, j) => !usadasA.has(j) && Math.abs((parseFloat(f.largo) || 0) - (parseFloat(q.largo) || 0)) < 2 && Math.abs((parseFloat(f.alto) || 0) - (parseFloat(q.alto) || 0)) < 2);
+        if (k < 0) return q;
+        usadasA.add(k); n++;
+        const f = lista[k]; const nuevo = { ...q };
+        campos.forEach((c) => { if (f[c] !== undefined && f[c] !== null && String(f[c]).trim() !== "") nuevo[c] = f[c]; });
+        if (cab.presupuesto && !nuevo.presupuesto) nuevo.presupuesto = cab.presupuesto;
+        if (cab.refObra && !nuevo.refObra) nuevo.refObra = cab.refObra;
+        if (cab.cliente && !nuevo.cliente) nuevo.cliente = cab.cliente;
+        return nuevo;
+      });
+      guardarPedidos(act);
+      setBorradorPedido(null);
+      setAviso(`Pedido ${cab.pedido} (EXP ${cab.expediente}) actualizado: ${n} de ${lista.length} persianas con los datos nuevos${n < lista.length ? ` (${lista.length - n} del PDF no casan con ninguna guardada: ref./medida distintas)` : ""}.`);
+      return;
+    }
     const hoy = new Date().toISOString().slice(0, 10);
     const enAlmacen = toArray(ctxM.persianasAlmacen);
     const usadas = new Set();
@@ -20840,7 +20863,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
           const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
           const mano = manoDe(x);
-          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}</td><td>EXP ${esc(x.expediente || "—")}${x.pedido || q.pedido ? `<br><span class="d">Pedido ${esc(x.pedido || q.pedido)}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}</td><td>EXP ${esc(x.expediente || "—")}<br><span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
       }).join("");
       return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
