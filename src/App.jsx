@@ -54011,6 +54011,8 @@ const AUX_CFG_DEFECTO = {
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
 };
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
+const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
 const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
@@ -54033,7 +54035,7 @@ const auxCmp = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { 
 async function guardarHojasCorteAux(ficheros, opciones) {
   const sinGuardar = !!(opciones && opciones.sinGuardar); // true = solo leer (lo usa el portal de Uxcar: el CRM la copia a Auxiliares)
   const cfgSnap = await fbGet(ref(fbDb, "auxiliaresConfig")).catch(() => null);
-  const refs = auxCfgDe(cfgSnap && cfgSnap.val ? cfgSnap.val() : null).refs.map((x) => String(x.ref || "").trim()).filter(Boolean);
+  const refs = auxRefsHoja(auxCfgDe(cfgSnap && cfgSnap.val ? cfgSnap.val() : null).refs);
   const hechas = [];
   hechas.errores = [];   // por qué no se pudo guardar cada hoja (se enseña al usuario)
   hechas.hojas = [];     // lo leído (para guardarlo en otro sitio)
@@ -54111,7 +54113,8 @@ function pptosConGuiaProveedor(ctx) {
   return set;
 }
 function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
-  const activas = new Map(cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).map((r) => [String(r.ref).trim(), r]));
+  const activas = new Map();
+  cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).forEach((r) => { auxAlias(r).forEach((a) => { if (!activas.has(a)) activas.set(a, r); }); activas.set(String(r.ref).trim(), r); });
   const piezas = [], avisos = [];
   const clave = (t) => String(t).replace(/[.#$/[\]\s]+/g, "_");
   Object.values(hojas || {}).forEach((h) => {
@@ -54135,7 +54138,7 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
         const n = f.ud || 1;
         for (let k = 1; k <= n; k++) {
           piezas.push({
-            id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: f.ref, nombre: rc.nombre || f.desc || f.ref,
+            id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
             lCorte: f.lCorte, color: f.color || "", k, n,
             ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
             referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
@@ -54224,12 +54227,13 @@ function AuxConfigPanel({ cfg, onGuardar }) {
     <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
       <div>
         <div className="text-sm font-bold text-slate-800 mb-1">Perfiles auxiliares (los que se cortan en la doble cabeza)</div>
-        <div className="text-xs text-slate-500 mb-2">Pon, quita o cambia lo que quieras. «Pasos» son los procesos que se ticaban después de cortar (separados por comas, p. ej. «Felpudo, Bocado»). Si añades una referencia nueva, vuelve a subir la hoja de corte para que la lea.</div>
+        <div className="text-xs text-slate-500 mb-2">Pon, quita o cambia lo que quieras. «Referencia real» es la que sale en la etiqueta; «La que sustituye» es la otra con la que puede venir en la hoja (p. ej. real 13501, sustituye 7037): si viene una u otra se corta igual y sale siempre la real. «Pasos» son los procesos que se ticaban después de cortar (separados por comas, p. ej. «Felpudo, Bocado»). Si añades una referencia nueva, vuelve a subir la hoja de corte para que la lea.</div>
         <div className="space-y-1.5">
           {b.refs.map((r, i) => (
             <div key={r.id || i} className="flex flex-wrap items-center gap-2">
               <input type="checkbox" checked={r.activo !== false} onChange={(e) => upRef(i, { activo: e.target.checked })} title="Activo: genera etiquetas" />
-              <input value={r.ref || ""} onChange={(e) => upRef(i, { ref: e.target.value })} placeholder="Referencia" className={campo + " w-32"} />
+              <input value={r.ref || ""} onChange={(e) => upRef(i, { ref: e.target.value })} placeholder="Referencia real" title="La referencia que quieres que salga en la etiqueta (p. ej. 13501)" className={campo + " w-32"} />
+              <input value={r.alias || ""} onChange={(e) => upRef(i, { alias: e.target.value })} placeholder="La que sustituye" title="Otra referencia con la que viene en la hoja (p. ej. 7037). Si la hoja trae esta, se coge igual y la etiqueta sale siempre con la real. Varias separadas por comas." className={campo + " w-32"} />
               <input value={r.nombre || ""} onChange={(e) => upRef(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
@@ -54404,7 +54408,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const subir = async (files) => {
     setLeyendo(true); setMsg("");
     try {
-      const refs = cfg.refs.map((r) => String(r.ref || "").trim()).filter(Boolean);
+      const refs = auxRefsHoja(cfg.refs);
       for (const f of Array.from(files || [])) {
         const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
         if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
