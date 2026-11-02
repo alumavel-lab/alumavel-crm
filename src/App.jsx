@@ -20008,6 +20008,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const [borradorPedido, setBorradorPedido] = useState(null); // { cab, filas } leído del PDF, para revisar antes de guardar
   const [leyendoPedido, setLeyendoPedido] = useState(false);
   const [verPedidas, setVerPedidas] = useState(false);
+  const [qPedidas, setQPedidas] = useState("");
   const inputPedidoRef = useRef(null);
 
   const subirPedido = async (file) => {
@@ -21063,11 +21064,23 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <div className="bg-white border border-slate-200 rounded-xl p-3">
           <button onClick={() => setVerPedidas(!verPedidas)} className="w-full flex items-center justify-between text-left">
             <span className="text-sm font-semibold text-slate-800">Pedidas, pendientes de llegar ({pendientesPedido.length}){pedidosTodos.length - pendientesPedido.length > 0 ? <span className="font-normal text-slate-500"> · {pedidosTodos.length - pendientesPedido.length} ya recibidas</span> : null}</span>
-            <span className="text-xs text-slate-500">{verPedidas ? "Ocultar" : "Ver"}</span>
+            <span className="text-xs text-slate-500">{verPedidas || qPedidas.trim() ? "Ocultar" : "Ver"}</span>
           </button>
-          {verPedidas && (() => {
+          <input value={qPedidas} onChange={(e) => setQPedidas(e.target.value)} placeholder="Buscar pedido: expediente, presupuesto, nº de pedido, obra, cliente…" className="mt-2 w-full max-w-md border border-slate-300 rounded px-2.5 py-1.5 text-sm" />
+          {qPedidas.trim() && (() => {
+            const sp = (t) => String(t || "").toLowerCase().replace(/[.\s]/g, "");
+            const qq = sp(qPedidas);
+            const hit = (x) => sp(`${x.expediente} ${x.presupuesto} ${x.pedido} ${x.refObra} ${x.cliente} ${x.ref}`).includes(qq);
+            const ya = pedidosTodos.filter((x) => x.estado === "recibida" && hit(x));
+            const pend = pendientesPedido.filter(hit);
+            if (pend.length) return null;
+            return <div className="mt-2 text-xs rounded bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">{ya.length ? `Ese pedido YA está recibido (${ya.length} persianas${ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Búscalo en los carros.` : "No hay ningún pedido de persianas pendiente con eso. Si es de Uxcar, mira el buscador de Fábrica → Materiales."}</div>;
+          })()}
+          {(verPedidas || qPedidas.trim()) && (() => {
             const grupos = {};
-            pendientesPedido.forEach((p) => { const k = `${p.expediente || "—"}§${p.pedido || ""}`; (grupos[k] = grupos[k] || []).push(p); });
+            const spQ = (t) => String(t || "").toLowerCase().replace(/[.\s]/g, "");
+            const qqP = spQ(qPedidas);
+            pendientesPedido.filter((x) => !qqP || spQ(`${x.expediente} ${x.presupuesto} ${x.pedido} ${x.refObra} ${x.cliente} ${x.ref}`).includes(qqP)).forEach((p) => { const k = `${p.expediente || "—"}§${p.pedido || ""}`; (grupos[k] = grupos[k] || []).push(p); });
             const quitar = (ids) => guardarPedidos(pedidosTodos.filter((p) => !ids.includes(p.id)));
             const llegada = (id) => guardarPedidos(pedidosTodos.map((p) => (p.id === id ? { ...p, estado: "recibida", fechaRecibida: new Date().toISOString().slice(0, 10), notaRecibida: "Marcada a mano" } : p)));
             if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
@@ -21079,6 +21092,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                   <div key={k}>
                     <div className="flex items-center gap-2 text-xs font-bold text-slate-700 mb-1">
                       <span>{etqExp(ps[0])}{ps[0].presupuesto ? ` · Presupuesto ${ps[0].presupuesto}` : ""}{ps[0].refObra && String(ps[0].refObra).replace(/\D/g, "") !== String(ps[0].expediente || "") ? ` · Obra ${ps[0].refObra}` : ""}{ps[0].pedido ? ` · Pedido ${ps[0].pedido}` : ""}{ps[0].fechaPedido ? ` · ${fmtDate(ps[0].fechaPedido)}` : ""}</span>
+                      {ps[0].fechaEntrega && <span className={`px-2 py-0.5 rounded font-semibold ${ps[0].fechaEntrega > new Date().toISOString().slice(0, 10) ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-600"}`}>Prevista {fmtDate(ps[0].fechaEntrega)}{ps[0].fechaEntrega > new Date().toISOString().slice(0, 10) ? " · si ha llegado antes, dale a «Han llegado»" : ""}</span>}
                       <span className={`px-2 py-0.5 rounded font-bold ${duenoDe(ps[0]) === "PROPIO" ? "bg-emerald-100 text-emerald-900" : "bg-violet-200 text-violet-900"}`}>{etqDueno(ps[0])}</span>
                       {nombreObraDe(ps[0]) && <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-900 font-semibold">{nombreObraDe(ps[0])}</span>}
                       {ps[0].cliente && <span className="font-normal text-slate-500">{ps[0].cliente}</span>}
@@ -22789,6 +22803,35 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
             <div className="relative w-56"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={qPpto} onChange={(e) => setQPpto(e.target.value)} placeholder="Nº de presupuesto (6036)" className={inputCls + " pl-9"} /></div>
             <div className="relative w-64"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={qRefFab} onChange={(e) => setQRefFab(e.target.value)} placeholder="Referencia / expediente (EXP 728)" className={inputCls + " pl-9"} /></div>
           </div>
+          {(() => {
+            const sp = (t) => String(t || "").toLowerCase().replace(/[.\s]/g, "");
+            const qs = [q, qPpto, qRefFab].map(sp).filter(Boolean);
+            if (!qs.length) return null;
+            const NOM = { vidrios: "Vidrios", compactos: "Compactos", persianas: "Persianas" };
+            const exps = toArray(uxExpedientes).filter((e) => { if (!e) return false; const t = sp(`${e.numero} ${e.presupuesto || ""} ${e.presupuestoNumero || ""} ${e.nombre || ""}`); return qs.every((x) => t.includes(x)); })
+              .map((e) => ({ e, mats: Object.entries(e.materiales || {}).filter(([, v]) => v && ["pedido", "recibido"].includes(v.estado)) })).filter((x) => x.mats.length);
+            const peds = toArray(uxPedidos).filter((pd) => { if (!pd) return false; let pp = ""; try { pp = uxDesglosaExp(pd, uxExpedientes).ppto.join(" "); } catch (er) { /* nada */ } const t = sp(`${pd.numero} ${pd.proveedorNombre || ""} ${pd.tipo || ""} ${toArray(pd.expedientes).map((x) => x && x.numero).join(" ")} ${pp}`); return qs.every((x) => t.includes(x)); });
+            if (!exps.length && !peds.length) return null;
+            return (
+              <div className="mb-4 rounded-lg border-2 border-violet-300 bg-violet-50 p-3 space-y-2">
+                <div className="text-sm font-bold text-violet-900">Pedidos de Uxcar que coinciden con lo que buscas</div>
+                {peds.map((pd) => { const es = uxEstadoPedido(pd); return (
+                  <div key={pd.id} className="flex flex-wrap items-center gap-2 bg-white border border-violet-200 rounded px-2 py-1.5 text-sm">
+                    <b>Pedido {pd.numero}</b><span className="text-slate-600">{pd.tipo} · {pd.proveedorNombre}</span>
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${es.cls}`}>{es.label}</span>
+                    <button type="button" onClick={() => setTab("entradasUx")} className="ml-auto text-xs font-semibold text-white bg-[#2E8B57] rounded px-2.5 py-1">Abrir / dar entrada</button>
+                  </div>
+                ); })}
+                {exps.map(({ e, mats }) => (
+                  <div key={e.id} className="flex flex-wrap items-center gap-2 bg-white border border-violet-200 rounded px-2 py-1.5 text-sm">
+                    <b>EXP {e.numero}</b>{(e.presupuesto || e.presupuestoNumero) && <span className="text-slate-600">Ppto {e.presupuesto || e.presupuestoNumero}</span>}
+                    {mats.map(([k, v]) => <span key={k} className={`text-[11px] font-semibold px-2 py-0.5 rounded ${v.estado === "recibido" ? "bg-emerald-100 text-emerald-800" : "bg-orange-100 text-orange-800"}`}>{NOM[k] || k}: {v.estado === "recibido" ? "recibido" : "PEDIDO HECHO"}</span>)}
+                    <span className="text-[11px] text-slate-500">según Uxcar</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
           <div className="mb-4 max-w-xs">
             <Select value={provFiltroFab} onChange={(e) => setProvFiltroFab(e.target.value)}>
               <option value="">Todos los proveedores</option>
