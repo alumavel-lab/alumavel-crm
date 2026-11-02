@@ -43750,6 +43750,12 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const obrasAD = [...ventanasPorObraTic.values()].map((x) => ({ key: x.dueno.key, nombre: obraDeDueno(x.dueno).nombre, dueno: x.dueno, vs: [...x.vs.values()], codigos: codigosDe(x.dueno) }))
       .filter((o) => { const pr = String(o.key).startsWith("p-") ? toArray(proyectos).find((q) => `p-${q.id}` === o.key) : null; return !pr || !["Entregado", "Cancelado"].includes(pr.estadoTrabajo); });
     obrasAD.forEach((o) => { o.clavePlan = null; for (const [k, f] of Object.entries(planObras)) { if (toArray(f.pres).some((c) => o.codigos.some((m) => mismoP(m, c)))) { o.clavePlan = k; break; } } });
+    const terminadaEl = (o) => {
+      const d = o.dueno || {};
+      if (d.tipo === "p") { const pr = toArray(proyectos).find((x) => x.id === d.id); return pr && ["Listo para reparto/recogida", "Albarán de carga firmado"].includes(pr.estadoTrabajo) ? String(pr.fechaTerminadoFabrica || "") : ""; }
+      if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); return e && e.estado === "terminado" ? String(e.fechaTerminado || "") : ""; }
+      return "";
+    };
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
       Object.keys(planDias[f] || {}).forEach((k) => {
@@ -43759,6 +43765,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       });
       const man = (asignManualAD && asignManualAD[f]) || {};
       Object.keys(man).forEach((ko) => { if (!man[ko]) return; const o = obrasAD.find((x) => limpiaAD(x.key) === ko); if (o && !o.clavePlan && !vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } });
+      obrasAD.forEach((o) => { if (!o.clavePlan && !vistas.has(o.key) && terminadaEl(o) === f) { vistas.add(o.key); out.push({ o, terminada: true }); } });
       return out;
     };
     const cacheSt = new Map();
@@ -43824,7 +43831,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         </label>
       );
       return (
-        <div key={f.x.v.id} className="space-y-0.5">
+        <div key={f.x.v.id} className="space-y-0.5 flex flex-col items-center">
+          <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} />
           {botonVentana(f, o, g)}
           {g ? (u ? <div className="text-xl font-bold text-slate-700 text-center">{enSol ? `Solape ${enSol}` : `Terminada ${enTer}`}</div> : null) : <div className="flex items-center justify-center gap-1.5">{caja("solape", enSol, "Sol")}{caja("espera", enTer, "Ter")}</div>}
         </div>
@@ -43870,7 +43878,9 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const horaAD = (ts) => new Date(ts).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
     const bloqueRegistro = (g) => (
       <div className={`rounded-xl border-2 border-slate-300 bg-white p-3 space-y-1 text-slate-800 ${g ? "text-xl" : "text-sm"}`}>
-        <div className="font-extrabold text-slate-900">📋 Registro del día</div>
+        <div className="font-extrabold text-slate-900">📋 Informe del día · <span className="capitalize">{etiquetaDia}</span></div>
+        {resumen(g)}
+        {stDia.length > 0 && <ul className={`${g ? "text-xl" : "text-xs"} text-slate-700 space-y-0.5`}>{stDia.map((x) => <li key={x.o.key}><b>{x.o.nombre}</b>: {x.n} de {x.total} en palet{x.pend > 0 ? ` · ${x.pend} hechas en fábrica esperando palet` : ""}</li>)}</ul>}
         {movsAD.length === 0 ? <div className="text-slate-500">Todavía no se ha movido ninguna ventana en palets este día.</div> : (
           <>
             <div><b>{entranAD.length}</b> ventanas metidas en palet · <b>{porPaletAD.size}</b> palets distintos{salenAD.length ? <> · <b>{salenAD.length}</b> sacadas</> : null}</div>
@@ -43896,8 +43906,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             <div className="text-4xl font-extrabold capitalize">{etiquetaDia}{diaAD === hoyAD ? " · HOY" : ""}</div>
             <button type="button" onClick={() => setTvAD(false)} className="ml-auto px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
           </div>
-          {resumen(true)}
           {bloqueRegistro(true)}
+          {avisoSinEt}
           {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">{stDia.map((x) => tarjetaObra(x, true))}</div>}
         </div>
       );
@@ -43910,6 +43920,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
           <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
         </div>
+        {bloqueRegistro(false)}
         <div className="bg-white border border-slate-200 rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
             <button type="button" onClick={() => moverMes(-1)} className="px-2 text-slate-500 text-lg">‹</button>
@@ -43929,7 +43940,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                     {its.slice(0, 5).map((it, j) => {
                       if (it.sinEtiquetas) return <div key={j} className="truncate rounded px-1 text-[10px] border border-dashed border-amber-400 text-amber-800 bg-amber-50">📌 {it.sinEtiquetas}</div>;
                       const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : st.pend > 0 ? "bg-sky-200 text-sky-900" : "bg-slate-200 text-slate-700";
-                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>📌 {it.o.nombre} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
+                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>{it.terminada ? "🏁" : "📌"} {it.o.nombre} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
                     })}
                     {its.length > 5 && <div className="text-[10px] text-slate-400">+{its.length - 5} más</div>}
                   </div>
@@ -43940,8 +43951,6 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         </div>
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
-          {resumen(false)}
-          {bloqueRegistro(false)}
           {avisoSinEt}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
