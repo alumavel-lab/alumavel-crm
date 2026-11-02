@@ -21074,7 +21074,23 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const ya = pedidosTodos.filter((x) => x.estado === "recibida" && hit(x));
             const pend = pendientesPedido.filter(hit);
             if (pend.length) return null;
-            return <div className="mt-2 text-xs rounded bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">{ya.length ? `Ese pedido YA está recibido (${ya.length} persianas${ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Búscalo en los carros.` : "No hay ningún pedido de persianas pendiente con eso. Si es de Uxcar, mira el buscador de Fábrica → Materiales."}</div>;
+            if (!ya.length) return <div className="mt-2 text-xs rounded bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">No hay ningún pedido de persianas pendiente con eso. Si es de Uxcar, mira el buscador de Fábrica → Materiales.</div>;
+            const todosIt = toArray(items);
+            let dentro = todosIt.filter((x) => ya.some((pp) => pp.recibidaId === x.id));
+            if (!dentro.length) dentro = todosIt.filter((x) => ya.some((pp) => { try { return casaPedidaConPersiana(pp, x); } catch (er) { return false; } }));
+            return (
+              <div className="mt-2 text-xs rounded bg-emerald-50 border border-emerald-300 text-emerald-900 px-2 py-2">
+                <div className="font-bold mb-1">Ese pedido YA está recibido ({ya.length} persiana{ya.length === 1 ? "" : "s"}{ya[0].fechaRecibida ? `, el ${fmtDate(ya[0].fechaRecibida)}` : ""}). Toca una para ir a su carro:</div>
+                {dentro.length === 0 && <div className="text-slate-600">No la encuentro colocada en ningún carro (mira «Pendientes de ubicar»).</div>}
+                <div className="flex flex-col gap-1 items-start">
+                  {dentro.map((x) => x.estante ? (
+                    <button key={x.id} type="button" onClick={() => { setVista("mapa"); setCarroAbierto(x.estante.carro); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (er) { /* nada */ } }} className="text-left font-semibold bg-white border border-emerald-400 hover:bg-emerald-100 rounded px-2 py-1">
+                      {x.ref || "—"} · {largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""} → <b>Carro {x.estante.carro}</b> · {textoEstante(x.estante)} <span className="underline">Ver carro</span>
+                    </button>
+                  ) : <div key={x.id} className="bg-white border border-amber-300 rounded px-2 py-1">{x.ref || "—"} · sin sitio en carro (pendiente de ubicar)</div>)}
+                </div>
+              </div>
+            );
           })()}
           {(verPedidas || qPedidas.trim()) && (() => {
             const grupos = {};
@@ -21084,9 +21100,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
             const quitar = (ids) => guardarPedidos(pedidosTodos.filter((p) => !ids.includes(p.id)));
             const llegada = (id) => guardarPedidos(pedidosTodos.map((p) => (p.id === id ? { ...p, estado: "recibida", fechaRecibida: new Date().toISOString().slice(0, 10), notaRecibida: "Marcada a mano" } : p)));
             if (!pendientesPedido.length) return <div className="text-xs text-slate-400 mt-2">No hay ninguna pendiente.</div>;
+            if (qqP && !Object.keys(grupos).length) return null; // buscando y no hay pendientes con eso: no se enseñan las demás
             return (
               <>
-              <button onClick={() => colocarDesdePedidas(pendientesPedido)} className="mt-2 text-sm font-semibold px-4 py-2 rounded-lg bg-[#2E8B57] text-white">Han llegado todas: colocar las {pendientesPedido.length} pendientes en carros</button>
+              {(() => { const pendF = qqP ? pendientesPedido.filter((x) => spQ(`${x.expediente} ${x.presupuesto} ${x.pedido} ${x.refObra} ${x.cliente} ${x.ref}`).includes(qqP)) : pendientesPedido; if (!pendF.length) return null;
+                return <button onClick={() => colocarDesdePedidas(pendF)} className="mt-2 text-sm font-semibold px-4 py-2 rounded-lg bg-[#2E8B57] text-white">{qqP ? `Han llegado las ${pendF.length} de esta búsqueda: colocar en carros` : `Han llegado todas: colocar las ${pendF.length} pendientes en carros`}</button>; })()}
               <div className="mt-2 space-y-3 max-h-80 overflow-y-auto">
                 {Object.entries(grupos).map(([k, ps]) => (
                   <div key={k}>
