@@ -54605,6 +54605,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [obraComp, setObraComp] = useState(""); // presupuesto que se está comprobando ("" = cerrado)
   const [codComp, setCodComp] = useState("");
   const archivoRef = useRef(null);
+  const archivoRef2 = useRef(null); const esperadoRef = useRef(""); // subida directa desde la tarjeta roja de una obra
   // Dónde está la persiana de la misma ventana/vivienda en el almacén de persianas (mismo cruce que usa el puesto de persiana)
   const itemsPers = toArray(ctxAux.persianasAlmacen);
   const nombreAlmP = (id) => (toArray(ctxAux.almacenesPersianas).find((a) => a.id === id) || {}).nombre || "";
@@ -54636,7 +54637,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
-  const subir = async (files) => {
+  const subir = async (files, esperado = "") => {
     setLeyendo(true); setMsg("");
     try {
       const refs = auxRefsHoja(cfg.refs);
@@ -54644,6 +54645,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
         if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
         if (!r || !r.modelos.length || !r.presupuesto) { setMsg(`«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones).`); continue; }
+        if (esperado && digitosPresu(r.presupuesto) !== esperado && !window.confirm(`Esta hoja es del presupuesto ${pptoBonito(r.presupuesto)}, no del ${pptoBonito(esperado)}. ¿Subirla igualmente?`)) continue;
         const previa = hojas && hojas[r.presupuesto];
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
@@ -54862,6 +54864,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <input ref={archivoRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => subir(e.target.files)} />
+        <input ref={archivoRef2} type="file" accept="application/pdf" className="hidden" onChange={(e) => { const x = esperadoRef.current; esperadoRef.current = ""; subir(e.target.files, x); }} />
         <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
@@ -55106,6 +55109,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               {faltanObras.length > 0 && (
                 <div className="rounded-xl border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm text-rose-900">
                   <b>⚠ {faltanObras.length} obra{faltanObras.length === 1 ? "" : "s"} del planning sin material de auxiliares aquí:</b> {faltanObras.filter((o) => o.motivo === "ppto").length} sin nº de presupuesto (pídelo y ponlo en su ficha) y {faltanObras.filter((o) => o.motivo === "hoja").length} sin hoja de corte subida. Salen en rojo dentro de su día.
+                  {(leyendo || msg) && <div className="mt-1 font-semibold text-slate-800">{leyendo ? "Leyendo la hoja…" : msg}</div>}
                 </div>
               )}
               {semanas.map((sem) => (
@@ -55139,10 +55143,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       {faltanObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {faltanObras.filter((o) => o.dia === d).map((o) => (
-                            <div key={o.k} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2">
+                            <div key={o.k} title={o.motivo === "hoja" ? "Toca para subir la hoja de corte de este presupuesto" : ""} onClick={() => { if (o.motivo !== "hoja" || leyendo) return; esperadoRef.current = [...o.pres][0] || ""; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 ${o.motivo === "hoja" ? "cursor-pointer hover:bg-rose-100" : ""}`}>
                               <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
                               <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
                               <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ Falta el nº de presupuesto: pídelo y ponlo en la ficha de la obra" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
+                              {o.motivo === "hoja" && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
