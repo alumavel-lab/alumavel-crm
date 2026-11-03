@@ -54693,6 +54693,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [verSinDia, setVerSinDia] = useState(false);
   const [perfilDia, setPerfilDia] = useState("");
   const [diasSel, setDiasSel] = useState([]);
+  const [pptosImp, setPptosImp] = useState([]); // obras elegidas para imprimir (por presupuesto), aunque sean de días distintos
   // CADENA CON LA PISTOLA: se imprime una pegatina; al leerla con la pistola queda confirmada y sale sola la siguiente de la misma tanda
   const [cadena, setCadena] = useState(null); // { tipo: "global" | "obra" | "ref", ppto, k, dias, ultimo: cod, nombre }
   const codigoRef = useRef(null);
@@ -54991,15 +54992,16 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const okObras = planObras.filter((o) => o.pres.size && [...o.pres].some((b) => _presConHoja.has(b))).map((o) => { let n = 0, c = 0; o.pres.forEach((b) => { const t = _totPorB[b]; if (t) { n += t.n; c += t.c; } }); return { ...o, n, c }; }).filter((o) => o.n === 0 || o.c === o.n);
   const diasAux = [...new Set([...obrasAux.filter((g) => g.dia).map((g) => g.dia), ...faltanObras.map((o) => o.dia), ...okObras.map((o) => o.dia)])];
   // HOJA PARA IMPRIMIR Y REVISAR con los papeles de corte: por día y obra, todas las piezas (cortadas y por cortar) y lo que falta (presupuesto / hoja)
-  const imprimirRevision = (dias, titulo) => {
+  const imprimirRevision = (dias, titulo, soloPptos) => {
+    const filtro = soloPptos && soloPptos.length ? new Set(soloPptos.map(String)) : null; // solo esas obras
     const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const lista = [...new Set(dias)].sort();
     if (!lista.length) return;
     let totFalta = 0; let totPend = 0; let totObras = 0;
     const cuerpo = lista.map((d) => {
       const porPpto = new Map();
-      piezas.forEach((p) => { if (diaDe(p.ppto) !== d) return; if (!porPpto.has(p.ppto)) porPpto.set(p.ppto, []); porPpto.get(p.ppto).push(p); });
-      const faltan = faltanObras.filter((o) => o.dia === d); totFalta += faltan.length;
+      piezas.forEach((p) => { if ((diaDe(p.ppto) || "") !== d) return; if (filtro && !filtro.has(String(p.ppto))) return; if (!porPpto.has(p.ppto)) porPpto.set(p.ppto, []); porPpto.get(p.ppto).push(p); });
+      const faltan = filtro ? [] : faltanObras.filter((o) => o.dia === d); totFalta += faltan.length;
       const obrasHtml = [...porPpto.entries()].sort((a, b) => auxCmp(a[0], b[0])).map(([pp, ps]) => {
         totObras += 1;
         const cort = ps.filter((p) => est[p.id] && est[p.id].cortada).length; totPend += ps.length - cort;
@@ -55009,8 +55011,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         return `<div class="obra"><h3>Ppto ${esc(pptoBonito(pp))} <small>${esc(nom)}</small><span class="rev">Revisado ☐</span></h3><div class="res">Piezas ${ps.length} · cortadas ${cort} · por cortar ${ps.length - cort}</div>${av.length ? `<div class="av">⚠ ${av.map(esc).join("<br>⚠ ")}</div>` : ""}<table><tr><th></th><th>Ventana</th><th>Ref.</th><th>Perfil</th><th>Color</th><th>Medida (mm)</th></tr>${filas}</table></div>`;
       }).join("");
       const faltaHtml = faltan.map((o) => `<div class="falta">⚠ ${o.pres.size ? "Ppto " + [...o.pres].map(pptoBonito).join(" / ") : "SIN Nº DE PRESUPUESTO"} — ${esc(o.nombre)}: ${o.motivo === "ppto" ? "falta el nº de presupuesto (pedirlo)" : "falta subir la hoja de corte de auxiliares"}</div>`).join("");
-      const sinAuxHtml = okObras.filter((o) => o.dia === d && o.n === 0).map((o) => `<div class="res">• Ppto ${[...o.pres].map(pptoBonito).join(" / ")} — ${esc(o.nombre)}: <b>NO TIENE AUXILIARES</b> (hoja subida, sin perfiles auxiliares)</div>`).join("");
-      const f = new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+      const sinAuxHtml = filtro ? "" : okObras.filter((o) => o.dia === d && o.n === 0).map((o) => `<div class="res">• Ppto ${[...o.pres].map(pptoBonito).join(" / ")} — ${esc(o.nombre)}: <b>NO TIENE AUXILIARES</b> (hoja subida, sin perfiles auxiliares)</div>`).join("");
+      const f = d ? new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }) : "Sin día en el planning";
+      if (filtro && !obrasHtml) return "";
       return `<h2>${esc(f)}</h2>${obrasHtml || faltaHtml || sinAuxHtml ? obrasHtml + sinAuxHtml + faltaHtml : '<div class="res">Sin obras este día.</div>'}`;
     }).join("");
     const w = window.open("", "_blank");
@@ -55151,7 +55154,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <div className="text-right"><div className="text-2xl font-extrabold text-[#2E8B57] leading-none">{g.piezas.length}</div><div className="text-[10px] text-slate-500">por cortar</div></div></div>
                   <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}</div>
                 </button>
-                <div className="px-3 pb-2 -mt-1"><button type="button" disabled={leyendo} title="Si a esta obra le faltan perfiles por cortar, vuelve a subir su hoja de corte: se lee otra vez con la lista actual" onClick={(e) => { e.stopPropagation(); esperadoRef.current = digitosPresu(String(g.ppto).split("-")[0]); claveRef.current = ""; if (archivoRef2.current) archivoRef2.current.click(); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] bg-white hover:bg-emerald-50 disabled:opacity-60">{leyendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Volver a subir hoja de corte</button></div>
+                <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-2"><label className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border cursor-pointer ${pptosImp.includes(g.ppto) ? "border-slate-700 bg-slate-800 text-white" : "border-slate-300 bg-white text-slate-700"}`} onClick={(e) => e.stopPropagation()}><input type="checkbox" className="w-3.5 h-3.5" checked={pptosImp.includes(g.ppto)} onChange={() => setPptosImp((l) => (l.includes(g.ppto) ? l.filter((x) => x !== g.ppto) : [...l, g.ppto]))} /> 🖨 Imprimir</label><button type="button" disabled={leyendo} title="Si a esta obra le faltan perfiles por cortar, vuelve a subir su hoja de corte: se lee otra vez con la lista actual" onClick={(e) => { e.stopPropagation(); esperadoRef.current = digitosPresu(String(g.ppto).split("-")[0]); claveRef.current = ""; if (archivoRef2.current) archivoRef2.current.click(); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] bg-white hover:bg-emerald-50 disabled:opacity-60">{leyendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Volver a subir hoja de corte</button></div>
                 {abierta && (
                   <div className="px-3 pb-3 border-t border-slate-100">
                     <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => cortar(g.piezas[0], { tipo: "obra", ppto: g.ppto })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
@@ -55308,6 +55311,13 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           const togDia = (d) => { setDiasSel((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d].sort())); if (perfilDia === "multi") setPerfilDia(""); };
           return (
             <div className="space-y-4">
+              {pptosImp.length > 0 && (
+                <div className="sticky top-0 z-20 rounded-xl border-2 border-slate-700 bg-white p-3 flex flex-wrap items-center gap-2 shadow">
+                  <b className="text-slate-900">🖨 Para imprimir: {pptosImp.map((pp) => `Ppto ${pptoBonito(pp)}`).join(", ")}</b>
+                  <button type="button" onClick={() => imprimirRevision([...new Set(pptosImp.map((pp) => diaDe(pp) || ""))], `${pptosImp.length} obra${pptosImp.length === 1 ? "" : "s"} elegida${pptosImp.length === 1 ? "" : "s"}`, pptosImp)} className="flex items-center gap-1 text-sm font-bold px-3 py-1.5 rounded-lg text-white" style={{ backgroundColor: "#334155" }}><Printer size={14} /> Imprimir {pptosImp.length} obra{pptosImp.length === 1 ? "" : "s"}</button>
+                  <button type="button" onClick={() => setPptosImp([])} className="text-xs font-semibold px-2 py-1 rounded border border-slate-300 bg-white">Quitar selección</button>
+                </div>
+              )}
               {diasSel.length > 0 && (
                 <div className="sticky top-0 z-10 rounded-xl border-2 border-indigo-500 bg-indigo-50 p-3">
                   <div className="flex flex-wrap items-center gap-2">
