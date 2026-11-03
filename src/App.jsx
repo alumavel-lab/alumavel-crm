@@ -43217,6 +43217,7 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
 
 function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuardarSinObra, onBorrarSinObra, caballetes, proyectos, clientes, uxExpedientes, onGuardar, onBorrar, isAdmin, config, onSaveConfig, onMoverEstado, pedidos = [], uxPedidos = [], listoParaFabricar = [], configPlanning, simple = false, quien = "", soloDia = false, onMoverDiaFabrica = null }) {
   const [verTodo, setVerTodo] = useState(false);
+  const [ticFuera, setTicFuera] = useState(false); // en «Cargar en el palet»: ver también los palés que están fuera
   const [incVentana, setIncVentana] = useState(null); // ventana con incidencia leída en carga: no se carga, se guarda en el almacén de espera
   const incAbiertasAlm = useIncidenciasAbiertasVentana();
   const flagsIncAlm = useObjetoFb("incidenciaVentanaLinea");
@@ -44029,9 +44030,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           <div className="space-y-1">
             <div className="text-sm font-bold text-slate-700">1. El palet: lee su código de barras o tócalo</div>
             <input value={ticCod} onChange={(e) => setTicCod(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); elegirPaletCod(e.currentTarget.value); } }} placeholder="Código del palet (pistola) y Enter" className="w-full sm:w-80 border-2 border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-            <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
-              {cabs.sort(natNum).map((c) => { const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
-                <button key={c.id} type="button" onClick={() => { setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); }} className={`px-2.5 py-1.5 rounded-lg border-2 text-xs font-bold ${sel ? "bg-emerald-600 border-emerald-800 text-white" : libre ? "bg-white border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-900"}`}>{c.numero}{c.obra && c.obra.nombre ? ` · ${String(c.obra.nombre).slice(0, 18)}` : libre ? " · libre" : ""} · {toArray(c.ventanas).length}</button>
+            <div className="flex flex-wrap items-center gap-2 mb-1"><label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600"><input type="checkbox" checked={ticFuera} onChange={(e) => setTicFuera(e.target.checked)} /> Ver también los palés que están fuera (al tocarlos se abre todo el almacén)</label></div>
+            <div className="flex flex-wrap gap-1.5 max-h-72 overflow-y-auto">
+              {(ticFuera ? cabsAhora() : cabs).sort(natNum).map((c) => { const fuera = (c.estado || "libre") === "fuera"; const sel = c.id === ticPalet; const libre = (c.estado || "libre") === "libre"; return (
+                <button key={c.id} type="button" onClick={() => { if (fuera) { setVerTodo(true); return; } setTicPalet(c.id); if (c.obra && c.obra.key) setTicObra(c.obra.key); }} className={`px-2.5 py-1.5 rounded-lg border-2 text-xs font-bold ${sel ? "bg-emerald-600 border-emerald-800 text-white" : fuera ? "bg-slate-200 border-slate-400 text-slate-500" : libre ? "bg-white border-slate-300 text-slate-700" : "bg-amber-50 border-amber-300 text-amber-900"}`}>{c.numero}{c.obra && c.obra.nombre ? ` · ${String(c.obra.nombre).slice(0, 18)}` : fuera ? " · fuera" : libre ? " · libre" : ""} · {toArray(c.ventanas).length}</button>
               ); })}
             </div>
           </div>
@@ -44722,6 +44724,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         {toastScan && <div onClick={() => setToastScan(null)} className={`fixed top-3 left-1/2 -translate-x-1/2 z-[60] max-w-[92vw] cursor-pointer rounded-xl px-5 py-3 shadow-2xl text-base font-bold text-white ${toastScan.ok ? "bg-emerald-600" : "bg-rose-600"}`}>{toastScan.texto}</div>}
         <AvisoBusquedaVentana indice={indicePiezas} ubic={ubicAlm} />
         <PedirVentanaLinea indice={indicePiezas} ubic={ubicAlm} quien="Carga" />
+        <button type="button" onClick={() => setVerTodo(true)} className="w-full rounded-xl border-2 border-indigo-500 bg-indigo-50 px-4 py-3 text-base font-extrabold text-indigo-900 text-left">📦 Ver TODO el almacén: todos los palés, las zonas/calles, el buscador y mover cosas</button>
         {panelTicar()}
         <div className="bg-white border-2 border-slate-300 rounded-xl p-4">
           <div className="text-base font-bold text-slate-800 mb-2">Pasa la pistola por la etiqueta de la ventana</div>
@@ -53900,6 +53903,9 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
     </div>
   );
 }
+// Presupuesto de una persiana de carro (si no lo trae, se agrupa por expediente)
+const clavePptoPers = (x) => { const d = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => t.replace(/\D/g, "")).find((t) => t.length >= 3) || ""; return d ? `P${d}` : `E${String(x.expediente || "—").trim()}`; };
+const etiquetaPptoPers = (k) => (k[0] === "P" ? `Ppto ${pptoBonito(k.slice(1))}` : `EXP ${k.slice(1)} (sin nº de presupuesto)`);
 function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
@@ -53928,7 +53934,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
   return (
     <div className="mt-6">
       <div className="flex flex-wrap items-center gap-3 mb-2">
-        <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(solo mirar)</span></h4>
+        <h4 className="font-display font-bold text-slate-800">Almacén de persianas <span className="text-xs font-normal text-slate-400">(por presupuesto · incidencia y baja)</span></h4>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar expediente, vivienda o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
       </div>
       {almacenes.map((a) => {
@@ -53954,7 +53960,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
                     {rojo && <div className="text-[12px] font-extrabold text-rose-700 leading-tight mt-1">👉 COGE AQUÍ: lado {destacarPers.lado} · estante {destacarPers.nivel}{destacarPers.ref ? ` · ${destacarPers.ref}` : ""}</div>}
                     <div className="text-[11px] text-slate-500 mt-0.5">{its.length} {its.length === 1 ? "persiana" : "persianas"}</div>
                     <div className="text-[11px] font-semibold text-slate-700 mt-0.5 leading-tight">
-                      {exps.length ? exps.slice(0, 3).map((e) => `EXP ${e}`).join(" · ") + (exps.length > 3 ? ` +${exps.length - 3}` : "") : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
+                      {its.length ? (() => { const ks = [...new Set(its.map(clavePptoPers))]; const nI = its.filter((x) => x.incidencia).length; return <>{ks.slice(0, 3).map((k) => (k[0] === "P" ? pptoBonito(k.slice(1)) : `EXP ${k.slice(1)}`)).join(" · ") + (ks.length > 3 ? ` +${ks.length - 3}` : "")}{nI > 0 && <span className="ml-1 text-rose-700 font-extrabold">⚠{nI}</span>}</>; })() : <span className="text-slate-700 font-extrabold text-sm tracking-wide">VACÍO</span>}
                     </div>
                   </div>
                 );
@@ -53976,22 +53982,47 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
               </div>
               <div className="overflow-y-auto p-4">
                 {!its.length ? <p className="text-sm text-slate-500">Este carro está vacío.</p> : (
-                  <table className="w-full text-sm">
-                    <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 px-2">Lado</th><th className="px-2">Estante</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Expediente</th><th className="px-2">Medida (mm)</th></tr></thead>
-                    <tbody>
-                      {its.map((x) => {
-                        const esFoco = !!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel;
-                        return (
-                          <tr key={x.id} className={`border-b border-slate-100 ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
-                            <td className="py-1.5 px-2">{x.estante.lado}</td><td className="px-2">{x.estante.nivel}</td>
-                            <td className="px-2 font-semibold">{x.ref || "—"}</td>
-                            <td className="px-2">EXP {x.expediente || "—"}{partePersiana(x) ? ` · ${partePersiana(x)}` : ""}</td>
-                            <td className="px-2">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+(() => {
+                    const hoyB = new Date().toISOString().slice(0, 10);
+                    const aplicar = (ids, patch) => { if (!ctx.savePersianasAlmacen) { alert("No se puede guardar desde aquí."); return; } const set = new Set(ids); ctx.savePersianasAlmacen(toArray(ctx.persianasAlmacen).map((y) => (set.has(y.id) ? { ...y, ...patch } : y))); };
+                    const incidencia = (x) => { const t = window.prompt(`Incidencia de la persiana EXP ${x.expediente || "—"} · ${x.ref || ""}\n\nEscribe qué le pasa:`, x.comentario || ""); if (t === null) return; if (!t.trim()) { alert("Escribe qué le pasa."); return; } aplicar([x.id], { incidencia: x.incidencia || "Otro", fechaIncidencia: x.fechaIncidencia || hoyB, comentario: t.trim() }); };
+                    const baja = (xs, txt) => { if (!window.confirm(`¿Dar de baja ${txt} del carro ${carroVer.numero}? Se quedan fuera del carro y el hueco queda libre.`)) return; aplicar(xs.map((x) => x.id), { estante: null, entregada: true, fechaSalida: hoyB }); };
+                    const grupos = {}; its.forEach((x) => { (grupos[clavePptoPers(x)] = grupos[clavePptoPers(x)] || []).push(x); });
+                    return Object.entries(grupos).sort((x, y) => x[0].localeCompare(y[0])).map(([k, xs]) => (
+                      <div key={k} className="mb-4 rounded-lg border-2 border-slate-200 overflow-hidden">
+                        <div className="flex flex-wrap items-center gap-2 bg-slate-100 px-3 py-2">
+                          <b className="text-base text-slate-900">{etiquetaPptoPers(k)}</b>
+                          <span className="text-sm text-slate-600">{xs.length} persiana{xs.length === 1 ? "" : "s"}{xs.some((x) => x.incidencia) ? ` · ⚠ ${xs.filter((x) => x.incidencia).length} con incidencia` : ""}</span>
+                          <button type="button" onClick={() => baja(xs, `las ${xs.length} persianas de ${etiquetaPptoPers(k)}`)} className="ml-auto text-xs font-bold px-2.5 py-1 rounded border border-rose-300 text-rose-700 bg-white">Dar de baja todo el presupuesto</button>
+                        </div>
+                        <table className="w-full text-sm">
+                          <thead><tr className="text-left text-xs text-slate-400 border-b"><th className="py-1 px-2">Lado</th><th className="px-2">Estante</th><th className="px-2">Vivienda / ref.</th><th className="px-2">Expediente</th><th className="px-2">Medida (mm)</th><th className="px-2"></th></tr></thead>
+                          <tbody>
+                            {xs.map((x) => {
+                              const esFoco = !!foco && foco.lado === x.estante.lado && foco.nivel === x.estante.nivel;
+                              return (
+                                <React.Fragment key={x.id}>
+                                  <tr className={`border-b border-slate-100 ${x.incidencia ? "bg-rose-50" : ""} ${esFoco ? "bg-rose-100 font-bold" : ""}`}>
+                                    <td className="py-1.5 px-2">{x.estante.lado}</td><td className="px-2">{x.estante.nivel}</td>
+                                    <td className="px-2 font-semibold">{x.ref || "—"}</td>
+                                    <td className="px-2">EXP {x.expediente || "—"}{partePersiana(x) ? ` · ${partePersiana(x)}` : ""}</td>
+                                    <td className="px-2">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
+                                    <td className="px-2 whitespace-nowrap text-right">
+                                      {x.incidencia
+                                        ? <button type="button" onClick={() => { if (window.confirm("¿Quitar la incidencia de esta persiana?")) aplicar([x.id], { incidencia: "", fechaIncidencia: "" }); }} className="text-xs font-bold px-2 py-1 rounded border border-rose-400 bg-rose-600 text-white mr-1">⚠ Incidencia · quitar</button>
+                                        : <button type="button" onClick={() => incidencia(x)} className="text-xs font-bold px-2 py-1 rounded border border-rose-300 text-rose-700 bg-white mr-1">⚠ Incidencia</button>}
+                                      <button type="button" onClick={() => baja([x], `la persiana ${x.ref || ""} (EXP ${x.expediente || "—"})`)} className="text-xs font-bold px-2 py-1 rounded border border-slate-400 text-slate-700 bg-white">Dar de baja</button>
+                                    </td>
+                                  </tr>
+                                  {x.incidencia && <tr className="bg-rose-50 border-b border-slate-100"><td colSpan={6} className="px-2 pb-1.5 text-xs font-semibold text-rose-700">⚠ {x.comentario || x.incidencia}{x.fechaIncidencia ? ` · ${fmtDate(x.fechaIncidencia)}` : ""}</td></tr>}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ));
+                  })()
                 )}
               </div>
             </div>
@@ -55518,7 +55549,7 @@ const colorHexVentana = (t) => { const x = String(t || "").toLowerCase(); return
 function ColorVentana({ texto }) { const hex = colorHexVentana(texto); return <span className="inline-flex items-center gap-1">{hex ? <span style={{ background: hex }} className="inline-block w-3 h-3 rounded-full border border-slate-500" /> : null}{texto}</span>; }
 
 // Panel que sale debajo del planning al tocar la chincheta de una obra: dónde están sus cristales, persianas y auxiliares, y si ya están cortados
-function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedientes, sinObra, onMover, onCerrar }) {
+function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedientes, sinObra, onMover, onCerrar, compacto = false }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const hojas = useObjetoFb("auxiliaresHojas");
   const est = useObjetoFb("auxiliaresPiezas");
@@ -55553,12 +55584,12 @@ function PanelObraPlanning({ obra, pptos, motivoMaterial, proyectos, uxExpedient
   const caja = "rounded-md border bg-white p-2 flex-1 min-w-[15rem]";
   const piezasCab = (c) => toArray(c.piezas);
   return (
-    <div className="mb-3 rounded-lg border-2 border-sky-400 bg-sky-50 p-3">
+    <div className={compacto ? "mt-1 rounded-lg border border-sky-300 bg-sky-50 p-2" : "mb-3 rounded-lg border-2 border-sky-400 bg-sky-50 p-3"}>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <b className="text-sm text-sky-900">📌 {obra.d.nombre}</b>
+        {!compacto && <b className="text-sm text-sky-900">📌 {obra.d.nombre}</b>}
         {motivoMaterial ? <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">Falta: {motivoMaterial}</span> : <span className="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">Material completo</span>}
-        <button type="button" onClick={onMover} className="ml-auto px-2 py-1 rounded bg-amber-400 text-slate-900 text-xs font-bold">↔ Mover de día</button>
-        <button type="button" onClick={onCerrar} className="px-2 py-1 rounded bg-white border border-slate-300 text-xs font-bold">Cerrar ✕</button>
+        {!compacto && <button type="button" onClick={onMover} className="ml-auto px-2 py-1 rounded bg-amber-400 text-slate-900 text-xs font-bold">↔ Mover de día</button>}
+        {!compacto && <button type="button" onClick={onCerrar} className="px-2 py-1 rounded bg-white border border-slate-300 text-xs font-bold">Cerrar ✕</button>}
       </div>
       {!set.size && <div className="text-xs text-slate-500 mb-2">Esta obra no tiene nº de presupuesto/expediente, así que no puedo buscar su material.</div>}
       <div className="flex flex-wrap gap-2 text-sm">
@@ -55606,6 +55637,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [planEdmo, setPlanEdmo] = useState(null); // vista previa del PDF «PLANING»: { bloques, horasDia, soloMaterial }
   const [destDia, setDestDia] = useState("");
   const [pinSel, setPinSel] = useState(null); // chincheta de obra elegida para moverla de día: { k, de }
+  const [qBusqPl, setQBusqPl] = useState(""); // buscador de obras del calendario (por presupuesto, expediente o nombre)
   const [verPlanImg, setVerPlanImg] = useState(false);
   const { pedirPin, modalPin } = usePinCristales();
   const [qLimp, setQLimp] = useState(""); const [verLimp, setVerLimp] = useState(false);
@@ -56802,10 +56834,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     w.document.write(`<html><head><meta charset="utf-8"><title>Informe del día ${esc(fmtDate(dia))}</title><style>body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:16px}h1{font-size:18px;margin:0 0 4px}h3{font-size:14px;margin:14px 0 4px}small{font-weight:normal;color:#555}table{border-collapse:collapse;width:100%}th,td{border:1px solid #bbb;padding:3px 6px;text-align:left}th{background:#eee}.e1 td{background:#e6f6ec}.e2 td{background:#ffe7d1}</style></head><body><h1>Control del día · ${esc(fmtDate(dia))}</h1><div>${lista.length} obra${lista.length === 1 ? "" : "s"} · ${tot.total} ventanas: <b>${tot.hechas} hechas</b>, <b>${tot.problema} con problema</b>, ${tot.pendientes} pendientes${textoTiempos ? ` · ${esc(textoTiempos)}` : ""}</div>${filtros ? `<div>Filtro: ${esc(filtros)} → ${vis.total} ventanas</div>` : ""}${cuerpo || "<p>Sin datos para este filtro.</p>"}</body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
   };
-  const hechasDia = todasFilasInforme.filter((f) => f.v && f.val === 1).length;
+  // El contador del ritmo empieza a CERO cada día: solo cuenta lo marcado en verde en ESTE día (no lo que viene heredado de días anteriores)
+  const hechasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
-  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} />;
+  const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})` : "Empieza a cero cada día"} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
       {inputCarga}
@@ -57059,6 +57092,33 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       </details>
       <div className="mb-3 flex flex-wrap items-start gap-3">
         <div className="rounded-lg border border-slate-300 bg-white p-2 flex-1 min-w-[320px]">
+          {(() => {
+            const nz = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.#\-_/]/g, "");
+            const pal = nz(qBusqPl).split(/\s+/).filter(Boolean);
+            const fechasDe = {}; Object.keys(asignTodas || {}).sort().forEach((f) => Object.keys(asignTodas[f] || {}).forEach((k) => { (fechasDe[k] = fechasDe[k] || []).push(f); }));
+            const res = pal.length ? [...obraPorClave.entries()].map(([k, ob]) => ({ k, ob, hay: nz(`${ob.d.nombre} ${[...presCrmDe(ob)].join(" ")} ${ob.d.numero || ""}`) })).filter((x) => pal.every((w) => x.hay.includes(w))) : [];
+            const fmtF = (f) => new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" });
+            const ir = (k, f) => { if (f) setDia(f); setObraInfo(k); setTimeout(() => { const el = document.getElementById(`pin-${k}-${f}`); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 300); };
+            return (
+              <div className="mb-2">
+                <input value={qBusqPl} onChange={(e) => setQBusqPl(e.target.value)} placeholder="🔎 Buscar obra: presupuesto, expediente o nombre…" className="w-full border-2 border-indigo-300 rounded-lg px-3 py-2 text-sm" />
+                {pal.length > 0 && (
+                  <div className="mt-1 rounded-lg border border-indigo-200 bg-indigo-50 p-1.5 space-y-1">
+                    {res.length === 0 && <div className="text-xs text-slate-600 px-1">No encuentro ninguna obra con eso.</div>}
+                    {res.slice(0, 8).map(({ k, ob }) => { const fs = fechasDe[k] || []; const ps = [...presCrmDe(ob)]; return (
+                      <div key={k} className="rounded bg-white border border-indigo-200 px-2 py-1 text-xs">
+                        <div className="font-bold text-slate-900">{ps.length ? `Ppto ${ps.map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ")} · ` : ""}{ob.d.nombre}</div>
+                        {fs.length === 0 ? <div className="text-rose-700 font-semibold">⚠ No está puesta en ningún día del calendario</div> : <div className="flex flex-wrap gap-1 mt-0.5">{fs.map((f) => <button key={f} type="button" onClick={() => ir(k, f)} className="px-2 py-0.5 rounded border border-indigo-400 bg-indigo-600 text-white font-bold">📅 {fmtF(f)}{f === hoy ? " (hoy)" : ""} · ver</button>)}</div>}
+                        {res.length <= 3 && <PanelObraPlanning compacto obra={ob} pptos={[...pptosPresupuesto(ob)]} motivoMaterial={(() => { const m = materialObra(ob); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} />}
+                      </div>
+                    ); })}
+                    {res.length > 8 && <div className="text-[11px] text-slate-500 px-1">Y {res.length - 8} más: escribe algo más para afinar.</div>}
+                    {res.length > 3 && <div className="text-[11px] text-slate-500 px-1">Dónde está su material: sale solo cuando quedan 3 obras o menos (o pulsa el día).</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="flex items-center justify-between mb-1">
             <button type="button" onClick={() => cambiaMes(-1)} className="px-2 font-bold">‹</button>
             <b className="text-sm capitalize">{nombreMes}</b>
@@ -57075,10 +57135,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f;
                   const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
                   const hecha = idsC.length > 0 && idsC.every((i) => mkC[i] === 1); const prob = idsC.some((i) => mkC[i] === 2); return (
-                  <button key={k} type="button" draggable title={nom + " — toca para ver dónde está su material (arrástrala para moverla de día)"}
+                  <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ver dónde está su material (arrástrala para moverla de día)`}
                     onDragStart={() => setPinSel({ k, de: f })}
                     onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; } setObraInfo(obraInfo === k ? null : k); }}
-                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : papel && papel[k] ? "bg-purple-600 border-purple-800 text-white" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"}`}>{hecha ? "✓" : "📌"} {nom}</button>
+                    className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : papel && papel[k] ? "bg-purple-600 border-purple-800 text-white" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"} ${qBusqPl.trim() && ob && (() => { const nz2 = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.#\-_/]/g, ""); const ws = nz2(qBusqPl).split(/\s+/).filter(Boolean); const h2 = nz2(`${ob.d.nombre} ${[...presCrmDe(ob)].join(" ")} ${ob.d.numero || ""}`); return ws.length && ws.every((w) => h2.includes(w)); })() ? "ring-2 ring-fuchsia-600" : ""}`}>{hecha ? "✓" : "📌"} {(() => { const ps = ob ? [...presCrmDe(ob)] : []; if (!ps.length) return nom; const f1 = (c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? `-${v}` : ""); }; return ps.slice(0, 1).map(f1).join("") + (ps.length > 1 ? ` +${ps.length - 1}` : ""); })()}</button>
                 ); })}
               </div>
             ); })}
@@ -57512,7 +57572,7 @@ function CargasDelDia({ proyectos, clientes, caballetes, quien }) {
 }
 
 // Contador de ritmo de la línea: ventanas que han pasado hoy frente a las que deberían (ritmo por hora desde la hora de inicio)
-function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
+function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detalle = "" }) {
   const escaneos = useEscaneosLinea();
   const cfg = useObjetoFb("configRitmoLinea");
   const [ahora, setAhora] = useState(Date.now());
@@ -57542,6 +57602,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true }) {
         <span className="text-4xl leading-none">{fuera ? "🕒" : mal ? "🔔" : "😀"}</span>
         <div>
           <div className="text-3xl font-black leading-none">{real} <span className="text-lg font-bold">{realProp !== undefined ? "ventanas hechas" : "ventanas hoy"}</span></div>
+          {detalle && <div className="text-xs font-semibold mt-1 opacity-80">{detalle}</div>}
         </div>
         <div className="text-sm font-bold">
           {fuera ? (!esHoy ? "Este no es el día de hoy: solo se cuentan" : `Aún no ha empezado el turno (${inicio})`) : terminado ? (mal ? "Turno terminado: no se llegó al ritmo" : "Turno terminado: ¡ritmo cumplido!") : mal ? "Vamos tarde" : "Vamos bien"}
