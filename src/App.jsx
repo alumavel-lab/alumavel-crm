@@ -54605,6 +54605,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [obraComp, setObraComp] = useState(""); // presupuesto que se está comprobando ("" = cerrado)
   const [codComp, setCodComp] = useState("");
   const archivoRef = useRef(null);
+  const claveRef = useRef(""); const ovPres = useObjetoFb("auxiliaresObraPres"); // { claveObraPlanning: "6553" }: obra ligada a un presupuesto leyendo su hoja de corte
   const archivoRef2 = useRef(null); const esperadoRef = useRef(""); // subida directa desde la tarjeta roja de una obra
   // Dónde está la persiana de la misma ventana/vivienda en el almacén de persianas (mismo cruce que usa el puesto de persiana)
   const itemsPers = toArray(ctxAux.persianasAlmacen);
@@ -54637,7 +54638,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
-  const subir = async (files, esperado = "") => {
+  const subir = async (files, esperado = "", claveObra = "") => {
     setLeyendo(true); setMsg("");
     try {
       const refs = auxRefsHoja(cfg.refs);
@@ -54649,7 +54650,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         const previa = hojas && hojas[r.presupuesto];
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
-        await fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) })));
+        if (claveObra) await fbSet(ref(fbDb, `auxiliaresObraPres/${claveObra}`), digitosPresu(r.presupuesto)).catch(() => {});
+        await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) }))), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
         setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no hay ninguna de las referencias de la lista.`);
       }
     } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
@@ -54766,8 +54768,17 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   Object.values((planF && planF.obras) || {}).forEach((f) => { if (!f || !f.inicio) return; toArray(f.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f.inicio < diaPlan[b]) { diaPlan[b] = f.inicio; nombrePlan[b] = String(f.nombre || "").replace(/ · en fabricación$/, ""); } }); });
   Object.entries(planFx || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.values(m || {}).forEach((e) => { if (!e) return; toArray(e.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f < diaPlan[b]) { diaPlan[b] = f; nombrePlan[b] = String(e.nombre || ""); } }); }); });
   // MISMO CRITERIO QUE CONTROL DEL DÍA: Fábrica manda (los días que tiene en planFabrica/dias) y lo puesto a mano solo cuenta si la obra no está en Fábrica
+  // PRESUPUESTO ≠ EXPEDIENTE: en el planning de Fábrica una obra de Uxcar puede traer su nº de expediente (630) donde debería ir el presupuesto (6.487).
+  // Aquí solo valen como presupuesto los de 4 cifras o más que NO sean el nº de expediente; y si el expediente de Uxcar tiene su presupuesto, se usa ese.
+  const presDeFabObra = (ob) => {
+    const out = new Set(); const nom = String((ob && ob.nombre) || "");
+    const mExp = nom.match(/exp\.?\s*(\d+)/i); const numExp = mExp ? mExp[1] : "";
+    toArray(ob && ob.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (b && b.length >= 4 && b !== numExp) out.add(b); });
+    if (numExp) { const e = toArray(uxExpedientes).find((x) => x && String(x.numero) === numExp); if (e) [e.presupuesto, e.presupuestoNumero].forEach((t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const b = digitosPresu(x); if (b && b.length >= 4) out.add(b); })); }
+    return out;
+  };
   const diaFab = {};
-  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; toArray(ob.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaFab[b] || f < diaFab[b]) { diaFab[b] = f; nombrePlan[b] = String(ob.nombre || "").replace(/ · en fabricación$/, ""); } }); }); });
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; [...presDeFabObra(ob)].forEach((b) => { if (!diaFab[b] || f < diaFab[b]) { diaFab[b] = f; nombrePlan[b] = String(ob.nombre || "").replace(/ · en fabricación$/, ""); } }); }); });
   Object.keys(diaFab).forEach((b) => { diaPlan[b] = diaFab[b]; });
   const diaManual = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; const id = String(ko).slice(2); const set = new Set();
@@ -54784,7 +54795,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   // OBRAS DEL PLANNING SIN MATERIAL DE AUXILIARES: todo lo que está en el planning de días tiene que verse aquí, aunque no tenga presupuesto o hoja de corte
   const planObras = [];
   const _pkMin = {};
-  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; if (!_pkMin[pk] || f < _pkMin[pk].dia) _pkMin[pk] = { k: `f-${pk}`, nombre: String(ob.nombre || "").replace(/ · en fabricación$/, ""), dia: f, pres: new Set(toArray(ob.pres).map((c) => digitosPresu(String(c).split("-")[0])).filter(Boolean)) }; }); });
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; if (!_pkMin[pk] || f < _pkMin[pk].dia) _pkMin[pk] = { k: `f-${pk}`, nombre: String(ob.nombre || "").replace(/ · en fabricación$/, ""), dia: f, pres: presDeFabObra(ob) }; }); });
   Object.values(_pkMin).forEach((x) => planObras.push(x));
   const _koMin = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; if (_koMin[ko] && _koMin[ko].dia <= f) return; const id = String(ko).slice(2); const set = new Set(); let nombre = ko;
@@ -54795,6 +54806,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     if ([...set].some((b) => diaFab[b])) return; // Fábrica manda
     _koMin[ko] = { k: ko, nombre, dia: f, pres: set }; }); });
   Object.values(_koMin).forEach((x) => planObras.push(x));
+  planObras.forEach((o) => {
+    // si la ficha no trae presupuesto, se lee del nombre (p. ej. «#4287 Uxcar · 6.553-1 · 13 ventanas») y de la hoja que se subió a mano para esta obra
+    if (!o.pres.size) { for (const m of String(o.nombre || "").matchAll(/(^|[^#\d.])(\d{1,2}\.\d{3}(?:-\d+)?)/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); } }
+    if (ovPres && ovPres[o.k]) o.pres.add(digitosPresu(ovPres[o.k]));
+  });
   const _presConHoja = new Set(Object.values(hojas || {}).filter(Boolean).map((h) => digitosPresu(h.presupuesto)).filter(Boolean));
   const faltanObras = planObras.filter((o) => !(o.pres.size && [...o.pres].some((b) => _presConHoja.has(b)))).map((o) => ({ ...o, motivo: o.pres.size ? "hoja" : "ppto" })).sort((a, b) => String(a.dia).localeCompare(String(b.dia)) || String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
   // Obras del planning CON hoja subida pero sin nada por cortar: o no llevan auxiliares, o ya está todo cortado
@@ -54863,8 +54879,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
+        {(msg || leyendo) && <div onClick={() => { if (!leyendo) setMsg(""); }} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl bg-slate-900 text-white px-4 py-3 text-sm font-semibold shadow-2xl cursor-pointer">{leyendo ? "⏳ Leyendo la hoja de corte…" : msg} {!leyendo && <span className="opacity-60 font-normal">(toca para cerrar)</span>}</div>}
         <input ref={archivoRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => subir(e.target.files)} />
-        <input ref={archivoRef2} type="file" accept="application/pdf" className="hidden" onChange={(e) => { const x = esperadoRef.current; esperadoRef.current = ""; subir(e.target.files, x); }} />
+        <input ref={archivoRef2} type="file" accept="application/pdf" className="hidden" onChange={(e) => { const x = esperadoRef.current; const kk = claveRef.current; esperadoRef.current = ""; claveRef.current = ""; subir(e.target.files, x, kk); }} />
         <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
@@ -55143,11 +55160,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       {faltanObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {faltanObras.filter((o) => o.dia === d).map((o) => (
-                            <div key={o.k} title={o.motivo === "hoja" ? "Toca para subir la hoja de corte de este presupuesto" : ""} onClick={() => { if (o.motivo !== "hoja" || leyendo) return; esperadoRef.current = [...o.pres][0] || ""; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 ${o.motivo === "hoja" ? "cursor-pointer hover:bg-rose-100" : ""}`}>
+                            <div key={o.k} title="Toca para subir la hoja de corte de esta obra" onClick={() => { if (leyendo) return; esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 cursor-pointer hover:bg-rose-100">
                               <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
                               <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
-                              <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ Falta el nº de presupuesto: pídelo y ponlo en la ficha de la obra" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
-                              {o.motivo === "hoja" && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
+                              <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ No tiene nº de presupuesto en la ficha: sube aquí su hoja de corte y lo leo de ella" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
+                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
