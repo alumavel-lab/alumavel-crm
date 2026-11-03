@@ -54981,6 +54981,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     // si la ficha no trae presupuesto, se lee del nombre (p. ej. «#4287 Uxcar · 6.553-1 · 13 ventanas») y de la hoja que se subió a mano para esta obra
     if (!o.pres.size) { for (const m of String(o.nombre || "").matchAll(/(^|[^#\d.])(\d{1,2}\.\d{3}(?:-\d+)?)/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); } }
     if (ovPres && ovPres[o.k]) o.pres.add(digitosPresu(ovPres[o.k]));
+    // «6384.2» guardado sin el punto (63842) junto al bueno (6384): el de la cifra de más es la versión pegada, se quita
+    [...o.pres].forEach((x) => { if ([...o.pres].some((y) => y !== x && x.length === y.length + 1 && x.startsWith(y))) o.pres.delete(x); });
   });
   const _presConHoja = new Set(Object.values(hojas || {}).filter(Boolean).map((h) => digitosPresu(h.presupuesto)).filter(Boolean));
   const faltanObras = planObras.filter((o) => !(o.pres.size && [...o.pres].some((b) => _presConHoja.has(b)))).map((o) => ({ ...o, motivo: o.pres.size ? "hoja" : "ppto" })).sort((a, b) => String(a.dia).localeCompare(String(b.dia)) || String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
