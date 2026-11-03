@@ -54715,6 +54715,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const manualCD = useObjetoFb("controlDiaObras"); // { fecha: { p-ID | u-ID: true } }: obras puestas a mano en un día (Control del día / Almacén del día)
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
+  // los avisos de «✓ …» se quitan solos a los 10 s (los de error se quedan hasta que se cierran)
+  useEffect(() => { if (!msg || !String(msg).startsWith("✓")) return undefined; const t = setTimeout(() => setMsg((m) => (m === msg ? "" : m)), 10000); return () => clearTimeout(t); }, [msg]);
   const [leyendo, setLeyendo] = useState(false);
   const [codigo, setCodigo] = useState("");
   const [lectura, setLectura] = useState(null);
@@ -55026,7 +55028,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        {(msg || leyendo) && <div onClick={() => { if (!leyendo) setMsg(""); }} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl bg-slate-900 text-white px-4 py-3 text-sm font-semibold shadow-2xl cursor-pointer">{leyendo ? "⏳ Leyendo la hoja de corte…" : msg} {!leyendo && <span className="opacity-60 font-normal">(toca para cerrar)</span>}</div>}
+        {(msg || leyendo) && <div role="button" onPointerDown={(e) => { if (leyendo) return; e.preventDefault(); e.stopPropagation(); setMsg(""); }} onClick={() => { if (!leyendo) setMsg(""); }} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[9999] max-w-[92vw] rounded-xl bg-slate-900 text-white pl-4 pr-10 py-3 text-sm font-semibold shadow-2xl cursor-pointer whitespace-pre-line">{leyendo ? "⏳ Leyendo la hoja de corte…" : msg} {!leyendo && <span className="opacity-60 font-normal">(toca para cerrar)</span>}{!leyendo && <span className="absolute top-1.5 right-2 w-7 h-7 flex items-center justify-center rounded-full bg-white/20 text-base font-bold">✕</span>}</div>}
         <input ref={archivoRef} type="file" accept="application/pdf" multiple className="hidden" onChange={(e) => subir(e.target.files)} />
         <input ref={archivoRef2} type="file" accept="application/pdf" className="hidden" onChange={(e) => { const x = esperadoRef.current; const kk = claveRef.current; esperadoRef.current = ""; claveRef.current = ""; subir(e.target.files, x, kk); }} />
         <button type="button" disabled={leyendo} onClick={() => archivoRef.current && archivoRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg disabled:opacity-60">
