@@ -5024,6 +5024,8 @@ export default function App() {
         const ya = hojasAuxApp && hojasAuxApp[ppto];
         hojasUxPasadasRef.current.add(clave);
         if (ya && ya.archivo === h.archivo && ya.fecha === h.fecha) return;
+        // NO pisar la hoja que se subió a mano en Auxiliares: solo se copia la de Uxcar si no hay ninguna, o si la de Uxcar es más nueva (otra versión u otro día)
+        if (ya && !(String(h.fecha || "") > String(ya.fecha || "") || (Number(h.version) || 0) > (Number(ya.version) || 0))) return;
         fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), h).catch(() => { hojasUxPasadasRef.current.delete(clave); });
       });
     });
@@ -54979,6 +54981,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     // si la ficha no trae presupuesto, se lee del nombre (p. ej. «#4287 Uxcar · 6.553-1 · 13 ventanas») y de la hoja que se subió a mano para esta obra
     if (!o.pres.size) { for (const m of String(o.nombre || "").matchAll(/(^|[^#\d.])(\d{1,2}\.\d{3}(?:-\d+)?)/g)) { const b = digitosPresu(m[2]); if (b) o.pres.add(b); } }
     if (ovPres && ovPres[o.k]) o.pres.add(digitosPresu(ovPres[o.k]));
+    // «6384.2» guardado sin el punto (63842) junto al bueno (6384): el de la cifra de más es la versión pegada, se quita
+    [...o.pres].forEach((x) => { if ([...o.pres].some((y) => y !== x && x.length === y.length + 1 && x.startsWith(y))) o.pres.delete(x); });
   });
   const _presConHoja = new Set(Object.values(hojas || {}).filter(Boolean).map((h) => digitosPresu(h.presupuesto)).filter(Boolean));
   const faltanObras = planObras.filter((o) => !(o.pres.size && [...o.pres].some((b) => _presConHoja.has(b)))).map((o) => ({ ...o, motivo: o.pres.size ? "hoja" : "ppto" })).sort((a, b) => String(a.dia).localeCompare(String(b.dia)) || String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
@@ -55147,6 +55151,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <div className="text-right"><div className="text-2xl font-extrabold text-[#2E8B57] leading-none">{g.piezas.length}</div><div className="text-[10px] text-slate-500">por cortar</div></div></div>
                   <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}</div>
                 </button>
+                <div className="px-3 pb-2 -mt-1"><button type="button" disabled={leyendo} title="Si a esta obra le faltan perfiles por cortar, vuelve a subir su hoja de corte: se lee otra vez con la lista actual" onClick={(e) => { e.stopPropagation(); esperadoRef.current = digitosPresu(String(g.ppto).split("-")[0]); claveRef.current = ""; if (archivoRef2.current) archivoRef2.current.click(); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] bg-white hover:bg-emerald-50 disabled:opacity-60">{leyendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Volver a subir hoja de corte</button></div>
                 {abierta && (
                   <div className="px-3 pb-3 border-t border-slate-100">
                     <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => cortar(g.piezas[0], { tipo: "obra", ppto: g.ppto })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
@@ -55350,7 +55355,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                                     {toArray(hj.modelos).map((m, i) => (<div key={i}><b>{m.modelo}</b> ({m.uds || 1} ud.): {toArray(m.filas).length} perfil{toArray(m.filas).length === 1 ? "" : "es"} auxiliar{toArray(m.filas).length === 1 ? "" : "es"} reconocido{toArray(m.filas).length === 1 ? "" : "s"}{toArray(m.sosp).length ? <div className="text-amber-800 font-semibold">⚠ Líneas con guía/persiana/mosquitera que NO he sabido leer:{toArray(m.sosp).map((l, j) => <div key={j} className="font-mono font-normal break-all">{l}</div>)}</div> : m.sosp ? <span> · nada sospechoso</span> : <span> · (vuelve a subir la hoja para ver el detalle)</span>}</div>))}
                                     <div className="text-slate-500">Busco estas referencias: {cfg.refs.filter((r) => r.activo !== false).map((r) => r.ref).join(", ")}</div>
                                   </div></details></div> : null; })()}
-                              {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
+                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
