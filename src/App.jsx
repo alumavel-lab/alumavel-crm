@@ -54593,6 +54593,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const enfocarPistola = () => { [200, 900, 2500, 5000, 8000].forEach((ms) => setTimeout(() => { try { if (codigoRef.current) codigoRef.current.focus(); } catch (e) { /* nada */ } }, ms)); }; // días elegidos para cortar juntos (por perfil y color) // día (o "sin") que se está cortando «por perfil»: todas sus obras juntas por referencia
   const planF = useObjetoFb("planFabrica"); // planning de Fábrica: para ordenar el corte por días
   const planFx = useObjetoFb("planFabricaExtras"); // lo metido a mano en un día desde Control del día / Almacén del día
+  const manualCD = useObjetoFb("controlDiaObras"); // { fecha: { p-ID | u-ID: true } }: obras puestas a mano en un día (Control del día / Almacén del día)
   const [filtro, setFiltro] = useState("");
   const [msg, setMsg] = useState("");
   const [leyendo, setLeyendo] = useState(false);
@@ -54762,12 +54763,70 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const diaPlan = {}; const nombrePlan = {};
   Object.values((planF && planF.obras) || {}).forEach((f) => { if (!f || !f.inicio) return; toArray(f.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f.inicio < diaPlan[b]) { diaPlan[b] = f.inicio; nombrePlan[b] = String(f.nombre || "").replace(/ · en fabricación$/, ""); } }); });
   Object.entries(planFx || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.values(m || {}).forEach((e) => { if (!e) return; toArray(e.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaPlan[b] || f < diaPlan[b]) { diaPlan[b] = f; nombrePlan[b] = String(e.nombre || ""); } }); }); });
+  // MISMO CRITERIO QUE CONTROL DEL DÍA: Fábrica manda (los días que tiene en planFabrica/dias) y lo puesto a mano solo cuenta si la obra no está en Fábrica
+  const diaFab = {};
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; toArray(ob.pres).forEach((c) => { const b = digitosPresu(String(c).split("-")[0]); if (!b) return; if (!diaFab[b] || f < diaFab[b]) { diaFab[b] = f; nombrePlan[b] = String(ob.nombre || "").replace(/ · en fabricación$/, ""); } }); }); });
+  Object.keys(diaFab).forEach((b) => { diaPlan[b] = diaFab[b]; });
+  const diaManual = {};
+  Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; const id = String(ko).slice(2); const set = new Set();
+    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
+    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (pr) { add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } } }
+    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
+    set.forEach((b) => { if (b && !diaFab[b] && (!diaManual[b] || f < diaManual[b])) diaManual[b] = f; }); }); });
+  Object.keys(diaManual).forEach((b) => { diaPlan[b] = diaManual[b]; });
   const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
   // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
   const obrasAux = [];
   pendientes.forEach((p) => { let g = obrasAux.find((x) => x.ppto === p.ppto); if (!g) { g = { ppto: p.ppto, obra: p.obra, cliente: p.cliente, dia: diaDe(p.ppto), piezas: [] }; obrasAux.push(g); } g.piezas.push(p); });
   obrasAux.sort((a, b) => (a.dia ? 0 : 1) - (b.dia ? 0 : 1) || String(a.dia).localeCompare(String(b.dia)) || auxCmp(a.ppto, b.ppto));
-  const diasAux = [...new Set(obrasAux.filter((g) => g.dia).map((g) => g.dia))];
+  // OBRAS DEL PLANNING SIN MATERIAL DE AUXILIARES: todo lo que está en el planning de días tiene que verse aquí, aunque no tenga presupuesto o hoja de corte
+  const planObras = [];
+  const _pkMin = {};
+  Object.entries((planF && planF.dias) || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.keys(m || {}).forEach((pk) => { const ob = planF && planF.obras && planF.obras[pk]; if (!ob) return; if (!_pkMin[pk] || f < _pkMin[pk].dia) _pkMin[pk] = { k: `f-${pk}`, nombre: String(ob.nombre || "").replace(/ · en fabricación$/, ""), dia: f, pres: new Set(toArray(ob.pres).map((c) => digitosPresu(String(c).split("-")[0])).filter(Boolean)) }; }); });
+  Object.values(_pkMin).forEach((x) => planObras.push(x));
+  const _koMin = {};
+  Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; if (_koMin[ko] && _koMin[ko].dia <= f) return; const id = String(ko).slice(2); const set = new Set(); let nombre = ko;
+    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
+    if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (!pr) return; nombre = `#${pr.numero} ${pr.nombre || ""}`.trim(); add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
+    else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (!e) return; nombre = `Uxcar exp. ${e.numero}`; add(e.presupuesto); add(e.presupuestoNumero); }
+    else return;
+    if ([...set].some((b) => diaFab[b])) return; // Fábrica manda
+    _koMin[ko] = { k: ko, nombre, dia: f, pres: set }; }); });
+  Object.values(_koMin).forEach((x) => planObras.push(x));
+  const _presConHoja = new Set(Object.values(hojas || {}).filter(Boolean).map((h) => digitosPresu(h.presupuesto)).filter(Boolean));
+  const faltanObras = planObras.filter((o) => !(o.pres.size && [...o.pres].some((b) => _presConHoja.has(b)))).map((o) => ({ ...o, motivo: o.pres.size ? "hoja" : "ppto" })).sort((a, b) => String(a.dia).localeCompare(String(b.dia)) || String(a.nombre).localeCompare(String(b.nombre), "es", { numeric: true }));
+  // Obras del planning CON hoja subida pero sin nada por cortar: o no llevan auxiliares, o ya está todo cortado
+  const _totPorB = {}; piezas.forEach((p) => { const b = digitosPresu(String(p.ppto).split("-")[0]); const t = (_totPorB[b] = _totPorB[b] || { n: 0, c: 0 }); t.n++; if (est && est[p.id] && est[p.id].cortada) t.c++; });
+  const okObras = planObras.filter((o) => o.pres.size && [...o.pres].some((b) => _presConHoja.has(b))).map((o) => { let n = 0, c = 0; o.pres.forEach((b) => { const t = _totPorB[b]; if (t) { n += t.n; c += t.c; } }); return { ...o, n, c }; }).filter((o) => o.n === 0 || o.c === o.n);
+  const diasAux = [...new Set([...obrasAux.filter((g) => g.dia).map((g) => g.dia), ...faltanObras.map((o) => o.dia), ...okObras.map((o) => o.dia)])];
+  // HOJA PARA IMPRIMIR Y REVISAR con los papeles de corte: por día y obra, todas las piezas (cortadas y por cortar) y lo que falta (presupuesto / hoja)
+  const imprimirRevision = (dias, titulo) => {
+    const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const lista = [...new Set(dias)].sort();
+    if (!lista.length) return;
+    let totFalta = 0; let totPend = 0; let totObras = 0;
+    const cuerpo = lista.map((d) => {
+      const porPpto = new Map();
+      piezas.forEach((p) => { if (diaDe(p.ppto) !== d) return; if (!porPpto.has(p.ppto)) porPpto.set(p.ppto, []); porPpto.get(p.ppto).push(p); });
+      const faltan = faltanObras.filter((o) => o.dia === d); totFalta += faltan.length;
+      const obrasHtml = [...porPpto.entries()].sort((a, b) => auxCmp(a[0], b[0])).map(([pp, ps]) => {
+        totObras += 1;
+        const cort = ps.filter((p) => est[p.id] && est[p.id].cortada).length; totPend += ps.length - cort;
+        const filas = ps.map((p) => { const c = !!(est[p.id] && est[p.id].cortada); return `<tr class="${c ? "ok" : ""}"><td class="chk">${c ? "✓" : "☐"}</td><td>${esc(auxVent(p))}${p.grupo ? " · " + esc(p.grupo) : ""}</td><td>${esc(p.ref)}</td><td>${esc(p.nombre)}</td><td>${esc(p.color || "")}</td><td class="num">${esc(auxMed(p.lCorte))}</td></tr>`; }).join("");
+        const av = (avisosPorPpto.find((x) => x.k === pptoBonito(pp)) || { lista: [] }).lista;
+        const nom = nombrePlan[digitosPresu(String(pp).split("-")[0])] || ps[0].obra || ps[0].cliente || "";
+        return `<div class="obra"><h3>Ppto ${esc(pptoBonito(pp))} <small>${esc(nom)}</small><span class="rev">Revisado ☐</span></h3><div class="res">Piezas ${ps.length} · cortadas ${cort} · por cortar ${ps.length - cort}</div>${av.length ? `<div class="av">⚠ ${av.map(esc).join("<br>⚠ ")}</div>` : ""}<table><tr><th></th><th>Ventana</th><th>Ref.</th><th>Perfil</th><th>Color</th><th>Medida (mm)</th></tr>${filas}</table></div>`;
+      }).join("");
+      const faltaHtml = faltan.map((o) => `<div class="falta">⚠ ${o.pres.size ? "Ppto " + [...o.pres].map(pptoBonito).join(" / ") : "SIN Nº DE PRESUPUESTO"} — ${esc(o.nombre)}: ${o.motivo === "ppto" ? "falta el nº de presupuesto (pedirlo)" : "falta subir la hoja de corte de auxiliares"}</div>`).join("");
+      const sinAuxHtml = okObras.filter((o) => o.dia === d && o.n === 0).map((o) => `<div class="res">• Ppto ${[...o.pres].map(pptoBonito).join(" / ")} — ${esc(o.nombre)}: <b>NO TIENE AUXILIARES</b> (hoja subida, sin perfiles auxiliares)</div>`).join("");
+      const f = new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+      return `<h2>${esc(f)}</h2>${obrasHtml || faltaHtml || sinAuxHtml ? obrasHtml + sinAuxHtml + faltaHtml : '<div class="res">Sin obras este día.</div>'}`;
+    }).join("");
+    const w = window.open("", "_blank");
+    if (!w) { alert("El navegador ha bloqueado la ventana de impresión. Permite las ventanas emergentes para este sitio."); return; }
+    w.document.write(`<html><head><meta charset="utf-8"><title>Revisión de auxiliares</title><style>body{font-family:Arial,sans-serif;font-size:11px;color:#111;margin:14px}h1{font-size:17px;margin:0 0 2px}h2{font-size:15px;margin:16px 0 4px;padding:3px 6px;background:#222;color:#fff;text-transform:capitalize}h3{font-size:13px;margin:8px 0 2px}small{font-weight:normal;color:#444;margin-left:6px}.rev{float:right;font-weight:normal;font-size:12px}.res{font-size:11px;color:#333;margin-bottom:3px}.obra{page-break-inside:avoid;margin-bottom:6px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #aaa;padding:2px 5px;text-align:left}th{background:#eee}.num{text-align:right;font-weight:bold}.chk{width:16px;text-align:center}tr.ok td{color:#777}.falta{border:2px solid #c00;color:#c00;font-weight:bold;padding:4px 6px;margin:4px 0}.av{color:#a60;font-size:10px;margin-bottom:3px}.top{border:1px solid #333;padding:4px 6px;margin:6px 0;font-size:12px}</style></head><body><h1>Revisión de auxiliares · ${esc(titulo || "")}</h1><div>Impreso el ${new Date().toLocaleString("es-ES")}</div><div class="top"><b>${totObras}</b> obras con hoja de corte · <b>${totPend}</b> piezas por cortar · <b style="color:#c00">${totFalta}</b> obras del planning SIN presupuesto u hoja de corte</div>${cuerpo}</body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 400);
+  };
   const pptosDelDia = (pp) => { const d = diaDe(pp); return d ? obrasAux.filter((g) => g.dia === d).map((g) => g.ppto) : []; };
   const siguientePieza = orden === "perfil" ? null : (obrasAux[0] && obrasAux[0].piezas[0]) || null;
   const grupos = [];
@@ -55039,8 +55098,14 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <b className="text-indigo-900">Elegidos: {diasSel.map((d) => new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "short", day: "numeric" })).join(", ")} · {obrasSel.length} obras · {obrasSel.reduce((a, g) => a + g.piezas.length, 0)} piezas</b>
                     <button type="button" onClick={() => setPerfilDia(perfilDia === "multi" ? "" : "multi")} className={`text-sm font-bold px-3 py-1.5 rounded-lg ${perfilDia === "multi" ? "bg-white border-2 border-indigo-600 text-indigo-800" : "bg-indigo-600 text-white"}`}>{perfilDia === "multi" ? "✕ Cerrar" : "✂ Cortar por perfil los días elegidos"}</button>
                     <button type="button" onClick={() => { setDiasSel([]); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-semibold px-2 py-1 rounded border border-slate-300 bg-white">Quitar selección</button>
+                    <button type="button" onClick={() => imprimirRevision(diasSel, "días elegidos")} className="flex items-center gap-1 text-sm font-bold px-3 py-1.5 rounded-lg border-2 border-slate-700 bg-white text-slate-900"><Printer size={14} /> Imprimir revisión</button>
                   </div>
                   {perfilDia === "multi" && <div className="mt-3">{obrasSel.length ? vistaPerfil(obrasSel, diasSel) : <div className="text-sm text-slate-500">Esos días no tienen nada por cortar.</div>}</div>}
+                </div>
+              )}
+              {faltanObras.length > 0 && (
+                <div className="rounded-xl border-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+                  <b>⚠ {faltanObras.length} obra{faltanObras.length === 1 ? "" : "s"} del planning sin material de auxiliares aquí:</b> {faltanObras.filter((o) => o.motivo === "ppto").length} sin nº de presupuesto (pídelo y ponlo en su ficha) y {faltanObras.filter((o) => o.motivo === "hoja").length} sin hoja de corte subida. Salen en rojo dentro de su día.
                 </div>
               )}
               {semanas.map((sem) => (
@@ -55048,6 +55113,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-1">
                     <span className="text-sm font-extrabold text-slate-500 uppercase tracking-wide">Semana del {fmtDate(sem.lunes)}</span>
                     <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
+                    <button type="button" onClick={() => imprimirRevision(sem.dias, `semana del ${fmtDate(sem.lunes)}`)} className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                   </div>
                   {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); return (
                     <div key={d} className={sel ? "rounded-lg ring-2 ring-indigo-300 p-1" : ""}>
@@ -55056,8 +55122,31 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
                         <span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>
                         {gs.length > 0 && botonPerfil(d)}
+                        <button type="button" onClick={() => imprimirRevision([d], new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }))} className="ml-2 flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-lg border-2 border-slate-600 bg-white text-slate-800"><Printer size={14} /> Imprimir</button>
                       </div>
                       {gs.length > 0 && (perfilDia === d ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
+                      {okObras.filter((o) => o.dia === d).length > 0 && (
+                        <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
+                          {okObras.filter((o) => o.dia === d).map((o) => (
+                            <div key={o.k} className="rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2">
+                              <div className="text-sm font-extrabold text-slate-800">Ppto {[...o.pres].map(pptoBonito).join(" / ")}</div>
+                              <div className="text-xs text-slate-600 truncate" title={o.nombre}>{o.nombre}</div>
+                              <div className={`mt-1 text-xs font-bold ${o.n === 0 ? "text-slate-700" : "text-emerald-700"}`}>{o.n === 0 ? "No tiene auxiliares (hoja subida, sin perfiles auxiliares)" : `✓ Todo cortado (${o.n} pieza${o.n === 1 ? "" : "s"})`}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {faltanObras.filter((o) => o.dia === d).length > 0 && (
+                        <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
+                          {faltanObras.filter((o) => o.dia === d).map((o) => (
+                            <div key={o.k} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2">
+                              <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
+                              <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
+                              <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ Falta el nº de presupuesto: pídelo y ponlo en la ficha de la obra" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ); })}
                 </div>
