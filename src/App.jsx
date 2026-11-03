@@ -49705,6 +49705,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const totalFirmes = firmes.reduce((a, o) => a + o.horas, 0);
   // Obras (y sus horas) que se han ido añadiendo a un día desde «Almacén del día»: se ven aquí también, para llevarlo todo controlado
   const extraAlm0 = useObjetoFb("controlDiaObras");
+  const hojasAuxPl = useObjetoFb("auxiliaresHojas"); // para avisar de las obras sin hoja de corte en Auxiliares
   const hechasPl = useObjetoFb("planFabricaHechas"); // obras ya dadas de baja en Almacén del día: { clave: { nombre, pres, dia } }
   const legacyAlmDia = useObjetoFb("almacenDiaObras"); // antiguo sitio del Almacén del día: se pasa a «controlDiaObras» y se vacía
   useEffect(() => {
@@ -49782,6 +49783,18 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // aviso diario automático, y se manda ya el correo de la semana.
   const [pvAbiertos, setPvAbiertos] = useState({}); // planning virtual en calendario: días abiertos con «+»
   const [pvTodos, setPvTodos] = useState(false);
+  const faltasObra = (r) => {
+    const out = []; if (!r) return out;
+    try {
+      const pr = r.tipo === "proyecto" ? toArray(proyectos).find((q) => q.id === r.id) : null;
+      if (pr) { if (faltaQueLlevaObra(pr)) out.push("informe de materiales"); if (!salidaDefinida(pr)) out.push("salida (reparto, recogida o instalación)"); }
+      const cods = presFab({ ref: r }).map((c) => digitosPresu(String(c).split("-")[0])).filter(Boolean);
+      if (!cods.length) out.push("nº de presupuesto");
+      else { const tengo = new Set([...Object.keys(hojasAuxPl || {}), ...Object.values(hojasAuxPl || {}).map((h) => h && String(h.presupuesto))]); if (!cods.some((c) => tengo.has(c))) out.push("hoja de corte (Auxiliares)"); }
+    } catch (e) { /* nada */ }
+    return out;
+  };
+  const obrasConFaltas = (() => { const m = new Map(); try { diasVer.forEach((f) => { ((plan1.dias[f] && plan1.dias[f].trozos) || []).forEach((t) => { const o = nombrePorId[t.id]; if (o && !m.has(t.id)) { const fl = faltasObra(o.ref); if (fl.length) m.set(t.id, { txt: pptoTxt(o), fl }); } }); extrasDiaAlm(f).forEach((x) => { if (!m.has(x.k)) { const fl = faltasObra(x.ref); if (fl.length) m.set(x.k, { txt: x.ppto || x.nombre, fl }); } }); }); } catch (e) { /* nada */ } return [...m.values()]; })();
   const soltarPV = (id, f) => {
     const o = nombrePorId[id]; if (!o || !f) return;
     const min = o.material ? sigLaborable(o.material) : desde;
@@ -50004,6 +50017,12 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
             ⚠ Pasan de {LIM_PERS_DIA} ventanas con persiana: {diasVer.filter((f) => persDia(f) > LIM_PERS_DIA).map((f) => `${fmtDia(f)} (${persDia(f)})`).join(" · ")}
           </div>
         )}
+        {obrasConFaltas.length > 0 && (
+          <div className="mb-2 rounded-lg border-2 border-rose-500 bg-rose-50 px-3 py-2 text-xs text-rose-900">
+            <b className="text-sm">⚠ {obrasConFaltas.length} obra{obrasConFaltas.length === 1 ? "" : "s"} del planning con documentación pendiente</b>
+            {obrasConFaltas.map((x, i) => <div key={i} className="mt-0.5">· <b>{x.txt}</b>: falta {x.fl.join(" · ")}</div>)}
+          </div>
+        )}
         {diasVer.length > 0 && (
           <div className="mb-2">
             <div className="flex items-center gap-2">
@@ -50042,6 +50061,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                       <input type="date" value={(plan1.obras[t.id] && plan1.obras[t.id].inicio) || f} min={hoyAlm} title="Cambiar el día en que empieza (o arrástrala a otro día)" onChange={(e) => { if (e.target.value) ponerDia(t.id, e.target.value); }} className="ml-auto border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white" />
                       <button type="button" onClick={() => { if (window.confirm(`¿Quitar ${o ? pptoTxt(o) : t.nombre} de este planning?\n\nQueda sin tick en la lista de arriba: puedes volver a ponerla marcándola.`)) setQuitadas([...quitadas, t.id]); }} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
                     </div>
+                    {(() => { const fl = o ? faltasObra(o.ref) : []; return fl.length ? <div className="mt-1 rounded bg-rose-600 text-white text-[10px] font-bold px-1.5 py-0.5">⚠ Falta: {fl.join(" · ")}</div> : null; })()}
                   </div>
                 ); })}
                 {hechasDiaPl(f).length > 0 && (
@@ -50062,6 +50082,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
                           <input type="date" value={f} min={hoyAlm} title="Cambiar de día (se cambia también en Control del día y Almacén del día)" onChange={(e) => moverExtraDia(x.k, f, e.target.value)} className="ml-auto border border-amber-300 rounded px-1 py-0.5 text-[11px] bg-white" />
                           <button type="button" onClick={() => quitarExtraDia(x.k, f)} className="text-[11px] text-rose-700 border border-rose-300 rounded px-1.5 py-0.5 bg-white">Quitar</button>
                         </div>
+                        {(() => { const fl = faltasObra(x.ref); return fl.length ? <div className="mt-1 rounded bg-rose-600 text-white text-[10px] font-bold px-1.5 py-0.5">⚠ Falta: {fl.join(" · ")}</div> : null; })()}
                       </div>
                     ))}
                     <div className="text-[11px] font-bold text-amber-900 mt-0.5">Con esto el día lleva {Math.round((d.usadas - bloq + hExA) * 10) / 10} h de {Math.round(capF * 10) / 10}{d.usadas - bloq + hExA > capF + 0.01 ? " ⚠ pasa de las horas" : ""}</div>
@@ -54258,6 +54279,22 @@ function pptosConGuiaProveedor(ctx) {
   toArray(ctx && ctx.persianasAlmacen).forEach((x) => { if (x && pedidoTraeGuia(x.descripcion)) String(x.presupuesto || "").split(/[·,;\s]+/).forEach(add); });
   return set;
 }
+// Reparte las piezas en barras de largo L: cada pieza gasta su medida + lo que come la sierra; el despunte se resta a cada barra.
+function auxEmpaquetar(filas, L, sierra, despunte) {
+  const cap = L - (despunte || 0); const barras = []; const fuera = [];
+  [...filas].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0)).forEach((p) => {
+    const l = Number(p.lCorte) || 0;
+    if (!(l > 0)) { fuera.push({ p, motivo: "sin medida" }); return; }
+    const need = l + (sierra || 0);
+    if (need > cap) { fuera.push({ p, motivo: "más larga que la barra" }); return; }
+    let mejor = -1, hueco = Infinity;
+    barras.forEach((b, i) => { const libre = cap - b.usado; if (libre >= need && libre - need < hueco) { hueco = libre - need; mejor = i; } });
+    if (mejor < 0) { barras.push({ piezas: [], usado: 0 }); mejor = barras.length - 1; }
+    barras[mejor].piezas.push(p); barras[mejor].usado += need;
+  });
+  barras.forEach((b) => { b.sobra = cap - b.usado; b.util = b.piezas.reduce((a, x) => a + (Number(x.lCorte) || 0), 0); });
+  return { barras, fuera };
+}
 function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   const activas = new Map();
   cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).forEach((r) => { auxAlias(r).forEach((a) => { if (!activas.has(a)) activas.set(a, r); }); activas.set(String(r.ref).trim(), r); });
@@ -54441,6 +54478,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const hojas = useObjetoFb("auxiliaresHojas");
   const est = useObjetoFb("auxiliaresPiezas");
   const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
+  const barraCfg = useObjetoFb("auxiliaresBarra"); // { len, sierra, despunte } en mm
+  const recortesFb = useObjetoFb("auxiliaresRecortes"); // { id: {ref,nombre,color,len,carro,pos,at} }
   const almsAux = toArray(ctxAux.almacenesPersianas).filter((a) => a && a.tipo === "auxiliar");
   const carrosAlm = toArray(ctxAux.carrosPersianas);
   // Si existe algún almacén de tipo «Auxiliares» (creado en Fábrica → almacén de persianas), sus carros SON los carros de auxiliares
@@ -54635,6 +54674,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     if (cd.tipo === "obra") return libres.find((x) => x.ppto === cd.ppto) || null;
     if (cd.tipo === "ref") {
       const enDias = (x) => !cd.dias ? true : cd.dias === "sin" ? !diaDe(x.ppto) : cd.dias.includes(diaDe(x.ppto));
+      if (cd.plan && cd.plan.length) { const ids = new Set(libres.map((x) => x.id)); const idSig = cd.plan.find((id) => ids.has(id)); if (idSig) return libres.find((x) => x.id === idSig) || null; }
       return libres.filter((x) => `${x.ref}|${x.nombre}|${x.color || ""}` === cd.k && enDias(x)).sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto))[0] || null;
     }
     return null;
@@ -54846,13 +54886,101 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
             const refs = []; gs.flatMap((g) => g.piezas).forEach((p) => { const k = `${p.ref}|${p.nombre}|${p.color || ""}`; let r = refs.find((x) => x.k === k); if (!r) { r = { k, p, filas: [] }; refs.push(r); } r.filas.push(p); });
             refs.forEach((r) => r.filas.sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0) || auxCmp(a.ppto, b.ppto)));
             refs.sort((a, b) => b.filas.length - a.filas.length || auxCmp(a.p.ref, b.p.ref));
+            const BL = Number(barraCfg && barraCfg.len) || 6000; const KF = barraCfg && barraCfg.sierra != null ? Number(barraCfg.sierra) : 4; const DP = Number(barraCfg && barraCfg.despunte) || 0;
+            const MINREC = barraCfg && barraCfg.minRecorte != null ? Number(barraCfg.minRecorte) : 500;
+            const normC = (c) => String(c || "").trim().toLowerCase();
+            const todosRec = Object.entries(recortesFb || {}).filter(([, v]) => v && Number(v.len) > 0).map(([id, v]) => ({ id, ...v }));
+            refs.forEach((r) => {
+              // recortes guardados de esta referencia y color: se usan ANTES de abrir barra nueva
+              const recs = todosRec.filter((v) => String(v.ref) === String(r.p.ref) && normC(v.color) === normC(r.p.color)).sort((a, b) => Number(a.len) - Number(b.len));
+              const pend = [...r.filas].sort((a, b) => (b.lCorte || 0) - (a.lCorte || 0));
+              r.recUsados = [];
+              recs.forEach((rc) => {
+                let libre = Number(rc.len); const dentro = [];
+                pend.slice().forEach((x) => { const l = Number(x.lCorte) || 0; if (l > 0 && l + KF <= libre) { dentro.push(x); libre -= l + KF; pend.splice(pend.indexOf(x), 1); } });
+                if (dentro.length) r.recUsados.push({ rc, piezas: dentro, sobra: libre });
+              });
+              r.emp = auxEmpaquetar(pend, BL, KF, DP);
+              r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
+            });
+            const guardarRec = (e, r, mm) => {
+              e.preventDefault(); const fd = new FormData(e.target); const carro = String(fd.get("carro") || "").trim(); const pos = String(fd.get("pos") || "").trim(); const len = Number(fd.get("len")) || mm;
+              if (!carro || !pos) { alert("Pon el carro y la posición donde lo dejas."); return; }
+              try { localStorage.setItem("auxRecLugar", JSON.stringify({ carro, pos })); } catch (er) { /* nada */ }
+              const id = `r${Date.now()}${Math.floor(Math.random() * 1000)}`;
+              fbSet(ref(fbDb, `auxiliaresRecortes/${id}`), { ref: String(r.p.ref), nombre: r.p.nombre || "", color: r.p.color || "", len: Math.round(len), carro, pos, at: Date.now(), quien: quien || "" }).catch(() => alert("No se pudo guardar el recorte."));
+              e.target.reset();
+            };
+            const lugarRec = () => { try { return JSON.parse(localStorage.getItem("auxRecLugar") || "{}"); } catch (er) { return {}; } };
+            const usarRec = (u) => {
+              if (!window.confirm(`¿Ya has cogido el recorte de ${Math.round(u.rc.len)} mm del carro ${u.rc.carro}, posición ${u.rc.pos}?\n` + (u.sobra >= MINREC ? `Lo que sobra (${Math.round(u.sobra)} mm) se queda guardado en el mismo sitio.` : `Lo que sobra (${Math.round(u.sobra)} mm) es menos de ${MINREC} mm: se tira.`))) return;
+              const base = `auxiliaresRecortes/${u.rc.id}`;
+              (u.sobra >= MINREC ? fbSet(ref(fbDb, `${base}/len`), Math.round(u.sobra)) : fbSet(ref(fbDb, base), null)).catch(() => alert("No se pudo actualizar el recorte."));
+            };
+            const totBarras = refs.reduce((a, r) => a + r.emp.barras.length, 0);
+            const setB = (campo, v) => { fbSet(ref(fbDb, `auxiliaresBarra/${campo}`), v === "" || isNaN(Number(v)) ? null : Number(v)).catch(() => {}); };
             return (
               <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+                  <b>🪚 Barras de</b>
+                  <input key={`bl${BL}`} type="number" defaultValue={BL} onBlur={(e) => setB("len", e.target.value)} className="w-20 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> mm
+                  · sierra <input key={`kf${KF}`} type="number" step="0.5" defaultValue={KF} onBlur={(e) => setB("sierra", e.target.value)} className="w-14 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> mm por corte
+                  · despunte <input key={`dp${DP}`} type="number" defaultValue={DP} onBlur={(e) => setB("despunte", e.target.value)} className="w-14 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> mm
+                  · guardar recortes desde <input key={`mr${MINREC}`} type="number" defaultValue={MINREC} onBlur={(e) => setB("minRecorte", e.target.value)} className="w-16 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> mm
+                  <b className="ml-auto text-base">Para lo elegido: {totBarras} barra{totBarras === 1 ? "" : "s"}</b>
+                </div>
+                <details className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm" open={todosRec.length > 0 && refs.some((r) => r.recUsados && r.recUsados.length)}>
+                  <summary className="cursor-pointer font-bold text-amber-900">📦 Almacén de recortes ({todosRec.length})</summary>
+                  {todosRec.length === 0 ? <div className="mt-1 text-slate-600">Vacío. Al cortar una barra, pulsa «Guardar recorte» y dime en qué carro y posición lo dejas.</div> : (
+                    <div className="mt-2 space-y-1">
+                      {[...todosRec].sort((a, b) => auxCmp(a.ref, b.ref) || Number(b.len) - Number(a.len)).map((v) => (
+                        <div key={v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-white rounded border border-amber-200 px-2 py-1">
+                          <b>Ref. {v.ref}</b><span>{v.nombre}{v.color ? ` · ${v.color}` : ""}</span><b className="text-emerald-800">{Math.round(v.len)} mm</b>
+                          <span className="font-bold text-indigo-800">📍 Carro {v.carro} · posición {v.pos}</span>
+                          <button type="button" onClick={() => { if (window.confirm("¿Quitar este recorte del almacén?")) fbSet(ref(fbDb, `auxiliaresRecortes/${v.id}`), null).catch(() => {}); }} className="ml-auto text-xs font-semibold px-2 py-0.5 rounded border border-rose-300 text-rose-700 bg-white">Quitar</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </details>
                 {refs.map((r) => (
                   <div key={r.k} className="rounded-xl border-2 border-indigo-200 bg-white p-3">
                     <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
-                      <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
-                    {r.filas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias }))}
+                      <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
+                      <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {(r.recUsados || []).map((u) => (
+                      <div key={u.rc.id} className="mt-2 rounded-lg border-2 border-amber-400 overflow-hidden">
+                        <div className="bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span>♻ USA EL RECORTE de {Math.round(u.rc.len)} mm</span><span className="text-sm text-indigo-900">📍 Carro {u.rc.carro} · posición {u.rc.pos}</span><span>{u.piezas.length} pieza{u.piezas.length === 1 ? "" : "s"} · sobrarán {Math.round(u.sobra)} mm</span>
+                          <button type="button" onClick={() => usarRec(u)} className="ml-auto px-2 py-0.5 rounded border border-amber-600 bg-white text-amber-900">Ya lo he cogido</button>
+                        </div>
+                        {u.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
+                      </div>
+                    ))}
+                    {r.emp.barras.map((b, bi) => (
+                      <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
+                        <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
+                          <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
+                          {b.sobra >= MINREC && (
+                            <form onSubmit={(e) => guardarRec(e, r, b.sobra)} className="ml-auto flex flex-wrap items-center gap-1 font-normal">
+                              <span className="font-bold text-amber-900">💾 Guardar recorte</span>
+                              <input name="len" type="number" defaultValue={Math.round(b.sobra)} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /><span>mm →</span>
+                              <input name="carro" placeholder="Carro" defaultValue={lugarRec().carro || ""} className="w-16 border border-slate-300 rounded px-1 py-0.5 bg-white" />
+                              <input name="pos" placeholder="Posición" defaultValue={lugarRec().pos || ""} className="w-16 border border-slate-300 rounded px-1 py-0.5 bg-white" />
+                              <button type="submit" className="px-2 py-0.5 rounded bg-amber-600 text-white font-bold">Guardar</button>
+                            </form>
+                          )}
+                        </div>
+                        <div className="flex h-2 bg-slate-200">{b.piezas.map((x, xi) => <div key={xi} title={`${auxMed(x.lCorte)} mm`} style={{ width: `${((Number(x.lCorte) + KF) / BL) * 100}%` }} className={`h-2 border-r border-white ${xi % 2 ? "bg-indigo-400" : "bg-indigo-600"}`} />)}</div>
+                        {b.piezas.map((x) => fila(x, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
+                      </div>
+                    ))}
+                    {r.emp.fuera.length > 0 && (
+                      <div className="mt-2 rounded-lg border-2 border-rose-300">
+                        <div className="bg-rose-50 px-2 py-1 text-xs font-bold text-rose-800">⚠ {r.emp.fuera.length} pieza{r.emp.fuera.length === 1 ? "" : "s"} que no se pueden poner en barra ({[...new Set(r.emp.fuera.map((x) => x.motivo))].join(", ")})</div>
+                        {r.emp.fuera.map((x) => fila(x.p, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
