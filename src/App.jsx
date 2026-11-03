@@ -41450,7 +41450,7 @@ function DibujoHojaVentana({ fab, tip, n, de, alto = 190 }) {
 // ---- "Hoja de corte" del programa de fabricación: una por modelo (CS1, CS2…). Trae el nº de PRESUPUESTO (con él se localiza la obra), las hojas
 // ("OB 2H" = 2 hojas), si lleva persiana y, a veces, una nota de mosquiteras ("SOLO 4 LLEVAN MOSQUITERA"). No trae nº de fabricación.
 const NUM_PALABRAS = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
-const digitosPresu = (t) => String(t || "").split("-")[0].replace(/\D/g, "");
+const digitosPresu = (t) => String(t || "").trim().split("-")[0].replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\D/g, ""); // «6384.2» = presupuesto 6384 versión 2 (no 63842)
 // Qué es de verdad cada posición lo dice el PERFIL de la hoja en la hoja de corte: «Hoja de ventana», «Hoja de puerta» o «Hoja de balconera» (con su código).
 // El nombre de la posición (P01…) no vale: una P puede ser una ventana. Devuelve { tipo: "puerta" | "ventana" | "balconera" | null, codigo, varios }.
 // La balconera se trata como puerta (misma ruta por la fábrica).
@@ -44146,7 +44146,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const limpiaAD = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
     const mismoP = (a, b) => { if (a === b) return true; const [ba, va] = a.split("-"); const [bb, vb] = b.split("-"); return ba === bb && (!va || !vb); };
     const codigosDe = (d) => {
-      const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+      const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
       if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); } }
       if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
       return [...out];
@@ -49749,7 +49749,7 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const claveRefFb = (o) => limpiaFb(`${o.ref.tipo}-${o.ref.id}`);
   // Códigos de presupuesto de la obra (con versión: 6633-1 y 6633-2 son viviendas distintas): es lo que enlaza Fábrica con Control del día
   const presFab = (o) => {
-    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
     if (o.ref.tipo === "proyecto") { const p = toArray(proyectos).find((x) => x.id === o.ref.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); try { add(pptoObraAmplio(p, uxExpedientes)); } catch (e) { /* nada */ } } }
     if (o.ref.tipo === "uxcar") { const e = toArray(uxExpedientes).find((x) => x.id === o.ref.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     return [...out];
@@ -54919,7 +54919,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   Object.keys(diaFab).forEach((b) => { diaPlan[b] = diaFab[b]; });
   const diaManual = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; const id = String(ko).slice(2); const set = new Set();
-    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
+    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
     if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (pr) { add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } } }
     else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
     set.forEach((b) => { if (b && !diaFab[b] && (!diaManual[b] || f < diaManual[b])) diaManual[b] = f; }); }); });
@@ -54936,7 +54936,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   Object.values(_pkMin).forEach((x) => planObras.push(x));
   const _koMin = {};
   Object.entries(manualCD || {}).forEach(([f, m]) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return; Object.entries(m || {}).forEach(([ko, v]) => { if (!v) return; if (_koMin[ko] && _koMin[ko].dia <= f) return; const id = String(ko).slice(2); const set = new Set(); let nombre = ko;
-    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
+    const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) set.add(digitosPresu(c.split("-")[0])); });
     if (String(ko).startsWith("p-")) { const pr = toArray(proyectos).find((x) => x && String(x.id) === id); if (!pr) return; nombre = `#${pr.numero} ${pr.nombre || ""}`.trim(); add(presupuestoDeObra(pr)); add(pr.presupuestoNumero); const e = pr.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x && x.id === pr.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); } }
     else if (String(ko).startsWith("u-")) { const e = toArray(uxExpedientes).find((x) => x && String(x.id) === id); if (!e) return; nombre = `Uxcar exp. ${e.numero}`; add(e.presupuesto); add(e.presupuestoNumero); }
     else return;
@@ -56008,7 +56008,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   // (por su enlace o por el mismo nº de presupuesto: la obra de Uxcar sale dos veces, como obra del CRM y como expediente, y las dos deben ver lo mismo)
   const mismoPresCD = (a, b) => { if (a === b) return true; const [ba, va] = a.split("-"); const [bb, vb] = b.split("-"); return ba === bb && (!va || !vb); };
   const presCrmDe = (o) => {
-    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+    const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
     if (o.d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === o.d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); const e = p.uxcarExpedienteId ? toArray(uxExpedientes).find((x) => x.id === p.uxcarExpedienteId) : null; if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } } }
     if (o.d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === o.d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     return out;
@@ -56101,7 +56101,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const listasSet = new Set(calcListoParaFabricar(toArray(proyectos), toArray(pedidos), uxExpedientes).map((p) => p.id));
   // Enlace con Fábrica: SIEMPRE por código de presupuesto (con su versión: -1 y -2 son viviendas distintas)
   const presConVersion = (o) => {
-    const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
+    const d = o.d; const out = new Set(); const add = (t) => String(t || "").split(/[·,;\s]+/).forEach((x) => { const c = x.replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").replace(/\./g, "").replace(/^EXP/i, ""); if (/^\d{3,}(-\d+)?$/.test(c)) out.add(c); });
     if (d.tipo === "p") { const p = toArray(proyectos).find((x) => x.id === d.id); if (p) { add(presupuestoDeObra(p)); add(p.presupuestoNumero); } }
     if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); if (e) { add(e.presupuesto); add(e.presupuestoNumero); add(e.numero); } }
     (presDeObra.get(limpia(d.key)) || []).forEach((pr) => add(pr.pres));
