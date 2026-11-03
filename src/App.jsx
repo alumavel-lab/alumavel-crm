@@ -54119,7 +54119,7 @@ const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-Z�
 const auxRefAlt = (ref, linea) => {
   const r = String(ref);
   const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}" : ""}`];
-  if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]?");
+  if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]\\d{0,8}", "\\d{6}"); // «703723S600505»: código + color pegado
   return alts.join("|");
 };
 function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
@@ -54156,7 +54156,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         // La referencia puede venir: tal cual; con prefijo de proveedor («C.327020» para 327020); con sufijo de acabado si tiene 6+ caracteres (584099 → 58409905);
         // o entre paréntesis en la descripción («703700 (13501) TRAVESAÑO»: la de la lista es 13501 y el código de la fila es otro)
         // El color puede ser de varias palabras y cualquier acabado («Negro Liso Mate», «Embero Int», «Nogal Ext»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*[º°]\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][\\wÁÉÍÓÚáéíóúñÑ./-]*)(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ][\\wÁÉÍÓÚáéíóúñÑ./-]*){0,3})\\s*)?(\\d(?:[\\d.,]|\\s(?=\\d))*)\\s?(${auxRefAlt(ref, linea)})(?:\\s+(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,10})?\\s*$`, "i")); // «582423 7M7M2X»: código de color detrás
+        const m = linea.match(new RegExp(`^[^\\n]*[º°]\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*)(?:\\s+(?:[A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*|\\d{4}(?=\\s)))*?)\\s*)?(\\d(?:[\\d.,]|\\s(?=\\d))*)\\s?(${auxRefAlt(ref, linea)})(?:\\s+(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,10})?\\s*$`, "i")); // «582423 7M7M2X»: código de color detrás
         if (!m) continue;
         const ud = parseInt(m[2], 10);
         const color = m[3] ? m[3].replace(/\s+/g, " ").trim().toUpperCase() : "";
