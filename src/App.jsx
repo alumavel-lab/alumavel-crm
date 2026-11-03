@@ -54948,6 +54948,23 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {(() => {
+                      const porObra = {};
+                      r.emp.barras.forEach((b, bi) => b.piezas.forEach((x) => { const o = (porObra[x.ppto] = porObra[x.ppto] || {}); (o[bi + 1] = o[bi + 1] || []).push(Math.round(Number(x.lCorte) || 0)); }));
+                      const lista = Object.entries(porObra).sort((a, c) => auxCmp(a[0], c[0]));
+                      return (
+                        <div className="mt-1 mb-1 rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-sm">
+                          <div className="text-xs font-extrabold text-slate-600 uppercase mb-1">Barras de cada obra</div>
+                          {lista.map(([pp, bs]) => (
+                            <div key={pp} className="flex flex-wrap items-baseline gap-x-2 py-0.5 border-b border-slate-200 last:border-0">
+                              <b className="text-slate-900">Ppto {pptoBonito ? pptoBonito(pp) : pp}</b>
+                              <span className="text-slate-600">{Object.values(bs).reduce((a, v) => a + v.length, 0)} pieza{Object.values(bs).reduce((a, v) => a + v.length, 0) === 1 ? "" : "s"} · {Object.keys(bs).length} barra{Object.keys(bs).length === 1 ? "" : "s"}:</span>
+                              {Object.entries(bs).map(([n, ls]) => <span key={n} className="px-1.5 rounded bg-indigo-100 text-indigo-900 font-bold">Barra {n}<span className="font-normal"> ({ls.join(" + ")})</span></span>)}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {(r.recUsados || []).map((u) => (
                       <div key={u.rc.id} className="mt-2 rounded-lg border-2 border-amber-400 overflow-hidden">
                         <div className="bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -54960,7 +54977,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                     {r.emp.barras.map((b, bi) => (
                       <div key={bi} className="mt-2 rounded-lg border border-slate-300 overflow-hidden">
                         <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 flex flex-wrap gap-x-3">
-                          <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span>sobran {Math.round(b.sobra)} mm</span>
+                          <span>Barra {bi + 1} de {r.emp.barras.length}</span><span>{b.piezas.length} pieza{b.piezas.length === 1 ? "" : "s"}</span><span className="text-indigo-800">obra{new Set(b.piezas.map((x) => x.ppto)).size === 1 ? "" : "s"}: {[...new Set(b.piezas.map((x) => x.ppto))].map((pp) => (pptoBonito ? pptoBonito(pp) : pp)).join(" · ")}</span><span>sobran {Math.round(b.sobra)} mm</span>
                           {b.sobra >= MINREC && (
                             <form onSubmit={(e) => guardarRec(e, r, b.sobra)} className="ml-auto flex flex-wrap items-center gap-1 font-normal">
                               <span className="font-bold text-amber-900">💾 Guardar recorte</span>
