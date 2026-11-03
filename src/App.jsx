@@ -782,12 +782,15 @@ function auditoriaDiff(clave, antes, despues) {
 }
 function RegistroActividad() {
   const [datos, setDatos] = useState(null);
-  const [q, setQ] = useState(""); const [col, setCol] = useState(""); const [soloClave, setSoloClave] = useState(false);
+  const [q, setQ] = useState(""); const [col, setCol] = useState(""); const [soloClave, setSoloClave] = useState(false); const [persona, setPersona] = useState(""); const [todos, setTodos] = useState(false);
   useEffect(() => onValue(fbQuery(ref(fbDb, "registroActividad"), orderByKey(), limitToLast(1500)), (snap) => setDatos(snap.val() || {}), () => setDatos({})), []);
   const filas = Object.entries(datos || {}).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.at || 0) - (a.at || 0));
   const cols = [...new Set(filas.map((f) => f.col).filter(Boolean))];
   const ql = q.trim().toLowerCase();
-  const vis = filas.filter((f) => (!col || f.col === col) && (!soloClave || f.clave || f.tipo === "eliminado") && (!ql || `${f.txt} ${f.quien}`.toLowerCase().includes(ql))).slice(0, 300);
+  const porPersona = {}; filas.forEach((f) => { const n = f.quien || "¿?"; const x = (porPersona[n] = porPersona[n] || { n, total: 0, clave: 0, ult: 0 }); x.total++; if (f.clave || f.tipo === "eliminado") x.clave++; if ((f.at || 0) > x.ult) x.ult = f.at || 0; });
+  const personas = Object.values(porPersona).sort((a, b) => b.ult - a.ult);
+  const buscando = !!ql;
+  const vis = filas.filter((f) => (!persona || (f.quien || "¿?") === persona) && (!col || f.col === col) && (!soloClave || f.clave || f.tipo === "eliminado") && (!ql || `${f.txt} ${f.quien}`.toLowerCase().includes(ql))).slice(0, 300);
   return (
     <div className="mt-6 bg-white border border-slate-200 rounded-xl p-4">
       <h3 className="text-lg font-bold text-slate-900">🕵 Registro de actividad — quién ha hecho qué</h3>
@@ -797,7 +800,19 @@ function RegistroActividad() {
         <select value={col} onChange={(e) => setCol(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todo</option>{cols.map((c) => <option key={c} value={c}>{AUD_NOMBRE[c] || c}</option>)}</select>
         <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={soloClave} onChange={(e) => setSoloClave(e.target.checked)} /> Solo cambios importantes (estado, firma, importes, borrados)</label>
       </div>
-      {datos === null ? <div className="text-sm text-slate-500">Cargando…</div> : vis.length === 0 ? <div className="text-sm text-slate-500">Todavía no hay nada que mostrar.</div> : (
+      {datos === null ? null : (
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          {personas.map((x) => (
+            <button key={x.n} type="button" onClick={() => { setPersona(persona === x.n ? "" : x.n); setTodos(false); }} className={`text-left rounded-lg border px-3 py-1.5 text-sm ${persona === x.n ? "bg-slate-900 text-white border-slate-900" : "bg-white border-slate-300 text-slate-800 hover:bg-slate-50"}`}>
+              <b>{x.n}</b> <span className={persona === x.n ? "text-slate-300" : "text-slate-500"}>· {x.total} entrada{x.total === 1 ? "" : "s"}{x.clave ? ` · ${x.clave} importante${x.clave === 1 ? "" : "s"}` : ""} · último {x.ult ? new Date(x.ult).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+            </button>
+          ))}
+          {persona && <button type="button" onClick={() => setPersona("")} className="text-xs font-semibold text-slate-600 underline">ver todas las personas</button>}
+        </div>
+      )}
+      {datos !== null && !persona && !buscando && !todos ? (
+        <div className="text-sm text-slate-500">Pincha en un nombre para ver todo lo que ha hecho esa persona (o escribe arriba para buscar). <button type="button" onClick={() => setTodos(true)} className="underline font-semibold text-slate-700">Ver las últimas de todos</button></div>
+      ) : datos === null ? <div className="text-sm text-slate-500">Cargando…</div> : vis.length === 0 ? <div className="text-sm text-slate-500">Todavía no hay nada que mostrar.</div> : (
         <div className="max-h-[420px] overflow-auto divide-y divide-slate-100 text-sm">
           {vis.map((f) => (
             <div key={f.id} className={`py-1.5 flex flex-wrap gap-x-3 ${f.tipo === "eliminado" ? "bg-rose-50" : f.clave ? "bg-amber-50" : ""}`}>
@@ -17162,6 +17177,8 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
   const puestos = piezas.filter((p) => p.puesto).length;
   const marcar = (i, v) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, puesto: v, fechaPuesto: v ? new Date().toISOString().slice(0, 10) : "" } : p)) });
   const guardarIncidencia = (i, cambios) => onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, ...cambios } : p)) });
+  // Vivienda, expediente y presupuesto de cada línea se pueden escribir a mano (si el documento no los traía o los leyó mal)
+  const editarCampo = (i, campo, valor) => { const v = String(valor || "").trim(); if (String((piezas[i] && piezas[i][campo]) || "") === v) return; onUpdate(cristal.id, { piezas: piezas.map((p, j) => (j === i ? { ...p, [campo]: v } : p)) }); };
   const quitar = (i, p) => {
     if (!window.confirm(`¿Quitar de este caballete el cristal ${p.ref ? `"${p.ref}"` : `de ${p.ancho}×${p.alto}`}? No se borra el cristal, solo se saca de aquí.`)) return;
     pedirPin(enTallerCab(cristal), "Hace falta el PIN para quitar cristales de un caballete que no está en el Taller.", () => onUpdate(cristal.id, { piezas: piezas.filter((_, j) => j !== i) }));
@@ -17276,13 +17293,14 @@ function PiezasCristalTabla({ cristal, onUpdate, todos }) {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th><th className="pr-2">Pasar a otro caballete</th><th className="pr-2"></th></tr></thead>
+            <thead><tr className="text-left text-slate-400 border-b"><th className="py-1 pr-2">Puesto</th><th className="pr-2">Vivienda / ref.</th><th className="pr-2">Expediente</th><th className="pr-2">Presupuesto</th><th className="pr-2">Medida (mm)</th><th className="pr-2">Uds</th><th className="pr-2">m²</th><th className="pr-2">Incidencia / comentario</th><th className="pr-2">Pasar a otro caballete</th><th className="pr-2"></th></tr></thead>
             <tbody>
               {piezas.map((p, i) => (
                 <tr key={i} className={`border-b border-slate-100 ${p.incidencia ? "bg-rose-50" : p.puesto ? "bg-emerald-50 text-slate-400" : ""}`}>
                   <td className="py-1 pr-2"><input type="checkbox" className="w-4 h-4 accent-[#2E8B57]" checked={!!p.puesto} onChange={(e) => marcar(i, e.target.checked)} /></td>
-                  <td className="pr-2 font-semibold">{p.ref || "—"}{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
-                  <td className="pr-2">{p.expediente || "—"}</td>
+                  <td className="pr-2 font-semibold"><input key={`rf${i}${p.ref || ""}`} defaultValue={p.ref || ""} placeholder="—" onBlur={(e) => editarCampo(i, "ref", e.target.value)} className="w-20 border border-transparent hover:border-slate-300 focus:border-slate-400 rounded px-1 py-0.5 bg-transparent font-semibold" />{ubicacionPieza(p) ? <span className="ml-1 text-[11px] font-semibold text-sky-700">{ubicacionPieza(p)}</span> : null}</td>
+                  <td className="pr-2"><input key={`ex${i}${p.expediente || ""}`} defaultValue={p.expediente || ""} placeholder="— escribir" onBlur={(e) => editarCampo(i, "expediente", e.target.value)} className="w-24 border border-transparent hover:border-slate-300 focus:border-slate-400 rounded px-1 py-0.5 bg-transparent" /></td>
+                  <td className="pr-2"><input key={`pr${i}${p.presupuesto || ""}`} defaultValue={p.presupuesto || p.ppto || ""} placeholder="— escribir" onBlur={(e) => editarCampo(i, "presupuesto", e.target.value)} className="w-24 border border-transparent hover:border-slate-300 focus:border-slate-400 rounded px-1 py-0.5 bg-transparent" /></td>
                   <td className="pr-2 font-mono-num">{p.ancho} × {p.alto}</td>
                   <td className="pr-2">{p.cantidad}</td>
                   <td className="pr-2">{p.m2 ? Math.round(p.m2 * 100) / 100 : ""}</td>
@@ -17398,8 +17416,8 @@ function DetalleHuecoModal({ ubicacion, cristalesEnHueco, onClose, onLiberar, on
                 <p><b>Cliente:</b> {cristal.cliente || "—"}</p>
                 {cristal.obraTexto && <p><b>Obra:</b> {cristal.obraTexto}</p>}
                 <p><b>Proveedor:</b> {cristal.proveedor || "—"}</p>
-                <p><b>Expediente:</b> {cristal.expediente || "—"}</p>
-                <p><b>Nº presupuesto:</b> {cristal.presupuesto || [...new Set(toArray(cristal.piezas).map((x) => x.presupuesto || x.ppto).filter(Boolean))].join(", ") || "—"}</p>
+                <p><b>Expediente:</b> {cristal.expediente || "—"} {onUpdate && <button onClick={() => { const v = window.prompt("Expediente de este caballete (por ejemplo EXP 1234):", cristal.expediente || ""); if (v !== null) onUpdate(cristal.id, { expediente: v.trim() }); }} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar</button>}</p>
+                <p><b>Nº presupuesto:</b> {cristal.presupuesto || [...new Set(toArray(cristal.piezas).map((x) => x.presupuesto || x.ppto).filter(Boolean))].join(", ") || "—"} {onUpdate && <button onClick={() => { const v = window.prompt("Nº de presupuesto de este caballete (por ejemplo 6938-2):", cristal.presupuesto || ""); if (v !== null) onUpdate(cristal.id, { presupuesto: v.trim() }); }} className="ml-1 text-xs font-semibold text-[#2E8B57] underline">cambiar</button>}</p>
                 {cristal.referencia && <p><b>Referencia:</b> {cristal.referencia}</p>}
                 {cristal.albaran && <p><b>Albarán:</b> {cristal.albaran}</p>}
                 <p><b>Medida:</b> {cristal.medida || "—"}</p>
@@ -17610,7 +17628,8 @@ function lineasQueFaltanPedidoCompra(filas, nuevas) {
 // Texto que se le manda a la IA para leer un packing list de cristal o un albarán de proveedor.
 // esTrozo = true cuando es solo una parte (unas páginas) de un PDF más largo.
 function promptPackingList(esTrozo) {
-  return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio. En "tipo" pon "packing" o "albaran". ' +
+  return 'Esto es uno de dos documentos del material que llega a una fábrica de ventanas: (A) un PACKING LIST de caballetes de cristal (por ejemplo de Cricursa), con la cabecera "Caballete" y las columnas Pedido, Pos., Cant., "Ancho x Alto" y Referencia; o (B) un ALBARÁN de proveedor (por ejemplo Dealux Trader), con "ALBARÁN Nº" y las columnas Ref., Cdad., Descripción, "Alto x Ancho", Metraje y Precio; o (C) un PEDIDO VENTA de un proveedor de vidrio (título "PEDIDO VENTA" y un número tipo PV-2624402, con "Ref. Cliente", "Fecha de entrega" y una tabla Línea, Descripción del producto, Cant, Dimensiones, Área/U.M., Peso). En "tipo" pon "packing" o "albaran" (el pedido venta (C) es "packing"). ' +
+    'SI ES UN PEDIDO VENTA (C): "pedido" es el número PV-… de la cabecera; "proveedor" el que vende el vidrio (el de la parte de arriba, por ejemplo la población o razón social del proveedor, NO el cliente que aparece como destinatario); "cliente" el cliente final que aparece en "Ref. Cliente" después del número (por ejemplo ALEJANDRO); "presupuesto" es el número de "Ref. Cliente" COMPLETO con su guion y sufijo, sin el nombre (en "6938-2 ALEJANDRO" el presupuesto es "6938-2": no quites el -2 ni lo juntes en 69382); en cada línea "material" es la descripción del vidrio (por ejemplo "GUARDIAN SELECT Float 4\\16\\Float 4"), "cantidad" la columna Cant., "ancho" y "alto" las dos cifras de Dimensiones tal cual salen (primer número = ancho, segundo = alto, en mm), "ref" lo que ponga en "Notas" de esa línea (por ejemplo V01), "expediente" vacío si no aparece y "caballete" VACÍO (aunque haya un número escrito a mano; no lo uses como caballete). Una línea con cantidad 8 es UNA fila con cantidad 8, no ocho filas. ' +
     'SI ES UN PACKING LIST: EL NÚMERO DE CABALLETE ES LO MÁS IMPORTANTE: suele estar en un recuadro aparte con el título "CABALLETE:" (o Rack / Bastidor) y es un número largo (por ejemplo 2632110298). Cópialo EXACTO, dígito a dígito y completo, sin recortarlo. NO lo confundas con el número de pedido, la fecha de carga ni las columnas POS o CANT de las filas. Lee TODAS las filas de cristales de la tabla, de arriba a abajo, sin saltarte ninguna (al final suele indicar el total de PIEZAS: comprueba que coincide). ' +
     'SI ES UN ALBARÁN: deja "caballete" vacío; "pedido" es el número de pedido; "ref" la referencia de la columna Ref. (ej. V01.375); "material" la descripción breve del artículo (ej. "AISLA-Block 185-E persiana"); "cantidad" la columna Cdad.; OJO: en el albarán la medida va como ALTO x ANCHO, o sea el primer número es el alto y el segundo el ancho; "m2" déjalo en 0 (no lo calcules). ' +
     'EN LOS DOS CASOS: "expediente" con el formato EXP 1234 (solo la palabra EXP y el número, sin el resto del texto); "planta" con la planta, piso, portal o escalera de la vivienda si aparece junto al expediente o en la obra (por ejemplo "P3" en "EXPEDIENTE 800 (P3)", "3ªA" en "EXP 965 3ªA", o "PORTAL 33C ESC 04 2B"), copiado tal cual, y vacío si no aparece. MUY IMPORTANTE: en muchas filas aparece debajo "Ref. Cte. Ped.: SN-EXP 823_PORTAL 33E ESC 06 2B_6.415": ahí el expediente es EXP 823, la planta es "PORTAL 33E ESC 06 2B" (portal, escalera y piso COMPLETOS, sin recortar) y 6.415 es el presupuesto (6415); No pongas aquí ciudades como VALENCIA ni VLC. ' +
@@ -54147,12 +54166,11 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const filas = [];
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
-        // El color puede ser de varias palabras («Negro Liso Mate», «Blanco Mate»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}\\s*$`, "i"));
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:([A-Za-zÁÉÍÓÚÑáéíóúñ][A-Za-zÁÉÍÓÚÑáéíóúñ_ ]*?)\\s+)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
         if (!m) continue;
         const ud = parseInt(m[2], 10);
-        const color = m[3] ? m[3].replace(/\\s+/g, " ").trim().toUpperCase() : "";
-        const digitos = m[5];
+        const color = m[3] ? m[3].trim().toUpperCase() : "";
+        const digitos = m[4];
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
@@ -54243,7 +54261,6 @@ const AUX_CFG_DEFECTO = {
     { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
     { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
-    { id: "r14", ref: "12201", nombre: "Solape enrasado 50 mm", pasos: "", activo: true }, // el solape de las hojas de corte (4.954, 5.404…); el 3217 no salía en ellas
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
@@ -54251,12 +54268,15 @@ const AUX_CFG_DEFECTO = {
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
-const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14"].includes(r.id));
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
+// Referencias equivalentes que traen otras hojas de corte (PVC): se suman como alias a las ya configuradas
+const AUX_VERSION = "03/11 14:15 · lectura hojas PVC";
+const auxAliasExtra = (r) => { const ref = String((r && r.ref) || "").trim(), nom = String((r && r.nombre) || ""); const o = []; if (/solape/i.test(nom)) o.push("12201"); if (ref === "708000" || (/batiente/i.test(nom) && /cortizo/i.test(nom))) o.push("708012SINNEN"); return o; };
 const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
   return {
-    refs: x.editado ? [...refsEd, ...AUX_REFS_NUEVAS.filter((n) => !toArray(x.vistas).includes(n.id) && !refsEd.some((r) => String(r.ref || "").trim() === n.ref))] : AUX_CFG_DEFECTO.refs,
+    refs: (x.editado ? [...refsEd, ...AUX_REFS_NUEVAS.filter((n) => !toArray(x.vistas).includes(n.id) && !refsEd.some((r) => String(r.ref || "").trim() === n.ref))] : AUX_CFG_DEFECTO.refs).map((r) => { const extra = auxAliasExtra(r); if (!extra.length) return r; const ya = auxAlias(r); const faltan = extra.filter((a) => !ya.includes(a)); return faltan.length ? { ...r, alias: [...ya, ...faltan].join(", ") } : r; }),
     carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
     bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
@@ -54747,32 +54767,25 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cortadas = Object.entries(est || {}).map(([id, e]) => ({ ...e, id })).filter((e) => e && e.cortada && coincide(e)).sort((a, b) => (b.cortadaAt || 0) - (a.cortadaAt || 0));
   const porTerminar = cortadas.filter((e) => !auxLista(refDe(e.ref), e));
   const terminadas = cortadas.filter((e) => auxLista(refDe(e.ref), e));
+  const [leyendoK, setLeyendoK] = useState("");
   const subir = async (files, esperado = "", claveObra = "") => {
-    setLeyendo(true); setMsg("");
+    setLeyendo(true); setLeyendoK(claveObra || ""); setMsg("");
     try {
       const refs = auxRefsHoja(cfg.refs);
       for (const f of Array.from(files || [])) {
         const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
         if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
-        if (!r || !r.modelos.length || !r.presupuesto) {
-          const esCarga = /carga|tipo.?plano|dibujo/i.test(f.name);
-          setMsg(esCarga ? `«${f.name}» es la CARGA DE MATERIAL, no la hoja de corte. En Auxiliares hay que subir la HOJA DE CORTE de la obra (la que trae las referencias y medidas de corte).` : `«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones). Si es la carga de material o el listado de dibujos, sube la HOJA DE CORTE.`);
-          continue;
-        }
+        if (!r || !r.modelos.length || !r.presupuesto) { setMsg(`⚠ «${f.name}» NO es la hoja de corte${/carga\s*de\s*material/i.test(f.name) ? " (es la carga de materiales)" : ""}: no trae «HOJA DE CORTE» ni las tablas de perfiles. Busca el PDF que se llama «HOJA DE CORTE» del presupuesto y súbelo.`); continue; }
         if (esperado && digitosPresu(r.presupuesto) !== esperado && !window.confirm(`Esta hoja es del presupuesto ${pptoBonito(r.presupuesto)}, no del ${pptoBonito(esperado)}. ¿Subirla igualmente?`)) continue;
         const previa = hojas && hojas[r.presupuesto];
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
         if (claveObra) await fbSet(ref(fbDb, `auxiliaresObraPres/${claveObra}`), digitosPresu(r.presupuesto)).catch(() => {});
         await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) }))), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
-        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : (() => {
-          // Sin ninguna referencia de la lista: se enseñan las líneas que PARECEN auxiliares (guía, solape, mosquitera, inversor…) para saber qué referencia añadir
-          const sos = [...new Set(r.modelos.flatMap((m) => toArray(m.sosp)).filter((l) => !/oscilobatiente|compas|refuerzo|^VENTANA\s+\d/i.test(l)))].slice(0, 6);
-          return `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no trae ninguna de las referencias de la lista de Auxiliares.${sos.length ? `\nLíneas que parecen auxiliares (si lo son, añade su referencia en Configuración y vuelve a subir la hoja):\n• ${sos.join("\n• ")}` : " Tampoco veo líneas de guías, solapes ni mosquiteras: puede que esta obra no lleve auxiliares."}`;
-        })());
+        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no hay ninguna de las referencias de la lista.`);
       }
     } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
-    finally { setLeyendo(false); if (archivoRef.current) archivoRef.current.value = ""; }
+    finally { setLeyendo(false); setLeyendoK(""); if (archivoRef.current) archivoRef.current.value = ""; }
   };
   // Avisos agrupados por presupuesto, para quitar de golpe las hojas que no valen (con copia de seguridad)
   const avisosPorPpto = (() => {
@@ -55024,6 +55037,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         </button>
         {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0], { tipo: "global" })} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {retalAviso && <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl border-4 px-5 py-3 text-lg font-extrabold shadow-2xl flex items-center gap-3 ${retalAviso.error ? "bg-rose-50 border-rose-600 text-rose-900" : "bg-amber-50 border-amber-500 text-amber-900"}`}><span>{retalAviso.txt}</span><button type="button" onClick={() => setRetalAviso(null)} className="px-2 py-0.5 rounded bg-white border border-slate-400 text-sm">OK</button></div>}
+        <span className="text-[11px] text-slate-400 self-center">versión {AUX_VERSION}</span>
         <label className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 py-2 bg-white">📦 En cada hueco caben <input key={`ph${porHuecoAux}`} type="number" min="1" defaultValue={porHuecoAux} onBlur={(e) => { const n = parseInt(e.target.value, 10); if (n >= 1 && n !== porHuecoAux) fbSet(ref(fbDb, "auxiliaresBarra/porHueco"), n).catch(() => {}); }} className="w-14 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> piezas</label>
         {admin && <button type="button" onClick={() => setVerConfig(!verConfig)} className="text-sm font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">{verConfig ? "Cerrar configuración" : "Configuración"}</button>}
       </div>
@@ -55037,7 +55051,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           <span className="w-full text-xs text-slate-300">Esperando la lectura de <b className="text-white">{cadena.ultimo}</b> · Última lectura de la pistola: {ultLectura ? <b className={String(ultLectura.cod) === String(cadena.ultimo).toUpperCase() ? "text-emerald-300" : "text-amber-300"}>{ultLectura.cod} ({Math.max(0, Math.round((Date.now() - ultLectura.at) / 1000))} s)</b> : <b className="text-rose-300">ninguna todavía (si pitas y no cambia, la lectura no está llegando al CRM)</b>}</span>
         </div>
       )}
-      {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold whitespace-pre-line">{msg}</div>}
+      {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
       {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
       {hojasLista.length > 0 && (
         <details className="rounded-md border border-slate-200 bg-white px-3 py-1.5">
@@ -55318,7 +55332,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                                     {toArray(hj.modelos).map((m, i) => (<div key={i}><b>{m.modelo}</b> ({m.uds || 1} ud.): {toArray(m.filas).length} perfil{toArray(m.filas).length === 1 ? "" : "es"} auxiliar{toArray(m.filas).length === 1 ? "" : "es"} reconocido{toArray(m.filas).length === 1 ? "" : "s"}{toArray(m.sosp).length ? <div className="text-amber-800 font-semibold">⚠ Líneas con guía/persiana/mosquitera que NO he sabido leer:{toArray(m.sosp).map((l, j) => <div key={j} className="font-mono font-normal break-all">{l}</div>)}</div> : m.sosp ? <span> · nada sospechoso</span> : <span> · (vuelve a subir la hoja para ver el detalle)</span>}</div>))}
                                     <div className="text-slate-500">Busco estas referencias: {cfg.refs.filter((r) => r.activo !== false).map((r) => r.ref).join(", ")}</div>
                                   </div></details></div> : null; })()}
-                              {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
+                              {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo && leyendoK === o.k ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo && leyendoK === o.k ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
@@ -55330,7 +55344,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                               <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
                               <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
                               <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ No tiene nº de presupuesto en la ficha: sube aquí su hoja de corte y lo leo de ella" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
-                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
+                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo && leyendoK === o.k ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo && leyendoK === o.k ? "Leyendo…" : "Subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
