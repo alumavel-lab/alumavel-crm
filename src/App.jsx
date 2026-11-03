@@ -54176,7 +54176,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     });
     const texto = b.lineas.join("\n");
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
-    const eje = ((texto.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
+    const eje = ((texto.match(/(\d{2,4}(?:[.,]\d{1,2})?)\s*Eje\b/) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
     return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length };
   });
@@ -54232,7 +54232,7 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
     filas.forEach((f) => { if (f.lCorte != null && f.lCorte < 10) { f.lCorte = Math.round(f.lCorte * 1000); f.lFinal = f.lFinal != null ? Math.round(f.lFinal * 1000) : null; f.enMetros = true; } });
     // La caja "Compacto decorativo - guía aparte" (CJ_DECOR_S/G) viene sin guía: se anota para avisar si falta la guía en la hoja
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(b) || /gu[ií]a aparte/i.test(b);
-    const eje = ((b.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
+    const eje = ((b.match(/(\d{2,4}(?:[.,]\d{1,2})?)\s*Eje\b/) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(b.match(/EJELADO:([DI])/) || [])[1]] || "";
     modelos.push({ eje, ejeLado, modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas, sosp: auxSospechosas(b.split("\n"), lista), nLin: b.split("\n").length });
   });
@@ -54347,6 +54347,40 @@ async function guardarHojasCorteAux(ficheros, opciones) {
   }
   return hechas;
 }
+async function auxEjesDelDibujo(doc, paginas) {
+  const idx = paginas.map((p, i) => ({ i, t: p.join("") })).filter((x) => /Modelo\s+Ancho\s+Alto\s+Uds/i.test(x.t) && /CAJ[OÓ]N/i.test(x.t) && !/SIN\s+CAJ[OÓ]N/i.test(x.t) && !/\d\s*Eje\b/.test(x.t)).map((x) => x.i);
+  if (!idx.length) return;
+  const imgs = [];
+  for (const i of idx) {
+    const pg = await doc.getPage(i + 1);
+    const vp = pg.getViewport({ scale: 3 }); // la cota «310 Eje» es letra pequeña: se renderiza a buena resolución
+    const cv = document.createElement("canvas"); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    await pg.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    // el dibujo está arriba a la izquierda (debajo del color): se recorta esa zona para que la cota se vea grande
+    const x0 = 0, y0 = Math.round(cv.height * 0.1), an = Math.round(cv.width * 0.55), al = Math.round(cv.height * 0.3);
+    const c2 = document.createElement("canvas"); c2.width = an; c2.height = al;
+    c2.getContext("2d").drawImage(cv, x0, y0, an, al, 0, 0, an, al);
+    imgs.push({ i, data: c2.toDataURL("image/jpeg", 0.8).split(",")[1] });
+  }
+  for (let k = 0; k < imgs.length; k += 8) {
+    const tanda = imgs.slice(k, k + 8);
+    const content = [];
+    tanda.forEach((im, j) => { content.push({ type: "text", text: `Imagen ${j}:` }); content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: im.data } }); });
+    content.push({ type: "text", text: 'Cada imagen es la cabecera de una hoja de corte con el dibujo de una ventana. En el dibujo hay una cota con la palabra «Eje» (por ejemplo «812,5 Eje»): es la altura del eje de la persiana. Para cada imagen dime ese número tal como está escrito y si el texto «Eje» está a la DERECHA (D) o a la IZQUIERDA (I) de la ventana. Si no hay «Eje», pon eje "". Devuelve SOLO un JSON válido, sin texto: [{"img":0,"eje":"812,5","lado":"D"}]' });
+    const r = await fetch("/.netlify/functions/anthropic-proxy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 800, messages: [{ role: "user", content }] }) });
+    if (!r.ok) continue;
+    const d = await r.json();
+    const txt = (d.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    const a = txt.indexOf("["), b = txt.lastIndexOf("]");
+    let lista = []; try { lista = JSON.parse(a >= 0 && b > a ? txt.slice(a, b + 1) : "[]"); } catch (e) { lista = []; }
+    toArray(lista).forEach((x) => {
+      const im = tanda[Number(x && x.img)]; const eje = String((x && x.eje) || "").trim().replace(/\s+/g, "");
+      if (!im || !/^\d{2,4}(?:[.,]\d{1,2})?$/.test(eje)) return;
+      const lado = String((x && x.lado) || "").toUpperCase();
+      paginas[im.i].push(`\n${eje} Eje\n${lado === "D" || lado === "I" ? `EJELADO:${lado}\n` : ""}`);
+    });
+  }
+}
 async function leerHojaAuxPdf(file, refs) {
   const lib = await cargarPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
@@ -54358,7 +54392,7 @@ async function leerHojaAuxPdf(file, refs) {
     let lado = "";
     try {
       const its = tc.items.filter((i) => i && i.str && i.str.trim() && i.transform);
-      const ejeIt = its.find((i) => /\d{2,4}\s*Eje\b/i.test(i.str)) || its.find((i) => /^\s*Eje\b/i.test(i.str));
+      const ejeIt = its.find((i) => /\d{2,4}\s*Eje\b/.test(i.str)) || its.find((i) => /^\s*Eje\b/.test(i.str)); // «Eje» del dibujo (no «EJE SOPORTE COMPAS»)
       if (ejeIt) {
         // centro de la ventana = la cota (3-4 cifras) que se repite arriba y abajo en la misma vertical
         const cuenta = {};
@@ -54369,6 +54403,9 @@ async function leerHojaAuxPdf(file, refs) {
     } catch (er) { /* nada */ }
     paginas.push([...tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")), lado ? `\nEJELADO:${lado}\n` : ""]);
   }
+  // El eje de la persiana viene escrito en el DIBUJO de la ventana («812,5 Eje»), que en el PDF es una imagen: se lee con la IA
+  // (solo las páginas que empiezan un modelo con cajón y no traen ya el eje como texto). Si falla, la hoja se lee igual, sin eje.
+  try { await auxEjesDelDibujo(doc, paginas); } catch (er) { /* sin eje: sale el de la casilla */ }
   const sinTexto = paginas.every((p) => !p.join("").trim());
   return { sinTexto, r: sinTexto ? null : leerAuxiliaresHojaCorte(paginas, refs) };
 }
@@ -55574,7 +55611,7 @@ async function imagenFolioPdf(url, n) {
   }
   const doc = await pr;
   const pg = await doc.getPage(n);
-  const vp = pg.getViewport({ scale: 1.6 });
+  const vp = pg.getViewport({ scale: 3 }); // la cota «310 Eje» es letra pequeña: se renderiza a buena resolución
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
   await pg.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
