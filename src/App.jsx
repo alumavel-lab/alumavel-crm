@@ -54243,6 +54243,7 @@ const AUX_CFG_DEFECTO = {
     { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
     { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
+    { id: "r14", ref: "12201", nombre: "Solape enrasado 50 mm", pasos: "", activo: true }, // el solape de las hojas de corte (4.954, 5.404…); el 3217 no salía en ellas
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
@@ -54250,7 +54251,7 @@ const AUX_CFG_DEFECTO = {
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
-const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13"].includes(r.id));
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
@@ -54753,7 +54754,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       for (const f of Array.from(files || [])) {
         const { sinTexto, r } = await leerHojaAuxPdf(f, refs);
         if (sinTexto) { setMsg(`«${f.name}» no tiene texto (es una imagen: una hoja marcada o escaneada). Sube la original tal como sale del programa.`); continue; }
-        if (!r || !r.modelos.length || !r.presupuesto) { setMsg(`«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones).`); continue; }
+        if (!r || !r.modelos.length || !r.presupuesto) {
+          const esCarga = /carga|tipo.?plano|dibujo/i.test(f.name);
+          setMsg(esCarga ? `«${f.name}» es la CARGA DE MATERIAL, no la hoja de corte. En Auxiliares hay que subir la HOJA DE CORTE de la obra (la que trae las referencias y medidas de corte).` : `«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones). Si es la carga de material o el listado de dibujos, sube la HOJA DE CORTE.`);
+          continue;
+        }
         if (esperado && digitosPresu(r.presupuesto) !== esperado && !window.confirm(`Esta hoja es del presupuesto ${pptoBonito(r.presupuesto)}, no del ${pptoBonito(esperado)}. ¿Subirla igualmente?`)) continue;
         const previa = hojas && hojas[r.presupuesto];
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
