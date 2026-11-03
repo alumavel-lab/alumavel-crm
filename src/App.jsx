@@ -54312,13 +54312,14 @@ const auxPasosDe = (rc, reg) => {
 // Texto del proceso para la etiqueta y la lista: el bocado lleva siempre el eje (distancia a la que se hace)
 const auxEjeKey = (p) => String(`${p.ppto}_${p.modelo}`).replace(/[.#$/[\]\s]+/g, "_"); // el eje se guarda por obra y modelo de ventana
 const auxPasosTxt = (rc, reg) => auxPasosDe(rc, reg).join(" + ");
+const AUX_EJE_DEFECTO = "283"; // eje habitual del bocado cuando no se ha escrito otro
 const auxEjeTxt = (rc, reg) => {
   if (!auxPasosDe(rc, reg).some((n) => /bocado/i.test(n))) return "";
   const ej = auxEjesDe(reg || {});
   if (ej.I && ej.D) return reg.n === 2 ? (reg.k === 1 ? `EJE IZQUIERDA ${ej.I}` : `EJE DERECHA ${ej.D}`) : `EJE IZQ. ${ej.I} · DER. ${ej.D}`;
   if (ej.I) return `EJE IZQUIERDA ${ej.I}`;
   if (ej.D) return `EJE DERECHA ${ej.D}`;
-  return `EJE ${ej.sin || "?"}`;
+  return `EJE ${ej.sin || AUX_EJE_DEFECTO}`; // sin eje puesto: el que se ve en la casilla (el de la hoja o 283), nunca «?»
 };
 const auxPasosEje = (rc, reg) => [auxPasosTxt(rc, reg), auxEjeTxt(rc, reg)].filter(Boolean).join(" · ");
 const auxLista = (rc, reg) => !!(reg && reg.cortada) && auxPasosDe(rc, reg).every((n) => reg.pasos && reg.pasos[auxSlug(n)]);
@@ -55045,7 +55046,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               <span className="text-slate-500">izq.</span>
               <input key={`eji_${auxEjeKey(p)}_${a.I}`} type="number" defaultValue={a.I} placeholder="—" onBlur={(ev) => { if (String(ev.target.value) !== a.I) guardarEje(p, { izq: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
               <span className="text-slate-500">der.</span>
-              <input key={`ejd_${auxEjeKey(p)}_${a.D}`} type="number" defaultValue={a.D} placeholder={a.sin || "283"} onBlur={(ev) => { if (String(ev.target.value) !== a.D) guardarEje(p, { der: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
+              <input key={`ejd_${auxEjeKey(p)}_${a.D}`} type="number" defaultValue={a.D} placeholder={a.sin || AUX_EJE_DEFECTO} onBlur={(ev) => { if (String(ev.target.value) !== a.D) guardarEje(p, { der: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
             </>); })()}
           </span>
         )}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
