@@ -54582,6 +54582,22 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
     finally { setLeyendo(false); if (archivoRef.current) archivoRef.current.value = ""; }
   };
+  // Avisos agrupados por presupuesto, para quitar de golpe las hojas que no valen (con copia de seguridad)
+  const avisosPorPpto = (() => {
+    const m = new Map();
+    avisos.forEach((a) => { const mm = String(a).match(/^Presupuesto ([\d.]+(?:-\d+)?)/); const k = mm ? mm[1] : "otros"; if (!m.has(k)) m.set(k, []); m.get(k).push(a); });
+    return [...m.entries()].map(([k, lista]) => ({ k, lista, hoja: Object.values(hojas || {}).find((h) => h && pptoBonito(String(h.presupuesto)) === k) || null, sinVentanas: lista.some((a) => /no encuentro sus ventanas/.test(a)) }));
+  })();
+  const quitarHojasLote = async (grupos, motivo) => {
+    const hs = grupos.map((g) => g.hoja).filter(Boolean);
+    if (!hs.length) return;
+    if (!window.confirm(`¿Quitar ${hs.length} hoja${hs.length === 1 ? "" : "s"} de corte (${motivo})?\n\n${hs.slice(0, 12).map((h) => pptoBonito(h.presupuesto)).join(", ")}${hs.length > 12 ? "…" : ""}\n\nSe guarda una copia por si hay que recuperarlas. Las piezas ya cortadas se quedan en los carros.`)) return;
+    try {
+      await fbSet(ref(fbDb, `copiaAuxiliaresHojas/${Date.now()}`), JSON.parse(JSON.stringify(Object.fromEntries(hs.map((h) => [h.presupuesto, h])))));
+      for (const h of hs) await fbSet(ref(fbDb, `auxiliaresHojas/${h.presupuesto}`), null);
+      setMsg(`${hs.length} hoja${hs.length === 1 ? "" : "s"} quitada${hs.length === 1 ? "" : "s"} (copia guardada).`);
+    } catch (e) { window.alert("No se pudo quitar: " + ((e && e.message) || e)); }
+  };
   const quitarHoja = (h) => { if (window.confirm(`¿Quitar la hoja del presupuesto ${pptoBonito(h.presupuesto)}? Las piezas ya cortadas se quedan en los carros.`)) guardarLinea(`auxiliaresHojas/${h.presupuesto}`, null); };
   const cortar = async (p, ctx) => {
     if (!p) return;
@@ -54747,7 +54763,13 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         </div>
         </details>
       )}
-      {avisos.length > 0 && <details className="rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs"><summary className="px-3 py-2 font-bold cursor-pointer">⚠ {avisos.length} aviso{avisos.length === 1 ? "" : "s"} de las hojas de corte (pulsa para verlos)</summary><div className="px-3 pb-2 space-y-1">{avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}</div></details>}
+      {avisos.length > 0 && <details className="rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-xs"><summary className="px-3 py-2 font-bold cursor-pointer">⚠ {avisos.length} aviso{avisos.length === 1 ? "" : "s"} de las hojas de corte (pulsa para verlos)</summary><div className="px-3 pb-2 space-y-2">
+          {avisosPorPpto.some((g) => g.sinVentanas && g.hoja) && <button type="button" onClick={() => quitarHojasLote(avisosPorPpto.filter((g) => g.sinVentanas && g.hoja), "sin ventanas en el CRM")} className="px-2.5 py-1 rounded-md border border-rose-400 bg-white text-rose-700 font-bold">🗑 Quitar las {avisosPorPpto.filter((g) => g.sinVentanas && g.hoja).length} hojas sin ventanas en el CRM</button>}
+          {avisosPorPpto.map((g) => <div key={g.k} className="rounded border border-amber-200 bg-white/60 px-2 py-1">
+            <div className="flex items-center gap-2"><b>Presupuesto {g.k}</b><span className="text-amber-700">{g.lista.length} aviso{g.lista.length === 1 ? "" : "s"}</span>{g.hoja && <button type="button" onClick={() => quitarHojasLote([g], `presupuesto ${g.k}`)} className="ml-auto px-2 py-0.5 rounded border border-rose-300 text-rose-700 bg-white font-semibold">🗑 Quitar esta hoja</button>}</div>
+            {g.lista.map((a, i) => <div key={i}>⚠ {a}</div>)}
+          </div>)}
+        </div></details>}
       {cruce.length > 0 && (() => {
         const porObra = [];
         cruce.forEach((c) => { let g = porObra.find((x) => x.obra === c.obra); if (!g) { g = { obra: c.obra, ppto: c.ppto, sinHoja: c.sinHoja, items: [] }; porObra.push(g); } g.items.push(c); });
