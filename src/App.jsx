@@ -54107,7 +54107,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
 // ---- AUXILIARES: perfiles que se cortan aparte (doble cabeza) leídos de la "Hoja de corte" ----
 // Líneas de la hoja que hablan de auxiliares (guía, persiana, mosquitera, inversor…) pero que no han dado ninguna fila: sirven para ver QUÉ no se lee
 const AUX_SOSP_RE = /gu[ií]a|persiana|mosquit|inversor|solape|cabeza|batiente|lama|contra\b/i;
-const auxSospechosas = (lineas, lista) => toArray(lineas).map((l) => String(l).trim()).filter((l) => l.length > 3 && AUX_SOSP_RE.test(l) && !lista.some((r) => l.includes(r))).slice(0, 10).map((l) => l.slice(0, 150));
+const auxSospechosas = (lineas, lista) => toArray(lineas).map((l) => String(l).trim()).filter((l) => l.length > 3 && AUX_SOSP_RE.test(l) && !/tornillo/i.test(l) && !lista.some((r) => l.includes(r))).slice(0, 10).map((l) => l.slice(0, 150));
 const AUX_NUM = "\\d{1,3}(?:\\.\\d{3})*,\\d{2}";
 const auxNum = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
 const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -54116,6 +54116,12 @@ const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-Z�
 // paginas = [[trozos de texto de pdf.js…], …] (igual que el resto de lectores de PDF del CRM). refs = referencias que se buscan.
 // Hoja de corte por GRUPOS (cabecera «Número : 6.994 Versión: 1», tabla «Modelo Ancho Alto Uds», sin «Presupuesto:» ni «Pos:»).
 // En las filas de PERFILES pdf.js entrega «ángulo descripción Ud COLOR L.Corte+ToT+Referencia» pegados: «…BATIENTE 64 MM 1 BLANCO 10541808088S» = 1054 + 1 + 808088S.
+const auxRefAlt = (ref, linea) => {
+  const r = String(ref);
+  const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}" : ""}`];
+  if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]?");
+  return alts.join("|");
+};
 function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   const cab = todo.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\.?\s*(\d+)/i);
@@ -54144,29 +54150,32 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
   const vistos = {};
   const modelos = bloques.map((b) => {
     const n = (vistos[b.nombre] = (vistos[b.nombre] || 0) + 1);
-    const filas = [];
+    const filas = []; const noLeidas = [];
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
-        // El color puede ser de varias palabras («Negro Liso Mate», «Blanco Mate»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}${String(ref).length >= 6 ? "([A-Za-z0-9]{0,2})" : "()"}\\s*$`, "i"));
+        // La referencia puede venir: tal cual; con prefijo de proveedor («C.327020» para 327020); con sufijo de acabado si tiene 6+ caracteres (584099 → 58409905);
+        // o entre paréntesis en la descripción («703700 (13501) TRAVESAÑO»: la de la lista es 13501 y el código de la fila es otro)
+        // El color puede ser de varias palabras y cualquier acabado («Negro Liso Mate», «Embero Int», «Nogal Ext»): antes esas filas no se leían
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][\\wÁÉÍÓÚáéíóúñÑ./-]*)(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ][\\wÁÉÍÓÚáéíóúñÑ./-]*){0,3})\\s*)?(\\d+)\\s?(${auxRefAlt(ref, linea)})(?:\\s+(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,10})?\\s*$`, "i")); // «582423 7M7M2X»: código de color detrás
         if (!m) continue;
-        // con 6+ caracteres se acepta la misma referencia con sufijo de color/acabado (584099 → 58409905)
         const ud = parseInt(m[2], 10);
-        const color = m[3] ? m[3].replace(/\\s+/g, " ").trim().toUpperCase() : "";
+        const color = m[3] ? m[3].replace(/\s+/g, " ").trim().toUpperCase() : "";
         const digitos = m[5];
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
-        filas.push({ ref, codigo: `${ref}${m[6] || ""}`, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
+        filas.push({ ref, codigo: m[6] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
         return;
       }
+      // la línea acaba en una referencia de la lista pero no se ha sabido leer: se avisa para que no pase desapercibida
+      if (/º/.test(linea) && lista.some((r) => new RegExp(`(?:${auxEsc(r)}[A-Za-z0-9]{0,2}\\s*$)|\\(\\s*${auxEsc(r)}\\s*\\)`, "i").test(linea))) noLeidas.push(`NO LEÍDA (tiene la referencia): ${linea.trim().slice(0, 140)}`);
     });
     const texto = b.lineas.join("\n");
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
     const eje = ((texto.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
-    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: auxSospechosas(b.lineas, lista), nLin: b.lineas.length };
+    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length };
   });
   return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
 }
