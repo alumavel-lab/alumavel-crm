@@ -54118,7 +54118,7 @@ const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-Z�
 // En las filas de PERFILES pdf.js entrega «ángulo descripción Ud COLOR L.Corte+ToT+Referencia» pegados: «…BATIENTE 64 MM 1 BLANCO 10541808088S» = 1054 + 1 + 808088S.
 const auxRefAlt = (ref, linea) => {
   const r = String(ref);
-  const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}(?:[A-Za-z]\\d{0,8})?" : ""}`];
+  const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}(?:\\d{2})?(?:[A-Za-z]\\d{0,8})?" : ""}`];
   if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]\\d{0,8}", "\\d{6}"); // «703723S600505»: código + color pegado
   return alts.join("|");
 };
@@ -54132,7 +54132,8 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
   const cliente = ((todo.match(/Cliente\s*:[ \t]*([^\n]+)/i) || [])[1] || "").trim();
   const fab = ((todo.match(/(\d{1,2}\.\d{3})\s*Cliente\s*:/i) || [])[1] || "").trim(); // nº del recuadro del membrete (junto a «Cliente»)
   const fechaDoc = ((todo.match(/\b(\d{2}\/\d{2}\/\d{4})\b/) || [])[1] || "").trim();
-  const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean);
+  // de la más larga a la más corta: «808088S» (inversor 64) gana a «8080» (inversor), que también la cogería
+  const lista = (refs || []).map((x) => String(x).trim()).filter(Boolean).sort((a, b) => b.length - a.length);
   const bloques = [];
   let actual = null;
   paginas.forEach((it) => {
@@ -54240,21 +54241,37 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
 // La lista de referencias, los carros y las medidas de la etiqueta se cambian desde la propia pantalla (Configuración de auxiliares).
 const AUX_CFG_DEFECTO = {
   refs: [
+    // Lista de Miguel (Auxiliares → Configuración, 03/11/2026). Es la de serie: si se pierde la configuración guardada, vuelve esta.
     { id: "r1", ref: "C.327020", nombre: "Guía de persiana", pasos: "Felpudo, Bocado", activo: true },
     { id: "r2", ref: "M05904", nombre: "Guía de mosquitera", pasos: "", activo: true },
     { id: "r3", ref: "MPLX42240", nombre: "Cabeza de mosquitera", pasos: "", activo: true },
-    { id: "r4", ref: "8080", nombre: "Inversor", pasos: "", activo: true },
-    { id: "r5", ref: "3217", nombre: "Solape", pasos: "", activo: true },
-    { id: "r6", ref: "8038", nombre: "Poste 82", pasos: "", activo: false },
-    { id: "r7", ref: "2304", nombre: "Esquinero 90", pasos: "", activo: false },
-    { id: "r8", ref: "9022010", nombre: "Conector marcos", pasos: "", activo: false },
-    { id: "r9", ref: "3178", nombre: "Junta ensanche marco", pasos: "", activo: false },
+    { id: "r4", ref: "8080", nombre: "Inversor / batiente 64", pasos: "", activo: true },
+    { id: "r5", ref: "3217", nombre: "Clipado", pasos: "", activo: true },
+    { id: "r6", ref: "8038", nombre: "Poste 82", pasos: "", activo: true },
+    { id: "r7", ref: "2304", nombre: "Esquinero 90", pasos: "", activo: true },
+    { id: "r8", ref: "9022010", nombre: "Conector marcos", pasos: "", activo: true },
+    { id: "r9", ref: "3178", nombre: "Junta ensanche marco", pasos: "", activo: true },
     { id: "r10", ref: "808088S", nombre: "Inversor (batiente 64)", pasos: "", activo: true },
     { id: "r11", ref: "COR-7228", nombre: "Hoja de contra", pasos: "", activo: true },
     { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
-    { id: "r14", ref: "12201", nombre: "Solape enrasado 50 mm", pasos: "", activo: true }, // el solape de las hojas de corte (4.954, 5.404…); el 3217 no salía en ellas
+    { id: "r16", ref: "13401", alias: "7080", nombre: "Batiente", pasos: "", activo: true },
+    { id: "r14", ref: "12201", nombre: "Solape", pasos: "", activo: true }, // solape enrasado 50 mm (4.954, 5.404…)
+    { id: "r17", ref: "13501", alias: "7037", nombre: "Travesaño", pasos: "", activo: true },
+    { id: "r18", ref: "5824", nombre: "Guía 53-60", pasos: "", activo: true },
+    { id: "r19", ref: "327018", nombre: "Guía 60×30", pasos: "", activo: true },
+    { id: "r20", ref: "327022", nombre: "Guía 60×45", pasos: "", activo: true },
+    { id: "r21", ref: "10831", nombre: "Guía 60×50", pasos: "", activo: true },
+    { id: "r22", ref: "12581", nombre: "Guía 60×30", pasos: "", activo: true },
+    { id: "r23", ref: "5825", nombre: "Guía 75×60", pasos: "", activo: true },
     { id: "r15", ref: "3348", nombre: "Guía 41/50", pasos: "", activo: true }, // RAÍL-GUÍA 41/50 MM (334823S verde, 334800G blanco: hoja 5.898)
+    { id: "r24", ref: "7060", nombre: "Batiente 77 linear", pasos: "", activo: true },
+    { id: "r25", ref: "7048", nombre: "Poste 70 hoja lineal", pasos: "", activo: true },
+    { id: "r26", ref: "7040", nombre: "Poste 94 marco lineal", pasos: "", activo: true },
+    { id: "r27", ref: "5915", nombre: "Solera aluminio", pasos: "", activo: true },
+    { id: "r28", ref: "5837", nombre: "Guía aluminio para 5802", pasos: "", activo: true },
+    { id: "r29", ref: "5806", nombre: "Perfil unión", pasos: "", activo: true },
+    { id: "r30", ref: "5840", nombre: "Adaptador aluminio para 5806", pasos: "", activo: true },
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
@@ -54262,7 +54279,7 @@ const AUX_CFG_DEFECTO = {
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
-const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14", "r15"].includes(r.id));
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14", "r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23", "r24", "r25", "r26", "r27", "r28", "r29", "r30"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
