@@ -12,7 +12,7 @@ import {
 import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, get as fbGet, set as fbSet, update as fbUpdate, onValue, runTransaction } from "firebase/database";
+import { getDatabase, ref, get as fbGet, set as fbSet, update as fbUpdate, onValue, runTransaction, query as fbQuery, orderByKey, limitToLast } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -754,6 +754,64 @@ function TextArea(props) { return <textarea {...conMayuscula(props, true)} class
 
 /* ================= APP ================= */
 
+// ===== Registro de actividad: quién cambia qué (se compara la lista antes y después de cada guardado) =====
+const AUD_NOMBRE = { presupuestos: "Presupuesto", proyectos: "Obra", clientes: "Cliente", pedidos: "Pedido", facturas: "Factura", incidencias: "Incidencia", instalaciones: "Instalación", mediciones: "Medición", tareas: "Tarea", leads: "Lead", proveedores: "Proveedor", ingresos: "Ingreso", usuarios: "Usuario" };
+const AUD_IGNORAR = new Set(["id", "documentos", "archivos", "fotos", "imagenes", "adjuntos", "actualizado", "updatedAt", "modificado"]);
+const AUD_CLAVE = /^(estado|firma|firmado|firmante|aceptad|rechazad|importe|total|precio|eliminad|cancelad|entregad|factur|cobrad|pagad)/i;
+function audCorto(v) { const t = v == null || v === "" ? "—" : typeof v === "boolean" ? (v ? "sí" : "no") : String(v); return t.length > 60 ? t.slice(0, 57) + "…" : t; }
+function audEtiqueta(clave, x) { const n = [x && x.numero != null ? `#${x.numero}` : "", x && (x.nombre || x.titulo || x.cliente || x.clienteNombre || x.asunto) || ""].filter(Boolean).join(" "); return `${AUD_NOMBRE[clave] || clave} ${n}`.trim(); }
+function auditoriaDiff(clave, antes, despues) {
+  if (!Array.isArray(antes) || !Array.isArray(despues)) return [];
+  const mA = new Map(), mD = new Map(); antes.forEach((x) => { if (x && x.id != null) mA.set(x.id, x); }); despues.forEach((x) => { if (x && x.id != null) mD.set(x.id, x); });
+  const out = [];
+  mD.forEach((n, id) => {
+    const o = mA.get(id);
+    if (!o) { out.push({ col: clave, tipo: "creado", txt: `Creado: ${audEtiqueta(clave, n)}` }); return; }
+    if (o === n) return;
+    const cambios = []; let clavePres = false;
+    Object.keys({ ...o, ...n }).forEach((c) => {
+      if (AUD_IGNORAR.has(c)) return; const a = o[c], b = n[c]; if (a === b) return;
+      if ((a == null || a === "") && (b == null || b === "")) return;
+      if (typeof a !== "object" && typeof b !== "object") { cambios.push(`${c}: ${audCorto(a)} → ${audCorto(b)}`); if (AUD_CLAVE.test(c)) clavePres = true; }
+      else if (JSON.stringify(a) !== JSON.stringify(b)) { cambios.push(`${c} (modificado)`); if (AUD_CLAVE.test(c)) clavePres = true; }
+    });
+    if (cambios.length) out.push({ col: clave, tipo: "cambio", clave: clavePres, txt: `${audEtiqueta(clave, n)} — ${cambios.slice(0, 6).join(" · ")}${cambios.length > 6 ? ` · +${cambios.length - 6} más` : ""}` });
+  });
+  mA.forEach((o, id) => { if (!mD.has(id)) out.push({ col: clave, tipo: "eliminado", clave: true, txt: `ELIMINADO: ${audEtiqueta(clave, o)}` }); });
+  return out;
+}
+function RegistroActividad() {
+  const [datos, setDatos] = useState(null);
+  const [q, setQ] = useState(""); const [col, setCol] = useState(""); const [soloClave, setSoloClave] = useState(false);
+  useEffect(() => onValue(fbQuery(ref(fbDb, "registroActividad"), orderByKey(), limitToLast(1500)), (snap) => setDatos(snap.val() || {}), () => setDatos({})), []);
+  const filas = Object.entries(datos || {}).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.at || 0) - (a.at || 0));
+  const cols = [...new Set(filas.map((f) => f.col).filter(Boolean))];
+  const ql = q.trim().toLowerCase();
+  const vis = filas.filter((f) => (!col || f.col === col) && (!soloClave || f.clave || f.tipo === "eliminado") && (!ql || `${f.txt} ${f.quien}`.toLowerCase().includes(ql))).slice(0, 300);
+  return (
+    <div className="mt-6 bg-white border border-slate-200 rounded-xl p-4">
+      <h3 className="text-lg font-bold text-slate-900">🕵 Registro de actividad — quién ha hecho qué</h3>
+      <p className="text-xs text-slate-500 mb-2">Se apunta cada cambio guardado desde que se instaló esta versión (no hay nada anterior). Busca por número de presupuesto, nombre de obra o persona.</p>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar: presupuesto, obra, persona…" className="border border-slate-300 rounded-md px-3 py-1.5 text-sm w-64" />
+        <select value={col} onChange={(e) => setCol(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-sm"><option value="">Todo</option>{cols.map((c) => <option key={c} value={c}>{AUD_NOMBRE[c] || c}</option>)}</select>
+        <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={soloClave} onChange={(e) => setSoloClave(e.target.checked)} /> Solo cambios importantes (estado, firma, importes, borrados)</label>
+      </div>
+      {datos === null ? <div className="text-sm text-slate-500">Cargando…</div> : vis.length === 0 ? <div className="text-sm text-slate-500">Todavía no hay nada que mostrar.</div> : (
+        <div className="max-h-[420px] overflow-auto divide-y divide-slate-100 text-sm">
+          {vis.map((f) => (
+            <div key={f.id} className={`py-1.5 flex flex-wrap gap-x-3 ${f.tipo === "eliminado" ? "bg-rose-50" : f.clave ? "bg-amber-50" : ""}`}>
+              <span className="text-xs text-slate-500 w-36 shrink-0">{f.at ? new Date(f.at).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+              <b className="w-40 shrink-0 text-slate-800">{f.quien || "¿?"}</b>
+              <span className="min-w-0 flex-1 break-words">{f.txt}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
   // undefined = comprobando si hay sesión; null = nadie ha entrado; objeto = usuario de Firebase
@@ -1159,6 +1217,7 @@ export default function App() {
   // Última versión de cada lista tal como la tenía ESTE navegador (al cargar o al guardar).
   // Sirve para saber qué ha cambiado aquí y no pisar lo que otros usuarios hayan añadido.
   const persistBase = useRef({});
+  const quienRef = useRef(""); // quién está usando este navegador (para el registro de actividad)
   const persistPendiente = useRef({}); // hay un cambio local de esta lista aún sin guardar (no se pisa con lo que llegue de la base de datos)
 
   const writeToStorage = useCallback(async (key) => {
@@ -1179,6 +1238,16 @@ export default function App() {
         } else {
           await fbSet(ref(fbDb, key), payload);
         }
+        // Registro de actividad: qué ha cambiado en esta lista y quién lo ha hecho
+        try {
+          const evs = auditoriaDiff(key, base, payload);
+          if (evs.length) {
+            const quienA = quienRef.current || "Desconocido"; const t0 = Date.now(); const lote = {};
+            const lista = evs.length > 40 ? [{ col: key, tipo: "cambio", clave: true, txt: `Cambio masivo en ${AUD_NOMBRE[key] || key}: ${evs.length} registros a la vez` }] : evs;
+            lista.forEach((e, i) => { lote[`${String(t0).padStart(14, "0")}_${String(i).padStart(3, "0")}_${Math.floor(Math.random() * 1000)}`] = { ...e, quien: quienA, at: t0 }; });
+            fbUpdate(ref(fbDb, "registroActividad"), lote).catch(() => {});
+          }
+        } catch (er) { /* el registro nunca debe impedir guardar */ }
         if (Array.isArray(payload)) persistBase.current[key] = payload;
         if (persistLatest.current[key] === payload) persistPendiente.current[key] = false;
         // Tras guardar, lo que hay en Firebase puede incluir lo que otros añadieron mientras tanto (se fusionó): se trae a la pantalla.
@@ -4253,6 +4322,7 @@ export default function App() {
 
   // El usuario del CRM es el que tiene el mismo uid que la cuenta con la que se ha entrado.
   const currentUser = authUser ? (usuarios.find((u) => u.authUid === authUser.uid) || null) : null;
+  quienRef.current = currentUser ? `${currentUser.nombre || ""} ${currentUser.apellidos || ""}`.trim() || currentUser.email || "" : (authUser && authUser.email) || "";
   emailUsuarioActual = (currentUser && currentUser.email) || (authUser && authUser.email) || ""; // los correos a proveedores/clientes se mandan con copia a quien los genera
 
   // Caballetes de ventanas terminadas (almacén de fábrica). Se guardan uno a uno en
@@ -7135,6 +7205,7 @@ export default function App() {
           />
         )}
         {modulo === "administracion" && isAdmin && <BorradoDatosPrueba zonas={zonasBorrado} onBorrar={borrarZonas} />}
+        {modulo === "administracion" && isAdmin && <RegistroActividad />}
       </TarifasVentanasCtx.Provider>
       </main>
 
@@ -54034,6 +54105,9 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
 }
 
 // ---- AUXILIARES: perfiles que se cortan aparte (doble cabeza) leídos de la "Hoja de corte" ----
+// Líneas de la hoja que hablan de auxiliares (guía, persiana, mosquitera, inversor…) pero que no han dado ninguna fila: sirven para ver QUÉ no se lee
+const AUX_SOSP_RE = /gu[ií]a|persiana|mosquit|inversor|solape|cabeza|batiente|lama|contra\b/i;
+const auxSospechosas = (lineas, lista) => toArray(lineas).map((l) => String(l).trim()).filter((l) => l.length > 3 && AUX_SOSP_RE.test(l) && !lista.some((r) => l.includes(r))).slice(0, 10).map((l) => l.slice(0, 150));
 const AUX_NUM = "\\d{1,3}(?:\\.\\d{3})*,\\d{2}";
 const auxNum = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
 const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -54090,7 +54164,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
     const eje = ((texto.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
-    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas };
+    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: auxSospechosas(b.lineas, lista), nLin: b.lineas.length };
   });
   return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
 }
@@ -54146,7 +54220,7 @@ function leerAuxiliaresHojaCorte(paginas, refs) {
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(b) || /gu[ií]a aparte/i.test(b);
     const eje = ((b.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(b.match(/EJELADO:([DI])/) || [])[1]] || "";
-    modelos.push({ eje, ejeLado, modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas });
+    modelos.push({ eje, ejeLado, modelo: mm[1].toUpperCase(), uds, ancho, alto, cajaSinGuia, filas, sosp: auxSospechosas(b.split("\n"), lista), nLin: b.split("\n").length });
   });
   return { presupuesto, version, referencia, cliente, modelos };
 }
@@ -55228,7 +55302,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                               <div className="text-sm font-extrabold text-slate-800">Ppto {[...o.pres].map(pptoBonito).join(" / ")}</div>
                               <div className="text-xs text-slate-600 truncate" title={o.nombre}>{o.nombre}</div>
                               <div className={`mt-1 text-xs font-bold ${o.n === 0 ? "text-slate-700" : "text-emerald-700"}`}>{o.n === 0 ? "No tiene auxiliares (hoja subida, sin perfiles auxiliares)" : `✓ Todo cortado (${o.n} pieza${o.n === 1 ? "" : "s"})`}</div>
-                              {o.n === 0 && (() => { const hj = Object.values(hojas || {}).find((h) => h && [...o.pres].includes(digitosPresu(h.presupuesto))); return hj ? <div className="text-[11px] text-slate-500">Hoja leída: {hj.archivo || "—"}{hj.version ? ` · v${hj.version}` : ""} · {toArray(hj.modelos).length} modelo{toArray(hj.modelos).length === 1 ? "" : "s"}</div> : null; })()}
+                              {o.n === 0 && (() => { const hj = Object.values(hojas || {}).find((h) => h && [...o.pres].includes(digitosPresu(h.presupuesto))); return hj ? <div className="text-[11px] text-slate-500" onClick={(e) => e.stopPropagation()}>Hoja leída: {hj.archivo || "—"}{hj.version ? ` · v${hj.version}` : ""} · {toArray(hj.modelos).length} modelo{toArray(hj.modelos).length === 1 ? "" : "s"}
+                                <details className="mt-0.5"><summary className="cursor-pointer font-semibold text-indigo-700">🔎 Ver qué ha leído</summary>
+                                  <div className="mt-1 space-y-1 text-[11px] text-slate-700">
+                                    {toArray(hj.modelos).map((m, i) => (<div key={i}><b>{m.modelo}</b> ({m.uds || 1} ud.): {toArray(m.filas).length} perfil{toArray(m.filas).length === 1 ? "" : "es"} auxiliar{toArray(m.filas).length === 1 ? "" : "es"} reconocido{toArray(m.filas).length === 1 ? "" : "s"}{toArray(m.sosp).length ? <div className="text-amber-800 font-semibold">⚠ Líneas con guía/persiana/mosquitera que NO he sabido leer:{toArray(m.sosp).map((l, j) => <div key={j} className="font-mono font-normal break-all">{l}</div>)}</div> : m.sosp ? <span> · nada sospechoso</span> : <span> · (vuelve a subir la hoja para ver el detalle)</span>}</div>))}
+                                    <div className="text-slate-500">Busco estas referencias: {cfg.refs.filter((r) => r.activo !== false).map((r) => r.ref).join(", ")}</div>
+                                  </div></details></div> : null; })()}
                               {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
                             </div>
                           ))}
