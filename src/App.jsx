@@ -54912,6 +54912,28 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     setTimeout(() => setRetalAviso((x) => (x && !x.error ? null : x)), 90000);
     return site;
   };
+  // Dar de alta A MANO un retal que ya tienes (perfil + color + medida): el programa le busca sitio en el carro de retales, saca la etiqueta
+  // y queda en el almacén de recortes para que el corte por perfil lo use antes de abrir barra nueva.
+  const altaRetal = () => {
+    const refsAct = cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim());
+    const colores = [...new Set([...piezas.map((x) => x.color), ...Object.values(recortesFb || {}).map((v) => v && v.color)].filter(Boolean).map((c) => String(c).toUpperCase()))].sort();
+    return (
+      <form onSubmit={(e) => {
+        e.preventDefault(); const fd = new FormData(e.target);
+        const rf = refsAct.find((r) => String(r.ref) === String(fd.get("ref"))); const len = Number(String(fd.get("len") || "").replace(",", "."));
+        if (!rf) { alert("Elige el perfil."); return; }
+        if (!(len > 0)) { alert("Pon la medida del retal en mm."); return; }
+        const site = guardarRetal({ ref: String(rf.ref), nombre: rf.nombre || "", color: String(fd.get("color") || "").trim().toUpperCase() }, len);
+        if (site) { e.target.reset(); setMsg(`✓ Retal de ${Math.round(len)} mm (ref. ${rf.ref}) dado de alta → CARRO ${site.carro} · ${site.pos}. Ya lo tiene en cuenta el corte por perfil.`); }
+      }} className="flex flex-wrap items-end gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm">
+        <b className="basis-full text-amber-900">♻ Dar de alta un retal que tengo</b>
+        <label className="flex flex-col text-xs font-semibold text-slate-600">Perfil<select name="ref" required defaultValue="" className="border border-slate-300 rounded px-1.5 py-1 text-sm text-slate-900 min-w-[200px]"><option value="" disabled>— elige —</option>{refsAct.map((r) => <option key={r.id || r.ref} value={r.ref}>{r.ref} · {r.nombre}</option>)}</select></label>
+        <label className="flex flex-col text-xs font-semibold text-slate-600">Color<input name="color" list="auxColoresRetal" placeholder="BLANCO" className="border border-slate-300 rounded px-1.5 py-1 text-sm text-slate-900 w-44" /><datalist id="auxColoresRetal">{colores.map((c) => <option key={c} value={c} />)}</datalist></label>
+        <label className="flex flex-col text-xs font-semibold text-slate-600">Medida (mm)<input name="len" type="number" min="1" required className="border border-slate-300 rounded px-1.5 py-1 text-sm text-slate-900 w-24" /></label>
+        <button type="submit" style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Dar de alta e imprimir</button>
+      </form>
+    );
+  };
   const cortar = async (p, ctx) => {
     if (!p) return;
     const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
@@ -55136,6 +55158,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           {leyendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {leyendo ? "Leyendo…" : "Subir hoja de corte (PDF)"}
         </button>
         <button type="button" disabled={leyendo} onClick={() => releerUxcar("")} title="Vuelve a leer, con el lector actual, todas las hojas de corte guardadas: las que Uxcar subió desde su portal y las de los documentos de tus obras" className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border-2 border-[#2E8B57] text-[#2E8B57] bg-white disabled:opacity-60"><RefreshCw size={14} /> Releer hojas guardadas</button>
+        <details className="basis-full"><summary className="cursor-pointer text-sm font-bold text-amber-900">♻ Almacén de retales ({Object.values(recortesFb || {}).filter((v) => v && Number(v.len) > 0).length}) · dar de alta un retal</summary><div className="mt-2">{altaRetal()}</div></details>
         {pendientes.length > 0 && <button type="button" onClick={() => cortar(orden === "perfil" ? planas[0] : siguientePieza || grupos[0].filas[0], { tipo: "global" })} className="flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg border border-[#2E8B57] text-[#2E8B57] hover:bg-emerald-50"><Printer size={14} /> Cortar la siguiente</button>}
         {retalAviso && <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] rounded-xl border-4 px-5 py-3 text-lg font-extrabold shadow-2xl flex items-center gap-3 ${retalAviso.error ? "bg-rose-50 border-rose-600 text-rose-900" : "bg-amber-50 border-amber-500 text-amber-900"}`}><span>{retalAviso.txt}</span><button type="button" onClick={() => setRetalAviso(null)} className="px-2 py-0.5 rounded bg-white border border-slate-400 text-sm">OK</button></div>}
         <label className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 border border-slate-300 rounded-lg px-3 py-2 bg-white">📦 En cada hueco caben <input key={`ph${porHuecoAux}`} type="number" min="1" defaultValue={porHuecoAux} onBlur={(e) => { const n = parseInt(e.target.value, 10); if (n >= 1 && n !== porHuecoAux) fbSet(ref(fbDb, "auxiliaresBarra/porHueco"), n).catch(() => {}); }} className="w-14 border border-slate-300 rounded px-1.5 py-0.5 text-right bg-white" /> piezas</label>
@@ -55320,7 +55343,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 </div>
                 <details className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm" open={todosRec.length > 0 && refs.some((r) => r.recUsados && r.recUsados.length)}>
                   <summary className="cursor-pointer font-bold text-amber-900">📦 Almacén de recortes ({todosRec.length})</summary>
-                  {todosRec.length === 0 ? <div className="mt-1 text-slate-600">Vacío. Al cortar una barra, pulsa «Guardar recorte» y dime en qué carro y posición lo dejas.</div> : (
+                  <div className="mt-2">{altaRetal()}</div>
+                  {todosRec.length === 0 ? <div className="mt-1 text-slate-600">Vacío. Los retales que sobran al cortar se guardan solos; los que ya tengas, dalos de alta aquí arriba.</div> : (
                     <div className="mt-2 space-y-1">
                       {[...todosRec].sort((a, b) => auxCmp(a.ref, b.ref) || Number(b.len) - Number(a.len)).map((v) => (
                         <div key={v.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-white rounded border border-amber-200 px-2 py-1">
