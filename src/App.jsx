@@ -54148,8 +54148,9 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
         // El color puede ser de varias palabras («Negro Liso Mate», «Blanco Mate»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}\\s*$`, "i"));
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}${String(ref).length >= 6 ? "([A-Za-z0-9]{0,2})" : "()"}\\s*$`, "i"));
         if (!m) continue;
+        // con 6+ caracteres se acepta la misma referencia con sufijo de color/acabado (584099 → 58409905)
         const ud = parseInt(m[2], 10);
         const color = m[3] ? m[3].replace(/\\s+/g, " ").trim().toUpperCase() : "";
         const digitos = m[5];
@@ -54157,7 +54158,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
-        filas.push({ ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
+        filas.push({ ref, codigo: `${ref}${m[6] || ""}`, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
         return;
       }
     });
