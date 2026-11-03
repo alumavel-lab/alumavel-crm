@@ -54118,7 +54118,7 @@ const AUX_COLOR_RE = /((?:LACADO\s+)?(?:CJ_)?(?:BLANCO|NEGRO|ANTRACITA|GRIS[A-Z�
 // En las filas de PERFILES pdf.js entrega «ángulo descripción Ud COLOR L.Corte+ToT+Referencia» pegados: «…BATIENTE 64 MM 1 BLANCO 10541808088S» = 1054 + 1 + 808088S.
 const auxRefAlt = (ref, linea) => {
   const r = String(ref);
-  const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}" : ""}`];
+  const alts = [`${/^\d/.test(r) ? "(?:[A-Za-z]{1,3}\\.)?" : ""}${auxEsc(r)}${r.length >= 4 ? "[A-Za-z0-9]{0,2}(?:[A-Za-z]\\d{0,8})?" : ""}`];
   if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]\\d{0,8}", "\\d{6}"); // «703723S600505»: código + color pegado
   return alts.join("|");
 };
@@ -54254,6 +54254,7 @@ const AUX_CFG_DEFECTO = {
     { id: "r12", ref: "COR-2366", nombre: "Lama contra de ventana", pasos: "", activo: true },
     { id: "r13", ref: "708000", nombre: "Batiente (Cortizo)", pasos: "", activo: true },
     { id: "r14", ref: "12201", nombre: "Solape enrasado 50 mm", pasos: "", activo: true }, // el solape de las hojas de corte (4.954, 5.404…); el 3217 no salía en ellas
+    { id: "r15", ref: "3348", nombre: "Guía 41/50", pasos: "", activo: true }, // RAÍL-GUÍA 41/50 MM (334823S verde, 334800G blanco: hoja 5.898)
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
@@ -54261,7 +54262,7 @@ const AUX_CFG_DEFECTO = {
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
-const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14"].includes(r.id));
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14", "r15"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
@@ -54771,7 +54772,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           setMsg(esCarga ? `«${f.name}» es la CARGA DE MATERIAL, no la hoja de corte. En Auxiliares hay que subir la HOJA DE CORTE de la obra (la que trae las referencias y medidas de corte).` : `«${f.name}» no parece una hoja de corte (no encuentro presupuesto y posiciones). Si es la carga de material o el listado de dibujos, sube la HOJA DE CORTE.`);
           continue;
         }
-        if (esperado && digitosPresu(r.presupuesto) !== esperado && !window.confirm(`Esta hoja es del presupuesto ${pptoBonito(r.presupuesto)}, no del ${pptoBonito(esperado)}. ¿Subirla igualmente?`)) continue;
+        const esperados = String(esperado || "").split(",").filter(Boolean);
+        // BLOQUEADO: desde la tarjeta de una obra solo entra la hoja de ESE presupuesto (no se deja subir otra por error)
+        if (esperados.length && !esperados.includes(digitosPresu(r.presupuesto))) { setMsg(`✋ NO SE HA SUBIDO: «${f.name}» es la hoja del presupuesto ${pptoBonito(r.presupuesto)} y esta obra es del ${esperados.map(pptoBonito).join(" / ")}. Busca la hoja de corte de la obra correcta.`); pitidoCRM(false); continue; }
         const previa = hojas && hojas[r.presupuesto];
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
@@ -55320,7 +55323,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       {okObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {okObras.filter((o) => o.dia === d).map((o) => (
-                            <div key={o.k} title={o.n === 0 ? "Toca para volver a subir la hoja de corte de esta obra" : ""} onClick={() => { if (o.n !== 0 || leyendo) return; esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2 ${o.n === 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}>
+                            <div key={o.k} title={o.n === 0 ? "Toca para volver a subir la hoja de corte de esta obra" : ""} onClick={() => { if (o.n !== 0 || leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2 ${o.n === 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}>
                               <div className="text-sm font-extrabold text-slate-800">Ppto {[...o.pres].map(pptoBonito).join(" / ")}</div>
                               <div className="text-xs text-slate-600 truncate" title={o.nombre}>{o.nombre}</div>
                               <div className={`mt-1 text-xs font-bold ${o.n === 0 ? "text-slate-700" : "text-emerald-700"}`}>{o.n === 0 ? "No tiene auxiliares (hoja subida, sin perfiles auxiliares)" : `✓ Todo cortado (${o.n} pieza${o.n === 1 ? "" : "s"})`}</div>
@@ -55330,7 +55333,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                                     {toArray(hj.modelos).map((m, i) => (<div key={i}><b>{m.modelo}</b> ({m.uds || 1} ud.): {toArray(m.filas).length} perfil{toArray(m.filas).length === 1 ? "" : "es"} auxiliar{toArray(m.filas).length === 1 ? "" : "es"} reconocido{toArray(m.filas).length === 1 ? "" : "s"}{toArray(m.sosp).length ? <div className="text-amber-800 font-semibold">⚠ Líneas con guía/persiana/mosquitera que NO he sabido leer:{toArray(m.sosp).map((l, j) => <div key={j} className="font-mono font-normal break-all">{l}</div>)}</div> : m.sosp ? <span> · nada sospechoso</span> : <span> · (vuelve a subir la hoja para ver el detalle)</span>}</div>))}
                                     <div className="text-slate-500">Busco estas referencias: {cfg.refs.filter((r) => r.activo !== false).map((r) => r.ref).join(", ")}</div>
                                   </div></details></div> : null; })()}
-                              {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
+                              {o.n === 0 && <button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir / volver a subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
@@ -55338,11 +55341,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       {faltanObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {faltanObras.filter((o) => o.dia === d).map((o) => (
-                            <div key={o.k} title="Toca para subir la hoja de corte de esta obra" onClick={() => { if (leyendo) return; esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 cursor-pointer hover:bg-rose-100">
+                            <div key={o.k} title="Toca para subir la hoja de corte de esta obra" onClick={() => { if (leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="rounded-xl border-2 border-rose-400 bg-rose-50 px-3 py-2 cursor-pointer hover:bg-rose-100">
                               <div className="text-sm font-extrabold text-rose-900">{o.pres.size ? `Ppto ${[...o.pres].map(pptoBonito).join(" / ")}` : "Sin nº de presupuesto"}</div>
                               <div className="text-xs text-slate-700 truncate" title={o.nombre}>{o.nombre}</div>
                               <div className="mt-1 text-xs font-bold text-rose-700">{o.motivo === "ppto" ? "⚠ No tiene nº de presupuesto en la ficha: sube aquí su hoja de corte y lo leo de ella" : "⚠ Falta subir la hoja de corte de auxiliares de este presupuesto"}</div>
-                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres][0] || ""; claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
+                              {<button type="button" disabled={leyendo} onClick={(e) => { e.stopPropagation(); esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1.5 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg disabled:opacity-60">{leyendo ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {leyendo ? "Leyendo…" : "Subir hoja de corte"}</button>}
                             </div>
                           ))}
                         </div>
