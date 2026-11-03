@@ -54107,7 +54107,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
 // ---- AUXILIARES: perfiles que se cortan aparte (doble cabeza) leídos de la "Hoja de corte" ----
 // Líneas de la hoja que hablan de auxiliares (guía, persiana, mosquitera, inversor…) pero que no han dado ninguna fila: sirven para ver QUÉ no se lee
 const AUX_SOSP_RE = /gu[ií]a|persiana|mosquit|inversor|solape|cabeza|batiente|lama|contra\b/i;
-const auxSospechosas = (lineas, lista) => toArray(lineas).map((l) => String(l).trim()).filter((l) => l.length > 3 && AUX_SOSP_RE.test(l) && !lista.some((r) => l.includes(r))).slice(0, 10).map((l) => l.slice(0, 150));
+const auxSospechosas = (lineas, lista) => toArray(lineas).map((l) => String(l).trim()).filter((l) => l.length > 3 && AUX_SOSP_RE.test(l) && !/tornillo/i.test(l) && !lista.some((r) => l.includes(r))).slice(0, 10).map((l) => l.slice(0, 150));
 const AUX_NUM = "\\d{1,3}(?:\\.\\d{3})*,\\d{2}";
 const auxNum = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
 const auxEsc = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -54144,11 +54144,11 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
   const vistos = {};
   const modelos = bloques.map((b) => {
     const n = (vistos[b.nombre] = (vistos[b.nombre] || 0) + 1);
-    const filas = [];
+    const filas = []; const noLeidas = [];
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
-        // El color puede ser de varias palabras («Negro Liso Mate», «Blanco Mate»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}${String(ref).length >= 6 ? "([A-Za-z0-9]{0,2})" : "()"}\\s*$`, "i"));
+        // El color puede ser de varias palabras y cualquier acabado («Negro Liso Mate», «Embero Int», «Nogal Ext»): antes esas filas no se leían
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][\\wÁÉÍÓÚáéíóúñÑ./-]*)(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ][\\wÁÉÍÓÚáéíóúñÑ./-]*){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}${String(ref).length >= 6 ? "([A-Za-z0-9]{0,2})" : "()"}\\s*$`, "i"));
         if (!m) continue;
         // con 6+ caracteres se acepta la misma referencia con sufijo de color/acabado (584099 → 58409905)
         const ud = parseInt(m[2], 10);
@@ -54161,12 +54161,14 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         filas.push({ ref, codigo: `${ref}${m[6] || ""}`, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
         return;
       }
+      // la línea acaba en una referencia de la lista pero no se ha sabido leer: se avisa para que no pase desapercibida
+      if (lista.some((r) => new RegExp(`${auxEsc(r)}[A-Za-z0-9]{0,2}\\s*$`, "i").test(linea))) noLeidas.push(`NO LEÍDA (tiene la referencia): ${linea.trim().slice(0, 140)}`);
     });
     const texto = b.lineas.join("\n");
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
     const eje = ((texto.match(/(\d{2,4})\s*Eje\b/i) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
-    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: auxSospechosas(b.lineas, lista), nLin: b.lineas.length };
+    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length };
   });
   return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
 }
