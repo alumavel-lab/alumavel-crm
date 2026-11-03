@@ -54147,11 +54147,12 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const filas = [];
     b.lineas.forEach((linea) => {
       for (const ref of lista) {
-        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:${AUX_COLOR_RE.source}\\s*)?(\\d+)${auxEsc(ref)}\\s*$`, "i"));
+        // El color puede ser de varias palabras («Negro Liso Mate», «Blanco Mate»): antes esas filas no se leían
+        const m = linea.match(new RegExp(`^[^\\n]*º\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:(${AUX_COLOR_RE.source}(?:\\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+){0,3})\\s*)?(\\d+)\\s?${auxEsc(ref)}\\s*$`, "i"));
         if (!m) continue;
         const ud = parseInt(m[2], 10);
-        const color = m[3] ? m[3].toUpperCase() : "";
-        const digitos = m[4];
+        const color = m[3] ? m[3].replace(/\\s+/g, " ").trim().toUpperCase() : "";
+        const digitos = m[5];
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
@@ -54759,7 +54760,11 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
         if (claveObra) await fbSet(ref(fbDb, `auxiliaresObraPres/${claveObra}`), digitosPresu(r.presupuesto)).catch(() => {});
         await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) }))), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
-        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no hay ninguna de las referencias de la lista.`);
+        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : (() => {
+          // Sin ninguna referencia de la lista: se enseñan las líneas que PARECEN auxiliares (guía, solape, mosquitera, inversor…) para saber qué referencia añadir
+          const sos = [...new Set(r.modelos.flatMap((m) => toArray(m.sosp)).filter((l) => !/oscilobatiente|compas|refuerzo|^VENTANA\s+\d/i.test(l)))].slice(0, 6);
+          return `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no trae ninguna de las referencias de la lista de Auxiliares.${sos.length ? `\nLíneas que parecen auxiliares (si lo son, añade su referencia en Configuración y vuelve a subir la hoja):\n• ${sos.join("\n• ")}` : " Tampoco veo líneas de guías, solapes ni mosquiteras: puede que esta obra no lleve auxiliares."}`;
+        })());
       }
     } catch (e) { setMsg("No se pudo leer el PDF: " + ((e && e.message) || e)); }
     finally { setLeyendo(false); if (archivoRef.current) archivoRef.current.value = ""; }
@@ -55027,7 +55032,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           <span className="w-full text-xs text-slate-300">Esperando la lectura de <b className="text-white">{cadena.ultimo}</b> · Última lectura de la pistola: {ultLectura ? <b className={String(ultLectura.cod) === String(cadena.ultimo).toUpperCase() ? "text-emerald-300" : "text-amber-300"}>{ultLectura.cod} ({Math.max(0, Math.round((Date.now() - ultLectura.at) / 1000))} s)</b> : <b className="text-rose-300">ninguna todavía (si pitas y no cambia, la lectura no está llegando al CRM)</b>}</span>
         </div>
       )}
-      {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold">{msg}</div>}
+      {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold whitespace-pre-line">{msg}</div>}
       {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
       {hojasLista.length > 0 && (
         <details className="rounded-md border border-slate-200 bg-white px-3 py-1.5">
