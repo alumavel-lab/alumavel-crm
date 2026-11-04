@@ -54977,7 +54977,7 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
           piezas.push({
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorteHoja != null ? f.lCorteHoja : f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
             // − / + de la configuración de este perfil: la medida a cortar es la de la hoja corregida (la hoja sigue guardada en lHoja)
-            lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, notaMedida: f.notaMedida || "", color: f.color || "", k, n,
+            lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, notaMedida: f.notaMedida || "", notaEt: f.notaMedida ? `AJUSTADA AL TRAMO QUE ABRE (hoja ${f.lCorteHoja != null ? f.lCorteHoja : ""})` : String(f.ref) === AUX_REF_ANGULO ? (/debajo/i.test(f.desc || "") ? "FIJO DEBAJO · al ancho de la mosquitera" : "FIJO AL LADO · al alto de la ventana") : "", color: f.color || "", k, n,
             eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
             referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
@@ -55057,7 +55057,7 @@ function imprimirAux(lista, cfg) {
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
     <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb">${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    ${p.color ? `<div class="r2">${esc(p.color)}</div>` : ""}
+    ${p.color || p.notaEt ? `<div class="r2">${esc(p.color || "")}${p.notaEt ? `${p.color ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
@@ -55428,7 +55428,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
