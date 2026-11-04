@@ -865,7 +865,11 @@ function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar, proyectos = [
   const ids = new Set(toArray(actual).map((x) => x && x.id));
   const preparar = (origen, lista) => { const L = toArray(lista).filter((x) => x && x.id != null); const faltan = L.filter((x) => !ids.has(x.id)); setCand({ origen, total: L.length, faltan }); setMsg(""); };
   const deFecha = async (f) => { try { const s = await fbGet(ref(fbDb, `copiasDiarias/${f}/${clave}`)); preparar(`copia del CRM del ${f}`, s.exists() ? s.val() : []); } catch (e) { setMsg("No se pudo leer esa copia: " + e.message); } };
-  const deArchivo = async (file) => { try { const j = JSON.parse(await file.text()); const lista = Array.isArray(j) ? j : j && (j[clave] !== undefined ? j[clave] : j.lista); preparar(`archivo ${file.name}`, lista); } catch (e) { setMsg("Ese archivo no es una copia válida (.json): " + e.message); } };
+  const deArchivo = async (file) => { try {
+    setMsg("Leyendo la copia…");
+    // la copia automática de Firebase viene comprimida (.json.gz): se descomprime aquí mismo
+    const texto = /\.gz$/i.test(file.name || "") && typeof DecompressionStream !== "undefined" ? await new Response(file.stream().pipeThrough(new DecompressionStream("gzip"))).text() : await file.text();
+    const j = JSON.parse(texto); setMsg(""); const lista = Array.isArray(j) ? j : j && (j[clave] !== undefined ? j[clave] : j.lista); preparar(`archivo ${file.name}`, lista); } catch (e) { setMsg("Ese archivo no es una copia válida (.json): " + e.message); } };
   return (
     <div className="mx-4 sm:mx-8 mt-3 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-2 text-sm">
       <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-amber-900">🛟 Recuperar {nombre} desde una copia {abierto ? "▲" : "▼"}</button>
@@ -876,7 +880,7 @@ function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar, proyectos = [
             <b className="text-xs">Copias del CRM:</b>
             {fechas.length ? fechas.map((f) => <button key={f} type="button" onClick={() => deFecha(f)} className="text-xs font-semibold px-2 py-1 rounded border border-amber-500 bg-white">{f}</button>) : <span className="text-xs text-slate-500">todavía ninguna (se hace una al día desde esta versión)</span>}
           </div>
-          <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer"><span className="px-2 py-1 rounded border border-amber-500 bg-white">📂 Elegir el archivo .json de la copia del correo</span><input type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) deArchivo(f); }} /></label>
+          <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer"><span className="px-2 py-1 rounded border border-amber-500 bg-white">📂 Elegir el archivo de la copia (.json o .json.gz de Firebase)</span><input type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) deArchivo(f); }} /></label>
           {clave === "presupuestos" && <button type="button" onClick={async () => { setMsg("Reconstruyendo…"); const L = await reconstruirPresupuestos(actual, proyectos, clientes); setMsg(""); setCand({ origen: "reconstrucción (obras + registro de actividad: datos incompletos, revísalos)", total: L.length, faltan: L }); }} className="block text-xs font-bold px-2 py-1 rounded border-2 border-rose-500 text-rose-800 bg-white">🧩 Sin copia: reconstruir desde las obras y el registro de actividad</button>}
           {msg && <div className="text-xs font-bold text-rose-700">{msg}</div>}
           {cand && (
@@ -53396,7 +53400,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
       <p className="text-xs text-slate-500 mb-3">Sube el archivo .json de la copia que llega cada día por email. Te enseña lo que había en esa copia y ya no existe ahora (por ejemplo, una obra que ha desaparecido) y lo puedes recuperar tal cual estaba. No toca nada de lo que hay ahora.</p>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Upload size={14} /> {copia ? "Cambiar archivo" : "Subir copia de seguridad (.json)"}</button>
-        <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         {copia && <span className="text-xs text-emerald-700 font-semibold">✓ {nombreArchivo}</span>}
       </div>
       {error && <p className="text-xs text-rose-600 font-semibold mb-2">⚠ {error}</p>}
