@@ -20245,6 +20245,19 @@ function AlmacenPersianas() {
 
 function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarItems, variosAlmacenes, irA }) {
   const ctxM = React.useContext(IncidenciasCristalCtx) || {};
+  const hojasAuxPers = useObjetoFb("auxiliaresHojas"); // hojas de corte (modelo = vivienda V01.159… → presupuesto)
+  const hojasCDPers = useObjetoFb("controlDiaHojaCorte");
+  // PRESUPUESTO POR LA VIVIENDA: V01.159, P03.160… son las ventanas de la hoja de corte / etiquetas de UN presupuesto. Se busca en qué
+  // presupuesto(s) sale esa vivienda; si solo en uno (o solo uno de los posibles del expediente), ese es el de la persiana
+  const pptosPorVivienda = useMemo(() => {
+    const m = new Map(); const add = (pos, pp) => { const k = normRefPers(pos); const d = digitosPresu(String(pp || "").split(/[,·;]/)[0]); if (k.length < 3 || d.length < 3) return; if (!m.has(k)) m.set(k, new Set()); m.get(k).add(d); };
+    try {
+      Object.values(hojasAuxPers || {}).forEach((h) => { if (h) toArray(h.modelos).forEach((md) => add(String(md.modelo || "").replace(/\s*\(\d+\)$/, ""), h.presupuesto)); });
+      Object.values(hojasCDPers || {}).forEach((h) => { if (h && h.pres) toArray(h.modelos).forEach((md) => add(md.pos, h.pres)); });
+      [...toArray(ctxM.proyectos), ...toArray(ctxM.uxExpedientes)].forEach((o) => toArray(o && o.etiquetasFab).forEach((l) => toArray(l && l.ventanas).forEach((v) => add(v && v.pos, (v && v.corte && v.corte.presupuesto) || (v && v.num)))));
+    } catch (er) { /* nada */ }
+    return m;
+  }, [hojasAuxPers, hojasCDPers, ctxM.proyectos, ctxM.uxExpedientes]);
   const otrosAlmacenes = toArray(ctxM.almacenesPersianas).filter((a) => a.id !== almacen.id && (a.tipo || "persiana") === (almacen.tipo || "persiana"));
   // Pasa todas las piezas de un expediente de este almacén a otro, colocándolas solas en los carros de destino.
   const pasarGrupoAOtroAlmacen = (exp, xs, destId) => {
@@ -20384,6 +20397,14 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && !/[,·;]/.test(String(q.presupuesto)) && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
     if (x.presupuesto && !/[,·;]/.test(String(x.presupuesto))) return String(x.presupuesto);
     const r0 = pptoDeExp(x);
+    // por la VIVIENDA (V01.159 → el presupuesto en cuya hoja de corte / etiquetas sale): si es uno solo, o uno solo de los posibles
+    const porViv = [...(pptosPorVivienda.get(normRefPers(x.ref)) || [])];
+    if (porViv.length) {
+      const posibles = String(r0 || "").split(/[,·;]/).map((t) => digitosPresu(t)).filter((d) => d.length >= 3);
+      const enAmbos = porViv.filter((d) => posibles.includes(d));
+      const uno = porViv.length === 1 ? porViv[0] : enAmbos.length === 1 ? enAmbos[0] : "";
+      if (uno) return pptoBonito(uno);
+    }
     // varios presupuestos juntos = no se sabe cuál es el de ESTA persiana: se dice claro en vez de enseñar la lista
     return r0 && /[,·;]/.test(r0) ? `? (sube el PEDIDO COMPRA · posibles: ${r0})` : r0;
   };
