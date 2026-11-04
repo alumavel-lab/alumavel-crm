@@ -72,11 +72,14 @@ if (typeof window !== "undefined" && !window.__vigilaVersion) {
     const d = document.createElement("div");
     d.id = "aviso-version-nueva";
     d.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.92);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:24px";
-    d.innerHTML = '<div style="max-width:520px"><div style="font-size:48px">🔄</div><div style="font-size:26px;font-weight:800;margin:8px 0">Hay una versión nueva del CRM</div><div style="font-size:17px;opacity:.85;margin-bottom:18px">Se actualiza sola en <b id="aviso-version-seg">10</b> segundos. No se puede seguir con la versión vieja.</div><button id="aviso-version-btn" style="font-size:18px;font-weight:800;padding:12px 26px;border:0;border-radius:10px;background:#2E8B57;color:#fff;cursor:pointer">Actualizar ahora</button></div>';
+    d.innerHTML = '<div style="max-width:520px"><div style="font-size:48px">🔄</div><div style="font-size:26px;font-weight:800;margin:8px 0">Hay una versión nueva del CRM</div><div style="font-size:17px;opacity:.85;margin-bottom:18px">Se actualiza sola en <b id="aviso-version-seg">…</b> segundos (antes, si estás guardando algo, se espera). No se puede seguir con la versión vieja.</div><button id="aviso-version-btn" style="font-size:18px;font-weight:800;padding:12px 26px;border:0;border-radius:10px;background:#2E8B57;color:#fff;cursor:pointer">Actualizar ahora</button></div>';
     document.body.appendChild(d);
     const recargar = () => { try { window.location.reload(); } catch (e) { /* nada */ } };
     document.getElementById("aviso-version-btn").onclick = recargar;
-    let n = 10; const t = setInterval(() => { n -= 1; const el = document.getElementById("aviso-version-seg"); if (el) el.textContent = String(Math.max(0, n)); if (n <= 0) { clearInterval(t); recargar(); } }, 1000);
+    // ESCALONADA: cada ordenador espera entre 15 y 75 s (no todos a la vez, que cargar todos juntos hacía fallar la carga de listas)
+    // y no recarga mientras haya algo guardándose
+    let n = 15 + Math.floor(Math.random() * 60); const sEl = document.getElementById("aviso-version-seg"); if (sEl) sEl.textContent = String(n);
+    const t = setInterval(() => { n -= 1; const el = document.getElementById("aviso-version-seg"); if (el) el.textContent = String(Math.max(0, n)); if (n <= 0 && !window.__crmGuardando) { clearInterval(t); recargar(); } }, 1000);
   };
   const mirar = async () => {
     const mio = miScript(); if (!mio) return; // en desarrollo no hay versión publicada
@@ -1294,6 +1297,7 @@ export default function App() {
       return;
     }
     persistInFlight.current[key] = true;
+    try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
     const payload = persistLatest.current[key];
     const base = persistBase.current[key];
     const fusionable = listaConIdsUnicos(payload) && listaConIdsUnicos(base);
@@ -1351,7 +1355,7 @@ export default function App() {
             }
           } catch (e) { /* sin conexión momentánea: el siguiente aviso en vivo lo trae */ }
         }
-        persistInFlight.current[key] = false;
+        persistInFlight.current[key] = false; try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
         return;
       } catch (e) {
         console.error(`storage error (intento ${intento})`, e);
@@ -1360,7 +1364,7 @@ export default function App() {
         }
       }
     }
-    persistInFlight.current[key] = false;
+    persistInFlight.current[key] = false; try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
     showToast("No se pudo guardar. Comprueba tu conexión: se seguirá intentando solo.", "error");
     // Sigue reintentando cada 10 s: antes se quedaba el cambio «pendiente» para siempre y esa pestaña dejaba de recibir lo de los demás
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 10000);
@@ -1368,7 +1372,7 @@ export default function App() {
 
   const persist = useCallback((key, value) => {
     persistLatest.current[key] = value;
-    persistPendiente.current[key] = true;
+    persistPendiente.current[key] = true; window.__crmGuardando = true;
     if (persistTimers.current[key]) clearTimeout(persistTimers.current[key]);
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 350);
   }, [writeToStorage]);
