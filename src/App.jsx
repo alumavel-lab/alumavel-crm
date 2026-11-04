@@ -54924,6 +54924,8 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
         const L = Number(f.lCorte) || 0; if (L <= mxV + 700) return f.lCorte;
         const st = String(Math.round(L));
         for (const suf of [`${f.ud}${f.tot}`, String(f.tot), String(f.ud)]) { if (suf && st.length > suf.length && st.endsWith(suf)) { const c = parseInt(st.slice(0, -suf.length), 10); if (c >= 40 && c <= mxV + 700) return c; } }
+        // la cifra pegada no es la Ud ni el ToT (hojas con otro orden de columnas): se quita la última cifra si así queda una medida posible
+        const c1 = parseInt(st.slice(0, -1), 10); if (st.length >= 5 && c1 >= 40 && c1 <= mxV + 700) return c1;
         return f.lCorte;
       };
       const filas = filasM.filter((f) => activas.has(String(f.ref))).map((f) => { const lc = medidaBuena(f); return lc === f.lCorte ? f : { ...f, lCorte: lc, lCorteHoja: f.lCorte }; });
