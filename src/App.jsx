@@ -61,6 +61,36 @@ if (typeof window !== "undefined" && !window.__fetchConToken) {
     return fetchOriginal(input, init);
   };
 }
+// VERSIÓN NUEVA OBLIGATORIA: cada 60 s (y al volver a la pestaña) se mira qué versión hay publicada en Netlify. Si es otra distinta de la
+// que tiene abierta este ordenador, se BLOQUEA la pantalla y se recarga sola: así ningún ordenador se queda con la versión vieja
+// (que, por ejemplo, volvía a pisar las hojas de corte subidas a mano).
+if (typeof window !== "undefined" && !window.__vigilaVersion) {
+  window.__vigilaVersion = true;
+  const miScript = () => { const el = [...document.querySelectorAll("script[src]")].find((x) => /\/assets\/index-[^/]+\.js/.test(x.getAttribute("src") || "")); return el ? (el.getAttribute("src").match(/\/assets\/index-[^/]+\.js/) || [])[0] : ""; };
+  const bloquear = () => {
+    if (document.getElementById("aviso-version-nueva")) return;
+    const d = document.createElement("div");
+    d.id = "aviso-version-nueva";
+    d.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.92);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:24px";
+    d.innerHTML = '<div style="max-width:520px"><div style="font-size:48px">🔄</div><div style="font-size:26px;font-weight:800;margin:8px 0">Hay una versión nueva del CRM</div><div style="font-size:17px;opacity:.85;margin-bottom:18px">Se actualiza sola en <b id="aviso-version-seg">10</b> segundos. No se puede seguir con la versión vieja.</div><button id="aviso-version-btn" style="font-size:18px;font-weight:800;padding:12px 26px;border:0;border-radius:10px;background:#2E8B57;color:#fff;cursor:pointer">Actualizar ahora</button></div>';
+    document.body.appendChild(d);
+    const recargar = () => { try { window.location.reload(); } catch (e) { /* nada */ } };
+    document.getElementById("aviso-version-btn").onclick = recargar;
+    let n = 10; const t = setInterval(() => { n -= 1; const el = document.getElementById("aviso-version-seg"); if (el) el.textContent = String(Math.max(0, n)); if (n <= 0) { clearInterval(t); recargar(); } }, 1000);
+  };
+  const mirar = async () => {
+    const mio = miScript(); if (!mio) return; // en desarrollo no hay versión publicada
+    try {
+      const r = await fetch(`/index.html?v=${Date.now()}`, { cache: "no-store" });
+      if (!r.ok) return;
+      const html = await r.text();
+      const publ = (html.match(/\/assets\/index-[^"'/]+\.js/) || [])[0];
+      if (publ && publ !== mio) bloquear();
+    } catch (e) { /* sin internet: ya se mirará */ }
+  };
+  setTimeout(mirar, 15000); setInterval(mirar, 60000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") mirar(); });
+}
 // Segunda instancia solo para dar de alta usuarios y comprobar contraseñas
 // sin cerrar la sesión del administrador que está usando el CRM.
 const fbAppAltas = initializeApp(firebaseConfig, "altas");
@@ -54174,16 +54204,18 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         // La referencia puede venir: tal cual; con prefijo de proveedor («C.327020» para 327020); con sufijo de acabado si tiene 6+ caracteres (584099 → 58409905);
         // o entre paréntesis en la descripción («703700 (13501) TRAVESAÑO»: la de la lista es 13501 y el código de la fila es otro)
         // El color puede ser de varias palabras y cualquier acabado («Negro Liso Mate», «Embero Int», «Nogal Ext»): antes esas filas no se leían
-        const m = linea.match(new RegExp(`^[^\\n]*[º°]\\s*(.*?)(?:\\s|(?<=[A-Za-z]))(\\d{1,2})\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*)(?:\\s+(?:[A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*|\\d{4}(?=\\s)))*?)\\s*)?(\\d(?:[\\d.,]|\\s(?=\\d))*)\\s?(${auxRefAlt(ref, linea)})(?:\\s+(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,10})?\\s*$`, "i")); // «582423 7M7M2X»: código de color detrás
+        const reFila = (UD) => new RegExp(`^[^\\n]*[º°]\\s*(.*?)${UD}\\s+(?:((?:RAL\\s*\\d{4}|${AUX_COLOR_RE.source}|[A-Za-zÁÉÍÓÚáéíóúñÑ_][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*)(?:\\s+(?:[A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ_./-]*|\\d{4}(?=\\s)))*?)\\s*)?(\\d(?:[\\d.,]|\\s(?=\\d))*)\\s?(${auxRefAlt(ref, linea)})(?:\\s+(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3,10})?\\s*$`, "i");
+        // primero la forma normal («… 2 BLANCO …»); solo si no encaja, la Ud pegada a la descripción («…35y392 LACADO BLANCO»)
+        const m = linea.match(reFila("(?:\\s|(?<=[A-Za-z]))(\\d{1,2})()")) || linea.match(reFila("(?<=[0-9._])()(\\d)"));
         if (!m) continue;
-        const ud = parseInt(m[2], 10);
-        const color = m[3] ? m[3].replace(/\s+/g, " ").trim().toUpperCase() : "";
-        const digitos = m[5].replace(/\D/g, ""); // la medida puede venir «1.160» o separada del total («980 1»)
+        const ud = parseInt(m[2] || m[3], 10); // la Ud puede venir pegada a la descripción («…35y392 LACADO BLANCO»: Ud 2)
+        const color = m[4] ? m[4].replace(/\s+/g, " ").trim().toUpperCase() : "";
+        const digitos = m[6].replace(/\D/g, ""); // la medida puede venir «1.160» o separada del total («980 1»)
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
-        filas.push({ ref, codigo: m[6] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
+        filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
         return;
       }
       // la línea acaba en una referencia de la lista pero no se ha sabido leer: se avisa para que no pase desapercibida
