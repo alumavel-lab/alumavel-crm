@@ -72,11 +72,14 @@ if (typeof window !== "undefined" && !window.__vigilaVersion) {
     const d = document.createElement("div");
     d.id = "aviso-version-nueva";
     d.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.92);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;text-align:center;padding:24px";
-    d.innerHTML = '<div style="max-width:520px"><div style="font-size:48px">🔄</div><div style="font-size:26px;font-weight:800;margin:8px 0">Hay una versión nueva del CRM</div><div style="font-size:17px;opacity:.85;margin-bottom:18px">Se actualiza sola en <b id="aviso-version-seg">10</b> segundos. No se puede seguir con la versión vieja.</div><button id="aviso-version-btn" style="font-size:18px;font-weight:800;padding:12px 26px;border:0;border-radius:10px;background:#2E8B57;color:#fff;cursor:pointer">Actualizar ahora</button></div>';
+    d.innerHTML = '<div style="max-width:520px"><div style="font-size:48px">🔄</div><div style="font-size:26px;font-weight:800;margin:8px 0">Hay una versión nueva del CRM</div><div style="font-size:17px;opacity:.85;margin-bottom:18px">Se actualiza sola en <b id="aviso-version-seg">…</b> segundos (antes, si estás guardando algo, se espera). No se puede seguir con la versión vieja.</div><button id="aviso-version-btn" style="font-size:18px;font-weight:800;padding:12px 26px;border:0;border-radius:10px;background:#2E8B57;color:#fff;cursor:pointer">Actualizar ahora</button></div>';
     document.body.appendChild(d);
     const recargar = () => { try { window.location.reload(); } catch (e) { /* nada */ } };
     document.getElementById("aviso-version-btn").onclick = recargar;
-    let n = 10; const t = setInterval(() => { n -= 1; const el = document.getElementById("aviso-version-seg"); if (el) el.textContent = String(Math.max(0, n)); if (n <= 0) { clearInterval(t); recargar(); } }, 1000);
+    // ESCALONADA: cada ordenador espera entre 15 y 75 s (no todos a la vez, que cargar todos juntos hacía fallar la carga de listas)
+    // y no recarga mientras haya algo guardándose
+    let n = 15 + Math.floor(Math.random() * 60); const sEl = document.getElementById("aviso-version-seg"); if (sEl) sEl.textContent = String(n);
+    const t = setInterval(() => { n -= 1; const el = document.getElementById("aviso-version-seg"); if (el) el.textContent = String(Math.max(0, n)); if (n <= 0 && !window.__crmGuardando) { clearInterval(t); recargar(); } }, 1000);
   };
   const mirar = async () => {
     const mio = miScript(); if (!mio) return; // en desarrollo no hay versión publicada
@@ -813,6 +816,85 @@ function auditoriaDiff(clave, antes, despues) {
   mA.forEach((o, id) => { if (!mD.has(id)) out.push({ col: clave, tipo: "eliminado", clave: true, txt: `ELIMINADO: ${audEtiqueta(clave, o)}` }); });
   return out;
 }
+// RECUPERAR una lista (p. ej. presupuestos) desde una copia: la diaria del CRM o el archivo .json de la copia que llega por correo.
+// Solo AÑADE los que faltan (por su id); no toca ni borra los que hay ahora.
+// Sin copia: se RECONSTRUYEN los presupuestos con lo que queda en el CRM — las obras creadas desde un presupuesto (número, cliente,
+// descripción, importe, documentos) y el registro de actividad («Creado: Presupuesto #7012 Cliente», «importe: … → …», «estado: … → …»)
+async function reconstruirPresupuestos(actual, proyectos, clientes) {
+  const ya = new Set(toArray(actual).map((x) => String(x.numero || "").trim()).filter(Boolean));
+  const proyEnlazados = new Set(toArray(actual).map((x) => x.proyectoCreadoId).filter(Boolean));
+  const porNum = new Map();
+  const cliNombre = (id) => (toArray(clientes).find((c) => c && c.id === id) || {}).nombre || "";
+  // 1) obras creadas desde presupuesto
+  toArray(proyectos).forEach((p) => {
+    if (!p || p.origen === "portalUxcar" || proyEnlazados.has(p.id)) return;
+    const num = String(p.presupuestoNumero || presupuestoDeObra(p) || "").trim();
+    const imp = parseFloat(p.importePresupuesto) || 0;
+    if (!num && !(imp > 0 && p.estadoPresupuesto === "Presupuesto aceptado")) return;
+    if (!num) return; // sin número no se puede saber cuál era
+    if (ya.has(num)) return;
+    porNum.set(num, { id: p.presupuestoId || uid(), numero: num, clienteId: p.clienteId || "", clienteNombre: cliNombre(p.clienteId), telefono: "", descripcion: p.nombre || "", importe: imp || "", estado: "Aceptado",
+      fechaEnvio: String(p.fechaAceptado || "").slice(0, 10), fechaRespuesta: String(p.fechaAceptado || "").slice(0, 10), proyectoCreadoId: p.id, documentos: toArray(p.documentos).filter((d) => d && d.url), llamadas: [],
+      zona: p.zona || "", envio: false, montaje: !!p.llevaInstalacion, reconstruido: "obra", comentarios: `RECONSTRUIDO desde la obra #${p.numero} (se perdió el presupuesto el 04/11/2026). Revisa importe, teléfono y estado.` });
+  });
+  // 2) registro de actividad
+  try {
+    const sn = await fbGet(ref(fbDb, "registroActividad"));
+    const evs = Object.entries((sn.exists() && sn.val()) || {}).map(([k, v]) => ({ k, ...v })).filter((e) => e && e.col === "presupuestos" && e.txt).sort((a, b) => String(a.k).localeCompare(String(b.k)));
+    evs.forEach((e) => {
+      const t = String(e.txt);
+      let m = t.match(/^Creado:\s*Presupuesto\s+#(\S+)\s*(.*)$/i);
+      if (m) { const num = m[1].trim(); if (ya.has(num)) return; if (!porNum.has(num)) porNum.set(num, { id: uid(), numero: num, clienteNombre: m[2].trim(), telefono: "", descripcion: "", importe: "", estado: "Pendiente", fechaEnvio: new Date(e.at || Date.now()).toISOString().slice(0, 10), llamadas: [], documentos: [], reconstruido: "registro", comentarios: "RECONSTRUIDO desde el registro de actividad (se perdió el presupuesto el 04/11/2026). Faltan datos: revísalo." }); return; }
+      m = t.match(/^Presupuesto\s+#(\S+)\s*(.*?)\s+—\s+(.*)$/i);
+      if (m) {
+        const num = m[1].trim(); if (ya.has(num)) return;
+        const x = porNum.get(num) || { id: uid(), numero: num, clienteNombre: m[2].trim(), telefono: "", descripcion: "", importe: "", estado: "Pendiente", llamadas: [], documentos: [], reconstruido: "registro", comentarios: "RECONSTRUIDO desde el registro de actividad (se perdió el presupuesto el 04/11/2026). Faltan datos: revísalo." };
+        m[3].split(" · ").forEach((par) => { const q = par.match(/^(\w+):\s*(.*?)\s*→\s*(.*)$/); if (!q) return; const v = q[3].trim(); if (v === "—" || v.endsWith("…")) return; if (["importe", "estado", "telefono", "zona", "descripcion", "clienteNombre", "fechaEnvio", "fechaRespuesta", "motivoRechazo"].includes(q[1])) x[q[1]] = v; });
+        porNum.set(num, x);
+      }
+    });
+  } catch (er) { /* sin registro */ }
+  return [...porNum.values()];
+}
+function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar, proyectos = [], clientes = [] }) {
+  const [abierto, setAbierto] = useState(false);
+  const [fechas, setFechas] = useState([]);
+  const [cand, setCand] = useState(null); // { origen, lista }
+  const [msg, setMsg] = useState("");
+  useEffect(() => { if (!abierto) return; fbGet(ref(fbDb, "copiasDiariasIndice")).then((s) => setFechas(Object.keys((s.exists() && s.val()) || {}).sort().reverse())).catch(() => setFechas([])); }, [abierto]);
+  const ids = new Set(toArray(actual).map((x) => x && x.id));
+  const preparar = (origen, lista) => { const L = toArray(lista).filter((x) => x && x.id != null); const faltan = L.filter((x) => !ids.has(x.id)); setCand({ origen, total: L.length, faltan }); setMsg(""); };
+  const deFecha = async (f) => { try { const s = await fbGet(ref(fbDb, `copiasDiarias/${f}/${clave}`)); preparar(`copia del CRM del ${f}`, s.exists() ? s.val() : []); } catch (e) { setMsg("No se pudo leer esa copia: " + e.message); } };
+  const deArchivo = async (file) => { try {
+    setMsg("Leyendo la copia…");
+    // la copia automática de Firebase viene comprimida (.json.gz): se descomprime aquí mismo
+    const texto = /\.gz$/i.test(file.name || "") && typeof DecompressionStream !== "undefined" ? await new Response(file.stream().pipeThrough(new DecompressionStream("gzip"))).text() : await file.text();
+    const j = JSON.parse(texto); setMsg(""); const lista = Array.isArray(j) ? j : j && (j[clave] !== undefined ? j[clave] : j.lista); preparar(`archivo ${file.name}`, lista); } catch (e) { setMsg("Ese archivo no es una copia válida (.json): " + e.message); } };
+  return (
+    <div className="mx-4 sm:mx-8 mt-3 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-2 text-sm">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="font-bold text-amber-900">🛟 Recuperar {nombre} desde una copia {abierto ? "▲" : "▼"}</button>
+      {abierto && (
+        <div className="mt-2 space-y-2">
+          <div className="text-xs text-amber-900">Solo AÑADE los {nombre} que falten (no borra ni cambia los que hay ahora: {toArray(actual).length}).</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <b className="text-xs">Copias del CRM:</b>
+            {fechas.length ? fechas.map((f) => <button key={f} type="button" onClick={() => deFecha(f)} className="text-xs font-semibold px-2 py-1 rounded border border-amber-500 bg-white">{f}</button>) : <span className="text-xs text-slate-500">todavía ninguna (se hace una al día desde esta versión)</span>}
+          </div>
+          <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer"><span className="px-2 py-1 rounded border border-amber-500 bg-white">📂 Elegir el archivo de la copia (.json o .json.gz de Firebase)</span><input type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) deArchivo(f); }} /></label>
+          {clave === "presupuestos" && <button type="button" onClick={async () => { setMsg("Reconstruyendo…"); const L = await reconstruirPresupuestos(actual, proyectos, clientes); setMsg(""); setCand({ origen: "reconstrucción (obras + registro de actividad: datos incompletos, revísalos)", total: L.length, faltan: L }); }} className="block text-xs font-bold px-2 py-1 rounded border-2 border-rose-500 text-rose-800 bg-white">🧩 Sin copia: reconstruir desde las obras y el registro de actividad</button>}
+          {msg && <div className="text-xs font-bold text-rose-700">{msg}</div>}
+          {cand && (
+            <div className="rounded border border-amber-300 bg-white p-2">
+              <div className="text-sm">En la {cand.origen} hay <b>{cand.total}</b> {nombre}; <b>{cand.faltan.length}</b> no están ahora en el CRM.</div>
+              {cand.faltan.length > 0 && <div className="mt-1 max-h-40 overflow-y-auto text-[11px] text-slate-700">{cand.faltan.slice(0, 300).map((x) => <div key={x.id}>{x.numero || "—"} · {x.clienteNombre || "?"}{x.importe ? ` · ${x.importe} €` : ""}{x.estado ? ` · ${x.estado}` : ""}{x.reconstruido ? ` · (de ${x.reconstruido})` : ""}</div>)}</div>}
+              {cand.faltan.length > 0 && <button type="button" onClick={() => { if (!window.confirm(`¿Recuperar ${cand.faltan.length} ${nombre}? Se añaden a los que hay.`)) return; onRestaurar(JSON.parse(JSON.stringify(cand.faltan))); setMsg(`✓ ${cand.faltan.length} ${nombre} recuperados.`); setCand(null); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1 text-sm font-bold px-3 py-1.5 rounded-md">Recuperar {cand.faltan.length} {nombre}</button>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function RegistroActividad() {
   const [datos, setDatos] = useState(null);
   const [q, setQ] = useState(""); const [col, setCol] = useState(""); const [soloClave, setSoloClave] = useState(false);
@@ -1259,12 +1341,34 @@ export default function App() {
       return;
     }
     persistInFlight.current[key] = true;
+    try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
     const payload = persistLatest.current[key];
     const base = persistBase.current[key];
     const fusionable = listaConIdsUnicos(payload) && listaConIdsUnicos(base);
+    // PROTECCIÓN 1 — BORRADO MASIVO: si este guardado quitaría de golpe muchos registros (≥5 y más del 30 % de la lista), NO se guarda.
+    // Pasó con Presupuestos: un ordenador que no había llegado a cargar la lista guardó solo los 2 nuevos y se perdieron todos los demás.
+    if (fusionable) {
+      const ids = new Set(payload.map((x) => x.id)); const nBorr = base.filter((x) => !ids.has(x.id)).length;
+      if (nBorr >= 5 && nBorr > base.length * 0.3 && !(window.__permitirBorradoMasivoHasta > Date.now())) {
+        fbSet(ref(fbDb, `copiasSeguridad/${key}/${Date.now()}`), { motivo: `bloqueado: se iban a borrar ${nBorr} de ${base.length}`, lista: JSON.parse(JSON.stringify(base)) }).catch(() => {});
+        persistInFlight.current[key] = false; persistPendiente.current[key] = false;
+        try { window.alert(`⛔ NO SE HA GUARDADO: este cambio iba a BORRAR ${nBorr} registros de «${key}» de golpe (de ${base.length}).\n\nPara no perder datos se ha parado. Recarga la página (Ctrl+F5) y vuelve a hacer el cambio. Si de verdad querías borrar tantos, avisa al administrador.`); } catch (e) { /* nada */ }
+        return;
+      }
+    }
+    // PROTECCIÓN 2 — LISTA NO CARGADA: si en este navegador la lista nunca llegó a cargarse, lo que se guarda solo AÑADE o CAMBIA
+    // registros; nunca sustituye la lista entera (antes se pisaba todo con lo poco que se veía aquí)
+    const sinBase = Array.isArray(payload) && listaConIdsUnicos(payload) && !Array.isArray(base);
     for (let intento = 1; intento <= 3; intento++) {
       try {
-        if (fusionable) {
+        if (sinBase) {
+          await runTransaction(ref(fbDb, key), (actual) => {
+            const serv = toArray(actual);
+            if (actual != null && !listaConIdsUnicos(serv)) return undefined; // no se sabe fusionar: no se toca
+            const m = new Map(serv.map((x) => [x.id, x])); payload.forEach((x) => m.set(x.id, x));
+            return [...m.values()];
+          });
+        } else if (fusionable) {
           // Solo se aplica lo que se ha cambiado desde este navegador; lo que otro usuario
           // haya creado o cambiado mientras tanto se respeta (antes se pisaba la lista entera).
           await runTransaction(ref(fbDb, key), (actual) => fusionarListaGuardado(actual, base, payload));
@@ -1295,7 +1399,7 @@ export default function App() {
             }
           } catch (e) { /* sin conexión momentánea: el siguiente aviso en vivo lo trae */ }
         }
-        persistInFlight.current[key] = false;
+        persistInFlight.current[key] = false; try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
         return;
       } catch (e) {
         console.error(`storage error (intento ${intento})`, e);
@@ -1304,7 +1408,7 @@ export default function App() {
         }
       }
     }
-    persistInFlight.current[key] = false;
+    persistInFlight.current[key] = false; try { window.__crmGuardando = Object.values(persistInFlight.current).some(Boolean) || Object.values(persistPendiente.current).some(Boolean); } catch (e) { /* nada */ }
     showToast("No se pudo guardar. Comprueba tu conexión: se seguirá intentando solo.", "error");
     // Sigue reintentando cada 10 s: antes se quedaba el cambio «pendiente» para siempre y esa pestaña dejaba de recibir lo de los demás
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 10000);
@@ -1312,7 +1416,7 @@ export default function App() {
 
   const persist = useCallback((key, value) => {
     persistLatest.current[key] = value;
-    persistPendiente.current[key] = true;
+    persistPendiente.current[key] = true; window.__crmGuardando = true;
     if (persistTimers.current[key]) clearTimeout(persistTimers.current[key]);
     persistTimers.current[key] = setTimeout(() => writeToStorage(key), 350);
   }, [writeToStorage]);
@@ -5046,6 +5150,24 @@ export default function App() {
       updateProyectoInline(pr.id, { fechaEntregaPrevista: e.fechaEntrega, uxFechaVista: e.fechaEntregaPortalAt });
     });
   }, [uxExpedientes, proyectos, currentUser?.id, loading]);
+  // COPIA DIARIA DENTRO DEL CRM: la primera vez que alguien abre el CRM cada día se guarda una copia de las listas importantes en
+  // «copiasDiarias/AAAA-MM-DD». Se guardan 14 días. Sirve para recuperar si se borra algo (ver «Recuperar desde copia»).
+  useEffect(() => {
+    if (!currentUser || loading) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const claves = ["presupuestos", "proyectos", "clientes", "facturas", "pedidos", "leads", "instalaciones", "ingresos"];
+    (async () => {
+      try {
+        const r = await runTransaction(ref(fbDb, `copiasDiariasIndice/${hoy}`), (x) => (x ? undefined : Date.now()));
+        if (!r || !r.committed) return; // ya la ha hecho otro ordenador hoy
+        for (const k of claves) {
+          try { const sn = await fbGet(ref(fbDb, k)); if (sn.exists() && toArray(sn.val()).length) await fbSet(ref(fbDb, `copiasDiarias/${hoy}/${k}`), sn.val()); } catch (e) { /* esa lista se salta */ }
+        }
+        const ind = await fbGet(ref(fbDb, "copiasDiariasIndice")); const lim = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+        Object.keys((ind.exists() && ind.val()) || {}).filter((f) => f < lim).forEach((f) => { fbSet(ref(fbDb, `copiasDiarias/${f}`), null).catch(() => {}); fbSet(ref(fbDb, `copiasDiariasIndice/${f}`), null).catch(() => {}); });
+      } catch (e) { /* sin copia hoy */ }
+    })();
+  }, [currentUser?.id, loading]);
   const hojasUxPasadasRef = useRef(new Set());
   const hojasAuxManualApp = useObjetoFb("auxiliaresHojasManual"); // hojas subidas A MANO en Auxiliares (copia protegida)
   const hojasAuxListo = useFbListo("auxiliaresHojas"), hojasManListo = useFbListo("auxiliaresHojasManual"); // NO decidir nada hasta tenerlas: al abrir el CRM llegan un momento después y parecía que no había ninguna (y se copiaba la de Uxcar encima)
@@ -6840,6 +6962,7 @@ export default function App() {
             onJuntarProformas={juntarProformas}
           />
         )}
+        {modulo === "presupuestos" && isAdmin && <RestaurarDesdeCopia clave="presupuestos" nombre="presupuestos" actual={presupuestos} proyectos={proyectos} clientes={clientes} onRestaurar={(faltan) => savePresupuestos([...presupuestos, ...faltan])} />}
         {modulo === "presupuestos" && (
           <PresupuestosModulo
             presupuestos={presupuestos}
@@ -44723,6 +44846,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       const t = window.prompt(`Vas a BORRAR TODOS los palets (${todos.length}, ${conV} con ventanas), los números de estante de Solape y Terminada (${codsEst.length} ventanas), el registro del Almacén del día y las obras añadidas a mano.\nNo se puede deshacer.\n\nPara confirmar escribe BORRAR:`);
       if (t === null) return;
       if (String(t).trim().toUpperCase() !== "BORRAR") { avisar(false, "No se ha borrado nada"); return; }
+      window.__permitirBorradoMasivoHasta = Date.now() + 60000; // borrado masivo confirmado con «BORRAR»: la protección lo deja pasar
       try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "controlDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
       catch (e) { avisar(false, "No se pudo borrar: " + e.message); }
     };
@@ -52474,6 +52598,7 @@ function BorradoDatosPrueba({ zonas, onBorrar }) {
     if (!elegidas.length) return;
     if (!window.confirm("Vas a BORRAR:\n\n" + elegidas.map((z) => `· ${z.titulo}: ${z.detalle}`).join("\n\n") + "\n\nAntes se descarga una copia (.json). No se puede deshacer desde el CRM.")) return;
     if (String(window.prompt("Para confirmar, escribe BORRAR en mayúsculas:") || "").trim() !== "BORRAR") { alert("No se ha borrado nada."); return; }
+    window.__permitirBorradoMasivoHasta = Date.now() + 60000;
     setBorrando(true);
     const ok = await onBorrar(elegidas.map((z) => z.id));
     setBorrando(false);
@@ -53275,7 +53400,7 @@ function RecuperarDesdeCopia({ datosActuales, onRestaurar }) {
       <p className="text-xs text-slate-500 mb-3">Sube el archivo .json de la copia que llega cada día por email. Te enseña lo que había en esa copia y ya no existe ahora (por ejemplo, una obra que ha desaparecido) y lo puedes recuperar tal cual estaba. No toca nada de lo que hay ahora.</p>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 text-sm font-semibold text-slate-600 border border-slate-300 px-3 py-2 rounded-md hover:bg-slate-50"><Upload size={14} /> {copia ? "Cambiar archivo" : "Subir copia de seguridad (.json)"}</button>
-        <input ref={inputRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
+        <input ref={inputRef} type="file" accept=".json,.gz,application/json,application/gzip" className="hidden" onChange={(e) => { if (e.target.files?.[0]) leer(e.target.files[0]); e.target.value = ""; }} />
         {copia && <span className="text-xs text-emerald-700 font-semibold">✓ {nombreArchivo}</span>}
       </div>
       {error && <p className="text-xs text-rose-600 font-semibold mb-2">⚠ {error}</p>}
@@ -56080,11 +56205,12 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
     const tc = await pg.getTextContent();
     const t = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ");
     if (!pres) { const mp = t.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:?\s*\.?\s*(\d+)/i); if (mp) pres = `${mp[1]}-${mp[2]}`; }
-    const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+([A-Z]{1,3}\d{1,3}\.\d{1,4})\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})/);
+    // el modelo puede llamarse de cualquier forma: V01.003, P02.101, EXTRA COCINA, SALÓN, BAÑO 2, JFI - 01… (antes solo «V01.003» y se perdían ventanas)
+    const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+(\S.{0,39}?)\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})(?=\s|$)/);
     if (!m) { if (cur) cur.texto += " " + t; continue; } // página de continuación del modelo anterior
     const acc = ((t.match(/Accionamiento\s+Tabla\s+Herraje\s*([\s\S]*?)Observaciones/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
     const obsCol = ((t.match(/Observaciones\s*([\s\S]*?)Color\s+Descripci/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
-    cur = { pos: m[1], ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
+    cur = { pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
     modelos.push(cur);
     if (Date.now() - inicio > 150000) continue; // tiempo máximo para los dibujos
     try {
