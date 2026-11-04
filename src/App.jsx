@@ -43425,7 +43425,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     salidaRefAD.current.forEach(({ pid, estado, key, clave, nombre }) => {
       if (avanzadasAD.current.has(pid)) return;
       avanzadasAD.current.add(pid);
-      if (estado === "En proceso" && onMoverEstado) {
+      // también las que ya estaban «Listo para reparto» (terminadas desde Control del día antes de paletizar): se dan de baja del planning
+      if ((estado === "En proceso" || estado === "Listo para reparto/recogida") && onMoverEstado) {
         try { // el planning de Fábrica la pone en verde en el día que tenía
           const kk = String(key || pid).replace(/[.#$\/\[\]]/g, "_"); const dd = (planFabAD && planFabAD.dias) || {}; const ee = extraAD || {};
           let dia = Object.keys(dd).sort().find((f) => clave && dd[f] && dd[f][clave]) || Object.keys(ee).sort().find((f) => ee[f] && ee[f][kk]) || new Date().toLocaleDateString("sv-SE");
@@ -49743,12 +49744,25 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   const [moviendo, setMoviendo] = useState(null); // obra elegida (tocándola) para llevarla a otro día: { id, nombre }
   const sumaPuestos = toArray(puestos).reduce((a, p) => a + (parseFloat(p.horasDia) || 0), 0);
   const uxProduccionDe = (p) => toArray(uxExpedientes).some((e) => e && e.estado === "produccion" && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id));
+  const hechasEC = useObjetoFb("planFabricaHechas"); // obras ya paletizadas y dadas de baja en Almacén del día
+  const hechaEC = (k) => !!(hechasEC && hechasEC[String(k).replace(/[.#$\/\[\]]/g, "_")]);
+  const recienTerm = (f) => !!f && Date.now() - new Date(String(f).slice(0, 10) + "T12:00:00").getTime() < 14 * 864e5;
+  const terminadasSinPalet = [
+    ...toArray(uxExpedientes).filter((e) => e && e.estado === "terminado" && recienTerm(e.fechaTerminado) && !hechaEC(`u-${e.id}`) && !(e.proyectoId && hechaEC(`p-${e.proyectoId}`)))
+      .map((e) => ({ ...obraUx(e), horas: 0, enCurso: true, terminada: true, diaTerm: String(e.fechaTerminado).slice(0, 10) })),
+    ...proyectos.filter((p) => p.estadoTrabajo === "Listo para reparto/recogida" && recienTerm(p.fechaTerminadoFabrica) && !hechaEC(`p-${p.id}`) && !(p.uxcarExpedienteId && hechaEC(`u-${p.uxcarExpedienteId}`))
+      && !toArray(uxExpedientes).some((e) => e && e.estado === "terminado" && (e.id === p.uxcarExpedienteId || e.proyectoId === p.id)))
+      .map((p) => ({ ...obraProyecto(p), horas: 0, enCurso: true, terminada: true, diaTerm: String(p.fechaTerminadoFabrica).slice(0, 10) })),
+  ];
   // Las obras que ya se han empezado a fabricar (En proceso) siguen en el planning, delante de las demás:
   // si no, al pulsar "Empezar a fabricar" desaparecían del planning y de "Obras de hoy" de los puestos.
   const enCurso = [
     // Obras de Uxcar mandadas a fábrica desde «Listo para fabricar» cuyo expediente no está en producción: entran como obra
     ...proyectos.filter((p) => p.estadoTrabajo === "En proceso" && (p.origen !== "portalUxcar" || !uxProduccionDe(p))).sort((a, b) => (a.fechaEnProceso || 0) - (b.fechaEnProceso || 0)).map((p) => ({ ...obraProyecto(p), nombre: `${obraProyecto(p).nombre} · en fabricación`, enCurso: true })),
     ...toArray(uxExpedientes).filter((e) => e.estado === "produccion").map((e) => ({ ...obraUx(e), nombre: `${obraUx(e).nombre} · en fabricación`, enCurso: true })),
+    // TERMINADAS EN LA LÍNEA PERO SIN PALETIZAR: al marcarlas terminadas (Control del día → «Pasa a reparto») salían del planning y el
+    // Almacén del día ya no las veía para paletizarlas. Siguen aquí (sin horas, en su día) hasta que el Almacén del día las da de baja.
+    ...terminadasSinPalet,
   ];
   const listas = [
     ...enCurso,
@@ -49800,10 +49814,11 @@ function Planning({ proyectos, pedidos, uxExpedientes, uxPedidos, listoParaFabri
   // Reparto: primero las listas, luego las que esperan material (desde el día siguiente a su llegada)
   // Las que tienen día elegido van primero y se colocan en ese día (si no cabe todo, lo que sobra pasa al siguiente día laborable);
   // el resto se reparte después en los huecos, desde "Planificar desde".
-  const conDia = firmes.filter((o) => fechasPlan[o.id]).sort((a, b) => fechasPlan[a.id].localeCompare(fechasPlan[b.id]));
-  const sinDia = firmes.filter((o) => !fechasPlan[o.id]);
-  const desdeEf = [desde, ...conDia.map((o) => fechasPlan[o.id])].sort()[0];
-  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: fechasPlan[o.id], forzar: true })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
+  const diaFijo = (o) => fechasPlan[o.id] || o.diaTerm || ""; // las terminadas sin paletizar se quedan en su día (o el día en que se terminaron)
+  const conDia = firmes.filter((o) => diaFijo(o)).sort((a, b) => diaFijo(a).localeCompare(diaFijo(b)));
+  const sinDia = firmes.filter((o) => !diaFijo(o));
+  const desdeEf = [desde, ...conDia.map((o) => diaFijo(o))].sort()[0];
+  const plan1 = repartirPlanning([...conDia.map((o) => ({ ...o, disponible: diaFijo(o), forzar: true })), ...sinDia.map((o) => ({ ...o, disponible: desdeEf }))], desdeEf, horasDia, ocupadoBase);
   const ocupado = {}; Object.entries(plan1.dias).forEach(([f, d]) => { ocupado[f] = d.usadas; });
   const plan2 = repartirPlanning(esperandoOrd.map((o) => ({ ...o, disponible: fechasPlan[o.id] && fechasPlan[o.id] > (o.material ? sigLaborable(o.material) : desde) ? fechasPlan[o.id] : o.material ? sigLaborable(o.material) : o.material === null ? sigLaborable(desde) : desde })), desde, horasDia, ocupado);
   const diasFirmes = Object.keys(plan1.dias).filter((f) => plan1.dias[f].trozos.length).sort();
