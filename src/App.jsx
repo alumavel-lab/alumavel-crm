@@ -56201,11 +56201,12 @@ async function leerHojaCorteControl(lib, pdfDoc, onProgreso) {
     const tc = await pg.getTextContent();
     const t = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ");
     if (!pres) { const mp = t.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:?\s*\.?\s*(\d+)/i); if (mp) pres = `${mp[1]}-${mp[2]}`; }
-    const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+([A-Z]{1,3}\d{1,3}\.\d{1,4})\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})/);
+    // el modelo puede llamarse de cualquier forma: V01.003, P02.101, EXTRA COCINA, SALÓN, BAÑO 2, JFI - 01… (antes solo «V01.003» y se perdían ventanas)
+    const m = t.match(/Modelo\s+Ancho\s+Alto\s+Uds\s+(\S.{0,39}?)\s+(\d{2,5})\s+(\d{2,5})\s+(\d{1,3})(?=\s|$)/);
     if (!m) { if (cur) cur.texto += " " + t; continue; } // página de continuación del modelo anterior
     const acc = ((t.match(/Accionamiento\s+Tabla\s+Herraje\s*([\s\S]*?)Observaciones/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
     const obsCol = ((t.match(/Observaciones\s*([\s\S]*?)Color\s+Descripci/) || [])[1] || "").split("\n").map((x) => x.trim()).filter(Boolean);
-    cur = { pos: m[1], ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
+    cur = { pos: m[1].replace(/\s+/g, " ").trim().toUpperCase(), ancho: +m[2], alto: +m[3], uds: Math.max(1, +m[4] || 1), desc: [...new Set(acc)].join(" · "), color: obsCol.length ? obsCol[obsCol.length - 1] : "", obs: obsCol.slice(0, -1).join(" "), texto: t, dib: "" };
     modelos.push(cur);
     if (Date.now() - inicio > 150000) continue; // tiempo máximo para los dibujos
     try {
