@@ -20246,6 +20246,48 @@ function AlmacenPersianas() {
 function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarItems, variosAlmacenes, irA }) {
   const ctxM = React.useContext(IncidenciasCristalCtx) || {};
   const hojasAuxPers = useObjetoFb("auxiliaresHojas"); // hojas de corte (modelo = vivienda V01.159… → presupuesto)
+  // LOS PEDIDOS DE PERSIANAS YA GUARDADOS EN EL CRM (el PDF «PEDIDO COMPRA» de cada pedido de Uxcar y el de los documentos de cada obra) se
+  // leen SOLOS (solo el texto, sin IA): presupuesto, referencia («EXP 823 DARWIN PORTAL 3 ESC 08 2A»), cliente y las viviendas que lleva.
+  // Se guarda lo leído en «cabecerasPedidosPersianas» para no volver a bajar cada PDF.
+  const cabsPedPers = useObjetoFb("cabecerasPedidosPersianas");
+  const leyendoCabsRef = useRef(false);
+  const docsPedidosPers = useMemo(() => {
+    const out = new Map(); const add = (d) => { if (d && d.url && /\.pdf(\?|$)|application%2Fpdf|\.pdf%/i.test(`${d.url} ${d.nombre || ""}`.replace(/\s/g, "")) || (d && d.url && /pdf/i.test(String(d.nombre || "")))) out.set(d.url, { url: d.url, nombre: d.nombre || "" }); };
+    toArray(ctxM.uxPedidosCtx).forEach((pd) => { if (pd && /persian|compact/i.test(String(pd.tipo || ""))) { add(pd.documento); toArray(pd.documentos).forEach(add); } });
+    // de las obras solo las que siguen vivas (no entregadas ni canceladas), para no bajar PDF de obras viejas
+    [...toArray(ctxM.proyectos).filter((o) => o && !["Entregado", "Cancelado"].includes(o.estadoTrabajo)), ...toArray(ctxM.uxExpedientes).filter((o) => o && o.estado !== "entregado")].forEach((o) => toArray(o && o.documentos).forEach((d) => { if (d && /persian|compact/i.test(`${d.tipo || ""} ${d.nombre || ""}`)) add(d); }));
+    return [...out.values()];
+  }, [ctxM.uxPedidosCtx, ctxM.proyectos, ctxM.uxExpedientes]);
+  useEffect(() => {
+    if (leyendoCabsRef.current) return;
+    const falta = docsPedidosPers.filter((d) => !(cabsPedPers || {})[hashTexto(d.url)]);
+    if (!falta.length) return;
+    leyendoCabsRef.current = true;
+    (async () => {
+      for (const d of falta.slice(0, 25)) {
+        const clave = hashTexto(d.url);
+        try {
+          const bytes = await bytesDeArchivoGuardado(d.url);
+          const lib = await cargarPdfJs(); const doc = await lib.getDocument({ data: bytes }).promise;
+          const lineas = []; for (let n = 1; n <= Math.min(doc.numPages, 4); n++) lineas.push(...lineasDePaginaPdf((await (await doc.getPage(n)).getTextContent()).items));
+          const cab = cabeceraPedidoCompraDeLineas(lineas); const txt = lineas.join("\n").toUpperCase();
+          const viviendas = [...new Set((txt.match(/\b[A-Z]{1,2}\d{2}\.\d{3}(?:\.\d)?\b/g) || []).map(normRefPers))];
+          const medidas = [...txt.matchAll(/(\d\.?\d{3}|\d{3})\s*[X×]\s*(\d\.?\d{3}|\d{3})/g)].map((m) => [parseInt(m[1].replace(".", ""), 10), parseInt(m[2].replace(".", ""), 10)]);
+          await fbSet(ref(fbDb, `cabecerasPedidosPersianas/${clave}`), JSON.parse(JSON.stringify({ url: d.url, nombre: d.nombre, presupuesto: cab.presupuesto || "", referencia: cab.referencia || "", cliente: cab.cliente || "", expediente: cab.expediente || "", viviendas, medidas, leidoEn: Date.now() })));
+        } catch (er) { await fbSet(ref(fbDb, `cabecerasPedidosPersianas/${clave}`), { url: d.url, nombre: d.nombre || "", error: String((er && er.message) || er).slice(0, 200), leidoEn: Date.now() }).catch(() => {}); }
+      }
+      leyendoCabsRef.current = false;
+    })();
+  }, [docsPedidosPers, cabsPedPers]);
+  // El pedido guardado de ESTA persiana: el que lleva su vivienda (V01.159…) en el mismo expediente; si hay varios, el de su medida
+  const cabDePersiana = (x) => {
+    const k = normRefPers(x && x.ref); if (k.length < 3) return null;
+    const e = expDigitosPers(x.expediente); const L = largoPersiana(x);
+    let c = Object.values(cabsPedPers || {}).filter((y) => y && !y.error && (y.referencia || y.presupuesto) && toArray(y.viviendas).includes(k) && (!e || !y.expediente || expDigitosPers(y.expediente) === e));
+    if (c.length > 1 && L > 0) { const cm = c.filter((y) => toArray(y.medidas).some((m) => Math.abs((m[0] || 0) - L) <= TOL_PEDIDO_MM)); if (cm.length) c = cm; }
+    const pps = [...new Set(c.map((y) => digitosPresu(String(y.presupuesto).split("-")[0])))];
+    return pps.length === 1 ? c[0] : null;
+  };
   const hojasCDPers = useObjetoFb("controlDiaHojaCorte");
   // PRESUPUESTO POR LA VIVIENDA: V01.159, P03.160… son las ventanas de la hoja de corte / etiquetas de UN presupuesto. Se busca en qué
   // presupuesto(s) sale esa vivienda; si solo en uno (o solo uno de los posibles del expediente), ese es el de la persiana
@@ -20396,6 +20438,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     // expediente juntos («6751, 6747, 6746») y así no se sabe de cuál es
     try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && !/[,·;]/.test(String(q.presupuesto)) && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
     if (x.presupuesto && !/[,·;]/.test(String(x.presupuesto))) return String(x.presupuesto);
+    try { const cg = cabDePersiana(x); if (cg && cg.presupuesto) return String(cg.presupuesto); } catch (er) { /* nada */ }
     const r0 = pptoDeExp(x);
     // por la VIVIENDA (V01.159 → el presupuesto en cuya hoja de corte / etiquetas sale): si es uno solo, o uno solo de los posibles
     const porViv = [...(pptosPorVivienda.get(normRefPers(x.ref)) || [])];
@@ -20435,7 +20478,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     return [...cands].sort((a, b) => nota(b) - nota(a))[0];
   };
   // REFERENCIA de la vivienda tal como viene en el pedido de compra («EXP 823 DARWIN PORTAL 3 ESC 08 1B»): es lo que dice a qué casa va
-  const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
+  const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); if (/[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, ""))) return r; try { const cg = cabDePersiana(x); if (cg && cg.referencia) return String(cg.referencia); } catch (er) { /* nada */ } return ""; };
   // TODO lo de la persiana para el almacén: lo del PEDIDO (presupuesto, referencia de la vivienda, cliente) y, de la OBRA de ese
   // presupuesto (o del expediente de Uxcar), el teléfono y la dirección — el pedido de compra no los trae
   // Bloque con TODO lo del pedido de esa persiana, para enseñarlo entero (revisión, almacén)
@@ -20467,9 +20510,11 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       }
     } catch (er) { /* nada */ }
     const cli = pr ? toArray(ctxM.clientes).find((c) => c && c.id === pr.clienteId) : null;
+    const cg = cabDePersiana(x); // lo leído del PEDIDO COMPRA guardado en el CRM
+    const cliQ = q && q.cliente && !/^uxcar$/i.test(String(q.cliente).trim()) ? q.cliente : "";
     return {
-      presupuesto: pp || "", referencia: referenciaDe(x) || "",
-      cliente: (q && q.cliente) || (cli && cli.nombre) || x.cliente || "",
+      presupuesto: (/^\d/.test(String(pp || "")) ? pp : "") || (cg && cg.presupuesto) || pp || "", referencia: referenciaDe(x) || (cg && cg.referencia) || "",
+      cliente: cliQ || (cg && cg.cliente) || (cli && cli.nombre) || x.cliente || "",
       telefono: (pr && pr.telefono) || (cli && (cli.telefono || cli.movil)) || (ux && ux.telefono) || "",
       direccion: (pr && pr.ubicacion) || (ux && (ux.direccion || ux.ubicacion)) || (cli && [cli.direccion, cli.poblacion || cli.provincia].filter(Boolean).join(", ")) || "",
     };
