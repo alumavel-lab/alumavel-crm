@@ -55621,7 +55621,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         {auxPasosDe(refDe(p.ref), p).some((n) => /bocado/i.test(n)) && (
           <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap">
             {(() => { const a = auxEjesDe(p); return (<>
-              <b className={a.I || a.D || a.sin ? "text-slate-700" : "text-rose-700"}>Eje (mm)</b>
+              <b className={a.I || a.D || a.sin ? "text-slate-700" : "text-rose-700"} title="Altura del eje del RECOGEDOR (la cota «Eje» del dibujo de la ventana): ahí va el bocado">Eje recogedor (mm)</b>
+              {p.eje ? <span className="text-[10px] font-bold text-emerald-700">✓ del dibujo</span> : (!a.I && !a.D) ? <span className="text-[10px] font-bold text-rose-700" title="La hoja se leyó sin el eje del dibujo: pulsa «Releer la guardada» en esta obra">⚠ sin dibujo: 283 por defecto</span> : null}
               <span className="text-slate-500">izq.</span>
               <input key={`eji_${auxEjeKey(p)}_${a.I}`} type="number" defaultValue={a.I} placeholder="—" onBlur={(ev) => { if (String(ev.target.value) !== a.I) guardarEje(p, { izq: ev.target.value }); }} className="border border-slate-300 rounded px-1 py-0.5 w-16 text-xs text-slate-800" />
               <span className="text-slate-500">der.</span>
