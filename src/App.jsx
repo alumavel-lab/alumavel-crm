@@ -54582,7 +54582,9 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
     const eje = ((texto.match(/(\d{2,4}(?:[.,]\d{1,2})?)\s*Eje\b/) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
-    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length, _firma: `${b.nombre}|${b.ancho}|${b.alto}|${b.uds}|${filas.map((f) => `${f.ref}:${f._dig}`).join(",")}` };
+    // tramos del dibujo (fijo / practicable) leídos con la IA: «TRAMOS:655,3F|1419,7P»
+    const tramos = String((texto.match(/TRAMOS:([^\n]+)/) || [])[1] || "").split("|").map((t) => { const q = t.trim().match(/^(\d{2,4}(?:[.,]\d{1,2})?)([FP])$/); return q ? { ancho: parseFloat(q[1].replace(",", ".")), tipo: q[2] } : null; }).filter(Boolean);
+    return { eje, ejeLado, tramos, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length, _firma: `${b.nombre}|${b.ancho}|${b.alto}|${b.uds}|${filas.map((f) => `${f.ref}:${f._dig}`).join(",")}` };
   });
   // La MEDIDA va pegada a Ud y ToT («1425» + «2» + «4» = 142524) o solo al ToT («1885» + «1»), según la hoja. Se decide para TODA la hoja
   // con las filas donde Ud y ToT son distintos (ventanas de varias unidades), y cada medida tiene que ser posible para el tamaño de la ventana.
@@ -54774,7 +54776,7 @@ async function guardarHojasCorteAux(ficheros, opciones) {
   return hechas;
 }
 async function auxEjesDelDibujo(doc, paginas) {
-  const idx = paginas.map((p, i) => ({ i, t: p.join("") })).filter((x) => /Modelo\s+Ancho\s+Alto\s+Uds/i.test(x.t) && /CAJ[OÓ]N/i.test(x.t) && !/SIN\s+CAJ[OÓ]N/i.test(x.t) && !/\d\s*Eje\b/.test(x.t)).map((x) => x.i);
+  const idx = paginas.map((p, i) => ({ i, t: p.join("") })).filter((x) => /Modelo\s+Ancho\s+Alto\s+Uds/i.test(x.t) && ((/CAJ[OÓ]N/i.test(x.t) && !/SIN\s+CAJ[OÓ]N/i.test(x.t) && !/\d\s*Eje\b/.test(x.t)) || /MOSQUIT|MPLX/i.test(x.t))).map((x) => x.i);
   if (!idx.length) return;
   const imgs = [];
   for (const i of idx) {
@@ -54792,7 +54794,7 @@ async function auxEjesDelDibujo(doc, paginas) {
     const tanda = imgs.slice(k, k + 8);
     const content = [];
     tanda.forEach((im, j) => { content.push({ type: "text", text: `Imagen ${j}:` }); content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: im.data } }); });
-    content.push({ type: "text", text: 'Cada imagen es la cabecera de una hoja de corte con el dibujo de una ventana. En el dibujo hay una cota con la palabra «Eje» (por ejemplo «812,5 Eje»): es la altura del eje de la persiana. Para cada imagen dime ese número tal como está escrito y si el texto «Eje» está a la DERECHA (D) o a la IZQUIERDA (I) de la ventana. Si no hay «Eje», pon eje "". Devuelve SOLO un JSON válido, sin texto: [{"img":0,"eje":"812,5","lado":"D"}]' });
+    content.push({ type: "text", text: 'Cada imagen es la cabecera de una hoja de corte con el dibujo de una ventana. En el dibujo hay una cota con la palabra «Eje» (por ejemplo «812,5 Eje»): es la altura del eje de la persiana. Para cada imagen dime ese número tal como está escrito y si el texto «Eje» está a la DERECHA (D) o a la IZQUIERDA (I) de la ventana. Si no hay «Eje», pon eje "". Además, debajo del dibujo hay COTAS DE CADA TRAMO de izquierda a derecha (p. ej. «655,3» y «1419,7»; si solo hay una cota total, un solo tramo): para cada tramo di su ancho tal como está escrito y si es FIJO (F: sin las líneas en diagonal de apertura) o PRACTICABLE (P: con alguna hoja que abre, líneas en diagonal). Devuelve SOLO un JSON válido, sin texto: [{"img":0,"eje":"812,5","lado":"D","tramos":[{"ancho":"655,3","tipo":"F"},{"ancho":"1419,7","tipo":"P"}]}]' });
     const r = await fetch("/.netlify/functions/anthropic-proxy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 800, messages: [{ role: "user", content }] }) });
     if (!r.ok) continue;
     const d = await r.json();
@@ -54800,8 +54802,11 @@ async function auxEjesDelDibujo(doc, paginas) {
     const a = txt.indexOf("["), b = txt.lastIndexOf("]");
     let lista = []; try { lista = JSON.parse(a >= 0 && b > a ? txt.slice(a, b + 1) : "[]"); } catch (e) { lista = []; }
     toArray(lista).forEach((x) => {
-      const im = tanda[Number(x && x.img)]; const eje = String((x && x.eje) || "").trim().replace(/\s+/g, "");
-      if (!im || !/^\d{2,4}(?:[.,]\d{1,2})?$/.test(eje)) return;
+      const im = tanda[Number(x && x.img)]; if (!im) return;
+      const tr = toArray(x && x.tramos).map((t) => ({ a: String((t && t.ancho) || "").trim().replace(/\s+/g, ""), t: String((t && t.tipo) || "").toUpperCase().slice(0, 1) })).filter((t) => /^\d{2,4}(?:[.,]\d{1,2})?$/.test(t.a) && (t.t === "F" || t.t === "P"));
+      if (tr.length > 1) paginas[im.i].push(`\nTRAMOS:${tr.map((t) => `${t.a}${t.t}`).join("|")}\n`);
+      const eje = String((x && x.eje) || "").trim().replace(/\s+/g, "");
+      if (!/^\d{2,4}(?:[.,]\d{1,2})?$/.test(eje)) return;
       const lado = String((x && x.lado) || "").toUpperCase();
       paginas[im.i].push(`\n${eje} Eje\n${lado === "D" || lado === "I" ? `EJELADO:${lado}\n` : ""}`);
     });
@@ -54896,6 +54901,7 @@ function auxEmpaquetar(filas, L, sierra, despunte) {
   barras.forEach((b) => { b.sobra = cap - b.usado; b.util = b.piezas.reduce((a, x) => a + (Number(x.lCorte) || 0), 0); });
   return { barras, fuera };
 }
+const AUX_MOSQ_DESCUENTO_MM = 20; // cajón de mosquitera: ancho del tramo que abre menos 2 cm
 function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
   const activas = new Map();
   cfg.refs.filter((r) => r.activo !== false && String(r.ref || "").trim()).forEach((r) => { auxAlias(r).forEach((a) => { if (!activas.has(a)) activas.set(a, r); }); activas.set(String(r.ref).trim(), r); });
@@ -54928,7 +54934,18 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
         const c1 = parseInt(st.slice(0, -1), 10); if (st.length >= 5 && c1 >= 40 && c1 <= mxV + 700) return c1;
         return f.lCorte;
       };
-      const filas = filasM.filter((f) => activas.has(String(f.ref))).map((f) => { const lc = medidaBuena(f); return lc === f.lCorte ? f : { ...f, lCorte: lc, lCorteHoja: f.lCorte }; });
+      // MOSQUITERA EN VENTANA CON FIJO: la hoja pone el cajón (cabeza) a todo el ancho, pero la mosquitera solo va en el tramo que abre.
+      // Si el dibujo tiene un fijo y UN tramo practicable, el cajón mide ese tramo − 20 mm (como el total − 20 que pone la hoja)
+      const trP = toArray(m.tramos).filter((t) => t && t.tipo === "P"), trF = toArray(m.tramos).filter((t) => t && t.tipo === "F");
+      const esCajonMosq = (rc, f) => String((rc && rc.ref) || f.ref || "").toUpperCase().includes("MPLX") || (/mosquit/i.test(`${(rc && rc.nombre) || ""} ${f.desc || ""}`) && /cabeza|caj[oó]n/i.test(`${(rc && rc.nombre) || ""} ${f.desc || ""}`) && !/gu[ií]a/i.test(`${(rc && rc.nombre) || ""}`));
+      const filas = filasM.filter((f) => activas.has(String(f.ref))).map((f) => {
+        const lc = medidaBuena(f); let g = lc === f.lCorte ? f : { ...f, lCorte: lc, lCorteHoja: f.lCorte };
+        if (trF.length && trP.length === 1 && esCajonMosq(activas.get(String(f.ref)), f) && trP[0].ancho > 200) {
+          const nueva = Math.round(trP[0].ancho - AUX_MOSQ_DESCUENTO_MM);
+          if (Math.abs(nueva - (Number(g.lCorte) || 0)) > 5) g = { ...g, lCorte: nueva, lCorteHoja: g.lCorteHoja != null ? g.lCorteHoja : f.lCorte, notaMedida: `ventana con fijo: tramo que abre ${String(trP[0].ancho).replace(".", ",")} − ${AUX_MOSQ_DESCUENTO_MM} = ${nueva} (la hoja ponía ${f.lCorte})` };
+        }
+        return g;
+      });
       unidades.forEach((u) => filas.forEach((f) => {
         const rc = activas.get(String(f.ref));
         const n = f.ud || 1;
@@ -54936,7 +54953,7 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
           piezas.push({
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorteHoja != null ? f.lCorteHoja : f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
             // − / + de la configuración de este perfil: la medida a cortar es la de la hoja corregida (la hoja sigue guardada en lHoja)
-            lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, color: f.color || "", k, n,
+            lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, notaMedida: f.notaMedida || "", color: f.color || "", k, n,
             eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
             referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
@@ -55576,7 +55593,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
-      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}
+      <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}{p.notaMedida ? <div className="text-[11px] font-bold text-amber-700">⚠ {p.notaMedida}</div> : null}
         {auxPasosDe(refDe(p.ref), p).some((n) => /bocado/i.test(n)) && (
           <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap">
             {(() => { const a = auxEjesDe(p); return (<>
