@@ -24215,7 +24215,8 @@ const esRecogidaFabrica = (p) => !p.llevaInstalacion && (p.estadoLogistica === "
 function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clientes, envios, proveedores, usuarios, currentUser, isAdmin, onGuardarAlbaranEntrega, onGuardarDocumentoEntrega, onUpsertEnvio, onMarcarRecogido, onDeleteEnvio }) {
   const [tab, setTab] = useState("repartos");
   const [abiertoId, setAbiertoId] = useState(null);
-  const [firmando, setFirmando] = useState(null); // "carga" | "cliente"
+  const [firmando, setFirmando] = useState(null); // "carga" | "cliente" | "responsable"
+  const [subiendoFotoCarga, setSubiendoFotoCarga] = useState(false);
   const [borrador, setBorrador] = useState(null);
   const [subiendoDoc, setSubiendoDoc] = useState(false);
   const [generando, setGenerando] = useState(false);
@@ -24309,25 +24310,40 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="bg-white border border-slate-200 rounded-lg p-4">
-            <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "1. Salida de fábrica (opcional)" : "1. Carga (chófer)"}</div>
+            <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "1. Salida de fábrica (foto + firma de quien entrega)" : "1. Carga (chófer)"}</div>
+            {/* FOTO DE LA CARGA OBLIGATORIA: sin foto no se puede firmar la carga */}
+            <div className="mb-2">
+              {toArray(a.fotosCarga).length > 0 && <div className="flex flex-wrap gap-1.5 mb-1.5">{toArray(a.fotosCarga).map((f, i) => <a key={i} href={f.url} target="_blank" rel="noreferrer"><img src={f.url} alt="Foto de la carga" className="w-16 h-16 object-cover rounded border border-slate-300" /></a>)}</div>}
+              <label className={`flex items-center justify-center gap-1.5 w-full text-sm font-bold px-3 py-2 rounded-md cursor-pointer border-2 ${toArray(a.fotosCarga).length ? "border-slate-300 text-slate-700 bg-white" : "border-rose-500 text-rose-700 bg-rose-50"}`}>
+                📷 {subiendoFotoCarga ? "Subiendo foto…" : toArray(a.fotosCarga).length ? `Foto de la carga ✓ (${toArray(a.fotosCarga).length}) · añadir otra` : "Foto de la carga (OBLIGATORIA)"}
+                <input type="file" accept="image/*" capture="environment" className="hidden" disabled={subiendoFotoCarga} onChange={async (e) => {
+                  const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+                  setSubiendoFotoCarga(true);
+                  try { const url = await subirArchivoAStorage(f, `albaranes-carga/${abierto.id}`); await guardar({ fotosCarga: [...toArray(a.fotosCarga), { url, nombre: f.name, fecha: new Date().toISOString() }] }, false); }
+                  catch (er) { alert("No se pudo subir la foto: " + ((er && er.message) || er)); }
+                  setSubiendoFotoCarga(false);
+                }} />
+              </label>
+            </div>
             {a.firmaCarga ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCarga.nombre} el {new Date(a.firmaCarga.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Firma al cargar el camión.</div>}
-            <button onClick={() => setFirmando("carga")} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
+            <button onClick={() => { if (!toArray(a.fotosCarga).length) { alert("Primero haz la FOTO DE LA CARGA: es obligatoria para firmar."); return; } setFirmando("carga"); }} style={{ backgroundColor: a.firmaCarga ? undefined : "#2E8B57", color: a.firmaCarga ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCarga ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCarga ? "Volver a firmar" : "Firmar carga"}</button>
           </div>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
             <div className="text-sm font-bold text-slate-800 mb-1">{esRecogidaFabrica(abierto) ? "2. Recogida (firma quien recoge)" : "2. Entrega (firma el cliente)"}</div>
             {a.firmaCliente ? <div className="text-xs text-emerald-700 font-semibold">✓ Firmado por {a.firmaCliente.nombre} el {new Date(a.firmaCliente.fecha).toLocaleString("es-ES")}</div> : <div className="text-xs text-slate-500 mb-2">Dale el móvil al cliente para que firme al recibirlo.</div>}
-            <button onClick={() => setFirmando("cliente")} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
+            {esRecogidaFabrica(abierto) && !a.firmaCliente && <button type="button" onClick={() => { if (!a.firmaCarga) { alert("Primero: foto de la carga y firma de quien entrega (paso 1)."); return; } setFirmando("responsable"); }} className="mt-2 w-full text-xs font-bold px-3 py-2 rounded-md border-2 border-amber-500 text-amber-800 bg-amber-50">No está el cliente: firma el responsable de la carga</button>}
+            <button onClick={() => { if (!a.firmaCarga) { alert(esRecogidaFabrica(abierto) ? "Primero: foto de la carga y firma de quien entrega (paso 1)." : "Primero el chófer: foto de la carga y su firma al cargar (paso 1)."); return; } setFirmando("cliente"); }} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
           </div>
         </div>
         <button disabled={generando} onClick={async () => { guardar(); setGenerando(true); await descargarPdfAlbaranEntrega({ ...abierto, albaranEntrega: { ...a, ...borrador } }, { cliente: cli, direccion: direccionDe(abierto) }); setGenerando(false); }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-3 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-60">{generando ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Descargar albarán en PDF (con la fecha de hoy{abierto.documentoEntrega ? " y el tipo plano" : ""})</button>
         {subiendoDoc && <SubirDocumentoEntrega proyecto={abierto} onCancel={() => setSubiendoDoc(false)} onGuardar={async (doc, recuento) => { await onGuardarDocumentoEntrega(abierto.id, doc, recuento); setSubiendoDoc(false); }} />}
         {firmando && (
           <FirmaCanvas
-            titulo={firmando === "carga" ? `Firma del chófer — ${borrador.numero}` : `Firma del cliente — ${borrador.numero}`}
-            nombreInicial={firmando === "carga" ? borrador.chofer : (cli ? cli.nombre : "")}
+            titulo={firmando === "carga" ? `Firma del chófer — ${borrador.numero}` : firmando === "responsable" ? `Firma del RESPONSABLE DE LA CARGA (no está el cliente) — ${borrador.numero}` : `Firma del cliente — ${borrador.numero}`}
+            nombreInicial={firmando === "carga" ? borrador.chofer : firmando === "responsable" ? "" : (cli ? cli.nombre : "")}
             onCancel={() => setFirmando(null)}
             onGuardar={(firma) => {
-              const f = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160) };
+              const f = { ...firma, dispositivo: (navigator.userAgent || "").slice(0, 160), ...(firmando === "responsable" ? { responsableCarga: true, nombre: `${firma.nombre || ""} (responsable de la carga, sin el cliente)` } : {}) };
               if (firmando === "carga") guardar({ firmaCarga: f, chofer: borrador.chofer || firma.nombre }, false, true);
               else {
                 // los caballetes de esta obra se quedan en casa del cliente: pendientes de devolver
@@ -44586,7 +44602,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className={`${g ? "text-3xl" : "text-base"} font-extrabold text-slate-900`}>{nombreAD(o)}</span>
             <span className={`${g ? "text-2xl" : "text-sm"} font-bold ${completa ? "text-emerald-700" : "text-slate-600"}`}>{n} de {total} en palet{completa ? " ✓" : ""}</span>
-            {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold text-sky-700`}>{pend} hecha{pend === 1 ? "" : "s"} en fábrica, falta palet</span>}
+            {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold px-2 rounded bg-emerald-600 text-white`}>🟢 {pend} montada{pend === 1 ? "" : "s"} en la línea · pendiente{pend === 1 ? "" : "s"} de paletizar</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
             {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
             {!g && <button type="button" onClick={() => sacarSinPaletizarAD(o)} title="El cliente se la lleva por sus propios medios: sale sin palet, pasa a «Recogida en fábrica» y, con el albarán firmado, a facturación" className="text-xs font-bold px-2 py-1 rounded-md border-2 border-amber-500 text-amber-800 bg-amber-50 hover:bg-amber-100">🚶 Sacar sin paletizar (la recoge el cliente)</button>}
