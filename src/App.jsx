@@ -20346,9 +20346,10 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         usadasA.add(k); n++;
         const f = lista[k]; const nuevo = { ...q };
         campos.forEach((c) => { if (f[c] !== undefined && f[c] !== null && String(f[c]).trim() !== "") nuevo[c] = f[c]; });
-        if (cab.presupuesto && !nuevo.presupuesto) nuevo.presupuesto = cab.presupuesto;
-        if (cab.refObra && !nuevo.refObra) nuevo.refObra = cab.refObra;
-        if (cab.cliente && !nuevo.cliente) nuevo.cliente = cab.cliente;
+        // lo del PEDIDO COMPRA manda sobre lo que hubiera: presupuesto mezclado («6751 · 6747 · 6746»), referencia corta («823») o cliente «Uxcar»
+        if (cab.presupuesto && (!nuevo.presupuesto || /[,·;]/.test(String(nuevo.presupuesto)))) nuevo.presupuesto = cab.presupuesto;
+        if (cab.refObra && String(cab.refObra).length > String(nuevo.refObra || "").length) nuevo.refObra = cab.refObra;
+        if (cab.cliente && (!nuevo.cliente || /^uxcar$/i.test(String(nuevo.cliente).trim()))) nuevo.cliente = cab.cliente;
         return nuevo;
       });
       guardarPedidos(act);
@@ -20380,7 +20381,13 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const pptoDe = (x) => {
     // el PRESUPUESTO DE ESA PERSIANA es el de su pedido de compra («Presupuesto: 6.740-1»); el de la persiana a veces lleva los de todo el
     // expediente juntos («6751, 6747, 6746») y así no se sabe de cuál es
-    try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
+    try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && !/[,·;]/.test(String(q.presupuesto)) && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
+    if (x.presupuesto && !/[,·;]/.test(String(x.presupuesto))) return String(x.presupuesto);
+    const r0 = pptoDeExp(x);
+    // varios presupuestos juntos = no se sabe cuál es el de ESTA persiana: se dice claro en vez de enseñar la lista
+    return r0 && /[,·;]/.test(r0) ? `? (sube el PEDIDO COMPRA · posibles: ${r0})` : r0;
+  };
+  const pptoDeExp = (x) => {
     if (x.presupuesto) return String(x.presupuesto);
     try {
       const e = String(x.expediente || "").replace(/\D/g, "");
@@ -20397,7 +20404,15 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     return "";
   };
   // Los datos de cada persiana (mano, descripción, nº de pedido…) salen del PEDIDO de persianas subido (ahí viene todo), no solo de lo que se guardó al meterla en el carro
-  const pedidoDe = (x) => { const L = toArray(ctxM.pedidosPersianas); return L.find((q) => q && q.recibidaId === x.id) || L.find((q) => q && casaPedidaConPersiana(q, x)) || null; };
+  // Pedido de esa persiana. Si hay varios que casan (el que llegó del portal de Uxcar con TODOS los presupuestos del expediente y
+  // el PEDIDO COMPRA subido con el suyo), manda el bueno: un solo presupuesto y la referencia completa de la vivienda
+  const pedidoDe = (x) => {
+    const L = toArray(ctxM.pedidosPersianas).filter(Boolean);
+    const cands = [...L.filter((q) => q.recibidaId === x.id), ...L.filter((q) => q.recibidaId !== x.id && casaPedidaConPersiana(q, x))];
+    if (!cands.length) return null;
+    const nota = (q) => (String(q.presupuesto || "").trim() && !/[,·;]/.test(String(q.presupuesto)) ? 2 : 0) + (/[A-Za-z]/.test(String(q.refObra || "").replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? 2 : 0) + (q.recibidaId === x.id ? 1 : 0);
+    return [...cands].sort((a, b) => nota(b) - nota(a))[0];
+  };
   // REFERENCIA de la vivienda tal como viene en el pedido de compra («EXP 823 DARWIN PORTAL 3 ESC 08 1B»): es lo que dice a qué casa va
   const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
   // TODO lo de la persiana para el almacén: lo del PEDIDO (presupuesto, referencia de la vivienda, cliente) y, de la OBRA de ese
@@ -21620,7 +21635,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <option value="Eléctrica">Eléctrica</option>
                       </select>
                     </td>
-                    <td className="pr-2 text-slate-500">{[x.nombreObra, x.refObra || x.obraUx, pptoDe(x) ? `Ppto ${pptoDe(x)}` : "", x.cliente].filter(Boolean).join(" · ") || "—"}</td>
+                    <td className="pr-2 text-slate-500">{(() => { const fp = fichaPersiana(x); return [fp.referencia ? <b key="r" className="text-slate-800">{fp.referencia}</b> : (x.refObra || x.obraUx || ""), x.nombreObra, fp.presupuesto ? `Ppto ${fp.presupuesto}` : "", fp.cliente, fp.telefono ? `☎ ${fp.telefono}` : "", fp.direccion ? `📍 ${fp.direccion}` : ""].filter(Boolean).reduce((acc, el, i) => (i ? [...acc, " · ", el] : [el]), []); })() || "—"}</td>
                     <td className={`pr-2 text-[11px] font-semibold ${colorCristal(cristalDe(x))}`}>{textoCristal(cristalDe(x)) || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
