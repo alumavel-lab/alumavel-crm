@@ -54526,6 +54526,7 @@ const auxRefAlt = (ref, linea) => {
   if (new RegExp(`\\(\\s*${auxEsc(r)}\\s*\\)`).test(linea)) alts.push("\\d{6}[A-Za-z]\\d{0,8}", "\\d{6}"); // «703723S600505»: código + color pegado
   return alts.join("|");
 };
+const AUX_REF_ANGULO = "ANG60X40"; // pieza que no viene en la hoja: se añade sola (ver «ÁNGULO 60×40»)
 function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
   const todo = paginas.map((it) => it.join("")).join("\n");
   const cab = todo.match(/N[uú]mero\s*:\s*([\d.]+)\s*Versi[oó]n\s*:\.?\s*(\d+)/i);
@@ -54545,7 +54546,9 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     lineas.forEach((linea, i) => {
       if (/^\s*Modelo\s+Ancho\s+Alto\s+Uds\s*$/i.test(linea)) {
         const dato = (lineas[i + 1] || "").match(/^\s*(.+?)\s+(\d{2,4})\s+(\d{2,4})\s+(\d+)\s*$/);
-        actual = { nombre: dato ? dato[1].trim().toUpperCase() : "GRUPO", ancho: dato ? parseInt(dato[2], 10) : null, alto: dato ? parseInt(dato[3], 10) : null, uds: dato ? parseInt(dato[4], 10) || 1 : 1, lineas: [] };
+        // color de la carpintería: la línea que va justo encima de «Modelo Ancho Alto Uds» (BLANCO, Embero Ext, Deko RAL 6005 Verde musgo…)
+        const colorCarp = String(lineas[i - 1] || "").replace(/\s+/g, " ").trim();
+        actual = { nombre: dato ? dato[1].trim().toUpperCase() : "GRUPO", ancho: dato ? parseInt(dato[2], 10) : null, alto: dato ? parseInt(dato[3], 10) : null, uds: dato ? parseInt(dato[4], 10) || 1 : 1, lineas: [], colorCarp: /^[A-Za-zÁÉÍÓÚáéíóúñÑ][\wÁÉÍÓÚáéíóúñÑ .,-]{1,40}$/.test(colorCarp) && !/p[aá]gina|cliente|refer|n[uú]mero/i.test(colorCarp) ? colorCarp : "" };
         bloques.push(actual);
         return;
       }
@@ -54584,7 +54587,25 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
     // tramos del dibujo (fijo / practicable) leídos con la IA: «TRAMOS:655,3F|1419,7P»
     const tramos = String((texto.match(/TRAMOS:([^\n]+)/) || [])[1] || "").split("|").map((t) => { const q = t.trim().match(/^(\d{2,4}(?:[.,]\d{1,2})?)([FP])$/); return q ? { ancho: parseFloat(q[1].replace(",", ".")), tipo: q[2] } : null; }).filter(Boolean);
-    return { eje, ejeLado, tramos, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length, _firma: `${b.nombre}|${b.ancho}|${b.alto}|${b.uds}|${filas.map((f) => `${f.ref}:${f._dig}`).join(",")}` };
+    // ÁNGULO 60×40: ventana con FIJO + MOSQUITERA + PERSIANA → 1 ángulo por ventana, al alto de la ventana (sin descuento), del color
+    // de la carpintería, para que apoye la mosquitera entera
+    const tramosV = String((texto.match(/TRAMOSV:([^\n]+)/) || [])[1] || "").split("|").map((t) => { const q = t.trim().match(/^(\d{2,4}(?:[.,]\d{1,2})?)([FP])$/); return q ? { alto: parseFloat(q[1].replace(",", ".")), tipo: q[2] } : null; }).filter(Boolean);
+    // persiana = cajón de PERSIANA (CAJON PVC…, compacto, CJ_…, guía de persiana); el «PLX-42 Cajón con Tela» es de la mosquitera y no cuenta
+    const conPersiana = (/CAJ[OÓ]N\s+PVC|CJ_|COMPACTO|PERSIANA|GU[IÍ]A\s+SENCILLA|C\.3270/i.test(texto)) && !/SIN\s+CAJ[OÓ]N/i.test(texto);
+    const conMosq = /MOSQUIT|MPLX/i.test(texto);
+    const colAng = String(b.colorCarp || "").toUpperCase();
+    if (conPersiana && conMosq && lista.includes(AUX_REF_ANGULO)) {
+      const pH = tramos.filter((t) => t.tipo === "P");
+      // fijo AL LADO → ángulo al ALTO de la ventana
+      if (tramos.some((t) => t.tipo === "F") && pH.length && b.alto > 0) filas.push({ ref: AUX_REF_ANGULO, codigo: AUX_REF_ANGULO, desc: "Ángulo 60×40 · fijo al lado: al alto de la ventana", color: colAng, lCorte: b.alto, lFinal: null, tot: b.uds, ud: 1 });
+      // fijo DEBAJO → ángulo al ANCHO de la mosquitera (el tramo que abre − 20, o el ancho de la ventana − 20)
+      const iP = tramosV.findIndex((t) => t.tipo === "P"); const iF = tramosV.findIndex((t, k) => t.tipo === "F" && k > iP);
+      if (iP >= 0 && iF > iP) {
+        const anchoMosq = Math.round(((pH.length === 1 && tramos.some((t) => t.tipo === "F")) ? pH[0].ancho : (b.ancho || 0)) - AUX_MOSQ_DESCUENTO_MM);
+        if (anchoMosq > 100) filas.push({ ref: AUX_REF_ANGULO, codigo: AUX_REF_ANGULO, desc: "Ángulo 60×40 · fijo debajo: al ancho de la mosquitera", color: colAng, lCorte: anchoMosq, lFinal: null, tot: b.uds, ud: 1 });
+      }
+    }
+    return { eje, ejeLado, tramos, tramosV, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length, _firma: `${b.nombre}|${b.ancho}|${b.alto}|${b.uds}|${filas.map((f) => `${f.ref}:${f._dig}`).join(",")}` };
   });
   // La MEDIDA va pegada a Ud y ToT («1425» + «2» + «4» = 142524) o solo al ToT («1885» + «1»), según la hoja. Se decide para TODA la hoja
   // con las filas donde Ud y ToT son distintos (ventanas de varias unidades), y cada medida tiene que ser posible para el tamaño de la ventana.
@@ -54701,6 +54722,7 @@ const AUX_CFG_DEFECTO = {
     { id: "r28", ref: "5837", nombre: "Guía aluminio para 5802", pasos: "", activo: true },
     { id: "r29", ref: "5806", nombre: "Perfil unión", pasos: "", activo: true },
     { id: "r30", ref: "5840", nombre: "Adaptador aluminio para 5806", pasos: "", activo: true },
+    { id: "r31", ref: "ANG60X40", nombre: "Ángulo 60×40 (mosquitera con fijo)", pasos: "", activo: true }, // no viene en la hoja: se añade en ventanas con fijo + mosquitera + persiana
   ],
   carros: [{ id: "c1", nombre: "Carro 1", huecos: 20 }, { id: "c2", nombre: "Carro 2", huecos: 20 }],
   bocadoCm: 8, anchoMm: 100, altoMm: 40, margenIzqMm: 6, margenDerMm: 3, margenSupMm: 1.5, escalaEt: 100, negativoEt: false,
@@ -54708,7 +54730,7 @@ const AUX_CFG_DEFECTO = {
 // Referencias añadidas después de que alguien editara la configuración: se suman una vez (si las quita, no vuelven: queda anotado en «vistas»)
 const auxAlias = (r) => String((r && r.alias) || "").split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 const auxRefsHoja = (refsCfg) => [...new Set(toArray(refsCfg).flatMap((r) => [String((r && r.ref) || "").trim(), ...auxAlias(r)]).filter(Boolean))];
-const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14", "r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23", "r24", "r25", "r26", "r27", "r28", "r29", "r30"].includes(r.id));
+const AUX_REFS_NUEVAS = AUX_CFG_DEFECTO.refs.filter((r) => ["r13", "r14", "r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23", "r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31"].includes(r.id));
 const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
@@ -54794,7 +54816,7 @@ async function auxEjesDelDibujo(doc, paginas) {
     const tanda = imgs.slice(k, k + 8);
     const content = [];
     tanda.forEach((im, j) => { content.push({ type: "text", text: `Imagen ${j}:` }); content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: im.data } }); });
-    content.push({ type: "text", text: 'Cada imagen es la cabecera de una hoja de corte con el dibujo de una ventana. En el dibujo hay una cota con la palabra «Eje» (por ejemplo «812,5 Eje»): es la altura del eje de la persiana. Para cada imagen dime ese número tal como está escrito y si el texto «Eje» está a la DERECHA (D) o a la IZQUIERDA (I) de la ventana. Si no hay «Eje», pon eje "". Además, debajo del dibujo hay COTAS DE CADA TRAMO de izquierda a derecha (p. ej. «655,3» y «1419,7»; si solo hay una cota total, un solo tramo): para cada tramo di su ancho tal como está escrito y si es FIJO (F: sin las líneas en diagonal de apertura) o PRACTICABLE (P: con alguna hoja que abre, líneas en diagonal). Devuelve SOLO un JSON válido, sin texto: [{"img":0,"eje":"812,5","lado":"D","tramos":[{"ancho":"655,3","tipo":"F"},{"ancho":"1419,7","tipo":"P"}]}]' });
+    content.push({ type: "text", text: 'Cada imagen es la cabecera de una hoja de corte con el dibujo de una ventana. En el dibujo hay una cota con la palabra «Eje» (por ejemplo «812,5 Eje»): es la altura del eje de la persiana. Para cada imagen dime ese número tal como está escrito y si el texto «Eje» está a la DERECHA (D) o a la IZQUIERDA (I) de la ventana. Si no hay «Eje», pon eje "". Además, debajo del dibujo hay COTAS DE CADA TRAMO de izquierda a derecha (p. ej. «655,3» y «1419,7»; si solo hay una cota total, un solo tramo): para cada tramo di su ancho tal como está escrito y si es FIJO (F: sin las líneas en diagonal de apertura) o PRACTICABLE (P: con alguna hoja que abre, líneas en diagonal). Y en VERTICAL, las cotas del lado de la ventana de ARRIBA a ABAJO (sin contar el cajón de persiana de arriba, p. ej. 185): cada tramo con su alto y si es FIJO (F) o PRACTICABLE (P) — p. ej. una ventana encima (1080, P) y un fijo debajo (1000, F); si no está partida en vertical, un solo tramo. Devuelve SOLO un JSON válido, sin texto: [{"img":0,"eje":"812,5","lado":"D","tramos":[{"ancho":"655,3","tipo":"F"},{"ancho":"1419,7","tipo":"P"}],"tramosV":[{"alto":"1080","tipo":"P"},{"alto":"1000","tipo":"F"}]}]' });
     const r = await fetch("/.netlify/functions/anthropic-proxy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 800, messages: [{ role: "user", content }] }) });
     if (!r.ok) continue;
     const d = await r.json();
@@ -54805,6 +54827,8 @@ async function auxEjesDelDibujo(doc, paginas) {
       const im = tanda[Number(x && x.img)]; if (!im) return;
       const tr = toArray(x && x.tramos).map((t) => ({ a: String((t && t.ancho) || "").trim().replace(/\s+/g, ""), t: String((t && t.tipo) || "").toUpperCase().slice(0, 1) })).filter((t) => /^\d{2,4}(?:[.,]\d{1,2})?$/.test(t.a) && (t.t === "F" || t.t === "P"));
       if (tr.length > 1) paginas[im.i].push(`\nTRAMOS:${tr.map((t) => `${t.a}${t.t}`).join("|")}\n`);
+      const trV = toArray(x && x.tramosV).map((t) => ({ a: String((t && (t.alto || t.ancho)) || "").trim().replace(/\s+/g, ""), t: String((t && t.tipo) || "").toUpperCase().slice(0, 1) })).filter((t) => /^\d{2,4}(?:[.,]\d{1,2})?$/.test(t.a) && (t.t === "F" || t.t === "P"));
+      if (trV.length > 1) paginas[im.i].push(`\nTRAMOSV:${trV.map((t) => `${t.a}${t.t}`).join("|")}\n`);
       const eje = String((x && x.eje) || "").trim().replace(/\s+/g, "");
       if (!/^\d{2,4}(?:[.,]\d{1,2})?$/.test(eje)) return;
       const lado = String((x && x.lado) || "").toUpperCase();
