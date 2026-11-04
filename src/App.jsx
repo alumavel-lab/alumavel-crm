@@ -21385,7 +21385,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
-        {esRecepcion && (
+        {(
           <>
             <input ref={inputPedidoRef} type="file" accept="application/pdf,image/*" className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) subirPedido(e.target.files[0]); e.target.value = ""; }} />
@@ -21414,7 +21414,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <button onClick={quitarRepetidasGuardadas} className="px-2 py-1 rounded bg-rose-600 text-white text-xs font-semibold">Quitar repetidas</button>
         </div>
       )}
-      {esRecepcion && borradorPedido && (() => {
+      {borradorPedido && (() => {
         const { cab, filas } = borradorPedido;
         const cambiaCab = (k, v) => setBorradorPedido({ ...borradorPedido, cab: { ...cab, [k]: v } });
         const cambiaFila = (i, patch) => setBorradorPedido({ ...borradorPedido, filas: filas.map((y, j) => (j === i ? { ...y, ...patch } : y)) });
@@ -21593,6 +21593,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <div ref={refRevision} className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
           <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
+          {!esMosq && borrador.some((x) => !String(fichaPersiana(x).presupuesto || "").match(/^\d/) || !fichaPersiana(x).referencia) && (
+            <div className="mb-2 rounded-lg border-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+              <span className="font-bold text-amber-900">Para que salgan el PRESUPUESTO, la REFERENCIA (EXP … PORTAL … ESC … 2A) y el CLIENTE, sube el PEDIDO COMPRA de estas persianas:</span>
+              <button type="button" onClick={() => inputPedidoRef.current?.click()} disabled={leyendoPedido} className="flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg text-white disabled:opacity-60" style={{ backgroundColor: "#2E8B57" }}><Plus size={14} /> {leyendoPedido ? "Leyendo pedido…" : "Subir PEDIDO COMPRA (PDF)"}</button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
             <label className="font-semibold text-slate-700">Carro de destino:</label>
             <select value={carroDestinoGlobal} onChange={(e) => setCarroDestinoGlobal(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 bg-white">
