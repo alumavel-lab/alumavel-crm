@@ -44272,6 +44272,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     // ventanas no coinciden: entonces se enlaza por el NOMBRE de la ventana (P01.101…) dentro de la misma obra
     const normPosCD = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
     const posIdxCD = {}; Object.entries(snapCD || {}).forEach(([k, sn]) => { if (!sn) return; const m = {}; toArray(sn.ventanas).forEach((w) => { const p = normPosCD(w.pos); if (p && !m[p]) m[p] = String(w.id); }); posIdxCD[limpiaAD(k)] = m; });
+    // Y lo más seguro: PRESUPUESTO + NOMBRE DE LA VENTANA (6509 + P01.101), sea cual sea la clave con la que cada pantalla tiene la obra
+    const basePCD = (c) => String(c || "").split("-")[0].replace(/\D/g, "");
+    const hechasPP = new Set(); const probPP = new Set();
+    Object.values(marcasCDAD || {}).forEach((dia) => Object.entries(dia || {}).forEach(([ko, vs]) => {
+      const sn = snapCD && (snapCD[ko] || snapCD[limpiaAD(ko)]); if (!sn) return;
+      const bases = [...new Set(toArray(sn.codigos).map(basePCD).filter((b) => b.length >= 3))]; if (!bases.length) return;
+      const posDe = {}; toArray(sn.ventanas).forEach((w) => { posDe[limpiaAD(String(w.id))] = normPosCD(w.pos); });
+      Object.entries(vs || {}).forEach(([id, v]) => { const p = posDe[limpiaAD(id)]; if (!p) return; const dest = v === 1 ? hechasPP : v === 2 ? probPP : null; if (dest) bases.forEach((b) => dest.add(`${b}|${p}`)); });
+    }));
     // Las ventanas salen de CONTROL DEL DÍA (las mismas); solo si una obra aún no está publicada desde allí se usan las de las etiquetas
     const deCD = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.ventanas).length).map((sn) => {
       const key = `${sn.tipo}-${sn.id}`; const kk = limpiaAD(key);
@@ -44463,7 +44472,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return out.filter((it) => it.sinEtiquetas || !salidaOk(it.o));
     };
     const cacheSt = new Map();
-    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? [...obrasAD.map((q) => ({ key: q.key, codigos: q.codigos })), ...toArray(proyectos).map((q) => ({ key: `p-${q.id}`, codigos: codigosDe({ tipo: "p", id: q.id }) })), ...toArray(uxExpedientes).map((q) => ({ key: `u-${q.id}`, codigos: codigosDe({ tipo: "u", id: q.id }) }))].filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))).map((q) => q.key) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((kq) => set.has(`${limpiaAD(kq)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`)) || [o.key, ...gem].some((kq) => { const sid = posIdxCD[limpiaAD(kq)] && posIdxCD[limpiaAD(kq)][normPosCD(x.v.pos)]; return !!sid && set.has(`${limpiaAD(kq)}|${limpiaAD(sid)}`); }); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
+    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? [...obrasAD.map((q) => ({ key: q.key, codigos: q.codigos })), ...toArray(proyectos).map((q) => ({ key: `p-${q.id}`, codigos: codigosDe({ tipo: "p", id: q.id }) })), ...toArray(uxExpedientes).map((q) => ({ key: `u-${q.id}`, codigos: codigosDe({ tipo: "u", id: q.id }) }))].filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))).map((q) => q.key) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((kq) => set.has(`${limpiaAD(kq)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`)) || [o.key, ...gem].some((kq) => { const sid = posIdxCD[limpiaAD(kq)] && posIdxCD[limpiaAD(kq)][normPosCD(x.v.pos)]; return !!sid && set.has(`${limpiaAD(kq)}|${limpiaAD(sid)}`); }) || (() => { const pp = set === hechasCD ? hechasPP : probPP; const pz = normPosCD(x.v.pos); return !!pz && toArray(o.codigos).some((c) => { const b = basePCD(c); return b.length >= 3 && pp.has(`${b}|${pz}`); }); })(); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
     const proyectoDeObra = (o) => { const d = o.dueno || {}; return d.tipo === "p" ? toArray(proyectos).find((q) => q.id === d.id) : toArray(proyectos).find((q) => q.id === (d.proyectoId || "§")); };
     // Una obra SALE de esta pantalla cuando está completa y todos sus palets ya están en el almacén de destino (el proyecto sigue a reparto / recogida / montaje)
     const salidaOk = (o) => {
