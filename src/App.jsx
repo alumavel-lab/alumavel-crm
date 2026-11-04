@@ -43787,12 +43787,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     } else {
       const obra = obraDeDueno(dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); }
+      if (sug) { const vacio = !toArray(sug.ventanas).length; colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); if (vacio) pegatinaPalet(sug, obra); }
       else {
         const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al escanear ${w.pos}`);
         colocarVentana(w, obra, creado.id);
         setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: creado.id, nueva: true, creado: true });
         avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${creado.numero} (caballete nuevo)`);
+        pegatinaPalet(creado, obra);
       }
     }
     volverAEscanear();
@@ -43927,14 +43928,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     return res;
   };
+  // Pegatina del palet al entrar su PRIMERA ventana (palet vacío o nuevo)
+  const pegatinaPalet = (c, obra) => { try { const cur = cabsAhora().find((z) => z.id === c.id) || c; const cli = obra && obra.cliente ? ` · ${obra.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...cur, almacenNombre: nombreAlmacen(almacenDe(cur)), obraTxt: `${(obra && obra.nombre) || ""}${cli}` }]); } catch (er) { /* sin etiqueta */ } };
   const colocarDesdeBuscador = (e) => {
     const obra = obraDeDueno(e.dueno);
     const sug = caballeteSugerido(obra, e.w);
-    if (sug) { cambiarCaballete(e.w, obra, sug.id); avisar(true, `✓ ${e.w.pos} → ${sug.numero}`); }
+    if (sug) { const vacio = !toArray(sug.ventanas).length; cambiarCaballete(e.w, obra, sug.id); avisar(true, `✓ ${e.w.pos} → ${sug.numero}`); if (vacio) pegatinaPalet(sug, obra); }
     else {
       const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${e.w.pos}`);
       colocarVentana(e.w, obra, creado.id);
       avisar(true, `✓ ${e.w.pos} → ${creado.numero} (caballete nuevo)`);
+      pegatinaPalet(creado, obra);
     }
   };
   // Panel "preparar obra": se elige la obra y cuántos caballetes lleva; se reservan libres para ella
@@ -44490,9 +44494,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       if (f.c) { setQuitarAD({ f, o }); return; }
       const obra = obraDeDueno(o.dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { if (colocarVentana(w, obra, sug.id)) avisar(true, `✓ ${w.pos} → ${sug.numero}`); return; }
+      // la PRIMERA ventana que entra en un palet (vacío o nuevo) saca la pegatina del palet sola; antes solo salía con «Siguiente palet»
+      const pegatina = (c) => { try { const cur = cabsAhora().find((z) => z.id === c.id) || c; const cli = obra.cliente ? ` · ${obra.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...cur, almacenNombre: nombreAlmacen(almacenDe(cur)), obraTxt: `${obra.nombre}${cli}` }]); } catch (e) { /* sin etiqueta */ } };
+      if (sug) {
+        const vacio = !toArray(sug.ventanas).length;
+        if (colocarVentana(w, obra, sug.id)) { avisar(true, `✓ ${w.pos} → ${sug.numero}${vacio ? " · 🖨 etiqueta del palet" : ""}`); if (vacio) pegatina(sug); }
+        return;
+      }
       const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${w.pos}`);
-      if (colocarVentana(w, obra, creado.id)) avisar(true, `✓ ${w.pos} → ${creado.numero} (palet nuevo)`);
+      if (colocarVentana(w, obra, creado.id)) { avisar(true, `✓ ${w.pos} → ${creado.numero} (palet nuevo) · 🖨 etiqueta del palet`); pegatina(creado); }
     };
     // calendario
     const [anio, mes] = mesAD.split("-").map(Number);
@@ -44644,6 +44654,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             ? <div className="text-2xl rounded-md bg-sky-50 border border-sky-300 px-2 py-1 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b></div>
             : <button type="button" onClick={() => asignarEImprimir(o, sig.w)} className="w-full text-left text-sm rounded-md bg-sky-50 border border-sky-300 hover:bg-sky-100 px-2 py-1.5 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b><span className="ml-2 font-semibold underline">🖨 Tocar: reservarlo para esta obra e imprimir su etiqueta</span></button>)}
           {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.values()].map(({ c, n: k }) => `${c.numero} (${k})${ubicDe(c) ? ` · ${ubicDe(c)}` : ""}`).join("   |   ")}</b></div>}
+          {!g && pal.size > 0 && <div className="flex flex-wrap gap-1.5">{[...pal.values()].map(({ c }) => <button key={c.id} type="button" onClick={() => { const ob = obraDeDueno(o.dueno); const cli = ob.cliente ? ` · ${ob.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)), obraTxt: `${ob.nombre}${cli}` }]); }} className="text-xs font-bold px-2 py-1 rounded-md border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🖨 Etiqueta {c.numero}</button>)}</div>}
           {(() => {
             const A = ord.filter((f) => !f.c && f.hecha); const B = ord.filter((f) => f.c); const C = ord.filter((f) => !f.c && !f.hecha);
             const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className="flex flex-wrap gap-1.5">{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
