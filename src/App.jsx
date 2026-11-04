@@ -5045,20 +5045,21 @@ export default function App() {
   }, [uxExpedientes, proyectos, currentUser?.id, loading]);
   const hojasUxPasadasRef = useRef(new Set());
   const hojasAuxManualApp = useObjetoFb("auxiliaresHojasManual"); // hojas subidas A MANO en Auxiliares (copia protegida)
+  const hojasAuxListo = useFbListo("auxiliaresHojas"), hojasManListo = useFbListo("auxiliaresHojasManual"); // NO decidir nada hasta tenerlas: al abrir el CRM llegan un momento después y parecía que no había ninguna (y se copiaba la de Uxcar encima)
   // Si la hoja que se subió a mano ha sido pisada (otro ordenador con la versión vieja copió encima la de Uxcar), se vuelve a poner
   useEffect(() => {
-    if (!currentUser || loading || !hojasAuxManualApp || !hojasAuxApp) return;
+    if (!currentUser || loading || !hojasAuxListo || !hojasManListo) return;
     Object.entries(hojasAuxManualApp).forEach(([ppto, man]) => {
       if (!man || !man.presupuesto) return;
       const ya = hojasAuxApp[ppto];
       if (ya && ya.manual && ya.subidaEn === man.subidaEn) return; // está la buena
       if (ya && ya.manual && (ya.subidaEn || 0) > (man.subidaEn || 0)) return; // hay otra subida a mano más nueva
-      if (ya && !ya.manual && (String(ya.fecha || "") > String(man.fecha || "") || (Number(ya.version) || 0) > (Number(man.version) || 0))) return; // Uxcar trae una versión más nueva: vale la suya
+      if (ya && !ya.manual && (Number(ya.version) || 0) > (Number(man.version) || 0)) return; // hay una VERSIÓN más nueva de la hoja (releída de Uxcar): vale esa
       fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), man).catch(() => {});
     });
-  }, [hojasAuxManualApp, hojasAuxApp, currentUser?.id, loading]);
+  }, [hojasAuxManualApp, hojasAuxApp, hojasAuxListo, hojasManListo, currentUser?.id, loading]);
   useEffect(() => {
-    if (!currentUser || loading) return;
+    if (!currentUser || loading || !hojasAuxListo || !hojasManListo) return;
     toArray(uxExpedientes).forEach((e) => {
       Object.entries(e.hojasCorteAux || {}).forEach(([ppto, h]) => {
         if (!h || !h.presupuesto) return;
@@ -5067,14 +5068,24 @@ export default function App() {
         const ya = hojasAuxApp && hojasAuxApp[ppto];
         hojasUxPasadasRef.current.add(clave);
         if (ya && ya.archivo === h.archivo && ya.fecha === h.fecha) return;
-        // NO pisar la hoja que se subió a mano en Auxiliares: solo se copia la de Uxcar si no hay ninguna, o si la de Uxcar es más nueva (otra versión u otro día)
-        if (ya && !(String(h.fecha || "") > String(ya.fecha || "") || (Number(h.version) || 0) > (Number(ya.version) || 0))) return;
+        // Solo entra la de Uxcar si NO hay hoja, o si es una VERSIÓN más nueva que la que hay (la fecha no cuenta: Uxcar vuelve a guardar la
+        // misma hoja cada vez que sube documentos, y eso pisaba la que se había subido aquí)
         const man = hojasAuxManualApp && hojasAuxManualApp[ppto];
-        if (man && !(String(h.fecha || "") > String(man.fecha || "") || (Number(h.version) || 0) > (Number(man.version) || 0))) return; // la subida a mano manda
-        fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), h).catch(() => { hojasUxPasadasRef.current.delete(clave); });
+        const verHay = Math.max(Number(ya && ya.version) || 0, Number(man && man.version) || 0);
+        if ((ya || man) && (Number(h.version) || 0) <= verHay) return;
+        // Se relee SU PDF con el lector de Auxiliares (lista actual, colores, eje del dibujo); si no se puede, se copia lo que leyó el portal
+        const docs = toArray(e.documentos).filter((d) => d && d.url && /hoja[\s_.-]*(de[\s_.-]*)?corte/i.test(`${d.tipo || ""} ${d.nombre || ""}`));
+        (async () => {
+          let hecho = false;
+          for (const d of docs) {
+            try { const b = await bytesDeArchivoGuardado(d.url); const hs = await guardarHojasCorteAux([new File([b], d.nombre || `HOJA DE CORTE ${ppto}.pdf`, { type: "application/pdf" })]); if (hs.map((x) => digitosPresu(x)).includes(digitosPresu(ppto))) hecho = true; } catch (er) { /* se intenta con el siguiente */ }
+            if (hecho) break;
+          }
+          if (!hecho) await fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), h).catch(() => { hojasUxPasadasRef.current.delete(clave); });
+        })();
       });
     });
-  }, [uxExpedientes, hojasAuxApp, hojasAuxManualApp, currentUser?.id, loading]);
+  }, [uxExpedientes, hojasAuxApp, hojasAuxManualApp, hojasAuxListo, hojasManListo, currentUser?.id, loading]);
   // Si un pedido de Uxcar sin enviar desaparece del portal (se sustituyó o se borró), su copia en Pedidos del CRM también: no quedan pedidos fantasma
   useEffect(() => {
     if (!currentUser || loading || !toArray(uxPedidos).length) return;
@@ -45596,6 +45607,12 @@ const useObjetoFb = (ruta) => {
   const [o, setO] = useState({});
   useEffect(() => onValue(ref(fbDb, ruta), (s) => setO(s.val() || {}), () => setO({})), [ruta]);
   return o;
+};
+// true en cuanto ha llegado el primer dato de esa ruta (antes, useObjetoFb da {} y no se sabe si está vacía o aún no ha cargado)
+const useFbListo = (ruta) => {
+  const [listo, setListo] = useState(false);
+  useEffect(() => onValue(ref(fbDb, ruta), () => setListo(true), () => setListo(false)), [ruta]);
+  return listo;
 };
 const useZonasLinea = () => {
   const cfg = useObjetoFb("configZonasLinea");
