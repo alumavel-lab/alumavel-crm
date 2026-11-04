@@ -20438,6 +20438,23 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
   // TODO lo de la persiana para el almacén: lo del PEDIDO (presupuesto, referencia de la vivienda, cliente) y, de la OBRA de ese
   // presupuesto (o del expediente de Uxcar), el teléfono y la dirección — el pedido de compra no los trae
+  // Bloque con TODO lo del pedido de esa persiana, para enseñarlo entero (revisión, almacén)
+  const BloquePedidoPers = ({ x }) => {
+    const fp = fichaPersiana(x); let q = null; try { q = pedidoDe(x); } catch (er) { q = null; }
+    const g = (k) => String((q && q[k]) || x[k] || "").trim();
+    const sinPpto = !/^\d/.test(String(fp.presupuesto || ""));
+    const tec = [g("colorCajon") && `Cajón ${g("colorCajon")}`, g("colorLama") && `Lama ${g("colorLama")}`, (g("guia") || g("colorGuia")) && `Guía ${[g("guia"), g("colorGuia")].filter(Boolean).join(" ")}`, g("cinta") && `Cinta ${g("cinta")}`, g("accionamiento") && `Acc. ${g("accionamiento")}`, (q && q.recogedor || x.recogedor) && `Recogedor ${q && q.recogedor || x.recogedor}`].filter(Boolean);
+    return (
+      <div className="text-xs leading-snug min-w-[220px]">
+        <div className={`font-extrabold ${fp.referencia ? "text-slate-900" : "text-rose-700"}`}>{fp.referencia || `EXP ${x.expediente || "?"} · SIN REFERENCIA (sube el PEDIDO COMPRA)`}</div>
+        <div className={`font-bold ${sinPpto ? "text-rose-700" : "text-slate-800"}`}>Presupuesto: {fp.presupuesto || "?"}</div>
+        <div className="text-slate-700">Cliente: <b>{fp.cliente || "?"}</b></div>
+        {q && (q.pedido || q.pedidoProv) && <div className="text-slate-500">Pedido {q.pedidoProv || q.pedido}{q.fechaPedido ? ` · ${q.fechaPedido}` : ""}</div>}
+        {tec.length > 0 && <div className="text-slate-500">{tec.join(" · ")}</div>}
+        {(g("descripcion")) && <div className="text-[11px] text-slate-400 line-clamp-2" title={g("descripcion")}>{g("descripcion")}</div>}
+      </div>
+    );
+  };
   const fichaPersiana = (x) => {
     let q = null; try { q = pedidoDe(x); } catch (er) { q = null; }
     const pp = pptoDe(x); const b = digitosPresu(String(pp || "").split(/[,·;]/)[0]);
@@ -21187,18 +21204,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           </div>
         )}
       </td>
-      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(() => {
-        // Todo lo que se sabe de la etiqueta (según por dónde entró la persiana, viene en un campo u otro)
-        const fp = fichaPersiana(x);
-        const datos = [fp.referencia || x.refObra || x.obraUx, x.nombreObra, x.habitacion, fp.cliente, fp.presupuesto ? `Ppto ${fp.presupuesto}` : "", fp.telefono ? `☎ ${fp.telefono}` : "", fp.direccion ? `📍 ${fp.direccion}` : "", x.pedidoProv ? `Pedido ${x.pedidoProv}` : x.pedido ? `Pedido ${x.pedido}` : ""].filter(Boolean);
-        const desc = String(x.descripcion || "").trim();
-        return (datos.length > 0 || desc) && (
-          <div className="text-xs font-normal text-slate-600 leading-snug mt-0.5 max-w-[240px]">
-            {datos.length > 0 && <div>{[...new Set(datos)].join(" · ")}</div>}
-            {desc && <div className="text-[11px] text-slate-400 line-clamp-2" title={desc}>{desc}</div>}
-          </div>
-        );
-      })()}</td>
+      <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" /><div className="mt-0.5"><BloquePedidoPers x={x} /></div></td>
       <td className="px-2"><input key={`${x.id}_${x.ref || ""}`} defaultValue={x.ref || ""} placeholder="V01.101" title="Vivienda / referencia (se puede escribir o corregir a mano)" onBlur={(e) => { const v = e.target.value.trim(); if (v !== String(x.ref || "")) actualizarPersiana(x.id, { ref: v }); }} className="w-28 border border-slate-300 focus:border-[#2E8B57] rounded px-2 py-1 text-sm font-semibold bg-white" /></td>
       <td className="px-2 font-mono-num">{largoPersiana(x)}{x.alto ? ` × ${x.alto}` : ""}</td>
       {mostrarSitio && <td className="px-2 text-xs">{x.entregada ? <span className="text-slate-400">Salió {fmtDate(x.fechaSalida)}</span> : x.enPuesto ? <span className="text-sky-700 font-semibold">En {x.enPuesto} <button onClick={() => devolverDePuesto(x)} className="ml-1 text-[#2E8B57] underline font-normal">devolver</button></span> : x.estante ? <>{dondeTxt(x.estante)}{!x.entregada && (<>
@@ -21385,7 +21391,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           className="ml-auto flex items-center gap-1.5 text-sm font-semibold px-3.5 py-2 rounded-lg hover:opacity-90 disabled:opacity-50">
           <Plus size={14} /> {leyendo ? "Leyendo…" : `Subir packing list de ${cosa}`}
         </button>
-        {esRecepcion && (
+        {(
           <>
             <input ref={inputPedidoRef} type="file" accept="application/pdf,image/*" className="hidden"
               onChange={(e) => { if (e.target.files?.[0]) subirPedido(e.target.files[0]); e.target.value = ""; }} />
@@ -21414,7 +21420,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           <button onClick={quitarRepetidasGuardadas} className="px-2 py-1 rounded bg-rose-600 text-white text-xs font-semibold">Quitar repetidas</button>
         </div>
       )}
-      {esRecepcion && borradorPedido && (() => {
+      {borradorPedido && (() => {
         const { cab, filas } = borradorPedido;
         const cambiaCab = (k, v) => setBorradorPedido({ ...borradorPedido, cab: { ...cab, [k]: v } });
         const cambiaFila = (i, patch) => setBorradorPedido({ ...borradorPedido, filas: filas.map((y, j) => (j === i ? { ...y, ...patch } : y)) });
@@ -21593,6 +21599,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
         <div ref={refRevision} className="bg-[#EEF7E4] border border-[#86D325] rounded-xl p-4">
           <h3 className="font-display font-bold text-slate-900 mb-1">Revisa las {cosa} antes de colocarlas</h3>
           <p className="text-xs text-slate-600 mb-2">{borrador.length} {cosa}. Corrige el expediente o el largo si algo está mal leído.</p>
+          {!esMosq && borrador.some((x) => !String(fichaPersiana(x).presupuesto || "").match(/^\d/) || !fichaPersiana(x).referencia) && (
+            <div className="mb-2 rounded-lg border-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+              <span className="font-bold text-amber-900">Para que salgan el PRESUPUESTO, la REFERENCIA (EXP … PORTAL … ESC … 2A) y el CLIENTE, sube el PEDIDO COMPRA de estas persianas:</span>
+              <button type="button" onClick={() => inputPedidoRef.current?.click()} disabled={leyendoPedido} className="flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg text-white disabled:opacity-60" style={{ backgroundColor: "#2E8B57" }}><Plus size={14} /> {leyendoPedido ? "Leyendo pedido…" : "Subir PEDIDO COMPRA (PDF)"}</button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
             <label className="font-semibold text-slate-700">Carro de destino:</label>
             <select value={carroDestinoGlobal} onChange={(e) => setCarroDestinoGlobal(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 bg-white">
@@ -21656,7 +21668,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                         <option value="Eléctrica">Eléctrica</option>
                       </select>
                     </td>
-                    <td className="pr-2 text-slate-500">{(() => { const fp = fichaPersiana(x); return [fp.referencia ? <b key="r" className="text-slate-800">{fp.referencia}</b> : (x.refObra || x.obraUx || ""), x.nombreObra, fp.presupuesto ? `Ppto ${fp.presupuesto}` : "", fp.cliente, fp.telefono ? `☎ ${fp.telefono}` : "", fp.direccion ? `📍 ${fp.direccion}` : ""].filter(Boolean).reduce((acc, el, i) => (i ? [...acc, " · ", el] : [el]), []); })() || "—"}</td>
+                    <td className="pr-2 align-top"><BloquePedidoPers x={x} /></td>
                     <td className={`pr-2 text-[11px] font-semibold ${colorCristal(cristalDe(x))}`}>{textoCristal(cristalDe(x)) || "—"}</td>
                     <td className="pr-2">
                       <select value={x.carroDestino || ""} onChange={(e) => setBorrador(borrador.map((y, j) => (j === i ? { ...y, carroDestino: parseInt(e.target.value, 10) || "" } : y)))} className="border border-slate-200 rounded px-1 py-0.5 bg-white max-w-[150px]">
