@@ -54711,7 +54711,8 @@ const auxCfgDe = (c) => {
   const x = c || {};
   const refsEd = toArray(x.refs);
   return {
-    refs: x.editado ? [...refsEd, ...AUX_REFS_NUEVAS.filter((n) => !toArray(x.vistas).includes(n.id) && !refsEd.some((r) => String(r.ref || "").trim() === n.ref))] : AUX_CFG_DEFECTO.refs,
+    // M05904 es la GUÍA de la mosquitera («Guia mosquitera antiviento PLX42…» en la hoja); si en la lista se llamó «cajón», se corrige el nombre
+    refs: (x.editado ? [...refsEd, ...AUX_REFS_NUEVAS.filter((n) => !toArray(x.vistas).includes(n.id) && !refsEd.some((r) => String(r.ref || "").trim() === n.ref))] : AUX_CFG_DEFECTO.refs).map((r) => (r && String(r.ref || "").trim().toUpperCase() === "M05904" && /caj[oó]n/i.test(String(r.nombre || "")) ? { ...r, nombre: "Guía de mosquitera" } : r)),
     carros: x.editado ? toArray(x.carros) : AUX_CFG_DEFECTO.carros,
     bocadoCm: x.bocadoCm != null && x.bocadoCm !== "" ? x.bocadoCm : 8,
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
@@ -54917,9 +54918,10 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
       if (m.cajaSinGuia && !hojaTraeGuia && !(pptosGuiaProv && pptosGuiaProv.has(ppto))) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: lleva caja de persiana "guía aparte" y la hoja no trae la guía. Revísalo antes de cortar.`);
       // MEDIDAS DE HOJAS LEÍDAS ANTES DEL ARREGLO («14252» = 1425 + Ud pegada): si la medida es imposible para el tamaño de la ventana,
       // se le quita la cifra de Ud/ToT pegada al final (sin tener que volver a subir la hoja)
-      const mxV = Math.max(Number(m.ancho) || 0, Number(m.alto) || 0);
+      // tope: la ventana + 70 cm; si la hoja no guardó las medidas de la ventana (hojas antiguas), 4 m (ninguna pieza auxiliar mide más)
+      const mxV = Math.max(Number(m.ancho) || 0, Number(m.alto) || 0) || 3300;
       const medidaBuena = (f) => {
-        const L = Number(f.lCorte) || 0; if (!(mxV > 0) || L <= mxV + 700) return f.lCorte;
+        const L = Number(f.lCorte) || 0; if (L <= mxV + 700) return f.lCorte;
         const st = String(Math.round(L));
         for (const suf of [`${f.ud}${f.tot}`, String(f.tot), String(f.ud)]) { if (suf && st.length > suf.length && st.endsWith(suf)) { const c = parseInt(st.slice(0, -suf.length), 10); if (c >= 40 && c <= mxV + 700) return c; } }
         return f.lCorte;
