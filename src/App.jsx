@@ -19790,12 +19790,14 @@ function PanelesPendientes({ cristales = [] }) {
 }
 // Nº de presupuesto de una persiana/mosquitera del almacén: el que lleva guardado, o el de su proyecto/expediente
 function presupuestoDePersiana(x, ctx) {
-  if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
+  // uno solo: ese; si lleva varios juntos («6751, 6747, 6746» = todo el expediente), manda el del pedido de compra de esa persiana
+  if (x && x.presupuesto && !/[,·;]/.test(String(x.presupuesto))) return String(x.presupuesto).replace(/\s+/g, " ").trim();
   // El presupuesto manda sobre el expediente: si el pedido de esa persiana lo trae, se usa ese (varios presupuestos pueden compartir un EXP)
   try {
     const ped = toArray(ctx && ctx.pedidosPersianas).find((q) => q && q.presupuesto && (q.recibidaId === (x && x.id) || casaPedidaConPersiana(q, x)));
     if (ped) return String(ped.presupuesto).replace(/\s+/g, " ").trim();
   } catch (er) { /* nada */ }
+  if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
   const nums = numsExpediente(x && x.expediente);
   if (!nums.length) return "";
   const p = toArray(ctx && ctx.proyectos).find((pr) => pr.presupuestoNumero && numsExpediente(pr.numero).some((n) => nums.includes(n)));
@@ -20253,6 +20255,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // se colocan en los carros y al confirmar quedan como recibidas.
   // Presupuesto y mano de una persiana: lo que traiga la pieza; si no, se busca (presupuesto: en la obra del CRM o en los caballetes de cristal de ese expediente; mano: en el texto de la línea).
   const pptoDe = (x) => {
+    // el PRESUPUESTO DE ESA PERSIANA es el de su pedido de compra («Presupuesto: 6.740-1»); el de la persiana a veces lleva los de todo el
+    // expediente juntos («6751, 6747, 6746») y así no se sabe de cuál es
+    try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
     if (x.presupuesto) return String(x.presupuesto);
     try {
       const e = String(x.expediente || "").replace(/\D/g, "");
@@ -20270,6 +20275,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Los datos de cada persiana (mano, descripción, nº de pedido…) salen del PEDIDO de persianas subido (ahí viene todo), no solo de lo que se guardó al meterla en el carro
   const pedidoDe = (x) => { const L = toArray(ctxM.pedidosPersianas); return L.find((q) => q && q.recibidaId === x.id) || L.find((q) => q && casaPedidaConPersiana(q, x)) || null; };
+  // REFERENCIA de la vivienda tal como viene en el pedido de compra («EXP 823 DARWIN PORTAL 3 ESC 08 1B»): es lo que dice a qué casa va
+  const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
   const descDe = (x) => { const q = pedidoDe(x); return [...new Set([q && q.descripcion, x.descripcion].map((t) => String(t || "").trim()).filter(Boolean))].join(" · "); };
   // Todo lo que trae el pedido de esa persiana, para el papel: cantidad, color del cajón y de la lama, guía (tipo, medida y color), cinta, accionamiento y la descripción
   const fichaImpPers = (x) => {
@@ -21075,7 +21082,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
           const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
           const mano = manoDe(x);
-          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${(x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc(x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${referenciaDe(x) ? `<b>${esc(referenciaDe(x))}</b><br>` : expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${((q && q.cliente) || x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc((q && q.cliente) || x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
       }).join("");
       return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
@@ -21104,7 +21111,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const porCarro = {};
     const sinSitioP = [];
     entrada.forEach((x) => { const e = sitio[x.id]; if (e) (porCarro[e.carro] = porCarro[e.carro] || []).push({ x, e }); else sinSitioP.push(x); });
-    const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${referenciaDe(x) ? esc(referenciaDe(x)) : `EXP ${esc(expedienteRealDe(x) || "sin dato")}`}</b>${pptoDe(x) ? ` · Ppto ${esc(pptoDe(x))}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
     const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Presupuesto</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Cliente</th></tr>';
     const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${esc(etqExp(x))}</b><br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td>${esc(pptoDe(x) || "sin dato")}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "mano sin dato")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
@@ -43787,12 +43794,13 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     } else {
       const obra = obraDeDueno(dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); }
+      if (sug) { const vacio = !toArray(sug.ventanas).length; colocarVentana(w, obra, sug.id); setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: sug.id, nueva: true }); avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${sug.numero}`); if (vacio) pegatinaPalet(sug, obra); }
       else {
         const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al escanear ${w.pos}`);
         colocarVentana(w, obra, creado.id);
         setVentanaEsc({ w, dueno, tipo: pieza.t, cabId: creado.id, nueva: true, creado: true });
         avisar(true, `✓ ${w.pos} (${obra.nombre}) → ${creado.numero} (caballete nuevo)`);
+        pegatinaPalet(creado, obra);
       }
     }
     volverAEscanear();
@@ -43927,14 +43935,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     }
     return res;
   };
+  // Pegatina del palet al entrar su PRIMERA ventana (palet vacío o nuevo)
+  const pegatinaPalet = (c, obra) => { try { const cur = cabsAhora().find((z) => z.id === c.id) || c; const cli = obra && obra.cliente ? ` · ${obra.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...cur, almacenNombre: nombreAlmacen(almacenDe(cur)), obraTxt: `${(obra && obra.nombre) || ""}${cli}` }]); } catch (er) { /* sin etiqueta */ } };
   const colocarDesdeBuscador = (e) => {
     const obra = obraDeDueno(e.dueno);
     const sug = caballeteSugerido(obra, e.w);
-    if (sug) { cambiarCaballete(e.w, obra, sug.id); avisar(true, `✓ ${e.w.pos} → ${sug.numero}`); }
+    if (sug) { const vacio = !toArray(sug.ventanas).length; cambiarCaballete(e.w, obra, sug.id); avisar(true, `✓ ${e.w.pos} → ${sug.numero}`); if (vacio) pegatinaPalet(sug, obra); }
     else {
       const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${e.w.pos}`);
       colocarVentana(e.w, obra, creado.id);
       avisar(true, `✓ ${e.w.pos} → ${creado.numero} (caballete nuevo)`);
+      pegatinaPalet(creado, obra);
     }
   };
   // Panel "preparar obra": se elige la obra y cuántos caballetes lleva; se reservan libres para ella
@@ -44257,6 +44268,19 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const hechasCD = new Set(); const probCD = new Set();
     Object.values(marcasCDAD || {}).forEach((dia) => Object.entries(dia || {}).forEach(([ko, vs]) => Object.entries(vs || {}).forEach(([id, v]) => { if (v === 1) hechasCD.add(`${ko}|${id}`); else if (v === 2) probCD.add(`${ko}|${id}`); })));
     const idCD = (o, x) => `${limpiaAD(o.key)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`;
+    // Si la obra entra en Control del día por un camino (hoja de corte, planning) y aquí por otro (etiquetas), los códigos internos de las
+    // ventanas no coinciden: entonces se enlaza por el NOMBRE de la ventana (P01.101…) dentro de la misma obra
+    const normPosCD = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+    const posIdxCD = {}; Object.entries(snapCD || {}).forEach(([k, sn]) => { if (!sn) return; const m = {}; toArray(sn.ventanas).forEach((w) => { const p = normPosCD(w.pos); if (p && !m[p]) m[p] = String(w.id); }); posIdxCD[limpiaAD(k)] = m; });
+    // Y lo más seguro: PRESUPUESTO + NOMBRE DE LA VENTANA (6509 + P01.101), sea cual sea la clave con la que cada pantalla tiene la obra
+    const basePCD = (c) => String(c || "").split("-")[0].replace(/\D/g, "");
+    const hechasPP = new Set(); const probPP = new Set();
+    Object.values(marcasCDAD || {}).forEach((dia) => Object.entries(dia || {}).forEach(([ko, vs]) => {
+      const sn = snapCD && (snapCD[ko] || snapCD[limpiaAD(ko)]); if (!sn) return;
+      const bases = [...new Set(toArray(sn.codigos).map(basePCD).filter((b) => b.length >= 3))]; if (!bases.length) return;
+      const posDe = {}; toArray(sn.ventanas).forEach((w) => { posDe[limpiaAD(String(w.id))] = normPosCD(w.pos); });
+      Object.entries(vs || {}).forEach(([id, v]) => { const p = posDe[limpiaAD(id)]; if (!p) return; const dest = v === 1 ? hechasPP : v === 2 ? probPP : null; if (dest) bases.forEach((b) => dest.add(`${b}|${p}`)); });
+    }));
     // Las ventanas salen de CONTROL DEL DÍA (las mismas); solo si una obra aún no está publicada desde allí se usan las de las etiquetas
     const deCD = Object.values(snapCD || {}).filter((sn) => sn && toArray(sn.ventanas).length).map((sn) => {
       const key = `${sn.tipo}-${sn.id}`; const kk = limpiaAD(key);
@@ -44448,7 +44472,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       return out.filter((it) => it.sinEtiquetas || !salidaOk(it.o));
     };
     const cacheSt = new Map();
-    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? [...obrasAD.map((q) => ({ key: q.key, codigos: q.codigos })), ...toArray(proyectos).map((q) => ({ key: `p-${q.id}`, codigos: codigosDe({ tipo: "p", id: q.id }) })), ...toArray(uxExpedientes).map((q) => ({ key: `u-${q.id}`, codigos: codigosDe({ tipo: "u", id: q.id }) }))].filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))).map((q) => q.key) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((kq) => set.has(`${limpiaAD(kq)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`)); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
+    const stats = (o) => { if (cacheSt.has(o.key)) return cacheSt.get(o.key); const gem = o.codigos.length ? [...obrasAD.map((q) => ({ key: q.key, codigos: q.codigos })), ...toArray(proyectos).map((q) => ({ key: `p-${q.id}`, codigos: codigosDe({ tipo: "p", id: q.id }) })), ...toArray(uxExpedientes).map((q) => ({ key: `u-${q.id}`, codigos: codigosDe({ tipo: "u", id: q.id }) }))].filter((q) => q.key !== o.key && q.codigos.some((c) => o.codigos.some((m) => mismoP(m, c)))).map((q) => q.key) : []; const marcaCD = (set, x) => set.has(idCD(o, x)) || gem.some((kq) => set.has(`${limpiaAD(kq)}|${limpiaAD(x.v.id || x.v.pos || baseDe(x.v))}`)) || [o.key, ...gem].some((kq) => { const sid = posIdxCD[limpiaAD(kq)] && posIdxCD[limpiaAD(kq)][normPosCD(x.v.pos)]; return !!sid && set.has(`${limpiaAD(kq)}|${limpiaAD(sid)}`); }) || (() => { const pp = set === hechasCD ? hechasPP : probPP; const pz = normPosCD(x.v.pos); return !!pz && toArray(o.codigos).some((c) => { const b = basePCD(c); return b.length >= 3 && pp.has(`${b}|${pz}`); }); })(); const filas = o.vs.map((x) => { const w = wDe(x, o.dueno); return { x, w, c: enCab(w), hecha: marcaCD(hechasCD, x), prob: marcaCD(probCD, x) }; }); const r = { filas, n: filas.filter((f) => f.c).length, pend: filas.filter((f) => !f.c && f.hecha).length, total: filas.length }; cacheSt.set(o.key, r); return r; };
     const proyectoDeObra = (o) => { const d = o.dueno || {}; return d.tipo === "p" ? toArray(proyectos).find((q) => q.id === d.id) : toArray(proyectos).find((q) => q.id === (d.proyectoId || "§")); };
     // Una obra SALE de esta pantalla cuando está completa y todos sus palets ya están en el almacén de destino (el proyecto sigue a reparto / recogida / montaje)
     const salidaOk = (o) => {
@@ -44490,9 +44514,15 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       if (f.c) { setQuitarAD({ f, o }); return; }
       const obra = obraDeDueno(o.dueno);
       const sug = caballeteSugerido(obra, w);
-      if (sug) { if (colocarVentana(w, obra, sug.id)) avisar(true, `✓ ${w.pos} → ${sug.numero}`); return; }
+      // la PRIMERA ventana que entra en un palet (vacío o nuevo) saca la pegatina del palet sola; antes solo salía con «Siguiente palet»
+      const pegatina = (c) => { try { const cur = cabsAhora().find((z) => z.id === c.id) || c; const cli = obra.cliente ? ` · ${obra.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...cur, almacenNombre: nombreAlmacen(almacenDe(cur)), obraTxt: `${obra.nombre}${cli}` }]); } catch (e) { /* sin etiqueta */ } };
+      if (sug) {
+        const vacio = !toArray(sug.ventanas).length;
+        if (colocarVentana(w, obra, sug.id)) { avisar(true, `✓ ${w.pos} → ${sug.numero}${vacio ? " · 🖨 etiqueta del palet" : ""}`); if (vacio) pegatina(sug); }
+        return;
+      }
       const creado = crearCaballete(`Alta automática: no quedaban caballetes libres al colocar ${w.pos}`);
-      if (colocarVentana(w, obra, creado.id)) avisar(true, `✓ ${w.pos} → ${creado.numero} (palet nuevo)`);
+      if (colocarVentana(w, obra, creado.id)) { avisar(true, `✓ ${w.pos} → ${creado.numero} (palet nuevo) · 🖨 etiqueta del palet`); pegatina(creado); }
     };
     // calendario
     const [anio, mes] = mesAD.split("-").map(Number);
@@ -44644,6 +44674,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             ? <div className="text-2xl rounded-md bg-sky-50 border border-sky-300 px-2 py-1 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b></div>
             : <button type="button" onClick={() => asignarEImprimir(o, sig.w)} className="w-full text-left text-sm rounded-md bg-sky-50 border border-sky-300 hover:bg-sky-100 px-2 py-1.5 text-sky-900">👉 Siguiente palet: <b>{propTexto}</b><span className="ml-2 font-semibold underline">🖨 Tocar: reservarlo para esta obra e imprimir su etiqueta</span></button>)}
           {pal.size > 0 && <div className={`${g ? "text-xl" : "text-xs"} text-slate-600`}>Palets: <b>{[...pal.values()].map(({ c, n: k }) => `${c.numero} (${k})${ubicDe(c) ? ` · ${ubicDe(c)}` : ""}`).join("   |   ")}</b></div>}
+          {!g && pal.size > 0 && <div className="flex flex-wrap gap-1.5">{[...pal.values()].map(({ c }) => <button key={c.id} type="button" onClick={() => { const ob = obraDeDueno(o.dueno); const cli = ob.cliente ? ` · ${ob.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)), obraTxt: `${ob.nombre}${cli}` }]); }} className="text-xs font-bold px-2 py-1 rounded-md border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🖨 Etiqueta {c.numero}</button>)}</div>}
           {(() => {
             const A = ord.filter((f) => !f.c && f.hecha); const B = ord.filter((f) => f.c); const C = ord.filter((f) => !f.c && !f.hecha);
             const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className="flex flex-wrap gap-1.5">{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
