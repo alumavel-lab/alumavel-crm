@@ -818,7 +818,45 @@ function auditoriaDiff(clave, antes, despues) {
 }
 // RECUPERAR una lista (p. ej. presupuestos) desde una copia: la diaria del CRM o el archivo .json de la copia que llega por correo.
 // Solo AÑADE los que faltan (por su id); no toca ni borra los que hay ahora.
-function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar }) {
+// Sin copia: se RECONSTRUYEN los presupuestos con lo que queda en el CRM — las obras creadas desde un presupuesto (número, cliente,
+// descripción, importe, documentos) y el registro de actividad («Creado: Presupuesto #7012 Cliente», «importe: … → …», «estado: … → …»)
+async function reconstruirPresupuestos(actual, proyectos, clientes) {
+  const ya = new Set(toArray(actual).map((x) => String(x.numero || "").trim()).filter(Boolean));
+  const proyEnlazados = new Set(toArray(actual).map((x) => x.proyectoCreadoId).filter(Boolean));
+  const porNum = new Map();
+  const cliNombre = (id) => (toArray(clientes).find((c) => c && c.id === id) || {}).nombre || "";
+  // 1) obras creadas desde presupuesto
+  toArray(proyectos).forEach((p) => {
+    if (!p || p.origen === "portalUxcar" || proyEnlazados.has(p.id)) return;
+    const num = String(p.presupuestoNumero || presupuestoDeObra(p) || "").trim();
+    const imp = parseFloat(p.importePresupuesto) || 0;
+    if (!num && !(imp > 0 && p.estadoPresupuesto === "Presupuesto aceptado")) return;
+    if (!num) return; // sin número no se puede saber cuál era
+    if (ya.has(num)) return;
+    porNum.set(num, { id: p.presupuestoId || uid(), numero: num, clienteId: p.clienteId || "", clienteNombre: cliNombre(p.clienteId), telefono: "", descripcion: p.nombre || "", importe: imp || "", estado: "Aceptado",
+      fechaEnvio: String(p.fechaAceptado || "").slice(0, 10), fechaRespuesta: String(p.fechaAceptado || "").slice(0, 10), proyectoCreadoId: p.id, documentos: toArray(p.documentos).filter((d) => d && d.url), llamadas: [],
+      zona: p.zona || "", envio: false, montaje: !!p.llevaInstalacion, reconstruido: "obra", comentarios: `RECONSTRUIDO desde la obra #${p.numero} (se perdió el presupuesto el 04/11/2026). Revisa importe, teléfono y estado.` });
+  });
+  // 2) registro de actividad
+  try {
+    const sn = await fbGet(ref(fbDb, "registroActividad"));
+    const evs = Object.entries((sn.exists() && sn.val()) || {}).map(([k, v]) => ({ k, ...v })).filter((e) => e && e.col === "presupuestos" && e.txt).sort((a, b) => String(a.k).localeCompare(String(b.k)));
+    evs.forEach((e) => {
+      const t = String(e.txt);
+      let m = t.match(/^Creado:\s*Presupuesto\s+#(\S+)\s*(.*)$/i);
+      if (m) { const num = m[1].trim(); if (ya.has(num)) return; if (!porNum.has(num)) porNum.set(num, { id: uid(), numero: num, clienteNombre: m[2].trim(), telefono: "", descripcion: "", importe: "", estado: "Pendiente", fechaEnvio: new Date(e.at || Date.now()).toISOString().slice(0, 10), llamadas: [], documentos: [], reconstruido: "registro", comentarios: "RECONSTRUIDO desde el registro de actividad (se perdió el presupuesto el 04/11/2026). Faltan datos: revísalo." }); return; }
+      m = t.match(/^Presupuesto\s+#(\S+)\s*(.*?)\s+—\s+(.*)$/i);
+      if (m) {
+        const num = m[1].trim(); if (ya.has(num)) return;
+        const x = porNum.get(num) || { id: uid(), numero: num, clienteNombre: m[2].trim(), telefono: "", descripcion: "", importe: "", estado: "Pendiente", llamadas: [], documentos: [], reconstruido: "registro", comentarios: "RECONSTRUIDO desde el registro de actividad (se perdió el presupuesto el 04/11/2026). Faltan datos: revísalo." };
+        m[3].split(" · ").forEach((par) => { const q = par.match(/^(\w+):\s*(.*?)\s*→\s*(.*)$/); if (!q) return; const v = q[3].trim(); if (v === "—" || v.endsWith("…")) return; if (["importe", "estado", "telefono", "zona", "descripcion", "clienteNombre", "fechaEnvio", "fechaRespuesta", "motivoRechazo"].includes(q[1])) x[q[1]] = v; });
+        porNum.set(num, x);
+      }
+    });
+  } catch (er) { /* sin registro */ }
+  return [...porNum.values()];
+}
+function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar, proyectos = [], clientes = [] }) {
   const [abierto, setAbierto] = useState(false);
   const [fechas, setFechas] = useState([]);
   const [cand, setCand] = useState(null); // { origen, lista }
@@ -839,10 +877,12 @@ function RestaurarDesdeCopia({ clave, nombre, actual, onRestaurar }) {
             {fechas.length ? fechas.map((f) => <button key={f} type="button" onClick={() => deFecha(f)} className="text-xs font-semibold px-2 py-1 rounded border border-amber-500 bg-white">{f}</button>) : <span className="text-xs text-slate-500">todavía ninguna (se hace una al día desde esta versión)</span>}
           </div>
           <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer"><span className="px-2 py-1 rounded border border-amber-500 bg-white">📂 Elegir el archivo .json de la copia del correo</span><input type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) deArchivo(f); }} /></label>
+          {clave === "presupuestos" && <button type="button" onClick={async () => { setMsg("Reconstruyendo…"); const L = await reconstruirPresupuestos(actual, proyectos, clientes); setMsg(""); setCand({ origen: "reconstrucción (obras + registro de actividad: datos incompletos, revísalos)", total: L.length, faltan: L }); }} className="block text-xs font-bold px-2 py-1 rounded border-2 border-rose-500 text-rose-800 bg-white">🧩 Sin copia: reconstruir desde las obras y el registro de actividad</button>}
           {msg && <div className="text-xs font-bold text-rose-700">{msg}</div>}
           {cand && (
             <div className="rounded border border-amber-300 bg-white p-2">
               <div className="text-sm">En la {cand.origen} hay <b>{cand.total}</b> {nombre}; <b>{cand.faltan.length}</b> no están ahora en el CRM.</div>
+              {cand.faltan.length > 0 && <div className="mt-1 max-h-40 overflow-y-auto text-[11px] text-slate-700">{cand.faltan.slice(0, 300).map((x) => <div key={x.id}>{x.numero || "—"} · {x.clienteNombre || "?"}{x.importe ? ` · ${x.importe} €` : ""}{x.estado ? ` · ${x.estado}` : ""}{x.reconstruido ? ` · (de ${x.reconstruido})` : ""}</div>)}</div>}
               {cand.faltan.length > 0 && <button type="button" onClick={() => { if (!window.confirm(`¿Recuperar ${cand.faltan.length} ${nombre}? Se añaden a los que hay.`)) return; onRestaurar(JSON.parse(JSON.stringify(cand.faltan))); setMsg(`✓ ${cand.faltan.length} ${nombre} recuperados.`); setCand(null); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="mt-1 text-sm font-bold px-3 py-1.5 rounded-md">Recuperar {cand.faltan.length} {nombre}</button>}
             </div>
           )}
@@ -6918,7 +6958,7 @@ export default function App() {
             onJuntarProformas={juntarProformas}
           />
         )}
-        {modulo === "presupuestos" && isAdmin && <RestaurarDesdeCopia clave="presupuestos" nombre="presupuestos" actual={presupuestos} onRestaurar={(faltan) => savePresupuestos([...presupuestos, ...faltan])} />}
+        {modulo === "presupuestos" && isAdmin && <RestaurarDesdeCopia clave="presupuestos" nombre="presupuestos" actual={presupuestos} proyectos={proyectos} clientes={clientes} onRestaurar={(faltan) => savePresupuestos([...presupuestos, ...faltan])} />}
         {modulo === "presupuestos" && (
           <PresupuestosModulo
             presupuestos={presupuestos}
