@@ -44556,6 +44556,20 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       palets.forEach((c) => { const cur = cabsAhora().find((z) => z.id === c.id) || c; guardarCab({ ...cur, almacenId: dest.id, historial: hist(cur, `Enviado a ${dest.nombre} desde Almacén del día${quien ? ` por ${quien}` : ""}`) }); });
       avisar(true, `${palets.length} palet${palets.length === 1 ? "" : "s"} → ${dest.nombre}`);
     };
+    // Obra que el cliente se lleva por sus propios medios: sale SIN paletizar. Se da de baja del planning (como una paletizada) y pasa a
+    // «Listo para reparto/recogida» con «Recogida en fábrica»; al firmar el albarán de recogida sigue a facturación como todas.
+    const sacarSinPaletizarAD = (o) => {
+      const pr = proyectoDeObra(o);
+      if (!pr) { window.alert("Esta obra no tiene ficha de obra en el CRM: no se puede pasar a recogida. Créala o enlázala primero."); return; }
+      if (!window.confirm(`${nombreAD(o)}: ¿sale SIN PALETIZAR porque la recoge el cliente por sus propios medios?\n\nPasa a «Recogida en fábrica» y sale de la lista de paletizar. Al firmar el albarán de recogida va a facturación.`)) return;
+      try {
+        const kk = String(o.key || pr.id).replace(/[.#$\/\[\]]/g, "_"); const dd = (planFabAD && planFabAD.dias) || {}; const ee = extraAD || {}; const clave = o.clavePlan || "";
+        const dia = Object.keys(dd).sort().find((f) => clave && dd[f] && dd[f][clave]) || Object.keys(ee).sort().find((f) => ee[f] && ee[f][kk]) || new Date().toLocaleDateString("sv-SE");
+        const fo = clave && planFabAD && planFabAD.obras && planFabAD.obras[clave];
+        fbSet(ref(fbDb, `planFabricaHechas/${kk}`), { nombre: nombreAD(o) || "", pres: fo && fo.pres ? fo.pres : [], dia, en: Date.now(), sinPaletizar: true, quien: quien || "" }).catch(() => {});
+      } catch (e) { /* nada */ }
+      if (onMoverEstado) onMoverEstado(pr.id, "Listo para reparto/recogida", { estadoLogistica: "Recogida en fábrica", sinPaletizar: true });
+    };
     const tarjetaObra = (x, g) => {
       const { o, filas, n, total, pend } = x;
       const completa = total > 0 && n === total;
@@ -44575,6 +44589,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
             {pend > 0 && <span className={`${g ? "text-2xl" : "text-sm"} font-bold text-sky-700`}>{pend} hecha{pend === 1 ? "" : "s"} en fábrica, falta palet</span>}
             {(() => { const ni = filas.filter((f) => incsDeVentana(o, f.x.v).length).length; return ni > 0 ? <span className={`${g ? "text-2xl text-rose-300" : "text-sm text-rose-700"} font-extrabold`}>⚠ {ni} con incidencia</span> : null; })()}
             {!g && extraAD && extraAD[diaAD] && extraAD[diaAD][limpiaAD(o.key)] && <button type="button" onClick={() => { fbSet(ref(fbDb, `controlDiaObras/${diaAD}/${limpiaAD(o.key)}`), null).catch(() => {}); }} className="ml-auto text-xs text-slate-500 underline">quitar de este día</button>}
+            {!g && <button type="button" onClick={() => sacarSinPaletizarAD(o)} title="El cliente se la lleva por sus propios medios: sale sin palet, pasa a «Recogida en fábrica» y, con el albarán firmado, a facturación" className="text-xs font-bold px-2 py-1 rounded-md border-2 border-amber-500 text-amber-800 bg-amber-50 hover:bg-amber-100">🚶 Sacar sin paletizar (la recoge el cliente)</button>}
           </div>
           <div className="h-2 rounded bg-slate-200 overflow-hidden"><div style={{ width: `${total ? Math.round((n / total) * 100) : 0}%`, backgroundColor: "#2E8B57" }} className="h-2" /></div>
           {completa && (() => {
@@ -56787,7 +56802,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const mandarAReparto = (o) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
     if (!onMoverEstado || !p || !["En proceso", "Pendiente de aceptación"].includes(p.estadoTrabajo)) return false;
-    if (window.confirm(`${o.d.nombre}: todas las ventanas hechas.\n\n¿Obra TERMINADA? Pasa a REPARTO («Listo para reparto/recogida»).`)) { onMoverEstado(pid, "Listo para reparto/recogida"); return true; }
+    // Ya no salta a reparto: TODAS las obras pasan por paletizar (Almacén del día) → almacén de ventanas → carga / recogida → facturación.
+    // (Si el cliente se la lleva sin palet, se saca desde el Almacén del día con «Sacar sin paletizar».)
+    window.alert(`${o.d.nombre}: todas las ventanas hechas en la línea.\n\nAhora va al ALMACÉN DEL DÍA para paletizarla.`);
     return false;
   };
   const siTerminada = (o, act) => { if (idsDe(o).every((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1)) setTimeout(() => mandarAReparto(o), 60); };
