@@ -19790,12 +19790,14 @@ function PanelesPendientes({ cristales = [] }) {
 }
 // Nº de presupuesto de una persiana/mosquitera del almacén: el que lleva guardado, o el de su proyecto/expediente
 function presupuestoDePersiana(x, ctx) {
-  if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
+  // uno solo: ese; si lleva varios juntos («6751, 6747, 6746» = todo el expediente), manda el del pedido de compra de esa persiana
+  if (x && x.presupuesto && !/[,·;]/.test(String(x.presupuesto))) return String(x.presupuesto).replace(/\s+/g, " ").trim();
   // El presupuesto manda sobre el expediente: si el pedido de esa persiana lo trae, se usa ese (varios presupuestos pueden compartir un EXP)
   try {
     const ped = toArray(ctx && ctx.pedidosPersianas).find((q) => q && q.presupuesto && (q.recibidaId === (x && x.id) || casaPedidaConPersiana(q, x)));
     if (ped) return String(ped.presupuesto).replace(/\s+/g, " ").trim();
   } catch (er) { /* nada */ }
+  if (x && x.presupuesto) return String(x.presupuesto).replace(/\s+/g, " ").trim();
   const nums = numsExpediente(x && x.expediente);
   if (!nums.length) return "";
   const p = toArray(ctx && ctx.proyectos).find((pr) => pr.presupuestoNumero && numsExpediente(pr.numero).some((n) => nums.includes(n)));
@@ -20253,6 +20255,9 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   // se colocan en los carros y al confirmar quedan como recibidas.
   // Presupuesto y mano de una persiana: lo que traiga la pieza; si no, se busca (presupuesto: en la obra del CRM o en los caballetes de cristal de ese expediente; mano: en el texto de la línea).
   const pptoDe = (x) => {
+    // el PRESUPUESTO DE ESA PERSIANA es el de su pedido de compra («Presupuesto: 6.740-1»); el de la persiana a veces lleva los de todo el
+    // expediente juntos («6751, 6747, 6746») y así no se sabe de cuál es
+    try { const q = pedidoDe(x); if (q && String(q.presupuesto || "").trim() && (!x.presupuesto || /[,·;]/.test(String(x.presupuesto)))) return String(q.presupuesto).trim(); } catch (er) { /* nada */ }
     if (x.presupuesto) return String(x.presupuesto);
     try {
       const e = String(x.expediente || "").replace(/\D/g, "");
@@ -20270,6 +20275,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   };
   // Los datos de cada persiana (mano, descripción, nº de pedido…) salen del PEDIDO de persianas subido (ahí viene todo), no solo de lo que se guardó al meterla en el carro
   const pedidoDe = (x) => { const L = toArray(ctxM.pedidosPersianas); return L.find((q) => q && q.recibidaId === x.id) || L.find((q) => q && casaPedidaConPersiana(q, x)) || null; };
+  // REFERENCIA de la vivienda tal como viene en el pedido de compra («EXP 823 DARWIN PORTAL 3 ESC 08 1B»): es lo que dice a qué casa va
+  const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
   const descDe = (x) => { const q = pedidoDe(x); return [...new Set([q && q.descripcion, x.descripcion].map((t) => String(t || "").trim()).filter(Boolean))].join(" · "); };
   // Todo lo que trae el pedido de esa persiana, para el papel: cantidad, color del cajón y de la lama, guía (tipo, medida y color), cinta, accionamiento y la descripción
   const fichaImpPers = (x) => {
@@ -21075,7 +21082,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
           const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
           const mano = manoDe(x);
-          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${(x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc(x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${referenciaDe(x) ? `<b>${esc(referenciaDe(x))}</b><br>` : expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${((q && q.cliente) || x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc((q && q.cliente) || x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
       }).join("");
       return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
@@ -21104,7 +21111,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
     const porCarro = {};
     const sinSitioP = [];
     entrada.forEach((x) => { const e = sitio[x.id]; if (e) (porCarro[e.carro] = porCarro[e.carro] || []).push({ x, e }); else sinSitioP.push(x); });
-    const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>EXP ${esc(expedienteRealDe(x) || "sin dato")}</b>${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
+    const fila = ({ x, e }) => `<tr><td>${esc(`lado ${e.lado} · est. ${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${referenciaDe(x) ? esc(referenciaDe(x)) : `EXP ${esc(expedienteRealDe(x) || "sin dato")}`}</b>${pptoDe(x) ? ` · Ppto ${esc(pptoDe(x))}` : ""}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(x.recogedor ? etiquetaMano(x.recogedor) : "")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
     const cab = '<tr><th>Sitio</th><th>Expediente</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Obra / cliente</th></tr>';
     const cab2 = '<tr><th>Est.</th><th>Expediente</th><th>Presupuesto</th><th>Vivienda</th><th>Medida</th><th>Mano</th><th>Cliente</th></tr>';
     const fila2 = ({ x, e }) => `<tr><td>${esc(`${e.nivel}${e.fila ? " · " + e.fila : ""}`)}</td><td><b>${esc(etqExp(x))}</b><br><span style="font-size:10px;font-weight:bold;padding:0 4px;background:${duenoDe(x) === "PROPIO" ? "#d1fae5" : "#ddd6fe"}">${esc(etqDueno(x).toUpperCase())}</span></td><td>${esc(pptoDe(x) || "sin dato")}</td><td><b>${esc(x.ref || "—")}</b></td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td>${esc(manoDe(x) ? etiquetaMano(manoDe(x)) : "mano sin dato")}</td><td>${esc(x.nombreObra || nombreObraDe(x))}</td></tr>`;
