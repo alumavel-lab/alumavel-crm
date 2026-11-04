@@ -20400,6 +20400,27 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
   const pedidoDe = (x) => { const L = toArray(ctxM.pedidosPersianas); return L.find((q) => q && q.recibidaId === x.id) || L.find((q) => q && casaPedidaConPersiana(q, x)) || null; };
   // REFERENCIA de la vivienda tal como viene en el pedido de compra («EXP 823 DARWIN PORTAL 3 ESC 08 1B»): es lo que dice a qué casa va
   const referenciaDe = (x) => { let q = null; try { q = pedidoDe(x); } catch (er) { q = null; } const r = String((q && q.refObra) || x.refObra || "").replace(/\s+/g, " ").trim(); return /[A-Za-z]/.test(r.replace(/^EXP(?:EDIENTE)?\.?\s*\d+\s*/i, "")) ? r : ""; };
+  // TODO lo de la persiana para el almacén: lo del PEDIDO (presupuesto, referencia de la vivienda, cliente) y, de la OBRA de ese
+  // presupuesto (o del expediente de Uxcar), el teléfono y la dirección — el pedido de compra no los trae
+  const fichaPersiana = (x) => {
+    let q = null; try { q = pedidoDe(x); } catch (er) { q = null; }
+    const pp = pptoDe(x); const b = digitosPresu(String(pp || "").split(/[,·;]/)[0]);
+    let pr = null, ux = null;
+    try {
+      if (b.length >= 3) {
+        pr = toArray(ctxM.proyectos).find((y) => y && [presupuestoDeObra(y), y.presupuestoNumero].some((t) => digitosPresu(t) === b)) || null;
+        ux = toArray(ctxM.uxExpedientes).find((e) => e && [e.presupuesto, e.presupuestoNumero, e.numero].some((t) => String(t || "").split(/[·,;\s]+/).some((z) => digitosPresu(z) === b))) || null;
+        if (!pr && ux && ux.proyectoId) pr = toArray(ctxM.proyectos).find((y) => y && y.id === ux.proyectoId) || null;
+      }
+    } catch (er) { /* nada */ }
+    const cli = pr ? toArray(ctxM.clientes).find((c) => c && c.id === pr.clienteId) : null;
+    return {
+      presupuesto: pp || "", referencia: referenciaDe(x) || "",
+      cliente: (q && q.cliente) || (cli && cli.nombre) || x.cliente || "",
+      telefono: (pr && pr.telefono) || (cli && (cli.telefono || cli.movil)) || (ux && ux.telefono) || "",
+      direccion: (pr && pr.ubicacion) || (ux && (ux.direccion || ux.ubicacion)) || (cli && [cli.direccion, cli.poblacion || cli.provincia].filter(Boolean).join(", ")) || "",
+    };
+  };
   const descDe = (x) => { const q = pedidoDe(x); return [...new Set([q && q.descripcion, x.descripcion].map((t) => String(t || "").trim()).filter(Boolean))].join(" · "); };
   // Todo lo que trae el pedido de esa persiana, para el papel: cantidad, color del cajón y de la lama, guía (tipo, medida y color), cinta, accionamiento y la descripción
   const fichaImpPers = (x) => {
@@ -21132,8 +21153,8 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
       </td>
       <td className="px-2 font-semibold">EXP {x.expediente || "—"} <input key={`${x.id}_p_${x.parte || ""}`} defaultValue={partePersiana(x)} list={idListaPartes} autoComplete="off" placeholder="P1 / cliente" title="Parte / vivienda de la obra (P1, P2…) o el cliente si falta: las que llevan lo mismo se colocan juntas" onBlur={(e) => { const v = normParte(e.target.value) || e.target.value.trim(); if (v !== partePersiana(x)) actualizarPersiana(x.id, { parte: v }); }} className="block mt-1 w-32 max-w-full border border-slate-300 rounded px-2 py-1 text-sm font-bold bg-white" />{(() => {
         // Todo lo que se sabe de la etiqueta (según por dónde entró la persiana, viene en un campo u otro)
-        const pp = String(x.presupuesto || "").trim();
-        const datos = [x.nombreObra, x.refObra || x.obraUx, x.habitacion, x.cliente, pp ? `Ppto ${pp}` : "", x.pedidoProv ? `Pedido ${x.pedidoProv}` : x.pedido ? `Pedido ${x.pedido}` : ""].filter(Boolean);
+        const fp = fichaPersiana(x);
+        const datos = [fp.referencia || x.refObra || x.obraUx, x.nombreObra, x.habitacion, fp.cliente, fp.presupuesto ? `Ppto ${fp.presupuesto}` : "", fp.telefono ? `☎ ${fp.telefono}` : "", fp.direccion ? `📍 ${fp.direccion}` : "", x.pedidoProv ? `Pedido ${x.pedidoProv}` : x.pedido ? `Pedido ${x.pedido}` : ""].filter(Boolean);
         const desc = String(x.descripcion || "").trim();
         return (datos.length > 0 || desc) && (
           <div className="text-xs font-normal text-slate-600 leading-snug mt-0.5 max-w-[240px]">
@@ -21205,7 +21226,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           const guia = [g("guia"), g("colorGuia") ? `(${g("colorGuia")})` : ""].filter(Boolean).join(" ");
           const cel = (t) => `<td>${t ? esc(t) : '<span class="v">—</span>'}</td>`;
           const mano = manoDe(x);
-          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${referenciaDe(x) ? `<b>${esc(referenciaDe(x))}</b><br>` : expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${((q && q.cliente) || x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc((q && q.cliente) || x.cliente || nombreObraDe(x))}</span>` : ""}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
+          return `<tr><td><b>${esc(x.ref || "—")}</b>${partePersiana(x) ? `<br>${esc(partePersiana(x))}` : ""}${unidadesDe(x) > 1 ? `<br><b>⚠ ${unidadesDe(x)} UDS</b>` : ""}</td><td>${referenciaDe(x) ? `<b>${esc(referenciaDe(x))}</b><br>` : expedienteRealDe(x) ? `EXP ${esc(expedienteRealDe(x))}<br>` : ""}<span class="d"><b>Ppto ${esc(pptoDe(x) || "sin dato")}</b></span>${((q && q.cliente) || x.cliente || nombreObraDe(x)) ? `<br><span class="d">${esc((q && q.cliente) || x.cliente || nombreObraDe(x))}</span>` : ""}${(() => { const fp = fichaPersiana(x); return [fp.telefono ? `☎ ${esc(fp.telefono)}` : "", fp.direccion ? esc(fp.direccion) : ""].filter(Boolean).map((t) => `<br><span class="d">${t}</span>`).join(""); })()}</td><td>${largoPersiana(x)}${x.alto ? ` × ${esc(x.alto)}` : ""}</td><td><b>${esc(mano ? etiquetaMano(mano) : "⚠ SIN DATO")}</b></td>${cel(g("cantPedido"))}${cel(g("colorCajon"))}${cel(g("colorLama"))}${cel(guia)}${cel(cinta)}${cel(g("accionamiento"))}<td class="d">${esc(desc)}</td></tr>`;
         }).join("");
       }).join("");
       return `<section><h2>${esc(almacen.nombre)} · Carro ${esc(c.numero)}${c.movido ? ` (movido${c.notaSitio ? `: ${esc(c.notaSitio)}` : ""})` : ""} · LADO ${lado}</h2><table><thead><tr><th>Vivienda</th><th>Exp.</th><th>Medida</th><th>Mano</th><th>Cant.</th><th>Cajón</th><th>Lama</th><th>Guía</th><th>Cinta</th><th>Acc.</th><th>Descripción</th></tr></thead><tbody>${filas}</tbody></table></section>`;
