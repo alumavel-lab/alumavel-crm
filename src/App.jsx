@@ -636,7 +636,10 @@ const facturadoProyecto = (p, facturas) => (facturas || []).reduce((s, f) => {
 // Obras entregadas (albarán firmado por el cliente o estado Entregado) con algo por facturar
 const pendientesDeFacturar = (proyectos, facturas) => (proyectos || []).filter((p) => {
   if (p.facturacionDescartada || p.estadoTrabajo === "Cancelado") return false;
-  const entregado = (p.albaranEntrega && p.albaranEntrega.firmaCliente) || p.estadoTrabajo === "Entregado";
+  // firmado por el cliente (o por el responsable de la carga) Y DADO POR BUENO por alguien del equipo; los albaranes de antes de esta revisión no la piden
+  const a = p.albaranEntrega || {};
+  if (a.firmaCliente && a.requiereRevision && !a.revisado) return false;
+  const entregado = a.firmaCliente || p.estadoTrabajo === "Entregado";
   if (!entregado) return false;
   return (parseFloat(p.importePresupuesto) || 0) - facturadoProyecto(p, facturas) > 0.005;
 });
@@ -24335,6 +24338,20 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
             <button onClick={() => { if (!a.firmaCarga) { alert(esRecogidaFabrica(abierto) ? "Primero: foto de la carga y firma de quien entrega (paso 1)." : "Primero el chófer: foto de la carga y su firma al cargar (paso 1)."); return; } setFirmando("cliente"); }} style={{ backgroundColor: a.firmaCliente ? undefined : "#2E8B57", color: a.firmaCliente ? undefined : "#ffffff" }} className={`mt-2 w-full text-sm font-semibold px-4 py-3 rounded-md ${a.firmaCliente ? "border border-slate-300 text-slate-600" : ""}`}>{a.firmaCliente ? "Volver a firmar" : "Firma del cliente"}</button>
           </div>
         </div>
+        {a.firmaCliente && a.requiereRevision && (
+          a.revisado
+            ? <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">✓ Dada por buena por {a.revisado.por || "—"} el {new Date(a.revisado.fecha).toLocaleString("es-ES")} · pasa a facturar</div>
+            : <div className="rounded-lg border-2 border-amber-500 bg-amber-50 px-4 py-3 space-y-2">
+                <div className="text-sm font-extrabold text-amber-900">⏳ Pendiente de que alguien del equipo la dé por buena (revisar la foto de la carga y las firmas). Hasta entonces NO pasa a facturar.</div>
+                {!toArray(a.fotosCarga).length && <div className="text-sm font-bold text-rose-700">⚠ NO HAY FOTO DE LA CARGA: pídesela al chófer / responsable antes de darla por buena.</div>}
+                {a.firmaCliente.responsableCarga && <div className="text-xs font-semibold text-amber-800">Ojo: no firmó el cliente, firmó el responsable de la carga.</div>}
+                <button type="button" onClick={() => {
+                  if (!toArray(a.fotosCarga).length && !window.confirm("No hay FOTO DE LA CARGA. ¿Darla por buena igualmente?")) return;
+                  if (!window.confirm("¿Has revisado la foto de la carga y las firmas? Al darla por buena pasa a FACTURAR.")) return;
+                  guardar({ revisado: { por: nombreYo || (currentUser && currentUser.email) || "—", fecha: new Date().toISOString() } }, !abierto.llevaInstalacion);
+                }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="w-full text-sm font-bold px-4 py-3 rounded-md">✓ Dar por buena (pasa a facturar)</button>
+              </div>
+        )}
         <button disabled={generando} onClick={async () => { guardar(); setGenerando(true); await descargarPdfAlbaranEntrega({ ...abierto, albaranEntrega: { ...a, ...borrador } }, { cliente: cli, direccion: direccionDe(abierto) }); setGenerando(false); }} className="w-full flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-3 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-60">{generando ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Descargar albarán en PDF (con la fecha de hoy{abierto.documentoEntrega ? " y el tipo plano" : ""})</button>
         {subiendoDoc && <SubirDocumentoEntrega proyecto={abierto} onCancel={() => setSubiendoDoc(false)} onGuardar={async (doc, recuento) => { await onGuardarDocumentoEntrega(abierto.id, doc, recuento); setSubiendoDoc(false); }} />}
         {firmando && (
@@ -24350,7 +24367,8 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
                 const cabs = toArray(caballetes).filter((c) => c.estado === "cargado" && c.obra && c.obra.proyectoId === abierto.id);
                 const hoyC = new Date().toISOString().slice(0, 10);
                 cabs.forEach((c) => onGuardarCaballete && onGuardarCaballete({ ...c, estado: "fuera", salida: { fecha: hoyC, cliente: cli ? cli.nombre : (c.obra.cliente || ""), obra: c.obra.nombre, direccion: direccionDe(abierto) }, historial: [...toArray(c.historial), { fecha: new Date().toISOString(), accion: `Entregado con ${c.obra.nombre} (albarán ${borrador.numero})` }] }));
-                guardar({ firmaCliente: f, ...(cabs.length ? { caballetes: cabs.map((c) => c.numero) } : {}) }, !abierto.llevaInstalacion);
+                // NO pasa a facturar todavía: alguien del equipo tiene que darla por buena (revisar foto y firmas)
+                guardar({ firmaCliente: f, requiereRevision: true, ...(cabs.length ? { caballetes: cabs.map((c) => c.numero) } : {}) }, false);
               }
               setFirmando(null);
             }}
@@ -24365,13 +24383,19 @@ function AlbaranesChofer({ caballetes = [], onGuardarCaballete, proyectos, clien
       <Header icon={<Truck size={20} className="text-[#2E8B57]" />} title="Albaranes" manualKey="albaranes" subtitle="Todos los albaranes de fábrica para firmar desde el móvil" />
       <div className="flex gap-2 mb-5 flex-wrap">
         {tabBtn("cargas", "Cargas de hoy", repartos.filter((p) => p.fechaReparto === new Date().toISOString().slice(0, 10)).length)}
-        {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length)}
+        {tabBtn("repartos", "Repartos y recogidas", repartos.filter((p) => !(p.albaranEntrega && p.albaranEntrega.firmaCliente)).length + proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado).length)}
         {tabBtn("salida", "Albaranes de salida", toArray(envios).filter((e) => e.estado === "Fuera" && !e.firmaChofer).length)}
         {tabBtn("firmados", "Firmados", 0)}
       </div>
       {tab === "cargas" && <div className="p-4"><CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={nombreYo} /></div>}
       {tab === "repartos" && (
         <div className="space-y-2">
+          {(() => { const porRevisar = proyectos.filter((p) => p.albaranEntrega && p.albaranEntrega.firmaCliente && p.albaranEntrega.requiereRevision && !p.albaranEntrega.revisado); return porRevisar.length > 0 && (
+            <div className="rounded-lg border-2 border-amber-500 bg-amber-50 p-3 space-y-1.5">
+              <div className="text-sm font-extrabold text-amber-900">⏳ Por dar por buenas antes de facturar ({porRevisar.length})</div>
+              {porRevisar.map((p) => <button key={p.id} type="button" onClick={() => abrir(p)} className="w-full text-left bg-white border border-amber-300 rounded px-3 py-2 text-sm"><b>#{p.numero} — {p.nombre}</b>{!toArray(p.albaranEntrega.fotosCarga).length && <span className="ml-2 text-rose-700 font-bold">⚠ sin foto de la carga</span>}{p.albaranEntrega.firmaCliente.responsableCarga && <span className="ml-2 text-amber-800 font-semibold">· firmó el responsable</span>}</button>)}
+            </div>
+          ); })()}
           {repartos.length === 0 && <p className="text-sm text-slate-400">No hay repartos ni recogidas pendientes.</p>}
           {repartos.map((p) => {
             const a = p.albaranEntrega || {};
