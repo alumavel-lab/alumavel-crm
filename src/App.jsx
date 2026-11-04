@@ -54915,13 +54915,22 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
       const refsGuia = new Set([...REFS_GUIA_PERSIANA, ...toArray(cfg && cfg.refs).filter((r) => /gu[ií]a de persiana/i.test(r.nombre || "")).map((r) => String(r.ref || "").trim().toUpperCase())]);
       const hojaTraeGuia = filasM.some((f) => refsGuia.has(String(f.ref || "").trim().toUpperCase()) || (/gu[ií]a/i.test(f.desc || "") && !/mosquit/i.test(f.desc || "")));
       if (m.cajaSinGuia && !hojaTraeGuia && !(pptosGuiaProv && pptosGuiaProv.has(ppto))) avisos.push(`Presupuesto ${pptoBonito(ppto)} · ${m.modelo}: lleva caja de persiana "guía aparte" y la hoja no trae la guía. Revísalo antes de cortar.`);
-      const filas = filasM.filter((f) => activas.has(String(f.ref)));
+      // MEDIDAS DE HOJAS LEÍDAS ANTES DEL ARREGLO («14252» = 1425 + Ud pegada): si la medida es imposible para el tamaño de la ventana,
+      // se le quita la cifra de Ud/ToT pegada al final (sin tener que volver a subir la hoja)
+      const mxV = Math.max(Number(m.ancho) || 0, Number(m.alto) || 0);
+      const medidaBuena = (f) => {
+        const L = Number(f.lCorte) || 0; if (!(mxV > 0) || L <= mxV + 700) return f.lCorte;
+        const st = String(Math.round(L));
+        for (const suf of [`${f.ud}${f.tot}`, String(f.tot), String(f.ud)]) { if (suf && st.length > suf.length && st.endsWith(suf)) { const c = parseInt(st.slice(0, -suf.length), 10); if (c >= 40 && c <= mxV + 700) return c; } }
+        return f.lCorte;
+      };
+      const filas = filasM.filter((f) => activas.has(String(f.ref))).map((f) => { const lc = medidaBuena(f); return lc === f.lCorte ? f : { ...f, lCorte: lc, lCorteHoja: f.lCorte }; });
       unidades.forEach((u) => filas.forEach((f) => {
         const rc = activas.get(String(f.ref));
         const n = f.ud || 1;
         for (let k = 1; k <= n; k++) {
           piezas.push({
-            id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
+            id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorteHoja != null ? f.lCorteHoja : f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
             // − / + de la configuración de este perfil: la medida a cortar es la de la hoja corregida (la hoja sigue guardada en lHoja)
             lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, color: f.color || "", k, n,
             eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
