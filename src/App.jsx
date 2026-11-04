@@ -5014,6 +5014,19 @@ export default function App() {
     });
   }, [uxExpedientes, proyectos, currentUser?.id, loading]);
   const hojasUxPasadasRef = useRef(new Set());
+  const hojasAuxManualApp = useObjetoFb("auxiliaresHojasManual"); // hojas subidas A MANO en Auxiliares (copia protegida)
+  // Si la hoja que se subió a mano ha sido pisada (otro ordenador con la versión vieja copió encima la de Uxcar), se vuelve a poner
+  useEffect(() => {
+    if (!currentUser || loading || !hojasAuxManualApp || !hojasAuxApp) return;
+    Object.entries(hojasAuxManualApp).forEach(([ppto, man]) => {
+      if (!man || !man.presupuesto) return;
+      const ya = hojasAuxApp[ppto];
+      if (ya && ya.manual && ya.subidaEn === man.subidaEn) return; // está la buena
+      if (ya && ya.manual && (ya.subidaEn || 0) > (man.subidaEn || 0)) return; // hay otra subida a mano más nueva
+      if (ya && !ya.manual && (String(ya.fecha || "") > String(man.fecha || "") || (Number(ya.version) || 0) > (Number(man.version) || 0))) return; // Uxcar trae una versión más nueva: vale la suya
+      fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), man).catch(() => {});
+    });
+  }, [hojasAuxManualApp, hojasAuxApp, currentUser?.id, loading]);
   useEffect(() => {
     if (!currentUser || loading) return;
     toArray(uxExpedientes).forEach((e) => {
@@ -5026,10 +5039,12 @@ export default function App() {
         if (ya && ya.archivo === h.archivo && ya.fecha === h.fecha) return;
         // NO pisar la hoja que se subió a mano en Auxiliares: solo se copia la de Uxcar si no hay ninguna, o si la de Uxcar es más nueva (otra versión u otro día)
         if (ya && !(String(h.fecha || "") > String(ya.fecha || "") || (Number(h.version) || 0) > (Number(ya.version) || 0))) return;
+        const man = hojasAuxManualApp && hojasAuxManualApp[ppto];
+        if (man && !(String(h.fecha || "") > String(man.fecha || "") || (Number(h.version) || 0) > (Number(man.version) || 0))) return; // la subida a mano manda
         fbSet(ref(fbDb, `auxiliaresHojas/${ppto}`), h).catch(() => { hojasUxPasadasRef.current.delete(clave); });
       });
     });
-  }, [uxExpedientes, hojasAuxApp, currentUser?.id, loading]);
+  }, [uxExpedientes, hojasAuxApp, hojasAuxManualApp, currentUser?.id, loading]);
   // Si un pedido de Uxcar sin enviar desaparece del portal (se sustituyó o se borró), su copia en Pedidos del CRM también: no quedan pedidos fantasma
   useEffect(() => {
     if (!currentUser || loading || !toArray(uxPedidos).length) return;
@@ -54168,7 +54183,7 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
-        filas.push({ ref, codigo: m[6] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud });
+        filas.push({ ref, codigo: m[6] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
         return;
       }
       // la línea acaba en una referencia de la lista pero no se ha sabido leer: se avisa para que no pase desapercibida
@@ -54178,9 +54193,30 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
     const cajaSinGuia = /CJ_DECOR_S\/G/i.test(texto) || /gu[ií]a aparte/i.test(texto);
     const eje = ((texto.match(/(\d{2,4}(?:[.,]\d{1,2})?)\s*Eje\b/) || [])[1] || "");
     const ejeLado = ({ D: "derecha", I: "izquierda" })[(texto.match(/EJELADO:([DI])/) || [])[1]] || "";
-    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length };
+    return { eje, ejeLado, modelo: n > 1 ? `${b.nombre} (${n})` : b.nombre, uds: b.uds, ancho: b.ancho, alto: b.alto, cajaSinGuia, filas, sosp: [...noLeidas.slice(0, 5), ...auxSospechosas(b.lineas, lista)].slice(0, 10), nLin: b.lineas.length, _firma: `${b.nombre}|${b.ancho}|${b.alto}|${b.uds}|${filas.map((f) => `${f.ref}:${f._dig}`).join(",")}` };
   });
-  return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos };
+  // La MEDIDA va pegada a Ud y ToT («1425» + «2» + «4» = 142524) o solo al ToT («1885» + «1»), según la hoja. Se decide para TODA la hoja
+  // con las filas donde Ud y ToT son distintos (ventanas de varias unidades), y cada medida tiene que ser posible para el tamaño de la ventana.
+  const posible = (l, mx) => l >= 40 && l <= Math.max(mx || 0, 2500) + 700;
+  let votA = 0, votB = 0;
+  modelos.forEach((mo) => mo.filas.forEach((f) => {
+    if (!f._dig || String(f.ud) === String(f.tot)) return;
+    const a = `${f.ud}${f.tot}`, t = String(f.tot);
+    if (f._dig.length > a.length && f._dig.endsWith(a) && posible(+f._dig.slice(0, -a.length), f._max)) votA++;
+    else if (f._dig.length > t.length && f._dig.endsWith(t) && posible(+f._dig.slice(0, -t.length), f._max)) votB++;
+  }));
+  const orden = votA > votB ? (f) => [`${f.ud}${f.tot}`, String(f.tot), String(f.ud)] : (f) => [String(f.tot), String(f.ud), `${f.ud}${f.tot}`];
+  modelos.forEach((mo) => mo.filas.forEach((f) => {
+    if (!f._dig) return;
+    const suf = orden(f).find((x) => f._dig.length > x.length && f._dig.endsWith(x) && posible(+f._dig.slice(0, -x.length), f._max));
+    const l = parseInt(suf ? f._dig.slice(0, -suf.length) : f._dig, 10);
+    if (Number.isFinite(l)) f.lCorte = l;
+    delete f._dig; delete f._max;
+  }));
+  // Páginas REPETIDAS: el mismo modelo con las mismas medidas y las mismas piezas impreso otra vez («Repite V2») no es otra ventana
+  const vistas = new Set(); const repetidos = [];
+  const sinRep = modelos.filter((mo) => { const k = mo._firma; delete mo._firma; if (mo.filas.length && vistas.has(k)) { repetidos.push(mo.modelo); return false; } vistas.add(k); return true; });
+  return { presupuesto, version, referencia, cliente, fab, fechaDoc, modelos: sinRep, repetidos };
 }
 
 function leerAuxiliaresHojaCorte(paginas, refs) {
@@ -54497,7 +54533,8 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
         for (let k = 1; k <= n; k++) {
           piezas.push({
             id: clave(`${ppto}_${m.modelo}_${u.id}_${f.ref}_${f.lCorte}_${k}`), ppto, version: h.version || "", modelo: m.modelo, ref: String(rc.ref).trim(), nombre: rc.nombre || f.desc || f.ref,
-            lCorte: f.lCorte, color: f.color || "", k, n,
+            // − / + de la configuración de este perfil: la medida a cortar es la de la hoja corregida (la hoja sigue guardada en lHoja)
+            lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, color: f.color || "", k, n,
             eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
             referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
           });
@@ -54635,6 +54672,8 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={r.alias || ""} onChange={(e) => upRef(i, { alias: e.target.value })} placeholder="La que sustituye" title="Otra referencia con la que viene en la hoja (p. ej. 7037). Si la hoja trae esta, se coge igual y la etiqueta sale siempre con la real. Varias separadas por comas." className={campo + " w-32"} />
               <input value={r.nombre || ""} onChange={(e) => upRef(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
+              <label className="flex items-center gap-0.5 text-xs font-bold text-rose-700" title="Milímetros que se RESTAN a la medida de la hoja de corte en cada pieza de este perfil">−<input type="number" min="0" step="0.5" value={r.menos ?? ""} onChange={(e) => upRef(i, { menos: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
+              <label className="flex items-center gap-0.5 text-xs font-bold text-emerald-700" title="Milímetros que se SUMAN a la medida de la hoja de corte en cada pieza de este perfil">+<input type="number" min="0" step="0.5" value={r.mas ?? ""} onChange={(e) => upRef(i, { mas: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -54838,8 +54877,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         if (previa && previa.version && r.version && String(previa.version) !== String(r.version) && !window.confirm(`Ya hay cargada la hoja del presupuesto ${pptoBonito(r.presupuesto)} versión ${previa.version}. ¿Sustituirla por la versión ${r.version}? Las piezas ya cortadas se quedan como están.`)) continue;
         const nFilas = r.modelos.reduce((a, m) => a + m.filas.length, 0);
         if (claveObra) await fbSet(ref(fbDb, `auxiliaresObraPres/${claveObra}`), digitosPresu(r.presupuesto)).catch(() => {});
-        await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10) }))), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
-        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.` : (() => {
+        const datoHoja = JSON.parse(JSON.stringify({ ...r, archivo: f.name, fecha: new Date().toISOString().slice(0, 10), manual: true, subidaEn: Date.now() }));
+        fbSet(ref(fbDb, `auxiliaresHojasManual/${r.presupuesto}`), datoHoja).catch(() => {}); // copia protegida: si otro ordenador (versión vieja) la pisa con la de Uxcar, se recupera sola
+        await Promise.race([fbSet(ref(fbDb, `auxiliaresHojas/${r.presupuesto}`), datoHoja), new Promise((_, rej) => setTimeout(() => rej(new Error("la base de datos no responde (¿hay internet?). La hoja puede no haberse guardado: recarga la página y comprueba")), 20000))]);
+        setMsg(nFilas ? `✓ Hoja del presupuesto ${pptoBonito(r.presupuesto)} v${r.version || "?"} cargada: ${r.modelos.length} modelo${r.modelos.length === 1 ? "" : "s"}, ${nFilas} líneas de auxiliares.${toArray(r.repetidos).length ? ` (${toArray(r.repetidos).length} página${toArray(r.repetidos).length === 1 ? "" : "s"} repetida${toArray(r.repetidos).length === 1 ? "" : "s"} no contada${toArray(r.repetidos).length === 1 ? "" : "s"}: ${toArray(r.repetidos).join(", ")})` : ""}` : (() => {
           // Sin ninguna referencia de la lista: se enseñan las líneas que PARECEN auxiliares (guía, solape, mosquitera, inversor…) para saber qué referencia añadir
           const sos = [...new Set(r.modelos.flatMap((m) => toArray(m.sosp)).filter((l) => !/oscilobatiente|compas|refuerzo|^VENTANA\s+\d/i.test(l)))].slice(0, 6);
           return `Hoja del presupuesto ${pptoBonito(r.presupuesto)} leída, pero no trae ninguna de las referencias de la lista de Auxiliares.${sos.length ? `\nLíneas que parecen auxiliares (si lo son, añade su referencia en Configuración y vuelve a subir la hoja):\n• ${sos.join("\n• ")}` : " Tampoco veo líneas de guías, solapes ni mosquiteras: puede que esta obra no lleve auxiliares."}`;
@@ -55006,7 +55047,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   };
   buscarCodigoRef.current = buscarCodigo;
   const guardarCfg = (b) => (b.refs.some((r) => !String(r.ref || "").trim() && String(r.nombre || "").trim()) && !window.confirm("Hay perfiles con nombre pero SIN referencia: esos no se guardarían. ¿Guardar de todas formas?")) ? Promise.resolve(false) : fbSet(ref(fbDb, "auxiliaresConfig"), JSON.parse(JSON.stringify({
-    refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim() })).filter((r) => r.ref),
+    refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim(), menos: Math.abs(parseFloat(String(r.menos ?? "").replace(",", "."))) || 0, mas: Math.abs(parseFloat(String(r.mas ?? "").replace(",", "."))) || 0 })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
     bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40,
     margenIzqMm: parseFloat(b.margenIzqMm) || 0, margenDerMm: parseFloat(b.margenDerMm) || 0, margenSupMm: parseFloat(b.margenSupMm) || 0, escalaEt: parseFloat(b.escalaEt) || 100, negativoEt: !!b.negativoEt, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
