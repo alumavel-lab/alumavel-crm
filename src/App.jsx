@@ -7278,6 +7278,7 @@ export default function App() {
                 proyectos={proyectos} uxExpedientes={uxExpedientes} etiquetasSinObra={etiquetasSinObra}
                 quien={currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : ""}
                 quienId={currentUser ? currentUser.id : ""} puestoFijo={isAdmin ? "" : (currentUser && currentUser.puestoFijo) || ""}
+                puestosPermitidos={isAdmin ? [] : toArray(currentUser && currentUser.puestosLinea)} puedeBajaCristal={isAdmin || !!(currentUser && currentUser.bajaCristales)}
                 cristales={cristales} onUpdateCristal={updateCristal} admin={isAdmin}
                 verMas={tieneAcceso("fabrica")}
                 onIrA={(t) => { tabInicialFabrica.actual = t; setModulo("fabrica"); }}
@@ -47356,62 +47357,6 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     </div>
   );
 }
-// Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
-function BuscarCristalesLinea({ cristales, onUpdateCristal, quien, indice }) {
-  const [abierto, setAbierto] = useState(false); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
-  const sinPuntos = (t) => String(t || "").replace(/(\d)\.(?=\d)/g, "$1");
-  const toks = sinPuntos(q).toLowerCase().split(/\s+/).filter(Boolean);
-  // Presupuestos de cada expediente (sacados de las etiquetas de fabricación): así se puede buscar el cristal por nº de presupuesto (6510 o 6.510)
-  const pptosPorExp = useMemo(() => {
-    const m = new Map(); if (!abierto || !indice) return m; const vistos = new Set();
-    indice.forEach((h) => { const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id); const e = datosVentanaLinea(h).exp; const pp = sinPuntos(v.num || (h.dueno && h.dueno.presupuesto) || "").split("-")[0]; if (!e || !pp) return; const set = m.get(e) || new Set(); set.add(pp); m.set(e, set); });
-    return m;
-  }, [abierto, indice]);
-  const filas = [];
-  if (abierto && toks.length) {
-    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
-      if (!p || (!!p.puesto !== verQuitados)) return;
-      const pps = numsExpediente(p.expediente || c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]);
-      const t = [...pps, sinPuntos(c.presupuesto), sinPuntos(p.presupuesto), p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
-      if (toks.every((k) => t.includes(k))) filas.push({ c, p, i });
-    }));
-  }
-  const cambiar = (x, quitar) => {
-    if (!onUpdateCristal) { alert("Desde aquí no tengo acceso al almacén de cristales."); return; }
-    if (quitar && !window.confirm(`¿Quitar del almacén el cristal ${x.p.ref || ""} (${x.p.ancho || "?"} × ${x.p.alto || "?"}) del caballete ${x.c.lote || x.c.numero || "—"}?`)) return;
-    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (quitar ? { ...q2, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : { ...q2, puesto: false, fechaPuesto: "", quitadoAMano: null, ventanaId: "", ventanaPos: "" }) : q2)) });
-  };
-  return (
-    <div className="mt-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
-      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full text-left text-base font-extrabold text-sky-900">{abierto ? "▼" : "▶"} 🔍 Buscar un cristal (y quitarlo a mano)</button>
-      {abierto && (
-        <div className="mt-2 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Presupuesto (6510), expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
-            <label className="text-xs text-slate-700 flex items-center gap-1"><input type="checkbox" checked={verQuitados} onChange={(e) => setVerQuitados(e.target.checked)} /> ver los ya quitados</label>
-          </div>
-          {!toks.length ? <div className="text-xs text-slate-500">Escribe algo para buscar.</div> : !filas.length ? <div className="text-sm text-slate-600">No hay ningún cristal {verQuitados ? "quitado" : "en el almacén"} con eso.</div> : (
-            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
-              {filas.slice(0, 80).map((x) => (
-                <div key={`${x.c.id}_${x.i}`} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1.5 text-sm">
-                  <span className="font-bold">{x.p.ref || "(sin ref.)"}</span>
-                  <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm</span>
-                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}{(() => { const pp = [...new Set(numsExpediente(x.p.expediente || x.c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]))]; return pp.length ? ` · ppto. ${pp.join(", ")}` : ""; })()}</span>
-                  <span className="text-slate-700">cab. <b>{x.c.lote || x.c.numero || "—"}</b> · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar"}</span>
-                  {x.p.puesto && <span className="text-xs text-slate-500">quitado {x.p.fechaPuesto || ""}{x.p.ventanaPos ? ` · ventana ${x.p.ventanaPos}` : ""}{x.p.quitadoAMano && x.p.quitadoAMano.por ? ` · a mano (${x.p.quitadoAMano.por})` : ""}</span>}
-                  {x.p.puesto
-                    ? <button type="button" onClick={() => cambiar(x, false)} className="ml-auto text-xs font-bold px-2 py-1 rounded border border-slate-400 text-slate-700">↩ Volver a meterlo</button>
-                    : <button type="button" onClick={() => cambiar(x, true)} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-600 text-white">🗑 Quitar del almacén</button>}
-                </div>
-              ))}
-              {filas.length > 80 && <div className="text-xs text-slate-500">…y {filas.length - 80} más: afina la búsqueda.</div>}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
   if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
@@ -48092,9 +48037,12 @@ function PendientesConfirmarCristales({ quien }) {
     </div>
   );
 }
-function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", cristales = [], onUpdateCristal, onIrA, admin = false }) {
+function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
-  const puestoId = puestoFijo || puestoSel; // con "puesto fijo" el operario no puede cambiar de puesto
+  // Puestos que el administrador le deja usar a este usuario (vacío = todos)
+  const permitidos = toArray(puestosPermitidos).filter(Boolean);
+  const puedePuesto = (id) => !permitidos.length || permitidos.includes(id);
+  const puestoId = puestoFijo || (puedePuesto(puestoSel) ? puestoSel : (permitidos[0] || puestoSel)); // con "puesto fijo" el operario no puede cambiar de puesto
   const [codigo, setCodigo] = useState("");
   const [ultimo, setUltimo] = useState(null); // { ok, texto }
   // Matrimonio: varias personas con la misma pistola. Cada una elige su mesa (1-3) y su aviso sale en su propio panel.
@@ -48275,10 +48223,10 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
-          {PUESTOS_LINEA.filter((p) => p.id !== "carga" && (!puestoFijo || p.id === puestoFijo)).map((p) => (
+          {PUESTOS_LINEA.filter((p) => p.id !== "carga" && (!puestoFijo || p.id === puestoFijo) && (admin || puedePuesto(p.id))).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
-          {(!puestoFijo || admin) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
+          {((!puestoFijo && !permitidos.length) || admin || permitidos.includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
         </div>
         {verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -48329,13 +48277,12 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
-        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
         <div className="mt-4">{puestoId === "colgado" && <p className="text-xs text-slate-600 mb-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500 align-middle mr-1"></span><b>Verde</b> = marco y todas sus hojas con herraje ya están listos: cógelos y júntalos. <span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 align-middle mx-1"></span>Amarillo = aún falta alguna pieza.</p>}
         <MapaZonasLinea resaltar={resaltarDe((ultimo && ultimo.h) || ficha)} ids={ZONAS_POR_PUESTO[puestoId]} indice={indice} admin={admin} control={puestoId === "lineaPers"} destacar={ultimo && ultimo.zona} verdes={puestoId === "colgado" ? piezasListasMatrimonio : null} /></div>
-        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null} />
+        <AlmacenPuestoSoloLectura puestoId={puestoId} cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} destacarPers={ultimo && ultimo.foco && ultimo.foco.tipo === "persiana" ? ultimo.foco : null} destacarCristal={ultimo && ultimo.foco && ultimo.foco.tipo === "cristal" ? ultimo.foco : null} />
         <p className="text-xs text-slate-500 mt-3">Hoy en este puesto: <b>{hoyAqui.length}</b> ventana{hoyAqui.length === 1 ? "" : "s"}. La <b>Carga</b> se registra sola al escanear en Almacén ventanas.</p>
         {hoyAqui.length > 0 && (
           <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-md max-h-56 overflow-y-auto">
@@ -54652,31 +54599,49 @@ function HorasPorObraLinea({ proyectos = [], uxExpedientes = [], usuarios = [], 
 
 // Almacén que le toca al puesto, SOLO PARA MIRAR (sin botones para cambiar nada)
 // Puesto Cristales: mirar (sin tocar nada) qué lleva el caballete de un hueco del mapa
-function CaballeteSoloLectura({ cristales, ubic, onCerrar }) {
+function CaballeteSoloLectura({ cristales, ubic, onCerrar, onUpdateCristal = null, quien = "", marcar = "" }) {
   const lista = cristales.filter((c) => c.ubicacion && c.ubicacion.zona === ubic.zona && c.ubicacion.fila === ubic.fila && c.ubicacion.hueco === ubic.hueco);
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onCerrar}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-3"><div className="font-bold text-slate-800">{ubicacionTexto(ubic)}</div><button type="button" onClick={onCerrar} className="ml-auto text-sm font-semibold text-slate-500 border border-slate-300 rounded px-3 py-1">Cerrar</button></div>
         {lista.length === 0 && <p className="text-sm text-slate-500">Hueco vacío.</p>}
-        {lista.map((c) => <CaballeteFilas key={c.id} c={c} />)}
+        {lista.map((c) => <CaballeteFilas key={c.id} c={c} marcar={marcar} onUpdateCristal={onUpdateCristal} quien={quien} />)}
       </div>
     </div>
   );
 }
-function CaballeteFilas({ c, marcar = "" }) {
+function CaballeteFilas({ c, marcar = "", onUpdateCristal = null, quien = "" }) {
+  const piezas = toArray(c.piezas);
+  const pendientes = piezas.filter((p) => !p.puesto).length;
+  const presu = presupuestoCab(c);
+  const cambiar = (i, quitar) => {
+    const p = piezas[i]; if (!onUpdateCristal || !p) return;
+    if (quitar && !window.confirm(`¿Dar de baja el cristal ${p.ref || ""} (${p.ancho || "?"} × ${p.alto || "?"}) del caballete ${c.lote || c.numero || "—"}?`)) return;
+    onUpdateCristal(c.id, { piezas: piezas.map((q, j) => (j === i ? (quitar ? { ...q, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : { ...q, puesto: false, fechaPuesto: "", quitadoAMano: null, ventanaId: "", ventanaPos: "" }) : q)) });
+  };
+  const vaciar = () => {
+    if (!onUpdateCristal) return;
+    if (!window.confirm(`¿Vaciar el caballete ${c.lote || c.numero || "—"}?\n\nSe dan de baja sus ${pendientes} cristal(es) que quedan y el caballete sale del mapa (deja libre el hueco).`)) return;
+    onUpdateCristal(c.id, { ubicacion: null, enPuesto: "", piezas: piezas.map((q) => (q.puesto ? q : { ...q, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } })), vaciadoAMano: { por: quien || "", ts: Date.now() } });
+  };
   return (
     <div className="border border-slate-200 rounded-lg p-3 mb-3">
-      <div className="text-sm font-bold text-slate-800">Caballete {c.lote || c.numero || "—"} <span className="font-normal text-slate-500">· {c.cliente || ""}{c.proveedor ? ` · ${c.proveedor}` : ""} · exp. {textoExpedientes(c, 10)}</span></div>
-      <table className="w-full text-xs mt-1"><thead><tr className="text-left text-slate-500"><th className="py-0.5">Vivienda / ref</th><th>Expediente</th><th>Medida (mm)</th><th>Uds</th><th>Estado</th></tr></thead>
-        <tbody>{toArray(c.piezas).map((p, i) => (
-          <tr key={i} className={`border-t border-slate-100 ${marcar && normBusq(`${p.ref} ${p.expediente || c.expediente}`).includes(normBusq(marcar)) ? "bg-rose-100 font-bold" : ""}`}><td className="py-0.5">{p.ref || "—"}</td><td>{p.expediente || c.expediente || ""}</td><td>{p.ancho || "?"} × {p.alto || "?"}</td><td>{p.cantidad || 1}</td><td>{p.puesto ? "✓ puesto" : "por poner"}</td></tr>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm font-bold text-slate-800">Caballete {c.lote || c.numero || "—"} <span className="font-normal text-slate-500">· {c.cliente || ""}{c.proveedor ? ` · ${c.proveedor}` : ""} · exp. {textoExpedientes(c, 10)}{presu ? ` · ppto. ${presu}` : ""} · {pendientes} de {piezas.length} por poner</span></div>
+        {onUpdateCristal && <button type="button" onClick={vaciar} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-700 text-white">🗑 Vaciar caballete</button>}
+      </div>
+      <table className="w-full text-xs mt-1"><thead><tr className="text-left text-slate-500"><th className="py-0.5">Vivienda / ref</th><th>Expediente</th><th>Presupuesto</th><th>Medida (mm)</th><th>Uds</th><th>Estado</th>{onUpdateCristal && <th></th>}</tr></thead>
+        <tbody>{piezas.map((p, i) => (
+          <tr key={i} className={`border-t border-slate-100 ${p.puesto ? "text-slate-400" : ""} ${marcar && normBusq(`${p.ref} ${p.expediente || c.expediente} ${p.presupuesto || ""}`).includes(normBusq(marcar)) ? "bg-rose-100 font-bold" : ""}`}><td className="py-0.5">{p.ref || "—"}</td><td>{p.expediente || c.expediente || ""}</td><td>{p.presupuesto || c.presupuesto || ""}</td><td>{p.ancho || "?"} × {p.alto || "?"}</td><td>{p.cantidad || 1}</td><td>{p.puesto ? `✓ puesto${p.quitadoAMano ? " (a mano)" : ""}` : "por poner"}</td>
+            {onUpdateCristal && <td className="text-right">{p.puesto ? <button type="button" onClick={() => cambiar(i, false)} className="text-[11px] underline text-slate-500">↩ volver</button> : <button type="button" onClick={() => cambiar(i, true)} className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">Dar de baja</button>}</td>}
+          </tr>
         ))}</tbody></table>
     </div>
   );
 }
 // Puesto Cristales: caballetes «Pendientes de ubicar» (sin hueco en el mapa) para poder buscar ahí el cristal
-function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
+function PendientesCristalesPuesto({ cristales, q, destacarCristal, onUpdateCristal = null, quien = "" }) {
   const [abierto, setAbierto] = useState(false);
   const nq = normBusq(q);
   const pend = cristales.filter((c) => !c.ubicacion && !c.enPuesto && toArray(c.piezas).some((p) => !p.puesto));
@@ -54686,14 +54651,14 @@ function PendientesCristalesPuesto({ cristales, q, destacarCristal }) {
   return (
     <div className={`mt-4 rounded-lg p-3 border ${foco ? "border-rose-500 bg-rose-50" : "border-amber-300 bg-amber-50/60"}`}>
       <button type="button" onClick={() => setAbierto(!abre)} className="text-sm font-bold text-amber-900">{abre ? "▼" : "▶"} Caballetes de CRISTAL pendientes de ubicar ({filtrados.length}) · no son ventanas{foco ? " · el cristal que buscas está aquí" : ""}</button>
-      {abre && (filtrados.length === 0 ? <p className="text-xs text-slate-500 mt-1">Ninguno{nq ? " con esa búsqueda" : ""}.</p> : <div className="mt-2">{filtrados.map((c) => <CaballeteFilas key={c.id} c={c} marcar={foco && String(c.lote || c.numero || "") === destacarCristal.caballete ? destacarCristal.viv : ""} />)}</div>)}
+      {abre && (filtrados.length === 0 ? <p className="text-xs text-slate-500 mt-1">Ninguno{nq ? " con esa búsqueda" : ""}.</p> : <div className="mt-2">{filtrados.map((c) => <CaballeteFilas key={c.id} c={c} marcar={foco && String(c.lote || c.numero || "") === destacarCristal.caballete ? destacarCristal.viv : ""} onUpdateCristal={onUpdateCristal} quien={quien} />)}</div>)}
     </div>
   );
 }
 // Presupuesto de una persiana de carro (si no lo trae, se agrupa por expediente)
 const clavePptoPers = (x) => { const d = String(x.presupuesto || "").split(/[·,;\s]+/).map((t) => t.replace(/\D/g, "")).find((t) => t.length >= 3) || ""; return d ? `P${d}` : `E${String(x.expediente || "—").trim()}`; };
 const etiquetaPptoPers = (k) => (k[0] === "P" ? `Ppto ${pptoBonito(k.slice(1))}` : `EXP ${k.slice(1)} (sin nº de presupuesto)`);
-function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null }) {
+function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = null, destacarCristal = null, onUpdateCristal = null, quien = "" }) {
   const ctx = React.useContext(IncidenciasCristalCtx) || {};
   const [q, setQ] = useState("");
   const [carroVer, setCarroVer] = useState(null); // { almacenId, numero }: carro abierto para ver todas sus persianas
@@ -54703,14 +54668,14 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
     return (
       <div className="mt-6">
         <div className="flex flex-wrap items-center gap-3 mb-2">
-          <h4 className="font-display font-bold text-slate-800">Almacén de cristales <span className="text-xs font-normal text-slate-400">(solo mirar)</span></h4>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
+          <h4 className="font-display font-bold text-slate-800">Almacén de cristales <span className="text-xs font-normal text-slate-400">{onUpdateCristal ? "(toca un caballete para ver sus cristales y darlos de baja)" : "(solo mirar)"}</span></h4>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar presupuesto, caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[260px]" />
         </div>
         {destacarCristal && destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-orange-500 text-white text-base font-extrabold">✓ CRISTAL {destacarCristal.viv || ""} PUESTO · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}</div>}
         {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
         <MapaAlmacenCristales cristales={cristales} filtros={{ cab: "", viv: "", exp: "", otro: q }} soloLectura verDetalleSolo onVerHueco={setHuecoVer} destacar={destacarCristal && destacarCristal.ubicacion ? { ...destacarCristal.ubicacion, naranja: !!destacarCristal.puesto } : null} />
-        <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} />
-        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} />}
+        <PendientesCristalesPuesto cristales={cristales} q={q} destacarCristal={destacarCristal} onUpdateCristal={onUpdateCristal} quien={quien} />
+        {huecoVer && <CaballeteSoloLectura cristales={cristales} ubic={huecoVer} onCerrar={() => setHuecoVer(null)} onUpdateCristal={onUpdateCristal} quien={quien} marcar={q} />}
       </div>
     );
   }
@@ -58894,7 +58859,7 @@ function ContadorRitmoLinea({ admin, real: realProp, total, esHoy = true, detall
   );
 }
 
-function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
+function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales, onUpdateCristal, admin, verMas, onIrA, caballetes, clientes, pedidos, uxPedidos,
   onGuardarEtiquetasObra, onGuardarSinObra, onBorrarSinObra, onGuardarCaballete, onBorrarCaballete, config, onSaveConfig, configPlanning, onMoverEstado, onMoverDiaFabrica = null, onMeterEnPlanning = null, onAnadirDocObra = null, renderParte = null, renderIncidencias = null, usuarios = [], onAsignarHoras = null }) {
   const soloAlmacen = puestoFijo === "almacenventanas"; // operario del almacén de ventanas: ve el almacén, no los puestos de la línea
   const [tab, setTab] = useState(soloAlmacen ? "almacenDia" : "puesto");
@@ -58937,7 +58902,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
         <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
       )}
       {actual.id === "puesto" && (
-        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
+        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} puestosPermitidos={puestosPermitidos} puedeBajaCristal={puedeBajaCristal} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
       {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
@@ -59071,6 +59036,25 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
             </Select>
             <p className="text-xs text-slate-500 mt-1">Si lo eliges, en Línea (pistola) solo verá ese puesto y no podrá leer en otros.</p>
           </Field>
+        )}
+        {f.rol !== "Administrador" && (
+          <Field label="Puestos de la línea que puede usar">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+              {[...PUESTOS_LINEA.filter((q) => q.id !== "carga"), { id: "auxiliares", nombre: "Auxiliares (corte)" }].map((q) => (
+                <label key={q.id} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={toArray(f.puestosLinea).includes(q.id)} onChange={(e) => setF({ ...f, puestosLinea: e.target.checked ? [...toArray(f.puestosLinea), q.id] : toArray(f.puestosLinea).filter((x) => x !== q.id) })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+                  {q.nombre}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">En Línea (pistola) solo verá y podrá leer en los puestos marcados. Sin ninguno marcado puede usar todos.</p>
+          </Field>
+        )}
+        {f.rol !== "Administrador" && (
+          <label className="flex items-start gap-2 text-sm text-slate-700 bg-rose-50 border border-rose-200 rounded-md p-3 cursor-pointer">
+            <input type="checkbox" checked={!!f.bajaCristales} onChange={(e) => setF({ ...f, bajaCristales: e.target.checked })} className="mt-0.5 rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
+            <span><b>Puede dar de baja cristales a mano</b> (en Línea → Cristales: buscar, quitar del almacén y vaciar caballetes). Si no está marcado, solo puede mirar.</span>
+          </label>
         )}
         {f.rol !== "Administrador" && (
           <label className="flex items-start gap-2 text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-md p-3 cursor-pointer">
