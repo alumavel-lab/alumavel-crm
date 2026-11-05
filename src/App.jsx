@@ -48100,11 +48100,12 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h, selCris);
       else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
-      // Sin persiana en el almacén → INCIDENCIA automática (una sola por ventana)
-      if (cruce && !cruce.ok && (puestoId === "persianaA" || puestoId === "persianaB")) {
-        const idInc = `pers_${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`; const ahoraI = Date.now();
-        runTransaction(ref(fbDb, `incidenciasFabrica/${idInc}`), (cur) => (cur ? undefined : { id: idInc, texto: `FALTA LA PERSIANA de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), foto: "", ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", apartar: false, automatica: true, estado: "Abierta", asignadoA: "", creadaTs: ahoraI, venceTs: ahoraI + PLAZO_INC_FABRICA_MS, creadaPor: { id: "", nombre: quien || "Pistola (automática)" } }))
-          .then((rr) => { if (rr && rr.committed) avisarM(false, `⚠ ${v.pos}: NO HAY PERSIANA en el almacén → INCIDENCIA creada sola (${cruce.texto})`, true); }).catch(() => {});
+      // Sin persiana o sin cristal en el almacén → INCIDENCIA automática (una sola por ventana y cosa)
+      const esCris = puestoId === "cristales"; const queFalta = esCris ? "EL CRISTAL" : "LA PERSIANA";
+      if (cruce && !cruce.ok && (esCris || puestoId === "persianaA" || puestoId === "persianaB") && !/varias unidades|no tengo acceso|expediente de la ventana/.test(cruce.texto)) {
+        const idInc = `${esCris ? "cris" : "pers"}_${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`; const ahoraI = Date.now();
+        runTransaction(ref(fbDb, `incidenciasFabrica/${idInc}`), (cur) => (cur ? undefined : { id: idInc, texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), foto: "", ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", apartar: false, automatica: true, estado: "Abierta", asignadoA: "", creadaTs: ahoraI, venceTs: ahoraI + PLAZO_INC_FABRICA_MS, creadaPor: { id: "", nombre: quien || "Pistola (automática)" } }))
+          .then((rr) => { if (rr && rr.committed) avisarM(false, `⚠ ${v.pos}: NO HAY ${esCris ? "CRISTAL" : "PERSIANA"} en el almacén → INCIDENCIA creada sola (${cruce.texto})`, true); }).catch(() => {});
       }
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
