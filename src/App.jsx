@@ -29039,7 +29039,10 @@ function UxcContactoCita({ exp }) {
         {!ficha && cab.cliente ? <span className="text-xs text-amber-700 font-semibold">· No existe ficha de «{cab.cliente}» en Clientes{propia ? " (se creará con este teléfono al enviar)" : ""}</span> : null}
         {ficha && !deFicha && !propio ? <span className="text-xs text-amber-700 font-semibold">· La ficha existe pero no tiene teléfono</span> : null}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-1 gap-3 ${propia ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
+        {propia && <Field label="Nombre de la obra">
+          <UxcCel valor={cab.expediente} placeholder="Ej.: Chalet García" onGuardar={(v) => guardarC("expediente", v)} />
+        </Field>}
         <Field label={propia ? "Teléfono del cliente" : "Teléfono del propietario"} required>
           <UxcCel tipo="tel" valor={cab.telefono} placeholder={deFicha || "Obligatorio"} onGuardar={(v) => guardarC("telefono", v)} />
         </Field>
