@@ -44797,6 +44797,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); return e && e.estado === "terminado" ? String(e.fechaTerminado || "") : ""; }
       return "";
     };
+    // ¿Tiene ya ETIQUETAS de fabricación? (las suyas, o un lote subido en otra obra que trae ventanas de su presupuesto)
+    const presConEtiq = new Set();
+    [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].forEach((l) => l && toArray(l.ventanas).forEach((v) => { const b = basePresuDia(v && v.num); if (b.length >= 3) presConEtiq.add(b); }));
+    const tieneEtiq = (o) => toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
       Object.keys(planDias[f] || {}).forEach((k) => {
@@ -45152,9 +45156,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                   <div className="text-[11px] font-bold text-slate-600">{Number(f.slice(8))}</div>
                   <div className="space-y-0.5">
                     {its.slice(0, 5).map((it, j) => {
-                      if (it.sinEtiquetas) return <div key={j} className="truncate rounded px-1 text-[10px] border border-dashed border-amber-400 text-amber-800 bg-amber-50">📌 {it.sinEtiquetas}</div>;
+                      if (it.sinEtiquetas) return <div key={j} title="Del planning, pero sin obra ni etiquetas en el CRM" className="truncate rounded px-1 text-[10px] font-semibold bg-rose-600 text-white">⚠ {it.sinEtiquetas}</div>;
                       const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : st.pend > 0 ? "bg-sky-200 text-sky-900" : "bg-slate-200 text-slate-700";
-                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>{it.terminada ? "🏁" : "📌"} {nombreAD(it.o)} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
+                      const sinE = !it.terminada && !tieneEtiq(it.o);
+                      return <div key={j} title={sinE ? "SIN ETIQUETAS de fabricación: súbelas (toca el día)" : undefined} className={`truncate rounded px-1 text-[10px] font-semibold ${sinE ? "bg-rose-600 text-white" : col}`}>{sinE ? "⚠" : it.terminada ? "🏁" : "📌"} {nombreAD(it.o)} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
                     })}
                     {its.length > 5 && <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); setDiaAD(f); setVerDiaAD(f); }} className="block text-[11px] font-bold text-sky-700 underline cursor-pointer">+{its.length - 5} más · ver todas</span>}
                   </div>
@@ -45166,6 +45171,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
           {avisoSinEt}
+          {(() => { const faltan = delDia.filter((it) => it.o && !it.terminada && !tieneEtiq(it.o)); if (!faltan.length) return null; return (
+            <div className="rounded-lg border-2 border-rose-500 bg-rose-50 p-3 space-y-2">
+              <div className="text-sm font-extrabold text-rose-800">⚠ {faltan.length === 1 ? "Esta obra planificada NO tiene" : `Estas ${faltan.length} obras planificadas NO tienen`} las etiquetas de fabricación subidas. Sin ellas la pistola no las reconoce. Súbelas aquí:</div>
+              {faltan.map((it) => (/^[pu]-/.test(String(it.o.key)) ? (
+                <div key={it.o.key} className="rounded-md border border-rose-300 bg-white p-2">
+                  <div className="text-sm font-bold text-rose-800 mb-1">{nombreAD(it.o)} · {it.o.nombre}</div>
+                  <EtiquetasFabricacionObra lotes={lotesDe(it.o.key)} presupuestoNumero={toArray(it.o.codigos)[0] || ""} onGuardar={(l) => onGuardarEtiquetasObra && onGuardarEtiquetasObra(it.o.key, l)} />
+                </div>
+              ) : <div key={it.o.key} className="text-sm text-rose-800"><b>{nombreAD(it.o)}</b>: no está como obra en el CRM (solo en el planning). Súbelas en Almacén de ventanas → Subir etiquetas.</div>))}
+            </div>
+          ); })()}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
       </div>
