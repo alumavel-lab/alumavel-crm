@@ -47357,62 +47357,6 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     </div>
   );
 }
-// Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
-function BuscarCristalesLinea({ cristales, onUpdateCristal, quien, indice }) {
-  const [abierto, setAbierto] = useState(true); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
-  const sinPuntos = (t) => String(t || "").replace(/(\d)\.(?=\d)/g, "$1");
-  const toks = sinPuntos(q).toLowerCase().split(/\s+/).filter(Boolean);
-  // Presupuestos de cada expediente (sacados de las etiquetas de fabricación): así se puede buscar el cristal por nº de presupuesto (6510 o 6.510)
-  const pptosPorExp = useMemo(() => {
-    const m = new Map(); if (!abierto || !indice) return m; const vistos = new Set();
-    indice.forEach((h) => { const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id); const e = datosVentanaLinea(h).exp; const pp = sinPuntos(v.num || (h.dueno && h.dueno.presupuesto) || "").split("-")[0]; if (!e || !pp) return; const set = m.get(e) || new Set(); set.add(pp); m.set(e, set); });
-    return m;
-  }, [abierto, indice]);
-  const filas = [];
-  if (abierto && toks.length) {
-    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
-      if (!p || (!!p.puesto !== verQuitados)) return;
-      const pps = numsExpediente(p.expediente || c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]);
-      const t = [...pps, sinPuntos(c.presupuesto), sinPuntos(p.presupuesto), p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
-      if (toks.every((k) => t.includes(k))) filas.push({ c, p, i });
-    }));
-  }
-  const cambiar = (x, quitar) => {
-    if (!onUpdateCristal) { alert("Desde aquí no tengo acceso al almacén de cristales."); return; }
-    if (quitar && !window.confirm(`¿Quitar del almacén el cristal ${x.p.ref || ""} (${x.p.ancho || "?"} × ${x.p.alto || "?"}) del caballete ${x.c.lote || x.c.numero || "—"}?`)) return;
-    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (quitar ? { ...q2, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : { ...q2, puesto: false, fechaPuesto: "", quitadoAMano: null, ventanaId: "", ventanaPos: "" }) : q2)) });
-  };
-  return (
-    <div className="mt-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
-      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full text-left text-base font-extrabold text-sky-900">{abierto ? "▼" : "▶"} 🔍 Buscar un cristal (y quitarlo a mano)</button>
-      {abierto && (
-        <div className="mt-2 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Presupuesto (6510), expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
-            <label className="text-xs text-slate-700 flex items-center gap-1"><input type="checkbox" checked={verQuitados} onChange={(e) => setVerQuitados(e.target.checked)} /> ver los ya quitados</label>
-          </div>
-          {!toks.length ? <div className="text-xs text-slate-500">Escribe algo para buscar.</div> : !filas.length ? <div className="text-sm text-slate-600">No hay ningún cristal {verQuitados ? "quitado" : "en el almacén"} con eso.</div> : (
-            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
-              {filas.slice(0, 80).map((x) => (
-                <div key={`${x.c.id}_${x.i}`} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1.5 text-sm">
-                  <span className="font-bold">{x.p.ref || "(sin ref.)"}</span>
-                  <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm</span>
-                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}{(() => { const pp = [...new Set(numsExpediente(x.p.expediente || x.c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]))]; return pp.length ? ` · ppto. ${pp.join(", ")}` : ""; })()}</span>
-                  <span className="text-slate-700">cab. <b>{x.c.lote || x.c.numero || "—"}</b> · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar"}</span>
-                  {x.p.puesto && <span className="text-xs text-slate-500">quitado {x.p.fechaPuesto || ""}{x.p.ventanaPos ? ` · ventana ${x.p.ventanaPos}` : ""}{x.p.quitadoAMano && x.p.quitadoAMano.por ? ` · a mano (${x.p.quitadoAMano.por})` : ""}</span>}
-                  {x.p.puesto
-                    ? <button type="button" onClick={() => cambiar(x, false)} className="ml-auto text-xs font-bold px-2 py-1 rounded border border-slate-400 text-slate-700">↩ Volver a meterlo</button>
-                    : <button type="button" onClick={() => cambiar(x, true)} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-600 text-white">🗑 Quitar del almacén</button>}
-                </div>
-              ))}
-              {filas.length > 80 && <div className="text-xs text-slate-500">…y {filas.length - 80} más: afina la búsqueda.</div>}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
   if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
@@ -48333,7 +48277,6 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
-        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={puedeBajaCristal || admin ? onUpdateCristal : null} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
@@ -54726,7 +54669,7 @@ function AlmacenPuestoSoloLectura({ puestoId, cristales = [], destacarPers = nul
       <div className="mt-6">
         <div className="flex flex-wrap items-center gap-3 mb-2">
           <h4 className="font-display font-bold text-slate-800">Almacén de cristales <span className="text-xs font-normal text-slate-400">{onUpdateCristal ? "(toca un caballete para ver sus cristales y darlos de baja)" : "(solo mirar)"}</span></h4>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[220px]" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar presupuesto, caballete, vivienda, expediente o medida…" className="ml-auto text-sm border border-slate-200 rounded-lg px-3 py-1.5 min-w-[260px]" />
         </div>
         {destacarCristal && destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-orange-500 text-white text-base font-extrabold">✓ CRISTAL {destacarCristal.viv || ""} PUESTO · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}</div>}
         {destacarCristal && !destacarCristal.puesto && <div className="mb-2 px-4 py-3 rounded-lg bg-rose-600 text-white animate-pulse text-base font-extrabold">👉 COGE EL CRISTAL {destacarCristal.viv || ""} · {destacarCristal.medida} mm · caballete {destacarCristal.caballete || "—"}{destacarCristal.ubicacion ? ` · ${ubicacionTexto(destacarCristal.ubicacion)}` : " · sin hueco en el mapa"}</div>}
