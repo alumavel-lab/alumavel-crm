@@ -54571,10 +54571,13 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         const ud = parseInt(m[2] || m[3], 10); // la Ud puede venir pegada a la descripción («…35y392 LACADO BLANCO»: Ud 2)
         const color = m[4] ? m[4].replace(/\s+/g, " ").trim().toUpperCase() : "";
         const digitos = m[6].replace(/\D/g, ""); // la medida puede venir «1.160» o separada del total («980 1»)
+        // MEDIDA CON DECIMALES («553,2»): la coma es decimal; tras ella va 1 decimal y luego el ToT pegado («553,24» = 553,2 y ToT 4)
+        const conComa = /^\s*[\d.]+,\d/.test(m[6]) ? m[6].trim().match(/^([\d.]+),(\d)/) : null;
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
+        if (conComa) { const ent = parseInt(conComa[1].replace(/\./g, ""), 10); filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(ent) ? parseFloat(`${ent}.${conComa[2]}`) : null, lFinal: null, tot: ud * b.uds, ud }); return; }
         filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
         return;
       }
