@@ -45957,6 +45957,7 @@ const PUESTOS_LINEA = [
   { id: "cristales", nombre: "Cristales", corto: "Cristales" },
   { id: "solape", nombre: "Solape / postigo", corto: "Solape" },
   { id: "especiales", nombre: "Especiales", corto: "Especiales" },
+  { id: "controlDia", nombre: "Control del día", corto: "C. día" },
   { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
 ];
 const nombrePuestoLinea = (id) => (PUESTOS_LINEA.find((p) => p.id === id) || {}).nombre || id;
@@ -47252,6 +47253,54 @@ function datosVentanaLinea(h) {
   };
   return { exp, viv, casa };
 }
+// Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
+function BuscarCristalesLinea({ cristales, onUpdateCristal, quien }) {
+  const [abierto, setAbierto] = useState(false); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
+  const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const filas = [];
+  if (abierto && toks.length) {
+    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
+      if (!p || (!!p.puesto !== verQuitados)) return;
+      const t = [p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
+      if (toks.every((k) => t.includes(k))) filas.push({ c, p, i });
+    }));
+  }
+  const cambiar = (x, quitar) => {
+    if (!onUpdateCristal) { alert("Desde aquí no tengo acceso al almacén de cristales."); return; }
+    if (quitar && !window.confirm(`¿Quitar del almacén el cristal ${x.p.ref || ""} (${x.p.ancho || "?"} × ${x.p.alto || "?"}) del caballete ${x.c.lote || x.c.numero || "—"}?`)) return;
+    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (quitar ? { ...q2, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : { ...q2, puesto: false, fechaPuesto: "", quitadoAMano: null, ventanaId: "", ventanaPos: "" }) : q2)) });
+  };
+  return (
+    <div className="mt-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full text-left text-base font-extrabold text-sky-900">{abierto ? "▼" : "▶"} 🔍 Buscar un cristal (y quitarlo a mano)</button>
+      {abierto && (
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            <label className="text-xs text-slate-700 flex items-center gap-1"><input type="checkbox" checked={verQuitados} onChange={(e) => setVerQuitados(e.target.checked)} /> ver los ya quitados</label>
+          </div>
+          {!toks.length ? <div className="text-xs text-slate-500">Escribe algo para buscar.</div> : !filas.length ? <div className="text-sm text-slate-600">No hay ningún cristal {verQuitados ? "quitado" : "en el almacén"} con eso.</div> : (
+            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+              {filas.slice(0, 80).map((x) => (
+                <div key={`${x.c.id}_${x.i}`} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1.5 text-sm">
+                  <span className="font-bold">{x.p.ref || "(sin ref.)"}</span>
+                  <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm</span>
+                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}</span>
+                  <span className="text-slate-700">cab. <b>{x.c.lote || x.c.numero || "—"}</b> · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar"}</span>
+                  {x.p.puesto && <span className="text-xs text-slate-500">quitado {x.p.fechaPuesto || ""}{x.p.ventanaPos ? ` · ventana ${x.p.ventanaPos}` : ""}{x.p.quitadoAMano && x.p.quitadoAMano.por ? ` · a mano (${x.p.quitadoAMano.por})` : ""}</span>}
+                  {x.p.puesto
+                    ? <button type="button" onClick={() => cambiar(x, false)} className="ml-auto text-xs font-bold px-2 py-1 rounded border border-slate-400 text-slate-700">↩ Volver a meterlo</button>
+                    : <button type="button" onClick={() => cambiar(x, true)} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-600 text-white">🗑 Quitar del almacén</button>}
+                </div>
+              ))}
+              {filas.length > 80 && <div className="text-xs text-slate-500">…y {filas.length - 80} más: afina la búsqueda.</div>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
   if (!d.exp) return { ok: false, texto: "no he podido saber el expediente de la ventana" };
@@ -48051,6 +48100,12 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h, selCris);
       else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
+      // Sin persiana en el almacén → INCIDENCIA automática (una sola por ventana)
+      if (cruce && !cruce.ok && (puestoId === "persianaA" || puestoId === "persianaB")) {
+        const idInc = `pers_${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`; const ahoraI = Date.now();
+        runTransaction(ref(fbDb, `incidenciasFabrica/${idInc}`), (cur) => (cur ? undefined : { id: idInc, texto: `FALTA LA PERSIANA de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), foto: "", ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", apartar: false, automatica: true, estado: "Abierta", asignadoA: "", creadaTs: ahoraI, venceTs: ahoraI + PLAZO_INC_FABRICA_MS, creadaPor: { id: "", nombre: quien || "Pistola (automática)" } }))
+          .then((rr) => { if (rr && rr.committed) avisarM(false, `⚠ ${v.pos}: NO HAY PERSIANA en el almacén → INCIDENCIA creada sola (${cruce.texto})`, true); }).catch(() => {});
+      }
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
@@ -48153,6 +48208,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
+        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
@@ -57683,11 +57739,12 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
     if (!cands.length) return { ok: false, t: `${vEt.pos || "Ventana"} de ${dueno.nombre || "?"} (lote ${fabEt}): no la encuentro en Control del día. ¿Está la obra en el planning?` };
     cands.sort((x, y) => (y.sc - x.sc) || (x.verde - y.verde));
     const top = cands.filter((c) => c.sc === cands[0].sc); const elegida = top.find((c) => !c.verde) || top[0];
-    if (elegida.verde) return { ok: true, rep: true, t: `Ya estaba hecha: ${elegida.v.pos} · ${elegida.o.d.nombre}` };
+    if (elegida.verde) { registrarEscaneoLinea({ puestoId: "controlDia", h }).catch(() => {}); return { ok: true, rep: true, t: `Ya estaba hecha: ${elegida.v.pos} · ${elegida.o.d.nombre}` }; }
     const o = elegida.o; const v = elegida.v;
     const act = { ...(marcas[limpia(o.d.key)] || {}) }; act[v.id] = 1; await guardarObra(o.d.key, act); siTerminada(o, act);
     const hh = { ...(horas[limpia(o.d.key)] || {}) }; hh[v.id] = Date.now(); guardarHoras(o.d.key, hh);
     fbSet(ref(fbDb, `controlDiaPistola/${claveFis}`), { ko: limpia(o.d.key), idv: v.id, ts: Date.now(), dia }).catch(() => {});
+    registrarEscaneoLinea({ puestoId: "controlDia", h }).catch(() => {}); // queda apuntado que la ventana pasó por Control del día (informe de la línea)
     const tot = idsDe(o).length; const hechas = idsDe(o).filter((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1).length;
     return { ok: true, t: `✓ HECHA: ${v.pos} · ${o.d.nombre} (${hechas} de ${tot})` };
   };
