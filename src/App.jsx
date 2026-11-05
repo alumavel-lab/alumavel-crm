@@ -28563,7 +28563,23 @@ function MedicionesUxcarZona({ propia = false }) {
 
   const abierto = lista && abiertoId ? lista.find((x) => x.id === abiertoId) : null;
   if (abierto) return <UxcExpediente exp={abierto} onBack={() => setAbiertoId(null)} />;
-  const filtradas = (lista || []).filter((x) => (propia ? !!x.propia : !x.propia)).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+  const filtradas = (lista || []).filter((x) => (propia ? !!x.propia : !x.propia)).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente} ${(x.cab || {}).bloque || ""}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+
+  // Bloques: varias viviendas medidas por separado que van juntas (p. ej. un bloque de 20 viviendas)
+  const bloquesExist = [...new Set((lista || []).filter((x) => x.propia && (x.cab || {}).bloque).map((x) => x.cab.bloque))].sort((m, n) => m.localeCompare(n, "es", { numeric: true }));
+  const ponerBloque = (x) => {
+    const act = (x.cab || {}).bloque || "";
+    const txt = window.prompt(`¿A qué bloque u obra pertenece «${(x.cab || {}).expediente || "esta obra"}»?\n\nEscribe el nombre (si ya existe, se junta con ese).${bloquesExist.length ? `\nYa hay: ${bloquesExist.join(" · ")}` : ""}\n\nDéjalo vacío para quitarla del bloque.`, act);
+    if (txt === null) return;
+    const limpio = txt.trim(); const igual = bloquesExist.find((k) => k.toLowerCase() === limpio.toLowerCase());
+    fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/cab/bloque`), limpio ? (igual || limpio) : null).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const nuevaEnBloque = (bl) => {
+    const base = (lista || []).find((x) => x.propia && (x.cab || {}).bloque === bl); const cb = (base && base.cab) || {};
+    const n = vacioPropia(); n.cab = { ...n.cab, bloque: bl, direccion: cb.direccion || "", municipio: cb.municipio || "", cliente: cb.cliente || "", telefono: cb.telefono || "", color: cb.color || n.cab.color };
+    crear(n);
+  };
+  const ordenFilas = propia ? (() => { const out = []; const vistos = new Set(); filtradas.forEach((x) => { const bl = (x.cab || {}).bloque; if (!bl) { out.push({ x }); return; } if (vistos.has(bl)) return; vistos.add(bl); const del = filtradas.filter((y) => (y.cab || {}).bloque === bl).sort((m, n) => String((m.cab || {}).expediente || "").localeCompare(String((n.cab || {}).expediente || ""), "es", { numeric: true })); out.push({ bloque: bl, n: del.length }); del.forEach((y) => out.push({ x: y, enBloque: true })); }); return out; })() : filtradas.map((x) => ({ x }));
 
   return (
     <div>
@@ -28589,14 +28605,19 @@ function MedicionesUxcarZona({ propia = false }) {
           <tbody>
             {lista === null && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Cargando…</td></tr>}
             {lista && filtradas.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">{propia ? "Todavía no hay obras propias. Pulsa «Nueva obra»." : "Todavía no hay expedientes de Uxcar en esta zona."}</td></tr>}
-            {filtradas.map((x) => {
+            {ordenFilas.map(({ x, bloque, n: nBl, enBloque }) => {
+              if (bloque) return (
+                <tr key={"bl_" + bloque} className="bg-indigo-50 border-b border-indigo-200">
+                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span><button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button></div></td>
+                </tr>
+              );
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
               return (
                 <tr key={x.id} onClick={() => setAbiertoId(x.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
-                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div>{c.citaFecha && <div className="text-[11px] font-semibold text-sky-700">📅 {uxcFechaCorta(c.citaFecha)}{c.citaHora ? ` · ${c.citaHora}` : ""}</div>}</td>
+                  <td className={`px-4 py-3 font-bold text-slate-800 ${enBloque ? "pl-8 border-l-4 border-indigo-300" : ""}`}>{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div>{c.citaFecha && <div className="text-[11px] font-semibold text-sky-700">📅 {uxcFechaCorta(c.citaFecha)}{c.citaHora ? ` · ${c.citaHora}` : ""}</div>}</td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (c.cliente || "—") : (c.direccion || "—")}<div className="text-[11px] text-slate-400">{propia ? c.direccion : c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (() => { const rr = uxcResumenOficina(x); return `${rr.medidas.length} de ${rr.activas.length}`; })() : uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{!uxcTelefonoEfectivo(x) && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Falta teléfono</Badge>}{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{!uxcTelefonoEfectivo(x) && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Falta teléfono</Badge>}{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}{propia && <button type="button" onClick={(e) => { e.stopPropagation(); ponerBloque(x); }} className="ml-2 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-400 text-indigo-800 bg-white hover:bg-indigo-50">🏢 {c.bloque ? "Cambiar de bloque" : "Añadir a bloque / obra"}</button>}</td>
                 </tr>
               );
             })}
@@ -29039,7 +29060,10 @@ function UxcContactoCita({ exp }) {
         {!ficha && cab.cliente ? <span className="text-xs text-amber-700 font-semibold">· No existe ficha de «{cab.cliente}» en Clientes{propia ? " (se creará con este teléfono al enviar)" : ""}</span> : null}
         {ficha && !deFicha && !propio ? <span className="text-xs text-amber-700 font-semibold">· La ficha existe pero no tiene teléfono</span> : null}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-1 gap-3 ${propia ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
+        {propia && <Field label="Nombre de la obra">
+          <UxcCel valor={cab.expediente} placeholder="Ej.: Chalet García" onGuardar={(v) => guardarC("expediente", v)} />
+        </Field>}
         <Field label={propia ? "Teléfono del cliente" : "Teléfono del propietario"} required>
           <UxcCel tipo="tel" valor={cab.telefono} placeholder={deFicha || "Obligatorio"} onGuardar={(v) => guardarC("telefono", v)} />
         </Field>
@@ -29310,6 +29334,7 @@ function UxcExpediente({ exp, onBack }) {
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> {propia ? "Volver a Mis obras" : "Volver a Uxcar (Aena)"}</button>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <h2 className="font-display text-2xl font-extrabold text-slate-900">{cab.expediente || (propia ? "Obra sin nombre" : "Expediente sin número")}</h2>
+        {propia && cab.bloque && <Badge className="bg-indigo-50 text-indigo-800 ring-indigo-200">🏢 {cab.bloque}</Badge>}
         {propia ? null : exp.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar (IA)</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}
         <span className="text-sm text-slate-500">{cab.direccion}</span>
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
@@ -43697,7 +43722,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [vistaDia, setVistaDia] = useState(soloDia);
   const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
-  const [tvAD, setTvAD] = useState(false);
+  const [tvAD, setTvAD] = useEstadoLocal("crm_tvAD", false);
   const [verDiaAD, setVerDiaAD] = useState(null); // día cuyo «+N más» se ha tocado: lista completa de sus obras
   const [quitarAD, setQuitarAD] = useState(null); // ventana que se va a sacar de un palet: { f, o } → pregunta a dónde va
   const incCtxAD = React.useContext(IncFabricaCtx);
@@ -44877,7 +44902,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       } catch (e) { /* nada */ }
       if (onMoverEstado) onMoverEstado(pr.id, "Listo para reparto/recogida", { estadoLogistica: "Recogida en fábrica", sinPaletizar: true });
     };
-    const tarjetaObra = (x, g) => {
+    const tarjetaObra = (x, g, col) => {
       const { o, filas, n, total, pend } = x;
       const completa = total > 0 && n === total;
       const pal = new Map(); filas.forEach((f) => { if (f.c) { const e = pal.get(f.c.id) || { c: f.c, n: 0 }; e.n++; pal.set(f.c.id, e); } });
@@ -44914,7 +44939,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {!g && pal.size > 0 && <div className="flex flex-wrap gap-1.5">{[...pal.values()].map(({ c }) => <button key={c.id} type="button" onClick={() => { const ob = obraDeDueno(o.dueno); const cli = ob.cliente ? ` · ${ob.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)), obraTxt: `${ob.nombre}${cli}` }]); }} className="text-xs font-bold px-2 py-1 rounded-md border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🖨 Etiqueta {c.numero}</button>)}</div>}
           {(() => {
             const A = ord.filter((f) => !f.c && f.hecha); const B = ord.filter((f) => f.c); const C = ord.filter((f) => !f.c && !f.hecha);
-            const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className="flex flex-wrap gap-1.5">{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
+            const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className={col ? "flex flex-col gap-1.5" : "flex flex-wrap gap-1.5"}>{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
             return <div className="space-y-2">{bloque("✓ Hechas en fábrica · listas para palet", A, g ? "text-sky-300" : "text-sky-700")}{bloque("Aún sin hacer en fábrica", C, g ? "text-slate-300" : "text-slate-500")}{bloque("Ya en palet", B, g ? "text-emerald-300" : "text-emerald-700")}</div>;
           })()}
         </div>
@@ -44991,7 +45016,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
           {bloqueRegistro(true)}
           {avisoSinEt}
-          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">{stDia.map((x) => tarjetaObra(x, true))}</div>}
+          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="flex flex-wrap gap-3 items-start">{stDia.map((x) => { const porFila = Math.max(1, Math.min(6, stDia.length)); return <div key={x.o.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.75rem)`, minWidth: "12rem", zoom: stDia.length >= 5 ? 0.55 : stDia.length === 4 ? 0.65 : stDia.length === 3 ? 0.8 : 1 }}>{tarjetaObra(x, true, true)}</div>; })}</div>}
         </div>
       );
     }
@@ -45934,6 +45959,12 @@ const useObjetoFb = (ruta) => {
   return o;
 };
 // true en cuanto ha llegado el primer dato de esa ruta (antes, useObjetoFb da {} y no se sabe si está vacía o aún no ha cargado)
+// Estado que sobrevive a la recarga (p. ej. la pantalla grande de la tele tras una actualización del CRM)
+function useEstadoLocal(clave, inicial) {
+  const [v, setV] = useState(() => { try { const r = window.localStorage.getItem(clave); return r == null ? inicial : JSON.parse(r); } catch { return inicial; } });
+  const poner = useCallback((x) => { setV((prev) => { const nv = typeof x === "function" ? x(prev) : x; try { window.localStorage.setItem(clave, JSON.stringify(nv)); } catch { /* sin almacenamiento */ } return nv; }); }, [clave]);
+  return [v, poner];
+}
 const useFbListo = (ruta) => {
   const [listo, setListo] = useState(false);
   useEffect(() => onValue(ref(fbDb, ruta), () => setListo(true), () => setListo(false)), [ruta]);
@@ -54571,10 +54602,13 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         const ud = parseInt(m[2] || m[3], 10); // la Ud puede venir pegada a la descripción («…35y392 LACADO BLANCO»: Ud 2)
         const color = m[4] ? m[4].replace(/\s+/g, " ").trim().toUpperCase() : "";
         const digitos = m[6].replace(/\D/g, ""); // la medida puede venir «1.160» o separada del total («980 1»)
+        // MEDIDA CON DECIMALES («553,2»): la coma es decimal; tras ella va 1 decimal y luego el ToT pegado («553,24» = 553,2 y ToT 4)
+        const conComa = /^\s*[\d.]+,\d/.test(m[6]) ? m[6].trim().match(/^([\d.]+),(\d)/) : null;
         const tot = String(ud * b.uds), totUd = String(ud);
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
+        if (conComa) { const ent = parseInt(conComa[1].replace(/\./g, ""), 10); filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(ent) ? parseFloat(`${ent}.${conComa[2]}`) : null, lFinal: null, tot: ud * b.uds, ud }); return; }
         filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
         return;
       }
@@ -55735,7 +55769,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   <div className="flex items-start gap-2"><div className="flex-1"><div className="text-lg font-extrabold text-slate-900">Ppto {pptoBonito(g.ppto)}</div>
                     <div className="text-xs text-slate-600 leading-tight">{nombrePlan[digitosPresu(String(g.ppto).split("-")[0])] || g.obra || g.cliente || ""}</div></div>
                     <div className="text-right"><div className="text-2xl font-extrabold text-[#2E8B57] leading-none">{g.piezas.length}</div><div className="text-[10px] text-slate-500">por cortar</div></div></div>
-                  <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}</div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">{Object.entries(tipos).map(([n, c]) => <span key={n} className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${/solape/i.test(n) ? "bg-amber-100 text-amber-900" : /mosquit/i.test(n) ? "bg-sky-100 text-sky-900" : "bg-slate-100 text-slate-700"}`}>{n} ×{c}</span>)}{(() => { const ya = {}; piezas.forEach((p) => { if (p.ppto === g.ppto && est && est[p.id] && est[p.id].cortada) ya[p.nombre] = (ya[p.nombre] || 0) + 1; }); const L = Object.entries(ya); return L.length ? <span className="text-[11px] font-semibold text-slate-500 px-1.5 py-0.5 rounded border border-dashed border-slate-300" title="Piezas de esta obra que ya están cortadas (en los carros o terminadas): no salen en «por cortar»">✂ ya cortadas: {L.map(([n, c]) => `${n} ×${c}`).join(" · ")}</span> : null; })()}</div>
                 </button>
                 <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-2"><label className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border cursor-pointer ${pptosImp.includes(g.ppto) ? "border-slate-700 bg-slate-800 text-white" : "border-slate-300 bg-white text-slate-700"}`} onClick={(e) => e.stopPropagation()}><input type="checkbox" className="w-3.5 h-3.5" checked={pptosImp.includes(g.ppto)} onChange={() => setPptosImp((l) => (l.includes(g.ppto) ? l.filter((x) => x !== g.ppto) : [...l, g.ppto]))} /> Elegir</label><button type="button" disabled={leyendo} title="Si a esta obra le faltan perfiles por cortar, vuelve a subir su hoja de corte: se lee otra vez con la lista actual" onClick={(e) => { e.stopPropagation(); esperadoRef.current = digitosPresu(String(g.ppto).split("-")[0]); claveRef.current = ""; if (archivoRef2.current) archivoRef2.current.click(); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] bg-white hover:bg-emerald-50 disabled:opacity-60">{leyendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Volver a subir hoja de corte</button>{hojasUxDe(g.ppto).length > 0 && <button type="button" disabled={leyendo} title="Relee la hoja de corte guardada (la de los documentos de la obra o la que dejó Uxcar)" onClick={(e) => { e.stopPropagation(); releerUxcar(g.ppto); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-sky-600 text-sky-700 bg-white hover:bg-sky-50 disabled:opacity-60"><RefreshCw size={12} /> Releer la guardada</button>}</div>
                 {abierta && (
@@ -56583,7 +56617,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [cerradas, setCerradas] = useState({});
   const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
   const [tvGrande, setTvGrande] = useState(null); // tele: obra agrandada (las demás en pequeño, en columnas)
-  const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
+  const [tv, setTv] = useEstadoLocal("crm_tvCD", false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const hojasCD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
