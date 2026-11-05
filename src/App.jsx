@@ -28563,7 +28563,23 @@ function MedicionesUxcarZona({ propia = false }) {
 
   const abierto = lista && abiertoId ? lista.find((x) => x.id === abiertoId) : null;
   if (abierto) return <UxcExpediente exp={abierto} onBack={() => setAbiertoId(null)} />;
-  const filtradas = (lista || []).filter((x) => (propia ? !!x.propia : !x.propia)).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+  const filtradas = (lista || []).filter((x) => (propia ? !!x.propia : !x.propia)).filter((x) => !q || `${(x.cab || {}).expediente} ${(x.cab || {}).direccion} ${(x.cab || {}).cliente} ${(x.cab || {}).bloque || ""}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => (b.creadoEn || 0) - (a.creadoEn || 0));
+
+  // Bloques: varias viviendas medidas por separado que van juntas (p. ej. un bloque de 20 viviendas)
+  const bloquesExist = [...new Set((lista || []).filter((x) => x.propia && (x.cab || {}).bloque).map((x) => x.cab.bloque))].sort((m, n) => m.localeCompare(n, "es", { numeric: true }));
+  const ponerBloque = (x) => {
+    const act = (x.cab || {}).bloque || "";
+    const txt = window.prompt(`¿A qué bloque u obra pertenece «${(x.cab || {}).expediente || "esta obra"}»?\n\nEscribe el nombre (si ya existe, se junta con ese).${bloquesExist.length ? `\nYa hay: ${bloquesExist.join(" · ")}` : ""}\n\nDéjalo vacío para quitarla del bloque.`, act);
+    if (txt === null) return;
+    const limpio = txt.trim(); const igual = bloquesExist.find((k) => k.toLowerCase() === limpio.toLowerCase());
+    fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/cab/bloque`), limpio ? (igual || limpio) : null).catch((e) => alert("No se pudo guardar: " + e.message));
+  };
+  const nuevaEnBloque = (bl) => {
+    const base = (lista || []).find((x) => x.propia && (x.cab || {}).bloque === bl); const cb = (base && base.cab) || {};
+    const n = vacioPropia(); n.cab = { ...n.cab, bloque: bl, direccion: cb.direccion || "", municipio: cb.municipio || "", cliente: cb.cliente || "", telefono: cb.telefono || "", color: cb.color || n.cab.color };
+    crear(n);
+  };
+  const ordenFilas = propia ? (() => { const out = []; const vistos = new Set(); filtradas.forEach((x) => { const bl = (x.cab || {}).bloque; if (!bl) { out.push({ x }); return; } if (vistos.has(bl)) return; vistos.add(bl); const del = filtradas.filter((y) => (y.cab || {}).bloque === bl).sort((m, n) => String((m.cab || {}).expediente || "").localeCompare(String((n.cab || {}).expediente || ""), "es", { numeric: true })); out.push({ bloque: bl, n: del.length }); del.forEach((y) => out.push({ x: y, enBloque: true })); }); return out; })() : filtradas.map((x) => ({ x }));
 
   return (
     <div>
@@ -28589,14 +28605,19 @@ function MedicionesUxcarZona({ propia = false }) {
           <tbody>
             {lista === null && <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Cargando…</td></tr>}
             {lista && filtradas.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">{propia ? "Todavía no hay obras propias. Pulsa «Nueva obra»." : "Todavía no hay expedientes de Uxcar en esta zona."}</td></tr>}
-            {filtradas.map((x) => {
+            {ordenFilas.map(({ x, bloque, n: nBl, enBloque }) => {
+              if (bloque) return (
+                <tr key={"bl_" + bloque} className="bg-indigo-50 border-b border-indigo-200">
+                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span><button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button></div></td>
+                </tr>
+              );
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
               return (
                 <tr key={x.id} onClick={() => setAbiertoId(x.id)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
-                  <td className="px-4 py-3 font-bold text-slate-800">{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div>{c.citaFecha && <div className="text-[11px] font-semibold text-sky-700">📅 {uxcFechaCorta(c.citaFecha)}{c.citaHora ? ` · ${c.citaHora}` : ""}</div>}</td>
+                  <td className={`px-4 py-3 font-bold text-slate-800 ${enBloque ? "pl-8 border-l-4 border-indigo-300" : ""}`}>{c.expediente || (propia ? "(obra sin nombre)" : "(sin número)")}<div className="text-[11px] font-normal text-slate-400">{c.pedido}</div>{c.citaFecha && <div className="text-[11px] font-semibold text-sky-700">📅 {uxcFechaCorta(c.citaFecha)}{c.citaHora ? ` · ${c.citaHora}` : ""}</div>}</td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (c.cliente || "—") : (c.direccion || "—")}<div className="text-[11px] text-slate-400">{propia ? c.direccion : c.cliente}</div></td>
                   <td className="px-4 py-3 text-slate-600">{propia ? (() => { const rr = uxcResumenOficina(x); return `${rr.medidas.length} de ${rr.activas.length}`; })() : uxcLista(x.ventanas).length}</td>
-                  <td className="px-4 py-3 space-x-1">{!uxcTelefonoEfectivo(x) && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Falta teléfono</Badge>}{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}</td>
+                  <td className="px-4 py-3 space-x-1">{!uxcTelefonoEfectivo(x) && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Falta teléfono</Badge>}{propia ? null : x.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}{err > 0 && x.revisado !== false && <Badge className="bg-rose-50 text-rose-700 ring-rose-200">{err} error{err === 1 ? "" : "es"}</Badge>}{av > 0 && <Badge className="bg-amber-50 text-amber-700 ring-amber-200">{av} aviso{av === 1 ? "" : "s"}</Badge>}{x.envio && x.envio.pedido ? <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Materiales pedidos</Badge> : x.envio ? <Badge className={x.envio.prisa ? "bg-rose-50 text-rose-700 ring-rose-200" : "bg-sky-50 text-sky-700 ring-sky-200"}>Enviada a oficina{x.envio.prisa ? ` · prisa ×${x.envio.prisa}` : ""}</Badge> : <Badge className="bg-slate-100 text-slate-600 ring-slate-200">Sin enviar</Badge>}{propia && <button type="button" onClick={(e) => { e.stopPropagation(); ponerBloque(x); }} className="ml-2 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-400 text-indigo-800 bg-white hover:bg-indigo-50">🏢 {c.bloque ? "Cambiar de bloque" : "Añadir a bloque / obra"}</button>}</td>
                 </tr>
               );
             })}
@@ -29313,6 +29334,7 @@ function UxcExpediente({ exp, onBack }) {
       <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800 mb-4"><ChevronLeft size={16} /> {propia ? "Volver a Mis obras" : "Volver a Uxcar (Aena)"}</button>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <h2 className="font-display text-2xl font-extrabold text-slate-900">{cab.expediente || (propia ? "Obra sin nombre" : "Expediente sin número")}</h2>
+        {propia && cab.bloque && <Badge className="bg-indigo-50 text-indigo-800 ring-indigo-200">🏢 {cab.bloque}</Badge>}
         {propia ? null : exp.revisado === false ? <Badge className="bg-rose-50 text-rose-700 ring-rose-200">Sin revisar (IA)</Badge> : <Badge className="bg-emerald-50 text-emerald-700 ring-emerald-200">Revisado</Badge>}
         <span className="text-sm text-slate-500">{cab.direccion}</span>
         <button onClick={borrar} className="ml-auto text-xs font-semibold text-rose-600 border border-rose-300 rounded-md px-2.5 py-1 hover:bg-rose-50">{propia ? "Borrar obra" : "Borrar expediente"}</button>
