@@ -47256,6 +47256,60 @@ function datosVentanaLinea(h) {
   };
   return { exp, viv, casa };
 }
+// PANEL DEL DÍA en cada puesto (como el Almacén del día): una COLUMNA por presupuesto de las fabricaciones (lotes) del día, con sus ventanas.
+// Se ponen en VERDE las que ya se han leído en ESTE puesto: así se ve qué ventana del expediente falta y se puede ir a buscarla.
+// Lotes del día = los que tienen alguna lectura HOY en cualquier puesto (+ los que se añadan a mano).
+function PanelDiaPuesto({ puestoId, indice, escaneos }) {
+  const [abierto, setAbierto] = useEstadoLocal(`crm_panelDia_${puestoId}`, true);
+  const [extra, setExtra] = useEstadoLocal(`crm_panelDiaLotes_${puestoId}`, []); const [nuevo, setNuevo] = useState("");
+  const [grande, setGrande] = useState(null);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const lotesHoy = useMemo(() => { const set = new Set(); toArray(escaneos).forEach((x) => { if (x && x.fecha === hoy && x.fab) set.add(String(x.fab)); }); toArray(extra).forEach((f) => set.add(String(f))); return [...set].sort(); }, [escaneos, extra, hoy]);
+  const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
+  const cols = useMemo(() => {
+    if (!abierto || !lotesHoy.length) return [];
+    const lotes = new Set(lotesHoy); const vistos = new Set(); const m = new Map();
+    indice.forEach((h) => {
+      const v = h && h.ventana; if (!v || !h.lote || !lotes.has(String(h.lote.fab)) || vistos.has(v.id)) return; vistos.add(v.id);
+      const k = `${h.lote.fab}|${v.num || h.dueno.nombre}`;
+      const c = m.get(k) || { k, fab: h.lote.fab, num: v.num || "", obra: h.dueno.nombre || "", grupos: new Set(), vs: [] };
+      if (v.grupo) c.grupos.add(v.grupo); c.vs.push(v); m.set(k, c);
+    });
+    return [...m.values()].map((c) => ({ ...c, vs: c.vs.sort((a, b) => (dibDe(a) || 999) - (dibDe(b) || 999) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
+      .sort((a, b) => String(a.fab).localeCompare(String(b.fab)) || String(a.num).localeCompare(String(b.num), "es", { numeric: true }));
+  }, [abierto, lotesHoy, indice, leidas]);
+  const porFila = Math.max(1, Math.min(8, cols.length));
+  return (
+    <div className="mt-3 rounded-lg border-2 border-slate-300 bg-slate-50 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Fabricaciones del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
+        {abierto && <span className="text-xs text-slate-600">Lotes: {lotesHoy.length ? lotesHoy.join(", ") : "ninguno leído hoy"}</span>}
+        {abierto && <span className="ml-auto flex items-center gap-1"><input value={nuevo} onChange={(e) => setNuevo(e.target.value.replace(/\D/g, ""))} placeholder="nº FAB" className="w-20 border border-slate-300 rounded px-1.5 py-0.5 text-xs" /><button type="button" onClick={() => { if (nuevo) { setExtra([...new Set([...toArray(extra), nuevo])]); setNuevo(""); } }} className="text-xs font-bold px-2 py-0.5 rounded bg-slate-700 text-white">+ lote</button>{toArray(extra).length > 0 && <button type="button" onClick={() => setExtra([])} className="text-xs underline text-slate-500">quitar añadidos</button>}</span>}
+      </div>
+      {abierto && (cols.length === 0
+        ? <div className="mt-1 text-xs text-slate-500">Todavía no se ha leído nada hoy. En cuanto se lea la primera ventana de un lote (en cualquier puesto) salen aquí todas sus obras; o añade el lote con «+ lote».</div>
+        : <div className="mt-2 flex flex-wrap gap-2 items-start">
+          {cols.filter((c) => !grande || c.k === grande).map((c) => {
+            const completa = c.hechas === c.vs.length;
+            return (
+              <div key={c.k} style={{ flex: `1 1 calc(${100 / (grande ? 1 : porFila)}% - 0.5rem)`, minWidth: "8.5rem" }} className={`rounded-lg border-2 bg-white ${completa ? "border-emerald-500" : "border-slate-300"}`}>
+                <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md ${completa ? "bg-emerald-600 text-white" : "bg-slate-800 text-white"}`}>
+                  <div className="text-sm font-extrabold leading-tight">{pptoBonito(c.num) || c.obra}</div>
+                  <div className="text-[11px] leading-tight opacity-90">{[...c.grupos].slice(0, 3).join(" · ") || c.obra} · FAB {c.fab}</div>
+                  <div className="text-xs font-bold">{c.hechas} de {c.vs.length}{completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}</div>
+                </button>
+                <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
+                  {c.vs.map((v) => { const ok = leidas.has(String(v.id)); return (
+                    <div key={v.id} className={`px-1.5 py-0.5 rounded text-xs font-bold border ${ok ? "bg-emerald-600 border-emerald-700 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                  ); })}
+                </div>
+              </div>
+            );
+          })}
+        </div>)}
+    </div>
+  );
+}
 // Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
 function BuscarCristalesLinea({ cristales, onUpdateCristal, quien, indice }) {
   const [abierto, setAbierto] = useState(false); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
@@ -48227,6 +48281,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
+        <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
