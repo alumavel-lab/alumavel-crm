@@ -4544,6 +4544,7 @@ export default function App() {
       creadaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
     };
     guardarIncFab(nueva);
+    if (data.alertaId) fbUpdate(ref(fbDb, `alertasLinea/${data.alertaId}`), { estado: "incidencia", incidenciaId: nueva.id, cierreTs: Date.now() }).catch(() => {});
     setIncFabForm(null);
     showToast("Incidencia enviada");
     if (data.apartar && data.ventanaBase) {
@@ -6314,6 +6315,7 @@ export default function App() {
           </button>
         )}
         {isAdmin && <AvisoSoldaduraLinea />}
+        {isAdmin && <AvisoFaltaMaterialLinea />}
         {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
           if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
@@ -48113,7 +48115,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       // Sin persiana o sin cristal en el almacén → se PROPONE la incidencia (no se crea sola): el chico la acepta con un botón
       const esCris = puestoId === "cristales"; const queFalta = esCris ? "EL CRISTAL" : "LA PERSIANA";
       if (cruce && !cruce.ok && (esCris || puestoId === "persianaA" || puestoId === "persianaB") && !/varias unidades|no tengo acceso|expediente de la ventana/.test(cruce.texto)) {
-        setPropInc({ texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", queFalta: esCris ? "cristal" : "persiana" });
+        const alertaId = `falta__${esCris ? "cris" : "pers"}__${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`;
+        runTransaction(ref(fbDb, `alertasLinea/${alertaId}`), (cur) => (cur && cur.estado === "incidencia" ? undefined : { id: alertaId, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), tipo: "faltaMaterial", puestoId: "faltaMaterial", que: esCris ? "cristal" : "persiana", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", vivienda: v.grupo || "", obraNombre: h.dueno.nombre || "", detalle: cruce.texto, estado: "abierta", por: quien || "" })).catch(() => {});
+        setPropInc({ alertaId, texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", queFalta: esCris ? "cristal" : "persiana" });
       } else if (r === "nuevo") setPropInc(null);
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
@@ -48212,7 +48216,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-2">
             <span className="flex-1 min-w-[14rem] text-sm font-bold text-rose-800">⚠ {propInc.ventana}: no está {propInc.queFalta === "cristal" ? "su cristal" : "su persiana"} en el almacén. ¿Crear incidencia?</span>
             <BotonIncidenciaFabrica prefill={propInc} />
-            <button type="button" onClick={() => setPropInc(null)} className="text-xs text-slate-600 underline">No, está bien</button>
+            <button type="button" onClick={() => { if (propInc.alertaId) fbUpdate(ref(fbDb, `alertasLinea/${propInc.alertaId}`), { respuesta: "El operario pulsó «No, está bien» (no creó incidencia)", respuestaPor: quien || "", respuestaTs: Date.now() }).catch(() => {}); setPropInc(null); }} className="text-xs text-slate-600 underline">No, está bien</button>
           </div>
         )}
         {puestoId === "cristales" && bloqCris && (
@@ -53992,7 +53996,7 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
   };
   const enviar = () => {
     if (!texto.trim()) { setError("Escribe qué ha pasado."); return; }
-    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar });
+    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar, ...(prefill.alertaId ? { alertaId: prefill.alertaId } : {}) });
   };
   return (
     <div className="fixed inset-0 z-[120] bg-black/40 flex items-end sm:items-center justify-center p-3">
@@ -54198,6 +54202,34 @@ async function revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por
     const rec = { id, ts: Date.now(), fecha, puestoId: "soldadora", obraKey: prev.obraKey, obraNombre: prev.obraNombre || prev.obraKey, nuevaObraNombre: h.dueno.nombre, n: pend.length, pendientes: pend.slice(0, 40), estado: "abierta", por: por || "" };
     await runTransaction(ref(fbDb, `alertasLinea/${id}`), (actual) => (actual && actual.estado !== "abierta" ? undefined : rec));
   } catch (e) { /* si las reglas de Firebase no permiten la ruta alertasLinea, no hay aviso */ }
+}
+// Administración: falta un cristal o una persiana y el operario NO ha creado la incidencia (a los 5 minutos, o al momento si pulsó «No, está bien»)
+function AvisoFaltaMaterialLinea() {
+  const [lista, setLista] = useState([]); const [ahora, setAhora] = useState(Date.now()); const [abierto, setAbierto] = useState(true);
+  useEffect(() => onValue(ref(fbDb, "alertasLinea"), (snap) => setLista(toArray(snap.val()).filter((a) => a && a.tipo === "faltaMaterial" && a.estado === "abierta")), () => {}), []);
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 60000); return () => clearInterval(t); }, []);
+  const ver = lista.filter((a) => a.respuesta || ahora - (a.ts || 0) >= 5 * 60000).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  if (!ver.length) return null;
+  const hora = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-amber-100 text-amber-950 border-b border-amber-300">
+      <div className="flex flex-wrap items-center gap-3 px-6 py-2.5 text-sm font-semibold">
+        <AlertOctagon size={15} />
+        <span>Línea: {ver.length} ventana{ver.length === 1 ? "" : "s"} sin cristal o persiana en el almacén y SIN incidencia creada por el operario.</span>
+        <button type="button" onClick={() => setAbierto((x) => !x)} className="underline ml-auto">{abierto ? "Ocultar" : "Ver detalle"}</button>
+      </div>
+      {abierto && (
+        <div className="px-6 pb-3 space-y-1.5">
+          {ver.map((a) => (
+            <div key={a.id} className="flex flex-wrap items-center gap-2 bg-white border border-amber-200 rounded-md px-3 py-2 text-sm text-slate-800">
+              <span>Falta <b>{a.que === "cristal" ? "el CRISTAL" : "la PERSIANA"}</b> de <b>{a.ventana}</b>{a.vivienda ? ` (${a.vivienda})` : ""} · {a.obraNombre} · leída en {a.puesto} el {hora(a.ts || 0)}{a.por ? ` por ${a.por}` : ""}.{a.respuesta ? <b className="text-rose-700"> {a.respuesta}.</b> : <b className="text-rose-700"> No ha hecho nada.</b>}</span>
+              <button type="button" onClick={() => fbUpdate(ref(fbDb, `alertasLinea/${a.id}`), { estado: "vista", cierreTs: Date.now() }).catch(() => {})} className="ml-auto text-xs underline text-slate-500">Visto</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 function AvisoSoldaduraLinea() {
   const [lista, setLista] = useState([]);
