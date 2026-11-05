@@ -47282,7 +47282,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
   const [tv, setTv] = useEstadoLocal(`crm_panelDiaTv_${puestoId}`, false);
   const [grande, setGrande] = useState(null);
   const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
-  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras");
+  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra");
   const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
@@ -47290,7 +47290,8 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[dia] || {};
     const pedidas = []; // { nombre, bases:Set, keys:Set }
     Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
-    Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (manual[dia][ko]) pedidas.push({ nombre: "", bases: new Set(), keys: new Set([ko]) }); });
+    // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
+    Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
     const cajas = pedidas.map((pd) => ({ ...pd, vs: [], vistos: new Set(), grupos: new Set(), num: "", obra: "", fabs: new Set() }));
     const vistos = new Set();
     indice.forEach((h) => {
@@ -47301,7 +47302,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     });
     return cajas.map((c, i) => ({ k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs: c.vs.sort((a, b2) => (dibDe(a) || 999) - (dibDe(b2) || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
       .filter((c) => c.vs.length || c.nombre);
-  }, [abierto, tv, planFab, manual, dia, indice, leidas]);
+  }, [abierto, tv, planFab, manual, snapCD, dia, indice, leidas]);
   const columnas = (enTv) => {
     const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.min(8, lista.length));
     return (
@@ -48223,7 +48224,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         <h3 className="font-display font-bold text-slate-800 mb-1">Lectura por puestos</h3>
         <p className="text-xs text-slate-500 mb-3">Elige el puesto de este ordenador y pasa la pistola por la etiqueta de la ventana. Cada pieza (marco u hoja) cuenta una sola vez en cada puesto.</p>
         <div className="flex flex-wrap gap-2 mb-4">
-          {PUESTOS_LINEA.filter((p) => p.id !== "carga" && (!puestoFijo || p.id === puestoFijo) && (admin || puedePuesto(p.id))).map((p) => (
+          {PUESTOS_LINEA.filter((p) => p.id !== "carga" && p.id !== "controlDia" && (!puestoFijo || p.id === puestoFijo) && (admin || puedePuesto(p.id))).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
           {((!puestoFijo && !permitidos.length) || admin || permitidos.includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
@@ -59040,7 +59041,7 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
         {f.rol !== "Administrador" && (
           <Field label="Puestos de la línea que puede usar">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
-              {[...PUESTOS_LINEA.filter((q) => q.id !== "carga"), { id: "auxiliares", nombre: "Auxiliares (corte)" }].map((q) => (
+              {[...PUESTOS_LINEA.filter((q) => q.id !== "carga" && q.id !== "controlDia"), { id: "auxiliares", nombre: "Auxiliares (corte)" }].map((q) => (
                 <label key={q.id} className="flex items-center gap-2 text-sm text-slate-700">
                   <input type="checkbox" checked={toArray(f.puestosLinea).includes(q.id)} onChange={(e) => setF({ ...f, puestosLinea: e.target.checked ? [...toArray(f.puestosLinea), q.id] : toArray(f.puestosLinea).filter((x) => x !== q.id) })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                   {q.nombre}
