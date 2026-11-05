@@ -41537,6 +41537,8 @@ function agruparEtiquetasFab(paginas) {
     const grupo = [exp, viv].filter(Boolean).join(" ");
     const cliente = nom ? nom[1].trim() : "";
     const tipo = texto.split("\n").map((x) => x.trim()).find((x) => FAB_TIPOS_PIEZA.has(x)) || "";
+    // «12-21» encima del código: el 1º número es el nº de la VENTANA dentro del lote (siempre el mismo en todas sus piezas) → su hueco en todos los almacenes
+    const nVentLote = (() => { const lns = texto.split("\n").map((x) => x.trim()); for (let i = lns.length - 1; i >= 0; i--) { const mm = lns[i].match(/^(\d{1,3})-(\d{1,3})(?:\s*\*\d+\*)?$/); if (mm) return parseInt(mm[1], 10); } const m2 = texto.match(/\b(\d{1,3})-\d{1,3}\s*\*\d{8,14}\*/); return m2 ? parseInt(m2[1], 10) : 0; })();
     let lote = lotes.get(fab);
     if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
     // Varias ventanas iguales agrupadas ("V01.001,005"): sus piezas idénticas se reparten por turnos entre ellas
@@ -41549,6 +41551,7 @@ function agruparEtiquetasFab(paginas) {
     const id = `${fab}|${r[2]}|${posV}`;
     let v = lote.ventanas.get(id);
     if (!v) { v = { id, orden: lote.ventanas.size, pos: posV, num: r[2], color: col ? `${col[1]} ${col[2]}` : "", grupo, cliente, piezas: [] }; lote.ventanas.set(id, v); }
+    if (nVentLote > 0 && !v.posicionLote) v.posicionLote = nVentLote;
     v.piezas.push({ c: b[1], t: tipo });
     etiquetas++;
   });
