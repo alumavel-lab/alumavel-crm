@@ -43697,7 +43697,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   const [vistaDia, setVistaDia] = useState(soloDia);
   const [mesAD, setMesAD] = useState(() => new Date().toLocaleDateString("sv-SE").slice(0, 7));
   const [diaAD, setDiaAD] = useState(() => new Date().toLocaleDateString("sv-SE"));
-  const [tvAD, setTvAD] = useState(false);
+  const [tvAD, setTvAD] = useEstadoLocal("crm_tvAD", false);
   const [verDiaAD, setVerDiaAD] = useState(null); // día cuyo «+N más» se ha tocado: lista completa de sus obras
   const [quitarAD, setQuitarAD] = useState(null); // ventana que se va a sacar de un palet: { f, o } → pregunta a dónde va
   const incCtxAD = React.useContext(IncFabricaCtx);
@@ -44877,7 +44877,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       } catch (e) { /* nada */ }
       if (onMoverEstado) onMoverEstado(pr.id, "Listo para reparto/recogida", { estadoLogistica: "Recogida en fábrica", sinPaletizar: true });
     };
-    const tarjetaObra = (x, g) => {
+    const tarjetaObra = (x, g, col) => {
       const { o, filas, n, total, pend } = x;
       const completa = total > 0 && n === total;
       const pal = new Map(); filas.forEach((f) => { if (f.c) { const e = pal.get(f.c.id) || { c: f.c, n: 0 }; e.n++; pal.set(f.c.id, e); } });
@@ -44914,7 +44914,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           {!g && pal.size > 0 && <div className="flex flex-wrap gap-1.5">{[...pal.values()].map(({ c }) => <button key={c.id} type="button" onClick={() => { const ob = obraDeDueno(o.dueno); const cli = ob.cliente ? ` · ${ob.cliente}` : ""; imprimirEtiquetasCaballetes([{ ...c, almacenNombre: nombreAlmacen(almacenDe(c)), obraTxt: `${ob.nombre}${cli}` }]); }} className="text-xs font-bold px-2 py-1 rounded-md border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🖨 Etiqueta {c.numero}</button>)}</div>}
           {(() => {
             const A = ord.filter((f) => !f.c && f.hecha); const B = ord.filter((f) => f.c); const C = ord.filter((f) => !f.c && !f.hecha);
-            const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className="flex flex-wrap gap-1.5">{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
+            const bloque = (tit, lista, cls) => lista.length ? (<div className="space-y-1"><div className={`${g ? "text-xl" : "text-xs"} font-bold ${cls}`}>{tit} ({lista.length})</div><div className={col ? "flex flex-col gap-1.5" : "flex flex-wrap gap-1.5"}>{lista.map((f) => fichaVentana(f, o, g))}</div></div>) : null;
             return <div className="space-y-2">{bloque("✓ Hechas en fábrica · listas para palet", A, g ? "text-sky-300" : "text-sky-700")}{bloque("Aún sin hacer en fábrica", C, g ? "text-slate-300" : "text-slate-500")}{bloque("Ya en palet", B, g ? "text-emerald-300" : "text-emerald-700")}</div>;
           })()}
         </div>
@@ -44991,7 +44991,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
           {bloqueRegistro(true)}
           {avisoSinEt}
-          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">{stDia.map((x) => tarjetaObra(x, true))}</div>}
+          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="flex flex-wrap gap-3 items-start">{stDia.map((x) => { const porFila = Math.max(1, Math.min(6, stDia.length)); return <div key={x.o.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.75rem)`, minWidth: "12rem", zoom: stDia.length >= 5 ? 0.55 : stDia.length === 4 ? 0.65 : stDia.length === 3 ? 0.8 : 1 }}>{tarjetaObra(x, true, true)}</div>; })}</div>}
         </div>
       );
     }
@@ -45934,6 +45934,12 @@ const useObjetoFb = (ruta) => {
   return o;
 };
 // true en cuanto ha llegado el primer dato de esa ruta (antes, useObjetoFb da {} y no se sabe si está vacía o aún no ha cargado)
+// Estado que sobrevive a la recarga (p. ej. la pantalla grande de la tele tras una actualización del CRM)
+function useEstadoLocal(clave, inicial) {
+  const [v, setV] = useState(() => { try { const r = window.localStorage.getItem(clave); return r == null ? inicial : JSON.parse(r); } catch { return inicial; } });
+  const poner = useCallback((x) => { setV((prev) => { const nv = typeof x === "function" ? x(prev) : x; try { window.localStorage.setItem(clave, JSON.stringify(nv)); } catch { /* sin almacenamiento */ } return nv; }); }, [clave]);
+  return [v, poner];
+}
 const useFbListo = (ruta) => {
   const [listo, setListo] = useState(false);
   useEffect(() => onValue(ref(fbDb, ruta), () => setListo(true), () => setListo(false)), [ruta]);
@@ -56586,7 +56592,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [cerradas, setCerradas] = useState({});
   const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
   const [tvGrande, setTvGrande] = useState(null); // tele: obra agrandada (las demás en pequeño, en columnas)
-  const [tv, setTv] = useState(false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
+  const [tv, setTv] = useEstadoLocal("crm_tvCD", false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
   const hojasCD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
   const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
