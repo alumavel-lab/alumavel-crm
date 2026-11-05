@@ -57197,6 +57197,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
   const [verPlanUp, setVerPlanUp] = useState(false); // el PLANING del programa va plegado (opcional)
+  const [codPist, setCodPist] = useState(""); const [msgPist, setMsgPist] = useState(null);
   const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
@@ -57654,6 +57655,39 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+  // PISTOLA: leer la pegatina de cualquier pieza de la ventana (código de 12 cifras) la pone en VERDE (hecha).
+  // Cada ventana física (de las etiquetas) se apunta en «controlDiaPistola» con la casilla que marcó: leer otra pieza de la misma ventana no marca otra.
+  const marcarPorCodigoCD = async (txt) => {
+    const d = String(txt || "").replace(/\D/g, "");
+    const h = [d, d.slice(-12), d.slice(0, 12)].map((k) => k && indice.get(k)).find(Boolean);
+    if (!h) return { ok: false, t: d ? `Código ${d} no encontrado. ¿Están subidas las etiquetas de ese lote en su obra?` : "No se ha leído ningún código." };
+    const vEt = h.ventana || {}; const posEt = normPosR(vEt.pos); const fabEt = String((h.lote && h.lote.fab) || "");
+    const claveFis = limpia(`${fabEt}_${vEt.id || vEt.pos || h.pieza.c}`);
+    try { const sn = await fbGet(ref(fbDb, `controlDiaPistola/${claveFis}`)); const prev = sn.exists() ? sn.val() : null; const oP = prev && obraPorClave.get(prev.ko); if (oP && valor(oP.d.key, prev.idv) === 1) return { ok: true, rep: true, t: `Ya estaba hecha: ${vEt.pos || ""} · ${oP.d.nombre}` }; } catch (e) { /* sigue */ }
+    const dueno = h.dueno || {};
+    const esSuObra = (o) => limpia(o.d.key) === limpia(dueno.key) || (!!dueno.proyectoId && ((o.d.tipo === "p" && String(o.d.id) === String(dueno.proyectoId)) || String(o.d.proyectoId || "") === String(dueno.proyectoId)));
+    const cands = [];
+    obras.forEach((o) => { if (o.d.tipo === "pl" && !esSuObra(o)) { /* el planning también vale por posición+lote */ }
+      [...o.viv.values()].flat().forEach((v) => {
+        const pv = normPosR(v.pos); if (!pv || !posEt) return;
+        const igualPos = pv === posEt; const prefijo = !igualPos && (pv.startsWith(posEt) || posEt.startsWith(pv) || pv.split(/[._]/).slice(0, 2).join(".") === posEt.split(/[._]/).slice(0, 2).join("."));
+        if (!igualPos && !prefijo) return;
+        let sc = igualPos ? 4 : 1; if (esSuObra(o)) sc += 6; if (fabEt && String(v.fab || "") === fabEt) sc += 3; if (String(v.id) === limpia(vEt.id || vEt.pos || "")) sc += 2;
+        if (sc < 5) return; // solo la posición, de otra obra y otro lote: no vale
+        cands.push({ o, v, sc, verde: valor(o.d.key, v.id) === 1 });
+      });
+    });
+    if (!cands.length) return { ok: false, t: `${vEt.pos || "Ventana"} de ${dueno.nombre || "?"} (lote ${fabEt}): no la encuentro en Control del día. ¿Está la obra en el planning?` };
+    cands.sort((x, y) => (y.sc - x.sc) || (x.verde - y.verde));
+    const top = cands.filter((c) => c.sc === cands[0].sc); const elegida = top.find((c) => !c.verde) || top[0];
+    if (elegida.verde) return { ok: true, rep: true, t: `Ya estaba hecha: ${elegida.v.pos} · ${elegida.o.d.nombre}` };
+    const o = elegida.o; const v = elegida.v;
+    const act = { ...(marcas[limpia(o.d.key)] || {}) }; act[v.id] = 1; await guardarObra(o.d.key, act); siTerminada(o, act);
+    const hh = { ...(horas[limpia(o.d.key)] || {}) }; hh[v.id] = Date.now(); guardarHoras(o.d.key, hh);
+    fbSet(ref(fbDb, `controlDiaPistola/${claveFis}`), { ko: limpia(o.d.key), idv: v.id, ts: Date.now(), dia }).catch(() => {});
+    const tot = idsDe(o).length; const hechas = idsDe(o).filter((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1).length;
+    return { ok: true, t: `✓ HECHA: ${v.pos} · ${o.d.nombre} (${hechas} de ${tot})` };
+  };
   // ¿Qué lleva esta ventana? Se mira su modelo (V01…) en la hoja de corte de su presupuesto y su descripción
   const extrasVentana = (o, v) => {
     const pp = pptosPresupuesto(o); const textos = [];
@@ -57858,6 +57892,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const hechasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
+  const pistolaCD = (grande) => (
+    <div className={`mb-3 flex flex-wrap items-center gap-2 rounded-lg border-2 p-2 ${grande ? "border-emerald-400 bg-slate-800" : "border-emerald-500 bg-emerald-50"}`}>
+      <span className={`${grande ? "text-xl text-white" : "text-sm text-emerald-900"} font-extrabold`}>🔫 Pistola: lee la pegatina de la ventana terminada</span>
+      <input value={codPist} onChange={(e) => setCodPist(e.target.value)} onKeyDown={async (e) => { if (e.key !== "Enter") return; const t = codPist; setCodPist(""); const r = await marcarPorCodigoCD(t); setMsgPist(r); }} placeholder="Pon aquí el cursor y lee con la pistola" className={`flex-1 min-w-[14rem] rounded-md border-2 px-2 py-1.5 font-mono ${grande ? "text-xl bg-slate-900 text-white border-slate-500" : "text-base border-slate-300 bg-white"}`} />
+      {msgPist && <span className={`w-full ${grande ? "text-2xl" : "text-sm"} font-bold px-2 py-1 rounded ${msgPist.ok ? (msgPist.rep ? "bg-sky-100 text-sky-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{msgPist.t}</span>}
+    </div>
+  );
   const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})` : "Empieza a cero cada día"} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
@@ -57869,6 +57910,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
+      {pistolaCD(true)}
       {contadorCD}
       {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
       <div className="flex flex-wrap gap-2 content-start">
@@ -57882,7 +57924,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
-            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 7.5rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 12rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
                 <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
@@ -58183,6 +58225,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       )}
       <div className="mb-2 flex flex-wrap items-center gap-2">
       </div>
+      {pistolaCD(false)}
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
