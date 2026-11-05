@@ -41528,11 +41528,11 @@ function agruparEtiquetasFab(paginas) {
     const posRaw = r[1].trim().replace(/\s+/g, " ");
     const multi = posRaw.match(/^([A-Z]\d{1,3})\.(\d{2,4})((?:,\d{2,4})+)$/);
     const posiciones = multi ? [`${multi[1]}.${multi[2]}`, ...multi[3].split(",").filter(Boolean).map((x) => `${multi[1]}.${x}`)] : [posRaw];
-    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/) || [])[1] || "";
+    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
     const col = texto.match(/-\s*F[A-Za-z]*:?[\d.]*\s+((?:[A-Z]{2,4}-)?\d{3,5})\s+(\S+)/);
     // Vivienda ("1º IZQ", "BAJO"…) y nombre del cliente de la etiqueta: sirven para no mezclar viviendas en un caballete
-    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/);
-    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/) || [])[1] || "")).replace(/\s+/g, " ").trim();
+    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/i);
+    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
     const nom = texto.match(/DIMEN\.REF:\s*[\d.]+\s*mm\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]*?)\s+(?:[A-Z]{1,4}|V)\s+[\d-]+/);
     const grupo = [exp, viv].filter(Boolean).join(" ");
     const cliente = nom ? nom[1].trim() : "";
@@ -47243,7 +47243,8 @@ function MovimientosCaballetes() {
 const normVivLinea = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 function datosVentanaLinea(h) {
   const v = h.ventana;
-  const exp = (String(h.lote.expediente || "").match(/\d{2,}/) || String(v.grupo || "").match(/\d{2,}/) || [""])[0];
+  // el expediente de CADA ventana (su etiqueta) manda sobre el del lote: un lote puede juntar varias obras (p. ej. el 1387: exp. 109 y 1072)
+  const exp = ((String(v.grupo || "").match(/^\s*(\d{2,})\b/) || [])[1]) || (String(h.lote.expediente || "").match(/\d{2,}/) || String(v.grupo || "").match(/\d{2,}/) || [""])[0];
   const viv = normVivLinea(String(v.grupo || "").replace(/^\s*\d+\s*/, ""));
   const pos = normVivLinea(v.pos);
   const casa = (refTxt) => {
@@ -47254,14 +47255,22 @@ function datosVentanaLinea(h) {
   return { exp, viv, casa };
 }
 // Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
-function BuscarCristalesLinea({ cristales, onUpdateCristal, quien }) {
+function BuscarCristalesLinea({ cristales, onUpdateCristal, quien, indice }) {
   const [abierto, setAbierto] = useState(false); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
-  const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const sinPuntos = (t) => String(t || "").replace(/(\d)\.(?=\d)/g, "$1");
+  const toks = sinPuntos(q).toLowerCase().split(/\s+/).filter(Boolean);
+  // Presupuestos de cada expediente (sacados de las etiquetas de fabricación): así se puede buscar el cristal por nº de presupuesto (6510 o 6.510)
+  const pptosPorExp = useMemo(() => {
+    const m = new Map(); if (!abierto || !indice) return m; const vistos = new Set();
+    indice.forEach((h) => { const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id); const e = datosVentanaLinea(h).exp; const pp = sinPuntos(v.num || (h.dueno && h.dueno.presupuesto) || "").split("-")[0]; if (!e || !pp) return; const set = m.get(e) || new Set(); set.add(pp); m.set(e, set); });
+    return m;
+  }, [abierto, indice]);
   const filas = [];
   if (abierto && toks.length) {
     toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
       if (!p || (!!p.puesto !== verQuitados)) return;
-      const t = [p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
+      const pps = numsExpediente(p.expediente || c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]);
+      const t = [...pps, sinPuntos(c.presupuesto), sinPuntos(p.presupuesto), p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
       if (toks.every((k) => t.includes(k))) filas.push({ c, p, i });
     }));
   }
@@ -47276,7 +47285,7 @@ function BuscarCristalesLinea({ cristales, onUpdateCristal, quien }) {
       {abierto && (
         <div className="mt-2 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Presupuesto (6510), expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
             <label className="text-xs text-slate-700 flex items-center gap-1"><input type="checkbox" checked={verQuitados} onChange={(e) => setVerQuitados(e.target.checked)} /> ver los ya quitados</label>
           </div>
           {!toks.length ? <div className="text-xs text-slate-500">Escribe algo para buscar.</div> : !filas.length ? <div className="text-sm text-slate-600">No hay ningún cristal {verQuitados ? "quitado" : "en el almacén"} con eso.</div> : (
@@ -47285,7 +47294,7 @@ function BuscarCristalesLinea({ cristales, onUpdateCristal, quien }) {
                 <div key={`${x.c.id}_${x.i}`} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1.5 text-sm">
                   <span className="font-bold">{x.p.ref || "(sin ref.)"}</span>
                   <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm</span>
-                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}</span>
+                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}{(() => { const pp = [...new Set(numsExpediente(x.p.expediente || x.c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]))]; return pp.length ? ` · ppto. ${pp.join(", ")}` : ""; })()}</span>
                   <span className="text-slate-700">cab. <b>{x.c.lote || x.c.numero || "—"}</b> · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar"}</span>
                   {x.p.puesto && <span className="text-xs text-slate-500">quitado {x.p.fechaPuesto || ""}{x.p.ventanaPos ? ` · ventana ${x.p.ventanaPos}` : ""}{x.p.quitadoAMano && x.p.quitadoAMano.por ? ` · a mano (${x.p.quitadoAMano.por})` : ""}</span>}
                   {x.p.puesto
@@ -48209,7 +48218,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
-        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} />}
+        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
