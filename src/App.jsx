@@ -47256,57 +47256,87 @@ function datosVentanaLinea(h) {
   };
   return { exp, viv, casa };
 }
-// PANEL DEL DÍA en cada puesto (como el Almacén del día): una COLUMNA por presupuesto de las fabricaciones (lotes) del día, con sus ventanas.
-// Se ponen en VERDE las que ya se han leído en ESTE puesto: así se ve qué ventana del expediente falta y se puede ir a buscarla.
-// Lotes del día = los que tienen alguna lectura HOY en cualquier puesto (+ los que se añadan a mano).
-function PanelDiaPuesto({ puestoId, indice, escaneos }) {
+// PANEL DEL DÍA en cada puesto (como el Almacén del día): las obras del CALENDARIO de ese día (planning de Fábrica + las metidas a mano),
+// una COLUMNA por presupuesto con sus ventanas. Se ponen en VERDE las que ya se han leído en ESTE puesto: así se ve qué ventana falta.
+// «📺 Pantalla grande»: lo mismo a toda pantalla para la tele, con la última lectura y su HUECO en grande (la pistola sigue leyendo igual).
+const basePresuDia = (t) => String(t || "").trim().replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").split("-")[0].replace(/\D/g, "");
+function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
   const [abierto, setAbierto] = useEstadoLocal(`crm_panelDia_${puestoId}`, true);
-  const [extra, setExtra] = useEstadoLocal(`crm_panelDiaLotes_${puestoId}`, []); const [nuevo, setNuevo] = useState("");
+  const [tv, setTv] = useEstadoLocal(`crm_panelDiaTv_${puestoId}`, false);
   const [grande, setGrande] = useState(null);
-  const hoy = new Date().toISOString().slice(0, 10);
-  const lotesHoy = useMemo(() => { const set = new Set(); toArray(escaneos).forEach((x) => { if (x && x.fecha === hoy && x.fab) set.add(String(x.fab)); }); toArray(extra).forEach((f) => set.add(String(f))); return [...set].sort(); }, [escaneos, extra, hoy]);
+  const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
+  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras");
   const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
   const cols = useMemo(() => {
-    if (!abierto || !lotesHoy.length) return [];
-    const lotes = new Set(lotesHoy); const vistos = new Set(); const m = new Map();
+    if (!abierto && !tv) return [];
+    const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+    const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[dia] || {};
+    const pedidas = []; // { nombre, bases:Set, keys:Set }
+    Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
+    Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (manual[dia][ko]) pedidas.push({ nombre: "", bases: new Set(), keys: new Set([ko]) }); });
+    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], vistos: new Set(), grupos: new Set(), num: "", obra: "", fabs: new Set() }));
+    const vistos = new Set();
     indice.forEach((h) => {
-      const v = h && h.ventana; if (!v || !h.lote || !lotes.has(String(h.lote.fab)) || vistos.has(v.id)) return; vistos.add(v.id);
-      const k = `${h.lote.fab}|${v.num || h.dueno.nombre}`;
-      const c = m.get(k) || { k, fab: h.lote.fab, num: v.num || "", obra: h.dueno.nombre || "", grupos: new Set(), vs: [] };
-      if (v.grupo) c.grupos.add(v.grupo); c.vs.push(v); m.set(k, c);
+      const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id);
+      const b = basePresuDia(v.num || (h.dueno && h.dueno.presupuesto)); const kd = limpia(h.dueno && h.dueno.key);
+      const c = cajas.find((x) => (b && x.bases.has(b)) || x.keys.has(kd)); if (!c) return;
+      c.vs.push(v); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    return [...m.values()].map((c) => ({ ...c, vs: c.vs.sort((a, b) => (dibDe(a) || 999) - (dibDe(b) || 999) || String(a.pos).localeCompare(String(b.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
-      .sort((a, b) => String(a.fab).localeCompare(String(b.fab)) || String(a.num).localeCompare(String(b.num), "es", { numeric: true }));
-  }, [abierto, lotesHoy, indice, leidas]);
-  const porFila = Math.max(1, Math.min(8, cols.length));
+    return cajas.map((c, i) => ({ k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs: c.vs.sort((a, b2) => (dibDe(a) || 999) - (dibDe(b2) || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
+      .filter((c) => c.vs.length || c.nombre);
+  }, [abierto, tv, planFab, manual, dia, indice, leidas]);
+  const columnas = (enTv) => {
+    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.min(8, lista.length));
+    return (
+      <div className="flex flex-wrap gap-2 items-start">
+        {lista.map((c) => {
+          const completa = c.vs.length > 0 && c.hechas === c.vs.length; const sinEt = !c.vs.length;
+          return (
+            <div key={c.k} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: enTv ? "9rem" : "8.5rem" }} className={`rounded-lg border-2 ${enTv ? "bg-slate-800" : "bg-white"} ${completa ? "border-emerald-500" : "border-slate-400"}`}>
+              <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md text-white ${completa ? "bg-emerald-600" : sinEt ? "bg-slate-500" : "bg-slate-900"}`}>
+                <div className={`${enTv ? "text-xl" : "text-sm"} font-extrabold leading-tight`}>{c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : c.nombre || c.obra}</div>
+                <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
+                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin etiquetas subidas" : `${c.hechas} de ${c.vs.length}${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
+              </button>
+              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
+                {c.vs.map((v) => { const ok = leidas.has(String(v.id)); const esUlt = ultimo && ultimo.h && ultimo.h.ventana && ultimo.h.ventana.id === v.id; return (
+                  <div key={v.id} className={`px-1.5 py-0.5 rounded font-bold border ${enTv ? "text-base" : "text-xs"} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                ); })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+  const vacio = <div className="text-sm text-slate-400">No hay obras en el calendario de este día (Almacén del día / Control del día).</div>;
+  if (tv) {
+    const z = ultimo && ultimo.zona;
+    return (
+      <div className="fixed inset-0 z-[95] bg-slate-950 text-white overflow-y-auto p-3" onClick={() => onFoco && onFoco()}>
+        <div className="flex flex-wrap items-center gap-3 mb-2">
+          <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
+          <span className="text-sm text-slate-400">Lee con la pistola: se sigue registrando aunque estés en esta pantalla.</span>
+          <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
+        </div>
+        {ultimo && (
+          <div className={`mb-3 rounded-xl px-4 py-3 flex flex-wrap items-center gap-4 ${ultimo.ok ? (ultimo.repetida ? "bg-amber-500 text-slate-900" : "bg-emerald-600") : "bg-rose-600"}`}>
+            {z && z.hueco ? <div className="text-6xl font-black leading-none">HUECO {z.hueco}</div> : null}
+            <div className="flex-1 min-w-[16rem] text-2xl font-bold whitespace-pre-line">{ultimo.texto}</div>
+          </div>
+        )}
+        {cols.length ? columnas(true) : vacio}
+      </div>
+    );
+  }
   return (
     <div className="mt-3 rounded-lg border-2 border-slate-300 bg-slate-50 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Fabricaciones del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
-        {abierto && <span className="text-xs text-slate-600">Lotes: {lotesHoy.length ? lotesHoy.join(", ") : "ninguno leído hoy"}</span>}
-        {abierto && <span className="ml-auto flex items-center gap-1"><input value={nuevo} onChange={(e) => setNuevo(e.target.value.replace(/\D/g, ""))} placeholder="nº FAB" className="w-20 border border-slate-300 rounded px-1.5 py-0.5 text-xs" /><button type="button" onClick={() => { if (nuevo) { setExtra([...new Set([...toArray(extra), nuevo])]); setNuevo(""); } }} className="text-xs font-bold px-2 py-0.5 rounded bg-slate-700 text-white">+ lote</button>{toArray(extra).length > 0 && <button type="button" onClick={() => setExtra([])} className="text-xs underline text-slate-500">quitar añadidos</button>}</span>}
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Obras del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs" />
+        <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
       </div>
-      {abierto && (cols.length === 0
-        ? <div className="mt-1 text-xs text-slate-500">Todavía no se ha leído nada hoy. En cuanto se lea la primera ventana de un lote (en cualquier puesto) salen aquí todas sus obras; o añade el lote con «+ lote».</div>
-        : <div className="mt-2 flex flex-wrap gap-2 items-start">
-          {cols.filter((c) => !grande || c.k === grande).map((c) => {
-            const completa = c.hechas === c.vs.length;
-            return (
-              <div key={c.k} style={{ flex: `1 1 calc(${100 / (grande ? 1 : porFila)}% - 0.5rem)`, minWidth: "8.5rem" }} className={`rounded-lg border-2 bg-white ${completa ? "border-emerald-500" : "border-slate-300"}`}>
-                <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md ${completa ? "bg-emerald-600 text-white" : "bg-slate-800 text-white"}`}>
-                  <div className="text-sm font-extrabold leading-tight">{pptoBonito(c.num) || c.obra}</div>
-                  <div className="text-[11px] leading-tight opacity-90">{[...c.grupos].slice(0, 3).join(" · ") || c.obra} · FAB {c.fab}</div>
-                  <div className="text-xs font-bold">{c.hechas} de {c.vs.length}{completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}</div>
-                </button>
-                <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
-                  {c.vs.map((v) => { const ok = leidas.has(String(v.id)); return (
-                    <div key={v.id} className={`px-1.5 py-0.5 rounded text-xs font-bold border ${ok ? "bg-emerald-600 border-emerald-700 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
-                  ); })}
-                </div>
-              </div>
-            );
-          })}
-        </div>)}
+      {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
     </div>
   );
 }
@@ -48281,7 +48311,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
-        <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} />
+        <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
         {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
