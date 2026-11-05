@@ -48041,7 +48041,7 @@ function PendientesConfirmarCristales({ quien }) {
 function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   // Puestos que el administrador le deja usar a este usuario (vacío = todos)
-  const permitidos = toArray(puestosPermitidos).filter(Boolean);
+  const permitidos = toArray(puestosPermitidos).filter((x) => x && PUESTOS_LINEA.some((q) => q.id === x)); // solo puestos (las pantallas «tab:…» van aparte)
   const puedePuesto = (id) => !permitidos.length || permitidos.includes(id);
   const puestoId = puestoFijo || (puedePuesto(puestoSel) ? puestoSel : (permitidos[0] || puestoSel)); // con "puesto fijo" el operario no puede cambiar de puesto
   const [codigo, setCodigo] = useState("");
@@ -48227,7 +48227,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           {PUESTOS_LINEA.filter((p) => p.id !== "carga" && p.id !== "controlDia" && (!puestoFijo || p.id === puestoFijo) && (admin || puedePuesto(p.id))).map((p) => (
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
-          {((!puestoFijo && !permitidos.length) || admin || permitidos.includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
+          {((!puestoFijo && !toArray(puestosPermitidos).length) || admin || toArray(puestosPermitidos).includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
         </div>
         {verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -58872,19 +58872,23 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
     { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "" },
     ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
     ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
-  ] : [
-    { id: "puesto", t: "Puesto (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
-    ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
-    ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
-    { id: "auxiliares", t: "Auxiliares", aviso: "" },
-    { id: "controlDia", t: "Control del día", aviso: "" },
-    { id: "cargas", t: "Cargas de hoy", aviso: "" },
-    ...(verMas ? [
-      { id: "almacen", t: "Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." },
-      { id: "almacenDia", t: "📅 Almacén del día", aviso: "" },
-      { id: "estanterias", t: "Estanterías e informes", aviso: "" },
-    ] : []),
-  ];
+  ] : (() => {
+    // Todo en un sitio y en el orden del camino de la ventana. Con pantallas marcadas en su usuario, cada uno ve solo las suyas.
+    const perm = toArray(puestosPermitidos).filter(Boolean);
+    const verTab = (id) => admin || !perm.length || perm.includes(`tab:${id}`) || (id === "puesto" && perm.some((x) => PUESTOS_LINEA.some((q) => q.id === x))) || (id === "auxiliares" && perm.includes("auxiliares"));
+    const almacenOk = (id) => verMas || admin || perm.includes(`tab:${id}`);
+    return [
+      { id: "controlDia", t: "1 · Control del día", aviso: "" },
+      { id: "puesto", t: "2 · Puestos (pistola)", aviso: "Modo PUESTO: cada lectura registra el paso de la ventana por tu puesto." },
+      { id: "auxiliares", t: "Auxiliares", aviso: "" },
+      ...(almacenOk("almacenDia") ? [{ id: "almacenDia", t: "3 · 📅 Almacén del día (paletizar)", aviso: "" }] : []),
+      ...(almacenOk("almacen") ? [{ id: "almacen", t: "4 · Almacén de ventanas", extra: fuera > 0 ? `${fuera} fuera` : "", aviso: "Modo ALMACÉN: cada lectura mete o saca la ventana de un caballete. No registra paso por el puesto." }] : []),
+      { id: "cargas", t: "5 · Cargas de hoy", aviso: "" },
+      ...(renderParte ? [{ id: "parte", t: "Parte del día y tareas", aviso: "" }] : []),
+      ...(renderIncidencias ? [{ id: "incidencias", t: "Incidencias", aviso: "" }] : []),
+      ...(almacenOk("estanterias") ? [{ id: "estanterias", t: "Estanterías e informes", aviso: "" }] : []),
+    ].filter((x) => x.id === "parte" || x.id === "incidencias" || verTab(x.id));
+  })();
   const actual = tabs.find((x) => x.id === tab) || tabs[0];
   return (
     <div>
@@ -59039,16 +59043,16 @@ function UsuarioForm({ initial, onCancel, onSave, onEnviarCambioPassword }) {
           </Field>
         )}
         {f.rol !== "Administrador" && (
-          <Field label="Puestos de la línea que puede usar">
+          <Field label="Pantallas y puestos de la Línea que puede usar">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
-              {[...PUESTOS_LINEA.filter((q) => q.id !== "carga" && q.id !== "controlDia"), { id: "auxiliares", nombre: "Auxiliares (corte)" }].map((q) => (
+              {[{ id: "tab:controlDia", nombre: "📋 Control del día" }, ...PUESTOS_LINEA.filter((q) => q.id !== "carga" && q.id !== "controlDia"), { id: "auxiliares", nombre: "Auxiliares (corte)" }, { id: "tab:almacenDia", nombre: "📅 Almacén del día" }, { id: "tab:almacen", nombre: "🏬 Almacén de ventanas" }, { id: "tab:cargas", nombre: "🚚 Cargas de hoy" }, { id: "tab:estanterias", nombre: "Estanterías e informes" }].map((q) => (
                 <label key={q.id} className="flex items-center gap-2 text-sm text-slate-700">
                   <input type="checkbox" checked={toArray(f.puestosLinea).includes(q.id)} onChange={(e) => setF({ ...f, puestosLinea: e.target.checked ? [...toArray(f.puestosLinea), q.id] : toArray(f.puestosLinea).filter((x) => x !== q.id) })} className="rounded border-slate-300 text-[#2E8B57] focus:ring-[#2E8B57]" />
                   {q.nombre}
                 </label>
               ))}
             </div>
-            <p className="text-xs text-slate-500 mt-1">En Línea (pistola) solo verá y podrá leer en los puestos marcados. Sin ninguno marcado puede usar todos.</p>
+            <p className="text-xs text-slate-500 mt-1">En Línea (pistola) solo verá las pantallas y los puestos marcados. Sin ninguno marcado lo ve todo (como hasta ahora).</p>
           </Field>
         )}
         {f.rol !== "Administrador" && (
