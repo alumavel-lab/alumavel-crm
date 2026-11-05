@@ -48002,6 +48002,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const buscandoCris = useRef(new Map()); // Cristales: ventanas cuya 1ª lectura (buscar el cristal) ya se hizo; la 2ª las deja puestas
   const forzar = useRef(""); // Cristales: código de la ventana que se acristala como URGENTE saltándose el bloqueo
   const [bloqCris, setBloqCris] = useState(null);
+  const [propInc, setPropInc] = useState(null); // incidencia propuesta (falta cristal / persiana): la acepta el chico
   mesaRef.current = mesa;
   const [ultimosMesa, setUltimosMesa] = useState({});
   const [verAux, setVerAux] = useState(false); // botón «Auxiliares» junto a los puestos
@@ -48109,13 +48110,11 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h, selCris);
       else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
-      // Sin persiana o sin cristal en el almacén → INCIDENCIA automática (una sola por ventana y cosa)
+      // Sin persiana o sin cristal en el almacén → se PROPONE la incidencia (no se crea sola): el chico la acepta con un botón
       const esCris = puestoId === "cristales"; const queFalta = esCris ? "EL CRISTAL" : "LA PERSIANA";
       if (cruce && !cruce.ok && (esCris || puestoId === "persianaA" || puestoId === "persianaB") && !/varias unidades|no tengo acceso|expediente de la ventana/.test(cruce.texto)) {
-        const idInc = `${esCris ? "cris" : "pers"}_${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`; const ahoraI = Date.now();
-        runTransaction(ref(fbDb, `incidenciasFabrica/${idInc}`), (cur) => (cur ? undefined : { id: idInc, texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), foto: "", ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", apartar: false, automatica: true, estado: "Abierta", asignadoA: "", creadaTs: ahoraI, venceTs: ahoraI + PLAZO_INC_FABRICA_MS, creadaPor: { id: "", nombre: quien || "Pistola (automática)" } }))
-          .then((rr) => { if (rr && rr.committed) avisarM(false, `⚠ ${v.pos}: NO HAY ${esCris ? "CRISTAL" : "PERSIANA"} en el almacén → INCIDENCIA creada sola (${cruce.texto})`, true); }).catch(() => {});
-      }
+        setPropInc({ texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", queFalta: esCris ? "cristal" : "persiana" });
+      } else if (r === "nuevo") setPropInc(null);
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
@@ -48209,6 +48208,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           </div>
         ) : (ultimo && pintaUltimo(ultimo, "mt-3"))}
         {puestoId === "cristales" && <PendientesConfirmarCristales quien={quien} />}
+        {propInc && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-2">
+            <span className="flex-1 min-w-[14rem] text-sm font-bold text-rose-800">⚠ {propInc.ventana}: no está {propInc.queFalta === "cristal" ? "su cristal" : "su persiana"} en el almacén. ¿Crear incidencia?</span>
+            <BotonIncidenciaFabrica prefill={propInc} />
+            <button type="button" onClick={() => setPropInc(null)} className="text-xs text-slate-600 underline">No, está bien</button>
+          </div>
+        )}
         {puestoId === "cristales" && bloqCris && (
           <div className="mt-3 border-2 border-rose-500 bg-rose-50 rounded-lg p-3">
             <div className="text-sm font-bold text-rose-800 mb-2">{bloqCris.pos} está bloqueada. Si es urgente, puedes acristalarla igual.</div>
@@ -53974,8 +53980,8 @@ function BotonIncidenciaFabrica({ prefill, flotante }) {
 }
 
 function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
-  const [texto, setTexto] = useState("");
-  const [tipo, setTipo] = useState("");
+  const [texto, setTexto] = useState(prefill.texto || "");
+  const [tipo, setTipo] = useState(prefill.tipo || "");
   const [puesto, setPuesto] = useState(prefill.puesto || "");
   const [foto, setFoto] = useState("");
   const [error, setError] = useState("");
