@@ -48038,7 +48038,7 @@ function PendientesConfirmarCristales({ quien }) {
     </div>
   );
 }
-function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
+function SeguimientoLinea({ pantallas = [], onIrPantalla = null, proyectos, uxExpedientes, sinObra, quien, quienId = "", puestoFijo = "", puestosPermitidos = [], puedeBajaCristal = false, cristales = [], onUpdateCristal, onIrA, admin = false }) {
   const [puestoSel, setPuestoId] = useState(() => { try { return localStorage.getItem("alumavel_puesto_linea") || "soldadora"; } catch (e) { return "soldadora"; } });
   // Puestos que el administrador le deja usar a este usuario (vacío = todos)
   const permitidos = toArray(puestosPermitidos).filter((x) => x && PUESTOS_LINEA.some((q) => q.id === x)); // solo puestos (las pantallas «tab:…» van aparte)
@@ -48228,6 +48228,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
             <button key={p.id} onClick={() => elegir(p.id)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${puestoId === p.id ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>{p.nombre}</button>
           ))}
           {((!puestoFijo && !toArray(puestosPermitidos).length) || admin || toArray(puestosPermitidos).includes("auxiliares")) && <button type="button" onClick={() => setVerAux((v) => !v)} className={`px-3 py-2 rounded-md text-sm font-semibold border ${verAux ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-300"}`}>Auxiliares</button>}
+          {onIrPantalla && toArray(pantallas).map((x) => (
+            <button key={`pant_${x.id}`} type="button" onClick={() => onIrPantalla(x.id)} className="px-3 py-2 rounded-md text-sm font-semibold border-2 border-indigo-400 bg-indigo-50 text-indigo-900 hover:bg-indigo-100">{x.t}</button>
+          ))}
         </div>
         {verAux ? <AuxiliaresLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} quien={quien} admin={admin} /> : (<>
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -58907,7 +58910,7 @@ function LineaModulo({ proyectos, uxExpedientes, etiquetasSinObra, quien, quienI
         <div className={`mb-3 px-3 py-2 rounded-md text-xs font-bold border ${actual.id === "almacen" ? "bg-violet-50 text-violet-800 border-violet-200" : "bg-sky-50 text-sky-800 border-sky-200"}`}>{actual.aviso}</div>
       )}
       {actual.id === "puesto" && (
-        <SeguimientoLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} puestosPermitidos={puestosPermitidos} puedeBajaCristal={puedeBajaCristal} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
+        <SeguimientoLinea pantallas={tabs.filter((x) => ["controlDia", "almacenDia", "almacen", "cargas"].includes(x.id)).map((x) => ({ id: x.id, t: x.t.replace(/^\d · /, "") }))} onIrPantalla={(id) => { setTab(id); try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) { /* nada */ } }} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} quien={quien} quienId={quienId} puestoFijo={puestoFijo} puestosPermitidos={puestosPermitidos} puedeBajaCristal={puedeBajaCristal} cristales={cristales} onUpdateCristal={onUpdateCristal} onIrA={onIrA} admin={admin} />
       )}
       {actual.id === "controlDia" && <ControlDelDia proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} pedidos={pedidos} admin={admin} onMoverEstado={onMoverEstado} onMoverDiaFabrica={onMoverDiaFabrica} onMeterEnPlanning={onMeterEnPlanning} onAnadirDocObra={onAnadirDocObra} />}
       {actual.id === "cargas" && <CargasDelDia proyectos={proyectos} clientes={clientes} caballetes={caballetes} quien={quien} />}
