@@ -1894,6 +1894,47 @@ export default function App() {
     showToast(`Creada la obra #${numero} en Proyectos`);
     return { id: nuevoId, numero };
   };
+  // Un BLOQUE (varias viviendas de Mis obras) llega a oficina como UNA sola obra en Proyectos
+  const crearProyectoDesdeBloque = async (bloque, exps) => {
+    if (!exps.length) return null;
+    const nuevoId = uid();
+    // se reserva en la primera vivienda (evita que dos personas creen dos obras a la vez)
+    const res = await runTransaction(ref(fbDb, `${UXC_NODO}/${exps[0].id}/envio/proyectoId`), (actual) => (actual ? undefined : nuevoId)).catch(() => null);
+    if (!res || !res.committed) return null;
+    const cab0 = (exps.find((e) => String((e.cab || {}).cliente || "").trim()) || exps[0]).cab || {};
+    const nomCli = String(cab0.cliente || "").trim();
+    const tel0 = (exps.map((e) => String((e.cab || {}).telefono || "").trim()).find(Boolean)) || "";
+    let cliente = clientes.find((c) => String(c.nombre || "").trim().toLowerCase() === nomCli.toLowerCase());
+    if (!cliente) { cliente = { id: uid(), nombre: nomCli || "Cliente sin nombre", email: "", telefono: "", movil: tel0, notas: `Cliente creado automáticamente desde el bloque «${bloque}» (Mediciones → Mis obras)` }; saveClientes([cliente, ...clientes]); }
+    const porViv = exps.map((e) => ({ e, vs: uxcLista(e.ventanas).filter((v) => v.activa !== false && !v.rechazada) }));
+    const todas = porViv.flatMap((x) => x.vs);
+    const nVent = todas.filter((v) => !uxcEsPuerta(v)).length, nPue = todas.filter(uxcEsPuerta).length;
+    const piezas = [`${exps.length} vivienda${exps.length === 1 ? "" : "s"}`, `${nVent} ventanas`, nPue ? `${nPue} puertas` : ""].filter(Boolean).join(", ");
+    const numero = nextNumeroProyecto();
+    const lleva = (f) => todas.some((v) => uxcObs(v)[f]);
+    const checklist = checklistMaterialesPorDefecto().map((c) => {
+      if (c.nombre === "Cristal" || c.nombre === "Perfil") return { ...c, estado: "si" };
+      if (c.nombre === "Persiana" || c.nombre === "Guía de persiana") return { ...c, estado: lleva("persiana") ? "si" : "no" };
+      if (c.nombre === "Mosquitera") return { ...c, estado: lleva("mosquitera") ? "si" : "no" };
+      return c;
+    });
+    const dir = cab0.direccion || cab0.municipio || "";
+    const lineas = porViv.map(({ e, vs }) => `· ${(e.cab || {}).expediente || "(vivienda sin nombre)"}: ${vs.length} carpintería${vs.length === 1 ? "" : "s"}`).join("\n");
+    const nuevo = {
+      id: nuevoId, numero, nombre: `🏢 ${bloque}${dir ? " · " + dir : ""} · ${piezas}`,
+      clienteId: cliente.id, tipoVenta: "Venta",
+      especificaciones: `BLOQUE medido vivienda a vivienda en el CRM (Mediciones → Mis obras → bloque «${bloque}»).\n${cab0.direccion || ""}${cab0.municipio ? " (" + cab0.municipio + ")" : ""}. Color: ${cab0.color || ""}.\nViviendas:\n${lineas}\nCada vivienda tiene su hoja de oficina en Mis obras → (vivienda) → Imprimir.`,
+      estadoPresupuesto: "Presupuesto aceptado", presupuestoFirmado: false, condicionesCumplidas: false, importePresupuesto: 0,
+      estadoTrabajo: "Pendiente de aceptación", fechaAceptado: new Date().toISOString().slice(0, 10), ubicacion: cab0.direccion || "", fechaSolicitud: new Date().toISOString().slice(0, 10), fechaEntregaPrevista: "", fechaEntregado: "",
+      provinciaReparto: "", ciudadRepartoManual: "", fechaReparto: "", llevaInstalacion: false, diasPlazoMateriales: 0, fechaFabricacion: "", fechaMontaje: "",
+      gastos: [], registroHorario: [], checklistMateriales: checklist,
+      origen: "medicionPropiaBloque", bloqueMedicion: bloque, medicionUxcarId: exps[0].id, medicionUxcarIds: exps.map((e) => e.id),
+    };
+    saveProyectos([nuevo, ...toArray(proyectosRef.current)]);
+    showToast(`Creada la obra #${numero} en Proyectos con ${exps.length} viviendas`);
+    return { id: nuevoId, numero };
+  };
+  uxcPuente.crearProyectoBloque = crearProyectoDesdeBloque;
   uxcPuente.crearProyecto = crearProyectoDesdeMedicionUxcar;
   uxcPuente.nombresClientes = () => clientes.map((c) => c.nombre).filter(Boolean);
   uxcPuente.fichaCliente = (nombre) => { const n = String(nombre || "").trim().toLowerCase(); return n ? (clientes.find((c) => String(c.nombre || "").trim().toLowerCase() === n) || null) : null; };
@@ -4503,6 +4544,7 @@ export default function App() {
       creadaPor: { id: currentUser ? currentUser.id : "", nombre: currentUser ? `${currentUser.nombre} ${currentUser.apellidos || ""}`.trim() : "" },
     };
     guardarIncFab(nueva);
+    if (data.alertaId) fbUpdate(ref(fbDb, `alertasLinea/${data.alertaId}`), { estado: "incidencia", incidenciaId: nueva.id, cierreTs: Date.now() }).catch(() => {});
     setIncFabForm(null);
     showToast("Incidencia enviada");
     if (data.apartar && data.ventanaBase) {
@@ -6273,6 +6315,7 @@ export default function App() {
           </button>
         )}
         {isAdmin && <AvisoSoldaduraLinea />}
+        {isAdmin && <AvisoFaltaMaterialLinea />}
         {isAdmin && <AvisoFinDiaLinea proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={etiquetasSinObra} />}
         {(() => {
           if (!veFabrica || modulo === "incfabrica" || !currentUser) return null;
@@ -28579,6 +28622,31 @@ function MedicionesUxcarZona({ propia = false }) {
     const n = vacioPropia(); n.cab = { ...n.cab, bloque: bl, direccion: cb.direccion || "", municipio: cb.municipio || "", cliente: cb.cliente || "", telefono: cb.telefono || "", color: cb.color || n.cab.color };
     crear(n);
   };
+  const enviarBloque = async (bl) => {
+    const todas = (lista || []).filter((x) => x.propia && (x.cab || {}).bloque === bl);
+    const sinEnviar = todas.filter((x) => !x.envio);
+    if (!sinEnviar.length) { alert("Todas las viviendas de este bloque ya están enviadas a oficina."); return; }
+    const conVent = sinEnviar.filter((x) => uxcResumenOficina(x).activas.length > 0);
+    const vacias = sinEnviar.filter((x) => !uxcResumenOficina(x).activas.length);
+    if (!conVent.length) { alert("Ninguna vivienda de este bloque tiene ventanas todavía."); return; }
+    if (!conVent.some((x) => uxcTelefonoEfectivo(x))) { alert("Pon el teléfono del cliente en «Contacto y cita» de al menos una vivienda del bloque. Es obligatorio."); return; }
+    if (!conVent.some((x) => String((x.cab || {}).cliente || "").trim())) { alert("Pon el cliente en «Datos de la obra» de al menos una vivienda del bloque (el nombre como está en Clientes, o uno nuevo: se creará solo)."); return; }
+    const yaEnv = todas.filter((x) => x.envio);
+    const pend = conVent.flatMap((x) => uxcResumenOficina(x).activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0)).map((v) => `${(x.cab || {}).expediente || "?"} ${v.ref}`));
+    let txt = `Se creará UNA sola obra en Proyectos con ${conVent.length} vivienda${conVent.length === 1 ? "" : "s"} del bloque «${bl}».\n`;
+    if (vacias.length) txt += `\nNo van (sin ventanas): ${vacias.map((x) => (x.cab || {}).expediente || "(sin nombre)").join(", ")}.`;
+    if (yaEnv.length) txt += `\nOjo: ${yaEnv.length} vivienda(s) de este bloque YA se enviaron antes y tienen su propia obra; no se juntan con esta.`;
+    if (pend.length) txt += `\nFaltan por medir ${pend.length}: ${pend.slice(0, 12).join(", ")}${pend.length > 12 ? "…" : ""}.`;
+    if (!window.confirm(txt + "\n\n¿Enviar a oficina?")) return;
+    const ahora = Date.now(); let por = ""; try { const u = fbAuth.currentUser; por = (u && (u.displayName || u.email)) || ""; } catch (e) { por = ""; }
+    try { window.open("https://wa.me/?text=" + encodeURIComponent(`BLOQUE MEDIDO · ${bl}\n${conVent.length} viviendas: ${conVent.map((x) => (x.cab || {}).expediente || "?").join(", ")}.${pend.length ? "\nFaltan por medir: " + pend.length + "." : ""}\nOficina: se ha creado UNA obra en Proyectos. Pedid ya los materiales.\n${window.location.origin}`), "_blank"); } catch (e) { /* sin ventana */ }
+    try {
+      for (const x of conVent) await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio`), { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por, pendientes: uxcResumenOficina(x).activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0)).length, bloque: bl });
+      const pr = uxcPuente.crearProyectoBloque ? await uxcPuente.crearProyectoBloque(bl, conVent) : null;
+      if (pr) for (const x of conVent) { await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/proyectoId`), pr.id); await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/proyectoNumero`), pr.numero); }
+      else alert("Se marcó como enviado, pero no se creó la obra en Proyectos (¿ya la estaba creando otra persona?). Mira en Proyectos.");
+    } catch (e) { alert("Se envió, pero algo falló al crear la obra: " + e.message); }
+  };
   const ordenFilas = propia ? (() => { const out = []; const vistos = new Set(); filtradas.forEach((x) => { const bl = (x.cab || {}).bloque; if (!bl) { out.push({ x }); return; } if (vistos.has(bl)) return; vistos.add(bl); const del = filtradas.filter((y) => (y.cab || {}).bloque === bl).sort((m, n) => String((m.cab || {}).expediente || "").localeCompare(String((n.cab || {}).expediente || ""), "es", { numeric: true })); out.push({ bloque: bl, n: del.length }); del.forEach((y) => out.push({ x: y, enBloque: true })); }); return out; })() : filtradas.map((x) => ({ x }));
 
   return (
@@ -28608,7 +28676,7 @@ function MedicionesUxcarZona({ propia = false }) {
             {ordenFilas.map(({ x, bloque, n: nBl, enBloque }) => {
               if (bloque) return (
                 <tr key={"bl_" + bloque} className="bg-indigo-50 border-b border-indigo-200">
-                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span><button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button></div></td>
+                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span>{(() => { const del = (lista || []).filter((y) => y.propia && (y.cab || {}).bloque === bloque); const env = del.filter((y) => y.envio); const nums = [...new Set(env.map((y) => y.envio.proyectoNumero).filter(Boolean))]; return env.length ? <span className="text-xs font-bold text-emerald-700">✓ {env.length} de {del.length} enviadas{nums.length ? ` · obra #${nums.join(", #")}` : ""}</span> : null; })()}<button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button>{(lista || []).some((y) => y.propia && (y.cab || {}).bloque === bloque && !y.envio) && <button type="button" onClick={() => enviarBloque(bloque)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-extrabold px-3 py-1.5 rounded-md shadow">📤 Enviar el bloque a oficina (una sola obra)</button>}</div></td>
                 </tr>
               );
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
@@ -29122,6 +29190,13 @@ function UxcEnvio({ exp, guardar }) {
     guardar("envio", { ...env, ultima: ahora, prisa: (env.prisa || 0) + 1 });
     abrirWA(`🔥 URGENTE · ${base}\nLlevo ${dias === 0 ? "desde hoy" : dias + " día" + (dias === 1 ? "" : "s")} esperando que pidáis los materiales de esta vivienda (enviada el ${cuando(env.primera)}). Por favor, confirmadme cuándo se piden.\n${enlace}`);
   };
+  if (!env && propia && cab.bloque) {
+    return (
+      <div className="mb-4 p-3 rounded-lg border-2 border-indigo-400 bg-indigo-50 text-sm text-indigo-900">
+        🏢 Esta vivienda es del bloque <b>«{cab.bloque}»</b>. El bloque entero se envía a oficina como <b>una sola obra</b>: vuelve a la lista de Mis obras y pulsa <b>«📤 Enviar el bloque a oficina»</b> en la cabecera del bloque.{pendientes.length > 0 && <span className="block text-amber-800 font-semibold">Faltan por medir aquí: {pendientes.map((v) => v.ref).join(", ")}</span>}
+      </div>
+    );
+  }
   if (!env) {
     return (
       <div className="mb-4 p-3 rounded-lg border-2 border-emerald-500 bg-emerald-50 flex flex-wrap items-center gap-3">
@@ -41455,15 +41530,17 @@ function agruparEtiquetasFab(paginas) {
     const posRaw = r[1].trim().replace(/\s+/g, " ");
     const multi = posRaw.match(/^([A-Z]\d{1,3})\.(\d{2,4})((?:,\d{2,4})+)$/);
     const posiciones = multi ? [`${multi[1]}.${multi[2]}`, ...multi[3].split(",").filter(Boolean).map((x) => `${multi[1]}.${x}`)] : [posRaw];
-    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/) || [])[1] || "";
+    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
     const col = texto.match(/-\s*F[A-Za-z]*:?[\d.]*\s+((?:[A-Z]{2,4}-)?\d{3,5})\s+(\S+)/);
     // Vivienda ("1º IZQ", "BAJO"…) y nombre del cliente de la etiqueta: sirven para no mezclar viviendas en un caballete
-    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/);
-    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/) || [])[1] || "")).replace(/\s+/g, " ").trim();
+    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/i);
+    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
     const nom = texto.match(/DIMEN\.REF:\s*[\d.]+\s*mm\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]*?)\s+(?:[A-Z]{1,4}|V)\s+[\d-]+/);
     const grupo = [exp, viv].filter(Boolean).join(" ");
     const cliente = nom ? nom[1].trim() : "";
     const tipo = texto.split("\n").map((x) => x.trim()).find((x) => FAB_TIPOS_PIEZA.has(x)) || "";
+    // «12-21» encima del código: el 1º número es el nº de la VENTANA dentro del lote (siempre el mismo en todas sus piezas) → su hueco en todos los almacenes
+    const nVentLote = (() => { const lns = texto.split("\n").map((x) => x.trim()); for (let i = lns.length - 1; i >= 0; i--) { const mm = lns[i].match(/^(\d{1,3})-(\d{1,3})(?:\s*\*\d+\*)?$/); if (mm) return parseInt(mm[1], 10); } const m2 = texto.match(/\b(\d{1,3})-\d{1,3}\s*\*\d{8,14}\*/); return m2 ? parseInt(m2[1], 10) : 0; })();
     let lote = lotes.get(fab);
     if (!lote) { lote = { fab, expediente: exp, ventanas: new Map() }; lotes.set(fab, lote); }
     // Varias ventanas iguales agrupadas ("V01.001,005"): sus piezas idénticas se reparten por turnos entre ellas
@@ -41476,6 +41553,7 @@ function agruparEtiquetasFab(paginas) {
     const id = `${fab}|${r[2]}|${posV}`;
     let v = lote.ventanas.get(id);
     if (!v) { v = { id, orden: lote.ventanas.size, pos: posV, num: r[2], color: col ? `${col[1]} ${col[2]}` : "", grupo, cliente, piezas: [] }; lote.ventanas.set(id, v); }
+    if (nVentLote > 0 && !v.posicionLote) v.posicionLote = nVentLote;
     v.piezas.push({ c: b[1], t: tipo });
     etiquetas++;
   });
@@ -44719,6 +44797,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       if (d.tipo === "u") { const e = toArray(uxExpedientes).find((x) => x.id === d.id); return e && e.estado === "terminado" ? String(e.fechaTerminado || "") : ""; }
       return "";
     };
+    // ¿Tiene ya ETIQUETAS de fabricación? (las suyas, o un lote subido en otra obra que trae ventanas de su presupuesto)
+    const presConEtiq = new Set();
+    [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].forEach((l) => l && toArray(l.ventanas).forEach((v) => { const b = basePresuDia(v && v.num); if (b.length >= 3) presConEtiq.add(b); }));
+    const tieneEtiq = (o) => toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
       Object.keys(planDias[f] || {}).forEach((k) => {
@@ -45074,9 +45156,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
                   <div className="text-[11px] font-bold text-slate-600">{Number(f.slice(8))}</div>
                   <div className="space-y-0.5">
                     {its.slice(0, 5).map((it, j) => {
-                      if (it.sinEtiquetas) return <div key={j} className="truncate rounded px-1 text-[10px] border border-dashed border-amber-400 text-amber-800 bg-amber-50">📌 {it.sinEtiquetas}</div>;
+                      if (it.sinEtiquetas) return <div key={j} title="Del planning, pero sin obra ni etiquetas en el CRM" className="truncate rounded px-1 text-[10px] font-semibold bg-rose-600 text-white">⚠ {it.sinEtiquetas}</div>;
                       const st = stats(it.o); const col = st.total > 0 && st.n === st.total ? "bg-emerald-500 text-white" : st.n > 0 ? "bg-amber-300 text-slate-900" : st.pend > 0 ? "bg-sky-200 text-sky-900" : "bg-slate-200 text-slate-700";
-                      return <div key={j} className={`truncate rounded px-1 text-[10px] font-semibold ${col}`}>{it.terminada ? "🏁" : "📌"} {nombreAD(it.o)} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
+                      const sinE = !it.terminada && !tieneEtiq(it.o);
+                      return <div key={j} title={sinE ? "SIN ETIQUETAS de fabricación: súbelas (toca el día)" : undefined} className={`truncate rounded px-1 text-[10px] font-semibold ${sinE ? "bg-rose-600 text-white" : col}`}>{sinE ? "⚠" : it.terminada ? "🏁" : "📌"} {nombreAD(it.o)} · {st.n}/{st.total}{st.pend > 0 ? ` (+${st.pend})` : ""}</div>;
                     })}
                     {its.length > 5 && <span role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); setDiaAD(f); setVerDiaAD(f); }} className="block text-[11px] font-bold text-sky-700 underline cursor-pointer">+{its.length - 5} más · ver todas</span>}
                   </div>
@@ -45088,6 +45171,17 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="space-y-3">
           <div className="text-base font-extrabold text-slate-900 capitalize">{etiquetaDia}{diaAD === hoyAD ? " · hoy" : ""}</div>
           {avisoSinEt}
+          {(() => { const faltan = delDia.filter((it) => it.o && !it.terminada && !tieneEtiq(it.o)); if (!faltan.length) return null; return (
+            <div className="rounded-lg border-2 border-rose-500 bg-rose-50 p-3 space-y-2">
+              <div className="text-sm font-extrabold text-rose-800">⚠ {faltan.length === 1 ? "Esta obra planificada NO tiene" : `Estas ${faltan.length} obras planificadas NO tienen`} las etiquetas de fabricación subidas. Sin ellas la pistola no las reconoce. Súbelas aquí:</div>
+              {faltan.map((it) => (/^[pu]-/.test(String(it.o.key)) ? (
+                <div key={it.o.key} className="rounded-md border border-rose-300 bg-white p-2">
+                  <div className="text-sm font-bold text-rose-800 mb-1">{nombreAD(it.o)} · {it.o.nombre}</div>
+                  <EtiquetasFabricacionObra lotes={lotesDe(it.o.key)} presupuestoNumero={toArray(it.o.codigos)[0] || ""} onGuardar={(l) => onGuardarEtiquetasObra && onGuardarEtiquetasObra(it.o.key, l)} />
+                </div>
+              ) : <div key={it.o.key} className="text-sm text-rose-800"><b>{nombreAD(it.o)}</b>: no está como obra en el CRM (solo en el planning). Súbelas en Almacén de ventanas → Subir etiquetas.</div>))}
+            </div>
+          ); })()}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
       </div>
@@ -45881,6 +45975,7 @@ const PUESTOS_LINEA = [
   { id: "cristales", nombre: "Cristales", corto: "Cristales" },
   { id: "solape", nombre: "Solape / postigo", corto: "Solape" },
   { id: "especiales", nombre: "Especiales", corto: "Especiales" },
+  { id: "controlDia", nombre: "Control del día", corto: "C. día" },
   { id: "carga", nombre: "Carga (almacén ventanas)", corto: "Carga" },
 ];
 const nombrePuestoLinea = (id) => (PUESTOS_LINEA.find((p) => p.id === id) || {}).nombre || id;
@@ -47166,7 +47261,8 @@ function MovimientosCaballetes() {
 const normVivLinea = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 function datosVentanaLinea(h) {
   const v = h.ventana;
-  const exp = (String(h.lote.expediente || "").match(/\d{2,}/) || String(v.grupo || "").match(/\d{2,}/) || [""])[0];
+  // el expediente de CADA ventana (su etiqueta) manda sobre el del lote: un lote puede juntar varias obras (p. ej. el 1387: exp. 109 y 1072)
+  const exp = ((String(v.grupo || "").match(/^\s*(\d{2,})\b/) || [])[1]) || (String(h.lote.expediente || "").match(/\d{2,}/) || String(v.grupo || "").match(/\d{2,}/) || [""])[0];
   const viv = normVivLinea(String(v.grupo || "").replace(/^\s*\d+\s*/, ""));
   const pos = normVivLinea(v.pos);
   const casa = (refTxt) => {
@@ -47175,6 +47271,146 @@ function datosVentanaLinea(h) {
     return [viv, pos].some((a) => a && (r === a || (a.length >= 2 && r.includes(a)) || (r.length >= 3 && a.includes(r))));
   };
   return { exp, viv, casa };
+}
+// PANEL DEL DÍA en cada puesto (como el Almacén del día): las obras del CALENDARIO de ese día (planning de Fábrica + las metidas a mano),
+// una COLUMNA por presupuesto con sus ventanas. Se ponen en VERDE las que ya se han leído en ESTE puesto: así se ve qué ventana falta.
+// «📺 Pantalla grande»: lo mismo a toda pantalla para la tele, con la última lectura y su HUECO en grande (la pistola sigue leyendo igual).
+const basePresuDia = (t) => String(t || "").trim().replace(/^(\d+(?:\.\d{3})*)\.\d{1,2}$/, "$1").split("-")[0].replace(/\D/g, "");
+function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
+  const [abierto, setAbierto] = useEstadoLocal(`crm_panelDia_${puestoId}`, true);
+  const [tv, setTv] = useEstadoLocal(`crm_panelDiaTv_${puestoId}`, false);
+  const [grande, setGrande] = useState(null);
+  const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
+  const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras");
+  const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
+  const cols = useMemo(() => {
+    if (!abierto && !tv) return [];
+    const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
+    const planObras = (planFab && planFab.obras) || {}; const delDia = ((planFab && planFab.dias) || {})[dia] || {};
+    const pedidas = []; // { nombre, bases:Set, keys:Set }
+    Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
+    Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (manual[dia][ko]) pedidas.push({ nombre: "", bases: new Set(), keys: new Set([ko]) }); });
+    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], vistos: new Set(), grupos: new Set(), num: "", obra: "", fabs: new Set() }));
+    const vistos = new Set();
+    indice.forEach((h) => {
+      const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id);
+      const b = basePresuDia(v.num || (h.dueno && h.dueno.presupuesto)); const kd = limpia(h.dueno && h.dueno.key);
+      const c = cajas.find((x) => (b && x.bases.has(b)) || x.keys.has(kd)); if (!c) return;
+      c.vs.push(v); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
+    });
+    return cajas.map((c, i) => ({ k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs: c.vs.sort((a, b2) => (dibDe(a) || 999) - (dibDe(b2) || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
+      .filter((c) => c.vs.length || c.nombre);
+  }, [abierto, tv, planFab, manual, dia, indice, leidas]);
+  const columnas = (enTv) => {
+    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.min(8, lista.length));
+    return (
+      <div className="flex flex-wrap gap-2 items-start">
+        {lista.map((c) => {
+          const completa = c.vs.length > 0 && c.hechas === c.vs.length; const sinEt = !c.vs.length;
+          return (
+            <div key={c.k} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: enTv ? "9rem" : "8.5rem" }} className={`rounded-lg border-2 ${enTv ? "bg-slate-800" : "bg-white"} ${completa ? "border-emerald-500" : "border-slate-400"}`}>
+              <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md text-white ${completa ? "bg-emerald-600" : sinEt ? "bg-slate-500" : "bg-slate-900"}`}>
+                <div className={`${enTv ? "text-xl" : "text-sm"} font-extrabold leading-tight`}>{c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : c.nombre || c.obra}</div>
+                <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
+                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin etiquetas subidas" : `${c.hechas} de ${c.vs.length}${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
+              </button>
+              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
+                {c.vs.map((v) => { const ok = leidas.has(String(v.id)); const esUlt = ultimo && ultimo.h && ultimo.h.ventana && ultimo.h.ventana.id === v.id; return (
+                  <div key={v.id} className={`px-1.5 py-0.5 rounded font-bold border ${enTv ? "text-base" : "text-xs"} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                ); })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+  const vacio = <div className="text-sm text-slate-400">No hay obras en el calendario de este día (Almacén del día / Control del día).</div>;
+  if (tv) {
+    const z = ultimo && ultimo.zona;
+    return (
+      <div className="fixed inset-0 z-[95] bg-slate-950 text-white overflow-y-auto p-3" onClick={() => onFoco && onFoco()}>
+        <div className="flex flex-wrap items-center gap-3 mb-2">
+          <div className="text-2xl font-extrabold">{nombrePuestoLinea(puestoId)} · {new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}</div>
+          <span className="text-sm text-slate-400">Lee con la pistola: se sigue registrando aunque estés en esta pantalla.</span>
+          <button type="button" onClick={(e) => { e.stopPropagation(); setTv(false); }} className="ml-auto px-4 py-2 rounded-lg bg-white text-slate-900 font-bold">Salir</button>
+        </div>
+        {ultimo && (
+          <div className={`mb-3 rounded-xl px-4 py-3 flex flex-wrap items-center gap-4 ${ultimo.ok ? (ultimo.repetida ? "bg-amber-500 text-slate-900" : "bg-emerald-600") : "bg-rose-600"}`}>
+            {z && z.hueco ? <div className="text-6xl font-black leading-none">HUECO {z.hueco}</div> : null}
+            <div className="flex-1 min-w-[16rem] text-2xl font-bold whitespace-pre-line">{ultimo.texto}</div>
+          </div>
+        )}
+        {cols.length ? columnas(true) : vacio}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-lg border-2 border-slate-300 bg-slate-50 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-base font-extrabold text-slate-800">{abierto ? "▼" : "▶"} 📋 Obras del día · ventanas leídas en {nombrePuestoLinea(puestoId)}</button>
+        <input type="date" value={dia} onChange={(e) => setDia(e.target.value || hoy)} className="border border-slate-300 rounded px-1.5 py-0.5 text-xs" />
+        <button type="button" onClick={() => { setTv(true); setTimeout(() => onFoco && onFoco(), 50); }} className="ml-auto px-3 py-1 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande</button>
+      </div>
+      {abierto && <div className="mt-2">{cols.length ? columnas(false) : vacio}</div>}
+    </div>
+  );
+}
+// Buscador de cristales para los chicos de la línea: encontrar uno a mano (expediente, vivienda, medida, caballete) y quitarlo del almacén
+function BuscarCristalesLinea({ cristales, onUpdateCristal, quien, indice }) {
+  const [abierto, setAbierto] = useState(false); const [q, setQ] = useState(""); const [verQuitados, setVerQuitados] = useState(false);
+  const sinPuntos = (t) => String(t || "").replace(/(\d)\.(?=\d)/g, "$1");
+  const toks = sinPuntos(q).toLowerCase().split(/\s+/).filter(Boolean);
+  // Presupuestos de cada expediente (sacados de las etiquetas de fabricación): así se puede buscar el cristal por nº de presupuesto (6510 o 6.510)
+  const pptosPorExp = useMemo(() => {
+    const m = new Map(); if (!abierto || !indice) return m; const vistos = new Set();
+    indice.forEach((h) => { const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id); const e = datosVentanaLinea(h).exp; const pp = sinPuntos(v.num || (h.dueno && h.dueno.presupuesto) || "").split("-")[0]; if (!e || !pp) return; const set = m.get(e) || new Set(); set.add(pp); m.set(e, set); });
+    return m;
+  }, [abierto, indice]);
+  const filas = [];
+  if (abierto && toks.length) {
+    toArray(cristales).forEach((c) => toArray(c.piezas).forEach((p, i) => {
+      if (!p || (!!p.puesto !== verQuitados)) return;
+      const pps = numsExpediente(p.expediente || c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]);
+      const t = [...pps, sinPuntos(c.presupuesto), sinPuntos(p.presupuesto), p.expediente, c.expediente, p.ref, `${p.ancho}x${p.alto}`, `${p.ancho} x ${p.alto}`, p.ancho, p.alto, c.lote, c.numero, c.presupuesto, c.cliente, p.composicion, p.descripcion].filter((x) => x != null && x !== "").join(" ").toLowerCase();
+      if (toks.every((k) => t.includes(k))) filas.push({ c, p, i });
+    }));
+  }
+  const cambiar = (x, quitar) => {
+    if (!onUpdateCristal) { alert("Desde aquí no tengo acceso al almacén de cristales."); return; }
+    if (quitar && !window.confirm(`¿Quitar del almacén el cristal ${x.p.ref || ""} (${x.p.ancho || "?"} × ${x.p.alto || "?"}) del caballete ${x.c.lote || x.c.numero || "—"}?`)) return;
+    onUpdateCristal(x.c.id, { piezas: toArray(x.c.piezas).map((q2, j) => (j === x.i ? (quitar ? { ...q2, puesto: true, fechaPuesto: hoyISO(), quitadoAMano: { por: quien || "", ts: Date.now() } } : { ...q2, puesto: false, fechaPuesto: "", quitadoAMano: null, ventanaId: "", ventanaPos: "" }) : q2)) });
+  };
+  return (
+    <div className="mt-3 rounded-lg border-2 border-sky-300 bg-sky-50 p-3">
+      <button type="button" onClick={() => setAbierto(!abierto)} className="w-full text-left text-base font-extrabold text-sky-900">{abierto ? "▼" : "▶"} 🔍 Buscar un cristal (y quitarlo a mano)</button>
+      {abierto && (
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Presupuesto (6510), expediente, vivienda, medida (1070x850), caballete…" className="flex-1 min-w-[14rem] border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white" />
+            <label className="text-xs text-slate-700 flex items-center gap-1"><input type="checkbox" checked={verQuitados} onChange={(e) => setVerQuitados(e.target.checked)} /> ver los ya quitados</label>
+          </div>
+          {!toks.length ? <div className="text-xs text-slate-500">Escribe algo para buscar.</div> : !filas.length ? <div className="text-sm text-slate-600">No hay ningún cristal {verQuitados ? "quitado" : "en el almacén"} con eso.</div> : (
+            <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+              {filas.slice(0, 80).map((x) => (
+                <div key={`${x.c.id}_${x.i}`} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1.5 text-sm">
+                  <span className="font-bold">{x.p.ref || "(sin ref.)"}</span>
+                  <span>{x.p.ancho || "?"} × {x.p.alto || "?"} mm</span>
+                  <span className="text-slate-500">exp. {x.p.expediente || x.c.expediente || "—"}{(() => { const pp = [...new Set(numsExpediente(x.p.expediente || x.c.expediente).flatMap((e) => [...(pptosPorExp.get(e) || [])]))]; return pp.length ? ` · ppto. ${pp.join(", ")}` : ""; })()}</span>
+                  <span className="text-slate-700">cab. <b>{x.c.lote || x.c.numero || "—"}</b> · {x.c.ubicacion ? ubicacionTexto(x.c.ubicacion) : x.c.enPuesto ? `en ${x.c.enPuesto}` : "sin ubicar"}</span>
+                  {x.p.puesto && <span className="text-xs text-slate-500">quitado {x.p.fechaPuesto || ""}{x.p.ventanaPos ? ` · ventana ${x.p.ventanaPos}` : ""}{x.p.quitadoAMano && x.p.quitadoAMano.por ? ` · a mano (${x.p.quitadoAMano.por})` : ""}</span>}
+                  {x.p.puesto
+                    ? <button type="button" onClick={() => cambiar(x, false)} className="ml-auto text-xs font-bold px-2 py-1 rounded border border-slate-400 text-slate-700">↩ Volver a meterlo</button>
+                    : <button type="button" onClick={() => cambiar(x, true)} className="ml-auto text-xs font-bold px-2 py-1 rounded bg-rose-600 text-white">🗑 Quitar del almacén</button>}
+                </div>
+              ))}
+              {filas.length > 80 && <div className="text-xs text-slate-500">…y {filas.length - 80} más: afina la búsqueda.</div>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 function cruzarCristalVentana(cristales, onUpdateCristal, h, sel = null) {
   const d = datosVentanaLinea(h);
@@ -47868,6 +48104,7 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
   const buscandoCris = useRef(new Map()); // Cristales: ventanas cuya 1ª lectura (buscar el cristal) ya se hizo; la 2ª las deja puestas
   const forzar = useRef(""); // Cristales: código de la ventana que se acristala como URGENTE saltándose el bloqueo
   const [bloqCris, setBloqCris] = useState(null);
+  const [propInc, setPropInc] = useState(null); // incidencia propuesta (falta cristal / persiana): la acepta el chico
   mesaRef.current = mesa;
   const [ultimosMesa, setUltimosMesa] = useState({});
   const [verAux, setVerAux] = useState(false); // botón «Auxiliares» junto a los puestos
@@ -47975,6 +48212,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
       if (puestoId === "cristales") cruce = cruzarCristalVentana(cristales, onUpdateCristal, h, selCris);
       else if (puestoId === "persianaA" || puestoId === "persianaB") cruce = cruzarPersianaVentana(ctx.persianasAlmacen, ctx.savePersianasAlmacen, h);
       if (cruce) fbUpdate(ref(fbDb, `escaneosLinea/${claveLecturaLinea(puestoId, h)}`), { enlace: cruce.ok ? "ok" : "sin", enlaceTexto: cruce.texto }).catch(() => {});
+      // Sin persiana o sin cristal en el almacén → se PROPONE la incidencia (no se crea sola): el chico la acepta con un botón
+      const esCris = puestoId === "cristales"; const queFalta = esCris ? "EL CRISTAL" : "LA PERSIANA";
+      if (cruce && !cruce.ok && (esCris || puestoId === "persianaA" || puestoId === "persianaB") && !/varias unidades|no tengo acceso|expediente de la ventana/.test(cruce.texto)) {
+        const alertaId = `falta__${esCris ? "cris" : "pers"}__${String(baseDe(v) || v.id || v.pos).replace(/[.#$\[\]\/|\s]/g, "_")}`;
+        runTransaction(ref(fbDb, `alertasLinea/${alertaId}`), (cur) => (cur && cur.estado === "incidencia" ? undefined : { id: alertaId, ts: Date.now(), fecha: new Date().toISOString().slice(0, 10), tipo: "faltaMaterial", puestoId: "faltaMaterial", que: esCris ? "cristal" : "persiana", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", vivienda: v.grupo || "", obraNombre: h.dueno.nombre || "", detalle: cruce.texto, estado: "abierta", por: quien || "" })).catch(() => {});
+        setPropInc({ alertaId, texto: `FALTA ${queFalta} de ${v.pos} (${v.grupo || ""}): al leerla en ${nombrePuestoLinea(puestoId)} el CRM dice: ${cruce.texto}.`, tipo: "Falta material", puesto: nombrePuestoLinea(puestoId), ventana: v.pos || "", ventanaId: v.id || "", obra: h.dueno.nombre || "", ventanaBase: baseDe(v) || "", queFalta: esCris ? "cristal" : "persiana" });
+      } else if (r === "nuevo") setPropInc(null);
     }
     if (cruce) texto = `${texto}${cruce.ok ? ` · ${cruce.texto}` : ` · ⚠ ${cruce.texto}`}`;
     avisarM(ok && (!cruce || cruce.ok), texto, aviso || (!!cruce && !cruce.ok));
@@ -48068,6 +48312,13 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           </div>
         ) : (ultimo && pintaUltimo(ultimo, "mt-3"))}
         {puestoId === "cristales" && <PendientesConfirmarCristales quien={quien} />}
+        {propInc && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border-2 border-rose-400 bg-rose-50 px-3 py-2">
+            <span className="flex-1 min-w-[14rem] text-sm font-bold text-rose-800">⚠ {propInc.ventana}: no está {propInc.queFalta === "cristal" ? "su cristal" : "su persiana"} en el almacén. ¿Crear incidencia?</span>
+            <BotonIncidenciaFabrica prefill={propInc} />
+            <button type="button" onClick={() => { if (propInc.alertaId) fbUpdate(ref(fbDb, `alertasLinea/${propInc.alertaId}`), { respuesta: "El operario pulsó «No, está bien» (no creó incidencia)", respuestaPor: quien || "", respuestaTs: Date.now() }).catch(() => {}); setPropInc(null); }} className="text-xs text-slate-600 underline">No, está bien</button>
+          </div>
+        )}
         {puestoId === "cristales" && bloqCris && (
           <div className="mt-3 border-2 border-rose-500 bg-rose-50 rounded-lg p-3">
             <div className="text-sm font-bold text-rose-800 mb-2">{bloqCris.pos} está bloqueada. Si es urgente, puedes acristalarla igual.</div>
@@ -48076,7 +48327,9 @@ function SeguimientoLinea({ proyectos, uxExpedientes, sinObra, quien, quienId = 
           </div>
         )}
         {ficha && <FichaVentanaLinea control={puestoId === "lineaPers"} admin={admin} h={ficha} ubic={ubic} escaneos={escaneos} hojasOv={hojasOv} pilOv={pilOv} solOv={solOv} mosqOv={mosqOv} sinPersOv={sinPersOv} onCerrar={() => { setFicha(null); enfocar(); }} />}
+        <PanelDiaPuesto puestoId={puestoId} indice={indice} escaneos={escaneos} ultimo={ultimo} onFoco={() => { try { if (inputRef.current) inputRef.current.focus(); } catch (e) { /* nada */ } }} />
         {puestoId === "cristales" && <ListaAcristalar ubic={ubic} indice={indice} sinPersOv={sinPersOv} />}
+        {puestoId === "cristales" && <BuscarCristalesLinea cristales={cristales} onUpdateCristal={onUpdateCristal} quien={quien} indice={indice} />}
         {puestoId === "lineaPers" && <MandarViviendasLinea ubic={ubic} indice={indice} sinPersOv={sinPersOv} quien={quien} />}
         {puestoId !== "pilastra" && puestoId !== "colgado" && puestoId !== "cristales" && puestoId !== "lineaPers" && <ListaPreparadas puestoId={puestoId} ubic={ubic} indice={indice} />}
         {(puestoId === "pilastra" || puestoId === "colgado") && <ListasColgado ubic={ubic} indice={indice} hojasOv={hojasOv} puestoId={puestoId} />}
@@ -53832,8 +54085,8 @@ function BotonIncidenciaFabrica({ prefill, flotante }) {
 }
 
 function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
-  const [texto, setTexto] = useState("");
-  const [tipo, setTipo] = useState("");
+  const [texto, setTexto] = useState(prefill.texto || "");
+  const [tipo, setTipo] = useState(prefill.tipo || "");
   const [puesto, setPuesto] = useState(prefill.puesto || "");
   const [foto, setFoto] = useState("");
   const [error, setError] = useState("");
@@ -53844,7 +54097,7 @@ function FormIncidenciaFabrica({ prefill, onGuardar, onCancelar }) {
   };
   const enviar = () => {
     if (!texto.trim()) { setError("Escribe qué ha pasado."); return; }
-    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar });
+    onGuardar({ texto: texto.trim(), tipo, puesto: puesto.trim(), foto, ventana: prefill.ventana || "", ventanaId: prefill.ventanaId || "", obra: prefill.obra || "", ventanaBase: prefill.ventanaBase || "", apartar: !!prefill.apartar, ...(prefill.alertaId ? { alertaId: prefill.alertaId } : {}) });
   };
   return (
     <div className="fixed inset-0 z-[120] bg-black/40 flex items-end sm:items-center justify-center p-3">
@@ -54050,6 +54303,34 @@ async function revisarCambioSoldadura({ h, escaneos, indice, hojasOv, pilOv, por
     const rec = { id, ts: Date.now(), fecha, puestoId: "soldadora", obraKey: prev.obraKey, obraNombre: prev.obraNombre || prev.obraKey, nuevaObraNombre: h.dueno.nombre, n: pend.length, pendientes: pend.slice(0, 40), estado: "abierta", por: por || "" };
     await runTransaction(ref(fbDb, `alertasLinea/${id}`), (actual) => (actual && actual.estado !== "abierta" ? undefined : rec));
   } catch (e) { /* si las reglas de Firebase no permiten la ruta alertasLinea, no hay aviso */ }
+}
+// Administración: falta un cristal o una persiana y el operario NO ha creado la incidencia (a los 5 minutos, o al momento si pulsó «No, está bien»)
+function AvisoFaltaMaterialLinea() {
+  const [lista, setLista] = useState([]); const [ahora, setAhora] = useState(Date.now()); const [abierto, setAbierto] = useState(true);
+  useEffect(() => onValue(ref(fbDb, "alertasLinea"), (snap) => setLista(toArray(snap.val()).filter((a) => a && a.tipo === "faltaMaterial" && a.estado === "abierta")), () => {}), []);
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 60000); return () => clearInterval(t); }, []);
+  const ver = lista.filter((a) => a.respuesta || ahora - (a.ts || 0) >= 5 * 60000).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  if (!ver.length) return null;
+  const hora = (ts) => new Date(ts).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="bg-amber-100 text-amber-950 border-b border-amber-300">
+      <div className="flex flex-wrap items-center gap-3 px-6 py-2.5 text-sm font-semibold">
+        <AlertOctagon size={15} />
+        <span>Línea: {ver.length} ventana{ver.length === 1 ? "" : "s"} sin cristal o persiana en el almacén y SIN incidencia creada por el operario.</span>
+        <button type="button" onClick={() => setAbierto((x) => !x)} className="underline ml-auto">{abierto ? "Ocultar" : "Ver detalle"}</button>
+      </div>
+      {abierto && (
+        <div className="px-6 pb-3 space-y-1.5">
+          {ver.map((a) => (
+            <div key={a.id} className="flex flex-wrap items-center gap-2 bg-white border border-amber-200 rounded-md px-3 py-2 text-sm text-slate-800">
+              <span>Falta <b>{a.que === "cristal" ? "el CRISTAL" : "la PERSIANA"}</b> de <b>{a.ventana}</b>{a.vivienda ? ` (${a.vivienda})` : ""} · {a.obraNombre} · leída en {a.puesto} el {hora(a.ts || 0)}{a.por ? ` por ${a.por}` : ""}.{a.respuesta ? <b className="text-rose-700"> {a.respuesta}.</b> : <b className="text-rose-700"> No ha hecho nada.</b>}</span>
+              <button type="button" onClick={() => fbUpdate(ref(fbDb, `alertasLinea/${a.id}`), { estado: "vista", cierreTs: Date.now() }).catch(() => {})} className="ml-auto text-xs underline text-slate-500">Visto</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 function AvisoSoldaduraLinea() {
   const [lista, setLista] = useState([]);
@@ -57124,6 +57405,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   }, [firmaReg]); // eslint-disable-line react-hooks/exhaustive-deps
   const [verRegistro, setVerRegistro] = useState(false);
   const [verPlanUp, setVerPlanUp] = useState(false); // el PLANING del programa va plegado (opcional)
+  const [codPist, setCodPist] = useState(""); const [msgPist, setMsgPist] = useState(null);
   const [verMeter, setVerMeter] = useState(false); const [qMeter, setQMeter] = useState(""); const [diaMeter, setDiaMeter] = useState(""); const [meterOcupado, setMeterOcupado] = useState(""); const [msgFoto, setMsgFoto] = useState(""); const fotoEtqRef = useRef(null); const [fotoObra, setFotoObra] = useState(null); // obra encontrada con la foto: { key, nombre, posicion }
   // Hojas de corte (Auxiliares): para avisar en cada ventana si lleva SOLAPE, MOSQUITERA o POSTIGO
   const hojasAuxCD = useObjetoFb("auxiliaresHojas");
@@ -57581,6 +57863,40 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const idsDe = (o) => { const ids = [...o.viv.values()].flat().map((v) => v.id); return ids.length ? ids : ["_obra"]; };
   const tocaGrupo = (o, ids) => { const act = { ...(marcas[limpia(o.d.key)] || {}) }; const todasVerdes = ids.every((i) => valor(o.d.key, i) === 1); ids.forEach((i) => { act[i] = todasVerdes ? 0 : 1; }); guardarObra(o.d.key, act); if (!todasVerdes) siTerminada(o, act);
     const h = { ...(horas[limpia(o.d.key)] || {}) }; const ahora = Date.now(); ids.forEach((i) => { if (todasVerdes) delete h[i]; else h[i] = ahora; }); guardarHoras(o.d.key, h); };
+  // PISTOLA: leer la pegatina de cualquier pieza de la ventana (código de 12 cifras) la pone en VERDE (hecha).
+  // Cada ventana física (de las etiquetas) se apunta en «controlDiaPistola» con la casilla que marcó: leer otra pieza de la misma ventana no marca otra.
+  const marcarPorCodigoCD = async (txt) => {
+    const d = String(txt || "").replace(/\D/g, "");
+    const h = [d, d.slice(-12), d.slice(0, 12)].map((k) => k && indice.get(k)).find(Boolean);
+    if (!h) return { ok: false, t: d ? `Código ${d} no encontrado. ¿Están subidas las etiquetas de ese lote en su obra?` : "No se ha leído ningún código." };
+    const vEt = h.ventana || {}; const posEt = normPosR(vEt.pos); const fabEt = String((h.lote && h.lote.fab) || "");
+    const claveFis = limpia(`${fabEt}_${vEt.id || vEt.pos || h.pieza.c}`);
+    try { const sn = await fbGet(ref(fbDb, `controlDiaPistola/${claveFis}`)); const prev = sn.exists() ? sn.val() : null; const oP = prev && obraPorClave.get(prev.ko); if (oP && valor(oP.d.key, prev.idv) === 1) return { ok: true, rep: true, t: `Ya estaba hecha: ${vEt.pos || ""} · ${oP.d.nombre}` }; } catch (e) { /* sigue */ }
+    const dueno = h.dueno || {};
+    const esSuObra = (o) => limpia(o.d.key) === limpia(dueno.key) || (!!dueno.proyectoId && ((o.d.tipo === "p" && String(o.d.id) === String(dueno.proyectoId)) || String(o.d.proyectoId || "") === String(dueno.proyectoId)));
+    const cands = [];
+    obras.forEach((o) => { if (o.d.tipo === "pl" && !esSuObra(o)) { /* el planning también vale por posición+lote */ }
+      [...o.viv.values()].flat().forEach((v) => {
+        const pv = normPosR(v.pos); if (!pv || !posEt) return;
+        const igualPos = pv === posEt; const prefijo = !igualPos && (pv.startsWith(posEt) || posEt.startsWith(pv) || pv.split(/[._]/).slice(0, 2).join(".") === posEt.split(/[._]/).slice(0, 2).join("."));
+        if (!igualPos && !prefijo) return;
+        let sc = igualPos ? 4 : 1; if (esSuObra(o)) sc += 6; if (fabEt && String(v.fab || "") === fabEt) sc += 3; if (String(v.id) === limpia(vEt.id || vEt.pos || "")) sc += 2;
+        if (sc < 5) return; // solo la posición, de otra obra y otro lote: no vale
+        cands.push({ o, v, sc, verde: valor(o.d.key, v.id) === 1 });
+      });
+    });
+    if (!cands.length) return { ok: false, t: `${vEt.pos || "Ventana"} de ${dueno.nombre || "?"} (lote ${fabEt}): no la encuentro en Control del día. ¿Está la obra en el planning?` };
+    cands.sort((x, y) => (y.sc - x.sc) || (x.verde - y.verde));
+    const top = cands.filter((c) => c.sc === cands[0].sc); const elegida = top.find((c) => !c.verde) || top[0];
+    if (elegida.verde) { registrarEscaneoLinea({ puestoId: "controlDia", h }).catch(() => {}); return { ok: true, rep: true, t: `Ya estaba hecha: ${elegida.v.pos} · ${elegida.o.d.nombre}` }; }
+    const o = elegida.o; const v = elegida.v;
+    const act = { ...(marcas[limpia(o.d.key)] || {}) }; act[v.id] = 1; await guardarObra(o.d.key, act); siTerminada(o, act);
+    const hh = { ...(horas[limpia(o.d.key)] || {}) }; hh[v.id] = Date.now(); guardarHoras(o.d.key, hh);
+    fbSet(ref(fbDb, `controlDiaPistola/${claveFis}`), { ko: limpia(o.d.key), idv: v.id, ts: Date.now(), dia }).catch(() => {});
+    registrarEscaneoLinea({ puestoId: "controlDia", h }).catch(() => {}); // queda apuntado que la ventana pasó por Control del día (informe de la línea)
+    const tot = idsDe(o).length; const hechas = idsDe(o).filter((i) => (act[i] !== undefined ? act[i] : valor(o.d.key, i)) === 1).length;
+    return { ok: true, t: `✓ HECHA: ${v.pos} · ${o.d.nombre} (${hechas} de ${tot})` };
+  };
   // ¿Qué lleva esta ventana? Se mira su modelo (V01…) en la hoja de corte de su presupuesto y su descripción
   const extrasVentana = (o, v) => {
     const pp = pptosPresupuesto(o); const textos = [];
@@ -57785,6 +58101,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
   const hechasDia = todasFilasInforme.filter((f) => f.v && ((marcas[limpia(f.o.d.key)] || {})[f.v.id] === 1)).length;
   const totalVentDia = todasFilasInforme.filter((f) => f.v).length;
   const esHoyCD = dia === new Date().toLocaleDateString("sv-SE");
+  const pistolaCD = (grande) => (
+    <div className={`mb-3 flex flex-wrap items-center gap-2 rounded-lg border-2 p-2 ${grande ? "border-emerald-400 bg-slate-800" : "border-emerald-500 bg-emerald-50"}`}>
+      <span className={`${grande ? "text-xl text-white" : "text-sm text-emerald-900"} font-extrabold`}>🔫 Pistola: lee la pegatina de la ventana terminada</span>
+      <input value={codPist} onChange={(e) => setCodPist(e.target.value)} onKeyDown={async (e) => { if (e.key !== "Enter") return; const t = codPist; setCodPist(""); const r = await marcarPorCodigoCD(t); setMsgPist(r); }} placeholder="Pon aquí el cursor y lee con la pistola" className={`flex-1 min-w-[14rem] rounded-md border-2 px-2 py-1.5 font-mono ${grande ? "text-xl bg-slate-900 text-white border-slate-500" : "text-base border-slate-300 bg-white"}`} />
+      {msgPist && <span className={`w-full ${grande ? "text-2xl" : "text-sm"} font-bold px-2 py-1 rounded ${msgPist.ok ? (msgPist.rep ? "bg-sky-100 text-sky-900" : "bg-emerald-600 text-white") : "bg-rose-600 text-white"}`}>{msgPist.t}</span>}
+    </div>
+  );
   const contadorCD = totalVentDia === 0 ? null : <ContadorRitmoLinea admin={admin} real={hechasDia} total={totalVentDia} esHoy={esHoyCD} detalle={hechasDia > 0 ? `Marcadas hoy (${textoTiempos || "sin hora guardada"})` : "Empieza a cero cada día"} />;
   if (tv) return (
     <div className="fixed inset-0 z-[90] bg-slate-900 text-white overflow-y-auto p-4">
@@ -57796,6 +58119,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
+      {pistolaCD(true)}
       {contadorCD}
       {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
       <div className="flex flex-wrap gap-2 content-start">
@@ -57809,7 +58133,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
-            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 7.5rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
+            <div key={o.d.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.5rem)`, minWidth: grande ? "100%" : "7rem", height: `calc((100vh - 12rem) / ${filas} - 0.5rem)` }} className={`flex flex-col rounded-xl border-4 overflow-hidden ${col === "verde" ? "border-emerald-500 bg-emerald-950" : col === "naranja" ? "border-orange-500 bg-slate-800" : grande ? "border-sky-400 bg-slate-800" : "border-slate-600 bg-slate-800"}`}>
               <div className={`px-2 py-1.5 ${col === "verde" ? "bg-emerald-600" : col === "naranja" ? "bg-orange-500" : grande ? "bg-sky-700" : "bg-slate-700"}`}>
                 <button type="button" onClick={() => setTvGrande(grande ? null : o.d.key)} title={grande ? "Volver a ver todas las obras" : "Ver esta obra en toda la pantalla"} className={`w-full text-left font-extrabold leading-tight ${grande ? "text-2xl" : "text-sm"}`}>{col === "verde" ? "✓ " : ""}{o.d.nombre} <span className="font-normal">{grande ? `🔍− (volver a las ${lista.length})` : "🔍+"}</span></button>
                 <div className="flex items-center gap-1 mt-0.5">
@@ -58110,6 +58434,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       )}
       <div className="mb-2 flex flex-wrap items-center gap-2">
       </div>
+      {pistolaCD(false)}
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
