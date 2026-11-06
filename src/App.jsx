@@ -38000,7 +38000,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             ...prev,
             clienteNombre: vacio(prev.clienteNombre) ? (datos.clienteNombre || prev.clienteNombre) : prev.clienteNombre,
             telefono: vacio(prev.telefono) ? (datos.telefono || prev.telefono) : prev.telefono,
-            descripcion: vacio(prev.descripcion) ? (datos.descripcion || prev.descripcion) : prev.descripcion,
+            descripcion: descConNumeroPresu(vacio(prev.descripcion) ? (datos.descripcion || prev.descripcion) : prev.descripcion, datos.numero || prev.numero),
             ...(vacio(prev.importe) && datos.importe ? { importe: datos.importe, masIva: datos.masIva, ivaPct: datos.ivaPct || prev.ivaPct || 21 } : {}),
             numero: !prev.id && datos.numero ? datos.numero : prev.numero,
             zona: vacio(prev.zona) ? (datos.zona || prev.zona) : prev.zona,
@@ -38070,7 +38070,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         ...prev,
         clienteNombre: datos.clienteNombre || prev.clienteNombre,
         telefono: datos.telefono || prev.telefono,
-        descripcion: datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion,
+        descripcion: descConNumeroPresu(datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion, datos.numero || prev.numero),
         importe: datos.importe || prev.importe,
         masIva: datos.importe ? datos.masIva : prev.masIva,
         ivaPct: datos.ivaPct || prev.ivaPct || 21,
@@ -42079,6 +42079,14 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
 // Del listado de vidrios salen el nº de fabricación (lote), el expediente y los presupuestos; de la hoja de corte, una ventana por UNIDAD
 // (posición, color, medidas, vidrio, sistema, mosquitera, cerradura, apertura exterior). No lee etiquetas ni dibujos, no crea pedidos y no toca el stock.
 const RAPIDO_MIN_ESPECIAL = 650; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
+// Al subir el presupuesto, la descripción de la obra empieza por su nº de presupuesto («6.812 Roman»); si ya lo lleva, no se repite
+function descConNumeroPresu(desc, num) {
+  const d = String(desc || "").trim(); const n = String(num || "").trim();
+  const dig = n.split("-")[0].replace(/\D/g, ""); if (dig.length < 3) return d;
+  if (d.replace(/(\d)\.(?=\d)/g, "$1").includes(dig)) return d;
+  const bonito = /^\d{4,}(-\d+)?$/.test(n) ? n.replace(/^(\d+)(\d{3})(?=$|-)/, "$1.$2") : n;
+  return d ? `${bonito} ${d}` : bonito;
+}
 const pptoBonito = (d) => { const s = String(d || "").replace(/\D/g, ""); return s.length > 3 ? `${s.slice(0, -3)}.${s.slice(-3)}` : s; };
 const mmRapido = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
 const normPosRapido = (p) => String(p || "").replace(/\s+/g, "").toUpperCase();
