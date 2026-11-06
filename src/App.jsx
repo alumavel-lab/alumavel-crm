@@ -47283,7 +47283,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
   const [grande, setGrande] = useState(null);
   const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
   const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra");
-  const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
+  const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+  // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
+  const leidas = useMemo(() => {
+    const ids = new Set(); const pp = new Set(); const porId = new Map();
+    indice.forEach((h) => { const v = h && h.ventana; if (v && !porId.has(String(v.id))) porId.set(String(v.id), v); });
+    toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
+    return { ids, pp };
+  }, [escaneos, puestoId, indice]);
+  const esLeida = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
     const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
@@ -47292,15 +47300,24 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
     // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
     Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
-    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], vistos: new Set(), grupos: new Set(), num: "", obra: "", fabs: new Set() }));
+    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], grupos: new Set(), num: "", obra: "", fabs: new Set(), fuente: "" }));
+    // 1) Las ventanas de CONTROL DEL DÍA (las mismas del Almacén del día, con su dibujo, medida y lo que lleva)
+    Object.entries(snapCD || {}).forEach(([k, sn]) => {
+      if (!sn || !toArray(sn.ventanas).length) return;
+      const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
+      const c = cajas.find((x) => !x.vs.length && (x.keys.has(limpia(k)) || bs.some((b) => x.bases.has(b)))); if (!c) return;
+      bs.forEach((b) => c.bases.add(b)); c.fuente = "cd"; c.obra = sn.nombre || c.obra;
+      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
+    });
+    // 2) Si Control del día aún no tiene esa obra: las ventanas de las ETIQUETAS
     const vistos = new Set();
     indice.forEach((h) => {
       const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id);
       const b = basePresuDia(v.num || (h.dueno && h.dueno.presupuesto)); const kd = limpia(h.dueno && h.dueno.key);
-      const c = cajas.find((x) => (b && x.bases.has(b)) || x.keys.has(kd)); if (!c) return;
-      c.vs.push(v); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
+      const c = cajas.find((x) => x.fuente !== "cd" && ((b && x.bases.has(b)) || x.keys.has(kd))); if (!c) return;
+      c.fuente = "et"; c.vs.push({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", dib: "", fab: h.lote.fab, tip: v.tipo || v.pos || "", ex: [], color: v.color || "", g: v.grupo || "", nLote: dibDe(v) }); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    return cajas.map((c, i) => ({ k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs: c.vs.sort((a, b2) => (dibDe(a) || 999) - (dibDe(b2) || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
+    return cajas.map((c, i) => { const vs = c.vs.sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => c.vs.length || c.nombre);
   }, [abierto, tv, planFab, manual, snapCD, dia, indice, leidas]);
   const columnas = (enTv) => {
@@ -47314,11 +47331,17 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
               <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md text-white ${completa ? "bg-emerald-600" : sinEt ? "bg-slate-500" : "bg-slate-900"}`}>
                 <div className={`${enTv ? "text-xl" : "text-sm"} font-extrabold leading-tight`}>{c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : c.nombre || c.obra}</div>
                 <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
-                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin etiquetas subidas" : `${c.hechas} de ${c.vs.length}${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
+                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin ventanas (falta la hoja de corte o las etiquetas)" : `${c.hechas} de ${c.vs.length} leídas aquí${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
               </button>
-              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
-                {c.vs.map((v) => { const ok = leidas.has(String(v.id)); const esUlt = ultimo && ultimo.h && ultimo.h.ventana && ultimo.h.ventana.id === v.id; return (
-                  <div key={v.id} className={`px-1.5 py-0.5 rounded font-bold border ${enTv ? "text-base" : "text-xs"} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
+                {c.vs.map((v) => { const ok = esLeida(c, v); const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
+                  <div key={v.id} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                    {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
+                    <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                    {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
+                    {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
+                    {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                  </div>
                 ); })}
               </div>
             </div>
