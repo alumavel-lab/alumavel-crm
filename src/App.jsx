@@ -41531,11 +41531,11 @@ function agruparEtiquetasFab(paginas) {
     const posRaw = r[1].trim().replace(/\s+/g, " ");
     const multi = posRaw.match(/^([A-Z]\d{1,3})\.(\d{2,4})((?:,\d{2,4})+)$/);
     const posiciones = multi ? [`${multi[1]}.${multi[2]}`, ...multi[3].split(",").filter(Boolean).map((x) => `${multi[1]}.${x}`)] : [posRaw];
-    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
+    const exp = (texto.match(/\bEXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1] || ""; // «EXPEDIENTE 1072» o «EXP 823»
     const col = texto.match(/-\s*F[A-Za-z]*:?[\d.]*\s+((?:[A-Z]{2,4}-)?\d{3,5})\s+(\S+)/);
     // Vivienda ("1º IZQ", "BAJO"…) y nombre del cliente de la etiqueta: sirven para no mezclar viviendas en un caballete
-    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/i);
-    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
+    const evm = texto.match(/\bEXP(?:EDIENTE)?\.?\s*\d+\s+([\s\S]*?)\s*Long:/i);
+    const viv = (evm ? evm[1] : ((texto.match(/\bEXP(?:EDIENTE)?\.?\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
     const nom = texto.match(/DIMEN\.REF:\s*[\d.]+\s*mm\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]*?)\s+(?:[A-Z]{1,4}|V)\s+[\d-]+/);
     const grupo = [exp, viv].filter(Boolean).join(" ");
     const cliente = nom ? nom[1].trim() : "";
