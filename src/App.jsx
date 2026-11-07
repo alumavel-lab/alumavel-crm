@@ -19941,6 +19941,7 @@ function PanelesPendientes({ cristales = [] }) {
                     {(x.estado || "pendiente") === "pendiente"
                       ? <button onClick={() => actualizar(x.id, { estado: "cortado", fechaCortado: hoy })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90">Marcar cortado</button>
                       : <><span className="text-xs font-semibold text-emerald-700">Cortado el {fmtDate(x.fechaCortado)}</span><button onClick={() => actualizar(x.id, { estado: "pendiente", fechaCortado: "" })} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-300">Volver a pendiente</button></>}
+                    <button onClick={() => imprimirEtiquetaPanel(x, (obraDe(x.expediente) || {}).nombre || "")} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-400 bg-white">🖨 Etiqueta</button>
                     <label className="flex items-center gap-1 text-xs text-slate-600">Sitio / carro:
                       <input list="sitios-paneles" defaultValue={x.sitio || ""} onBlur={(e) => { if (e.target.value !== (x.sitio || "")) actualizar(x.id, { sitio: e.target.value.trim() }); }} placeholder="ej. Carro paneles, mesa de corte" className="border border-slate-300 rounded-md px-2 py-1 text-xs w-48" />
                     </label>
@@ -55349,6 +55350,43 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
 // Sitio en los carros para la siguiente pieza de una obra. La OBRA VA COMPLETA EN UN CARRO: al empezarla se elige un carro con sitio para
 // todas sus piezas (primero el de las obras del mismo día del planning) y ese sitio queda reservado; si ninguno la coge entera, el que tenga más
 // sitio (y se avisa: partida = true). pendPorPpto = piezas que le faltan por cortar a cada obra (incluida la que se va a cortar ahora).
+// A qué CARRO va cada perfil: el elegido en Configuración o, si no, por su nombre
+const AUX_RE_MOSQ = /mosquit|MPLX|M05904/i;
+function auxGrupoDe(cfgRef, nombre, ref) {
+  if (cfgRef && cfgRef.grupo) return cfgRef.grupo;
+  const t = `${(cfgRef && cfgRef.nombre) || ""} ${nombre || ""} ${ref || ""}`;
+  if (/solap/i.test(t)) return "solape";
+  if (/gu[ií]a|cabeza|caj[oó]n\s*mosq/i.test(t) || AUX_RE_MOSQ.test(t)) return "guias";
+  return "batiente";
+}
+// Reparto por TIPO de carro (solo si hay carros marcados para ese tipo en Configuración):
+//  · solape: cada hueco = una vivienda (presupuesto) completa
+//  · batiente (y el resto): cada hueco = una vivienda, máximo 10 piezas; si tiene más, sigue en el hueco siguiente
+//  · guias (guías de persiana y mosquitera, cabezas de mosquitera): cada hueco = 3 ventanas si llevan mosquitera, 6 si no
+function auxSitioPorGrupo(cfg, est, p, grupo, ventanasConMosq) {
+  const carros = toArray(cfg.carros).filter((c) => c && c.grupo === grupo);
+  if (!carros.length) return null;
+  const ids = new Set(carros.map((c) => c.id));
+  const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro && ids.has(e.carro));
+  const enHueco = (cid, h) => regs.filter((e) => e.carro === cid && e.hueco === h);
+  const vent = (x) => `${x.ppto}|${x.ventanaPos || x.modelo || ""}`;
+  const huecos = []; carros.forEach((c) => { const n = parseInt(c.huecos, 10) || 0; for (let h = 1; h <= n; h++) huecos.push({ c, h, oc: enHueco(c.id, h) }); });
+  const cabe = (x) => {
+    if (!x.oc.length) return true;
+    if (String(x.oc[0].ppto) !== String(p.ppto)) return false; // un hueco = una sola vivienda/presupuesto
+    if (grupo === "solape") return true;
+    if (grupo === "batiente") return x.oc.length < 10;
+    const vs = new Set(x.oc.map(vent)); if (vs.has(vent(p))) return true;
+    const conMosq = [...vs, vent(p)].some((v) => ventanasConMosq && ventanasConMosq.has(v)) || x.oc.some((e) => AUX_RE_MOSQ.test(`${e.nombre} ${e.ref}`)) || AUX_RE_MOSQ.test(`${p.nombre} ${p.ref}`);
+    return vs.size < (conMosq ? 3 : 6);
+  };
+  const out = (x) => ({ carro: x.c.id, carroNombre: x.c.nombre, hueco: x.h, tipoCarro: grupo }); // (no «grupo»: ese campo es la vivienda de la pieza)
+  const suyos = huecos.filter((x) => x.oc.length && String(x.oc[0].ppto) === String(p.ppto));
+  const enSuyo = suyos.find(cabe); if (enSuyo) return out(enSuyo);
+  // hueco vacío: mejor el siguiente al último de esta vivienda (que quede junta), si no el primero vacío
+  if (suyos.length) { const u = suyos[suyos.length - 1]; const sig = huecos.find((x) => x.c.id === u.c.id && x.h > u.h && !x.oc.length); if (sig) return out(sig); }
+  const vacio = huecos.find((x) => !x.oc.length); return vacio ? out(vacio) : null;
+}
 function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
   const carros = cfg.carros;
   const regs = Object.values(est || {}).filter((e) => e && e.cortada && e.carro);
@@ -55380,6 +55418,51 @@ function auxSitioLibre(cfg, est, ppto, pptosMismoDia = [], pendPorPpto = {}) {
   const mejor = [...carros].sort((x, y) => libreEfectivo(y) - libreEfectivo(x)).find((c) => huecoLibre(c.id, ppto));
   if (mejor) return { ...huecoLibre(mejor.id, ppto), partida: true, necesita };
   return null;
+}
+// Etiqueta de un PANEL (impresora de etiquetas, solo negro): expediente/presupuesto, medida grande, tipo y color, vivienda y sitio
+function imprimirEtiquetaPanel(x, obraNombre = "") {
+  const esc = (t) => String(t == null ? "" : t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const exp = numsExpediente(x.expediente)[0] || x.expediente || "";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Panel</title><style>@page{size:100mm 50mm;margin:0}body{margin:0;font-family:Arial,sans-serif}.e{width:96mm;height:46mm;padding:2mm;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between}.a{font-size:13pt;font-weight:900}.m{font-size:24pt;font-weight:900;line-height:1}.s{font-size:9pt}.b{border:2px solid #000;padding:1mm 2mm;font-weight:900;font-size:11pt;display:inline-block}</style></head><body><div class="e"><div class="a">PANEL ${esc(x.tipo || "")}${x.presupuesto ? ` · Ppto ${esc(x.presupuesto)}` : ""}${exp ? ` · EXP ${esc(exp)}` : ""}</div><div class="m">${esc(x.ancho)} × ${esc(x.alto)} mm</div><div class="s">${esc([x.color, x.espesor ? `${x.espesor} mm` : "", x.ref ? `Viv. ${x.ref}` : "", (parseFloat(x.cantidad) || 1) > 1 ? `${x.cantidad} uds` : ""].filter(Boolean).join(" · "))}</div><div class="s">${esc(obraNombre || "")}</div>${x.sitio ? `<div class="b">${esc(x.sitio)}</div>` : ""}</div></body></html>`;
+  try { const fr = document.createElement("iframe"); fr.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0"; document.body.appendChild(fr); const d = fr.contentWindow.document; d.open(); d.write(html); d.close(); setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { /* nada */ } setTimeout(() => fr.remove(), 60000); }, 300); } catch (e) { alert("No se pudo imprimir la etiqueta: " + ((e && e.message) || e)); }
+}
+// AUXILIARES · paneles de las obras que se están cortando (salen de «Paneles pendientes de cortar»; marcarlo aquí lo marca allí y al revés)
+function PanelesDeObrasAux({ obras }) {
+  const ctx = React.useContext(IncidenciasCristalCtx) || {};
+  const paneles = toArray(ctx.paneles); const guardar = ctx.savePaneles || (() => {});
+  const [abierto, setAbierto] = useState(true); const [verCortados, setVerCortados] = useState(false);
+  const pptos = new Set(); const exps = new Set(); const nomDe = {};
+  toArray(obras).forEach((g) => { const b = basePresuDia(g.ppto); if (b.length >= 3) { pptos.add(b); nomDe[b] = g.obra || ""; } (String(g.obra || "").match(/\bexp(?:ediente)?\.?\s*(\d{2,4})\b/gi) || []).map((m) => m.replace(/\D/g, "")).forEach((e) => { exps.add(String(e)); nomDe[`e${e}`] = g.obra || ""; }); }); // solo «EXP 823» / «Expediente 1072» (no los números de presupuesto)
+  const deEstas = paneles.filter((x) => { const b = basePresuDia(x.presupuesto); return (b && pptos.has(b)) || numsExpediente(x.expediente).some((e) => exps.has(String(e))); });
+  const lista = deEstas.filter((x) => verCortados || (x.estado || "pendiente") === "pendiente").sort((a, b) => String(a.presupuesto || a.expediente).localeCompare(String(b.presupuesto || b.expediente), "es", { numeric: true }));
+  const nPend = deEstas.filter((x) => (x.estado || "pendiente") === "pendiente").length;
+  const hoy = new Date().toISOString().slice(0, 10);
+  const actualizar = (id, patch) => guardar(paneles.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const nombre = (x) => nomDe[basePresuDia(x.presupuesto)] || nomDe[`e${numsExpediente(x.expediente)[0]}`] || "";
+  return (
+    <div className="rounded-lg border-2 border-amber-300 bg-amber-50/60 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => setAbierto(!abierto)} className="text-sm font-extrabold text-amber-900">{abierto ? "▼" : "▶"} 🟫 Paneles de estas obras · {nPend} pendiente{nPend === 1 ? "" : "s"} de cortar</button>
+        <label className="ml-auto text-xs text-slate-600 flex items-center gap-1"><input type="checkbox" checked={verCortados} onChange={(e) => setVerCortados(e.target.checked)} /> ver también los cortados</label>
+      </div>
+      {abierto && (!lista.length ? <div className="text-xs text-slate-500 mt-1">{deEstas.length ? "Todos los paneles de estas obras están cortados." : "Ninguna de estas obras tiene paneles en «Paneles pendientes de cortar»."}</div> : (
+        <div className="mt-2 space-y-1">
+          {lista.map((x) => { const pend = (x.estado || "pendiente") === "pendiente"; return (
+            <div key={x.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm ${pend ? "bg-white border-amber-200" : "bg-emerald-50 border-emerald-200 text-slate-500"}`}>
+              <b>{x.presupuesto ? `Ppto ${x.presupuesto}` : `EXP ${numsExpediente(x.expediente)[0] || x.expediente || "—"}`}</b>
+              <span>{x.tipo || "Panel"} · <b>{x.ancho} × {x.alto}</b> mm{(parseFloat(x.cantidad) || 1) > 1 ? ` · ${x.cantidad} uds` : ""}</span>
+              {x.color && <span className="text-slate-600">{x.color}</span>}{x.ref && <span className="text-slate-600">viv. {x.ref}</span>}
+              <span className="ml-auto flex items-center gap-1">
+                {pend ? <button type="button" onClick={() => actualizar(x.id, { estado: "cortado", fechaCortado: hoy })} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-bold px-2.5 py-1 rounded">✓ Marcar cortado</button>
+                  : <><span className="text-xs font-semibold text-emerald-700">Cortado {fmtDate(x.fechaCortado)}</span><button type="button" onClick={() => actualizar(x.id, { estado: "pendiente", fechaCortado: "" })} className="text-xs underline">deshacer</button></>}
+                <button type="button" onClick={() => imprimirEtiquetaPanel(x, nombre(x))} className="text-xs font-bold px-2 py-1 rounded border border-slate-400 bg-white">🖨 Etiqueta</button>
+              </span>
+            </div>
+          ); })}
+        </div>
+      ))}
+    </div>
+  );
 }
 // Etiqueta de auxiliares (impresora térmica: solo negro). Lo importante en grande y en negrita; el carro y la posición en un recuadro grueso
 // (o en negativo si se elige: depende de que el navegador imprima fondos). Márgenes y tamaño ajustables en Auxiliares → Configuración.
@@ -55474,6 +55557,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
               <label className="flex items-center gap-0.5 text-xs font-bold text-rose-700" title="Milímetros que se RESTAN a la medida de la hoja de corte en cada pieza de este perfil">−<input type="number" min="0" step="0.5" value={r.menos ?? ""} onChange={(e) => upRef(i, { menos: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
               <label className="flex items-center gap-0.5 text-xs font-bold text-emerald-700" title="Milímetros que se SUMAN a la medida de la hoja de corte en cada pieza de este perfil">+<input type="number" min="0" step="0.5" value={r.mas ?? ""} onChange={(e) => upRef(i, { mas: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
+              <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}>{[["", "Automático (por el nombre)"], ["solape", "Solapes"], ["batiente", "Batientes y resto"], ["guias", "Guías y mosquiteras"]].map(([v, t]) => <option key={v} value={v}>{v ? `Carro: ${t}` : `Carro: ${t}`}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -55488,6 +55572,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
               <span className="text-xs text-slate-500">huecos</span>
+              <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-48"}><option value="">Para todo (general)</option><option value="solape">Solapes · 1 vivienda por hueco</option><option value="batiente">Batientes y resto · 1 vivienda por hueco (máx. 10)</option><option value="guias">Guías y mosquiteras · 3 ventanas por hueco (6 sin mosquitera)</option></select>
               <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -55532,7 +55617,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cfg = useMemo(() => {
     const base = auxCfgDe(cfgRaw);
     const delAlmacen = [];
-    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20) })));
+    const grupoGuardado = (id) => (toArray(base.carros).find((x) => x && x.id === id) || {}).grupo || "";
+    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20), grupo: grupoGuardado(`${a.id}|${c.id}`) })));
     return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
@@ -55780,8 +55866,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
     // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
     const grupoCarro = perfilDia === "elegidas" && pptosImp.includes(p.ppto) ? [...pptosImp] : perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
-    const sitio = auxSitioLibre({ ...cfg, porHueco: porHuecoAux }, est, p.ppto, grupoCarro, pendPorPpto);
-    if (!sitio) { alert("Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
+    const grupoP = auxGrupoDe(refDe(p.ref), p.nombre, p.ref);
+    const ventMosq = new Set([...piezas, ...Object.values(est || {}).filter(Boolean)].filter((x) => x && String(x.ppto) === String(p.ppto) && AUX_RE_MOSQ.test(`${x.nombre} ${x.ref}`)).map((x) => `${x.ppto}|${x.ventanaPos || x.modelo || ""}`));
+    const hayCarrosGrupo = toArray(cfg.carros).some((c) => c && c.grupo === grupoP);
+    const sitio = (hayCarrosGrupo ? auxSitioPorGrupo(cfg, est, p, grupoP, ventMosq) : null)
+      || (() => { const gen = toArray(cfg.carros).filter((c) => c && !c.grupo); return auxSitioLibre({ ...cfg, porHueco: porHuecoAux, carros: gen.length ? gen : cfg.carros }, est, p.ppto, grupoCarro, pendPorPpto); })();
+    if (!sitio) { alert(hayCarrosGrupo ? `Los carros de ${grupoP === "solape" ? "SOLAPES" : grupoP === "guias" ? "GUÍAS Y MOSQUITERAS" : "BATIENTES Y RESTO"} están llenos. Añade huecos o un carro de ese tipo en «Configuración».` : "Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
@@ -56018,6 +56108,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       )}
       {msg && <div className="px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-sky-800 text-sm font-semibold whitespace-pre-line">{msg}</div>}
       {admin && verConfig && <AuxConfigPanel cfg={cfg} onGuardar={guardarCfg} />}
+      <PanelesDeObrasAux obras={obrasAux} />
       {hojasLista.length > 0 && (
         <details className="rounded-md border border-slate-200 bg-white px-3 py-1.5">
         <summary className="cursor-pointer text-sm font-semibold text-slate-600">📄 Hojas de corte cargadas ({hojasLista.length})</summary>
