@@ -55628,7 +55628,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
             <div key={c.id || i} className="flex flex-wrap items-center gap-2">
               <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
-              <span className="text-xs text-slate-500">huecos</span>
+              <span className="text-xs text-slate-500">estantes (huecos)</span>
               <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-56"}><option value="">Para todo (general)</option>{auxTiposCarro(b).map((tc) => <option key={tc.id} value={tc.id}>{tc.nombre} · {AUX_REGLAS[tc.regla] || ""}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
@@ -55690,8 +55690,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cfg = useMemo(() => {
     const base = auxCfgDe(cfgRaw);
     const delAlmacen = [];
-    const grupoGuardado = (id) => (toArray(base.carros).find((x) => x && x.id === id) || {}).grupo || "";
-    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20), grupo: grupoGuardado(`${a.id}|${c.id}`) })));
+    const guardado = (id) => toArray(base.carros).find((x) => x && x.id === id) || {};
+    // carros del almacén de Auxiliares: los estantes (huecos) y el tipo que se pongan en Configuración mandan; si no, 2 × su capacidad
+    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => { const g = guardado(`${a.id}|${c.id}`); delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: parseInt(g.huecos, 10) > 0 ? parseInt(g.huecos, 10) : 2 * (parseInt(c.capacidad, 10) || 20), grupo: g.grupo || "" }); }));
     return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
