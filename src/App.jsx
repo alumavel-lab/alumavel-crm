@@ -7148,6 +7148,7 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
+            esAdmin: !!isAdmin,
             paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
@@ -20149,6 +20150,18 @@ function AlmacenPersianas() {
           <button onClick={() => abrir("nuevo")} className="flex items-center gap-1 text-xs font-semibold text-white bg-[#2E8B57] hover:opacity-90 px-3 py-2 rounded-lg"><Plus size={13} /> Nuevo almacén</button>
           <button onClick={() => abrir("duplicar")} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">Duplicar este</button>
           <button onClick={() => abrir("editar")} className="text-xs font-semibold text-slate-700 border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50">Editar</button>
+          {ctx.esAdmin && <button onClick={() => {
+            // VACIAR: borra TODAS las persianas de este almacén (colocadas, pendientes de ubicar y las ya salidas). Los carros se quedan.
+            const delAlm = todosItems.filter((x) => almacenDe(x) === almacen.id);
+            if (!delAlm.length) { alert(`El almacén «${almacen.nombre}» ya está vacío.`); return; }
+            const txt = window.prompt(`⚠ VACIAR «${almacen.nombre}»\n\nSe borran ${delAlm.length} persianas (colocadas, pendientes de ubicar y ya salidas). Los carros se quedan.\nAntes se descarga una COPIA (archivo .json) por si hay que recuperarlas.\n\nEscribe BORRAR para confirmar:`, "");
+            if (String(txt || "").trim().toUpperCase() !== "BORRAR") return;
+            try { const blob = new Blob([JSON.stringify({ almacen: almacen.nombre, fecha: new Date().toISOString(), persianas: delAlm }, null, 1)], { type: "application/json" }); const a2 = document.createElement("a"); a2.href = URL.createObjectURL(blob); a2.download = `copia-persianas-${String(almacen.nombre).replace(/[^\w-]+/g, "_")}-${new Date().toISOString().slice(0, 10)}.json`; document.body.appendChild(a2); a2.click(); a2.remove(); } catch (e) { if (!window.confirm("No se pudo descargar la copia. ¿Borrar igualmente?")) return; }
+            window.__permitirBorradoMasivoHasta = Date.now() + 60000; // borrado masivo confirmado con «BORRAR»
+            const ids = new Set(delAlm.map((x) => x.id));
+            saveItems(todosItems.filter((x) => !ids.has(x.id)));
+            alert(`Hecho: ${delAlm.length} persianas borradas de «${almacen.nombre}». La copia se ha descargado en tu ordenador.`);
+          }} className="text-xs font-semibold text-white bg-rose-700 hover:bg-rose-800 px-3 py-2 rounded-lg">🗑 Vaciar este almacén</button>}
         </div>
       </div>
 
