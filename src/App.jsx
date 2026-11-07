@@ -55555,7 +55555,7 @@ function imprimirAux(lista, cfg) {
     <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb"${String(p.ejeTxt).length > 10 ? ` style="font-size:${f(4.2)}"` : ""}>${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
     ${p.color || p.notaEt ? `<div class="r2">${esc(p.color || "")}${p.notaEt ? `${p.color ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
-    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
+    <div class="sitio"><span class="lugar">${esc(`${String(p.carroNombre || "").split("·").pop().trim().toUpperCase()} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
