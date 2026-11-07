@@ -55355,12 +55355,13 @@ const AUX_RE_MOSQ = /mosquit|MPLX|M05904/i;
 function auxGrupoDe(cfgRef, nombre, ref) {
   if (cfgRef && cfgRef.grupo) return cfgRef.grupo;
   const t = `${(cfgRef && cfgRef.nombre) || ""} ${nombre || ""} ${ref || ""}`;
+  if (/postig|contraventana/i.test(t)) return "postigo";
   if (/solap/i.test(t)) return "solape";
   if (/gu[ií]a|cabeza|caj[oó]n\s*mosq/i.test(t) || AUX_RE_MOSQ.test(t)) return "guias";
   return "batiente";
 }
 // Reparto por TIPO de carro (solo si hay carros marcados para ese tipo en Configuración):
-//  · solape: cada hueco = una vivienda (presupuesto) completa
+//  · solape y postigo (cada uno en su carro): cada hueco = una vivienda (presupuesto) completa
 //  · batiente (y el resto): cada hueco = una vivienda, máximo 10 piezas; si tiene más, sigue en el hueco siguiente
 //  · guias (guías de persiana y mosquitera, cabezas de mosquitera): cada hueco = 3 ventanas si llevan mosquitera, 6 si no
 function auxSitioPorGrupo(cfg, est, p, grupo, ventanasConMosq) {
@@ -55374,7 +55375,7 @@ function auxSitioPorGrupo(cfg, est, p, grupo, ventanasConMosq) {
   const cabe = (x) => {
     if (!x.oc.length) return true;
     if (String(x.oc[0].ppto) !== String(p.ppto)) return false; // un hueco = una sola vivienda/presupuesto
-    if (grupo === "solape") return true;
+    if (grupo === "solape" || grupo === "postigo") return true;
     if (grupo === "batiente") return x.oc.length < 10;
     const vs = new Set(x.oc.map(vent)); if (vs.has(vent(p))) return true;
     const conMosq = [...vs, vent(p)].some((v) => ventanasConMosq && ventanasConMosq.has(v)) || x.oc.some((e) => AUX_RE_MOSQ.test(`${e.nombre} ${e.ref}`)) || AUX_RE_MOSQ.test(`${p.nombre} ${p.ref}`);
@@ -55557,7 +55558,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
               <label className="flex items-center gap-0.5 text-xs font-bold text-rose-700" title="Milímetros que se RESTAN a la medida de la hoja de corte en cada pieza de este perfil">−<input type="number" min="0" step="0.5" value={r.menos ?? ""} onChange={(e) => upRef(i, { menos: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
               <label className="flex items-center gap-0.5 text-xs font-bold text-emerald-700" title="Milímetros que se SUMAN a la medida de la hoja de corte en cada pieza de este perfil">+<input type="number" min="0" step="0.5" value={r.mas ?? ""} onChange={(e) => upRef(i, { mas: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
-              <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}>{[["", "Automático (por el nombre)"], ["solape", "Solapes"], ["batiente", "Batientes y resto"], ["guias", "Guías y mosquiteras"]].map(([v, t]) => <option key={v} value={v}>{v ? `Carro: ${t}` : `Carro: ${t}`}</option>)}</select>
+              <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}>{[["", "Automático (por el nombre)"], ["solape", "Solapes"], ["postigo", "Postigos"], ["batiente", "Batientes y resto"], ["guias", "Guías y mosquiteras"]].map(([v, t]) => <option key={v} value={v}>{v ? `Carro: ${t}` : `Carro: ${t}`}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -55572,7 +55573,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
               <span className="text-xs text-slate-500">huecos</span>
-              <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-48"}><option value="">Para todo (general)</option><option value="solape">Solapes · 1 vivienda por hueco</option><option value="batiente">Batientes y resto · 1 vivienda por hueco (máx. 10)</option><option value="guias">Guías y mosquiteras · 3 ventanas por hueco (6 sin mosquitera)</option></select>
+              <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-48"}><option value="">Para todo (general)</option><option value="solape">Solapes · 1 vivienda por hueco</option><option value="postigo">Postigos · 1 vivienda por hueco</option><option value="batiente">Batientes y resto · 1 vivienda por hueco (máx. 10)</option><option value="guias">Guías y mosquiteras · 3 ventanas por hueco (6 sin mosquitera)</option></select>
               <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -55871,7 +55872,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const hayCarrosGrupo = toArray(cfg.carros).some((c) => c && c.grupo === grupoP);
     const sitio = (hayCarrosGrupo ? auxSitioPorGrupo(cfg, est, p, grupoP, ventMosq) : null)
       || (() => { const gen = toArray(cfg.carros).filter((c) => c && !c.grupo); return auxSitioLibre({ ...cfg, porHueco: porHuecoAux, carros: gen.length ? gen : cfg.carros }, est, p.ppto, grupoCarro, pendPorPpto); })();
-    if (!sitio) { alert(hayCarrosGrupo ? `Los carros de ${grupoP === "solape" ? "SOLAPES" : grupoP === "guias" ? "GUÍAS Y MOSQUITERAS" : "BATIENTES Y RESTO"} están llenos. Añade huecos o un carro de ese tipo en «Configuración».` : "Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
+    if (!sitio) { alert(hayCarrosGrupo ? `Los carros de ${grupoP === "solape" ? "SOLAPES" : grupoP === "postigo" ? "POSTIGOS" : grupoP === "guias" ? "GUÍAS Y MOSQUITERAS" : "BATIENTES Y RESTO"} están llenos. Añade huecos o un carro de ese tipo en «Configuración».` : "Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
