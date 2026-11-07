@@ -55158,6 +55158,14 @@ const auxEjeKey = (p) => String(`${p.ppto}_${p.modelo}`).replace(/[.#$/[\]\s]+/g
 const auxPasosTxt = (rc, reg) => auxPasosDe(rc, reg).join(" + ");
 const AUX_EJE_DEFECTO = "283"; // eje habitual del bocado cuando no se ha escrito otro
 const auxEjeTxt = (rc, reg) => {
+  // GUÍA DE PERSIANA: siempre la MANO (lado de la persiana donde va el eje) y la distancia del EJE, lleve o no bocado esa guía
+  const nomG = `${(reg && reg.nombre) || ""} ${(rc && rc.nombre) || ""}`;
+  if (reg && /gu[ií]a/i.test(nomG) && !/mosquit|MPLX|M05904/i.test(`${nomG} ${reg.ref || ""}`)) {
+    const ej = auxEjesDe(reg); const dos = ej.I && ej.D;
+    const mano = dos ? (reg.n === 2 ? (reg.k === 1 ? "IZQ" : "DCHA") : "IZQ+DCHA") : ej.I ? "IZQ" : ej.D ? "DCHA" : reg.ejeLado === "izquierda" ? "IZQ" : reg.ejeLado === "derecha" ? "DCHA" : "";
+    const val = dos ? (reg.n === 2 ? (reg.k === 1 ? ej.I : ej.D) : `${ej.I}/${ej.D}`) : (ej.I || ej.D || ej.sin || AUX_EJE_DEFECTO);
+    return `${mano ? `${mano} · ` : ""}EJE ${val}`;
+  }
   if (!auxPasosDe(rc, reg).some((n) => /bocado/i.test(n))) return "";
   const ej = auxEjesDe(reg || {});
   if (ej.I && ej.D) return reg.n === 2 ? (reg.k === 1 ? `EJE IZQUIERDA ${ej.I}` : `EJE DERECHA ${ej.D}`) : `EJE IZQ. ${ej.I} · DER. ${ej.D}`;
@@ -55544,7 +55552,7 @@ function imprimirAux(lista, cfg) {
   </style></head><body><div class="et">
     <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
-    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb">${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
+    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb"${String(p.ejeTxt).length > 10 ? ` style="font-size:${f(4.2)}"` : ""}>${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
     ${p.color || p.notaEt ? `<div class="r2">${esc(p.color || "")}${p.notaEt ? `${p.color ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
     <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
