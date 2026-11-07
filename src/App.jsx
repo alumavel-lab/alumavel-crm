@@ -55679,6 +55679,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const hojas = useObjetoFb("auxiliaresHojas");
   const hojasCDAux = useObjetoFb("controlDiaHojaCorte"); // hojas de corte de Control del día (con el enlace del PDF): para releerlas aquí
   const est = useObjetoFb("auxiliaresPiezas");
+  const estBase = est; // (alias: dentro de «cortar» se puede usar otro estado, el de una tanda en curso)
   const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
   const barraCfg = useObjetoFb("auxiliaresBarra"); // { len, sierra, despunte } en mm
   const porHuecoAux = Math.max(1, parseInt(barraCfg && barraCfg.porHueco, 10) || 7); // piezas que caben en cada hueco de un carro
@@ -55935,9 +55936,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       </form>
     );
   };
-  const cortar = async (p, ctx) => {
-    if (!p) return;
-    const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
+  const cortar = async (p, ctx, opt = {}) => {
+    if (!p) return null;
+    const est = opt.est || estBase; // en una tanda de varias, lo cortado en esta tanda cuenta ya para el hueco
+    const pendPorPpto = {}; sinCortar.forEach((x) => { if (!est[x.id] || !est[x.id].cortada) pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
     // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
     const grupoCarro = perfilDia === "elegidas" && pptosImp.includes(p.ppto) ? [...pptosImp] : perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
     const grupoP = auxGrupoDe(refDe(p.ref), p.nombre, p.ref, cfg);
@@ -55951,7 +55953,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
-      imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
+      if (!opt.sinImprimir) imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
       try {
         let inf = barraSnap.current[p.id];
@@ -55964,8 +55966,20 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
-      pitidoCRM(true);
-    } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
+      if (!opt.sinImprimir) pitidoCRM(true);
+      return { reg, sitio };
+    } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); return null; }
+  };
+  // CORTAR VARIAS IGUALES DE GOLPE: se cortan una tras otra (cada una a su hueco) y TODAS sus etiquetas salen seguidas en una sola impresión
+  const cortarVarias = async (ps, ctx) => {
+    const lista = toArray(ps).filter((x) => x && !(estBase[x.id] && estBase[x.id].cortada)); if (!lista.length) return;
+    const estL = { ...(estBase || {}) }; const regs = [];
+    for (const p of lista) { const r = await cortar(p, ctx, { sinImprimir: true, est: estL }); if (!r) break; estL[p.id] = r.reg; regs.push(r.reg); }
+    if (!regs.length) return;
+    imprimirAux(regs.map((reg) => ({ ...reg, pasosTxt: auxPasosTxt(refDe(reg.ref), reg), ejeTxt: auxEjeTxt(refDe(reg.ref), reg) })), cfg);
+    const sitios = [...new Set(regs.map((x) => `${String(x.carroNombre || "").split("·").pop().trim()} · hueco ${x.hueco}`))];
+    setMsg(`✓ ${regs.length} × ${regs[0].nombre} ${auxMed(regs[0].lCorte)} mm cortadas · ${regs.length} etiquetas seguidas → ${sitios.slice(0, 8).join(" | ")}${sitios.length > 8 ? " …" : ""}${regs.length < lista.length ? ` · ⚠ paré en ${regs.length} de ${lista.length} (mira el aviso)` : ""}`);
+    pitidoCRM(true);
   };
   const reimprimir = (e0) => {
     const q = piezas.find((y) => y.id === e0.id); const ov = ejesOv && ejesOv[auxEjeKey(e0)];
@@ -56373,6 +56387,30 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
                       <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {(() => {
+                      // RESUMEN DE IGUALES: misma medida (mismo perfil y color) → se pueden cortar varias de golpe, con sus etiquetas seguidas
+                      const gr = {}; r.filas.forEach((x) => { if (est && est[x.id] && est[x.id].cortada) return; const k = String(Math.round((Number(x.lCorte) || 0) * 10)); (gr[k] = gr[k] || []).push(x); });
+                      const L = Object.values(gr).filter((xs) => xs.length >= 2).sort((a2, b2) => b2.length - a2.length || (Number(b2[0].lCorte) || 0) - (Number(a2[0].lCorte) || 0));
+                      if (!L.length) return null;
+                      return (
+                        <details open className="mt-1 mb-2 rounded-lg border border-indigo-300 bg-indigo-50/60 px-2 py-1">
+                          <summary className="cursor-pointer text-sm font-extrabold text-indigo-900">📋 Resumen de piezas iguales ({L.reduce((t, xs) => t + xs.length, 0)} piezas en {L.length} medida{L.length === 1 ? "" : "s"}): córtalas juntas</summary>
+                          <div className="mt-1 space-y-1">
+                            {L.map((xs) => { const kk = `${r.k}|${xs[0].lCorte}`; return (
+                              <div key={kk} className="flex flex-wrap items-center gap-2 bg-white rounded border border-indigo-200 px-2 py-1 text-sm">
+                                <b className="text-lg">{xs.length} ×</b><b className="text-lg">{auxMed(xs[0].lCorte)} mm</b>
+                                <span className="text-xs text-slate-500">{[...new Set(xs.map((x) => pptoBonito(x.ppto)))].slice(0, 6).join(", ")}{new Set(xs.map((x) => x.ppto)).size > 6 ? "…" : ""}</span>
+                                <span className="ml-auto flex items-center gap-1">
+                                  <span className="text-xs text-slate-600">de</span><input id={`nv-${kk}`} type="number" min="1" max={xs.length} defaultValue={Math.min(4, xs.length)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-sm text-right" />
+                                  <button type="button" onClick={() => { const el = document.getElementById(`nv-${kk}`); const nn = Math.max(1, Math.min(xs.length, parseInt(el && el.value, 10) || 1)); cortarVarias(xs.slice(0, nn), { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} className="text-xs font-bold px-2 py-1 rounded border-2 border-indigo-600 text-indigo-800 bg-white">✂ Cortar esas</button>
+                                  <button type="button" onClick={() => { if (xs.length < 6 || window.confirm(`¿Cortar las ${xs.length} piezas de ${auxMed(xs[0].lCorte)} mm y sacar sus ${xs.length} etiquetas seguidas?`)) cortarVarias(xs, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-bold px-2 py-1 rounded">✂ Cortar las {xs.length}</button>
+                                </span>
+                              </div>
+                            ); })}
+                          </div>
+                        </details>
+                      );
+                    })()}
                     {(r.recUsados || []).map((u) => (
                       <div key={u.rc.id} className="mt-2 rounded-lg border-2 border-amber-400 overflow-hidden">
                         <div className="bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1">
