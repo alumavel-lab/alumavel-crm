@@ -56946,7 +56946,33 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const pinsMovRaw = useObjetoFb("controlDiaPins");
   const pinsMov = useMemo(() => fusionaObra(pinsMovRaw), [pinsMovRaw, uxAProy]); // chinchetas movidas a mano: { claveObra: { idVentana: { pag, px, py } } }
   const notasTodasRaw = useObjetoFb("controlDiaNotas");
-  const notasTodas = useMemo(() => fusionaDias(notasTodasRaw), [notasTodasRaw, uxAProy]); // notas por día: { fecha: { claveObra: { idVentana: "texto" } } }
+  const notasTodas = useMemo(() => fusionaDias(notasTodasRaw), [notasTodasRaw, uxAProy]);
+  // PASO ÚNICO: todo lo guardado con la clave de un expediente de Uxcar que ya tiene proyecto se pasa al PROYECTO (si choca, gana el proyecto)
+  // y se borra la clave del expediente. Así no queda nada «con expediente» en Control del día.
+  const migradoUx = useRef("");
+  useEffect(() => {
+    const listos = [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw, hojasCDRaw, ventanasGuardadasRaw, pinsMovRaw].every((x) => x !== undefined);
+    if (!listos || !Object.keys(uxAProy).length) return;
+    const firma = JSON.stringify(uxAProy).length + "|" + [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw].map((o) => Object.keys(o || {}).length).join(",");
+    if (migradoUx.current === firma) return;
+    migradoUx.current = firma;
+    const up = {};
+    const porDia = { controlDia: marcasTodasRaw, controlDiaHoras: horasTodasRaw, controlDiaObras: asignTodasCDRaw, controlDiaNotas: notasTodasRaw };
+    Object.entries(porDia).forEach(([nodo, o]) => Object.entries(o || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([k, v]) => {
+      const c = canonK(k); if (c === k) return;
+      const delP = d[c];
+      up[`${nodo}/${f}/${c}`] = v && typeof v === "object" ? { ...v, ...(delP && typeof delP === "object" ? delP : {}) } : (delP !== undefined ? delP : v);
+      up[`${nodo}/${f}/${k}`] = null;
+    })));
+    const porObra = { controlDiaHojaCorte: hojasCDRaw, controlDiaVentanas: ventanasGuardadasRaw, controlDiaPins: pinsMovRaw };
+    Object.entries(porObra).forEach(([nodo, o]) => Object.entries(o || {}).forEach(([k, v]) => {
+      const c = canonK(k); if (c === k) return;
+      if (o[c] === undefined) up[`${nodo}/${c}`] = v;
+      else if (nodo === "controlDiaPins" && v && typeof v === "object") up[`${nodo}/${c}`] = { ...v, ...o[c] };
+      up[`${nodo}/${k}`] = null;
+    }));
+    if (Object.keys(up).length) fbUpdate(ref(fbDb), JSON.parse(JSON.stringify(up))).catch(() => { migradoUx.current = ""; });
+  }, [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw, hojasCDRaw, ventanasGuardadasRaw, pinsMovRaw, uxAProy]); // (notas por día: { fecha: { claveObra: { idVentana: "texto" } } })
   const [colocando, setColocando] = useState(null); // { key, id }: se está colocando una chincheta tocando en el folio
   const intentadasCarga = useRef({});
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
