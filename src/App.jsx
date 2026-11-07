@@ -55651,6 +55651,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  // Presupuestos con su COMPACTO (persiana) ya llegado al almacén de persianas (y sin colocar todavía)
+  const pptosCompactoLlegado = useMemo(() => { const set = new Set(); toArray(ctxAux.persianasAlmacen).forEach((x) => { if (!x || x.entregada || x.colocadaVentana) return; String(presupuestoDePersiana(x, ctxAux) || "").split(/[,·;]/).forEach((t) => { const b = basePresuDia(t); if (b.length >= 3) set.add(b); }); }); return set; }, [ctxAux.persianasAlmacen, ctxAux.pedidosPersianas]);
   const pptosGuiaProv = useMemo(() => pptosConGuiaProveedor(ctxAux), [ctxAux.pedidosCrm, ctxAux.uxPedidosCtx, ctxAux.persianasAlmacen, ctxAux.proyectos, ctxAux.uxExpedientes]); // eslint-disable-line react-hooks/exhaustive-deps
   const ejesOv = useObjetoFb("auxiliaresEjes"); // eje (mm) y lado escritos a mano, por obra y modelo: mandan sobre lo leído de la hoja
   const { piezas: piezasBase, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
@@ -56192,15 +56194,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         )}
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar <span className="font-normal text-slate-500">({pendientes.length}{q ? ` de ${todasPend}` : ""})</span></div>
+        <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar {(() => { const enPlan = obrasAux.filter((g) => g.dia); const comp = obrasAux.filter((g) => !g.dia && pptosCompactoLlegado.has(basePresuDia(g.ppto))); const nP = enPlan.reduce((a2, g) => a2 + g.piezas.length, 0), nC = comp.reduce((a2, g) => a2 + g.piezas.length, 0); return <span className="font-normal text-slate-600">· <b className="text-slate-900">📅 planning: {nP}</b> piezas ({enPlan.length} obras) · <b className="text-sky-800">📦 compacto llegado: {nC}</b> ({comp.length} obras) <span className="text-slate-400">· total con todo: {pendientes.length}{q ? ` de ${todasPend}` : ""}</span></span>; })()}</div>
         {solapesConMosq.length > 0 && (
-          <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
-            <b>✂ Con la mosquitera va el solape:</b>
+          <details className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
+            <summary className="cursor-pointer"><b>✂ Con la mosquitera va el solape</b> · {solapesConMosq.length} aviso{solapesConMosq.length === 1 ? "" : "s"} (pulsa para verlos)</summary>
             <ul className="mt-1 space-y-0.5 text-xs">
               {solapesConMosq.map((x) => <li key={x.ppto}>Presupuesto {pptoBonito(x.ppto)}{x.obra ? ` · ${x.obra}` : ""}: {x.enHoja ? <>corta también el <b>solape</b> ({x.pend} sin cortar)</> : x.desactivado ? <b>el solape está en la hoja, pero su referencia está DESACTIVADA en Configuración: actívala para que salga a cortar</b> : <b>no encuentro el solape en lo leído de la hoja. Si en el papel sí está, su código no es el de Configuración ({x.codigos.join(", ") || "ninguno"}): pon el código que trae vuestra hoja y vuelve a subirla</b>}</li>)}
             </ul>
             {q && pptosMosqFiltro.size > 0 && <div className="mt-1 text-[11px] text-amber-800">Los solapes de esas obras salen en la lista aunque no coincidan con el filtro.</div>}
-          </div>
+          </details>
         )}
         {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
         {orden === "ventana" ? (() => {
@@ -56230,7 +56232,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               </div>
             );
           };
-          const sinDia = obrasAux.filter((g) => !g.dia);
+          const sinDiaTodas = obrasAux.filter((g) => !g.dia);
+          const sinDiaCompacto = sinDiaTodas.filter((g) => pptosCompactoLlegado.has(basePresuDia(g.ppto)));
+          const sinDia = sinDiaTodas.filter((g) => !pptosCompactoLlegado.has(basePresuDia(g.ppto))); // el resto (ni planning ni compacto): oculto en un desplegable
           // «Cortar por perfil»: todas las piezas de las obras de ese día juntas por referencia y de mayor a menor medida; cada una va al hueco de su obra
           const vistaPerfil = (gs, dias) => {
             const refs = []; gs.flatMap((g) => g.piezas).forEach((p) => { const k = `${p.ref}|${p.nombre}|${p.color || ""}`; let r = refs.find((x) => x.k === k); if (!r) { r = { k, p, filas: [] }; refs.push(r); } r.filas.push(p); });
@@ -56450,11 +56454,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   ); })}
                 </div>
               ))}
+              {sinDiaCompacto.length > 0 && (
+                <div className="rounded-xl border-2 border-sky-400 bg-sky-50/50 p-2">
+                  <div className="text-base font-extrabold text-sky-900 mb-1">📦 Compacto llegado (sin día en el planning) · {sinDiaCompacto.length} obra{sinDiaCompacto.length === 1 ? "" : "s"} · {sinDiaCompacto.reduce((a2, g) => a2 + g.piezas.length, 0)} piezas</div>
+                  <div className="text-xs text-sky-800 mb-2">Su persiana (compacto) ya está en el almacén de persianas: se pueden ir cortando sus auxiliares.</div>
+                  <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDiaCompacto.map(tarjeta)}</div>
+                </div>
+              )}
               {sinDia.length > 0 && (
                 <div>
-                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
-                  {(verSinDia || !diasAux.length) && <div className="mt-2">{botonPerfil("sin")}</div>}
-                  {(verSinDia || !diasAux.length) && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia, "sin")}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
+                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-sm font-bold text-slate-400">{verSinDia ? "▼" : "▶"} Otras sin planning ni compacto llegado (ocultas) · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
+                  {verSinDia && <div className="mt-2">{botonPerfil("sin")}</div>}
+                  {verSinDia && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia, "sin")}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
                 </div>
               )}
             </div>
