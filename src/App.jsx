@@ -55701,7 +55701,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const pptosGuiaProv = useMemo(() => pptosConGuiaProveedor(ctxAux), [ctxAux.pedidosCrm, ctxAux.uxPedidosCtx, ctxAux.persianasAlmacen, ctxAux.proyectos, ctxAux.uxExpedientes]); // eslint-disable-line react-hooks/exhaustive-deps
   const ejesOv = useObjetoFb("auxiliaresEjes"); // eje (mm) y lado escritos a mano, por obra y modelo: mandan sobre lo leído de la hoja
   const { piezas: piezasBase, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
-  const piezas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
+  // Piezas QUITADAS a mano (hoja mal leída, piezas que no van): no salen para cortar; se pueden recuperar abajo
+  const quitadasAux = useObjetoFb("auxiliaresQuitadas");
+  const kQuit = (id) => String(id).replace(/[.#$/[\]]/g, "_");
+  const piezasTodas = useMemo(() => piezasBase.map((x) => { const o = ejesOv && ejesOv[auxEjeKey(x)]; if (!o) return x; if (o.izq || o.der) return { ...x, ejeI: String(o.izq || ""), ejeD: String(o.der || "") }; return o.eje || o.lado ? { ...x, eje: o.eje ? String(o.eje) : x.eje, ejeLado: o.lado || x.ejeLado } : x; }), [piezasBase, ejesOv]);
+  const piezas = useMemo(() => piezasTodas.filter((x) => !(quitadasAux && quitadasAux[kQuit(x.id)])), [piezasTodas, quitadasAux]);
+  const quitarPiezas = (ps, txt) => {
+    const L = toArray(ps).filter((x) => x && !(est && est[x.id] && est[x.id].cortada)); if (!L.length) return;
+    if (!window.confirm(`${txt || `¿Quitar ${L.length} pieza${L.length === 1 ? "" : "s"}?`}\n\nNo saldrán para cortar. Se pueden recuperar abajo en «Piezas quitadas».`)) return;
+    const up = {}; const ts = Date.now(); L.forEach((x) => { up[kQuit(x.id)] = { ts, por: quien || "", ppto: x.ppto || "", nombre: x.nombre || "", lCorte: x.lCorte || 0, modelo: x.modelo || "", k: x.k || 0, n: x.n || 0 }; });
+    fbUpdate(ref(fbDb, "auxiliaresQuitadas"), up).then(() => setMsg(`🗑 ${L.length} pieza${L.length === 1 ? "" : "s"} quitada${L.length === 1 ? "" : "s"} de la lista de corte.`)).catch((e) => alert("No se pudo quitar: " + e.message));
+  };
+  const recuperarPiezas = (keys) => { const up = {}; keys.forEach((k) => { up[k] = null; }); fbUpdate(ref(fbDb, "auxiliaresQuitadas"), up).catch(() => {}); };
   const guardarEje = (x, patch) => { const a = auxEjesDe(x); const n = { izq: patch.izq !== undefined ? patch.izq : a.I, der: patch.der !== undefined ? patch.der : a.D }; guardarLinea(`auxiliaresEjes/${auxEjeKey(x)}`, n.izq || n.der ? n : null); };
   // Cruce con el análisis de materiales: lo que el análisis dice que lleva la obra (inversor, guía de persiana…) y la hoja de corte no trae
   const cruce = useMemo(() => {
@@ -56168,6 +56179,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           </span>
         )}{conVentana ? ` · ${[auxVent(p), p.grupo].filter(Boolean).join(" · ")}` : ""}</div>
       <button type="button" onClick={() => cortar(p, ctx)} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md"><Printer size={13} /> Cortada + etiqueta</button>
+      <button type="button" onClick={() => quitarPiezas([p], `¿Quitar ${p.nombre} ${auxMed(p.lCorte)} mm del Ppto ${pptoBonito(p.ppto)}?`)} title="Esta pieza no va (hoja mal leída): quitarla de la lista de corte" className="text-xs font-semibold px-2 py-1.5 rounded-md border border-rose-300 text-rose-700 bg-white hover:bg-rose-50">🗑</button>
     </div>
   );
   return (
@@ -56278,7 +56290,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 <div className="px-3 pb-2 -mt-1 flex flex-wrap items-center gap-2"><label className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border cursor-pointer ${pptosImp.includes(g.ppto) ? "border-slate-700 bg-slate-800 text-white" : "border-slate-300 bg-white text-slate-700"}`} onClick={(e) => e.stopPropagation()}><input type="checkbox" className="w-3.5 h-3.5" checked={pptosImp.includes(g.ppto)} onChange={() => setPptosImp((l) => (l.includes(g.ppto) ? l.filter((x) => x !== g.ppto) : [...l, g.ppto]))} /> Elegir</label><button type="button" disabled={leyendo} title="Si a esta obra le faltan perfiles por cortar, vuelve a subir su hoja de corte: se lee otra vez con la lista actual" onClick={(e) => { e.stopPropagation(); esperadoRef.current = digitosPresu(String(g.ppto).split("-")[0]); claveRef.current = ""; if (archivoRef2.current) archivoRef2.current.click(); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-[#2E8B57] text-[#2E8B57] bg-white hover:bg-emerald-50 disabled:opacity-60">{leyendo ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Volver a subir hoja de corte</button>{hojasUxDe(g.ppto).length > 0 && <button type="button" disabled={leyendo} title="Relee la hoja de corte guardada (la de los documentos de la obra o la que dejó Uxcar)" onClick={(e) => { e.stopPropagation(); releerUxcar(g.ppto); }} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border border-sky-600 text-sky-700 bg-white hover:bg-sky-50 disabled:opacity-60"><RefreshCw size={12} /> Releer la guardada</button>}</div>
                 {abierta && (
                   <div className="px-3 pb-3 border-t border-slate-100">
-                    <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => cortar(g.piezas[0], { tipo: "obra", ppto: g.ppto })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
+                    <div className="flex flex-wrap gap-2 py-2"><button type="button" onClick={() => quitarPiezas(g.piezas, `¿Quitar TODAS las ${g.piezas.length} piezas sin cortar del Ppto ${pptoBonito(g.ppto)}? (p. ej. si la hoja se ha leído mal)`)} className="order-last text-sm font-bold px-3 py-2 rounded-lg border-2 border-rose-400 text-rose-700 bg-white hover:bg-rose-50">🗑 Quitar toda la obra</button>{(() => { const pm = {}; g.piezas.forEach((x) => { const kk = `${x.nombre}|${auxMed(x.lCorte)}`; (pm[kk] = pm[kk] || []).push(x); }); const sosp = Object.values(pm).filter((xs) => xs.length >= 8); return sosp.map((xs) => <button key={`q${xs[0].nombre}${xs[0].lCorte}`} type="button" onClick={() => quitarPiezas(xs, `¿Quitar las ${xs.length} piezas «${xs[0].nombre} ${auxMed(xs[0].lCorte)} mm» del Ppto ${pptoBonito(g.ppto)}?`)} className="order-last text-xs font-bold px-2 py-1 rounded border border-rose-300 text-rose-700 bg-rose-50">🗑 Quitar las {xs.length} «{xs[0].nombre} {auxMed(xs[0].lCorte)}»</button>); })()}<button type="button" onClick={() => cortar(g.piezas[0], { tipo: "obra", ppto: g.ppto })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex items-center gap-1.5 text-sm font-bold px-3 py-2 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta obra</button></div>
                     {porVent.map((x) => (
                       <div key={x.k} className="mb-2">
                         <div className="text-sm font-bold text-slate-700 bg-slate-50 rounded px-2 py-1">{auxVent(x.p) || "—"}{x.p.grupo ? ` · ${x.p.grupo}` : ""}</div>
@@ -56554,6 +56566,24 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
           );
         })() : null}
         {orden === "perfil" ? planas.map((p) => fila(p, true, { tipo: "global" })) : null}
+        {(() => {
+          const L = Object.entries(quitadasAux || {}).filter(([, v]) => v); if (!L.length) return null;
+          const porP = {}; L.forEach(([k, v]) => { (porP[v.ppto || "—"] = porP[v.ppto || "—"] || []).push([k, v]); });
+          return (
+            <details className="mt-3 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2">
+              <summary className="cursor-pointer text-sm font-bold text-slate-600">🗑 Piezas quitadas ({L.length}) · pulsa para verlas o recuperarlas</summary>
+              <div className="mt-2 space-y-1">
+                {Object.entries(porP).sort((a2, b2) => auxCmp(a2[0], b2[0])).map(([pp, xs]) => (
+                  <div key={pp} className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2 py-1 text-sm">
+                    <b>Ppto {pptoBonito(pp)}</b><span className="text-slate-600">{xs.length} pieza{xs.length === 1 ? "" : "s"}: {[...new Set(xs.map(([, v]) => `${v.nombre} ${auxMed(v.lCorte)}`))].slice(0, 5).join(" · ")}{xs.length > 5 ? "…" : ""}</span>
+                    <span className="text-xs text-slate-400">{xs[0][1].por ? `quitó ${xs[0][1].por}` : ""}</span>
+                    <button type="button" onClick={() => recuperarPiezas(xs.map(([k]) => k))} className="ml-auto text-xs font-bold px-2 py-1 rounded border border-slate-400 bg-white">↩ Recuperar</button>
+                  </div>
+                ))}
+              </div>
+            </details>
+          );
+        })()}
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex flex-wrap items-center gap-2">
