@@ -56969,7 +56969,11 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   });
   toArray(uxExpedientes).forEach((e) => {
     const key = `u-${e.id}`;
-    if (!obras.has(key)) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
+    // Si el expediente de Uxcar ya tiene su PROYECTO en el CRM, la obra es esa: no se repite como «Uxcar exp.» vacía
+    // (solo sale aparte si trae ventanas propias de sus etiquetas, que ya la habrán creado arriba)
+    const conProyecto = (e.proyectoId && obras.has(`p-${e.proyectoId}`)) || toArray(proyectos).some((p) => p && p.uxcarExpedienteId === e.id && obras.has(`p-${p.id}`));
+    const yaUsada = Object.values(asignTodasCD || {}).some((d) => d && d[limpia(key)]); // ya metida a mano en algún día con esta clave: se respeta
+    if (!obras.has(key) && (!conProyecto || yaUsada)) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
   });
   // Presupuestos del planning de producción que no están en el CRM: obra «virtual» con las ventanas del propio planning
   Object.entries(planPres || {}).forEach(([pk, pr]) => {
