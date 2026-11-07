@@ -55100,6 +55100,7 @@ const auxCfgDe = (c) => {
     anchoMm: parseFloat(x.anchoMm) || 100, altoMm: parseFloat(x.altoMm) || 40,
     margenIzqMm: x.margenIzqMm != null && x.margenIzqMm !== "" ? parseFloat(x.margenIzqMm) : 6, margenDerMm: x.margenDerMm != null && x.margenDerMm !== "" ? parseFloat(x.margenDerMm) : 3,
     margenSupMm: x.margenSupMm != null && x.margenSupMm !== "" ? parseFloat(x.margenSupMm) : 1.5, escalaEt: parseFloat(x.escalaEt) || 100, negativoEt: !!x.negativoEt,
+    tiposCarro: toArray(x.tiposCarro).filter((t) => t && t.id && t.nombre),
   };
 };
 const auxSlug = (t) => String(t).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
@@ -55352,9 +55353,20 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
 // sitio (y se avisa: partida = true). pendPorPpto = piezas que le faltan por cortar a cada obra (incluida la que se va a cortar ahora).
 // A qué CARRO va cada perfil: el elegido en Configuración o, si no, por su nombre
 const AUX_RE_MOSQ = /mosquit|MPLX|M05904/i;
-function auxGrupoDe(cfgRef, nombre, ref) {
+// Tipos de carro que vienen hechos (cada uno con su regla de reparto). Los que crea el usuario se añaden en Configuración.
+const AUX_TIPOS_CARRO = [
+  { id: "solape", nombre: "Solapes", regla: "vivienda" }, { id: "postigo", nombre: "Postigos", regla: "vivienda" },
+  { id: "travesano", nombre: "Travesaños", regla: "vivienda10" }, { id: "batiente", nombre: "Batientes y resto", regla: "vivienda10" },
+  { id: "guias", nombre: "Guías y mosquiteras", regla: "guias" },
+];
+const AUX_REGLAS = { vivienda: "1 vivienda por hueco", vivienda10: "1 vivienda por hueco (máx. 10 piezas)", guias: "3 ventanas por hueco (6 sin mosquitera)" };
+const auxTiposCarro = (cfg) => [...AUX_TIPOS_CARRO, ...toArray(cfg && cfg.tiposCarro)];
+function auxGrupoDe(cfgRef, nombre, ref, cfg) {
   if (cfgRef && cfgRef.grupo) return cfgRef.grupo;
   const t = `${(cfgRef && cfgRef.nombre) || ""} ${nombre || ""} ${ref || ""}`;
+  const propio = toArray(cfg && cfg.tiposCarro).find((x) => x && x.palabras && String(x.palabras).split(",").map((w) => w.trim()).filter(Boolean).some((w) => t.toLowerCase().includes(w.toLowerCase())));
+  if (propio) return propio.id;
+  if (/travesa/i.test(t)) return "travesano";
   if (/postig|contraventana/i.test(t)) return "postigo";
   if (/solap/i.test(t)) return "solape";
   if (/gu[ií]a|cabeza|caj[oó]n\s*mosq/i.test(t) || AUX_RE_MOSQ.test(t)) return "guias";
@@ -55375,8 +55387,9 @@ function auxSitioPorGrupo(cfg, est, p, grupo, ventanasConMosq) {
   const cabe = (x) => {
     if (!x.oc.length) return true;
     if (String(x.oc[0].ppto) !== String(p.ppto)) return false; // un hueco = una sola vivienda/presupuesto
-    if (grupo === "solape" || grupo === "postigo") return true;
-    if (grupo === "batiente") return x.oc.length < 10;
+    const regla = (auxTiposCarro(cfg).find((tc) => tc.id === grupo) || {}).regla || "vivienda10";
+    if (regla === "vivienda") return true;
+    if (regla === "vivienda10") return x.oc.length < 10;
     const vs = new Set(x.oc.map(vent)); if (vs.has(vent(p))) return true;
     const conMosq = [...vs, vent(p)].some((v) => ventanasConMosq && ventanasConMosq.has(v)) || x.oc.some((e) => AUX_RE_MOSQ.test(`${e.nombre} ${e.ref}`)) || AUX_RE_MOSQ.test(`${p.nombre} ${p.ref}`);
     return vs.size < (conMosq ? 3 : 6);
@@ -55558,7 +55571,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={r.pasos || ""} onChange={(e) => upRef(i, { pasos: e.target.value })} placeholder="Pasos (opcional)" className={campo + " w-44"} />
               <label className="flex items-center gap-0.5 text-xs font-bold text-rose-700" title="Milímetros que se RESTAN a la medida de la hoja de corte en cada pieza de este perfil">−<input type="number" min="0" step="0.5" value={r.menos ?? ""} onChange={(e) => upRef(i, { menos: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
               <label className="flex items-center gap-0.5 text-xs font-bold text-emerald-700" title="Milímetros que se SUMAN a la medida de la hoja de corte en cada pieza de este perfil">+<input type="number" min="0" step="0.5" value={r.mas ?? ""} onChange={(e) => upRef(i, { mas: e.target.value })} placeholder="0" className={campo + " w-16"} />mm</label>
-              <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}>{[["", "Automático (por el nombre)"], ["solape", "Solapes"], ["postigo", "Postigos"], ["batiente", "Batientes y resto"], ["guias", "Guías y mosquiteras"]].map(([v, t]) => <option key={v} value={v}>{v ? `Carro: ${t}` : `Carro: ${t}`}</option>)}</select>
+              <select value={r.grupo || ""} onChange={(e) => upRef(i, { grupo: e.target.value })} title="A qué carro va este perfil al cortarlo" className={campo + " w-44"}><option value="">Carro: automático (por el nombre)</option>{auxTiposCarro(b).map((tc) => <option key={tc.id} value={tc.id}>Carro: {tc.nombre}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, refs: b.refs.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -55573,12 +55586,27 @@ function AuxConfigPanel({ cfg, onGuardar }) {
               <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
               <span className="text-xs text-slate-500">huecos</span>
-              <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-48"}><option value="">Para todo (general)</option><option value="solape">Solapes · 1 vivienda por hueco</option><option value="postigo">Postigos · 1 vivienda por hueco</option><option value="batiente">Batientes y resto · 1 vivienda por hueco (máx. 10)</option><option value="guias">Guías y mosquiteras · 3 ventanas por hueco (6 sin mosquitera)</option></select>
+              <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-56"}><option value="">Para todo (general)</option>{auxTiposCarro(b).map((tc) => <option key={tc.id} value={tc.id}>{tc.nombre} · {AUX_REGLAS[tc.regla] || ""}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
           ))}
         </div>
         <button type="button" onClick={() => setB({ ...b, carros: [...b.carros, { id: uid(), nombre: `Carro ${b.carros.length + 1}`, huecos: 20 }] })} className="mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">+ Añadir carro</button>
+      </div>
+      <div>
+        <div className="text-sm font-bold text-slate-800 mb-1">Tipos de carro</div>
+        <div className="text-xs text-slate-500 mb-2">Vienen hechos: {AUX_TIPOS_CARRO.map((t) => `${t.nombre} (${AUX_REGLAS[t.regla]})`).join(" · ")}. Aquí puedes crear los tuyos: nombre, cómo se reparte en los huecos y (opcional) palabras del nombre del perfil para que vayan solos a ese carro.</div>
+        <div className="space-y-1.5">
+          {toArray(b.tiposCarro).map((t, i) => (
+            <div key={t.id || i} className="flex flex-wrap items-center gap-2">
+              <input value={t.nombre || ""} onChange={(e) => setB({ ...b, tiposCarro: toArray(b.tiposCarro).map((x, j) => (j === i ? { ...x, nombre: e.target.value } : x)) })} placeholder="Nombre (p. ej. Junquillos)" className={campo + " w-48"} />
+              <select value={t.regla || "vivienda"} onChange={(e) => setB({ ...b, tiposCarro: toArray(b.tiposCarro).map((x, j) => (j === i ? { ...x, regla: e.target.value } : x)) })} className={campo + " w-64"}>{Object.entries(AUX_REGLAS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+              <input value={t.palabras || ""} onChange={(e) => setB({ ...b, tiposCarro: toArray(b.tiposCarro).map((x, j) => (j === i ? { ...x, palabras: e.target.value } : x)) })} placeholder="Palabras del perfil (separadas por comas)" className={campo + " w-64"} />
+              <button type="button" onClick={() => setB({ ...b, tiposCarro: toArray(b.tiposCarro).filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setB({ ...b, tiposCarro: [...toArray(b.tiposCarro), { id: `t_${uid()}`, nombre: "", regla: "vivienda", palabras: "" }] })} className="mt-2 text-xs font-semibold text-[#2E8B57] hover:underline">+ Nuevo tipo de carro</button>
       </div>
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
         <div className="text-sm font-bold text-slate-800">🏷 Etiqueta (ajusta si se corta por un lado o sale pequeña)</div>
@@ -55867,12 +55895,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
     // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
     const grupoCarro = perfilDia === "elegidas" && pptosImp.includes(p.ppto) ? [...pptosImp] : perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
-    const grupoP = auxGrupoDe(refDe(p.ref), p.nombre, p.ref);
+    const grupoP = auxGrupoDe(refDe(p.ref), p.nombre, p.ref, cfg);
     const ventMosq = new Set([...piezas, ...Object.values(est || {}).filter(Boolean)].filter((x) => x && String(x.ppto) === String(p.ppto) && AUX_RE_MOSQ.test(`${x.nombre} ${x.ref}`)).map((x) => `${x.ppto}|${x.ventanaPos || x.modelo || ""}`));
     const hayCarrosGrupo = toArray(cfg.carros).some((c) => c && c.grupo === grupoP);
     const sitio = (hayCarrosGrupo ? auxSitioPorGrupo(cfg, est, p, grupoP, ventMosq) : null)
       || (() => { const gen = toArray(cfg.carros).filter((c) => c && !c.grupo); return auxSitioLibre({ ...cfg, porHueco: porHuecoAux, carros: gen.length ? gen : cfg.carros }, est, p.ppto, grupoCarro, pendPorPpto); })();
-    if (!sitio) { alert(hayCarrosGrupo ? `Los carros de ${grupoP === "solape" ? "SOLAPES" : grupoP === "postigo" ? "POSTIGOS" : grupoP === "guias" ? "GUÍAS Y MOSQUITERAS" : "BATIENTES Y RESTO"} están llenos. Añade huecos o un carro de ese tipo en «Configuración».` : "Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
+    if (!sitio) { alert(hayCarrosGrupo ? `Los carros de ${String((auxTiposCarro(cfg).find((tc) => tc.id === grupoP) || {}).nombre || grupoP).toUpperCase()} están llenos. Añade huecos o un carro de ese tipo en «Configuración».` : "Todos los carros están llenos. Añade huecos o un carro en «Configuración»."); return; }
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
@@ -55940,6 +55968,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const guardarCfg = (b) => (b.refs.some((r) => !String(r.ref || "").trim() && String(r.nombre || "").trim()) && !window.confirm("Hay perfiles con nombre pero SIN referencia: esos no se guardarían. ¿Guardar de todas formas?")) ? Promise.resolve(false) : fbSet(ref(fbDb, "auxiliaresConfig"), JSON.parse(JSON.stringify({
     refs: b.refs.map((r) => ({ ...r, ref: String(r.ref || "").trim(), nombre: String(r.nombre || "").trim(), menos: Math.abs(parseFloat(String(r.menos ?? "").replace(",", "."))) || 0, mas: Math.abs(parseFloat(String(r.mas ?? "").replace(",", "."))) || 0 })).filter((r) => r.ref),
     carros: b.carros.map((c) => ({ ...c, nombre: String(c.nombre || "").trim() || "Carro", huecos: Math.max(1, parseInt(c.huecos, 10) || 1) })),
+    tiposCarro: toArray(b.tiposCarro).filter((t) => t && String(t.nombre || "").trim()).map((t) => ({ id: t.id, nombre: String(t.nombre).trim(), regla: t.regla || "vivienda", palabras: String(t.palabras || "").trim() })),
     bocadoCm: parseFloat(b.bocadoCm) || 8, anchoMm: parseFloat(b.anchoMm) || 100, altoMm: parseFloat(b.altoMm) || 40,
     margenIzqMm: parseFloat(b.margenIzqMm) || 0, margenDerMm: parseFloat(b.margenDerMm) || 0, margenSupMm: parseFloat(b.margenSupMm) || 0, escalaEt: parseFloat(b.escalaEt) || 100, negativoEt: !!b.negativoEt, editado: true, vistas: AUX_REFS_NUEVAS.map((n) => n.id),
   }))).then(() => { setMsg("✓ Configuración guardada."); setVerConfig(false); try { localStorage.removeItem("auxCfgBorrador"); } catch (e) { /* nada */ } return true; }).catch((e) => { alert(`No se pudo guardar la configuración: ${(e && e.message) || e}. Lo que escribiste NO se ha perdido, sigue en pantalla. Si pone "permission denied", hay que abrir las reglas de Firebase para auxiliaresConfig.`); return false; });
