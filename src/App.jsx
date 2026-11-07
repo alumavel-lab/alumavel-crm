@@ -5472,6 +5472,42 @@ export default function App() {
     showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
     return true;
   };
+  // OBRA EN LA LÍNEA → sus pedidos se dan de BAJA solos (mientras aprendemos a usar la pistola, algunos no se dan de baja a mano).
+  // En cuanto una obra tiene alguna lectura en un puesto de Línea (pistola), todo lo pendiente de sus pedidos se da por llegado:
+  // líneas confirmadas por fábrica y pedido «Recibido» (sin crear cristales/persianas/stock: ese material ya está en la ventana).
+  // También el pedido de Uxcar en su portal. Una sola vez por obra.
+  const escaneosApp = useEscaneosLinea();
+  const bajaHecha = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || loading || !escaneosApp.length) return;
+    const obrasLinea = new Set(escaneosApp.map((x) => x && x.obraKey).filter(Boolean));
+    const nuevas = [...obrasLinea].filter((k) => !bajaHecha.current.has(k));
+    if (!nuevas.length) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const pids = new Set(); const eids = new Set();
+    nuevas.forEach((k) => {
+      bajaHecha.current.add(k);
+      const id = String(k).slice(2);
+      if (k.startsWith("p-")) { pids.add(id); const pr = proyectos.find((x) => String(x.id) === id); if (pr && pr.uxcarExpedienteId) eids.add(String(pr.uxcarExpedienteId)); }
+      if (k.startsWith("u-")) { eids.add(id); const ex = uxExpedientes.find((x) => String(x.id) === id); if (ex && ex.proyectoId) pids.add(String(ex.proyectoId)); proyectos.filter((x) => String(x.uxcarExpedienteId || "") === id).forEach((x) => pids.add(String(x.id))); }
+    });
+    let n = 0;
+    const next = pedidos.map((pd) => {
+      if (!pd || pd.estado === "Cancelado") return pd;
+      const suyo = (pd.proyectoId && pids.has(String(pd.proyectoId))) || (pd.uxcarExpedienteId && eids.has(String(pd.uxcarExpedienteId)));
+      if (!suyo) return pd;
+      const pend = toArray(pd.lineas).some((l) => l && !l.confirmadoFabrica) || pd.estado !== "Recibido";
+      if (!pend) return pd;
+      n++;
+      return { ...pd, estado: "Recibido", bajaPorLinea: { fecha: hoy, motivo: "La obra entró en Línea (pistola)" },
+        lineas: toArray(pd.lineas).map((l) => (l && !l.confirmadoFabrica ? { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: "Línea (pistola): obra en línea" } : l)) };
+    });
+    if (n) savePedidos(next);
+    const patchUx = {};
+    uxPedidos.forEach((p) => { if (!p || p.recibido) return; if (toArray(p.expedientes).some((e) => e && eids.has(String(e.expedienteId || "")))) { patchUx[`pedidos/${p.id}/recibido`] = hoy; patchUx[`pedidos/${p.id}/bajaPorLinea`] = { fecha: hoy, motivo: "La obra entró en Línea (pistola)" }; } });
+    if (Object.keys(patchUx).length) fbUpdate(ref(fbDb, "portalUxcar"), patchUx).catch(() => {});
+    if (n || Object.keys(patchUx).length) showToast(`Obra en la línea: ${n + Object.keys(patchUx).length / 2} pedido(s) dados de baja solos`);
+  }, [escaneosApp, loading, currentUser, pedidos, uxPedidos, proyectos, uxExpedientes]);
   // Lo que se confirma con el albarán (en el portal o en Fábrica) pasa al pedido del CRM:
   // líneas llegadas = confirmadas por fábrica; si ha llegado todo, pedido "Recibido".
   useEffect(() => {
@@ -7148,7 +7184,6 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
-            esAdmin: !!isAdmin,
             paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
