@@ -56919,20 +56919,60 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const [errPlan, setErrPlan] = useState("");
   const [lunesSemana, setLunesSemana] = useState(() => { const d = new Date(); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); return d.toISOString().slice(0, 10); });
   const inputPlanRef = useRef(null);
-  const marcasTodas = useObjetoFb("controlDia");
+  // UNA OBRA = UNA CLAVE: un expediente de Uxcar que ya tiene su proyecto se trata SIEMPRE como ese proyecto (lo marcado/puesto con
+  // la clave del expediente se lee junto con lo del proyecto, y lo nuevo se guarda ya en la del proyecto)
+  const uxAProy = useMemo(() => { const m = {}; const ids = new Set(toArray(proyectos).map((p) => p && p.id)); toArray(uxExpedientes).forEach((e) => { if (!e) return; const pid = (e.proyectoId && ids.has(e.proyectoId) ? e.proyectoId : (toArray(proyectos).find((p) => p && p.uxcarExpedienteId === e.id) || {}).id); if (pid) m[String(e.id)] = String(pid); }); return m; }, [proyectos, uxExpedientes]);
+  const canonK = (k) => { const t = String(k || ""); if (!t.startsWith("u-")) return t; const pid = uxAProy[t.slice(2)] || Object.entries(uxAProy).find(([eid]) => eid.replace(/[.#$\/\[\]]/g, "_") === t.slice(2)); return pid ? `p-${Array.isArray(pid) ? pid[1] : pid}`.replace(/[.#$\/\[\]]/g, "_") : t; };
+  const fusionaDias = (o) => { if (!o) return o; const out = {}; Object.entries(o).forEach(([f, d]) => { if (!d || typeof d !== "object") { out[f] = d; return; } const nd = {}; Object.entries(d).filter(([k]) => canonK(k) !== k).forEach(([k, v]) => { const c = canonK(k); nd[c] = typeof v === "object" && v ? { ...(nd[c] || {}), ...v } : v; }); Object.entries(d).filter(([k]) => canonK(k) === k).forEach(([k, v]) => { nd[k] = typeof v === "object" && v && typeof nd[k] === "object" ? { ...nd[k], ...v } : v; }); out[f] = nd; }); return out; };
+  const fusionaObra = (o) => { if (!o) return o; const out = { ...o }; Object.entries(o).forEach(([k, v]) => { const c = canonK(k); if (c !== k && out[c] === undefined) out[c] = v; }); return out; };
+  const marcasTodasRaw = useObjetoFb("controlDia");
+  const marcasTodas = useMemo(() => fusionaDias(marcasTodasRaw), [marcasTodasRaw, uxAProy]);
   const marcas = (marcasTodas && marcasTodas[dia]) || {};
-  const horasTodas = useObjetoFb("controlDiaHoras"); // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
+  const horasTodasRaw = useObjetoFb("controlDiaHoras");
+  const horasTodas = useMemo(() => fusionaDias(horasTodasRaw), [horasTodasRaw, uxAProy]);
+  const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
-  const asignTodasCD = useObjetoFb("controlDiaObras"); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
+  const asignTodasCDRaw = useObjetoFb("controlDiaObras");
+  const asignTodasCD = useMemo(() => fusionaDias(asignTodasCDRaw), [asignTodasCDRaw, uxAProy]); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
   const [verHechas, setVerHechas] = useState({}); // grupos de ventanas con la lista de «ya fabricadas» abierta: { "claveObra|vivienda": true }
   const [tvGrande, setTvGrande] = useState(null); // tele: obra agrandada (las demás en pequeño, en columnas)
   const [tv, setTv] = useEstadoLocal("crm_tvCD", false); // pantalla grande para la tele: dibujo de cada ventana de la carga de material
-  const hojasCD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
-  const ventanasGuardadas = useObjetoFb("controlDiaVentanas"); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
+  const hojasCDRaw = useObjetoFb("controlDiaHojaCorte");
+  const hojasCD = useMemo(() => fusionaObra(hojasCDRaw), [hojasCDRaw, uxAProy]); // hoja de corte leída de cada obra: { claveObra: { pres, archivo, url, leidoEn, modelos:[{pos,ancho,alto,uds,desc,color,dib,extras}] } }
+  const ventanasGuardadasRaw = useObjetoFb("controlDiaVentanas");
+  const ventanasGuardadas = useMemo(() => fusionaObra(ventanasGuardadasRaw), [ventanasGuardadasRaw, uxAProy]); // ventanas leídas de la carga de material de cada obra (solo para esta pantalla): { claveObra: { ventanas:[…] } }
   const [estadoCarga, setEstadoCarga] = useState({}); // { claveObra: "leyendo" | "error: …" }
-  const pinsMov = useObjetoFb("controlDiaPins"); // chinchetas movidas a mano: { claveObra: { idVentana: { pag, px, py } } }
-  const notasTodas = useObjetoFb("controlDiaNotas"); // notas por día: { fecha: { claveObra: { idVentana: "texto" } } }
+  const pinsMovRaw = useObjetoFb("controlDiaPins");
+  const pinsMov = useMemo(() => fusionaObra(pinsMovRaw), [pinsMovRaw, uxAProy]); // chinchetas movidas a mano: { claveObra: { idVentana: { pag, px, py } } }
+  const notasTodasRaw = useObjetoFb("controlDiaNotas");
+  const notasTodas = useMemo(() => fusionaDias(notasTodasRaw), [notasTodasRaw, uxAProy]);
+  // PASO ÚNICO: todo lo guardado con la clave de un expediente de Uxcar que ya tiene proyecto se pasa al PROYECTO (si choca, gana el proyecto)
+  // y se borra la clave del expediente. Así no queda nada «con expediente» en Control del día.
+  const migradoUx = useRef("");
+  useEffect(() => {
+    const listos = [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw, hojasCDRaw, ventanasGuardadasRaw, pinsMovRaw].every((x) => x !== undefined);
+    if (!listos || !Object.keys(uxAProy).length) return;
+    const firma = JSON.stringify(uxAProy).length + "|" + [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw].map((o) => Object.keys(o || {}).length).join(",");
+    if (migradoUx.current === firma) return;
+    migradoUx.current = firma;
+    const up = {};
+    const porDia = { controlDia: marcasTodasRaw, controlDiaHoras: horasTodasRaw, controlDiaObras: asignTodasCDRaw, controlDiaNotas: notasTodasRaw };
+    Object.entries(porDia).forEach(([nodo, o]) => Object.entries(o || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([k, v]) => {
+      const c = canonK(k); if (c === k) return;
+      const delP = d[c];
+      up[`${nodo}/${f}/${c}`] = v && typeof v === "object" ? { ...v, ...(delP && typeof delP === "object" ? delP : {}) } : (delP !== undefined ? delP : v);
+      up[`${nodo}/${f}/${k}`] = null;
+    })));
+    const porObra = { controlDiaHojaCorte: hojasCDRaw, controlDiaVentanas: ventanasGuardadasRaw, controlDiaPins: pinsMovRaw };
+    Object.entries(porObra).forEach(([nodo, o]) => Object.entries(o || {}).forEach(([k, v]) => {
+      const c = canonK(k); if (c === k) return;
+      if (o[c] === undefined) up[`${nodo}/${c}`] = v;
+      else if (nodo === "controlDiaPins" && v && typeof v === "object") up[`${nodo}/${c}`] = { ...v, ...o[c] };
+      up[`${nodo}/${k}`] = null;
+    }));
+    if (Object.keys(up).length) fbUpdate(ref(fbDb), JSON.parse(JSON.stringify(up))).catch(() => { migradoUx.current = ""; });
+  }, [marcasTodasRaw, horasTodasRaw, asignTodasCDRaw, notasTodasRaw, hojasCDRaw, ventanasGuardadasRaw, pinsMovRaw, uxAProy]); // (notas por día: { fecha: { claveObra: { idVentana: "texto" } } })
   const [colocando, setColocando] = useState(null); // { key, id }: se está colocando una chincheta tocando en el folio
   const intentadasCarga = useRef({});
   const indice = useMemo(() => indicePiezasFab(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
@@ -56944,7 +56984,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const obras = new Map();
   indice.forEach((hh) => {
     if (!hh.ventana.modelo || String(hh.pieza.c) !== baseDe(hh.ventana)) return;
-    const d = hh.dueno;
+    let d = hh.dueno;
+    // etiquetas subidas en el expediente de Uxcar → van a SU proyecto (la misma obra)
+    if (String(d.key).startsWith("u-") && uxAProy[String(d.id)]) { const pid = uxAProy[String(d.id)]; const pr = toArray(proyectos).find((x) => String(x.id) === pid); if (pr) d = { ...d, key: `p-${pid}`, tipo: "p", id: pr.id, proyectoId: pr.id, nombre: `#${pr.numero} ${pr.nombre || ""}`.trim(), presupuesto: pr.presupuestoNumero || d.presupuesto || "" }; }
     if (!obras.has(d.key)) obras.set(d.key, { d, viv: new Map() });
     const o = obras.get(d.key);
     const g = hh.ventana.grupo || "Sin vivienda";
@@ -56969,7 +57011,10 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   });
   toArray(uxExpedientes).forEach((e) => {
     const key = `u-${e.id}`;
-    if (!obras.has(key)) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
+    // Si el expediente de Uxcar ya tiene su PROYECTO en el CRM, la obra es esa: no se repite como «Uxcar exp.» vacía
+    // (solo sale aparte si trae ventanas propias de sus etiquetas, que ya la habrán creado arriba)
+    const conProyecto = (e.proyectoId && obras.has(`p-${e.proyectoId}`)) || toArray(proyectos).some((p) => p && p.uxcarExpedienteId === e.id && obras.has(`p-${p.id}`));
+    if (!obras.has(key) && !conProyecto) obras.set(key, { d: { key, tipo: "u", id: e.id, nombre: `Uxcar exp. ${e.numero}` }, viv: new Map() });
   });
   // Presupuestos del planning de producción que no están en el CRM: obra «virtual» con las ventanas del propio planning
   Object.entries(planPres || {}).forEach(([pk, pr]) => {
@@ -57508,7 +57553,9 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const sinAsignarDia = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (o.d.tipo === "s" || !["Entregado", "Cancelado"].includes((toArray(proyectos).find((x) => x.id === proyectoIdDe(o)) || {}).estadoTrabajo)));
   const nSinMaterial = sinAsignarDia.filter((o) => !materialObra(o).ok).length;
   const disponibles = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (verSinMaterial || materialObra(o).ok) && (!buscar.trim() || String(o.d.nombre).toLowerCase().includes(buscar.trim().toLowerCase()) || [...pptosDe(o)].some((x) => x.includes(buscar.trim().replace(/\D/g, "") || "§§")))).sort(ordenObras);
-  const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); } catch (e) { /* nada */ } };
+  // Claves antiguas de la MISMA obra (el expediente de Uxcar de este proyecto): al quitar o mover, se limpian también
+  const gemelasDe = (k) => { const c = canonK(k); return Object.entries(uxAProy).filter(([, pid]) => `p-${pid}`.replace(/[.#$\/\[\]]/g, "_") === c).map(([eid]) => `u-${eid}`.replace(/[.#$\/\[\]]/g, "_")); };
+  const asignar = async (o, si) => { try { await fbSet(ref(fbDb, `controlDiaObras/${dia}/${limpia(o.d.key)}`), si ? true : null); if (!si) for (const g of gemelasDe(limpia(o.d.key))) await fbSet(ref(fbDb, `controlDiaObras/${dia}/${g}`), null); } catch (e) { /* nada */ } };
   // Obra con TODAS sus ventanas hechas (verde) → pregunta y pasa a REPARTO («Listo para reparto/recogida»)
   const mandarAReparto = (o) => {
     const pid = proyectoIdDe(o); const p = pid ? toArray(proyectos).find((x) => x.id === pid) : null;
@@ -57868,8 +57915,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       for (const nodo of ["controlDia", "controlDiaHoras", "controlDiaNotas"]) {
         const sn = await fbGet(ref(fbDb, `${nodo}/${de}/${k}`));
         if (sn.exists()) { await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), sn.val()); await fbSet(ref(fbDb, `${nodo}/${de}/${k}`), null); }
+        for (const g of gemelasDe(k)) { const sg = await fbGet(ref(fbDb, `${nodo}/${de}/${g}`)); if (sg.exists()) { const yaA = (await fbGet(ref(fbDb, `${nodo}/${a}/${k}`))).val(); await fbSet(ref(fbDb, `${nodo}/${a}/${k}`), typeof sg.val() === "object" ? { ...sg.val(), ...(yaA || {}) } : (yaA || sg.val())); await fbSet(ref(fbDb, `${nodo}/${de}/${g}`), null); } }
       }
       await fbSet(ref(fbDb, `controlDiaObras/${de}/${k}`), null);
+      for (const g of gemelasDe(k)) await fbSet(ref(fbDb, `controlDiaObras/${de}/${g}`), null);
     } catch (e) { alert("No se pudo mover la obra: " + e.message); }
   };
   const obraPorClave = new Map([...obras.values()].map((o) => [limpia(o.d.key), o]));
@@ -58409,6 +58458,10 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                       <div key={k} className="rounded bg-white border border-indigo-200 px-2 py-1 text-xs">
                         <div className="font-bold text-slate-900">{ps.length ? `Ppto ${ps.map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ")} · ` : ""}{ob.d.nombre}</div>
                         {fs.length === 0 ? <div className="text-rose-700 font-semibold">⚠ No está puesta en ningún día del calendario</div> : <div className="flex flex-wrap gap-1 mt-0.5">{fs.map((f) => <button key={f} type="button" onClick={() => ir(k, f)} className="px-2 py-0.5 rounded border border-indigo-400 bg-indigo-600 text-white font-bold">📅 {fmtF(f)}{f === hoy ? " (hoy)" : ""} · ver</button>)}</div>}
+                        <div className="flex flex-wrap items-center gap-1 mt-1">
+                          <input type="date" id={`fpon-${k}`} defaultValue={dia || hoy} className="border border-slate-300 rounded px-1 py-0.5 text-xs" />
+                          <button type="button" onClick={async () => { const el = document.getElementById(`fpon-${k}`); const f = (el && el.value) || dia || hoy; if (fs.includes(f)) { ir(k, f); return; } try { await fbSet(ref(fbDb, `controlDiaObras/${f}/${k}`), true); ir(k, f); } catch (e) { alert("No se pudo poner en el día: " + e.message); } }} className="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold">📅 {fs.length ? "Ponerla también en este día" : "Ponerla en este día"}</button>
+                        </div>
                         {res.length <= 3 && <PanelObraPlanning compacto obra={ob} pptos={[...pptosPresupuesto(ob)]} motivoMaterial={(() => { const m = materialObra(ob); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} />}
                       </div>
                     ); })}
