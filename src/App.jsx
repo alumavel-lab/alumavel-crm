@@ -51044,7 +51044,26 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
-  const lista = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  // Filtros: texto (pedido, expediente, presupuesto), proveedor, qué, estado y fechas (pedido y llegada)
+  const [fq, setFq] = useState(""); const [fProv, setFProv] = useState(""); const [fTipo, setFTipo] = useState(""); const [fEst, setFEst] = useState("");
+  const [fDesde, setFDesde] = useState(""); const [fHasta, setFHasta] = useState(""); const [fLlDesde, setFLlDesde] = useState(""); const [fLlHasta, setFLlHasta] = useState("");
+  const isoDe = (v) => { if (!v) return ""; if (typeof v === "number") return new Date(v).toISOString().slice(0, 10); const t = String(v); const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : t.slice(0, 10); };
+  const estadoCorto = (p) => { const l = String(uxEstadoPedido(p).label || ""); return /^Recibido/.test(l) ? "Recibido en fábrica" : /^Llegado en parte/.test(l) ? "Llegado en parte (falta material)" : /Retrasado/.test(l) ? "⚠ Retrasado" : /^Enviado/.test(l) ? "Enviado al proveedor" : l; };
+  const base = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido);
+  const opc = (fn) => [...new Set(base.map(fn).filter(Boolean))].sort((x, y) => String(x).localeCompare(String(y), "es"));
+  const provs = opc((p) => p.proveedorNombre); const tipos = opc((p) => p.tipo); const estados = opc(estadoCorto);
+  const nq = String(fq || "").toLowerCase().replace(/(\d)\.(?=\d)/g, "$1").trim();
+  const lista = base.filter((p) => {
+    if (fProv && p.proveedorNombre !== fProv) return false;
+    if (fTipo && p.tipo !== fTipo) return false;
+    if (fEst && estadoCorto(p) !== fEst) return false;
+    const fp = isoDe(p.fecha); if (fDesde && (!fp || fp < fDesde)) return false; if (fHasta && (!fp || fp > fHasta)) return false;
+    const fl = isoDe(p.llegadaPrevista); if (fLlDesde && (!fl || fl < fLlDesde)) return false; if (fLlHasta && (!fl || fl > fLlHasta)) return false;
+    if (nq) { const d = uxDesglosaExp(p, expsUx); const t = `${p.numero} ${p.tipo} ${p.proveedorNombre} ${uxTextoExp(d)} ${d.ppto.join(" ")} ${uxEstadoPedido(p).label} ${p.comentarios || ""}`.toLowerCase().replace(/(\d)\.(?=\d)/g, "$1"); if (!nq.split(/\s+/).every((k) => t.includes(k))) return false; }
+    return true;
+  }).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  const hayFiltro = !!(fq || fProv || fTipo || fEst || fDesde || fHasta || fLlDesde || fLlHasta);
+  const limpiar = () => { setFq(""); setFProv(""); setFTipo(""); setFEst(""); setFDesde(""); setFHasta(""); setFLlDesde(""); setFLlHasta(""); };
   const abierto = toArray(pedidos).find((p) => p.id === abiertoId);
   if (abierto) {
     return (
@@ -51066,11 +51085,21 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         <p className="text-sm text-slate-600 mr-auto">Pedidos que Uxcar ha hecho a sus proveedores. Cuando llegue el camión, abre el pedido y sube el albarán para comprobar lo que ha llegado.</p>
         <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} /> Ver también los ya recibidos</label>
       </div>
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 flex flex-wrap items-end gap-2 text-xs">
+        <label className="flex flex-col gap-0.5 flex-1 min-w-[12rem]"><span className="font-semibold text-slate-600">Buscar</span><input value={fq} onChange={(e) => setFq(e.target.value)} placeholder="Pedido, expediente, presupuesto…" className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white" /></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Proveedor</span><select value={fProv} onChange={(e) => setFProv(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todos</option>{provs.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Qué</span><select value={fTipo} onChange={(e) => setFTipo(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todo</option>{tipos.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Estado</span><select value={fEst} onChange={(e) => setFEst(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todos</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Fecha pedido</span><span className="flex items-center gap-1"><input type="date" value={fDesde} onChange={(e) => setFDesde(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" />–<input type="date" value={fHasta} onChange={(e) => setFHasta(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" /></span></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Llegada</span><span className="flex items-center gap-1"><input type="date" value={fLlDesde} onChange={(e) => setFLlDesde(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" />–<input type="date" value={fLlHasta} onChange={(e) => setFLlHasta(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" /></span></label>
+        <span className="text-slate-500 font-semibold">{lista.length} de {base.length}</span>
+        {hayFiltro && <button type="button" onClick={limpiar} className="px-2 py-1.5 rounded border border-slate-300 bg-white font-semibold text-slate-600">Quitar filtros</button>}
+      </div>
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Presupuestos</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
           <tbody>
-            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No hay pedidos de Uxcar pendientes de llegar.</td></tr>}
+            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">{hayFiltro ? "Ningún pedido con esos filtros." : "No hay pedidos de Uxcar pendientes de llegar."}</td></tr>}
             {lista.map((p) => { const e = uxEstadoPedido(p); return (
               <tr key={p.id} onClick={() => setAbiertoId(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2 font-semibold">{p.numero}</td><td className="px-3 py-2">{p.tipo}</td><td className="px-3 py-2">{p.proveedorNombre}</td>
