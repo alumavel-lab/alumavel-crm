@@ -5472,6 +5472,42 @@ export default function App() {
     showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
     return true;
   };
+  // OBRA EN LA LÍNEA → sus pedidos se dan de BAJA solos (mientras aprendemos a usar la pistola, algunos no se dan de baja a mano).
+  // En cuanto una obra tiene alguna lectura en un puesto de Línea (pistola), todo lo pendiente de sus pedidos se da por llegado:
+  // líneas confirmadas por fábrica y pedido «Recibido» (sin crear cristales/persianas/stock: ese material ya está en la ventana).
+  // También el pedido de Uxcar en su portal. Una sola vez por obra.
+  const escaneosApp = useEscaneosLinea();
+  const bajaHecha = useRef(new Set());
+  useEffect(() => {
+    if (!currentUser || loading || !escaneosApp.length) return;
+    const obrasLinea = new Set(escaneosApp.map((x) => x && x.obraKey).filter(Boolean));
+    const nuevas = [...obrasLinea].filter((k) => !bajaHecha.current.has(k));
+    if (!nuevas.length) return;
+    const hoy = new Date().toISOString().slice(0, 10);
+    const pids = new Set(); const eids = new Set();
+    nuevas.forEach((k) => {
+      bajaHecha.current.add(k);
+      const id = String(k).slice(2);
+      if (k.startsWith("p-")) { pids.add(id); const pr = proyectos.find((x) => String(x.id) === id); if (pr && pr.uxcarExpedienteId) eids.add(String(pr.uxcarExpedienteId)); }
+      if (k.startsWith("u-")) { eids.add(id); const ex = uxExpedientes.find((x) => String(x.id) === id); if (ex && ex.proyectoId) pids.add(String(ex.proyectoId)); proyectos.filter((x) => String(x.uxcarExpedienteId || "") === id).forEach((x) => pids.add(String(x.id))); }
+    });
+    let n = 0;
+    const next = pedidos.map((pd) => {
+      if (!pd || pd.estado === "Cancelado") return pd;
+      const suyo = (pd.proyectoId && pids.has(String(pd.proyectoId))) || (pd.uxcarExpedienteId && eids.has(String(pd.uxcarExpedienteId)));
+      if (!suyo) return pd;
+      const pend = toArray(pd.lineas).some((l) => l && !l.confirmadoFabrica) || pd.estado !== "Recibido";
+      if (!pend) return pd;
+      n++;
+      return { ...pd, estado: "Recibido", bajaPorLinea: { fecha: hoy, motivo: "La obra entró en Línea (pistola)" },
+        lineas: toArray(pd.lineas).map((l) => (l && !l.confirmadoFabrica ? { ...l, confirmadoFabrica: true, fechaConfirmadoFabrica: hoy, confirmadoPorFabrica: "Línea (pistola): obra en línea" } : l)) };
+    });
+    if (n) savePedidos(next);
+    const patchUx = {};
+    uxPedidos.forEach((p) => { if (!p || p.recibido) return; if (toArray(p.expedientes).some((e) => e && eids.has(String(e.expedienteId || "")))) { patchUx[`pedidos/${p.id}/recibido`] = hoy; patchUx[`pedidos/${p.id}/bajaPorLinea`] = { fecha: hoy, motivo: "La obra entró en Línea (pistola)" }; } });
+    if (Object.keys(patchUx).length) fbUpdate(ref(fbDb, "portalUxcar"), patchUx).catch(() => {});
+    if (n || Object.keys(patchUx).length) showToast(`Obra en la línea: ${n + Object.keys(patchUx).length / 2} pedido(s) dados de baja solos`);
+  }, [escaneosApp, loading, currentUser, pedidos, uxPedidos, proyectos, uxExpedientes]);
   // Lo que se confirma con el albarán (en el portal o en Fábrica) pasa al pedido del CRM:
   // líneas llegadas = confirmadas por fábrica; si ha llegado todo, pedido "Recibido".
   useEffect(() => {
@@ -7148,7 +7184,6 @@ export default function App() {
         {(modulo === "fabrica" || modulo === "prepmaterial" || modulo === "lineapistola") && (
           <IncFabricaCtx.Provider value={{ puede: veFabrica, abrir: (p) => setIncFabForm(p || {}) }}>
           <IncidenciasCristalCtx.Provider value={{
-            esAdmin: !!isAdmin,
             paneles: panelesFabrica, savePaneles: savePanelesFabrica, tareasAluminio, saveTareasAluminio,
             incidencias, proyectos, clientes, proveedores, uxExpedientes, configPlanning: configVentanas && configVentanas.planning, crear: crearIncidenciaDesdeCristal, crearPedidoEsperaReposicion,
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
@@ -55123,6 +55158,14 @@ const auxEjeKey = (p) => String(`${p.ppto}_${p.modelo}`).replace(/[.#$/[\]\s]+/g
 const auxPasosTxt = (rc, reg) => auxPasosDe(rc, reg).join(" + ");
 const AUX_EJE_DEFECTO = "283"; // eje habitual del bocado cuando no se ha escrito otro
 const auxEjeTxt = (rc, reg) => {
+  // GUÍA DE PERSIANA: siempre la MANO (lado de la persiana donde va el eje) y la distancia del EJE, lleve o no bocado esa guía
+  const nomG = `${(reg && reg.nombre) || ""} ${(rc && rc.nombre) || ""}`;
+  if (reg && /gu[ií]a/i.test(nomG) && !/mosquit|MPLX|M05904/i.test(`${nomG} ${reg.ref || ""}`)) {
+    const ej = auxEjesDe(reg); const dos = ej.I && ej.D;
+    const mano = dos ? (reg.n === 2 ? (reg.k === 1 ? "IZQ" : "DCHA") : "IZQ+DCHA") : ej.I ? "IZQ" : ej.D ? "DCHA" : reg.ejeLado === "izquierda" ? "IZQ" : reg.ejeLado === "derecha" ? "DCHA" : "";
+    const val = dos ? (reg.n === 2 ? (reg.k === 1 ? ej.I : ej.D) : `${ej.I}/${ej.D}`) : (ej.I || ej.D || ej.sin || AUX_EJE_DEFECTO);
+    return `${mano ? `${mano} · ` : ""}EJE ${val}`;
+  }
   if (!auxPasosDe(rc, reg).some((n) => /bocado/i.test(n))) return "";
   const ej = auxEjesDe(reg || {});
   if (ej.I && ej.D) return reg.n === 2 ? (reg.k === 1 ? `EJE IZQUIERDA ${ej.I}` : `EJE DERECHA ${ej.D}`) : `EJE IZQ. ${ej.I} · DER. ${ej.D}`;
@@ -55509,10 +55552,10 @@ function imprimirAux(lista, cfg) {
   </style></head><body><div class="et">
     <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
-    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb">${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
+    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb"${String(p.ejeTxt).length > 10 ? ` style="font-size:${f(4.2)}"` : ""}>${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
     ${p.color || p.notaEt ? `<div class="r2">${esc(p.color || "")}${p.notaEt ? `${p.color ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
-    <div class="sitio"><span class="lugar">${esc(`${p.carroNombre || ""} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
+    <div class="sitio"><span class="lugar">${esc(`${String(p.carroNombre || "").split("·").pop().trim().toUpperCase()} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
   </div></body></html>`;
@@ -55585,7 +55628,7 @@ function AuxConfigPanel({ cfg, onGuardar }) {
             <div key={c.id || i} className="flex flex-wrap items-center gap-2">
               <input value={c.nombre || ""} onChange={(e) => upCarro(i, { nombre: e.target.value })} placeholder="Nombre" className={campo + " w-44"} />
               <input type="number" min="1" value={c.huecos ?? ""} onChange={(e) => upCarro(i, { huecos: e.target.value })} className={campo + " w-20"} />
-              <span className="text-xs text-slate-500">huecos</span>
+              <span className="text-xs text-slate-500">estantes (huecos)</span>
               <select value={c.grupo || ""} onChange={(e) => upCarro(i, { grupo: e.target.value })} title="Qué perfiles van a este carro" className={campo + " w-56"}><option value="">Para todo (general)</option>{auxTiposCarro(b).map((tc) => <option key={tc.id} value={tc.id}>{tc.nombre} · {AUX_REGLAS[tc.regla] || ""}</option>)}</select>
               <button type="button" onClick={() => setB({ ...b, carros: b.carros.filter((_, j) => j !== i) })} className="text-rose-600 hover:bg-rose-50 rounded p-1" title="Quitar"><Trash2 size={14} /></button>
             </div>
@@ -55636,6 +55679,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const hojas = useObjetoFb("auxiliaresHojas");
   const hojasCDAux = useObjetoFb("controlDiaHojaCorte"); // hojas de corte de Control del día (con el enlace del PDF): para releerlas aquí
   const est = useObjetoFb("auxiliaresPiezas");
+  const estBase = est; // (alias: dentro de «cortar» se puede usar otro estado, el de una tanda en curso)
   const ctxAux = React.useContext(IncidenciasCristalCtx) || {};
   const barraCfg = useObjetoFb("auxiliaresBarra"); // { len, sierra, despunte } en mm
   const porHuecoAux = Math.max(1, parseInt(barraCfg && barraCfg.porHueco, 10) || 7); // piezas que caben en cada hueco de un carro
@@ -55646,11 +55690,14 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const cfg = useMemo(() => {
     const base = auxCfgDe(cfgRaw);
     const delAlmacen = [];
-    const grupoGuardado = (id) => (toArray(base.carros).find((x) => x && x.id === id) || {}).grupo || "";
-    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: 2 * (parseInt(c.capacidad, 10) || 20), grupo: grupoGuardado(`${a.id}|${c.id}`) })));
+    const guardado = (id) => toArray(base.carros).find((x) => x && x.id === id) || {};
+    // carros del almacén de Auxiliares: los estantes (huecos) y el tipo que se pongan en Configuración mandan; si no, 2 × su capacidad
+    almsAux.forEach((a) => carrosAlm.filter((c) => almacenDe(c) === a.id).sort((x, y) => (x.numero || 0) - (y.numero || 0)).forEach((c) => { const g = guardado(`${a.id}|${c.id}`); delAlmacen.push({ id: `${a.id}|${c.id}`, nombre: `${a.nombre} · carro ${c.numero}`, huecos: parseInt(g.huecos, 10) > 0 ? parseInt(g.huecos, 10) : 2 * (parseInt(c.capacidad, 10) || 20), grupo: g.grupo || "" }); }));
     return delAlmacen.length ? { ...base, carros: delAlmacen, carrosDeAlmacen: true } : base;
   }, [cfgRaw, ctxAux.almacenesPersianas, ctxAux.carrosPersianas]);
   const ventanas = useMemo(() => auxVentanas(proyectos, uxExpedientes, sinObra), [proyectos, uxExpedientes, sinObra]);
+  // Presupuestos con su COMPACTO (persiana) ya llegado al almacén de persianas (y sin colocar todavía)
+  const pptosCompactoLlegado = useMemo(() => { const set = new Set(); toArray(ctxAux.persianasAlmacen).forEach((x) => { if (!x || x.entregada || x.colocadaVentana) return; String(presupuestoDePersiana(x, ctxAux) || "").split(/[,·;]/).forEach((t) => { const b = basePresuDia(t); if (b.length >= 3) set.add(b); }); }); return set; }, [ctxAux.persianasAlmacen, ctxAux.pedidosPersianas]);
   const pptosGuiaProv = useMemo(() => pptosConGuiaProveedor(ctxAux), [ctxAux.pedidosCrm, ctxAux.uxPedidosCtx, ctxAux.persianasAlmacen, ctxAux.proyectos, ctxAux.uxExpedientes]); // eslint-disable-line react-hooks/exhaustive-deps
   const ejesOv = useObjetoFb("auxiliaresEjes"); // eje (mm) y lado escritos a mano, por obra y modelo: mandan sobre lo leído de la hoja
   const { piezas: piezasBase, avisos } = useMemo(() => auxExpandir(hojas, cfg, ventanas, pptosGuiaProv), [hojas, cfg, ventanas, pptosGuiaProv]);
@@ -55890,9 +55937,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       </form>
     );
   };
-  const cortar = async (p, ctx) => {
-    if (!p) return;
-    const pendPorPpto = {}; sinCortar.forEach((x) => { pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
+  const cortar = async (p, ctx, opt = {}) => {
+    if (!p) return null;
+    const est = opt.est || estBase; // en una tanda de varias, lo cortado en esta tanda cuenta ya para el hueco
+    const pendPorPpto = {}; sinCortar.forEach((x) => { if (!est[x.id] || !est[x.id].cortada) pendPorPpto[x.ppto] = (pendPorPpto[x.ppto] || 0) + 1; });
     // Cortando varios días juntos: las obras de todos esos días cuentan como «del mismo grupo» para el carro
     const grupoCarro = perfilDia === "elegidas" && pptosImp.includes(p.ppto) ? [...pptosImp] : perfilDia === "multi" && diasSel.includes(diaDe(p.ppto)) ? obrasAux.filter((g) => g.dia && diasSel.includes(g.dia)).map((g) => g.ppto) : pptosDelDia(p.ppto);
     const grupoP = auxGrupoDe(refDe(p.ref), p.nombre, p.ref, cfg);
@@ -55906,7 +55954,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
       const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
-      imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
+      if (!opt.sinImprimir) imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
       try {
         let inf = barraSnap.current[p.id];
@@ -55919,8 +55967,20 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
       setCadena({ ...(ctx || { tipo: "global" }), ultimo: cod, nombre: `${p.nombre} ${auxMed(p.lCorte)} mm` });
       enfocarPistola();
       setMsg(`✓ ${p.nombre} ${auxMed(p.lCorte)} mm → ${sitio.carroNombre} · hueco ${sitio.hueco}${sitio.partida ? ` — ⚠ OJO: ningún carro tiene sitio para las ${sitio.necesita} piezas de esta obra juntas; va a quedar PARTIDA en dos carros (vacía o amplía un carro)` : ""}`);
-      pitidoCRM(true);
-    } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); }
+      if (!opt.sinImprimir) pitidoCRM(true);
+      return { reg, sitio };
+    } catch (e) { setMsg("No se pudo guardar el corte: " + ((e && e.message) || e)); pitidoCRM(false); return null; }
+  };
+  // CORTAR VARIAS IGUALES DE GOLPE: se cortan una tras otra (cada una a su hueco) y TODAS sus etiquetas salen seguidas en una sola impresión
+  const cortarVarias = async (ps, ctx) => {
+    const lista = toArray(ps).filter((x) => x && !(estBase[x.id] && estBase[x.id].cortada)); if (!lista.length) return;
+    const estL = { ...(estBase || {}) }; const regs = [];
+    for (const p of lista) { const r = await cortar(p, ctx, { sinImprimir: true, est: estL }); if (!r) break; estL[p.id] = r.reg; regs.push(r.reg); }
+    if (!regs.length) return;
+    imprimirAux(regs.map((reg) => ({ ...reg, pasosTxt: auxPasosTxt(refDe(reg.ref), reg), ejeTxt: auxEjeTxt(refDe(reg.ref), reg) })), cfg);
+    const sitios = [...new Set(regs.map((x) => `${String(x.carroNombre || "").split("·").pop().trim()} · hueco ${x.hueco}`))];
+    setMsg(`✓ ${regs.length} × ${regs[0].nombre} ${auxMed(regs[0].lCorte)} mm cortadas · ${regs.length} etiquetas seguidas → ${sitios.slice(0, 8).join(" | ")}${sitios.length > 8 ? " …" : ""}${regs.length < lista.length ? ` · ⚠ paré en ${regs.length} de ${lista.length} (mira el aviso)` : ""}`);
+    pitidoCRM(true);
   };
   const reimprimir = (e0) => {
     const q = piezas.find((y) => y.id === e0.id); const ov = ejesOv && ejesOv[auxEjeKey(e0)];
@@ -56192,15 +56252,15 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
         )}
       </div>
       <div className="bg-white border border-slate-200 rounded-xl p-4">
-        <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar <span className="font-normal text-slate-500">({pendientes.length}{q ? ` de ${todasPend}` : ""})</span></div>
+        <div className="text-sm font-bold text-slate-800 mb-2">Falta por cortar {(() => { const enPlan = obrasAux.filter((g) => g.dia); const comp = obrasAux.filter((g) => !g.dia && pptosCompactoLlegado.has(basePresuDia(g.ppto))); const nP = enPlan.reduce((a2, g) => a2 + g.piezas.length, 0), nC = comp.reduce((a2, g) => a2 + g.piezas.length, 0); return <span className="font-normal text-slate-600">· <b className="text-slate-900">📅 planning: {nP}</b> piezas ({enPlan.length} obras) · <b className="text-sky-800">📦 compacto llegado: {nC}</b> ({comp.length} obras) <span className="text-slate-400">· total con todo: {pendientes.length}{q ? ` de ${todasPend}` : ""}</span></span>; })()}</div>
         {solapesConMosq.length > 0 && (
-          <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
-            <b>✂ Con la mosquitera va el solape:</b>
+          <details className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900">
+            <summary className="cursor-pointer"><b>✂ Con la mosquitera va el solape</b> · {solapesConMosq.length} aviso{solapesConMosq.length === 1 ? "" : "s"} (pulsa para verlos)</summary>
             <ul className="mt-1 space-y-0.5 text-xs">
               {solapesConMosq.map((x) => <li key={x.ppto}>Presupuesto {pptoBonito(x.ppto)}{x.obra ? ` · ${x.obra}` : ""}: {x.enHoja ? <>corta también el <b>solape</b> ({x.pend} sin cortar)</> : x.desactivado ? <b>el solape está en la hoja, pero su referencia está DESACTIVADA en Configuración: actívala para que salga a cortar</b> : <b>no encuentro el solape en lo leído de la hoja. Si en el papel sí está, su código no es el de Configuración ({x.codigos.join(", ") || "ninguno"}): pon el código que trae vuestra hoja y vuelve a subirla</b>}</li>)}
             </ul>
             {q && pptosMosqFiltro.size > 0 && <div className="mt-1 text-[11px] text-amber-800">Los solapes de esas obras salen en la lista aunque no coincidan con el filtro.</div>}
-          </div>
+          </details>
         )}
         {todasPend === 0 && <div className="text-sm text-slate-500">{hojasLista.length ? "No queda nada por cortar con las referencias activas." : "Sube la hoja de corte de una obra y aquí saldrá lo que hay que cortar."}</div>}
         {orden === "ventana" ? (() => {
@@ -56230,7 +56290,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               </div>
             );
           };
-          const sinDia = obrasAux.filter((g) => !g.dia);
+          const sinDiaTodas = obrasAux.filter((g) => !g.dia);
+          const sinDiaCompacto = sinDiaTodas.filter((g) => pptosCompactoLlegado.has(basePresuDia(g.ppto)));
+          const sinDia = sinDiaTodas.filter((g) => !pptosCompactoLlegado.has(basePresuDia(g.ppto))); // el resto (ni planning ni compacto): oculto en un desplegable
           // «Cortar por perfil»: todas las piezas de las obras de ese día juntas por referencia y de mayor a menor medida; cada una va al hueco de su obra
           const vistaPerfil = (gs, dias) => {
             const refs = []; gs.flatMap((g) => g.piezas).forEach((p) => { const k = `${p.ref}|${p.nombre}|${p.color || ""}`; let r = refs.find((x) => x.k === k); if (!r) { r = { k, p, filas: [] }; refs.push(r); } r.filas.push(p); });
@@ -56326,6 +56388,30 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
                       <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
+                    {(() => {
+                      // RESUMEN DE IGUALES: misma medida (mismo perfil y color) → se pueden cortar varias de golpe, con sus etiquetas seguidas
+                      const gr = {}; r.filas.forEach((x) => { if (est && est[x.id] && est[x.id].cortada) return; const k = String(Math.round((Number(x.lCorte) || 0) * 10)); (gr[k] = gr[k] || []).push(x); });
+                      const L = Object.values(gr).filter((xs) => xs.length >= 2).sort((a2, b2) => b2.length - a2.length || (Number(b2[0].lCorte) || 0) - (Number(a2[0].lCorte) || 0));
+                      if (!L.length) return null;
+                      return (
+                        <details open className="mt-1 mb-2 rounded-lg border border-indigo-300 bg-indigo-50/60 px-2 py-1">
+                          <summary className="cursor-pointer text-sm font-extrabold text-indigo-900">📋 Resumen de piezas iguales ({L.reduce((t, xs) => t + xs.length, 0)} piezas en {L.length} medida{L.length === 1 ? "" : "s"}): córtalas juntas</summary>
+                          <div className="mt-1 space-y-1">
+                            {L.map((xs) => { const kk = `${r.k}|${xs[0].lCorte}`; return (
+                              <div key={kk} className="flex flex-wrap items-center gap-2 bg-white rounded border border-indigo-200 px-2 py-1 text-sm">
+                                <b className="text-lg">{xs.length} ×</b><b className="text-lg">{auxMed(xs[0].lCorte)} mm</b>
+                                <span className="text-xs text-slate-500">{[...new Set(xs.map((x) => pptoBonito(x.ppto)))].slice(0, 6).join(", ")}{new Set(xs.map((x) => x.ppto)).size > 6 ? "…" : ""}</span>
+                                <span className="ml-auto flex items-center gap-1">
+                                  <span className="text-xs text-slate-600">de</span><input id={`nv-${kk}`} type="number" min="1" max={xs.length} defaultValue={Math.min(4, xs.length)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-sm text-right" />
+                                  <button type="button" onClick={() => { const el = document.getElementById(`nv-${kk}`); const nn = Math.max(1, Math.min(xs.length, parseInt(el && el.value, 10) || 1)); cortarVarias(xs.slice(0, nn), { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} className="text-xs font-bold px-2 py-1 rounded border-2 border-indigo-600 text-indigo-800 bg-white">✂ Cortar esas</button>
+                                  <button type="button" onClick={() => { if (xs.length < 6 || window.confirm(`¿Cortar las ${xs.length} piezas de ${auxMed(xs[0].lCorte)} mm y sacar sus ${xs.length} etiquetas seguidas?`)) cortarVarias(xs, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-bold px-2 py-1 rounded">✂ Cortar las {xs.length}</button>
+                                </span>
+                              </div>
+                            ); })}
+                          </div>
+                        </details>
+                      );
+                    })()}
                     {(r.recUsados || []).map((u) => (
                       <div key={u.rc.id} className="mt-2 rounded-lg border-2 border-amber-400 overflow-hidden">
                         <div className="bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -56450,11 +56536,18 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   ); })}
                 </div>
               ))}
+              {sinDiaCompacto.length > 0 && (
+                <div className="rounded-xl border-2 border-sky-400 bg-sky-50/50 p-2">
+                  <div className="text-base font-extrabold text-sky-900 mb-1">📦 Compacto llegado (sin día en el planning) · {sinDiaCompacto.length} obra{sinDiaCompacto.length === 1 ? "" : "s"} · {sinDiaCompacto.reduce((a2, g) => a2 + g.piezas.length, 0)} piezas</div>
+                  <div className="text-xs text-sky-800 mb-2">Su persiana (compacto) ya está en el almacén de persianas: se pueden ir cortando sus auxiliares.</div>
+                  <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDiaCompacto.map(tarjeta)}</div>
+                </div>
+              )}
               {sinDia.length > 0 && (
                 <div>
-                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-base font-extrabold text-slate-500">{verSinDia ? "▼" : "▶"} Sin día en el planning · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
-                  {(verSinDia || !diasAux.length) && <div className="mt-2">{botonPerfil("sin")}</div>}
-                  {(verSinDia || !diasAux.length) && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia, "sin")}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
+                  <button type="button" onClick={() => setVerSinDia(!verSinDia)} className="text-sm font-bold text-slate-400">{verSinDia ? "▼" : "▶"} Otras sin planning ni compacto llegado (ocultas) · {sinDia.length} obra{sinDia.length === 1 ? "" : "s"} · {sinDia.reduce((a, g) => a + g.piezas.length, 0)} piezas</button>
+                  {verSinDia && <div className="mt-2">{botonPerfil("sin")}</div>}
+                  {verSinDia && (perfilDia === "sin" ? <div className="mt-2">{vistaPerfil(sinDia, "sin")}</div> : <div className="grid gap-2 mt-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{sinDia.map(tarjeta)}</div>)}
                 </div>
               )}
             </div>
