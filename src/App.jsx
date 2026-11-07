@@ -38000,7 +38000,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
             ...prev,
             clienteNombre: vacio(prev.clienteNombre) ? (datos.clienteNombre || prev.clienteNombre) : prev.clienteNombre,
             telefono: vacio(prev.telefono) ? (datos.telefono || prev.telefono) : prev.telefono,
-            descripcion: vacio(prev.descripcion) ? (datos.descripcion || prev.descripcion) : prev.descripcion,
+            descripcion: descConNumeroPresu(vacio(prev.descripcion) ? (datos.descripcion || prev.descripcion) : prev.descripcion, datos.numero || prev.numero),
             ...(vacio(prev.importe) && datos.importe ? { importe: datos.importe, masIva: datos.masIva, ivaPct: datos.ivaPct || prev.ivaPct || 21 } : {}),
             numero: !prev.id && datos.numero ? datos.numero : prev.numero,
             zona: vacio(prev.zona) ? (datos.zona || prev.zona) : prev.zona,
@@ -38070,7 +38070,7 @@ function PresupuestoForm({ initial, clientes, presupuestosExistentes, nextNumero
         ...prev,
         clienteNombre: datos.clienteNombre || prev.clienteNombre,
         telefono: datos.telefono || prev.telefono,
-        descripcion: datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion,
+        descripcion: descConNumeroPresu(datos.descripcion ? (prev.descripcion ? `${prev.descripcion}\n\n${datos.descripcion}` : datos.descripcion) : prev.descripcion, datos.numero || prev.numero),
         importe: datos.importe || prev.importe,
         masIva: datos.importe ? datos.masIva : prev.masIva,
         ivaPct: datos.ivaPct || prev.ivaPct || 21,
@@ -41531,11 +41531,11 @@ function agruparEtiquetasFab(paginas) {
     const posRaw = r[1].trim().replace(/\s+/g, " ");
     const multi = posRaw.match(/^([A-Z]\d{1,3})\.(\d{2,4})((?:,\d{2,4})+)$/);
     const posiciones = multi ? [`${multi[1]}.${multi[2]}`, ...multi[3].split(",").filter(Boolean).map((x) => `${multi[1]}.${x}`)] : [posRaw];
-    const exp = (texto.match(/EXPEDIENTE\s*(\d+)/i) || [])[1] || "";
+    const exp = (texto.match(/\bEXP(?:EDIENTE)?\.?\s*(\d+)/i) || [])[1] || ""; // «EXPEDIENTE 1072» o «EXP 823»
     const col = texto.match(/-\s*F[A-Za-z]*:?[\d.]*\s+((?:[A-Z]{2,4}-)?\d{3,5})\s+(\S+)/);
     // Vivienda ("1º IZQ", "BAJO"…) y nombre del cliente de la etiqueta: sirven para no mezclar viviendas en un caballete
-    const evm = texto.match(/EXPEDIENTE\s*\d+\s+([\s\S]*?)\s*Long:/i);
-    const viv = (evm ? evm[1] : ((texto.match(/EXPEDIENTE\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
+    const evm = texto.match(/\bEXP(?:EDIENTE)?\.?\s*\d+\s+([\s\S]*?)\s*Long:/i);
+    const viv = (evm ? evm[1] : ((texto.match(/\bEXP(?:EDIENTE)?\.?\s*\d+[ \t]+([^\n]*)/i) || [])[1] || "")).replace(/\s+/g, " ").trim();
     const nom = texto.match(/DIMEN\.REF:\s*[\d.]+\s*mm\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'\-]*?)\s+(?:[A-Z]{1,4}|V)\s+[\d-]+/);
     const grupo = [exp, viv].filter(Boolean).join(" ");
     const cliente = nom ? nom[1].trim() : "";
@@ -42079,6 +42079,14 @@ async function leerEtiquetasFabPdf(file, onProgreso) {
 // Del listado de vidrios salen el nº de fabricación (lote), el expediente y los presupuestos; de la hoja de corte, una ventana por UNIDAD
 // (posición, color, medidas, vidrio, sistema, mosquitera, cerradura, apertura exterior). No lee etiquetas ni dibujos, no crea pedidos y no toca el stock.
 const RAPIDO_MIN_ESPECIAL = 650; // ventana con ancho o alto menor que esto = "especial" (qué se hace con ellas lo decide Miguel)
+// Al subir el presupuesto, la descripción de la obra empieza por su nº de presupuesto («6.812 Roman»); si ya lo lleva, no se repite
+function descConNumeroPresu(desc, num) {
+  const d = String(desc || "").trim(); const n = String(num || "").trim();
+  const dig = n.split("-")[0].replace(/\D/g, ""); if (dig.length < 3) return d;
+  if (d.replace(/(\d)\.(?=\d)/g, "$1").includes(dig)) return d;
+  const bonito = /^\d{4,}(-\d+)?$/.test(n) ? n.replace(/^(\d+)(\d{3})(?=$|-)/, "$1.$2") : n;
+  return d ? `${bonito} ${d}` : bonito;
+}
 const pptoBonito = (d) => { const s = String(d || "").replace(/\D/g, ""); return s.length > 3 ? `${s.slice(0, -3)}.${s.slice(-3)}` : s; };
 const mmRapido = (t) => { const n = parseFloat(String(t).replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n) : null; };
 const normPosRapido = (p) => String(p || "").replace(/\s+/g, "").toUpperCase();
@@ -47283,7 +47291,15 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
   const [grande, setGrande] = useState(null);
   const hoy = new Date().toLocaleDateString("sv-SE"); const [dia, setDia] = useState(hoy);
   const planFab = useObjetoFb("planFabrica"); const manual = useObjetoFb("controlDiaObras"); const snapCD = useObjetoFb("controlDiaVentanasObra");
-  const leidas = useMemo(() => new Set(toArray(escaneos).filter((x) => x && x.puestoId === puestoId).map((x) => String(x.ventanaId))), [escaneos, puestoId]);
+  const normP = (t) => String(t || "").toUpperCase().replace(/\s+/g, "");
+  // Leídas en ESTE puesto: por la ventana de las etiquetas (id) y por PRESUPUESTO + NOMBRE de la ventana (para enlazar con las ventanas de Control del día)
+  const leidas = useMemo(() => {
+    const ids = new Set(); const pp = new Set(); const porId = new Map();
+    indice.forEach((h) => { const v = h && h.ventana; if (v && !porId.has(String(v.id))) porId.set(String(v.id), v); });
+    toArray(escaneos).forEach((x) => { if (!x || x.puestoId !== puestoId) return; ids.add(String(x.ventanaId)); const v = porId.get(String(x.ventanaId)); const b = basePresuDia(v && v.num); const pos = normP((v && v.pos) || x.pos); if (b && pos) { pp.add(`${b}|${pos}`); pp.add(`${b}|${pos.split("/")[0].replace(/\d+$/, "")}`); } });
+    return { ids, pp };
+  }, [escaneos, puestoId, indice]);
+  const esLeida = (c, v) => leidas.ids.has(String(v.id)) || [...c.bases].some((b) => leidas.pp.has(`${b}|${normP(v.pos)}`) || leidas.pp.has(`${b}|${normP(v.pos).split("/")[0].replace(/\d+$/, "")}`));
   const cols = useMemo(() => {
     if (!abierto && !tv) return [];
     const limpia = (t) => String(t || "").replace(/[.#$\/\[\]]/g, "_");
@@ -47292,15 +47308,24 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
     Object.keys(delDia).forEach((k) => { const f = planObras[k] || {}; const bases = new Set(toArray(f.pres).map(basePresuDia).filter((b) => b.length >= 3)); pedidas.push({ nombre: String(f.nombre || (delDia[k] && delDia[k].nombre) || k).replace(/ · en fabricación$/, ""), bases, keys: new Set() }); });
     // Metidas a mano en Control del día: su nombre y sus presupuestos salen de lo que publica Control del día
     Object.keys((manual && manual[dia]) || {}).forEach((ko) => { if (!manual[dia][ko]) return; const sn = (snapCD && snapCD[ko]) || {}; const bases = new Set(toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3)); if (pedidas.some((pd) => [...bases].some((b) => pd.bases.has(b)))) return; pedidas.push({ nombre: sn.nombre || ko, bases, keys: new Set([ko]) }); });
-    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], vistos: new Set(), grupos: new Set(), num: "", obra: "", fabs: new Set() }));
+    const cajas = pedidas.map((pd) => ({ ...pd, vs: [], grupos: new Set(), num: "", obra: "", fabs: new Set(), fuente: "" }));
+    // 1) Las ventanas de CONTROL DEL DÍA (las mismas del Almacén del día, con su dibujo, medida y lo que lleva)
+    Object.entries(snapCD || {}).forEach(([k, sn]) => {
+      if (!sn || !toArray(sn.ventanas).length) return;
+      const bs = toArray(sn.codigos).map(basePresuDia).filter((b) => b.length >= 3);
+      const c = cajas.find((x) => !x.vs.length && (x.keys.has(limpia(k)) || bs.some((b) => x.bases.has(b)))); if (!c) return;
+      bs.forEach((b) => c.bases.add(b)); c.fuente = "cd"; c.obra = sn.nombre || c.obra;
+      toArray(sn.ventanas).forEach((w) => { c.vs.push({ id: String(w.id), pos: w.pos || "", medida: w.medida || "", dib: w.dib || "", fab: w.fab || "", tip: w.tip || "", ex: toArray(w.ex), color: w.color || "", g: w.g && w.g !== "Sin vivienda" ? w.g : "" }); if (w.g && w.g !== "Sin vivienda") c.grupos.add(w.g); if (w.fab) c.fabs.add(w.fab); });
+    });
+    // 2) Si Control del día aún no tiene esa obra: las ventanas de las ETIQUETAS
     const vistos = new Set();
     indice.forEach((h) => {
       const v = h && h.ventana; if (!v || vistos.has(v.id)) return; vistos.add(v.id);
       const b = basePresuDia(v.num || (h.dueno && h.dueno.presupuesto)); const kd = limpia(h.dueno && h.dueno.key);
-      const c = cajas.find((x) => (b && x.bases.has(b)) || x.keys.has(kd)); if (!c) return;
-      c.vs.push(v); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
+      const c = cajas.find((x) => x.fuente !== "cd" && ((b && x.bases.has(b)) || x.keys.has(kd))); if (!c) return;
+      c.fuente = "et"; c.vs.push({ id: String(v.id), pos: v.pos || "", medida: v.medida || "", dib: "", fab: h.lote.fab, tip: v.tipo || v.pos || "", ex: [], color: v.color || "", g: v.grupo || "", nLote: dibDe(v) }); if (v.grupo) c.grupos.add(v.grupo); if (!c.num) c.num = v.num || ""; c.obra = c.obra || (h.dueno && h.dueno.nombre) || ""; c.fabs.add(h.lote.fab);
     });
-    return cajas.map((c, i) => ({ k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs: c.vs.sort((a, b2) => (dibDe(a) || 999) - (dibDe(b2) || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })), hechas: c.vs.filter((v) => leidas.has(String(v.id))).length }))
+    return cajas.map((c, i) => { const vs = c.vs.sort((a, b2) => (a.nLote || 999) - (b2.nLote || 999) || String(a.pos).localeCompare(String(b2.pos), "es", { numeric: true })); return { k: `${i}_${c.nombre || [...c.keys][0] || ""}`, nombre: c.nombre, num: c.num || [...c.bases][0] || "", bases: c.bases, obra: c.obra, grupos: c.grupos, fabs: [...c.fabs], vs, hechas: vs.filter((v) => esLeida(c, v)).length }; })
       .filter((c) => c.vs.length || c.nombre);
   }, [abierto, tv, planFab, manual, snapCD, dia, indice, leidas]);
   const columnas = (enTv) => {
@@ -47314,11 +47339,17 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
               <button type="button" onClick={() => setGrande(grande === c.k ? null : c.k)} className={`w-full text-left px-2 py-1 rounded-t-md text-white ${completa ? "bg-emerald-600" : sinEt ? "bg-slate-500" : "bg-slate-900"}`}>
                 <div className={`${enTv ? "text-xl" : "text-sm"} font-extrabold leading-tight`}>{c.num ? `Ppto ${pptoBonito(basePresuDia(c.num))}` : c.nombre || c.obra}</div>
                 <div className={`${enTv ? "text-sm" : "text-[11px]"} leading-tight opacity-90`}>{[...c.grupos].slice(0, 3).join(" · ") || c.obra || c.nombre}{c.fabs.length ? ` · FAB ${c.fabs.join(", ")}` : ""}</div>
-                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin etiquetas subidas" : `${c.hechas} de ${c.vs.length}${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
+                <div className={`${enTv ? "text-lg" : "text-xs"} font-bold`}>{sinEt ? "sin ventanas (falta la hoja de corte o las etiquetas)" : `${c.hechas} de ${c.vs.length} leídas aquí${completa ? " ✓" : ` · faltan ${c.vs.length - c.hechas}`}`}</div>
               </button>
-              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 gap-1" : "flex flex-col gap-1"}`}>
-                {c.vs.map((v) => { const ok = leidas.has(String(v.id)); const esUlt = ultimo && ultimo.h && ultimo.h.ventana && ultimo.h.ventana.id === v.id; return (
-                  <div key={v.id} className={`px-1.5 py-0.5 rounded font-bold border ${enTv ? "text-base" : "text-xs"} ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>{dibDe(v) ? <span className="opacity-80">{dibDe(v)} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+              <div className={`p-1 ${grande ? "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1" : "flex flex-col gap-1"}`}>
+                {c.vs.map((v) => { const ok = esLeida(c, v); const uv = ultimo && ultimo.h && ultimo.h.ventana; const esUlt = !!uv && (String(uv.id) === v.id || (normP(uv.pos) === normP(v.pos) && [...c.bases].includes(basePresuDia(uv.num)))); return (
+                  <div key={v.id} className={`rounded-lg border-2 p-1 flex flex-col items-center gap-0.5 ${esUlt ? "ring-4 ring-amber-400" : ""} ${ok ? "bg-emerald-600 border-emerald-700 text-white" : enTv ? "bg-slate-700 border-slate-500 text-white" : "bg-white border-slate-300 text-slate-800"}`}>
+                    {v.dib ? <div className="bg-white rounded"><DibujoPlan hash={v.dib} alto={enTv ? 100 : 60} /></div> : v.fab && v.tip ? <div className="bg-white rounded"><DibujoCargaVentana fab={v.fab} tip={v.tip} alto={enTv ? 90 : 50} /></div> : null}
+                    <div className={`${enTv ? "text-lg" : "text-xs"} font-extrabold leading-tight text-center`}>{v.nLote ? <span className="opacity-80">{v.nLote} · </span> : null}{v.pos}{ok ? " ✓" : ""}</div>
+                    {v.medida && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-90`}>{v.medida}</div>}
+                    {v.g && <div className={`${enTv ? "text-sm" : "text-[10px]"} opacity-80 text-center leading-tight`}>{v.g}</div>}
+                    {toArray(v.ex).length > 0 && <div className="flex flex-wrap justify-center gap-0.5">{toArray(v.ex).map((x) => <span key={x} className={`${enTv ? "text-sm" : "text-[9px]"} font-extrabold px-1 rounded bg-amber-400 text-amber-950`}>LLEVA {x}</span>)}</div>}
+                  </div>
                 ); })}
               </div>
             </div>
@@ -51013,7 +51044,26 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
-  const lista = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  // Filtros: texto (pedido, expediente, presupuesto), proveedor, qué, estado y fechas (pedido y llegada)
+  const [fq, setFq] = useState(""); const [fProv, setFProv] = useState(""); const [fTipo, setFTipo] = useState(""); const [fEst, setFEst] = useState("");
+  const [fDesde, setFDesde] = useState(""); const [fHasta, setFHasta] = useState(""); const [fLlDesde, setFLlDesde] = useState(""); const [fLlHasta, setFLlHasta] = useState("");
+  const isoDe = (v) => { if (!v) return ""; if (typeof v === "number") return new Date(v).toISOString().slice(0, 10); const t = String(v); const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : t.slice(0, 10); };
+  const estadoCorto = (p) => { const l = String(uxEstadoPedido(p).label || ""); return /^Recibido/.test(l) ? "Recibido en fábrica" : /^Llegado en parte/.test(l) ? "Llegado en parte (falta material)" : /Retrasado/.test(l) ? "⚠ Retrasado" : /^Enviado/.test(l) ? "Enviado al proveedor" : l; };
+  const base = [...toArray(pedidos)].filter((p) => verTodos || !p.recibido);
+  const opc = (fn) => [...new Set(base.map(fn).filter(Boolean))].sort((x, y) => String(x).localeCompare(String(y), "es"));
+  const provs = opc((p) => p.proveedorNombre); const tipos = opc((p) => p.tipo); const estados = opc(estadoCorto);
+  const nq = String(fq || "").toLowerCase().replace(/(\d)\.(?=\d)/g, "$1").trim();
+  const lista = base.filter((p) => {
+    if (fProv && p.proveedorNombre !== fProv) return false;
+    if (fTipo && p.tipo !== fTipo) return false;
+    if (fEst && estadoCorto(p) !== fEst) return false;
+    const fp = isoDe(p.fecha); if (fDesde && (!fp || fp < fDesde)) return false; if (fHasta && (!fp || fp > fHasta)) return false;
+    const fl = isoDe(p.llegadaPrevista); if (fLlDesde && (!fl || fl < fLlDesde)) return false; if (fLlHasta && (!fl || fl > fLlHasta)) return false;
+    if (nq) { const d = uxDesglosaExp(p, expsUx); const t = `${p.numero} ${p.tipo} ${p.proveedorNombre} ${uxTextoExp(d)} ${d.ppto.join(" ")} ${uxEstadoPedido(p).label} ${p.comentarios || ""}`.toLowerCase().replace(/(\d)\.(?=\d)/g, "$1"); if (!nq.split(/\s+/).every((k) => t.includes(k))) return false; }
+    return true;
+  }).sort((a, b) => (b.creadoAt || 0) - (a.creadoAt || 0));
+  const hayFiltro = !!(fq || fProv || fTipo || fEst || fDesde || fHasta || fLlDesde || fLlHasta);
+  const limpiar = () => { setFq(""); setFProv(""); setFTipo(""); setFEst(""); setFDesde(""); setFHasta(""); setFLlDesde(""); setFLlHasta(""); };
   const abierto = toArray(pedidos).find((p) => p.id === abiertoId);
   if (abierto) {
     return (
@@ -51035,11 +51085,21 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         <p className="text-sm text-slate-600 mr-auto">Pedidos que Uxcar ha hecho a sus proveedores. Cuando llegue el camión, abre el pedido y sube el albarán para comprobar lo que ha llegado.</p>
         <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} /> Ver también los ya recibidos</label>
       </div>
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 flex flex-wrap items-end gap-2 text-xs">
+        <label className="flex flex-col gap-0.5 flex-1 min-w-[12rem]"><span className="font-semibold text-slate-600">Buscar</span><input value={fq} onChange={(e) => setFq(e.target.value)} placeholder="Pedido, expediente, presupuesto…" className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white" /></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Proveedor</span><select value={fProv} onChange={(e) => setFProv(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todos</option>{provs.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Qué</span><select value={fTipo} onChange={(e) => setFTipo(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todo</option>{tipos.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Estado</span><select value={fEst} onChange={(e) => setFEst(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white"><option value="">Todos</option>{estados.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Fecha pedido</span><span className="flex items-center gap-1"><input type="date" value={fDesde} onChange={(e) => setFDesde(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" />–<input type="date" value={fHasta} onChange={(e) => setFHasta(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" /></span></label>
+        <label className="flex flex-col gap-0.5"><span className="font-semibold text-slate-600">Llegada</span><span className="flex items-center gap-1"><input type="date" value={fLlDesde} onChange={(e) => setFLlDesde(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" />–<input type="date" value={fLlHasta} onChange={(e) => setFLlHasta(e.target.value)} className="border border-slate-300 rounded px-1 py-1 bg-white" /></span></label>
+        <span className="text-slate-500 font-semibold">{lista.length} de {base.length}</span>
+        {hayFiltro && <button type="button" onClick={limpiar} className="px-2 py-1.5 rounded border border-slate-300 bg-white font-semibold text-slate-600">Quitar filtros</button>}
+      </div>
       <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase"><tr><th className="text-left px-3 py-2">Pedido</th><th className="text-left px-3 py-2">Qué</th><th className="text-left px-3 py-2">Proveedor</th><th className="text-left px-3 py-2">Expedientes</th><th className="text-left px-3 py-2">Presupuestos</th><th className="text-left px-3 py-2">Fecha</th><th className="text-left px-3 py-2">Estado</th></tr></thead>
           <tbody>
-            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No hay pedidos de Uxcar pendientes de llegar.</td></tr>}
+            {lista.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">{hayFiltro ? "Ningún pedido con esos filtros." : "No hay pedidos de Uxcar pendientes de llegar."}</td></tr>}
             {lista.map((p) => { const e = uxEstadoPedido(p); return (
               <tr key={p.id} onClick={() => setAbiertoId(p.id)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
                 <td className="px-3 py-2 font-semibold">{p.numero}</td><td className="px-3 py-2">{p.tipo}</td><td className="px-3 py-2">{p.proveedorNombre}</td>
