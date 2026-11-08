@@ -43775,11 +43775,11 @@ function BuscadorLista({ opciones, valor, onElegir, placeholder, esCodigo, onCod
         }}
         className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5 pr-7 bg-white"
       />
-      {elegida && !abierto && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onElegir("")} title="Quitar la obra elegida" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 text-sm leading-none">✕</button>}
+      {elegida && !abierto && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onElegir(""); }} title="Quitar la obra elegida" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 text-sm leading-none">✕</button>}
       {abierto && (
-        <div onMouseDown={(e) => e.preventDefault()} className="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-auto bg-white border border-slate-300 rounded-md shadow-lg">
+        <div onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-auto bg-white border border-slate-300 rounded-md shadow-lg">
           {visibles.map((o, i) => (
-            <div key={o.key} ref={(el) => { if (el && i === activo) el.scrollIntoView({ block: "nearest" }); }} onClick={() => elegir(o)} className={`px-2 py-1.5 text-sm cursor-pointer ${i === activo ? "bg-emerald-100" : "hover:bg-slate-50"} ${o.key === valor ? "font-semibold" : ""}`}>{o.texto}</div>
+            <div key={o.key} ref={(el) => { if (el && i === activo) el.scrollIntoView({ block: "nearest" }); }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); elegir(o); }} /* dentro de un <label>: sin esto el clic volvía a enfocar la casilla y se reabría la lista */ className={`px-2 py-1.5 text-sm cursor-pointer ${i === activo ? "bg-emerald-100" : "hover:bg-slate-50"} ${o.key === valor ? "font-semibold" : ""}`}>{o.texto}</div>
           ))}
           {terminos.length > 0 && coincidencias === 0 && <div className="px-2 py-1.5 text-xs text-slate-500">Ninguna obra coincide con «{q.trim()}»</div>}
           {todas.length > MAX && <div className="px-2 py-1.5 text-xs text-slate-400">Hay {todas.length - MAX} más. Sigue escribiendo para afinar.</div>}
