@@ -58717,7 +58717,13 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                         {fs.length === 0 ? <div className="text-rose-700 font-semibold">⚠ No está puesta en ningún día del calendario</div> : <div className="flex flex-wrap gap-1 mt-0.5">{fs.map((f) => <button key={f} type="button" onClick={() => ir(k, f)} className="px-2 py-0.5 rounded border border-indigo-400 bg-indigo-600 text-white font-bold">📅 {fmtF(f)}{f === hoy ? " (hoy)" : ""} · ver</button>)}</div>}
                         <div className="flex flex-wrap items-center gap-1 mt-1">
                           <input type="date" id={`fpon-${k}`} defaultValue={dia || hoy} className="border border-slate-300 rounded px-1 py-0.5 text-xs" />
-                          <button type="button" onClick={async () => { const el = document.getElementById(`fpon-${k}`); const f = (el && el.value) || dia || hoy; if (fs.includes(f)) { ir(k, f); return; } try { await fbSet(ref(fbDb, `controlDiaObras/${f}/${k}`), true); ir(k, f); } catch (e) { alert("No se pudo poner en el día: " + e.message); } }} className="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold">📅 {fs.length ? "Ponerla también en este día" : "Ponerla en este día"}</button>
+                          <button type="button" onClick={async () => {
+                            const el = document.getElementById(`fpon-${k}`); const f = (el && el.value) || dia || hoy;
+                            if (fs.includes(f)) { ir(k, f); return; }
+                            // Ya está en otro día: se MUEVE (con sus ventanas marcadas, horas y notas), nunca se duplica
+                            if (fs.length) { const de = fs[fs.length - 1]; await moverObraDia(k, de, f); fs.slice(0, -1).forEach((d2) => { if (!enFabrica.has(k)) fbSet(ref(fbDb, `controlDiaObras/${d2}/${k}`), null).catch(() => {}); }); ir(k, f); return; }
+                            try { await fbSet(ref(fbDb, `controlDiaObras/${f}/${k}`), true); ir(k, f); } catch (e) { alert("No se pudo poner en el día: " + e.message); }
+                          }} className="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold">📅 {fs.length ? "Moverla a este día" : "Ponerla en este día"}</button>
                         </div>
                         {res.length <= 3 && <PanelObraPlanning compacto obra={ob} pptos={[...pptosPresupuesto(ob)]} motivoMaterial={(() => { const m = materialObra(ob); return m.ok ? "" : m.motivo; })()} proyectos={proyectos} uxExpedientes={uxExpedientes} sinObra={sinObra} />}
                       </div>
