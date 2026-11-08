@@ -1940,19 +1940,21 @@ export default function App() {
   const crearPresupuestoDesdeMedicion = (exps, bloque = "") => {
     const L = toArray(exps).filter(Boolean); if (!L.length) return null;
     const cab0 = (L.find((e) => String((e.cab || {}).cliente || "").trim()) || L[0]).cab || {};
-    const nomCli = String(cab0.cliente || "").trim() || String(cab0.expediente || "").trim() || "Cliente sin nombre";
+    const deUxcar = !L[0].propia; // medición de Aena: el cliente del presupuesto es Uxcar (el propietario va en la descripción)
+    const cliUx = deUxcar ? (clientes.find((c) => /uxcar/i.test(c.nombre || "")) || {}).nombre || "Construcciones Uxcar 97" : "";
+    const nomCli = deUxcar ? cliUx : (String(cab0.cliente || "").trim() || String(cab0.expediente || "").trim() || "Cliente sin nombre");
     const tel = (L.map((e) => String((e.cab || {}).telefono || "").trim()).find(Boolean)) || "";
     if (!clientes.some((c) => String(c.nombre || "").trim().toLowerCase() === nomCli.toLowerCase())) saveClientes([{ id: uid(), nombre: nomCli, email: "", telefono: "", movil: tel, notas: "Cliente creado automáticamente desde Mediciones → Mis obras" }, ...clientes]);
     const nVent = L.reduce((t, e) => t + uxcLista(e.ventanas).filter((v) => v.activa !== false && !v.rechazada).length, 0);
-    const nombreObra = bloque || cab0.expediente || "Obra";
+    const nombreObra = bloque || (deUxcar ? `EXP ${cab0.expediente || "?"}${cab0.cliente ? ` · ${cab0.cliente}` : ""}` : (cab0.expediente || "Obra"));
     const numero = nextNumeroPresupuesto();
     const np = {
       id: uid(), creadoEn: Date.now(), numero, fechaEnvio: new Date().toISOString().slice(0, 10),
       clienteNombre: nomCli, telefono: tel, email: "", descripcion: `${nombreObra}${bloque ? ` · ${L.length} viviendas` : ""} · ${nVent} ventana${nVent === 1 ? "" : "s"}`,
       importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
-      comentarios: `Presupuesto SOLICITADO desde Mediciones → Mis obras (${bloque ? `bloque «${bloque}»: ${L.map((e) => (e.cab || {}).expediente || "?").join(", ")}` : `obra «${nombreObra}»`}). Las medidas están en la medición: Mediciones → Mis obras → Imprimir.`,
+      comentarios: `Presupuesto SOLICITADO desde Mediciones → ${deUxcar ? "Uxcar (Aena)" : "Mis obras"} (${deUxcar ? `concurso ${cab0.concurso || "—"} · ${cab0.pedido || ""} · ` : ""}${bloque ? `bloque «${bloque}»: ${L.map((e) => (e.cab || {}).expediente || "?").join(", ")}` : `obra «${nombreObra}»`}). Las medidas están en la medición: Mediciones → Mis obras → Imprimir.`,
       fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: [cab0.direccion, cab0.municipio].filter(Boolean).join(", "), montaje: false, recoge: false, zona: cab0.municipio || "",
-      proyectoId: "", origen: "medicionPropia", medicionIds: L.map((e) => e.id),
+      proyectoId: "", origen: deUxcar ? "medicionUxcar" : "medicionPropia", medicionIds: L.map((e) => e.id), // (el id de la medición NO es el del expediente del portal de Uxcar: no se enlaza)
     };
     savePresupuestos([np, ...presupuestos]);
     showToast(`Presupuesto ${numero} solicitado (pendiente) para ${nombreObra}`);
@@ -29247,13 +29249,13 @@ function UxcEnvio({ exp, guardar }) {
     if (pendientes.length) aviso += `Faltan por medir ${pendientes.length} de ${r.activas.length} carpinterías (${pendientes.map((v) => v.ref).join(", ")}).\n\n`;
     if (exp.revisado === false) aviso += "Los datos del expediente están sin revisar (leídos por IA).\n\n";
     if (aviso && !window.confirm(aviso + "¿Enviar a oficina igualmente?")) return;
-    if (!aviso && !window.confirm(propia ? `Se enviará a oficina y se SOLICITARÁ UN PRESUPUESTO (queda en Presupuestos como «Pendiente», cliente ${cab.cliente}). ¿Continuar?` : `Se enviará a oficina y se creará la obra en Proyectos (cliente Uxcar). ¿Continuar?`)) return;
+    if (!aviso && !window.confirm(`Se enviará a oficina y se SOLICITARÁ UN PRESUPUESTO (queda en Presupuestos como «Pendiente», cliente ${propia ? cab.cliente : "Uxcar"}). ¿Continuar?`)) return;
     const ahora = Date.now();
     // WhatsApp se abre ya (antes de esperar nada) para que el móvil no lo bloquee
-    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\n${propia ? "Oficina: hay que hacer el PRESUPUESTO (está en Presupuestos como pendiente)." : "Oficina: se ha creado la obra en Proyectos. Pedid ya los materiales."} Hoja de oficina: CRM → Mediciones → ${propia ? "Mis obras" : "Uxcar (Aena)"} → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
+    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: hay que hacer el PRESUPUESTO (está en Presupuestos como pendiente). Hoja de oficina: CRM → Mediciones → ${propia ? "Mis obras" : "Uxcar (Aena)"} → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
     try {
       await guardar("envio", { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por: quien(), pendientes: pendientes.length });
-      if (propia && uxcPuente.crearPresupuesto) {
+      if (uxcPuente.crearPresupuesto) { // Mis obras y Uxcar (Aena): se solicita el PRESUPUESTO (la obra se crea al aceptarlo)
         const pp = uxcPuente.crearPresupuesto([exp]);
         if (pp) { await guardar("envio/presupuestoNumero", pp.numero); await guardar("envio/presupuestoId", pp.id); }
       } else if (uxcPuente.crearProyecto) {
