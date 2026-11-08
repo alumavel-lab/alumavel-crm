@@ -1935,6 +1935,30 @@ export default function App() {
     return { id: nuevoId, numero };
   };
   uxcPuente.crearProyectoBloque = crearProyectoDesdeBloque;
+  // MIS OBRAS → «Enviar a oficina» SOLICITA UN PRESUPUESTO: se crea en Presupuestos en «Pendiente» con los datos de la medición
+  // (cliente, teléfono, dirección, obra). Uno por obra (o uno por bloque).
+  const crearPresupuestoDesdeMedicion = (exps, bloque = "") => {
+    const L = toArray(exps).filter(Boolean); if (!L.length) return null;
+    const cab0 = (L.find((e) => String((e.cab || {}).cliente || "").trim()) || L[0]).cab || {};
+    const nomCli = String(cab0.cliente || "").trim() || String(cab0.expediente || "").trim() || "Cliente sin nombre";
+    const tel = (L.map((e) => String((e.cab || {}).telefono || "").trim()).find(Boolean)) || "";
+    if (!clientes.some((c) => String(c.nombre || "").trim().toLowerCase() === nomCli.toLowerCase())) saveClientes([{ id: uid(), nombre: nomCli, email: "", telefono: "", movil: tel, notas: "Cliente creado automáticamente desde Mediciones → Mis obras" }, ...clientes]);
+    const nVent = L.reduce((t, e) => t + uxcLista(e.ventanas).filter((v) => v.activa !== false && !v.rechazada).length, 0);
+    const nombreObra = bloque || cab0.expediente || "Obra";
+    const numero = nextNumeroPresupuesto();
+    const np = {
+      id: uid(), creadoEn: Date.now(), numero, fechaEnvio: new Date().toISOString().slice(0, 10),
+      clienteNombre: nomCli, telefono: tel, email: "", descripcion: `${nombreObra}${bloque ? ` · ${L.length} viviendas` : ""} · ${nVent} ventana${nVent === 1 ? "" : "s"}`,
+      importe: "", estado: "Pendiente", motivoRechazo: "", fechaRespuesta: "",
+      comentarios: `Presupuesto SOLICITADO desde Mediciones → Mis obras (${bloque ? `bloque «${bloque}»: ${L.map((e) => (e.cab || {}).expediente || "?").join(", ")}` : `obra «${nombreObra}»`}). Las medidas están en la medición: Mediciones → Mis obras → Imprimir.`,
+      fechaPrevistaConfirmacion: "", envio: false, direccionEnvio: [cab0.direccion, cab0.municipio].filter(Boolean).join(", "), montaje: false, recoge: false, zona: cab0.municipio || "",
+      proyectoId: "", origen: "medicionPropia", medicionIds: L.map((e) => e.id),
+    };
+    savePresupuestos([np, ...presupuestos]);
+    showToast(`Presupuesto ${numero} solicitado (pendiente) para ${nombreObra}`);
+    return { id: np.id, numero };
+  };
+  uxcPuente.crearPresupuesto = crearPresupuestoDesdeMedicion;
   uxcPuente.crearProyecto = crearProyectoDesdeMedicionUxcar;
   uxcPuente.nombresClientes = () => clientes.map((c) => c.nombre).filter(Boolean);
   uxcPuente.fichaCliente = (nombre) => { const n = String(nombre || "").trim().toLowerCase(); return n ? (clientes.find((c) => String(c.nombre || "").trim().toLowerCase() === n) || null) : null; };
@@ -28683,18 +28707,18 @@ function MedicionesUxcarZona({ propia = false }) {
     if (!conVent.some((x) => String((x.cab || {}).cliente || "").trim())) { alert("Pon el cliente en «Datos de la obra» de al menos una vivienda del bloque (el nombre como está en Clientes, o uno nuevo: se creará solo)."); return; }
     const yaEnv = todas.filter((x) => x.envio);
     const pend = conVent.flatMap((x) => uxcResumenOficina(x).activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0)).map((v) => `${(x.cab || {}).expediente || "?"} ${v.ref}`));
-    let txt = `Se creará UNA sola obra en Proyectos con ${conVent.length} vivienda${conVent.length === 1 ? "" : "s"} del bloque «${bl}».\n`;
+    let txt = `Se SOLICITARÁ UN SOLO PRESUPUESTO (Pendiente en Presupuestos) con ${conVent.length} vivienda${conVent.length === 1 ? "" : "s"} del bloque «${bl}».\n`;
     if (vacias.length) txt += `\nNo van (sin ventanas): ${vacias.map((x) => (x.cab || {}).expediente || "(sin nombre)").join(", ")}.`;
     if (yaEnv.length) txt += `\nOjo: ${yaEnv.length} vivienda(s) de este bloque YA se enviaron antes y tienen su propia obra; no se juntan con esta.`;
     if (pend.length) txt += `\nFaltan por medir ${pend.length}: ${pend.slice(0, 12).join(", ")}${pend.length > 12 ? "…" : ""}.`;
     if (!window.confirm(txt + "\n\n¿Enviar a oficina?")) return;
     const ahora = Date.now(); let por = ""; try { const u = fbAuth.currentUser; por = (u && (u.displayName || u.email)) || ""; } catch (e) { por = ""; }
-    try { window.open("https://wa.me/?text=" + encodeURIComponent(`BLOQUE MEDIDO · ${bl}\n${conVent.length} viviendas: ${conVent.map((x) => (x.cab || {}).expediente || "?").join(", ")}.${pend.length ? "\nFaltan por medir: " + pend.length + "." : ""}\nOficina: se ha creado UNA obra en Proyectos. Pedid ya los materiales.\n${window.location.origin}`), "_blank"); } catch (e) { /* sin ventana */ }
+    try { window.open("https://wa.me/?text=" + encodeURIComponent(`BLOQUE MEDIDO · ${bl}\n${conVent.length} viviendas: ${conVent.map((x) => (x.cab || {}).expediente || "?").join(", ")}.${pend.length ? "\nFaltan por medir: " + pend.length + "." : ""}\nOficina: hay que hacer UN PRESUPUESTO de todo el bloque (está en Presupuestos como pendiente).\n${window.location.origin}`), "_blank"); } catch (e) { /* sin ventana */ }
     try {
       for (const x of conVent) await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio`), { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por, pendientes: uxcResumenOficina(x).activas.filter((v) => !(uxcNum(v.anchoFab) > 0 && uxcNum(v.altoFab) > 0)).length, bloque: bl });
-      const pr = uxcPuente.crearProyectoBloque ? await uxcPuente.crearProyectoBloque(bl, conVent) : null;
-      if (pr) for (const x of conVent) { await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/proyectoId`), pr.id); await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/proyectoNumero`), pr.numero); }
-      else alert("Se marcó como enviado, pero no se creó la obra en Proyectos (¿ya la estaba creando otra persona?). Mira en Proyectos.");
+      const pp = uxcPuente.crearPresupuesto ? uxcPuente.crearPresupuesto(conVent, bl) : null;
+      if (pp) for (const x of conVent) { await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/presupuestoId`), pp.id); await fbSet(ref(fbDb, `${UXC_NODO}/${x.id}/envio/presupuestoNumero`), pp.numero); }
+      else alert("Se marcó como enviado, pero no se pudo crear el presupuesto. Mira en Presupuestos.");
     } catch (e) { alert("Se envió, pero algo falló al crear la obra: " + e.message); }
   };
   const ordenFilas = propia ? (() => { const out = []; const vistos = new Set(); filtradas.forEach((x) => { const bl = (x.cab || {}).bloque; if (!bl) { out.push({ x }); return; } if (vistos.has(bl)) return; vistos.add(bl); const del = filtradas.filter((y) => (y.cab || {}).bloque === bl).sort((m, n) => String((m.cab || {}).expediente || "").localeCompare(String((n.cab || {}).expediente || ""), "es", { numeric: true })); out.push({ bloque: bl, n: del.length }); del.forEach((y) => out.push({ x: y, enBloque: true })); }); return out; })() : filtradas.map((x) => ({ x }));
@@ -28726,7 +28750,7 @@ function MedicionesUxcarZona({ propia = false }) {
             {ordenFilas.map(({ x, bloque, n: nBl, enBloque }) => {
               if (bloque) return (
                 <tr key={"bl_" + bloque} className="bg-indigo-50 border-b border-indigo-200">
-                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span>{(() => { const del = (lista || []).filter((y) => y.propia && (y.cab || {}).bloque === bloque); const env = del.filter((y) => y.envio); const nums = [...new Set(env.map((y) => y.envio.proyectoNumero).filter(Boolean))]; return env.length ? <span className="text-xs font-bold text-emerald-700">✓ {env.length} de {del.length} enviadas{nums.length ? ` · obra #${nums.join(", #")}` : ""}</span> : null; })()}<button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button>{(lista || []).some((y) => y.propia && (y.cab || {}).bloque === bloque && !y.envio) && <button type="button" onClick={() => enviarBloque(bloque)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-extrabold px-3 py-1.5 rounded-md shadow">📤 Enviar el bloque a oficina (una sola obra)</button>}</div></td>
+                  <td colSpan={4} className="px-4 py-2"><div className="flex flex-wrap items-center gap-3"><span className="font-extrabold text-indigo-900">🏢 {bloque}</span><span className="text-xs font-semibold text-indigo-700">{nBl} vivienda{nBl === 1 ? "" : "s"}</span>{(() => { const del = (lista || []).filter((y) => y.propia && (y.cab || {}).bloque === bloque); const env = del.filter((y) => y.envio); const nums = [...new Set(env.map((y) => y.envio.proyectoNumero).filter(Boolean))]; const pps = [...new Set(env.map((y) => y.envio.presupuestoNumero).filter(Boolean))]; return env.length ? <span className="text-xs font-bold text-emerald-700">✓ {env.length} de {del.length} enviadas{pps.length ? ` · presupuesto ${pps.join(", ")} (pendiente)` : ""}{nums.length ? ` · obra #${nums.join(", #")}` : ""}</span> : null; })()}<button type="button" onClick={() => nuevaEnBloque(bloque)} className="ml-auto text-xs font-bold px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">+ Nueva vivienda en este bloque</button>{(lista || []).some((y) => y.propia && (y.cab || {}).bloque === bloque && !y.envio) && <button type="button" onClick={() => enviarBloque(bloque)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-xs font-extrabold px-3 py-1.5 rounded-md shadow">📤 Enviar el bloque a oficina (una sola obra)</button>}</div></td>
                 </tr>
               );
               const c = x.cab || {}; const comp = uxcComprobaciones(x); const err = comp.filter((k) => k.n === "error").length, av = comp.filter((k) => k.n === "aviso").length;
@@ -29223,17 +29247,20 @@ function UxcEnvio({ exp, guardar }) {
     if (pendientes.length) aviso += `Faltan por medir ${pendientes.length} de ${r.activas.length} carpinterías (${pendientes.map((v) => v.ref).join(", ")}).\n\n`;
     if (exp.revisado === false) aviso += "Los datos del expediente están sin revisar (leídos por IA).\n\n";
     if (aviso && !window.confirm(aviso + "¿Enviar a oficina igualmente?")) return;
-    if (!aviso && !window.confirm(`Se enviará a oficina y se creará la obra en Proyectos (cliente ${propia ? cab.cliente : "Uxcar"}). ¿Continuar?`)) return;
+    if (!aviso && !window.confirm(propia ? `Se enviará a oficina y se SOLICITARÁ UN PRESUPUESTO (queda en Presupuestos como «Pendiente», cliente ${cab.cliente}). ¿Continuar?` : `Se enviará a oficina y se creará la obra en Proyectos (cliente Uxcar). ¿Continuar?`)) return;
     const ahora = Date.now();
     // WhatsApp se abre ya (antes de esperar nada) para que el móvil no lo bloquee
-    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\nOficina: se ha creado la obra en Proyectos. Pedid ya los materiales. Hoja de oficina: CRM → Mediciones → ${propia ? "Mis obras" : "Uxcar (Aena)"} → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
+    abrirWA(`VIVIENDA MEDIDA · ${base}\nCarpinterías medidas: ${r.medidas.length} de ${r.activas.length}.${pendientes.length ? "\nSin medir: " + pendientes.map((v) => v.ref).join(", ") + "." : ""}\n${propia ? "Oficina: hay que hacer el PRESUPUESTO (está en Presupuestos como pendiente)." : "Oficina: se ha creado la obra en Proyectos. Pedid ya los materiales."} Hoja de oficina: CRM → Mediciones → ${propia ? "Mis obras" : "Uxcar (Aena)"} → ${cab.expediente || "expediente"} → Imprimir.\n${enlace}`);
     try {
       await guardar("envio", { primera: ahora, ultima: ahora, veces: 1, prisa: 0, por: quien(), pendientes: pendientes.length });
-      if (uxcPuente.crearProyecto) {
+      if (propia && uxcPuente.crearPresupuesto) {
+        const pp = uxcPuente.crearPresupuesto([exp]);
+        if (pp) { await guardar("envio/presupuestoNumero", pp.numero); await guardar("envio/presupuestoId", pp.id); }
+      } else if (uxcPuente.crearProyecto) {
         const pr = await uxcPuente.crearProyecto(exp);
         if (pr) await guardar("envio/proyectoNumero", pr.numero);
       }
-    } catch (e) { alert("Se envió, pero no se pudo crear la obra en Proyectos: " + e.message); }
+    } catch (e) { alert(propia ? "Se envió, pero no se pudo crear el presupuesto: " + e.message : "Se envió, pero no se pudo crear la obra en Proyectos: " + e.message); }
   };
   const prisa = () => {
     const ahora = Date.now();
@@ -29263,6 +29290,7 @@ function UxcEnvio({ exp, guardar }) {
         {pendientes.length > 0 && <span className="block text-amber-800">Ojo: ahora aún faltan por medir {pendientes.map((v) => v.ref).join(", ")}</span>}
       </div>
       {env.proyectoNumero && <div className="text-sm font-bold text-slate-700">Obra #{env.proyectoNumero} creada en Proyectos</div>}
+      {env.presupuestoNumero && <div className="text-sm font-bold text-slate-700">Presupuesto {env.presupuestoNumero} solicitado (Pendiente en Presupuestos)</div>}
       {env.pedido
         ? <div className="text-sm font-bold text-emerald-700">✔ Materiales pedidos el {cuando(env.pedido.fecha)}{env.pedido.por ? ` (${env.pedido.por})` : ""} <button onClick={() => guardar("envio/pedido", null)} className="ml-1 text-xs font-normal text-slate-500 underline">deshacer</button></div>
         : <>
