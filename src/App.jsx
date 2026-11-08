@@ -45156,7 +45156,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           </div>
           {bloqueRegistro(true)}
           {avisoSinEt}
-          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="flex flex-wrap gap-3 items-start">{stDia.map((x) => { const porFila = Math.max(1, Math.min(6, stDia.length)); return <div key={x.o.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.75rem)`, minWidth: "12rem", zoom: stDia.length >= 5 ? 0.55 : stDia.length === 4 ? 0.65 : stDia.length === 3 ? 0.8 : 1 }}>{tarjetaObra(x, true, true)}</div>; })}</div>}
+          {stDia.length === 0 ? <div className="text-2xl text-slate-300">No hay obras con ventanas en el planning de este día.</div> : <div className="flex flex-wrap gap-3 items-start">{stDia.map((x) => { const porFila = Math.max(1, Math.ceil(stDia.length / Math.max(1, Math.ceil(stDia.length / 6)))); return <div key={x.o.key} style={{ flex: `1 1 calc(${100 / porFila}% - 0.75rem)`, minWidth: "12rem", zoom: stDia.length >= 5 ? 0.55 : stDia.length === 4 ? 0.65 : stDia.length === 3 ? 0.8 : 1 }}>{tarjetaObra(x, true, true)}</div>; })}</div>}
         </div>
       );
     }
@@ -47378,7 +47378,7 @@ function PanelDiaPuesto({ puestoId, indice, escaneos, ultimo, onFoco }) {
       .filter((c) => c.vs.length || c.nombre);
   }, [abierto, tv, planFab, manual, snapCD, dia, indice, leidas]);
   const columnas = (enTv) => {
-    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.min(8, lista.length));
+    const lista = cols.filter((c) => !grande || c.k === grande); const porFila = Math.max(1, Math.ceil(lista.length / Math.max(1, Math.ceil(lista.length / 8))));
     return (
       <div className="flex flex-wrap gap-2 items-start">
         {lista.map((c) => {
@@ -58464,7 +58464,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
           const hayGrande = !!tvGrande && arr.some((x) => x.d.key === tvGrande);
           if (hayGrande && o.d.key !== tvGrande) return null;
           const unidades = hayGrande ? 1 : arr.length;
-          const porFila = Math.max(1, Math.min(8, unidades)); const filas = Math.max(1, Math.ceil(unidades / porFila));
+          const filas = Math.max(1, Math.ceil(unidades / 8)); const porFila = Math.max(1, Math.ceil(unidades / filas)); // repartidas a partes iguales: 10 obras = 5 + 5 (no 8 + 2)
           const vivs = [...o.viv.entries()]; const todosIds = idsDe(o); const vals = todosIds.map((i) => valor(o.d.key, i)); const col = colorDe(vals);
           const grande = tvGrande === o.d.key; const nV = vivs.reduce((a, [, vs]) => a + vs.length, 0); const nH = vals.filter((x) => x === 1).length;
           return (
