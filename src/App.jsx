@@ -4338,6 +4338,17 @@ export default function App() {
     saveIngresos(ingresos.map((i) => (i.id === ingresoId ? { ...i, proyectoId, vinculado: true } : i)));
     showToast("Entrada vinculada al proyecto (no se ha generado factura)");
   };
+  // ENTRADAS ASIGNADAS A UN PRESUPUESTO (aún sin proyecto): en cuanto ese presupuesto tiene su proyecto (a mano o al firmarse), la entrada pasa sola a él
+  useEffect(() => {
+    const pend = toArray(ingresos).filter((i) => i && i.presupuestoId && !i.proyectoId);
+    if (!pend.length) return;
+    const proyDe = (pid) => { const pre = toArray(presupuestos).find((x) => x && x.id === pid); const id = (pre && pre.proyectoCreadoId) || ((toArray(proyectos).find((x) => x && x.presupuestoId === pid) || {}).id) || ""; return id && toArray(proyectos).some((x) => x && x.id === id) ? id : ""; };
+    const cambios = pend.map((i) => [i.id, proyDe(i.presupuestoId)]).filter(([, pid]) => pid);
+    if (!cambios.length) return;
+    const m = new Map(cambios);
+    saveIngresos(ingresos.map((i) => (m.has(i.id) ? { ...i, proyectoId: m.get(i.id), vinculado: true } : i)));
+    showToast(`${cambios.length} entrada${cambios.length === 1 ? "" : "s"} de dinero pasada${cambios.length === 1 ? "" : "s"} a su proyecto recién creado`);
+  }, [ingresos, presupuestos, proyectos]);
 
   const saveSolicitudesPedido = (next) => { setSolicitudesPedido(next); persist("solicitudes_pedido", next); };
 
@@ -7194,6 +7205,7 @@ export default function App() {
             ingresos={ingresos}
             clientes={clientes}
             proyectos={proyectos}
+            presupuestos={presupuestos}
             view={ingresoView}
             setView={setIngresoView}
             editId={ingresoEditId}
@@ -36657,7 +36669,7 @@ function PresupuestosPresentacion({ presupuestos }) {
   );
 }
 
-function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
+function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(false);
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
@@ -36690,6 +36702,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
         initial={editing || prefill}
         clientes={clientes}
         proyectos={proyectos}
+        presupuestos={presupuestos}
         onCancel={() => { setView("list"); onClearPrefill && onClearPrefill(); }}
         onSave={(data) => { onUpsert(data); onClearPrefill && onClearPrefill(); }}
       />
@@ -36970,7 +36983,7 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
   );
 }
 
-function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
+function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel, onSave }) {
   const [f, setF] = useState(
     initial || {
       id: null, fecha: new Date().toISOString().slice(0, 10), clienteNombre: "", importe: "",
@@ -36987,7 +37000,7 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
     if (!f.importe || parseFloat(f.importe) <= 0) { setErrorMsg("El importe tiene que ser mayor que 0."); return; }
     if (!f.fecha) { setErrorMsg("Falta la fecha (es obligatoria)."); return; }
     setErrorMsg("");
-    onSave({ ...f, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null });
+    onSave({ ...f, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null, presupuestoId: f.proyectoId ? null : (f.presupuestoId || null) });
   };
 
   return (
@@ -37035,12 +37048,13 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
 
         <JustificantesIngreso justificantes={f.justificantes} onChange={(next) => setF((prev) => ({ ...prev, justificantes: next }))} />
 
-        <Field label="Proyecto (déjalo en blanco si todavía no existe)">
-          <Select value={f.proyectoId || ""} onChange={set("proyectoId")}>
-            <option value="">Sin proyecto todavía</option>
+        <Field label="Proyecto o presupuesto (si aún no hay proyecto, elige su presupuesto)">
+          <Select value={f.proyectoId ? f.proyectoId : f.presupuestoId ? `pre:${f.presupuestoId}` : ""} onChange={(e) => { const v = e.target.value; if (v.startsWith("pre:")) setF({ ...f, proyectoId: "", presupuestoId: v.slice(4) }); else setF({ ...f, proyectoId: v, presupuestoId: "" }); }}>
+            <option value="">Sin proyecto ni presupuesto todavía</option>
+            {toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado").sort((a, b) => String(b.numero || "").localeCompare(String(a.numero || ""), "es", { numeric: true })).map((pr) => <option key={`pre-${pr.id}`} value={`pre:${pr.id}`} data-buscar={`${pr.numero || ""} ${String(pr.numero || "").replace(/\./g, "")} ${pr.descripcion || ""} ${pr.clienteNombre || ""}`}>📄 Presupuesto {pr.numero}{pr.descripcion ? ` — ${pr.descripcion}` : ""}{pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""} (sin proyecto){pr.importe ? ` · ${money(pr.importe)}` : ""}</option>)}
             {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
-          <p className="text-xs text-slate-400 mt-1">Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura.</p>
+          <p className="text-xs text-slate-400 mt-1">{f.presupuestoId && !f.proyectoId ? "📄 Queda apuntada a ese presupuesto. Cuando se cree su proyecto, pasa sola a él y se resta de lo pendiente de cobrar." : "Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura."} Escribe el nº de presupuesto o el cliente para buscar.</p>
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
