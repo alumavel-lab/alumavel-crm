@@ -51498,7 +51498,10 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const repartirEnPedidosCrm = (sobran) => {
     const numsObra = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split(/[-.]/)[0]; if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
     const proys = toArray(ctxUxAlb.proyectos);
-    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && !p.uxcarPedidoId && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
+    // También los «(de Uxcar)»: copias en el CRM de pedidos de Uxcar. Solo se dejan fuera las que tienen su pedido de Uxcar PENDIENTE en la lista
+    // de Entradas Uxcar (esas ya se han mirado arriba). Si su pedido de Uxcar ya no está pendiente o no existe, el que manda es el del CRM.
+    const uxPendIds = new Set(toArray(pedidos).filter((p) => p && !p.recibido).map((p) => p.id));
+    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && !(p.uxcarPedidoId && uxPendIds.has(p.uxcarPedidoId)) && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
     const cands = peds.map((p) => {
       const pr = p.proyectoId ? proys.find((x) => x && x.id === p.proyectoId) : null;
       const d = datosObraPedido(p, pr, expsUx);
@@ -51656,7 +51659,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
             {toArray(albRes.crm).map((x) => (
               <label key={`crm-${x.p.id}`} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[`crm:${x.p.id}`]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [`crm:${x.p.id}`]: e.target.checked }))} />
-                <b>#{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {x.d.ppto || "—"}</b><span>{x.p.proveedorExterno || "Pedido CRM"}</span><span className="text-slate-600">{x.d.ref || x.d.obra}</span>
+                <b>#{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {x.d.ppto || "—"}</b><span>{x.p.proveedorExterno || "Pedido CRM"}{x.p.uxcarPedidoId ? " (de Uxcar)" : ""}</span><span className="text-slate-600">{x.d.ref || x.d.obra}</span>
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
                 {!x.completo && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
