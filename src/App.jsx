@@ -43970,7 +43970,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   });
   const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
   const incsFabAD = useObjetoFb("incidenciasFabrica"); // las mismas incidencias de fábrica de siempre
-  const [verIncAD, setVerIncAD] = useState(null); // { titulo, ids:[...] } de la ventana cuya incidencia se está viendo
+  const [verIncAD, setVerIncAD] = useState(null); // { titulo, ids:[...], f, o } de la ventana cuya incidencia se está viendo
+  // VENTANAS PALETIZADAS CON LA INCIDENCIA SIN ARREGLAR: se dejan pasar al palet y quedan apuntadas en su pestaña hasta que se arreglen
+  const palIncAD = useObjetoFb("paletizadasConIncidencia");
+  const [tabAD, setTabAD] = useEstadoLocal("almacenDiaTab", "dia");
   const hojasAD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra (la misma que usa Control del día)
   const snapCD = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra tal como las ve Control del día
   const planingAD = useObjetoFb("controlDiaPlaning"); // horas de cada obra según el PDF «PLANING»
@@ -45074,7 +45077,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div key={f.x.v.id} className={`space-y-0.5 flex flex-col items-center ${incsDeVentana(o, f.x.v).length ? "ring-2 ring-rose-500 rounded-lg p-0.5 bg-rose-50" : ""}`}>
           {incsDeVentana(o, f.x.v).length > 0 && (g
             ? <div className="text-xl font-extrabold text-rose-300">⚠ INCIDENCIA</div>
-            : <button type="button" onClick={() => setVerIncAD({ titulo: `${f.x.v.pos} · ${o.nombre}`, ids: incsDeVentana(o, f.x.v).map((i) => i.id) })} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ INCIDENCIA ({incsDeVentana(o, f.x.v).length}) · ver</button>)}
+            : <button type="button" onClick={() => setVerIncAD({ titulo: `${f.x.v.pos} · ${o.nombre}`, ids: incsDeVentana(o, f.x.v).map((i) => i.id), f, o })} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ INCIDENCIA ({incsDeVentana(o, f.x.v).length}) · ver</button>)}
+          {pendIncDe(o, f.x.v) && <div className={`${g ? "text-lg" : "text-[10px]"} font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950`}>📦 paletizada · incidencia pendiente</div>}
           {f.x.v.dib ? <DibujoPlan hash={f.x.v.dib} alto={g ? 130 : 70} /> : f.x.lote.fab ? <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} /> : null}
           {botonVentana(f, o, g)}
           {!g && <BotonIncidenciaFabrica prefill={{ ventanaId: f.x.v.id, ventana: `${f.x.v.pos}${f.x.v.medida ? " · " + f.x.v.medida : ""}`, obra: o.nombre }} />}
@@ -45215,6 +45219,36 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "controlDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
       catch (e) { avisar(false, "No se pudo borrar: " + e.message); }
     };
+    const pendIncAD = toArray(palIncAD).filter((r) => r && !r.hecho).sort((a, b) => (b.fecha || 0) - (a.fecha || 0));
+    const pendIncDe = (o, v) => pendIncAD.find((r) => r.obraKey === o.key && (r.ventanaId === v.id || (r.pos && r.pos === v.pos)));
+    const paletizarConInc = (f, o, ids) => {
+      if (!f || !o) return;
+      const incs = toArray(incsFabAD).filter((i) => i && ids.includes(i.id));
+      if (!window.confirm(`${f.x.v.pos} · ${o.nombre}\n\n¿Pasarla a PALETIZAR aunque tenga la incidencia sin arreglar?\n\nQueda apuntada en «⚠ Pendientes de incidencia» hasta que alguien la marque como arreglada.`)) return;
+      if (!f.c) ticarAD(f, o);
+      const cab = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, f.w)));
+      const id = String(`${limpiaAD(o.key)}_${limpiaAD(f.x.v.id || f.x.v.pos)}`);
+      fbSet(ref(fbDb, `paletizadasConIncidencia/${id}`), JSON.parse(JSON.stringify({ id, obraKey: o.key, obra: o.nombre || "", ref: nombreAD(o) || "", ventanaId: f.x.v.id || "", pos: f.x.v.pos || "", medida: f.x.v.medida || "", palet: cab ? cab.numero : "", incIds: ids, incTexto: incs.map((i) => `${i.tipo ? i.tipo + ": " : ""}${i.texto || ""}`).join(" | "), fecha: Date.now(), dia: diaAD, quien: quien || "", hecho: false }))).catch((e) => avisar(false, "No se pudo apuntar: " + e.message));
+      avisar(true, `${f.x.v.pos} paletizada con la incidencia pendiente · apuntada en «Pendientes de incidencia»`);
+      setVerIncAD(null);
+    };
+    const marcarIncArreglada = (r) => {
+      if (!window.confirm(`${r.pos} · ${r.ref || r.obra}: ¿la incidencia ya está ARREGLADA en el palet?`)) return;
+      fbUpdate(ref(fbDb, `paletizadasConIncidencia/${r.id}`), { hecho: true, hechoPor: quien || "", hechoEn: Date.now() }).then(() => avisar(true, `✓ ${r.pos}: incidencia arreglada`)).catch((e) => avisar(false, "No se pudo guardar: " + e.message));
+    };
+    const listaPendInc = (
+      <div className="space-y-2">
+        <p className="text-sm text-slate-600">Ventanas que se pasaron a paletizar <b>con la incidencia sin arreglar</b>. Cuando esté arreglada en el palet, pulsa «Arreglada».</p>
+        {pendIncAD.length === 0 ? <div className="text-sm text-emerald-700 font-semibold">✓ No hay nada pendiente.</div> : pendIncAD.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border-2 border-rose-300 bg-rose-50 px-3 py-2">
+            <div className="min-w-[10rem]"><div className="text-lg font-extrabold text-slate-900">{r.pos}</div>{r.medida ? <div className="text-xs text-slate-500">{r.medida}</div> : null}</div>
+            <div className="flex-1 min-w-[14rem] text-sm"><div className="font-bold text-slate-800">{r.ref ? `${r.ref} · ` : ""}{r.obra}</div><div className="text-rose-800">⚠ {r.incTexto || "incidencia"}</div><div className="text-xs text-slate-500">{r.palet ? `Palet ${r.palet} · ` : ""}{r.fecha ? new Date(r.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}{r.quien ? ` · ${r.quien}` : ""}</div></div>
+            {toArray(r.incIds).length > 0 && <button type="button" onClick={() => setVerIncAD({ titulo: `${r.pos} · ${r.obra}`, ids: toArray(r.incIds) })} className="text-xs font-semibold px-2 py-1 rounded border border-rose-300 text-rose-800 bg-white">Ver incidencia</button>}
+            <button type="button" onClick={() => marcarIncArreglada(r)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-3 py-1.5 rounded-md">✓ Arreglada</button>
+          </div>
+        ))}
+      </div>
+    );
     const modalIncAD = verIncAD ? (
       <div className="fixed inset-0 z-[120] bg-black/40 flex items-center justify-center p-3" onClick={() => setVerIncAD(null)}>
         <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -45227,6 +45261,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               <div className="text-xs text-slate-500">Creada por {(i.creadaPor && i.creadaPor.nombre) || "—"}{i.creadaTs ? ` · ${new Date(i.creadaTs).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : ""}</div>
               {i.foto ? <img src={i.foto} alt="" className="max-h-48 rounded border border-slate-200" /> : null}
             </div>); })}
+          {verIncAD.f && verIncAD.o && !pendIncDe(verIncAD.o, verIncAD.f.x.v) && <button type="button" onClick={() => paletizarConInc(verIncAD.f, verIncAD.o, verIncAD.ids)} className="w-full text-left rounded-lg border-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">📦 Pasarla a paletizar con la incidencia pendiente<div className="text-xs font-normal">{verIncAD.f.c ? `Ya está en el palet ${verIncAD.f.c.numero}: se apunta como pendiente.` : "La mete en el palet y la apunta en «⚠ Pendientes de incidencia» hasta que se arregle."}</div></button>}
+          {verIncAD.f && verIncAD.o && pendIncDe(verIncAD.o, verIncAD.f.x.v) && <div className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">📦 Ya está paletizada con la incidencia pendiente (en «⚠ Pendientes de incidencia»).</div>}
           <p className="text-xs text-slate-500">Las incidencias se resuelven y se reasignan en la pestaña «Incidencias» (oficina). Para crear otra, usa el botón «Incidencia» de la ventana.</p>
         </div>
       </div>
@@ -45252,9 +45288,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="flex flex-wrap items-center gap-3">
           {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
+          <div className="flex gap-1">
+            <button type="button" onClick={() => setTabAD("dia")} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${tabAD !== "inc" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-200"}`}>Paletizar</button>
+            <button type="button" onClick={() => setTabAD("inc")} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${tabAD === "inc" ? "bg-rose-600 text-white border-rose-600" : pendIncAD.length ? "bg-rose-50 text-rose-800 border-rose-400 animate-pulse" : "bg-white text-slate-600 border-slate-200"}`}>⚠ Pendientes de incidencia{pendIncAD.length ? ` (${pendIncAD.length})` : ""}</button>
+          </div>
           <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
           {isAdmin && <button type="button" onClick={limpiarPrueba} className="px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 text-xs font-semibold">🧹 Borrar palets de prueba</button>}
         </div>
+        {tabAD === "inc" ? listaPendInc : <>
         {bloqueRegistro(false)}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -45328,6 +45369,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           ); })()}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
+        </>}
       </div>
     );
   };
