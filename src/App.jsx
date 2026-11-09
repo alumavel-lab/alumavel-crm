@@ -38764,6 +38764,8 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
 function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
+  // PASAR A PROYECTO: obligatorio comprobar el importe con la hoja del presupuesto FIRMADO (si no cuadra, no pasa)
+  const [confImp, setConfImp] = useState(null); // { valor, visto }
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
   // tenga fecha puesta) y deja de mostrarse en cuanto el presupuesto queda resuelto
@@ -39123,13 +39125,41 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
 
       {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado === "firmado" && (
         <button
-          onClick={onCrearProyecto}
+          onClick={() => setConfImp({ valor: "", visto: false })}
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="w-full flex items-center justify-center gap-2 hover:opacity-90 text-base font-bold py-4 rounded-lg mb-6 shadow-md cursor-pointer select-none"
         >
           <Briefcase size={20} /> CREAR PROYECTO DESDE ESTE PRESUPUESTO
         </button>
       )}
+      {confImp && (() => {
+        const imp = parseFloat(presupuesto.importe) || 0;
+        const escrito = parseFloat(String(confImp.valor || "").replace(/\s|€/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")) || 0;
+        // la hoja firmada puede traer el total CON IVA: vale si coincide con el importe o con el importe + 21 % / 10 %
+        const casa = escrito > 0 && [imp, imp * 1.21, imp * 1.1].some((v) => Math.abs(v - escrito) <= 0.05);
+        const pdfFirmado = (presupuesto.firma && presupuesto.firma.pdfUrl) || (toArray(presupuesto.documentos).find((d) => d && /firmad/i.test(d.nombre || "")) || {}).url || "";
+        return (
+          <div className="fixed inset-0 z-[130] bg-black/40 flex items-center justify-center p-3" onClick={() => setConfImp(null)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-extrabold text-slate-900">💶 ¿El importe es el correcto?</div>
+              <p className="text-sm text-slate-600">Antes de pasar el presupuesto <b>{presupuesto.numero}</b> a proyecto, mira el importe en la <b>hoja del presupuesto firmado</b> y escríbelo aquí.</p>
+              <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">Importe en el CRM: <b className="text-lg text-slate-900">{money(imp)}</b>{imp ? <span className="text-xs text-slate-500"> (con IVA 21 %: {money(imp * 1.21)})</span> : null}</div>
+              {pdfFirmado ? <a href={pdfFirmado} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-bold text-sky-700 underline">📄 Abrir la hoja del presupuesto firmado</a> : <div className="text-sm font-bold text-amber-800">⚠ No encuentro el PDF firmado en este presupuesto: búscalo en Documentos guardados.</div>}
+              <label className="block text-sm font-semibold text-slate-700">Importe que pone en la hoja firmada
+                <input autoFocus inputMode="decimal" value={confImp.valor} onChange={(e) => setConfImp({ ...confImp, valor: e.target.value })} placeholder="Ej: 4.250,30" className="mt-1 w-full border-2 border-slate-300 rounded-md px-3 py-2 text-lg font-bold" />
+              </label>
+              {escrito > 0 && (casa
+                ? <div className="text-sm font-bold text-emerald-700">✓ Coincide con el importe del CRM.</div>
+                : <div className="text-sm font-bold text-rose-700">✕ No coincide ({money(escrito)} en la hoja y {money(imp)} en el CRM). Corrige el importe del presupuesto («Editar») antes de pasarlo a proyecto.</div>)}
+              <label className="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" checked={confImp.visto} onChange={(e) => setConfImp({ ...confImp, visto: e.target.checked })} className="mt-0.5 w-4 h-4" /> He comprobado el importe en la hoja del presupuesto firmado</label>
+              <div className="flex gap-2 pt-1">
+                <button type="button" disabled={!casa || !confImp.visto} onClick={() => { setConfImp(null); onCrearProyecto(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-bold py-2.5 rounded-md disabled:opacity-40">Sí, es correcto: crear el proyecto</button>
+                <button type="button" onClick={() => setConfImp(null)} className="px-4 text-sm font-semibold rounded-md border border-slate-300">Cancelar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado !== "firmado" && (
         <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
           ⚠ Aceptado, pero todavía no hay firma confirmada — hasta que no esté firmado (arriba, en "Enviar a firmar") no se puede crear el proyecto.
