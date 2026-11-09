@@ -39713,6 +39713,9 @@ const uxHoy = () => new Date().toISOString().slice(0, 10);
 const uxSumarDias = (fecha, n) => { const d = new Date((fecha || uxHoy()) + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
 const uxNum = (v) => parseInt(v, 10) || 0;
+// Medida de una línea de pedido en mm. Algunos pedidos traen la medida con el decimal pegado («379,50» guardado como 37950,
+// «784,50» como 78450): ninguna ventana/cristal pasa de 3,3 m, así que se le van quitando cifras hasta que sea posible (37950 → 379,5)
+const uxMedidaMm = (v) => { let n = uxNum(v); let i = 0; while (n > 3300 && i < 2) { n = n / 10; i++; } return Math.round(n * 10) / 10; };
 // Lo que se controla de cada expediente: las ventanas (recuento) y el material que hay
 // que pedir para ellas: persianas (se guarda en "compactos") y cristales ("vidrios").
 const UX_CONTROL = [["compactos", "Persianas", "Persianas"], ["vidrios", "Cristales", "Cristales"]];
@@ -41308,7 +41311,7 @@ const uxLineasPedidas = (pedido) => {
   toArray(pedido && pedido.expedientes).forEach((e, gi) => {
     const ls = toArray(e.lineas);
     if (ls.length === 0) out.push({ key: `${gi}-0`, exp: e.numero || "", modelo: "", codigo: "", descripcion: `${(pedido && pedido.tipo) || "Material"} según documento`, ancho: 0, alto: 0, color: "", pedido: 1 });
-    ls.forEach((l, li) => out.push({ key: `${gi}-${li}`, exp: e.numero || "", modelo: l.modelo || "", codigo: l.codigo || "", descripcion: l.descripcion || "", ancho: uxNum(l.ancho), alto: uxNum(l.alto), color: l.color || "", pedido: parseFloat(l.uds) || 1 }));
+    ls.forEach((l, li) => out.push({ key: `${gi}-${li}`, exp: e.numero || "", modelo: l.modelo || "", codigo: l.codigo || "", descripcion: l.descripcion || "", ancho: uxMedidaMm(l.ancho), alto: uxMedidaMm(l.alto), color: l.color || "", pedido: parseFloat(l.uds) || 1 }));
   });
   return out;
 };
@@ -51284,7 +51287,10 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
-        if (info.pagina) paginas.push(info.pagina); if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
+        // un PDF se lee entero (todas sus páginas de una vez); solo en fotos sueltas se cuentan las páginas que faltan
+        if (mediaType === "application/pdf" && info.paginasTotal) { for (let pg = 1; pg <= info.paginasTotal; pg++) paginas.push(pg); }
+        else if (info.pagina) paginas.push(info.pagina);
+        if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
