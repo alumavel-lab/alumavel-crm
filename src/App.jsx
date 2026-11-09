@@ -40753,7 +40753,7 @@ function UxStockPerfiles({ stock, nombre, aviso, expedientes = [], modo = "porta
     setAlb({ leyendo: true, lineas: [] });
     try {
       const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-      const info = await uxLeerAlbaranConClaude(dataUrl, tipoMime);
+      const info = await uxLeerAlbaranConClaude(dataUrl, tipoMime, file);
       const lineas = toArray(info.lineas).filter((l) => l.codigo || l.descripcion).map((l) => {
         const c = cruzarStockUx(lista, { codigo: l.codigo, color: l.color || "" });
         const mismo = c.estado === "ok" ? c.item.id : c.mismo && c.mismo.length === 1 ? c.mismo[0].id : "";
@@ -41329,25 +41329,37 @@ const uxPatchRecepcion = (pedido, recepcion, expedientes) => {
   return patch;
 };
 
-async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
+async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const base64 = String(dataUrl).split(",")[1];
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
   const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
-  const response = await fetch("/.netlify/functions/anthropic-proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
-  });
-  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message || "error al leer");
-  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  // 1º lectura rápida. Un PACKING LIST con muchos cristales tarda más de lo que deja Netlify (error 504/502):
+  // entonces se lee EN SEGUNDO PLANO (sin límite de tiempo, el CRM va preguntando hasta que está)
+  let texto = "";
+  let lento = false;
+  try {
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+    });
+    if (!response.ok) { if ([502, 503, 504, 413].includes(response.status) && file) lento = true; else throw new Error("respuesta no válida (" + response.status + ")"); }
+    else {
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "error al leer");
+      texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      if (data.stop_reason === "max_tokens" && file) lento = true; // se cortó: demasiadas líneas para la lectura rápida
+    }
+  } catch (e) { if (file && /Failed to fetch|NetworkError|network|timeout/i.test(String((e && e.message) || e))) lento = true; else throw e; }
+  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000, 100);
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");
-  const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const trozo = ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio;
+  let res;
+  try { res = JSON.parse(trozo); } catch (e) { try { res = JSON.parse(repararJsonIA(trozo)); } catch (e2) { const sv = salvarJsonIA(trozo); if (!sv.leidos) throw new Error("la lectura ha salido con un error de formato: vuelve a subirlo"); res = sv.obj; } }
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
@@ -41408,7 +41420,7 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar, emailProveedor = "", movil
       nuevos.push({ file, nombre: file.name });
       try {
         const dataUrl = await uxLeerComoDataUrl(file);
-        const info = await uxLeerAlbaranConClaude(dataUrl, mediaType);
+        const info = await uxLeerAlbaranConClaude(dataUrl, mediaType, file);
         if (info.lineas.length === 0) { fallos.push(file.name); continue; }
         const r = uxCasarAlbaran(pedidas, ll, info.lineas);
         ll = r.llegado;
@@ -51227,7 +51239,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
-        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType);
+        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
         if (info.pagina) paginas.push(info.pagina); if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
       }
@@ -51301,7 +51313,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1 min-w-[16rem] text-sm text-emerald-900"><b>📷 Albarán por foto:</b> haz una foto al albarán (aunque traiga varias obras) y busco solo a qué pedidos de Uxcar corresponde, por medidas. Revisas y se dan de baja.</div>
           <input ref={albRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files, albRef.current && albRef.current.dataset.anadir === "1"); e.target.value = ""; }} />
-          <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
+          <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo… (un packing list largo puede tardar 1-2 min)</> : "📷 Subir foto del albarán"}</button>
         </div>
         {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
         {albRes && albRes.lineas.length > 0 && (
