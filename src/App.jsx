@@ -18083,10 +18083,10 @@ function salvarJsonIA(txt) {
   return { obj, leidos, perdidos };
 }
 // Manda el documento a la IA en segundo plano (sin límite de tiempo) y devuelve el texto tal cual.
-async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60) {
+async function pedirTextoIAEnSegundoPlano(file, prompt, maxTokens, maxIntentos = 60, modelo = "") {
   const contentBlock = await bloqueDeArchivoParaIA(file);
   const jobId = uid();
-  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: "claude-sonnet-5", max_tokens: maxTokens || 8000, thinking: { type: "disabled" }, contentBlock, prompt });
+  await fbSet(ref(fbDb, `packingListJobsInput/${jobId}`), { model: modelo || "claude-sonnet-5", max_tokens: maxTokens || 8000, ...(modelo ? {} : { thinking: { type: "disabled" } }), contentBlock, prompt });
   await fetch("/.netlify/functions/anthropic-proxy-background", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId }),
   });
@@ -41353,7 +41353,8 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
       if (data.stop_reason === "max_tokens" && file) lento = true; // se cortó: demasiadas líneas para la lectura rápida
     }
   } catch (e) { if (file && /Failed to fetch|NetworkError|network|timeout/i.test(String((e && e.message) || e))) lento = true; else throw e; }
-  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000, 100);
+  // el mismo lector rápido (no «piensa»: todo el espacio es para la lista), pero sin el límite de tiempo
+  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 32000, 120, "claude-haiku-4-5-20251001");
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");

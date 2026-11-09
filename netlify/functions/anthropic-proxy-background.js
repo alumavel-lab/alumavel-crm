@@ -76,7 +76,7 @@ export const handler = async (event) => {
       return { statusCode: 200, body: "ok" };
     }
 
-    const { model, max_tokens, contentBlock, prompt } = await leerEntrada(jobId);
+    const { model, max_tokens, contentBlock, prompt, thinking } = await leerEntrada(jobId);
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -88,6 +88,8 @@ export const handler = async (event) => {
       body: JSON.stringify({
         model,
         max_tokens,
+        // el CRM pide SIN razonamiento: si no se pasa, el modelo puede gastar todos los tokens pensando y no contestar nada
+        ...(thinking ? { thinking } : {}),
         messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }],
       }),
     });
