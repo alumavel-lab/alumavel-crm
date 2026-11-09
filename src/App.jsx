@@ -22922,7 +22922,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Pendientes de recibir en fábrica: de momento solo cristales y compactos
   // Solo los que ya se han pedido de verdad al proveedor (un pedido sin hacer todavía no puede "llegar")
   const yaPedido = (p) => !!p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado);
-  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
+  // ENTRADAS ECOWIN = solo los pedidos PROPIOS. Las copias «(de Uxcar)» no salen aquí: los pedidos de Uxcar van en «Entradas Uxcar» (no se mezclan)
+  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && !p.uxcarPedidoId && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
   const [provFiltroFab, setProvFiltroFab] = useState("");
   const [qPpto, setQPpto] = useState(""); // buscador 1: nº de presupuesto
   const [qRefFab, setQRefFab] = useState(""); // buscador 2: referencia / expediente / obra
@@ -22966,7 +22967,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const ecoAbierto = abiertoEcoId && filtered.some((p) => p.id === abiertoEcoId) ? abiertoEcoId : null; // si el pedido ya no está pendiente (se dio por llegado), vuelve a la lista
   const nEntUx = toArray(uxPedidos).filter((p) => !p.recibido && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual)).length;
   const bloqueAlbaran = onRecibirConAlbaran && (
-            <AlbaranFabrica pedidos={pedidos} materiales={materiales} proveedores={proveedores}
+            <AlbaranFabrica pedidos={pedidos.filter((p) => !p.uxcarPedidoId)} materiales={materiales} proveedores={proveedores}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
           );
@@ -51501,7 +51502,8 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     // También los «(de Uxcar)»: copias en el CRM de pedidos de Uxcar. Solo se dejan fuera las que tienen su pedido de Uxcar PENDIENTE en la lista
     // de Entradas Uxcar (esas ya se han mirado arriba). Si su pedido de Uxcar ya no está pendiente o no existe, el que manda es el del CRM.
     const uxPendIds = new Set(toArray(pedidos).filter((p) => p && !p.recibido).map((p) => p.id));
-    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && !(p.uxcarPedidoId && uxPendIds.has(p.uxcarPedidoId)) && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
+    // NUNCA los pedidos propios (Entradas Ecowin): solo las copias de pedidos de Uxcar, para no mezclar
+    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && p.uxcarPedidoId && !uxPendIds.has(p.uxcarPedidoId) && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
     const cands = peds.map((p) => {
       const pr = p.proyectoId ? proys.find((x) => x && x.id === p.proyectoId) : null;
       const d = datosObraPedido(p, pr, expsUx);
@@ -51589,7 +51591,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       if (elegidosCrm.length && ctxUxAlb.encolarEntradaCrm) ctxUxAlb.encolarEntradaCrm(elegidosCrm.map((x) => ({ crmId: x.p.id, filasDirectas: x.filas, archivo: archivoTxt })));
       if (toArray(albRes.sobran).length) setSinPedidoUlt({ grupos: gruposSinPedido(albRes.sobran), archivo: archivoTxt, proveedor: albRes.proveedor, fecha: uxHoy(), quien });
       const txtCab = rCab ? ` · Almacén de cristales: ${rCab.nuevos} caballete${rCab.nuevos === 1 ? "" : "s"} nuevo${rCab.nuevos === 1 ? "" : "s"} en «Pendientes de ubicar»${rCab.fusionados ? ` y ${rCab.fusionados} que ya estaban completados` : ""}${rCab.nSin ? ` (${rCab.nSin} cristal${rCab.nSin === 1 ? "" : "es"} marcados ⚠ SIN PEDIDO)` : ""}.` : "";
-      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"} de Uxcar: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${elegidosCrm.length ? ` · ${elegidosCrm.length} pedido${elegidosCrm.length === 1 ? "" : "s"} del CRM (Entradas Ecowin) con entrada: ${elegidosCrm.filter((x) => x.completo).length} completo${elegidosCrm.filter((x) => x.completo).length === 1 ? "" : "s"}.` : ""}${txtCab}`);
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"} de Uxcar: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${elegidosCrm.length ? ` · ${elegidosCrm.length} pedido${elegidosCrm.length === 1 ? "" : "s"} de Uxcar (copia en el CRM) con entrada: ${elegidosCrm.filter((x) => x.completo).length} completo${elegidosCrm.filter((x) => x.completo).length === 1 ? "" : "s"}.` : ""}${txtCab}`);
       setAlbRes(null);
     } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
@@ -51655,7 +51657,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
-            {toArray(albRes.crm).length > 0 && <div className="text-xs font-bold text-slate-700 pt-1">Pedidos del CRM (Entradas Ecowin PVC) con cristales de este albarán:</div>}
+            {toArray(albRes.crm).length > 0 && <div className="text-xs font-bold text-slate-700 pt-1">Pedidos de Uxcar que ya no estaban en la lista de arriba (copia en el CRM, todavía pendiente) con cristales de este albarán:</div>}
             {toArray(albRes.crm).map((x) => (
               <label key={`crm-${x.p.id}`} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[`crm:${x.p.id}`]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [`crm:${x.p.id}`]: e.target.checked }))} />
