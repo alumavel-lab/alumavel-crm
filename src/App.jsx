@@ -56713,6 +56713,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     set.forEach((b) => { if (b && !diaFab[b] && (!diaManual[b] || f < diaManual[b])) diaManual[b] = f; }); }); });
   Object.keys(diaManual).forEach((b) => { diaPlan[b] = diaManual[b]; });
   const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
+  // LO YA CORTADO de un día (para revisar): piezas de las obras de ese día marcadas como cortadas
+  const cortadasDelDia = (d) => piezas.filter((p) => diaDe(p.ppto) === d && est && est[p.id] && est[p.id].cortada);
   // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
   const obrasAux = [];
   pendientes.forEach((p) => { let g = obrasAux.find((x) => x.ppto === p.ppto); if (!g) { g = { ppto: p.ppto, obra: p.obra, cliente: p.cliente, dia: diaDe(p.ppto), piezas: [] }; obrasAux.push(g); } g.piezas.push(p); });
@@ -57021,7 +57023,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 </details>
                 {refs.map((r) => (
                   <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
-                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"}</span><span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
+                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} por cortar</span>{(() => { const n = piezas.filter((p) => `${p.ref}|${p.nombre}|${p.color || ""}` === r.k && dias.includes(diaDe(p.ppto)) && est && est[p.id] && est[p.id].cortada).length; return n ? <span className="text-sm font-bold text-emerald-700">✂ {n} cortadas</span> : null; })()}<span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
                     <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
@@ -57135,8 +57137,29 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   </div>
                   {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = faltanObras.filter((o) => o.dia === d).length; return (
                     <details key={d} open={dOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== dOpen) setDiasAbiertos((x) => (o ? [...new Set([...toArray(x), d])] : toArray(x).filter((y) => y !== d))); }} className={`rounded-lg border ${sel ? "ring-2 ring-indigo-300 border-indigo-300" : "border-slate-200"} group/dia`}>
-                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
+                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{cortadasDelDia(d).length > 0 && <span className="text-sm font-bold text-emerald-700">· ✂ {cortadasDelDia(d).length} cortadas</span>}{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
                       {dOpen && <div className="p-1">
+                      {(() => {
+                        // RESUMEN PARA REVISAR: por obra, lo cortado (por perfil) y lo que falta
+                        const pps = [...new Set([...gs.map((g) => String(g.ppto)), ...piezas.filter((p) => diaDe(p.ppto) === d).map((p) => String(p.ppto))])];
+                        if (!pps.length) return null;
+                        const filas = pps.map((pp) => { const todas = piezas.filter((p) => String(p.ppto) === pp); const cort = todas.filter((p) => est && est[p.id] && est[p.id].cortada); const porNom = {}; cort.forEach((p) => { porNom[p.nombre] = (porNom[p.nombre] || 0) + 1; }); const faltaNom = {}; todas.filter((p) => !(est && est[p.id] && est[p.id].cortada)).forEach((p) => { faltaNom[p.nombre] = (faltaNom[p.nombre] || 0) + 1; }); return { pp, total: todas.length, cort: cort.length, porNom, faltaNom }; });
+                        const tc = filas.reduce((t, x) => t + x.cort, 0), tt = filas.reduce((t, x) => t + x.total, 0);
+                        return (
+                          <details className="mb-2 rounded-lg border-2 border-emerald-300 bg-emerald-50/50 px-2 py-1">
+                            <summary className="cursor-pointer text-sm font-extrabold text-emerald-900">✂ Revisar lo cortado este día: {tc} de {tt} piezas cortadas · faltan {tt - tc} (por obra)</summary>
+                            <div className="mt-1 space-y-1">
+                              {filas.map((x) => (
+                                <div key={x.pp} className={`rounded border px-2 py-1 text-sm ${x.cort === x.total ? "border-emerald-300 bg-white" : "border-amber-300 bg-amber-50"}`}>
+                                  <div className="flex flex-wrap items-center gap-2"><b>Ppto {pptoBonito(x.pp)}</b><span className={`text-xs font-bold ${x.cort === x.total ? "text-emerald-700" : "text-amber-800"}`}>{x.cort === x.total ? `✓ todo cortado (${x.total})` : `✂ ${x.cort} de ${x.total} cortadas · faltan ${x.total - x.cort}`}</span></div>
+                                  {x.cort > 0 && <div className="text-xs text-emerald-800">Cortadas: {Object.entries(x.porNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
+                                  {x.cort < x.total && <div className="text-xs text-amber-900">Faltan: {Object.entries(x.faltaNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        );
+                      })()}
                       <div className="flex flex-wrap items-center gap-1 mb-2">
                         <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
                           <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
