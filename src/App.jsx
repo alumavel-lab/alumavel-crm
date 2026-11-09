@@ -40753,7 +40753,7 @@ function UxStockPerfiles({ stock, nombre, aviso, expedientes = [], modo = "porta
     setAlb({ leyendo: true, lineas: [] });
     try {
       const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-      const info = await uxLeerAlbaranConClaude(dataUrl, tipoMime);
+      const info = await uxLeerAlbaranConClaude(dataUrl, tipoMime, file);
       const lineas = toArray(info.lineas).filter((l) => l.codigo || l.descripcion).map((l) => {
         const c = cruzarStockUx(lista, { codigo: l.codigo, color: l.color || "" });
         const mismo = c.estado === "ok" ? c.item.id : c.mismo && c.mismo.length === 1 ? c.mismo[0].id : "";
@@ -41329,25 +41329,37 @@ const uxPatchRecepcion = (pedido, recepcion, expedientes) => {
   return patch;
 };
 
-async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
+async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const base64 = String(dataUrl).split(",")[1];
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
   const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
-  const response = await fetch("/.netlify/functions/anthropic-proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
-  });
-  if (!response.ok) throw new Error("respuesta no válida (" + response.status + ")");
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message || "error al leer");
-  const texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  // 1º lectura rápida. Un PACKING LIST con muchos cristales tarda más de lo que deja Netlify (error 504/502):
+  // entonces se lee EN SEGUNDO PLANO (sin límite de tiempo, el CRM va preguntando hasta que está)
+  let texto = "";
+  let lento = false;
+  try {
+    const response = await fetch("/.netlify/functions/anthropic-proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 8000, messages: [{ role: "user", content: [contentBlock, { type: "text", text: prompt }] }] }),
+    });
+    if (!response.ok) { if ([502, 503, 504, 413].includes(response.status) && file) lento = true; else throw new Error("respuesta no válida (" + response.status + ")"); }
+    else {
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "error al leer");
+      texto = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+      if (data.stop_reason === "max_tokens" && file) lento = true; // se cortó: demasiadas líneas para la lectura rápida
+    }
+  } catch (e) { if (file && /Failed to fetch|NetworkError|network|timeout/i.test(String((e && e.message) || e))) lento = true; else throw e; }
+  if (lento) texto = await pedirTextoIAEnSegundoPlano(file, prompt, 16000, 100);
   const limpio = texto.replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");
-  const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
+  const trozo = ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio;
+  let res;
+  try { res = JSON.parse(trozo); } catch (e) { try { res = JSON.parse(repararJsonIA(trozo)); } catch (e2) { const sv = salvarJsonIA(trozo); if (!sv.leidos) throw new Error("la lectura ha salido con un error de formato: vuelve a subirlo"); res = sv.obj; } }
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
@@ -41408,7 +41420,7 @@ function UxAlbaranEntrada({ pedido, quien, onGuardar, emailProveedor = "", movil
       nuevos.push({ file, nombre: file.name });
       try {
         const dataUrl = await uxLeerComoDataUrl(file);
-        const info = await uxLeerAlbaranConClaude(dataUrl, mediaType);
+        const info = await uxLeerAlbaranConClaude(dataUrl, mediaType, file);
         if (info.lineas.length === 0) { fallos.push(file.name); continue; }
         const r = uxCasarAlbaran(pedidas, ll, info.lineas);
         ll = r.llegado;
@@ -43958,7 +43970,10 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
   });
   const zonasAD = useZonasLinea(); // huecos de cada estantería tal como están configurados (no los de fábrica)
   const incsFabAD = useObjetoFb("incidenciasFabrica"); // las mismas incidencias de fábrica de siempre
-  const [verIncAD, setVerIncAD] = useState(null); // { titulo, ids:[...] } de la ventana cuya incidencia se está viendo
+  const [verIncAD, setVerIncAD] = useState(null); // { titulo, ids:[...], f, o } de la ventana cuya incidencia se está viendo
+  // VENTANAS PALETIZADAS CON LA INCIDENCIA SIN ARREGLAR: se dejan pasar al palet y quedan apuntadas en su pestaña hasta que se arreglen
+  const palIncAD = useObjetoFb("paletizadasConIncidencia");
+  const [tabAD, setTabAD] = useEstadoLocal("almacenDiaTab", "dia");
   const hojasAD = useObjetoFb("controlDiaHojaCorte"); // hoja de corte leída de cada obra (la misma que usa Control del día)
   const snapCD = useObjetoFb("controlDiaVentanasObra"); // ventanas de cada obra tal como las ve Control del día
   const planingAD = useObjetoFb("controlDiaPlaning"); // horas de cada obra según el PDF «PLANING»
@@ -45062,7 +45077,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div key={f.x.v.id} className={`space-y-0.5 flex flex-col items-center ${incsDeVentana(o, f.x.v).length ? "ring-2 ring-rose-500 rounded-lg p-0.5 bg-rose-50" : ""}`}>
           {incsDeVentana(o, f.x.v).length > 0 && (g
             ? <div className="text-xl font-extrabold text-rose-300">⚠ INCIDENCIA</div>
-            : <button type="button" onClick={() => setVerIncAD({ titulo: `${f.x.v.pos} · ${o.nombre}`, ids: incsDeVentana(o, f.x.v).map((i) => i.id) })} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ INCIDENCIA ({incsDeVentana(o, f.x.v).length}) · ver</button>)}
+            : <button type="button" onClick={() => setVerIncAD({ titulo: `${f.x.v.pos} · ${o.nombre}`, ids: incsDeVentana(o, f.x.v).map((i) => i.id), f, o })} className="text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ INCIDENCIA ({incsDeVentana(o, f.x.v).length}) · ver</button>)}
+          {pendIncDe(o, f.x.v) && <div className={`${g ? "text-lg" : "text-[10px]"} font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950`}>📦 paletizada · incidencia pendiente</div>}
           {f.x.v.dib ? <DibujoPlan hash={f.x.v.dib} alto={g ? 130 : 70} /> : f.x.lote.fab ? <DibujoCargaVentana fab={f.x.lote.fab} tip={f.x.v.tipo || f.x.v.pos} alto={g ? 110 : 52} /> : null}
           {botonVentana(f, o, g)}
           {!g && <BotonIncidenciaFabrica prefill={{ ventanaId: f.x.v.id, ventana: `${f.x.v.pos}${f.x.v.medida ? " · " + f.x.v.medida : ""}`, obra: o.nombre }} />}
@@ -45203,6 +45219,36 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
       try { for (const c of todos) await onBorrar(c.id); for (const k of codsEst) await fbSet(ref(fbDb, `ubicacionesLinea/${k}`), null); await fbSet(ref(fbDb, "ocupacionLinea/solape"), null); await fbSet(ref(fbDb, "ocupacionLinea/espera"), null); await fbSet(ref(fbDb, "registroAlmacen"), null); await fbSet(ref(fbDb, "controlDiaObras"), null); avisar(true, "Palets de prueba borrados: todo a cero"); }
       catch (e) { avisar(false, "No se pudo borrar: " + e.message); }
     };
+    const pendIncAD = toArray(palIncAD).filter((r) => r && !r.hecho).sort((a, b) => (b.fecha || 0) - (a.fecha || 0));
+    const pendIncDe = (o, v) => pendIncAD.find((r) => r.obraKey === o.key && (r.ventanaId === v.id || (r.pos && r.pos === v.pos)));
+    const paletizarConInc = (f, o, ids) => {
+      if (!f || !o) return;
+      const incs = toArray(incsFabAD).filter((i) => i && ids.includes(i.id));
+      if (!window.confirm(`${f.x.v.pos} · ${o.nombre}\n\n¿Pasarla a PALETIZAR aunque tenga la incidencia sin arreglar?\n\nQueda apuntada en «⚠ Pendientes de incidencia» hasta que alguien la marque como arreglada.`)) return;
+      if (!f.c) ticarAD(f, o);
+      const cab = cabsAhora().find((c) => toArray(c.ventanas).some((x) => mismaVentana(x, f.w)));
+      const id = String(`${limpiaAD(o.key)}_${limpiaAD(f.x.v.id || f.x.v.pos)}`);
+      fbSet(ref(fbDb, `paletizadasConIncidencia/${id}`), JSON.parse(JSON.stringify({ id, obraKey: o.key, obra: o.nombre || "", ref: nombreAD(o) || "", ventanaId: f.x.v.id || "", pos: f.x.v.pos || "", medida: f.x.v.medida || "", palet: cab ? cab.numero : "", incIds: ids, incTexto: incs.map((i) => `${i.tipo ? i.tipo + ": " : ""}${i.texto || ""}`).join(" | "), fecha: Date.now(), dia: diaAD, quien: quien || "", hecho: false }))).catch((e) => avisar(false, "No se pudo apuntar: " + e.message));
+      avisar(true, `${f.x.v.pos} paletizada con la incidencia pendiente · apuntada en «Pendientes de incidencia»`);
+      setVerIncAD(null);
+    };
+    const marcarIncArreglada = (r) => {
+      if (!window.confirm(`${r.pos} · ${r.ref || r.obra}: ¿la incidencia ya está ARREGLADA en el palet?`)) return;
+      fbUpdate(ref(fbDb, `paletizadasConIncidencia/${r.id}`), { hecho: true, hechoPor: quien || "", hechoEn: Date.now() }).then(() => avisar(true, `✓ ${r.pos}: incidencia arreglada`)).catch((e) => avisar(false, "No se pudo guardar: " + e.message));
+    };
+    const listaPendInc = (
+      <div className="space-y-2">
+        <p className="text-sm text-slate-600">Ventanas que se pasaron a paletizar <b>con la incidencia sin arreglar</b>. Cuando esté arreglada en el palet, pulsa «Arreglada».</p>
+        {pendIncAD.length === 0 ? <div className="text-sm text-emerald-700 font-semibold">✓ No hay nada pendiente.</div> : pendIncAD.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border-2 border-rose-300 bg-rose-50 px-3 py-2">
+            <div className="min-w-[10rem]"><div className="text-lg font-extrabold text-slate-900">{r.pos}</div>{r.medida ? <div className="text-xs text-slate-500">{r.medida}</div> : null}</div>
+            <div className="flex-1 min-w-[14rem] text-sm"><div className="font-bold text-slate-800">{r.ref ? `${r.ref} · ` : ""}{r.obra}</div><div className="text-rose-800">⚠ {r.incTexto || "incidencia"}</div><div className="text-xs text-slate-500">{r.palet ? `Palet ${r.palet} · ` : ""}{r.fecha ? new Date(r.fecha).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}{r.quien ? ` · ${r.quien}` : ""}</div></div>
+            {toArray(r.incIds).length > 0 && <button type="button" onClick={() => setVerIncAD({ titulo: `${r.pos} · ${r.obra}`, ids: toArray(r.incIds) })} className="text-xs font-semibold px-2 py-1 rounded border border-rose-300 text-rose-800 bg-white">Ver incidencia</button>}
+            <button type="button" onClick={() => marcarIncArreglada(r)} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-3 py-1.5 rounded-md">✓ Arreglada</button>
+          </div>
+        ))}
+      </div>
+    );
     const modalIncAD = verIncAD ? (
       <div className="fixed inset-0 z-[120] bg-black/40 flex items-center justify-center p-3" onClick={() => setVerIncAD(null)}>
         <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -45215,6 +45261,8 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
               <div className="text-xs text-slate-500">Creada por {(i.creadaPor && i.creadaPor.nombre) || "—"}{i.creadaTs ? ` · ${new Date(i.creadaTs).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : ""}</div>
               {i.foto ? <img src={i.foto} alt="" className="max-h-48 rounded border border-slate-200" /> : null}
             </div>); })}
+          {verIncAD.f && verIncAD.o && !pendIncDe(verIncAD.o, verIncAD.f.x.v) && <button type="button" onClick={() => paletizarConInc(verIncAD.f, verIncAD.o, verIncAD.ids)} className="w-full text-left rounded-lg border-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">📦 Pasarla a paletizar con la incidencia pendiente<div className="text-xs font-normal">{verIncAD.f.c ? `Ya está en el palet ${verIncAD.f.c.numero}: se apunta como pendiente.` : "La mete en el palet y la apunta en «⚠ Pendientes de incidencia» hasta que se arregle."}</div></button>}
+          {verIncAD.f && verIncAD.o && pendIncDe(verIncAD.o, verIncAD.f.x.v) && <div className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">📦 Ya está paletizada con la incidencia pendiente (en «⚠ Pendientes de incidencia»).</div>}
           <p className="text-xs text-slate-500">Las incidencias se resuelven y se reasignan en la pestaña «Incidencias» (oficina). Para crear otra, usa el botón «Incidencia» de la ventana.</p>
         </div>
       </div>
@@ -45240,9 +45288,14 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
         <div className="flex flex-wrap items-center gap-3">
           {!soloDia && <button onClick={() => setVistaDia(false)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver al almacén</button>}
           <h3 className="text-lg font-extrabold text-slate-900">📅 Almacén del día</h3>
+          <div className="flex gap-1">
+            <button type="button" onClick={() => setTabAD("dia")} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${tabAD !== "inc" ? "bg-[#2E8B57] text-white border-[#2E8B57]" : "bg-white text-slate-600 border-slate-200"}`}>Paletizar</button>
+            <button type="button" onClick={() => setTabAD("inc")} className={`px-3 py-1.5 rounded-md text-sm font-bold border-2 ${tabAD === "inc" ? "bg-rose-600 text-white border-rose-600" : pendIncAD.length ? "bg-rose-50 text-rose-800 border-rose-400 animate-pulse" : "bg-white text-slate-600 border-slate-200"}`}>⚠ Pendientes de incidencia{pendIncAD.length ? ` (${pendIncAD.length})` : ""}</button>
+          </div>
           <button type="button" onClick={() => setTvAD(true)} className="ml-auto px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm font-bold">📺 Pantalla grande (tele)</button>
           {isAdmin && <button type="button" onClick={limpiarPrueba} className="px-3 py-1.5 rounded-md border border-rose-300 text-rose-700 text-xs font-semibold">🧹 Borrar palets de prueba</button>}
         </div>
+        {tabAD === "inc" ? listaPendInc : <>
         {bloqueRegistro(false)}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -45316,6 +45369,7 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
           ); })()}
           {stDia.length === 0 ? <div className="text-sm text-slate-500">No hay obras con ventanas para este día (salen las del planning de Fábrica y las metidas a mano en Control del día).</div> : stDia.map((x) => tarjetaObra(x, false))}
         </div>
+        </>}
       </div>
     );
   };
@@ -51227,7 +51281,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
-        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType);
+        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
         if (info.pagina) paginas.push(info.pagina); if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
       }
@@ -51301,7 +51355,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1 min-w-[16rem] text-sm text-emerald-900"><b>📷 Albarán por foto:</b> haz una foto al albarán (aunque traiga varias obras) y busco solo a qué pedidos de Uxcar corresponde, por medidas. Revisas y se dan de baja.</div>
           <input ref={albRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files, albRef.current && albRef.current.dataset.anadir === "1"); e.target.value = ""; }} />
-          <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
+          <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo… (un packing list largo puede tardar 1-2 min)</> : "📷 Subir foto del albarán"}</button>
         </div>
         {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
         {albRes && albRes.lineas.length > 0 && (
@@ -55939,6 +55993,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
   const [verSinDia, setVerSinDia] = useState(false);
   const [perfilDia, setPerfilDia] = useState("");
+  // DESPLEGABLES de «Falta por cortar»: semanas y días abiertos (se recuerdan en este ordenador) y días vistos por obra en vez de por perfil
+  const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
+  const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
+  const [diasPorObra, setDiasPorObra] = useState([]);
   const [diasSel, setDiasSel] = useState([]);
   const [pptosImp, setPptosImp] = useState([]); // obras elegidas para imprimir (por presupuesto), aunque sean de días distintos
   // CADENA CON LA PISTOLA: se imprime una pegatina; al leerla con la pistola queda confirmada y sale sola la siguiente de la misma tanda
@@ -56529,7 +56587,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               r.emp = auxEmpaquetar(pend, BL, KF, DP);
               r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
             });
-            planBarrasRef.current = {};
+            // (no se vacía: con varios días abiertos a la vez, cada uno añade el plan de sus barras)
             refs.forEach((r) => (r.emp.barras || []).forEach((b) => { const inf = { ids: b.piezas.map((x) => x.id), sobra: b.sobra, ref: String(r.p.ref), nombre: r.p.nombre, color: r.p.color, min: minDe(r.p.ref) }; b.piezas.forEach((x) => { planBarrasRef.current[x.id] = inf; }); }));
             const ubicRefs = (barraCfg && barraCfg.ubicPorRef) || {};
             const setUbic = (rf, v) => { const t = String(v || "").trim(); fbSet(ref(fbDb, `auxiliaresBarra/ubicPorRef/${kRefMin(rf)}`), t || null).catch(() => {}); };
@@ -56591,8 +56649,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   )}
                 </details>
                 {refs.map((r) => (
-                  <div key={r.k} className="rounded-xl border-2 border-indigo-200 bg-white p-3">
-                    <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                  <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
+                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"}</span><span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
+                    <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
@@ -56654,7 +56713,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                         {r.emp.fuera.map((x) => fila(x.p, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
                       </div>
                     )}
-                  </div>
+                  </details>
                 ))}
               </div>
             );
@@ -56694,23 +56753,27 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   {(leyendo || msg) && <div className="mt-1 font-semibold text-slate-800">{leyendo ? "Leyendo la hoja…" : msg}</div>}
                 </div>
               )}
-              {semanas.map((sem) => (
-                <div key={sem.lunes} className="space-y-3">
+              {semanas.map((sem) => { const gsSem = obrasAux.filter((g) => sem.dias.includes(g.dia)); const semOpen = semAbiertas.includes(sem.lunes); return (
+                <details key={sem.lunes} open={semOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== semOpen) setSemAbiertas((x) => (o ? [...new Set([...toArray(x), sem.lunes])] : toArray(x).filter((y) => y !== sem.lunes))); }} className="rounded-xl border-2 border-slate-300 bg-white group/sem">
+                  <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-100 rounded-xl"><span className="font-extrabold text-slate-600 group-open/sem:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 uppercase tracking-wide">Semana del {new Date(sem.dias[0] + "T12:00:00").getDate()} al {new Date(sem.dias[4] + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}</span><span className="ml-auto text-sm font-bold text-slate-600">{gsSem.length ? `${gsSem.length} obra${gsSem.length === 1 ? "" : "s"} · ${gsSem.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "nada por cortar"}</span></summary>
+                  {semOpen && <div className="space-y-2 p-2">
                   <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-1">
                     <span className="text-sm font-extrabold text-slate-500 uppercase tracking-wide">Semana del {fmtDate(sem.lunes)}</span>
                     <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
                     <button type="button" onClick={() => imprimirRevision(sem.dias, `semana del ${fmtDate(sem.lunes)}`)} className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                   </div>
-                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); return (
-                    <div key={d} className={sel ? "rounded-lg ring-2 ring-indigo-300 p-1" : ""}>
+                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = faltanObras.filter((o) => o.dia === d).length; return (
+                    <details key={d} open={dOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== dOpen) setDiasAbiertos((x) => (o ? [...new Set([...toArray(x), d])] : toArray(x).filter((y) => y !== d))); }} className={`rounded-lg border ${sel ? "ring-2 ring-indigo-300 border-indigo-300" : "border-slate-200"} group/dia`}>
+                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
+                      {dOpen && <div className="p-1">
                       <div className="flex flex-wrap items-center gap-1 mb-2">
                         <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
                           <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
                         <span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>
-                        {gs.length > 0 && botonPerfil(d)}
+                        {gs.length > 0 && <button type="button" onClick={() => setDiasPorObra((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d]))} className="ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 border-indigo-400 bg-white text-indigo-800">{porObra ? "✂ Ver por perfil" : "🏠 Ver por obra"}</button>}
                         <button type="button" onClick={() => imprimirRevision([d], new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }))} className="ml-2 flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-lg border-2 border-slate-600 bg-white text-slate-800"><Printer size={14} /> Imprimir</button>
                       </div>
-                      {gs.length > 0 && (perfilDia === d ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
+                      {gs.length > 0 && (!porObra ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
                       {okObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {okObras.filter((o) => o.dia === d).map((o) => (
@@ -56741,10 +56804,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           ))}
                         </div>
                       )}
-                    </div>
+                      </div>}
+                    </details>
                   ); })}
-                </div>
-              ))}
+                  </div>}
+                </details>
+              ); })}
               {sinDiaCompacto.length > 0 && (
                 <div className="rounded-xl border-2 border-sky-400 bg-sky-50/50 p-2">
                   <div className="text-base font-extrabold text-sky-900 mb-1">📦 Compacto llegado (sin día en el planning) · {sinDiaCompacto.length} obra{sinDiaCompacto.length === 1 ? "" : "s"} · {sinDiaCompacto.reduce((a2, g) => a2 + g.piezas.length, 0)} piezas</div>
