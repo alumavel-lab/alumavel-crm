@@ -55993,6 +55993,10 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
   const [abiertaAux, setAbiertaAux] = useState(""); // obra (presupuesto) desplegada en «Falta por cortar»
   const [verSinDia, setVerSinDia] = useState(false);
   const [perfilDia, setPerfilDia] = useState("");
+  // DESPLEGABLES de «Falta por cortar»: semanas y días abiertos (se recuerdan en este ordenador) y días vistos por obra en vez de por perfil
+  const [semAbiertas, setSemAbiertas] = useEstadoLocal("auxSemAbiertas", []);
+  const [diasAbiertos, setDiasAbiertos] = useEstadoLocal("auxDiasAbiertos", []);
+  const [diasPorObra, setDiasPorObra] = useState([]);
   const [diasSel, setDiasSel] = useState([]);
   const [pptosImp, setPptosImp] = useState([]); // obras elegidas para imprimir (por presupuesto), aunque sean de días distintos
   // CADENA CON LA PISTOLA: se imprime una pegatina; al leerla con la pistola queda confirmada y sale sola la siguiente de la misma tanda
@@ -56583,7 +56587,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
               r.emp = auxEmpaquetar(pend, BL, KF, DP);
               r.filas = [...r.recUsados.flatMap((u) => u.piezas), ...r.emp.barras.flatMap((b) => b.piezas), ...r.emp.fuera.map((x) => x.p)];
             });
-            planBarrasRef.current = {};
+            // (no se vacía: con varios días abiertos a la vez, cada uno añade el plan de sus barras)
             refs.forEach((r) => (r.emp.barras || []).forEach((b) => { const inf = { ids: b.piezas.map((x) => x.id), sobra: b.sobra, ref: String(r.p.ref), nombre: r.p.nombre, color: r.p.color, min: minDe(r.p.ref) }; b.piezas.forEach((x) => { planBarrasRef.current[x.id] = inf; }); }));
             const ubicRefs = (barraCfg && barraCfg.ubicPorRef) || {};
             const setUbic = (rf, v) => { const t = String(v || "").trim(); fbSet(ref(fbDb, `auxiliaresBarra/ubicPorRef/${kRefMin(rf)}`), t || null).catch(() => {}); };
@@ -56645,8 +56649,9 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   )}
                 </details>
                 {refs.map((r) => (
-                  <div key={r.k} className="rounded-xl border-2 border-indigo-200 bg-white p-3">
-                    <div className="flex flex-wrap items-center gap-2 mb-1"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
+                  <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
+                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"}</span><span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
+                    <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
                       <label className="flex items-center gap-1 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-0.5" title="Recorte mínimo que se guarda de este perfil. Vacío = el general">♻ guardar desde <input key={`mn${r.k}${minDe(r.p.ref)}`} type="number" min="0" placeholder={String(MINREC)} defaultValue={minRefs[kRefMin(r.p.ref)] != null ? minRefs[kRefMin(r.p.ref)] : ""} onBlur={(e) => setMinRef(r.p.ref, e.target.value)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-right bg-white" /> mm</label>
@@ -56708,7 +56713,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                         {r.emp.fuera.map((x) => fila(x.p, true, { tipo: "ref", k: r.k, dias, plan: r.filas.map((y) => y.id) }))}
                       </div>
                     )}
-                  </div>
+                  </details>
                 ))}
               </div>
             );
@@ -56748,23 +56753,27 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   {(leyendo || msg) && <div className="mt-1 font-semibold text-slate-800">{leyendo ? "Leyendo la hoja…" : msg}</div>}
                 </div>
               )}
-              {semanas.map((sem) => (
-                <div key={sem.lunes} className="space-y-3">
+              {semanas.map((sem) => { const gsSem = obrasAux.filter((g) => sem.dias.includes(g.dia)); const semOpen = semAbiertas.includes(sem.lunes); return (
+                <details key={sem.lunes} open={semOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== semOpen) setSemAbiertas((x) => (o ? [...new Set([...toArray(x), sem.lunes])] : toArray(x).filter((y) => y !== sem.lunes))); }} className="rounded-xl border-2 border-slate-300 bg-white group/sem">
+                  <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-100 rounded-xl"><span className="font-extrabold text-slate-600 group-open/sem:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 uppercase tracking-wide">Semana del {new Date(sem.dias[0] + "T12:00:00").getDate()} al {new Date(sem.dias[4] + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" })}</span><span className="ml-auto text-sm font-bold text-slate-600">{gsSem.length ? `${gsSem.length} obra${gsSem.length === 1 ? "" : "s"} · ${gsSem.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "nada por cortar"}</span></summary>
+                  {semOpen && <div className="space-y-2 p-2">
                   <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-1">
                     <span className="text-sm font-extrabold text-slate-500 uppercase tracking-wide">Semana del {fmtDate(sem.lunes)}</span>
                     <button type="button" onClick={() => { const todos = sem.dias.every((d) => diasSel.includes(d)); setDiasSel((x) => todos ? x.filter((y) => !sem.dias.includes(y)) : [...new Set([...x, ...sem.dias])].sort()); if (perfilDia === "multi") setPerfilDia(""); }} className="text-xs font-bold px-2 py-1 rounded border border-indigo-400 text-indigo-800 bg-white">{sem.dias.every((d) => diasSel.includes(d)) ? "Quitar la semana" : "Elegir toda la semana"}</button>
                     <button type="button" onClick={() => imprimirRevision(sem.dias, `semana del ${fmtDate(sem.lunes)}`)} className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded border border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                   </div>
-                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); return (
-                    <div key={d} className={sel ? "rounded-lg ring-2 ring-indigo-300 p-1" : ""}>
+                  {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = faltanObras.filter((o) => o.dia === d).length; return (
+                    <details key={d} open={dOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== dOpen) setDiasAbiertos((x) => (o ? [...new Set([...toArray(x), d])] : toArray(x).filter((y) => y !== d))); }} className={`rounded-lg border ${sel ? "ring-2 ring-indigo-300 border-indigo-300" : "border-slate-200"} group/dia`}>
+                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
+                      {dOpen && <div className="p-1">
                       <div className="flex flex-wrap items-center gap-1 mb-2">
                         <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
                           <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
                         <span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>
-                        {gs.length > 0 && botonPerfil(d)}
+                        {gs.length > 0 && <button type="button" onClick={() => setDiasPorObra((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d]))} className="ml-2 text-sm font-bold px-3 py-1 rounded-lg border-2 border-indigo-400 bg-white text-indigo-800">{porObra ? "✂ Ver por perfil" : "🏠 Ver por obra"}</button>}
                         <button type="button" onClick={() => imprimirRevision([d], new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }))} className="ml-2 flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-lg border-2 border-slate-600 bg-white text-slate-800"><Printer size={14} /> Imprimir</button>
                       </div>
-                      {gs.length > 0 && (perfilDia === d ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
+                      {gs.length > 0 && (!porObra ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
                       {okObras.filter((o) => o.dia === d).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
                           {okObras.filter((o) => o.dia === d).map((o) => (
@@ -56795,10 +56804,12 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                           ))}
                         </div>
                       )}
-                    </div>
+                      </div>}
+                    </details>
                   ); })}
-                </div>
-              ))}
+                  </div>}
+                </details>
+              ); })}
               {sinDiaCompacto.length > 0 && (
                 <div className="rounded-xl border-2 border-sky-400 bg-sky-50/50 p-2">
                   <div className="text-base font-extrabold text-sky-900 mb-1">📦 Compacto llegado (sin día en el planning) · {sinDiaCompacto.length} obra{sinDiaCompacto.length === 1 ? "" : "s"} · {sinDiaCompacto.reduce((a2, g) => a2 + g.piezas.length, 0)} piezas</div>
