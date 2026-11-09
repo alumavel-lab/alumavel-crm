@@ -41330,7 +41330,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -41346,7 +41346,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
   const res = JSON.parse(ini !== -1 && fin !== -1 ? limpio.slice(ini, fin + 1) : limpio);
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
-    proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""),
+    proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
     lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
   };
 }
@@ -51167,20 +51167,32 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
   // El albarán suele decir de qué expediente/vivienda es cada línea («EXP 823 BAJO 14-C»): primero se casa con ESA vivienda
   const nz = (t) => String(t || "").toUpperCase().replace(/EXPEDIENTE|EXP\.?/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
   const expOk = (a, l, p) => { const ta = nz(a.expediente); if (!ta) return false; const tl = nz(`${l.exp} ${(p && p.expedientes && p.expedientes[parseInt(String(l.key).split("-")[0], 10)] && p.expedientes[parseInt(String(l.key).split("-")[0], 10)].vivienda) || ""}`); if (!tl) return false; return ta === tl || ta.includes(tl) || tl.includes(ta); };
+  // tolerancia amplia (±15 mm) SOLO si además coincide la vivienda/expediente: el proveedor a veces redondea la medida
+  const medidaAmplia = (a, l) => a.ancho && a.alto && l.ancho && l.alto && ((Math.abs(a.ancho - l.ancho) <= 15 && Math.abs(a.alto - l.alto) <= 15) || (Math.abs(a.ancho - l.alto) <= 15 && Math.abs(a.alto - l.ancho) <= 15));
   const pa = String(proveedorAlb || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4);
   const mismoProv = (p) => !!pa && String(p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").startsWith(pa);
   const hayDelProv = pedidosPend.some(mismoProv);
-  const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l))).length; return { p, ls, llegado: { ...ya }, n: 0, cab: {}, pot, potExp, prov: mismoProv(p) }; })
+  const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) || (medidaAmplia(a, l) && expOk(a, l, p)))).length; return { p, ls, llegado: { ...ya }, n: 0, cab: {}, pot, potExp, prov: mismoProv(p) }; })
     .filter((c) => c.pot > 0 && (!hayDelProv || c.prov))
     .sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
-  const asignar = (estricto) => cands.forEach((c) => c.ls.forEach((l) => {
+  const asignar = (estricto, amplia) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !medidaOk(a, l) || (estricto && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (estricto && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   asignar(true); // 1º: misma medida Y mismo expediente/vivienda
   asignar(false); // 2º: lo que quede, solo por medida
-  const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, cab: c.cab, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, total: c.ls.length }; });
-  return { reparto: out, sobran: resto.filter((a) => a.q > 0) };
+  asignar(true, true); // 3º: misma vivienda y medida parecida (±15 mm)
+  const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, cab: c.cab, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, faltanTxt: faltan.map((l) => (l.ancho && l.alto ? `${l.ancho}×${l.alto}` : l.descripcion || l.codigo || "?")), total: c.ls.length }; });
+  // Lo que no casa: los motores/accesorios sin medida no son un error (van con su persiana). Al resto se le busca la línea pendiente más parecida.
+  const quedan = resto.filter((a) => a.q > 0);
+  const accesorios = quedan.filter((a) => !(a.ancho && a.alto));
+  const pendTodas = pedidosPend.flatMap((p) => { const ya = (p.recepcion && p.recepcion.lineas) || {}; const c = cands.find((x) => x.p === p); const lleg = c ? c.llegado : ya; return uxLineasPedidas(p).filter((l) => l.ancho && l.alto && (l.pedido - (parseFloat(lleg[l.key]) || 0)) > 0).map((l) => ({ p, l })); });
+  const sobran = quedan.filter((a) => a.ancho && a.alto).map((a) => {
+    let mejor = null, dm = Infinity;
+    pendTodas.forEach(({ p, l }) => { const d = Math.min(Math.abs(a.ancho - l.ancho) + Math.abs(a.alto - l.alto), Math.abs(a.ancho - l.alto) + Math.abs(a.alto - l.ancho)); if (d < dm) { dm = d; mejor = { p, l }; } });
+    return { ...a, parecida: mejor && dm <= 200 ? `${mejor.p.numero} (${mejor.p.proveedorNombre || ""}) pide ${mejor.l.ancho}×${mejor.l.alto}` : "" };
+  });
+  return { reparto: out, sobran, accesorios };
 }
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
@@ -51190,22 +51202,26 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
   const [albLeyendo, setAlbLeyendo] = useState(false); const [albRes, setAlbRes] = useState(null); const [albSel, setAlbSel] = useState({}); const [albMsg, setAlbMsg] = useState("");
   const albRef = useRef(null);
-  const leerAlbaranLista = async (fileList) => {
+  // anadir = true: la foto es OTRA PÁGINA del mismo albarán → se suma a lo ya leído y se vuelve a repartir todo junto
+  const leerAlbaranLista = async (fileList, anadir = false) => {
     const files = Array.from(fileList || []); if (!files.length) return;
-    setAlbLeyendo(true); setAlbMsg(""); setAlbRes(null);
+    const prev = anadir && albRes ? albRes : null;
+    setAlbLeyendo(true); setAlbMsg(""); if (!prev) setAlbRes(null);
     try {
-      let lineas = []; let proveedor = ""; const docs = [];
+      let lineas = prev ? [...prev.lineas] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
+      const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0;
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+        if (info.pagina) paginas.push(info.pagina); if (info.paginasTotal) paginasTotal = Math.max(paginasTotal, info.paginasTotal);
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
       const r = uxRepartirAlbaran(pend, lineas, proveedor);
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
-      setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs });
+      setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
@@ -51270,23 +51286,27 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 p-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1 min-w-[16rem] text-sm text-emerald-900"><b>📷 Albarán por foto:</b> haz una foto al albarán (aunque traiga varias obras) y busco solo a qué pedidos de Uxcar corresponde, por medidas. Revisas y se dan de baja.</div>
-          <input ref={albRef} type="file" multiple accept="application/pdf,image/*" capture="environment" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files); e.target.value = ""; }} />
-          <button type="button" disabled={albLeyendo} onClick={() => albRef.current && albRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
+          <input ref={albRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files, albRef.current && albRef.current.dataset.anadir === "1"); e.target.value = ""; }} />
+          <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
         </div>
         {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
-        {albRes && albRes.reparto.length > 0 && (
+        {albRes && albRes.lineas.length > 0 && (
           <div className="mt-2 space-y-1">
-            <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
+            <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}{albRes.paginasTotal ? ` · páginas ${albRes.paginas.join(", ") || "?"} de ${albRes.paginasTotal}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
+            {albRes.paginasTotal > 1 && albRes.paginas.length < albRes.paginasTotal && <div className="rounded border-2 border-amber-400 bg-amber-50 px-2 py-1 text-sm font-bold text-amber-900">⚠ El albarán tiene {albRes.paginasTotal} páginas y solo has subido {albRes.paginas.length === 1 ? "la " + albRes.paginas[0] : albRes.paginas.join(", ")}. Lo que venga en las otras páginas sale como «falta». Pulsa «➕ Añadir otra página».</div>}
             {albRes.reparto.map((x) => (
               <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
                 <b>{x.p.numero}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))} · Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</span>
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
+                {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
-            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente: {albRes.sobran.slice(0, 6).map((a) => `${a.ancho || "?"}×${a.alto || "?"}`).join(", ")}{albRes.sobran.length > 6 ? "…" : ""}</div>}
+            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: {a.parecida}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
+            {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
-              <button type="button" disabled={albLeyendo} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              <button type="button" disabled={albLeyendo || !albRes.reparto.some((x) => albSel[x.p.id])} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = "1"; albRef.current.click(); }} className="text-sm font-bold px-3 py-2 rounded-md border-2 border-emerald-600 text-emerald-800 bg-white disabled:opacity-60">➕ Añadir otra página</button>
               <button type="button" onClick={() => setAlbRes(null)} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
             </div>
           </div>
