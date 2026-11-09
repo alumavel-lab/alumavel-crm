@@ -41486,7 +41486,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""), pagina: parseInt(res.pagina, 10) || 0, paginasTotal: parseInt(res.paginasTotal, 10) || 0,
-    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
+    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ ventana: (String(l.codigo || "").trim().toUpperCase().replace(/,/g, ".").match(/^[A-Z]\d{1,2}(?:\.\d{3})+$/) || [""])[0], codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
   };
 }
 
@@ -51381,18 +51381,21 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   const mismoProv = (p) => !!pa && String(p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").startsWith(pa);
   const hayDelProv = pedidosPend.some(mismoProv);
   const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) || (medidaAmplia(a, l) && expOk(a, l, p)))).length; return { p, ls, llegado: { ...ya }, n: 0, cab: {}, pot, potExp, prov: mismoProv(p) }; })
-    .filter((c) => c.pot > 0 && (!hayDelProv || c.prov));
+    .filter((c) => c.pot > 0);
   // UN ALBARÁN ES DE UN SOLO PROVEEDOR: si no se sabe cuál, el que más medidas casa; los pedidos de otros proveedores (y de otro material) fuera
-  if (!hayDelProv && cands.length) {
+  // (un pedido puede estar apuntado con el proveedor equivocado: «UX-59 Persianas · Tvitec» siendo de Dealum. Ese se queda, pero solo casa
+  //  si coincide la obra o la ventana, nunca solo por medida)
+  if (cands.length) {
     const kp = (c) => `${String(c.p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4)}|${c.p.tipo || ""}`;
     const peso = {}; cands.forEach((c) => { peso[kp(c)] = (peso[kp(c)] || 0) + c.pot + c.potExp; });
-    const gana = Object.keys(peso).sort((a, b) => peso[b] - peso[a])[0];
-    for (let i = cands.length - 1; i >= 0; i--) if (kp(cands[i]) !== gana) cands.splice(i, 1);
+    const gana = hayDelProv ? null : Object.keys(peso).sort((a, b) => peso[b] - peso[a])[0];
+    const tipoGana = hayDelProv ? (cands.find((c) => c.prov) || {}).p?.tipo || "" : String(gana || "").split("|")[1] || "";
+    for (let i = cands.length - 1; i >= 0; i--) { const c = cands[i]; if (tipoGana && (c.p.tipo || "") !== tipoGana) { cands.splice(i, 1); continue; } c.otroProv = hayDelProv ? !c.prov : kp(c) !== gana; }
   }
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
   const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (c.otroProv && !estricto && vent !== "solo") || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
   asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
