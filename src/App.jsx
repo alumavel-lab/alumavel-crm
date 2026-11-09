@@ -57219,6 +57219,7 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const horasTodas = useMemo(() => fusionaDias(horasTodasRaw), [horasTodasRaw, uxAProy]);
   const _hT = null; // cuándo se marcó cada ventana: { fecha: { claveObra: { idVentana: milisegundos } } }
   const horas = (horasTodas && horasTodas[dia]) || {};
+  const incsFabCD = useObjetoFb("incidenciasFabrica"); // incidencias de fábrica (para avisar arriba y pintar la obra en el calendario)
   const asignTodasCDRaw = useObjetoFb("controlDiaObras");
   const asignTodasCD = useMemo(() => fusionaDias(asignTodasCDRaw), [asignTodasCDRaw, uxAProy]); // { fecha: { claveObra: true } } · lo metido A MANO aquí (las del planning de Fábrica van aparte, abajo)
   const [cerradas, setCerradas] = useState({});
@@ -57835,6 +57836,31 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   };
   const ordenObras = (a, b) => String(a.d.nombre).localeCompare(String(b.d.nombre), "es", { numeric: true });
   const lista = [...obras.values()].filter((o) => asign[limpia(o.d.key)]).sort(ordenObras);
+  // Lo ÚLTIMO marcado de cada ventana (de cualquier día): una obra que sigue en otro día conserva su verde/naranja en el calendario
+  const diasMarcas = Object.keys(marcasTodas || {}).sort().reverse();
+  const valorUlt = (k, id) => { for (const d of diasMarcas) { const x = marcasTodas[d] && marcasTodas[d][k]; if (x && x[id] !== undefined) return x[id] || 0; } return 0; };
+  const incsDeObraCD = (o) => { if (!o) return []; const ids = new Set(idsDe(o).map((x) => String(x))); const nom = String(o.d.nombre || "").trim(); return toArray(incsFabCD).filter((i) => i && i.estado !== "Resuelta" && ((nom && String(i.obra || "").trim() === nom) || (i.ventanaId && ids.has(limpia(String(i.ventanaId)))))); };
+  // AVISO ARRIBA: incidencias abiertas y ventanas en NARANJA (problema) de las obras del día, en grande y diciendo qué es
+  const avisoIncidenciasCD = (grande) => {
+    const filas = [];
+    lista.forEach((o) => {
+      incsDeObraCD(o).forEach((i) => filas.push({ k: `i${i.id}`, obra: o.d.nombre, que: `${i.ventana ? `${i.ventana} · ` : ""}${i.tipo || "Incidencia"}`, texto: i.texto || "", por: (i.creadaPor && i.creadaPor.nombre) || "" }));
+      [...o.viv.values()].flat().forEach((v) => { if (valor(o.d.key, v.id) === 2) filas.push({ k: `n${o.d.key}${v.id}`, obra: o.d.nombre, que: `${v.pos || "Ventana"} en NARANJA (problema)`, texto: notaDe(o, v.id) || "", por: "" }); });
+    });
+    if (!filas.length) return null;
+    return (
+      <div className={`mb-3 rounded-xl border-4 border-rose-600 bg-rose-50 ${grande ? "p-3" : "p-2"}`}>
+        <div className={`${grande ? "text-3xl" : "text-lg"} font-black text-rose-700`}>⚠ {filas.length} INCIDENCIA{filas.length === 1 ? "" : "S"} ABIERTA{filas.length === 1 ? "" : "S"} HOY</div>
+        <div className="mt-1 space-y-1">
+          {filas.map((x) => (
+            <div key={x.k} className={`rounded-lg bg-white border-2 border-rose-300 px-2 py-1 ${grande ? "text-2xl" : "text-sm"} text-slate-900`}>
+              <b className="text-rose-700">{x.obra}</b> · <b>{x.que}</b>{x.texto ? <span>: {x.texto}</span> : null}{x.por ? <span className={`${grande ? "text-lg" : "text-xs"} text-slate-500`}> · {x.por}</span> : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
   const [verSinMaterial, setVerSinMaterial] = useState(true);
   const [verFolio, setVerFolio] = useState(true); // true: la hoja de la carga con chinchetas · false: lista de ventanas
   const sinAsignarDia = [...obras.values()].filter((o) => !asign[limpia(o.d.key)] && (o.d.tipo === "s" || !["Entregado", "Cancelado"].includes((toArray(proyectos).find((x) => x.id === proyectoIdDe(o)) || {}).estadoTrabajo)));
@@ -58486,6 +58512,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
       {pistolaCD(true)}
+      {avisoIncidenciasCD(true)}
       {contadorCD}
       {/* Una COLUMNA por obra, todas a la vez; tocar el nombre de una la agranda (las demás siguen en pequeño y se pueden marcar) */}
       <div className="flex flex-wrap gap-2 content-start">
@@ -58781,7 +58808,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <div className="text-xs font-bold text-left">{Number(f.slice(8))}</div>
                 {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f;
                   const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
-                  const hecha = idsC.length > 0 && idsC.every((i) => mkC[i] === 1); const prob = idsC.some((i) => mkC[i] === 2); return (
+                  const hecha = idsC.length > 0 && idsC.every((i) => (mkC[i] !== undefined ? mkC[i] : valorUlt(k, i)) === 1); const prob = idsC.some((i) => (mkC[i] !== undefined ? mkC[i] : valorUlt(k, i)) === 2) || incsDeObraCD(ob).length > 0; return (
                   <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ENTRAR en la obra (marcar, incidencia, quitar) y ver su material (arrástrala para moverla de día)`}
                     onDragStart={() => setPinSel({ k, de: f })}
                     onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; }
@@ -58813,6 +58840,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       <div className="mb-2 flex flex-wrap items-center gap-2">
       </div>
       {pistolaCD(false)}
+      {avisoIncidenciasCD(false)}
       {contadorCD}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {repetidasPlan().quitar.length > 0 && <button type="button" onClick={quitarRepetidas} title="Deja cada obra solo en un día (donde tiene más marcas, o el primero) y la quita de los demás. Se guarda copia para volver atrás." className="px-3 py-1.5 rounded-md bg-rose-600 text-white text-sm font-bold">🧹 Quitar las {repetidasPlan().quitar.length} repetidas ({repetidasPlan().nObras} obras)</button>}
