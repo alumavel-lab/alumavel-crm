@@ -41376,7 +41376,56 @@ const uxPatchRecepcion = (pedido, recepcion, expedientes) => {
   return patch;
 };
 
+// PACKING LIST DE TVITEC (PDF con texto): se lee línea a línea SIN IA, no se salta nada. Formato:
+//   Caballete / Pedido / 2002400436 / Pos. Cant. Ancho x Alto Referencia /
+//   1126356 2 2 665 x 427 V07.228, Ref. Cte. Ped.: SN-EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B, Ref. Cte. Pos.: V07.228, Compra: AENA
+//   … Total Caballete: 24 … / Total: 194 (después vienen los albaranes de cada pedido, que repiten lo mismo: no se leen)
+function uxParsearPackingTexto(txt) {
+  const filas = []; let prevPed = false;
+  for (const raw of String(txt || "").replace(/\r/g, "").split("\n")) {
+    const l = raw.trim(); if (!l) continue;
+    if (/^Total:\s*\d+/i.test(l)) { filas.push({ total: parseInt(l.match(/\d+/)[0], 10) }); break; }
+    if (/^Pedido$/i.test(l)) { prevPed = true; continue; }
+    if (prevPed && /^\d{5,12}$/.test(l)) { prevPed = false; filas.push({ cab: l }); continue; }
+    prevPed = false;
+    const mt = l.match(/^Total Caballete:\s*(\d+)/i); if (mt) { filas.push({ totCab: parseInt(mt[1], 10) }); continue; }
+    if (/^(?:\d{6,8}\s+)?\d{1,3}\s+\d{1,3}\s+\d{2,4}\s*x\s*\d{2,4}\b/.test(l)) { filas.push({ row: l }); continue; }
+    const last = filas[filas.length - 1]; if (last && last.row) last.row += " " + l;
+  }
+  const lineas = []; let cab = "", ped = "", total = 0; const sumaCab = {}, totCab = {};
+  filas.forEach((f) => {
+    if (f.cab) { cab = f.cab; return; }
+    if (f.totCab != null) { totCab[cab] = f.totCab; return; }
+    if (f.total != null) { total = f.total; return; }
+    const m = f.row.match(/^(?:(\d{6,8})\s+)?(\d{1,3})\s+(\d{1,3})\s+(\d{2,4})\s*x\s*(\d{2,4})\s+(.*)$/); if (!m) return;
+    if (m[1]) ped = m[1];
+    const resto = m[6]; const ventana = (resto.match(/^([A-Z]\d{1,2}(?:\.\d{3})*)\s*,/) || [])[1] || ""; // «V06.244.245» = dos ventanas (V06.244 y V06.245)
+    const refObra = ((resto.match(/Ref\.\s*Cte\.\s*Ped\.:\s*(.*?),\s*Ref\.\s*Cte\.\s*Pos/i) || [])[1] || "").trim();
+    const cant = parseInt(m[3], 10) || 1;
+    sumaCab[cab] = (sumaCab[cab] || 0) + cant;
+    lineas.push({ codigo: ventana, ventana, descripcion: `${ventana}${ped ? ` · pedido Tvitec ${ped}` : ""}`, ancho: parseInt(m[4], 10), alto: parseInt(m[5], 10), cantidad: cant, expediente: refObra, caballete: cab, pedidoProv: ped });
+  });
+  const descuadres = Object.keys(totCab).filter((c) => sumaCab[c] !== totCab[c]);
+  const unidades = lineas.reduce((a, x) => a + x.cantidad, 0);
+  return { lineas, total, unidades, descuadres, caballetes: Object.keys(totCab).length };
+}
+async function uxLeerPackingPdfSinIA(file) {
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    let txt = "";
+    for (let n = 1; n <= doc.numPages; n++) { txt += (await (await doc.getPage(n)).getTextContent()).items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("") + "\n"; if (/^\s*Total:\s*\d+/m.test(txt)) break; }
+    if (!/Packing List/i.test(txt) || !/Ref\.\s*Cte\.\s*Ped/i.test(txt)) return null;
+    const r = uxParsearPackingTexto(txt);
+    if (!r.lineas.length) return null;
+    const proveedor = /TVITEC/i.test(txt) ? "TVITEC SYSTEM GLASS" : "Tvitec";
+    const aviso = (r.total && r.total !== r.unidades) || r.descuadres.length ? `⚠ Ojo: he leído ${r.unidades} unidades y el packing dice ${r.total || "?"}${r.descuadres.length ? ` (caballetes que no cuadran: ${r.descuadres.join(", ")})` : ""}. Revísalo.` : "";
+    return { proveedor, numeroAlbaran: "", pagina: 0, paginasTotal: 0, lineas: r.lineas, sinIA: true, aviso, resumen: `${r.lineas.length} líneas · ${r.unidades} cristales · ${r.caballetes} caballetes${r.total === r.unidades && !r.descuadres.length ? " · ✓ cuadra con el total del packing" : ""}` };
+  } catch (e) { return null; }
+}
 async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
+  // 0º: si es un PACKING LIST de Tvitec en PDF con texto, se lee exacto sin IA
+  if (file && mediaType === "application/pdf") { const pk = await uxLeerPackingPdfSinIA(file); if (pk) return pk; }
   const base64 = String(dataUrl).split(",")[1];
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
@@ -51290,6 +51339,9 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   const cacheNums = new Map();
   const numsLinea = (l, p) => { const gi = parseInt(String(l.key).split("-")[0], 10) || 0; const k = `${p && p.id}|${gi}`; if (!cacheNums.has(k)) cacheNums.set(k, numsPedidoGrupo(p, gi)); return cacheNums.get(k); };
   const obraOk = (a, l, p) => { const na = numsDe(a.expediente); const nl = numsLinea(l, p); if (na.size && [...na].some((n) => nl.has(n))) return true; const pa2 = palabras(a.expediente); if (pa2.size < 2) return false; const pl = txtLinea(l, p).pal; return [...pa2].filter((w) => pl.has(w)).length >= 2; };
+  // misma VENTANA (V07.228) en la misma obra: lo más seguro. «V06.244.245» vale para V06.244 y V06.245
+  const ventanasDe = (t) => { const m = String(t || "").toUpperCase().match(/^([A-Z])(\d{1,2})((?:\.\d{3})*)$/); if (!m) return []; const ns = m[3].split(".").filter(Boolean); return ns.length ? ns.map((n) => `${m[1]}${m[2].padStart(2, "0")}.${n}`) : [`${m[1]}${m[2]}`]; };
+  const ventOk = (a, l, p) => { if (!a.ventana) return false; const vs = ventanasDe(a.ventana); if (!vs.length) return false; const tl = `${l.modelo || ""} ${l.codigo || ""} ${l.descripcion || ""}`.toUpperCase(); return vs.some((v) => new RegExp(`(^|[^A-Z0-9.])${v.replace(".", "\\.")}([^0-9]|$)`).test(tl)) && obraOk(a, l, p); };
   const vivOk = (a, l, p) => { const va = vivDe(a.expediente); if (!va) return false; const tl = txtLinea(l, p); const vl = tl.viv || vivDe(`${l.modelo || ""}`) || vivDe(`${l.descripcion || ""}`); return !!vl && vl === va && obraOk(a, l, p); };
   const expOk = (a, l, p) => expOkViv(a, l, p) || obraOk(a, l, p);
   // si la línea del albarán dice su obra y ESA obra tiene pedido pendiente, no se reparte a pedidos de otras obras aunque la medida coincida
@@ -51311,12 +51363,13 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
     for (let i = cands.length - 1; i >= 0; i--) if (kp(cands[i]) !== gana) cands.splice(i, 1);
   }
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
-  const asignar = (estricto, amplia, viv) => cands.forEach((c) => c.ls.forEach((l) => {
+  const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent && !ventOk(a, l, c.p)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
-  asignar(true, true, true); // 0º: misma obra Y misma vivienda (1K, 1B…), medida parecida
+  asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida
+  asignar(true, true, true); // 1º: misma obra Y misma vivienda (1K, 1B…), medida parecida
   asignar(true); // 1º: misma medida Y mismo expediente/vivienda
   asignar(false); // 2º: lo que quede, solo por medida
   asignar(true, true); // 3º: misma vivienda y medida parecida (±15 mm)
@@ -51349,12 +51402,13 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     setAlbLeyendo(true); setAlbMsg(""); if (!prev) setAlbRes(null);
     try {
       let lineas = prev ? [...prev.lineas] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
-      const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0;
+      const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0; const avisosLect = [];
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+        if (info.sinIA) avisosLect.push(`📄 ${file.name}: leído exacto, sin IA — ${info.resumen}${info.aviso ? ` ${info.aviso}` : ""}`);
         // un PDF se lee entero (todas sus páginas de una vez); solo en fotos sueltas se cuentan las páginas que faltan
         if (mediaType === "application/pdf" && info.paginasTotal) { for (let pg = 1; pg <= info.paginasTotal; pg++) paginas.push(pg); }
         else if (info.pagina) paginas.push(info.pagina);
@@ -51365,7 +51419,8 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
       setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
-      if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
+      if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
+      if (!r.reparto.length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
   };
