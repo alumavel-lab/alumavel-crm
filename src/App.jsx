@@ -51341,7 +51341,8 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   const obraOk = (a, l, p) => { const na = numsDe(a.expediente); const nl = numsLinea(l, p); if (na.size && [...na].some((n) => nl.has(n))) return true; const pa2 = palabras(a.expediente); if (pa2.size < 2) return false; const pl = txtLinea(l, p).pal; return [...pa2].filter((w) => pl.has(w)).length >= 2; };
   // misma VENTANA (V07.228) en la misma obra: lo más seguro. «V06.244.245» vale para V06.244 y V06.245
   const ventanasDe = (t) => { const m = String(t || "").toUpperCase().match(/^([A-Z])(\d{1,2})((?:\.\d{3})*)$/); if (!m) return []; const ns = m[3].split(".").filter(Boolean); return ns.length ? ns.map((n) => `${m[1]}${m[2].padStart(2, "0")}.${n}`) : [`${m[1]}${m[2]}`]; };
-  const ventOk = (a, l, p) => { if (!a.ventana) return false; const vs = ventanasDe(a.ventana); if (!vs.length) return false; const tl = `${l.modelo || ""} ${l.codigo || ""} ${l.descripcion || ""}`.toUpperCase(); return vs.some((v) => new RegExp(`(^|[^A-Z0-9.])${v.replace(".", "\\.")}([^0-9]|$)`).test(tl)) && obraOk(a, l, p); };
+  const mismaVentanaTxt = (a, l) => { if (!a.ventana) return false; const vs = ventanasDe(a.ventana); if (!vs.length) return false; const tl = `${l.modelo || ""} ${l.codigo || ""} ${l.descripcion || ""}`.toUpperCase(); return vs.some((v) => new RegExp(`(^|[^A-Z0-9.])${v.replace(".", "\\.")}([^0-9]|$)`).test(tl)); };
+  const ventOk = (a, l, p) => mismaVentanaTxt(a, l) && obraOk(a, l, p);
   const vivOk = (a, l, p) => { const va = vivDe(a.expediente); if (!va) return false; const tl = txtLinea(l, p); const vl = tl.viv || vivDe(`${l.modelo || ""}`) || vivDe(`${l.descripcion || ""}`); return !!vl && vl === va && obraOk(a, l, p); };
   const expOk = (a, l, p) => expOkViv(a, l, p) || obraOk(a, l, p);
   // si la línea del albarán dice su obra y ESA obra tiene pedido pendiente, no se reparte a pedidos de otras obras aunque la medida coincida
@@ -51365,14 +51366,17 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
   const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent && !ventOk(a, l, c.p)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
-  asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida
+  asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
   asignar(true, true, true); // 1º: misma obra Y misma vivienda (1K, 1B…), medida parecida
-  asignar(true); // 1º: misma medida Y mismo expediente/vivienda
-  asignar(false); // 2º: lo que quede, solo por medida
-  asignar(true, true); // 3º: misma vivienda y medida parecida (±15 mm)
+  asignar(true); // 2º: misma medida (±3) Y misma obra
+  // 3º: MISMA VENTANA (V07.228 en el packing y «V07.228 · …» en el pedido) y la MISMA medida (±3 mm), aunque el texto de la obra no se parezca
+  // (el packing dice «823 JOAN M PARETS 1B» y el pedido «6.891-1»). Va ANTES que «solo por medida» para que no se lo quede otra obra.
+  asignar(false, false, false, "solo");
+  asignar(false); // 4º: lo que quede, solo por medida (±3)
+  asignar(true, true); // 5º: misma obra y medida parecida (±15 mm)
   const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, cab: c.cab, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, faltanTxt: faltan.map((l) => (l.ancho && l.alto ? `${l.ancho}×${l.alto}` : l.descripcion || l.codigo || "?")), total: c.ls.length }; });
   // Lo que no casa: los motores/accesorios sin medida no son un error (van con su persiana). Al resto se le busca la línea pendiente más parecida.
   const quedan = resto.filter((a) => a.q > 0);
