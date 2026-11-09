@@ -51510,7 +51510,30 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {albRes.lineas.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="pr-2 font-bold whitespace-nowrap">{a.ancho && a.alto ? `${a.ancho}×${a.alto}` : "sin medida"}</td><td className="pr-2 whitespace-nowrap">× {a.cantidad || 1}</td><td className="pr-2">{a.expediente || ""}</td><td className="pr-2 text-slate-500">{a.caballete ? `cab. ${a.caballete}` : ""}</td><td className="text-slate-500">{String(a.descripcion || a.codigo || "").slice(0, 40)}</td></tr>)}
               </tbody></table>
             </details>
-            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: <b>{a.parecida.p.numero}</b>{uxDesglosaExp(a.parecida.p, expsUx).ppto.length ? <b className="text-slate-900"> · Ppto {uxDesglosaExp(a.parecida.p, expsUx).ppto.join(", ")}</b> : null} ({a.parecida.p.proveedorNombre || ""}) pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
+            {albRes.sobran.length > 0 && (() => {
+              // LO QUE NO CASA, AGRUPADO POR OBRA: y por qué (no hay pedido pendiente de esa obra / sí lo hay pero ya recibido / las medidas no coinciden)
+              const numsTxt = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{4}$/.test(d)) out.add(d); }); return out; };
+              const grupos = new Map(); albRes.sobran.forEach((a) => { const k = String(a.expediente || "sin referencia").trim(); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(a); });
+              const pptoDigs = (p) => new Set(uxDesglosaExp(p, expsUx).ppto.map((x) => String(x).split("-")[0].replace(/\D/g, "")));
+              const todos = toArray(pedidos).filter(Boolean);
+              return (
+                <div className="rounded border-2 border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-900">
+                  <div className="font-bold">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} cristal(es) del albarán no casan con ningún pedido pendiente. Por obra:</div>
+                  {[...grupos.entries()].sort((x, y) => y[1].length - x[1].length).map(([k, xs]) => {
+                    const nums = [...numsTxt(k)];
+                    const deObra = nums.length ? todos.filter((p) => { const d = pptoDigs(p); return nums.some((n) => d.has(n)); }) : [];
+                    const pend = deObra.filter((p) => !p.recibido), rec = deObra.filter((p) => p.recibido);
+                    const n = xs.reduce((t, a) => t + a.q, 0);
+                    return (
+                      <details key={k} className="mt-1 bg-white rounded border border-rose-200 px-2 py-1">
+                        <summary className="cursor-pointer"><b>{n} × {k}</b>{" — "}{!nums.length ? <span className="text-slate-600">la referencia no trae nº de presupuesto: no puedo saber su pedido (mira la ventana)</span> : !deObra.length ? <span className="font-bold text-rose-700">NO hay ningún pedido de Uxcar con el presupuesto {nums.map((x) => x.replace(/^(\d)(\d{3})$/, "$1.$2")).join(" / ")} (¿no está dado de alta?)</span> : !pend.length ? <span className="font-bold text-amber-700">su pedido {rec.map((p) => p.numero).join(", ")} ya está RECIBIDO</span> : <span className="text-slate-700">tiene pedido pendiente ({pend.map((p) => `${p.numero} · ${p.tipo || ""} · ${p.proveedorNombre || ""}`).join(", ")}) pero las medidas no coinciden</span>}</summary>
+                        <div className="mt-1 space-y-0.5">{xs.map((a, i) => <div key={i}>· {a.ventana ? <b>{a.ventana} </b> : null}{a.ancho}×{a.alto}{a.q > 1 ? ` (×${a.q})` : ""}{a.caballete ? <span className="text-slate-500"> · cab. {a.caballete}</span> : null}{a.parecida ? <span className="text-slate-500"> — lo más parecido pendiente: {a.parecida.p.numero} pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : null}</div>)}</div>
+                      </details>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
               <button type="button" disabled={albLeyendo || !albRes.reparto.some((x) => albSel[x.p.id])} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
