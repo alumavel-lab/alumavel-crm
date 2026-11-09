@@ -51118,11 +51118,74 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
   );
 }
 
+// Un albarán (foto) que trae material de VARIOS pedidos de Uxcar: se reparten sus líneas entre los pedidos pendientes por medida
+// (o código), cada unidad del albarán cuenta una sola vez; primero los pedidos con más coincidencias y del mismo proveedor.
+function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
+  const resto = lineasAlb.map((a) => ({ ...a, q: parseFloat(a.cantidad) || 1 }));
+  const cerca = (x, y) => Math.abs(x - y) <= 3;
+  const medidaOk = (a, l) => (a.ancho && a.alto && l.ancho && l.alto) ? ((cerca(a.ancho, l.ancho) && cerca(a.alto, l.alto)) || (cerca(a.ancho, l.alto) && cerca(a.alto, l.ancho))) : (!!a.codigo && String(a.codigo).replace(/\s/g, "").toUpperCase() === String(l.codigo || "").replace(/\s/g, "").toUpperCase());
+  // El albarán suele decir de qué expediente/vivienda es cada línea («EXP 823 BAJO 14-C»): primero se casa con ESA vivienda
+  const nz = (t) => String(t || "").toUpperCase().replace(/EXPEDIENTE|EXP\.?/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
+  const expOk = (a, l, p) => { const ta = nz(a.expediente); if (!ta) return false; const tl = nz(`${l.exp} ${(p && p.expedientes && p.expedientes[parseInt(String(l.key).split("-")[0], 10)] && p.expedientes[parseInt(String(l.key).split("-")[0], 10)].vivienda) || ""}`); if (!tl) return false; return ta === tl || ta.includes(tl) || tl.includes(ta); };
+  const pa = String(proveedorAlb || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4);
+  const mismoProv = (p) => !!pa && String(p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").startsWith(pa);
+  const hayDelProv = pedidosPend.some(mismoProv);
+  const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l))).length; return { p, ls, llegado: { ...ya }, n: 0, pot, potExp, prov: mismoProv(p) }; })
+    .filter((c) => c.pot > 0 && (!hayDelProv || c.prov))
+    .sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
+  const asignar = (estricto) => cands.forEach((c) => c.ls.forEach((l) => {
+    let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !medidaOk(a, l) || (estricto && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; });
+  }));
+  asignar(true); // 1º: misma medida Y mismo expediente/vivienda
+  asignar(false); // 2º: lo que quede, solo por medida
+  const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, total: c.ls.length }; });
+  return { reparto: out, sobran: resto.filter((a) => a.q > 0) };
+}
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
+  // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
+  const [albLeyendo, setAlbLeyendo] = useState(false); const [albRes, setAlbRes] = useState(null); const [albSel, setAlbSel] = useState({}); const [albMsg, setAlbMsg] = useState("");
+  const albRef = useRef(null);
+  const leerAlbaranLista = async (fileList) => {
+    const files = Array.from(fileList || []); if (!files.length) return;
+    setAlbLeyendo(true); setAlbMsg(""); setAlbRes(null);
+    try {
+      let lineas = []; let proveedor = ""; const docs = [];
+      for (const file of files) {
+        const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+        if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
+        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType);
+        lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+      }
+      if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
+      const pend = toArray(pedidos).filter((p) => p && !p.recibido);
+      const r = uxRepartirAlbaran(pend, lineas, proveedor);
+      const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
+      setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs });
+      if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
+    } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
+    finally { setAlbLeyendo(false); }
+  };
+  const confirmarAlbaranLista = async () => {
+    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); if (!elegidos.length) return;
+    setAlbLeyendo(true);
+    try {
+      const subidos = []; for (const f of albRes.docs) subidos.push({ nombre: f.name, url: await subirArchivoAStorage(f, "uxcar-albaranes") });
+      let ok = 0;
+      for (const x of elegidos) {
+        const previa = x.p.recepcion || {}; const lineas = {}; uxLineasPedidas(x.p).forEach((l) => { lineas[l.key] = Math.max(0, parseFloat(x.llegado[l.key]) || 0); });
+        const recepcion = JSON.parse(JSON.stringify({ fecha: uxHoy(), por: quien || "", documentos: [...toArray(previa.documentos), ...subidos], lineas, extras: toArray(previa.extras), completo: x.completo, comentario: previa.comentario || "", historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: quien || "", completo: x.completo, desde: "albarán por foto (lista)" }] }));
+        const r = await onGuardarRecepcion(x.p, recepcion); if (r !== false) ok++;
+      }
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"}: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.`);
+      setAlbRes(null);
+    } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
+    finally { setAlbLeyendo(false); }
+  };
   // Filtros: texto (pedido, expediente, presupuesto), proveedor, qué, estado y fechas (pedido y llegada)
   const [fq, setFq] = useState(""); const [fProv, setFProv] = useState(""); const [fTipo, setFTipo] = useState(""); const [fEst, setFEst] = useState("");
   const [fDesde, setFDesde] = useState(""); const [fHasta, setFHasta] = useState(""); const [fLlDesde, setFLlDesde] = useState(""); const [fLlHasta, setFLlHasta] = useState("");
@@ -51163,6 +51226,31 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Pedidos que Uxcar ha hecho a sus proveedores. Cuando llegue el camión, abre el pedido y sube el albarán para comprobar lo que ha llegado.</p>
         <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} /> Ver también los ya recibidos</label>
+      </div>
+      <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1 min-w-[16rem] text-sm text-emerald-900"><b>📷 Albarán por foto:</b> haz una foto al albarán (aunque traiga varias obras) y busco solo a qué pedidos de Uxcar corresponde, por medidas. Revisas y se dan de baja.</div>
+          <input ref={albRef} type="file" multiple accept="application/pdf,image/*" capture="environment" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files); e.target.value = ""; }} />
+          <button type="button" disabled={albLeyendo} onClick={() => albRef.current && albRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
+        </div>
+        {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
+        {albRes && albRes.reparto.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
+            {albRes.reparto.map((x) => (
+              <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
+                <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
+                <b>{x.p.numero}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))} · Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</span>
+                <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
+              </label>
+            ))}
+            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente: {albRes.sobran.slice(0, 6).map((a) => `${a.ancho || "?"}×${a.alto || "?"}`).join(", ")}{albRes.sobran.length > 6 ? "…" : ""}</div>}
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button type="button" disabled={albLeyendo} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              <button type="button" onClick={() => setAlbRes(null)} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 flex flex-wrap items-end gap-2 text-xs">
         <label className="flex flex-col gap-0.5 flex-1 min-w-[12rem]"><span className="font-semibold text-slate-600">Buscar</span><input value={fq} onChange={(e) => setFq(e.target.value)} placeholder="Pedido, expediente, presupuesto…" className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white" /></label>
