@@ -56774,9 +56774,24 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                         <button type="button" onClick={() => imprimirRevision([d], new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }))} className="ml-2 flex items-center gap-1 text-sm font-bold px-3 py-1 rounded-lg border-2 border-slate-600 bg-white text-slate-800"><Printer size={14} /> Imprimir</button>
                       </div>
                       {gs.length > 0 && (!porObra ? vistaPerfil(gs, [d]) : <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>{gs.map(tarjeta)}</div>)}
-                      {okObras.filter((o) => o.dia === d).length > 0 && (
+                      {/* OBRAS YA CORTADAS: bloqueadas y recogidas (no se puede volver a subir ni releer la hoja: duplicaría piezas). Solo admin las desbloquea */}
+                      {okObras.filter((o) => o.dia === d && o.n > 0).length > 0 && (
+                        <details className="mt-2 rounded-lg border-2 border-emerald-300 bg-emerald-50/60 px-2 py-1">
+                          <summary className="cursor-pointer text-sm font-extrabold text-emerald-800">🔒 {okObras.filter((o) => o.dia === d && o.n > 0).length} obra{okObras.filter((o) => o.dia === d && o.n > 0).length === 1 ? "" : "s"} ya cortada{okObras.filter((o) => o.dia === d && o.n > 0).length === 1 ? "" : "s"}: {okObras.filter((o) => o.dia === d && o.n > 0).map((o) => `Ppto ${[...o.pres].map(pptoBonito).join("/")}`).join(", ")}</summary>
+                          <div className="mt-1 space-y-1">
+                            {okObras.filter((o) => o.dia === d && o.n > 0).map((o) => (
+                              <div key={o.k} className="flex flex-wrap items-center gap-2 rounded border border-emerald-200 bg-white px-2 py-1 text-sm">
+                                <b className="text-slate-800">Ppto {[...o.pres].map(pptoBonito).join(" / ")}</b><span className="text-xs text-slate-500 truncate max-w-[14rem]">{o.nombre}</span>
+                                <span className="text-xs font-bold text-emerald-700">✓ Todo cortado ({o.n} pieza{o.n === 1 ? "" : "s"}) · bloqueada</span>
+                                {admin && <button type="button" disabled={leyendo} onClick={() => { if (!window.confirm(`Ppto ${[...o.pres].map(pptoBonito).join("/")} ya está TODO CORTADO.\n\nSi vuelves a subir la hoja de corte pueden salir otra vez piezas para cortar. ¿Seguro?`)) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className="ml-auto text-xs font-semibold px-2 py-1 rounded border border-slate-300 text-slate-600 bg-white">🔓 Volver a subir (admin)</button>}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                      {okObras.filter((o) => o.dia === d && o.n === 0).length > 0 && (
                         <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(14rem, 1fr))" }}>
-                          {okObras.filter((o) => o.dia === d).map((o) => (
+                          {okObras.filter((o) => o.dia === d && o.n === 0).map((o) => (
                             <div key={o.k} title={o.n === 0 ? "Toca para volver a subir la hoja de corte de esta obra" : ""} onClick={() => { if (o.n !== 0 || leyendo) return; esperadoRef.current = [...o.pres].join(","); claveRef.current = o.k; if (archivoRef2.current) archivoRef2.current.click(); }} className={`rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2 ${o.n === 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}>
                               <div className="text-sm font-extrabold text-slate-800">Ppto {[...o.pres].map(pptoBonito).join(" / ")}</div>
                               <div className="text-xs text-slate-600 truncate" title={o.nombre}>{o.nombre}</div>
