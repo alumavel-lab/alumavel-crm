@@ -59398,6 +59398,108 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             <b className="text-sm capitalize">{nombreMes}</b>
             <button type="button" onClick={() => cambiaMes(1)} className="px-2 font-bold">›</button>
           </div>
+          {(() => {
+            // PAPEL PARA COMPROBAR EN FÁBRICA: cada día con sus obras, una casilla para marcar a mano, cuántas ventanas están hechas y sitio para notas
+            const imprimirDias = (dias, titulo) => {
+              const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+              const pp = (ob) => [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ");
+              const bloques = dias.map((f) => {
+                const ks = Object.keys((asignTodas && asignTodas[f]) || {});
+                const filas = ks.map((k) => {
+                  const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const ids = ob ? idsDe(ob) : []; const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
+                  const v = (i) => (mk[i] !== undefined ? mk[i] : valorUlt(k, i));
+                  const hechas = ids.filter((i) => v(i) === 1).length; const prob = ids.filter((i) => v(i) === 2).length; const incs = ob ? incsDeObraCD(ob).length : 0;
+                  const est = ids.length && hechas === ids.length ? "✓ TERMINADA" : prob || incs ? `⚠ ${prob ? `${prob} con problema` : ""}${prob && incs ? " · " : ""}${incs ? `${incs} incidencia${incs === 1 ? "" : "s"}` : ""}` : ids.length ? "pendiente" : "sin ventanas";
+                  return `<tr><td class="chk">☐</td><td><b>${esc(pp(ob) || "")}</b></td><td>${esc(nom)}</td><td class="num">${ids.length ? `${hechas} / ${ids.length}` : "—"}</td><td class="${/TERMINADA/.test(est) ? "ok" : /⚠/.test(est) ? "mal" : ""}">${esc(est)}</td><td class="nota"></td></tr>`;
+                }).join("");
+                const fecha0 = new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }); const fecha = fecha0.charAt(0).toUpperCase() + fecha0.slice(1);
+                return `<div class="dia"><h2>${esc(fecha)} <span>· ${ks.length} obra${ks.length === 1 ? "" : "s"}</span></h2>${ks.length ? `<table><tr><th></th><th>Presupuesto</th><th>Obra</th><th>Ventanas hechas</th><th>Estado en el CRM</th><th>Comprobado en fábrica / notas</th></tr>${filas}</table>` : `<div class="vacio">Sin obras</div>`}</div>`;
+              }).join("");
+              const html = `<!doctype html><html><head><meta charset="utf-8"><title>Control del día · ${esc(titulo)}</title><style>
+                body{font-family:Arial,sans-serif;color:#111;margin:10mm} h1{font-size:18px;margin:0 0 2px} .sub{font-size:11px;color:#555;margin-bottom:8px}
+                .dia{margin:8px 0 12px;page-break-inside:avoid} h2{font-size:14px;margin:0 0 4px;border-bottom:2px solid #111} h2 span{font-weight:normal;color:#555;text-transform:none}
+                table{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed} th,td{border:1px solid #999;padding:6px 5px;text-align:left;vertical-align:middle;overflow:hidden} th{background:#eee;padding:3px 5px}
+                th:nth-child(1){width:22px} th:nth-child(2){width:80px} th:nth-child(3){width:26%} th:nth-child(4){width:70px} th:nth-child(5){width:140px}
+                .chk{font-size:16px;text-align:center} .num{text-align:center;white-space:nowrap} .ok{color:#067a3b;font-weight:bold} .mal{color:#b00;font-weight:bold} .vacio{font-size:11px;color:#777}
+                @page{size:A4 landscape;margin:8mm}
+              </style></head><body><h1>Control del día · ${esc(titulo)}</h1><div class="sub">Impreso el ${new Date().toLocaleString("es-ES")} · Marca ☐ cuando lo compruebes en fábrica.</div>${bloques}</body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
+              try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `control_del_dia_${dias[0]}.html`; a.click(); } catch (e) { alert("No se pudo abrir para imprimir."); }
+            };
+            // INFORME DE VENTANAS SALIDAS del día: obras cerradas (todas sus ventanas hechas ese día), separadas en atrasadas del día anterior,
+            // planificadas para hoy y otras no planificadas; y lo que queda pendiente
+            const informeSalidas = (f) => {
+              const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+              const diasMarcas = Object.keys(marcasTodas || {}).sort();
+              const valorHasta = (k, i, hasta) => { let v; for (const d of diasMarcas) { if (d > hasta) break; const m = ((marcasTodas[d] || {})[k] || {})[i]; if (m !== undefined) v = m; } return v; };
+              const hechaHasta = (k, hasta) => { const ob = obraPorClave.get(k); const ids = ob ? idsDe(ob) : []; return ids.length > 0 && ids.every((i) => valorHasta(k, i, hasta) === 1); };
+              const diaAntes = (d0) => { const d = new Date(d0 + "T12:00:00"); for (let n = 0; n < 7; n++) { d.setDate(d.getDate() - 1); const x = d.toLocaleDateString("sv-SE"); const dow = d.getDay(); if (Object.keys((asignTodas && asignTodas[x]) || {}).length || (dow >= 1 && dow <= 5)) return x; } return d.toLocaleDateString("sv-SE"); };
+              const ant = diaAntes(f);
+              const ref = (k) => { const ob = obraPorClave.get(k); return ob ? [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : ""; };
+              const nom = (k) => { const ob = obraPorClave.get(k); return ob ? ob.d.nombre : k; };
+              const planHoy = Object.keys((asignTodas && asignTodas[f]) || {});
+              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy.includes(k));
+              const ya = new Set([...planHoy, ...atrasadas]);
+              const otras0 = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
+              const est = (k) => (hechaHasta(k, f) ? "Terminada" : "Pendiente");
+              // VENTANAS HECHAS ESE DÍA (marcadas como hechas ese día y que antes no lo estaban), por obra
+              const valorAntes = (k, i) => { let v; for (const d of diasMarcas) { if (d >= f) break; const m = ((marcasTodas[d] || {})[k] || {})[i]; if (m !== undefined) v = m; } return v; };
+              const idsK = (k) => { const ob = obraPorClave.get(k); return ob ? idsDe(ob) : []; };
+              const hoyDe = (k) => { const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {}; return idsK(k).filter((i) => mk[i] === 1 && valorAntes(k, i) !== 1).length; };
+              const hechasTot = (k) => idsK(k).filter((i) => valorHasta(k, i, f) === 1).length;
+              // ADELANTADAS: obras planificadas para días SIGUIENTES (hasta 3 semanas) con ventanas hechas hoy
+              const diaDe = {}; Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k]) diaDe[k] = d; }));
+              const adelantadas = Object.keys(diaDe).filter((k) => !planHoy.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0);
+              const otras = otras0.filter((k) => !adelantadas.includes(k));
+              const sumHoy = (ks) => ks.reduce((t, k) => t + hoyDe(k), 0);
+              const vPlan = sumHoy(planHoy), vAtr = sumHoy(atrasadas), vAde = sumHoy(adelantadas), vOtr = sumHoy(otras);
+              const vTotal = vPlan + vAtr + vAde + vOtr;
+              const vAtrTot = atrasadas.reduce((t, k) => t + idsK(k).length, 0), vAtrHechas = atrasadas.reduce((t, k) => t + hechasTot(k), 0);
+              const nAt = atrasadas.filter((k) => est(k) === "Terminada").length, nPl = planHoy.filter((k) => est(k) === "Terminada").length;
+              const total = nAt + nPl + otras.length + adelantadas.filter((k) => hechaHasta(k, f)).length;
+              const pend = [...atrasadas, ...planHoy].filter((k) => est(k) !== "Terminada");
+              const fechaTxt = (d) => { const t = new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); return t.charAt(0).toUpperCase() + t.slice(1); };
+              const nomAnt = new Date(ant + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long" });
+              const tabla = (ks, estado, extra) => ks.length ? `<table><tr><th class="n">Nº</th><th>Obra / cliente</th><th>Referencia</th><th class="v">Ventanas hoy</th><th class="v">Hechas / total</th><th>Estado</th></tr>${ks.map((k, i) => { const e = estado ? estado(k) : est(k); return `<tr><td class="n">${i + 1}</td><td>${esc(nom(k))}${extra ? `<div class="sub2">${esc(extra(k))}</div>` : ""}</td><td>${esc(ref(k))}</td><td class="v"><b>${hoyDe(k)}</b></td><td class="v">${hechasTot(k)} / ${idsK(k).length}</td><td class="${e === "Pendiente" ? "pend" : ""}">${esc(e)}</td></tr>`; }).join("")}<tr class="tot"><td></td><td><b>Total</b></td><td></td><td class="v"><b>${sumHoy(ks)}</b></td><td class="v">${ks.reduce((t, k) => t + hechasTot(k), 0)} / ${ks.reduce((t, k) => t + idsK(k).length, 0)}</td><td></td></tr></table>` : `<div class="vacio">Ninguna</div>`;
+              const html = `<!doctype html><html><head><meta charset="utf-8"><title>Informe de ventanas salidas ${esc(f)}</title><style>
+                body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:14mm 16mm} h1{text-align:center;font-size:26px;margin:0} .fecha{text-align:center;color:#777;font-size:13px;margin:4px 0 22px}
+                h2{font-size:19px;margin:18px 0 8px} p{font-size:13px;line-height:1.4;margin:0 0 10px}
+                .kpi{width:100%;border-collapse:collapse;margin-top:6px} .kpi td{border:1px solid #999;text-align:center;padding:8px} .kpi .t{font-size:13px;font-weight:bold} .kpi .v{font-size:22px}
+                table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed} th{background:#1f3a5f;color:#fff;text-align:left;padding:8px} th:nth-child(1){width:34px} th:nth-child(2){width:31%} th:nth-child(3){width:14%} th:nth-child(4){width:11%} th:nth-child(5){width:12%} td{border:1px solid #ccc;padding:8px} tr:nth-child(odd) td{background:#f4f6fa}
+                .n{width:40px} .v{text-align:center} th.v{text-align:center} .sub2{font-size:11px;color:#666} tr.tot td{background:#e8edf5;border-top:2px solid #1f3a5f} .pend{color:#b00;font-weight:bold} .vacio{font-size:13px;color:#777} .pie{margin-top:18px;font-size:11px;color:#888;font-style:italic}
+                @page{size:A4;margin:10mm}
+              </style></head><body>
+                <h1>Informe de ventanas salidas</h1><div class="fecha">${esc(fechaTxt(f))}</div>
+                <h2>Resumen</h2>
+                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? `las ${nAt}` : `${nAt} de las ${atrasadas.length}`} atrasadas del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
+                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}. Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.</p>
+                <table class="kpi"><tr><td class="t">Atrasadas ${esc(nomAnt)}</td><td class="t">Planificadas hoy</td><td class="t">Otras cerradas</td><td class="t">Total cerradas</td></tr>
+                <tr><td class="v">${nAt} / ${atrasadas.length}</td><td class="v">${nPl} / ${planHoy.length}</td><td class="v">${otras.length}</td><td class="v">${total}</td></tr></table>
+                <table class="kpi"><tr><td class="t">Ventanas hoy (planificadas)</td><td class="t">Ventanas del ${esc(nomAnt)}</td><td class="t">Ventanas adelantadas</td><td class="t">Total ventanas hoy</td></tr>
+                <tr><td class="v">${vPlan}</td><td class="v">${vAtr}</td><td class="v">${vAde}</td><td class="v">${vTotal}</td></tr></table>
+                <h2>Retraso del ${esc(nomAnt)}</h2>${tabla(atrasadas)}
+                <h2>Planificadas para hoy</h2>${tabla(planHoy)}
+                <h2>Adelantadas (de días siguientes)</h2>${tabla(adelantadas, (k) => (hechaHasta(k, f) ? "Terminada" : "Adelantada (sigue)"), (k) => `planificada para el ${new Date(diaDe[k] + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}`)}
+                <h2>Otras cerradas hoy (no planificadas)</h2>${tabla(otras, () => "Cerrada")}
+                <div class="pie">Sacado del Control del día del CRM el ${new Date().toLocaleString("es-ES")}. Una obra cuenta como cerrada cuando todas sus ventanas están marcadas como hechas. Las atrasadas son las del ${esc(nomAnt)} que no se terminaron ese día.</div>
+              </body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
+              try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `informe_ventanas_${f}.html`; a.click(); } catch (e) { alert("No se pudo abrir para imprimir."); }
+            };
+            const lunes = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; })();
+            const semana = Array.from({ length: 7 }, (_, i) => { const d = new Date(lunes); d.setDate(lunes.getDate() + i); return d.toLocaleDateString("sv-SE"); }).filter((f, i) => i < 5 || Object.keys((asignTodas && asignTodas[f]) || {}).length);
+            const tSem = `semana del ${new Date(semana[0] + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" })}`;
+            return (
+              <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                <button type="button" onClick={() => imprimirDias(semana, tSem)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
+                <button type="button" onClick={() => imprimirDias([dia], new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }))} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border border-slate-400 bg-white text-slate-700"><Printer size={13} /> Imprimir el día elegido</button>
+                <button type="button" onClick={() => informeSalidas(dia)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-600 bg-white text-indigo-800">📄 Informe de ventanas salidas del día</button>
+                <span className="text-[11px] text-slate-500">para comprobarlo en fábrica con el papel</span>
+              </div>
+            );
+          })()}
           {pinSel ? <div className="mb-1 px-2 py-1 rounded bg-amber-100 border border-amber-400 text-xs font-semibold text-amber-900 flex items-center gap-2">📌 Moviendo «{(obraPorClave.get(pinSel.k) || { d: { nombre: pinSel.k } }).d.nombre}»: toca el día al que la quieres pasar <button type="button" onClick={() => setPinSel(null)} className="ml-auto underline">cancelar</button></div> : <div className="mb-1 text-[11px] text-slate-500">📌 Toca la chincheta de una obra para ver dónde está su cristal, persianas y auxiliares (debajo del calendario). Para moverla de día, arrástrala o usa «Mover de día» en ese panel.</div>}
           <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
           <div className="grid grid-cols-7 gap-1">
