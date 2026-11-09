@@ -59398,6 +59398,46 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
             <b className="text-sm capitalize">{nombreMes}</b>
             <button type="button" onClick={() => cambiaMes(1)} className="px-2 font-bold">›</button>
           </div>
+          {(() => {
+            // PAPEL PARA COMPROBAR EN FÁBRICA: cada día con sus obras, una casilla para marcar a mano, cuántas ventanas están hechas y sitio para notas
+            const imprimirDias = (dias, titulo) => {
+              const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+              const pp = (ob) => [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ");
+              const bloques = dias.map((f) => {
+                const ks = Object.keys((asignTodas && asignTodas[f]) || {});
+                const filas = ks.map((k) => {
+                  const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const ids = ob ? idsDe(ob) : []; const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
+                  const v = (i) => (mk[i] !== undefined ? mk[i] : valorUlt(k, i));
+                  const hechas = ids.filter((i) => v(i) === 1).length; const prob = ids.filter((i) => v(i) === 2).length; const incs = ob ? incsDeObraCD(ob).length : 0;
+                  const est = ids.length && hechas === ids.length ? "✓ TERMINADA" : prob || incs ? `⚠ ${prob ? `${prob} con problema` : ""}${prob && incs ? " · " : ""}${incs ? `${incs} incidencia${incs === 1 ? "" : "s"}` : ""}` : ids.length ? "pendiente" : "sin ventanas";
+                  return `<tr><td class="chk">☐</td><td><b>${esc(pp(ob) || "")}</b></td><td>${esc(nom)}</td><td class="num">${ids.length ? `${hechas} / ${ids.length}` : "—"}</td><td class="${/TERMINADA/.test(est) ? "ok" : /⚠/.test(est) ? "mal" : ""}">${esc(est)}</td><td class="nota"></td></tr>`;
+                }).join("");
+                const fecha0 = new Date(f + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }); const fecha = fecha0.charAt(0).toUpperCase() + fecha0.slice(1);
+                return `<div class="dia"><h2>${esc(fecha)} <span>· ${ks.length} obra${ks.length === 1 ? "" : "s"}</span></h2>${ks.length ? `<table><tr><th></th><th>Presupuesto</th><th>Obra</th><th>Ventanas hechas</th><th>Estado en el CRM</th><th>Comprobado en fábrica / notas</th></tr>${filas}</table>` : `<div class="vacio">Sin obras</div>`}</div>`;
+              }).join("");
+              const html = `<!doctype html><html><head><meta charset="utf-8"><title>Control del día · ${esc(titulo)}</title><style>
+                body{font-family:Arial,sans-serif;color:#111;margin:10mm} h1{font-size:18px;margin:0 0 2px} .sub{font-size:11px;color:#555;margin-bottom:8px}
+                .dia{margin:8px 0 12px;page-break-inside:avoid} h2{font-size:14px;margin:0 0 4px;border-bottom:2px solid #111} h2 span{font-weight:normal;color:#555;text-transform:none}
+                table{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed} th,td{border:1px solid #999;padding:6px 5px;text-align:left;vertical-align:middle;overflow:hidden} th{background:#eee;padding:3px 5px}
+                th:nth-child(1){width:22px} th:nth-child(2){width:80px} th:nth-child(3){width:26%} th:nth-child(4){width:70px} th:nth-child(5){width:140px}
+                .chk{font-size:16px;text-align:center} .num{text-align:center;white-space:nowrap} .ok{color:#067a3b;font-weight:bold} .mal{color:#b00;font-weight:bold} .vacio{font-size:11px;color:#777}
+                @page{size:A4 landscape;margin:8mm}
+              </style></head><body><h1>Control del día · ${esc(titulo)}</h1><div class="sub">Impreso el ${new Date().toLocaleString("es-ES")} · Marca ☐ cuando lo compruebes en fábrica.</div>${bloques}</body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
+              try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `control_del_dia_${dias[0]}.html`; a.click(); } catch (e) { alert("No se pudo abrir para imprimir."); }
+            };
+            const lunes = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; })();
+            const semana = Array.from({ length: 7 }, (_, i) => { const d = new Date(lunes); d.setDate(lunes.getDate() + i); return d.toLocaleDateString("sv-SE"); }).filter((f, i) => i < 5 || Object.keys((asignTodas && asignTodas[f]) || {}).length);
+            const tSem = `semana del ${new Date(semana[0] + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" })}`;
+            return (
+              <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                <button type="button" onClick={() => imprimirDias(semana, tSem)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
+                <button type="button" onClick={() => imprimirDias([dia], new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }))} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border border-slate-400 bg-white text-slate-700"><Printer size={13} /> Imprimir el día elegido</button>
+                <span className="text-[11px] text-slate-500">para comprobarlo en fábrica con el papel</span>
+              </div>
+            );
+          })()}
           {pinSel ? <div className="mb-1 px-2 py-1 rounded bg-amber-100 border border-amber-400 text-xs font-semibold text-amber-900 flex items-center gap-2">📌 Moviendo «{(obraPorClave.get(pinSel.k) || { d: { nombre: pinSel.k } }).d.nombre}»: toca el día al que la quieres pasar <button type="button" onClick={() => setPinSel(null)} className="ml-auto underline">cancelar</button></div> : <div className="mb-1 text-[11px] text-slate-500">📌 Toca la chincheta de una obra para ver dónde está su cristal, persianas y auxiliares (debajo del calendario). Para moverla de día, arrástrala o usa «Mover de día» en ese panel.</div>}
           <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">{["L", "M", "X", "J", "V", "S", "D"].map((x) => <span key={x}>{x}</span>)}</div>
           <div className="grid grid-cols-7 gap-1">
