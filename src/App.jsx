@@ -51491,10 +51491,17 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       });
       const ya = existentes.find((c) => normLote(c.lote) === normLote(cab));
       if (ya) {
-        // el caballete ya estaba (otro albarán o el packing de Cristales): solo se añaden los cristales SIN PEDIDO que no tuviera
-        const tiene = toArray(ya.piezas);
-        const add = piezas.filter((pz) => pz.sinPedido && !tiene.some((t) => t && t.sinPedido && Number(t.ancho) === pz.ancho && Number(t.alto) === pz.alto && String(t.ref || "") === pz.ref));
-        if (add.length) fusiones[ya.id] = { piezas: [...tiene, ...add], cantidad: (parseFloat(ya.cantidad) || 0) + add.reduce((t, x) => t + x.cantidad, 0), sinPedido: true };
+        // El caballete YA ESTABA (importado en Cristales o por otro albarán): NO se añaden cristales (estarían repetidos).
+        // Solo se MARCAN como «⚠ SIN PEDIDO» los que ya tiene con esa medida; si alguno no está, ese sí se añade.
+        const tiene = toArray(ya.piezas).map((t) => ({ ...t })); const add = []; let marcados = 0;
+        const casa = (t, pz) => t && Math.abs(Number(t.ancho) - pz.ancho) <= 2 && Math.abs(Number(t.alto) - pz.alto) <= 2 && (!t.ref || !pz.ref || String(t.ref).toUpperCase() === String(pz.ref).toUpperCase());
+        piezas.filter((pz) => pz.sinPedido).forEach((pz) => {
+          const t = tiene.find((x) => casa(x, pz) && !x._marcada);
+          if (t) { t._marcada = true; if (!t.sinPedido) { t.sinPedido = true; t.descripcion = `⚠ SIN PEDIDO (reclamado a oficina)${pz.ref ? ` · ${pz.ref}` : ""}${t.descripcion ? ` · ${t.descripcion}` : ""}`; marcados++; } }
+          else add.push(pz);
+        });
+        tiene.forEach((t) => { delete t._marcada; });
+        if (marcados || add.length) fusiones[ya.id] = { piezas: [...tiene, ...add], cantidad: (parseFloat(ya.cantidad) || 0) + add.reduce((t, x) => t + x.cantidad, 0), sinPedido: true };
         return;
       }
       const cantidad = piezas.reduce((t, x) => t + (x.cantidad || 0), 0);
