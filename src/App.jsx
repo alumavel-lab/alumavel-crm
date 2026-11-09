@@ -41334,7 +41334,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). El "proveedor" es la empresa QUE EMITE el albarán (la del logo y el CIF de arriba), NUNCA el cliente al que va dirigido (Construcciones Uxcar, Alumavel). Los motores, mandos y accesorios sin medidas ponlos con ancho 0 y alto 0. Si pone «Página 1 / 4», pon pagina 1 y paginasTotal 4. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","pagina":0,"paginasTotal":0,"lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -51173,12 +51173,21 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
   const expOk = (a, l, p) => { const ta = nz(a.expediente); if (!ta) return false; const tl = nz(`${l.exp} ${(p && p.expedientes && p.expedientes[parseInt(String(l.key).split("-")[0], 10)] && p.expedientes[parseInt(String(l.key).split("-")[0], 10)].vivienda) || ""}`); if (!tl) return false; return ta === tl || ta.includes(tl) || tl.includes(ta); };
   // tolerancia amplia (±15 mm) SOLO si además coincide la vivienda/expediente: el proveedor a veces redondea la medida
   const medidaAmplia = (a, l) => a.ancho && a.alto && l.ancho && l.alto && ((Math.abs(a.ancho - l.ancho) <= 15 && Math.abs(a.alto - l.alto) <= 15) || (Math.abs(a.ancho - l.alto) <= 15 && Math.abs(a.alto - l.ancho) <= 15));
-  const pa = String(proveedorAlb || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4);
+  // si el lector puso como proveedor al CLIENTE (Uxcar / Alumavel), no vale: se deduce por las medidas
+  const provLimpio = /uxcar|alumavel|ecowin/i.test(String(proveedorAlb || "")) ? "" : proveedorAlb;
+  const pa = String(provLimpio || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4);
   const mismoProv = (p) => !!pa && String(p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").startsWith(pa);
   const hayDelProv = pedidosPend.some(mismoProv);
   const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) || (medidaAmplia(a, l) && expOk(a, l, p)))).length; return { p, ls, llegado: { ...ya }, n: 0, cab: {}, pot, potExp, prov: mismoProv(p) }; })
-    .filter((c) => c.pot > 0 && (!hayDelProv || c.prov))
-    .sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
+    .filter((c) => c.pot > 0 && (!hayDelProv || c.prov));
+  // UN ALBARÁN ES DE UN SOLO PROVEEDOR: si no se sabe cuál, el que más medidas casa; los pedidos de otros proveedores (y de otro material) fuera
+  if (!hayDelProv && cands.length) {
+    const kp = (c) => `${String(c.p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4)}|${c.p.tipo || ""}`;
+    const peso = {}; cands.forEach((c) => { peso[kp(c)] = (peso[kp(c)] || 0) + c.pot + c.potExp; });
+    const gana = Object.keys(peso).sort((a, b) => peso[b] - peso[a])[0];
+    for (let i = cands.length - 1; i >= 0; i--) if (kp(cands[i]) !== gana) cands.splice(i, 1);
+  }
+  cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
   const asignar = (estricto, amplia) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
     resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (estricto && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
@@ -51190,7 +51199,8 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
   // Lo que no casa: los motores/accesorios sin medida no son un error (van con su persiana). Al resto se le busca la línea pendiente más parecida.
   const quedan = resto.filter((a) => a.q > 0);
   const accesorios = quedan.filter((a) => !(a.ancho && a.alto));
-  const pendTodas = pedidosPend.flatMap((p) => { const ya = (p.recepcion && p.recepcion.lineas) || {}; const c = cands.find((x) => x.p === p); const lleg = c ? c.llegado : ya; return uxLineasPedidas(p).filter((l) => l.ancho && l.alto && (l.pedido - (parseFloat(lleg[l.key]) || 0)) > 0).map((l) => ({ p, l })); });
+  const ref0 = cands[0] ? cands[0].p : null; const mismoGrupo = (p) => !ref0 || (String(p.proveedorNombre || "").toLowerCase().slice(0, 4) === String(ref0.proveedorNombre || "").toLowerCase().slice(0, 4) && (p.tipo || "") === (ref0.tipo || ""));
+  const pendTodas = pedidosPend.filter(mismoGrupo).flatMap((p) => { const ya = (p.recepcion && p.recepcion.lineas) || {}; const c = cands.find((x) => x.p === p); const lleg = c ? c.llegado : ya; return uxLineasPedidas(p).filter((l) => l.ancho && l.alto && (l.pedido - (parseFloat(lleg[l.key]) || 0)) > 0).map((l) => ({ p, l })); });
   const sobran = quedan.filter((a) => a.ancho && a.alto).map((a) => {
     let mejor = null, dm = Infinity;
     pendTodas.forEach(({ p, l }) => { const d = Math.min(Math.abs(a.ancho - l.ancho) + Math.abs(a.alto - l.alto), Math.abs(a.ancho - l.alto) + Math.abs(a.alto - l.ancho)); if (d < dm) { dm = d; mejor = { p, l }; } });
