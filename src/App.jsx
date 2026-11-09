@@ -51388,6 +51388,12 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
+            <details className="rounded border border-slate-300 bg-white px-2 py-1 text-xs">
+              <summary className="cursor-pointer font-bold text-slate-700">🔎 Ver lo que he leído del albarán ({albRes.lineas.length} líneas · {albRes.lineas.reduce((t, a) => t + (parseFloat(a.cantidad) || 1), 0)} unidades) — compáralo con el papel</summary>
+              <table className="mt-1 w-full"><tbody>
+                {albRes.lineas.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="pr-2 font-bold whitespace-nowrap">{a.ancho && a.alto ? `${a.ancho}×${a.alto}` : "sin medida"}</td><td className="pr-2 whitespace-nowrap">× {a.cantidad || 1}</td><td className="pr-2">{a.expediente || ""}</td><td className="pr-2 text-slate-500">{a.caballete ? `cab. ${a.caballete}` : ""}</td><td className="text-slate-500">{String(a.descripcion || a.codigo || "").slice(0, 40)}</td></tr>)}
+              </tbody></table>
+            </details>
             {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: <b>{a.parecida.p.numero}</b>{uxDesglosaExp(a.parecida.p, expsUx).ppto.length ? <b className="text-slate-900"> · Ppto {uxDesglosaExp(a.parecida.p, expsUx).ppto.join(", ")}</b> : null} ({a.parecida.p.proveedorNombre || ""}) pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
