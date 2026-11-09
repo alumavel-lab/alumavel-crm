@@ -59438,9 +59438,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const ant = diaAntes(f);
               const ref = (k) => { const ob = obraPorClave.get(k); return ob ? [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : ""; };
               const nom = (k) => { const ob = obraPorClave.get(k); return ob ? ob.d.nombre : k; };
-              const planHoy = Object.keys((asignTodas && asignTodas[f]) || {});
-              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy.includes(k));
-              const ya = new Set([...planHoy, ...atrasadas]);
+              const planHoy0 = Object.keys((asignTodas && asignTodas[f]) || {});
+              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy0.includes(k));
+              const ya = new Set([...planHoy0, ...atrasadas]);
               const otras0 = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
               const est = (k) => (hechaHasta(k, f) ? "Terminada" : "Pendiente");
               // VENTANAS HECHAS ESE DÍA (marcadas como hechas ese día y que antes no lo estaban), por obra
@@ -59450,7 +59450,15 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const hechasTot = (k) => idsK(k).filter((i) => valorHasta(k, i, f) === 1).length;
               // ADELANTADAS: obras planificadas para días SIGUIENTES (hasta 3 semanas) con ventanas hechas hoy
               const diaDe = {}; Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k]) diaDe[k] = d; }));
-              const adelantadas = Object.keys(diaDe).filter((k) => !planHoy.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0);
+              // Una obra puede estar HOY y también en un día SIGUIENTE (el planning la tenía para después y se ha metido hoy):
+              //  · si se ha hecho hoy (ventanas marcadas hoy) y está terminada → es ADELANTADA (de su día del planning)
+              //  · si ya estaba terminada ANTES de hoy → no es de hoy: sale aparte («ya hechas antes»)
+              //  · si sigue a medias → cuenta como planificada para hoy (pendiente)
+              const todaAntes = (k) => idsK(k).length > 0 && idsK(k).every((i) => valorAntes(k, i) === 1);
+              const yaAntes = planHoy0.filter((k) => todaAntes(k));
+              const adelDeHoy = planHoy0.filter((k) => !todaAntes(k) && diaDe[k] && hechaHasta(k, f) && hoyDe(k) > 0);
+              const planHoy = planHoy0.filter((k) => !yaAntes.includes(k) && !adelDeHoy.includes(k));
+              const adelantadas = [...adelDeHoy, ...Object.keys(diaDe).filter((k) => !planHoy0.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0)];
               const otras = otras0.filter((k) => !adelantadas.includes(k));
               const sumHoy = (ks) => ks.reduce((t, k) => t + hoyDe(k), 0);
               const vPlan = sumHoy(planHoy), vAtr = sumHoy(atrasadas), vAde = sumHoy(adelantadas), vOtr = sumHoy(otras);
@@ -59472,8 +59480,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               </style></head><body>
                 <h1>Informe de ventanas salidas</h1><div class="fecha">${esc(fechaTxt(f))}</div>
                 <h2>Resumen</h2>
-                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? `las ${nAt}` : `${nAt} de las ${atrasadas.length}`} atrasadas del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
-                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}. Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.</p>
+                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? (nAt === 1 ? "la atrasada" : `las ${nAt} atrasadas`) : `${nAt} de las ${atrasadas.length} atrasadas`} del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy, ${adelantadas.filter((k) => hechaHasta(k, f)).length} adelantada${adelantadas.filter((k) => hechaHasta(k, f)).length === 1 ? "" : "s"} de días siguientes y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
+                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}.${vAtrTot ? ` Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.` : ""}</p>
                 <table class="kpi"><tr><td class="t">Atrasadas ${esc(nomAnt)}</td><td class="t">Planificadas hoy</td><td class="t">Otras cerradas</td><td class="t">Total cerradas</td></tr>
                 <tr><td class="v">${nAt} / ${atrasadas.length}</td><td class="v">${nPl} / ${planHoy.length}</td><td class="v">${otras.length}</td><td class="v">${total}</td></tr></table>
                 <table class="kpi"><tr><td class="t">Ventanas hoy (planificadas)</td><td class="t">Ventanas del ${esc(nomAnt)}</td><td class="t">Ventanas adelantadas</td><td class="t">Total ventanas hoy</td></tr>
@@ -59482,6 +59490,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <h2>Planificadas para hoy</h2>${tabla(planHoy)}
                 <h2>Adelantadas (de días siguientes)</h2>${tabla(adelantadas, (k) => (hechaHasta(k, f) ? "Terminada" : "Adelantada (sigue)"), (k) => `planificada para el ${new Date(diaDe[k] + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}`)}
                 <h2>Otras cerradas hoy (no planificadas)</h2>${tabla(otras, () => "Cerrada")}
+                ${yaAntes.length ? `<h2>En el calendario de hoy pero ya hechas antes</h2>${tabla(yaAntes, () => "Ya estaba hecha")}` : ""}
                 <div class="pie">Sacado del Control del día del CRM el ${new Date().toLocaleString("es-ES")}. Una obra cuenta como cerrada cuando todas sus ventanas están marcadas como hechas. Las atrasadas son las del ${esc(nomAnt)} que no se terminaron ese día.</div>
               </body></html>`;
               const w = window.open("", "_blank");
