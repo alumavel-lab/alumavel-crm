@@ -51222,7 +51222,7 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
 
 // Un albarán (foto) que trae material de VARIOS pedidos de Uxcar: se reparten sus líneas entre los pedidos pendientes por medida
 // (o código), cada unidad del albarán cuenta una sola vez; primero los pedidos con más coincidencias y del mismo proveedor.
-function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
+function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proyectos = []) {
   const resto = lineasAlb.map((a) => ({ ...a, q: parseFloat(a.cantidad) || 1 }));
   const cerca = (x, y) => Math.abs(x - y) <= 3;
   const medidaOk = (a, l) => (a.ancho && a.alto && l.ancho && l.alto) ? ((cerca(a.ancho, l.ancho) && cerca(a.alto, l.alto)) || (cerca(a.ancho, l.alto) && cerca(a.alto, l.ancho))) : (!!a.codigo && String(a.codigo).replace(/\s/g, "").toUpperCase() === String(l.codigo || "").replace(/\s/g, "").toUpperCase());
@@ -51232,13 +51232,24 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
   // OBRA de cada línea: los números de expediente y presupuesto. El albarán trae «SN-EXPEDIENTE 741_6.833.3» o «SN-EXP 823_JOAN M PARETS…»;
   // el pedido está unido a su expediente de Uxcar, que tiene su nº de expediente y su presupuesto (6.833-3 → 6833)
   const numsDe = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
-  const numsPedidoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const s0 = new Set(); [x.numero, x.presupuesto, e.numero, e.expediente, e.presupuesto, e.presupuestoNumero, e.referencia].forEach((v) => numsDe(v).forEach((n) => s0.add(n))); return s0; };
+  // TEXTO DE LA OBRA de cada grupo del pedido: expediente de Uxcar + su obra en el CRM (referencia «EXP 823 JOAN M PARETS PORTAL 12 ESC 10 1K», nombre…)
+  const textoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const pr = toArray(proyectos).find((y) => y && (y.id === e.proyectoId || y.id === p.proyectoId)) || {};
+    return [x.numero, x.presupuesto, x.vivienda, x.referencia, e.numero, e.expediente, e.presupuesto, e.presupuestoNumero, e.referencia, e.descripcion, e.nombre, e.obra, e.vivienda, pr.referencia, pr.nombre, pr.descripcion, pr.expediente, pr.presupuestoNumero, p.referencia, p.obra].filter((v) => typeof v === "string" || typeof v === "number").join(" · "); };
+  const numsPedidoGrupo = (p, gi) => numsDe(textoGrupo(p, gi));
+  // palabras que distinguen la obra (PARETS, MONTSERRAT…): no cuentan las genéricas
+  const GEN = new Set(["EXPEDIENTE", "PORTAL", "ESCALERA", "CALLE", "PLANTA", "BAJO", "BLOQUE", "VIVIENDA", "VIVIENDAS", "OBRA", "AENA", "UXCAR", "CONSTRUCCIONES", "AVENIDA", "PASEO", "PLAZA", "CRISTAL", "CRISTALES"]);
+  const palabras = (t) => new Set(String(t || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]+/g, " ").split(" ").filter((w) => w.length >= 4 && /^[A-Z]+$/.test(w) && !GEN.has(w)));
+  // vivienda al final de la referencia: «… ESC 10 1K» → 1K · «BAJO 14-C» → 14C
+  const vivDe = (t) => { const m = String(t || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim().match(/(?:^|\s)(\d{1,2})\s?([A-Z])$/); return m ? m[1] + m[2] : ""; };
+  const cacheTxt = new Map();
+  const txtLinea = (l, p) => { const gi = parseInt(String(l.key).split("-")[0], 10) || 0; const k = `${p && p.id}|${gi}`; if (!cacheTxt.has(k)) { const t = textoGrupo(p, gi); cacheTxt.set(k, { t, pal: palabras(t), viv: vivDe(t) }); } return cacheTxt.get(k); };
   const cacheNums = new Map();
   const numsLinea = (l, p) => { const gi = parseInt(String(l.key).split("-")[0], 10) || 0; const k = `${p && p.id}|${gi}`; if (!cacheNums.has(k)) cacheNums.set(k, numsPedidoGrupo(p, gi)); return cacheNums.get(k); };
-  const obraOk = (a, l, p) => { const na = numsDe(a.expediente); if (!na.size) return false; const nl = numsLinea(l, p); return [...na].some((n) => nl.has(n)); };
+  const obraOk = (a, l, p) => { const na = numsDe(a.expediente); const nl = numsLinea(l, p); if (na.size && [...na].some((n) => nl.has(n))) return true; const pa2 = palabras(a.expediente); if (pa2.size < 2) return false; const pl = txtLinea(l, p).pal; return [...pa2].filter((w) => pl.has(w)).length >= 2; };
+  const vivOk = (a, l, p) => { const va = vivDe(a.expediente); if (!va) return false; const tl = txtLinea(l, p); const vl = tl.viv || vivDe(`${l.modelo || ""}`) || vivDe(`${l.descripcion || ""}`); return !!vl && vl === va && obraOk(a, l, p); };
   const expOk = (a, l, p) => expOkViv(a, l, p) || obraOk(a, l, p);
   // si la línea del albarán dice su obra y ESA obra tiene pedido pendiente, no se reparte a pedidos de otras obras aunque la medida coincida
-  const obraConPedido = (a) => { const na = numsDe(a.expediente); if (!na.size) return false; return pedidosPend.some((p) => toArray(p.expedientes).some((x, gi) => [...na].some((n) => numsPedidoGrupo(p, gi).has(n)))); };
+  const obraConPedido = (a) => { if (!String(a.expediente || "").trim()) return false; return pedidosPend.some((p) => toArray(p.expedientes).some((x, gi) => obraOk(a, { key: `${gi}-0` }, p))); };
   // tolerancia amplia (±15 mm) SOLO si además coincide la vivienda/expediente: el proveedor a veces redondea la medida
   const medidaAmplia = (a, l) => a.ancho && a.alto && l.ancho && l.alto && ((Math.abs(a.ancho - l.ancho) <= 15 && Math.abs(a.alto - l.alto) <= 15) || (Math.abs(a.ancho - l.alto) <= 15 && Math.abs(a.alto - l.ancho) <= 15));
   // si el lector puso como proveedor al CLIENTE (Uxcar / Alumavel), no vale: se deduce por las medidas
@@ -51256,11 +51267,12 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
     for (let i = cands.length - 1; i >= 0; i--) if (kp(cands[i]) !== gana) cands.splice(i, 1);
   }
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
-  const asignar = (estricto, amplia) => cands.forEach((c) => c.ls.forEach((l) => {
+  const asignar = (estricto, amplia, viv) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
+  asignar(true, true, true); // 0º: misma obra Y misma vivienda (1K, 1B…), medida parecida
   asignar(true); // 1º: misma medida Y mismo expediente/vivienda
   asignar(false); // 2º: lo que quede, solo por medida
   asignar(true, true); // 3º: misma vivienda y medida parecida (±15 mm)
@@ -51279,7 +51291,8 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
 }
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
-  const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
+  const ctxUxAlb = React.useContext(IncidenciasCristalCtx) || {};
+  const expsUx = toArray(ctxUxAlb.uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
@@ -51305,7 +51318,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
-      const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx);
+      const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
       setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
