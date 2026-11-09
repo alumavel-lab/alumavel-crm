@@ -39785,7 +39785,23 @@ const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
 const uxNum = (v) => parseInt(v, 10) || 0;
 // Medida de una línea de pedido en mm. Algunos pedidos traen la medida con el decimal pegado («379,50» guardado como 37950,
 // «784,50» como 78450): ninguna ventana/cristal pasa de 3,3 m, así que se le van quitando cifras hasta que sea posible (37950 → 379,5)
-const uxMedidaMm = (v) => { let n = uxNum(v); let i = 0; while (n > 3300 && i < 2) { n = n / 10; i++; } return Math.round(n * 10) / 10; };
+// Formatos que llegan: 1967 · "1.967" · "1.967,00mm" · "379,50" · "379.50mm" · 37950 (decimal pegado). Siempre se REDONDEA HACIA ABAJO al mm
+// (379,50 → 379), como lo pone el proveedor en el albarán: así 379,50 del pedido casa con 379 del packing.
+const uxMedidaMm = (v) => {
+  if (v == null || v === "") return 0;
+  let n;
+  if (typeof v === "number") n = v;
+  else {
+    let t = String(v).toLowerCase().replace(/mm|\s/g, "");
+    if (t.includes(".") && t.includes(",")) t = t.replace(/\./g, "").replace(",", "."); // 1.967,00 → 1967.00
+    else if (t.includes(",")) t = t.replace(",", "."); // 379,50 → 379.50
+    else if (/^\d{1,2}\.\d{3}(?:\D|$)/.test(t)) t = t.replace(".", ""); // 1.967 → 1967 (punto de miles)
+    n = parseFloat(t);
+  }
+  if (!Number.isFinite(n)) return 0;
+  let i = 0; while (n > 3300 && i < 2) { n = n / 10; i++; }
+  return Math.floor(n + 1e-9);
+};
 // Lo que se controla de cada expediente: las ventanas (recuento) y el material que hay
 // que pedir para ellas: persianas (se guarda en "compactos") y cristales ("vidrios").
 const UX_CONTROL = [["compactos", "Persianas", "Persianas"], ["vidrios", "Cristales", "Cristales"]];
@@ -51549,7 +51565,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       return { p, pr, d, nums, ls };
     });
     const resto = toArray(sobran).map((a) => ({ ...a }));
-    const med = (a, l, tol) => { const A = a.ancho, H = a.alto, x = parseFloat(l.ancho), y = parseFloat(l.alto); return (Math.abs(A - x) <= tol && Math.abs(H - y) <= tol) || (Math.abs(A - y) <= tol && Math.abs(H - x) <= tol); };
+    const med = (a, l, tol) => { const A = a.ancho, H = a.alto, x = uxMedidaMm(l.ancho), y = uxMedidaMm(l.alto); return (Math.abs(A - x) <= tol && Math.abs(H - y) <= tol) || (Math.abs(A - y) <= tol && Math.abs(H - x) <= tol); };
     const vent = (a, l) => { if (!a.ventana) return false; const t = `${l.referencia || ""} ${l.descripcion || ""} ${l.codigoListado || ""}`.toUpperCase(); const m = String(a.ventana).toUpperCase().match(/^([A-Z]\d{1,2})((?:\.\d{3})+)$/); if (!m) return t.includes(String(a.ventana).toUpperCase()); return m[2].split(".").filter(Boolean).some((n) => new RegExp(`(^|[^A-Z0-9.])${m[1]}\\.${n}([^0-9]|$)`).test(t)); };
     const pasar = (cond) => resto.forEach((a) => { if (!(a.q > 0)) return; const na = numsObra(a.expediente);
       cands.forEach((c) => { if (!(a.q > 0)) return; const mismaObra = na.size > 0 && [...na].some((n) => c.nums.has(n));
