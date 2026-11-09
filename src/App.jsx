@@ -22035,6 +22035,7 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <div className="flex flex-wrap items-center gap-2 mb-1">
                       <b className="text-base">{/^EXP /.test(k) ? k : `Presupuesto ${k}`}</b>
                       <span className="text-xs text-slate-600">{xs.length} {xs.length === 1 ? "pieza" : "piezas"}{xs[0].expediente && !/^EXP /.test(k) ? ` · EXP ${xs[0].expediente}` : ""}</span>
+                      {(() => { const fs = [...new Set(xs.map((x) => x.fechaEntrada || x.fechaLlegada || "").filter(Boolean))].sort(); return fs.length ? <span className="text-xs font-bold text-sky-800 bg-sky-50 border border-sky-300 rounded px-2 py-0.5">📅 Llegó {fs.map((f) => fmtDate(f)).join(", ")}</span> : <span className="text-xs text-slate-400">sin fecha de llegada</span>; })()}
                       {(() => { const pr = propuestaCarro(xs); return pr ? <span className="ml-auto text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">Propuesto: carro {pr}</span> : <span className="ml-auto text-xs text-slate-500">ningún carro las coge todas juntas</span>; })()}
                       <select value={carroPpto[k] || propuestaCarro(xs) || ""} onChange={(e) => setCarroPpto((c) => ({ ...c, [k]: e.target.value }))} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
                         <option value="">Carro…</option>{opcionesCarro(-1)}
