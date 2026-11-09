@@ -45071,9 +45071,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const presConEtiq = new Set();
     [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].forEach((l) => l && toArray(l.ventanas).forEach((v) => { const b = basePresuDia(v && v.num); if (b.length >= 3) presConEtiq.add(b); }));
     const tieneEtiq = (o) => toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
+    // UNA OBRA = UN DÍA: si el planning la pone en varios días, aquí sale solo en el primero (igual que en Control del día)
+    const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).forEach((k) => {
+      Object.keys(planDias[f] || {}).filter((k) => !primerDiaPlan[k] || primerDiaPlan[k] === f).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
         if (o) { if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } }
         else out.push({ sinEtiquetas: String((planObras[k] && planObras[k].nombre) || (planDias[f][k] && planDias[f][k].nombre) || k).replace(/ · en fabricación$/, "") });
@@ -58308,6 +58310,19 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const asignTodas = {};
   Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  // UNA OBRA = UN DÍA: si sale en varios días (el planning la reparte en 2, o se metió en otro día sin quitarla del suyo), se queda en UNO:
+  // el último día en que se le han marcado ventanas (donde de verdad se ha hecho) o, si aún no tiene nada marcado, el primero.
+  // Los otros días se recuerdan (asignOtrosDias) para que el informe sepa que estaba planificada para otro día (adelantada).
+  const asignOtrosDias = {};
+  (() => {
+    const diasDe = {}; Object.keys(asignTodas).sort().forEach((f) => Object.keys(asignTodas[f] || {}).forEach((ko) => { (diasDe[ko] = diasDe[ko] || []).push(f); }));
+    Object.entries(diasDe).forEach(([ko, ds]) => {
+      if (ds.length < 2) return;
+      const conMarcas = ds.filter((f) => { const m = ((marcasTodas && marcasTodas[f]) || {})[ko]; return m && Object.values(m).some((v) => v === 1 || v === 2); });
+      const queda = conMarcas.length ? conMarcas[conMarcas.length - 1] : ds[0];
+      ds.forEach((f) => { if (f !== queda) { delete asignTodas[f][ko]; (asignOtrosDias[ko] = asignOtrosDias[ko] || []).push(f); } });
+    });
+  })();
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
   const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta, hechoEn } }
@@ -59449,7 +59464,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const hoyDe = (k) => { const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {}; return idsK(k).filter((i) => mk[i] === 1 && valorAntes(k, i) !== 1).length; };
               const hechasTot = (k) => idsK(k).filter((i) => valorHasta(k, i, f) === 1).length;
               // ADELANTADAS: obras planificadas para días SIGUIENTES (hasta 3 semanas) con ventanas hechas hoy
-              const diaDe = {}; Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k]) diaDe[k] = d; }));
+              const diaDe = {}; Object.entries(asignOtrosDias).forEach(([k, ds]) => { const sig = toArray(ds).filter((d) => d > f).sort()[0]; if (sig) diaDe[k] = sig; }); Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k] || d < diaDe[k]) diaDe[k] = d; }));
               // Una obra puede estar HOY y también en un día SIGUIENTE (el planning la tenía para después y se ha metido hoy):
               //  · si se ha hecho hoy (ventanas marcadas hoy) y está terminada → es ADELANTADA (de su día del planning)
               //  · si ya estaba terminada ANTES de hoy → no es de hoy: sale aparte («ya hechas antes»)
