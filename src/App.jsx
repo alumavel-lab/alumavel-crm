@@ -3072,7 +3072,7 @@ export default function App() {
   // un pedido de Uxcar, la entrada también se guarda en su portal.
   // desdeFabrica: la entrada la da fábrica. Fábrica NO cierra el pedido en oficina: las líneas quedan confirmadas por fábrica
   // (la obra sigue su camino) pero el pedido y las líneas siguen abiertos en oficina hasta que oficina los cierre ella misma.
-  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica }) => {
+  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica, sinUbicar }) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -3158,7 +3158,7 @@ export default function App() {
         const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, presupuesto: info.ppto || "", obraTexto: info.obra || "", referencia: info.ref || "", medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id, pedidoNumero: pedido.numero };
         const reservado = propios.find((h) => !estaOcupado(h.zona, h.fila, h.hueco));
         if (reservado) propios.splice(propios.indexOf(reservado), 1);
-        const ub = reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
+        const ub = sinUbicar ? null : (reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado)); // entrada de Uxcar: a «Pendientes de ubicar»
         if (ub) ocupados.push({ ...ub, expediente, exps: expedientesDeCaballete(datos) });
         nuevosCab.push({ id: uid(), estado: ub ? "Colocado" : "Pendiente", ubicacion: ub || null, fechaColocado: ub ? hoy : "", fechaLlegada: hoy, ...datos });
       });
@@ -5491,10 +5491,34 @@ export default function App() {
   }, [uxPedidos, pedidos, currentUser?.id, loading]);
 
   // Entrada de material de un pedido de Uxcar hecha desde Fábrica
+  // ENTRADA DE UXCAR → ALMACENES: lo que llega (cristales y persianas) se crea en su almacén, en «Pendientes de ubicar» y con fecha de llegada.
+  // Se hace con la recepción de siempre del pedido del CRM (el que lleva este pedido de Uxcar), de UNO EN UNO (cola) para no pisarse.
+  const colaUxStock = useRef([]); const bloqueoSyncUx = useRef(new Set()); const [tickColaUx, setTickColaUx] = useState(0);
+  useEffect(() => {
+    if (!colaUxStock.current.length) return;
+    const it = colaUxStock.current.shift();
+    try {
+      const pd = pedidos.find((x) => x.id === it.crmId);
+      if (pd) {
+        const grupos = toArray(it.expedientes); let gi = grupos.findIndex((e) => (e.expedienteId || "") === (pd.uxcarExpedienteId || "")); if (gi < 0) gi = 0;
+        const esperado = grupos[gi] ? Math.max(1, toArray(grupos[gi].lineas).length) : 1;
+        const ids = new Set(toArray(pd.lineas).filter((l, li) => li < esperado && (parseFloat(it.lineas[`${gi}-${li}`]) || 0) >= (parseFloat(l.cantidad) || 1)).map((l) => l.id));
+        const cabDeLinea = {}; toArray(pd.lineas).forEach((l, li) => { const c = it.caballetes && it.caballetes[`${gi}-${li}`]; if (c) cabDeLinea[l.id] = c; });
+        // cada cristal a SU caballete del packing list (un caballete por número, en «Pendientes de ubicar»)
+        const filas = filasLlegadaManual(pd).filter((f) => ids.has(f.lineaId)).map((f) => (cabDeLinea[f.lineaId] ? { ...f, caballete: cabDeLinea[f.lineaId] } : f));
+        if (filas.length) recibirPedidoConAlbaran(pd.id, { filas, archivo: it.archivo || "(albarán Uxcar)", numeroAlbaran: it.numeroAlbaran || "", numeroPedidoProveedor: "", desdeFabrica: true, sinUbicar: true });
+      }
+    } catch (e) { console.error("Entrada Uxcar → almacén", e); }
+    bloqueoSyncUx.current.delete(it.crmId);
+    if (colaUxStock.current.length) setTimeout(() => setTickColaUx((t) => t + 1), 400);
+  }, [tickColaUx, pedidos]);
   const uxGuardarRecepcion = async (pedidoUx, recepcion0) => {
-    const recepcion = { ...recepcion0, origen: "fabrica" }; // «fabrica» = la entrada la ha hecho Ecowin PVC desde el CRM; solo esa confirma las líneas (la albarán que da Uxcar en su portal no)
+    const recepcion = { ...recepcion0, origen: "fabrica" };
+    // los pedidos del CRM de este pedido de Uxcar: primero se crea su material en los almacenes (y la sincronización espera)
+    pedidos.filter((pd) => pd.uxcarPedidoId === pedidoUx.id && pd.estado !== "Cancelado").forEach((pd) => { bloqueoSyncUx.current.add(pd.id); colaUxStock.current.push({ crmId: pd.id, lineas: { ...(recepcion.lineas || {}) }, caballetes: { ...(recepcion.caballetes || {}) }, expedientes: toArray(pedidoUx.expedientes), archivo: (toArray(recepcion.documentos).slice(-1)[0] || {}).nombre || "", numeroAlbaran: recepcion.numeroAlbaran || "" }); }); // «fabrica» = la entrada la ha hecho Ecowin PVC desde el CRM; solo esa confirma las líneas (la albarán que da Uxcar en su portal no)
     try { await fbUpdate(ref(fbDb, "portalUxcar"), uxPatchRecepcion(pedidoUx, recepcion, uxExpedientes)); }
-    catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
+    catch (e) { colaUxStock.current = colaUxStock.current.filter((x) => !pedidos.some((pd) => pd.id === x.crmId && pd.uxcarPedidoId === pedidoUx.id)); showToast("No se pudo guardar: " + e.message, "error"); return false; }
+    setTickColaUx((t) => t + 1);
     showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
     return true;
   };
@@ -5542,6 +5566,7 @@ export default function App() {
     let cambio = false;
     const next = pedidos.map((pd) => {
       if (!pd.uxcarPedidoId || pd.estado === "Cancelado") return pd;
+      if (bloqueoSyncUx.current.has(pd.id)) return pd; // su material se está creando en los almacenes (cola de entradas)
       const p = uxPedidos.find((x) => x.id === pd.uxcarPedidoId);
       if (!p || !p.recepcion) return pd;
       // Si Uxcar da la llegada en su portal, NO se confirma en fábrica: el pedido queda en Materiales pendientes hasta que fábrica lo reciba (cristales a su sitio, persianas a su carro)
@@ -21986,6 +22011,19 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
           if (n) guardarItems(items.map((x) => (sitio[x.id] ? { ...x, estante: sitio[x.id], pendienteUbicar: false } : x)));
           setAviso(n === xs.length ? `${n} ubicadas en el carro ${carroN}.` : `${n} de ${xs.length} ubicadas en el carro ${carroN}; el resto no cabe ahí: prueba otro carro.`);
         };
+        // CARRO PROPUESTO para un presupuesto: el primero donde caben TODAS sus persianas juntas (se prueba sin guardar nada)
+        const propCache = {};
+        const propuestaCarro = (xs) => {
+          const key = xs.map((x) => x.id).join(","); if (propCache[key] !== undefined) return propCache[key];
+          const carros = [...new Set(estantes.map((e) => e.carro))].sort((a, b) => a - b); let res = "";
+          for (const c of carros) {
+            const est = estantes.filter((e) => e.carro === c); const estado = estadoOcupacionPersianas(items); let n = 0; const porExp = {};
+            xs.forEach((x) => { const k2 = x.expediente || "—"; (porExp[k2] = porExp[k2] || []).push(x); });
+            try { Object.entries(porExp).forEach(([exp, g]) => { const r = colocarGrupoPersianas(g, exp, est, estado); n += Object.keys(r.res || {}).length; }); } catch (e) { n = 0; }
+            if (n === xs.length) { res = String(c); break; }
+          }
+          propCache[key] = res; return res;
+        };
         return (
           <div id="lista-sin-sitio" className="bg-white border border-slate-200 rounded-xl p-4">
             <p className="text-sm text-slate-600 mb-2">{Cosa} que han entrado y <b>todavía no tienen sitio</b>. No se colocan solas: elige el carro y pulsa <b>Ubicar</b>. Se agrupan por <b>nº de presupuesto</b>.</p>
@@ -21997,10 +22035,12 @@ function AlmacenPersianasUno({ almacen, carros, items, guardarCarros, guardarIte
                     <div className="flex flex-wrap items-center gap-2 mb-1">
                       <b className="text-base">{/^EXP /.test(k) ? k : `Presupuesto ${k}`}</b>
                       <span className="text-xs text-slate-600">{xs.length} {xs.length === 1 ? "pieza" : "piezas"}{xs[0].expediente && !/^EXP /.test(k) ? ` · EXP ${xs[0].expediente}` : ""}</span>
-                      <select value={carroPpto[k] || ""} onChange={(e) => setCarroPpto((c) => ({ ...c, [k]: e.target.value }))} className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs">
+                      {(() => { const fs = [...new Set(xs.map((x) => x.fechaEntrada || x.fechaLlegada || "").filter(Boolean))].sort(); return fs.length ? <span className="text-xs font-bold text-sky-800 bg-sky-50 border border-sky-300 rounded px-2 py-0.5">📅 Llegó {fs.map((f) => fmtDate(f)).join(", ")}</span> : <span className="text-xs text-slate-400">sin fecha de llegada</span>; })()}
+                      {(() => { const pr = propuestaCarro(xs); return pr ? <span className="ml-auto text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">Propuesto: carro {pr}</span> : <span className="ml-auto text-xs text-slate-500">ningún carro las coge todas juntas</span>; })()}
+                      <select value={carroPpto[k] || propuestaCarro(xs) || ""} onChange={(e) => setCarroPpto((c) => ({ ...c, [k]: e.target.value }))} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
                         <option value="">Carro…</option>{opcionesCarro(-1)}
                       </select>
-                      <button type="button" onClick={() => ubicar(xs, carroPpto[k])} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Ubicar todas</button>
+                      <button type="button" onClick={() => ubicar(xs, carroPpto[k] || propuestaCarro(xs))} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="text-xs font-semibold px-3 py-1.5 rounded-md">Ubicar todas</button>
                     </div>
                     <table className="w-full text-xs">
                       <tbody>{xs.map((x) => (
@@ -41290,7 +41330,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
     : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } };
-  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5"), ponlo. Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":""}]}';
+  const prompt = 'Esto es un albarán de entrega de un proveedor de carpintería (persianas/cajones, cristales u otro material). Saca TODAS las líneas de material entregado. Las medidas en milímetros como número entero (sin puntos de miles: "1.445" es 1445). Si una línea trae expediente u obra (p.ej. "6.276-5" o "EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B"), ponlo entero. Si es un PACKING LIST de cristales con CABALLETES (bastidores), pon en cada línea el número del caballete en el que viene (p.ej. "2002400436"). Responde SOLO con JSON, sin texto ni ```: {"proveedor":"","numeroAlbaran":"","lineas":[{"codigo":"","descripcion":"","ancho":0,"alto":0,"cantidad":1,"expediente":"","caballete":""}]}';
   const response = await fetch("/.netlify/functions/anthropic-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -41307,7 +41347,7 @@ async function uxLeerAlbaranConClaude(dataUrl, mediaType) {
   const n = (v) => parseInt(String(v || "0").replace(/\./g, "").replace(",", "."), 10) || 0;
   return {
     proveedor: String(res.proveedor || ""), numeroAlbaran: String(res.numeroAlbaran || ""),
-    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || "") })),
+    lineas: (Array.isArray(res.lineas) ? res.lineas : []).map((l) => ({ codigo: String(l.codigo || ""), descripcion: String(l.descripcion || ""), ancho: n(l.ancho), alto: n(l.alto), cantidad: parseFloat(l.cantidad) || 1, expediente: String(l.expediente || ""), caballete: String(l.caballete || "").replace(/\s+/g, "") })),
   };
 }
 
@@ -51118,11 +51158,74 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
   );
 }
 
+// Un albarán (foto) que trae material de VARIOS pedidos de Uxcar: se reparten sus líneas entre los pedidos pendientes por medida
+// (o código), cada unidad del albarán cuenta una sola vez; primero los pedidos con más coincidencias y del mismo proveedor.
+function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb) {
+  const resto = lineasAlb.map((a) => ({ ...a, q: parseFloat(a.cantidad) || 1 }));
+  const cerca = (x, y) => Math.abs(x - y) <= 3;
+  const medidaOk = (a, l) => (a.ancho && a.alto && l.ancho && l.alto) ? ((cerca(a.ancho, l.ancho) && cerca(a.alto, l.alto)) || (cerca(a.ancho, l.alto) && cerca(a.alto, l.ancho))) : (!!a.codigo && String(a.codigo).replace(/\s/g, "").toUpperCase() === String(l.codigo || "").replace(/\s/g, "").toUpperCase());
+  // El albarán suele decir de qué expediente/vivienda es cada línea («EXP 823 BAJO 14-C»): primero se casa con ESA vivienda
+  const nz = (t) => String(t || "").toUpperCase().replace(/EXPEDIENTE|EXP\.?/g, " ").replace(/[^A-Z0-9]+/g, " ").trim();
+  const expOk = (a, l, p) => { const ta = nz(a.expediente); if (!ta) return false; const tl = nz(`${l.exp} ${(p && p.expedientes && p.expedientes[parseInt(String(l.key).split("-")[0], 10)] && p.expedientes[parseInt(String(l.key).split("-")[0], 10)].vivienda) || ""}`); if (!tl) return false; return ta === tl || ta.includes(tl) || tl.includes(ta); };
+  const pa = String(proveedorAlb || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 4);
+  const mismoProv = (p) => !!pa && String(p.proveedorNombre || "").toLowerCase().replace(/[^a-z]/g, "").startsWith(pa);
+  const hayDelProv = pedidosPend.some(mismoProv);
+  const cands = pedidosPend.map((p) => { const ls = uxLineasPedidas(p); const ya = (p.recepcion && p.recepcion.lineas) || {}; const pend = ls.filter((l) => (l.pedido - (parseFloat(ya[l.key]) || 0)) > 0); const potExp = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l) && expOk(a, l, p))).length; const pot = pend.filter((l) => lineasAlb.some((a) => medidaOk(a, l))).length; return { p, ls, llegado: { ...ya }, n: 0, cab: {}, pot, potExp, prov: mismoProv(p) }; })
+    .filter((c) => c.pot > 0 && (!hayDelProv || c.prov))
+    .sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
+  const asignar = (estricto) => cands.forEach((c) => c.ls.forEach((l) => {
+    let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !medidaOk(a, l) || (estricto && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+  }));
+  asignar(true); // 1º: misma medida Y mismo expediente/vivienda
+  asignar(false); // 2º: lo que quede, solo por medida
+  const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, cab: c.cab, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, total: c.ls.length }; });
+  return { reparto: out, sobran: resto.filter((a) => a.q > 0) };
+}
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
+  // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
+  const [albLeyendo, setAlbLeyendo] = useState(false); const [albRes, setAlbRes] = useState(null); const [albSel, setAlbSel] = useState({}); const [albMsg, setAlbMsg] = useState("");
+  const albRef = useRef(null);
+  const leerAlbaranLista = async (fileList) => {
+    const files = Array.from(fileList || []); if (!files.length) return;
+    setAlbLeyendo(true); setAlbMsg(""); setAlbRes(null);
+    try {
+      let lineas = []; let proveedor = ""; const docs = [];
+      for (const file of files) {
+        const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
+        if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
+        const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType);
+        lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+      }
+      if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
+      const pend = toArray(pedidos).filter((p) => p && !p.recibido);
+      const r = uxRepartirAlbaran(pend, lineas, proveedor);
+      const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
+      setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs });
+      if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
+    } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
+    finally { setAlbLeyendo(false); }
+  };
+  const confirmarAlbaranLista = async () => {
+    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); if (!elegidos.length) return;
+    setAlbLeyendo(true);
+    try {
+      const subidos = []; for (const f of albRes.docs) subidos.push({ nombre: f.name, url: await subirArchivoAStorage(f, "uxcar-albaranes") });
+      let ok = 0;
+      for (const x of elegidos) {
+        const previa = x.p.recepcion || {}; const lineas = {}; uxLineasPedidas(x.p).forEach((l) => { lineas[l.key] = Math.max(0, parseFloat(x.llegado[l.key]) || 0); });
+        const recepcion = JSON.parse(JSON.stringify({ fecha: uxHoy(), por: quien || "", documentos: [...toArray(previa.documentos), ...subidos], lineas, caballetes: { ...((previa && previa.caballetes) || {}), ...(x.cab || {}) }, extras: toArray(previa.extras), completo: x.completo, comentario: previa.comentario || "", historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: quien || "", completo: x.completo, desde: "albarán por foto (lista)" }] }));
+        const r = await onGuardarRecepcion(x.p, recepcion); if (r !== false) ok++;
+      }
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"}: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.`);
+      setAlbRes(null);
+    } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
+    finally { setAlbLeyendo(false); }
+  };
   // Filtros: texto (pedido, expediente, presupuesto), proveedor, qué, estado y fechas (pedido y llegada)
   const [fq, setFq] = useState(""); const [fProv, setFProv] = useState(""); const [fTipo, setFTipo] = useState(""); const [fEst, setFEst] = useState("");
   const [fDesde, setFDesde] = useState(""); const [fHasta, setFHasta] = useState(""); const [fLlDesde, setFLlDesde] = useState(""); const [fLlHasta, setFLlHasta] = useState("");
@@ -51163,6 +51266,31 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm text-slate-600 mr-auto">Pedidos que Uxcar ha hecho a sus proveedores. Cuando llegue el camión, abre el pedido y sube el albarán para comprobar lo que ha llegado.</p>
         <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={verTodos} onChange={(e) => setVerTodos(e.target.checked)} /> Ver también los ya recibidos</label>
+      </div>
+      <div className="rounded-lg border-2 border-emerald-500 bg-emerald-50 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1 min-w-[16rem] text-sm text-emerald-900"><b>📷 Albarán por foto:</b> haz una foto al albarán (aunque traiga varias obras) y busco solo a qué pedidos de Uxcar corresponde, por medidas. Revisas y se dan de baja.</div>
+          <input ref={albRef} type="file" multiple accept="application/pdf,image/*" capture="environment" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files); e.target.value = ""; }} />
+          <button type="button" disabled={albLeyendo} onClick={() => albRef.current && albRef.current.click()} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo…</> : "📷 Subir foto del albarán"}</button>
+        </div>
+        {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
+        {albRes && albRes.reparto.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
+            {albRes.reparto.map((x) => (
+              <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
+                <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
+                <b>{x.p.numero}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))} · Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</span>
+                <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
+              </label>
+            ))}
+            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente: {albRes.sobran.slice(0, 6).map((a) => `${a.ancho || "?"}×${a.alto || "?"}`).join(", ")}{albRes.sobran.length > 6 ? "…" : ""}</div>}
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button type="button" disabled={albLeyendo} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              <button type="button" onClick={() => setAlbRes(null)} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 flex flex-wrap items-end gap-2 text-xs">
         <label className="flex flex-col gap-0.5 flex-1 min-w-[12rem]"><span className="font-semibold text-slate-600">Buscar</span><input value={fq} onChange={(e) => setFq(e.target.value)} placeholder="Pedido, expediente, presupuesto…" className="border border-slate-300 rounded px-2 py-1.5 text-sm bg-white" /></label>
@@ -54997,8 +55125,11 @@ function leerAuxiliaresHojaCorteGrupos(paginas, refs) {
         const suf = digitos.length > tot.length && digitos.endsWith(tot) ? tot : digitos.length > totUd.length && digitos.endsWith(totUd) ? totUd : "";
         const lCorte = parseInt(suf ? digitos.slice(0, -suf.length) : digitos, 10);
         const desc = m[1].replace(AUX_COLOR_RE, "").trim();
-        if (conComa) { const ent = parseInt(conComa[1].replace(/\./g, ""), 10); filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(ent) ? parseFloat(`${ent}.${conComa[2]}`) : null, lFinal: null, tot: ud * b.uds, ud }); return; }
-        filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
+        // ÁNGULO DE CORTE: la fila empieza por él («45º -45 º…», «90º - 90º…», «0º -0 º…»)
+        const angM = linea.match(/^\s*(\d{1,3})\s*[º°]\s*(-?)\s*(\d{1,3})\s*[º°]/);
+        const angulo = angM ? `${angM[1]}° ${angM[2]}${angM[3]}°` : "";
+        if (conComa) { const ent = parseInt(conComa[1].replace(/\./g, ""), 10); filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(ent) ? parseFloat(`${ent}.${conComa[2]}`) : null, lFinal: null, tot: ud * b.uds, ud, angulo }); return; }
+        filas.push({ ref, codigo: m[7] || ref, desc, color, lCorte: Number.isFinite(lCorte) ? lCorte : null, lFinal: null, tot: ud * b.uds, ud, angulo, _dig: digitos, _max: Math.max(b.ancho || 0, b.alto || 0) });
         return;
       }
       // la línea acaba en una referencia de la lista pero no se ha sabido leer: se avisa para que no pase desapercibida
@@ -55411,7 +55542,7 @@ function auxExpandir(hojas, cfg, ventanas, pptosGuiaProv) {
             // − / + de la configuración de este perfil: la medida a cortar es la de la hoja corregida (la hoja sigue guardada en lHoja)
             lCorte: f.lCorte != null ? Math.round((f.lCorte - (Number(rc.menos) || 0) + (Number(rc.mas) || 0)) * 10) / 10 : f.lCorte, lHoja: f.lCorte, notaMedida: f.notaMedida || "", notaEt: f.notaMedida ? `AJUSTADA AL TRAMO QUE ABRE (hoja ${f.lCorteHoja != null ? f.lCorteHoja : ""})` : String(f.ref) === AUX_REF_ANGULO ? (/debajo/i.test(f.desc || "") ? "FIJO DEBAJO · al ancho de la mosquitera" : "FIJO AL LADO · al alto de la ventana") : "", color: f.color || "", k, n,
             eje: m.eje || "", ejeLado: m.ejeLado || "", ventanaPos: u.x ? u.x.v.pos || "" : "", dib: u.x ? dibDe(u.x.v) : 0, grupo: u.x ? u.x.v.grupo || "" : "", cliente: (u.x && u.x.v.cliente) || h.cliente || "", obra: u.x ? u.x.dueno.nombre : "", unidad: u.txt,
-            referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "",
+            referencia: h.referencia || "", fab: h.fab || "", fechaDoc: h.fechaDoc || "", angulo: f.angulo || "",
           });
         }
       }));
@@ -55573,6 +55704,7 @@ function imprimirAux(lista, cfg) {
     .med { font-size: ${f(7)}; font-weight: 900; line-height: 1; white-space: nowrap; margin-top: 0.3mm; display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; }
     .med .refp { font-size: ${f(4.6)}; font-weight: 900; }
     .med .ejeb { font-size: ${f(5)}; font-weight: 900; border: 0.6mm solid #000; padding: 0 1.2mm; line-height: 1.1; ${neg ? "background:#000;color:#fff;" : ""} }
+    .med .ang { font-size: ${f(4.6)}; font-weight: 900; }
     .r2 { font-size: ${f(3.4)}; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
     .sitio { margin-top: 0.6mm; display: flex; align-items: center; justify-content: space-between; gap: 2mm; white-space: nowrap; overflow: hidden; border: 0.7mm solid #000; padding: 0.2mm 1.2mm; ${neg ? "background: #000; color: #fff;" : ""} }
     .sitio .lugar { font-size: ${f(5.4)}; font-weight: 900; }
@@ -55582,9 +55714,9 @@ function imprimirAux(lista, cfg) {
   </style></head><body><div class="et">
     <div class="r1"><span class="pos">${p.dib ? `D${esc(p.dib)} · ` : ""}${esc(p.ventanaPos || p.modelo)}</span>
       <span class="der"><div class="nom">${esc(p.nombre)}${p.n > 1 ? ` ${p.k}/${p.n}` : ""}</div><div class="ppto">Ppto ${esc(pptoBonito(p.ppto))}${p.version ? ` v${esc(p.version)}` : ""}${p.fab ? ` · Fab ${esc(p.fab)}` : ""}</div></span></div>
-    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.ejeTxt ? `<span class="ejeb"${String(p.ejeTxt).length > 10 ? ` style="font-size:${f(4.2)}"` : ""}>${esc(p.ejeTxt)}</span>` : ""}<span class="refp">${esc(p.ref || "")}</span></div>
+    <div class="med"><span>${esc(auxMed(p.lCorte))} mm</span>${p.angulo ? `<span class="ang">${esc(String(p.angulo).replace(/\s+/g, ""))}</span>` : ""}${p.ejeTxt ? `<span class="ejeb"${String(p.ejeTxt).length > 10 ? ` style="font-size:${f(4.2)}"` : ""}>${esc(p.ejeTxt)}</span>` : ""}${p.ejeTxt && p.angulo ? "" : `<span class="refp">${esc(p.ref || "")}</span>`}</div>
     <div class="r2">${esc([p.grupo, p.cliente, p.referencia, p.fechaDoc].filter(Boolean).join(" · ") || p.unidad)}</div>
-    ${p.color || p.notaEt ? `<div class="r2">${esc(p.color || "")}${p.notaEt ? `${p.color ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
+    ${p.color || p.notaEt || (p.ejeTxt && p.angulo) ? `<div class="r2">${esc([p.ejeTxt && p.angulo ? `REF ${p.ref || ""}` : "", p.color || ""].filter(Boolean).join(" · "))}${p.notaEt ? `${p.color || (p.ejeTxt && p.angulo) ? " · " : ""}<span style="font-weight:900;text-decoration:underline">${esc(p.notaEt)}</span>` : ""}</div>` : ""}
     <div class="sitio"><span class="lugar">${esc(`${String(p.carroNombre || "").split("·").pop().trim().toUpperCase()} · POS. ${p.hueco ?? ""}`)}</span>${p.pasosTxt ? `<span class="pasos">${esc(p.pasosTxt)}</span>` : ""}</div>
     <div class="bar">${svgCode128Mm(p.cod, 6.5, 0.5, util)}</div>
     <div class="dig">${esc(p.cod)}</div>
@@ -55993,7 +56125,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     try {
       const r = await runTransaction(ref(fbDb, "auxiliaresContador"), (n) => (n || 0) + 1);
       const cod = "AX" + String(r.snapshot.val()).padStart(6, "0");
-      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
+      const reg = JSON.parse(JSON.stringify({ cod, ppto: p.ppto, version: p.version, modelo: p.modelo, ref: p.ref, nombre: p.nombre, lCorte: p.lCorte, angulo: p.angulo || "", color: p.color, k: p.k, n: p.n, eje: p.eje || "", ejeLado: p.ejeLado || "", ejeI: p.ejeI || "", ejeD: p.ejeD || "", ventanaPos: p.ventanaPos, dib: p.dib || 0, grupo: p.grupo, cliente: p.cliente, obra: p.obra, unidad: p.unidad, referencia: p.referencia || "", fab: p.fab || "", fechaDoc: p.fechaDoc || "", notaEt: p.notaEt || "", ...sitio, cortada: true, cortadaAt: Date.now(), por: quien || "" }));
       await fbSet(ref(fbDb, `auxiliaresPiezas/${p.id}`), reg);
       if (!opt.sinImprimir) imprimirAux([{ ...reg, pasosTxt: auxPasosTxt(refDe(p.ref), reg), ejeTxt: auxEjeTxt(refDe(p.ref), reg) }], cfg);
       recienCortadas.current.add(p.id); codsTanda.current.add(String(cod).toUpperCase());
@@ -56195,6 +56327,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     <div key={p.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
       <div className="min-w-[170px]"><span className="text-sm font-semibold text-slate-800">{p.nombre}</span>{p.n > 1 && <span className="text-xs text-slate-500"> {p.k}/{p.n}</span>}</div>
       <div className="text-base font-bold text-slate-900 w-24">{auxMed(p.lCorte)} mm</div>
+      {p.angulo ? <div className="text-sm font-extrabold text-sky-900 bg-sky-50 border-2 border-sky-400 rounded px-2 py-0.5 whitespace-nowrap" title="Ángulo de corte de la hoja de corte">∠ {p.angulo}</div> : null}
       <div className="text-xs text-slate-500 flex-1 min-w-[140px]">{conVentana ? <b className="text-slate-800">Ppto {pptoBonito(p.ppto)} · </b> : null}<b className="text-slate-800">{p.ref}</b>{p.color ? ` · ${p.color}` : ""}{auxPasosEje(refDe(p.ref), p) ? <b className="text-violet-700"> · {auxPasosEje(refDe(p.ref), p)}</b> : null}{p.notaMedida ? <div className="text-[11px] font-bold text-amber-700">⚠ {p.notaMedida}</div> : null}
         {auxPasosDe(refDe(p.ref), p).some((n) => /bocado/i.test(n)) && (
           <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap">
@@ -56432,16 +56565,16 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                       <button type="button" onClick={() => cortar(r.filas[0], { tipo: "ref", k: r.k, dias, plan: r.filas.map((x) => x.id) })} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="ml-auto flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"><Printer size={14} /> Cortar la siguiente de esta referencia</button></div>
                     {(() => {
                       // RESUMEN DE IGUALES: misma medida (mismo perfil y color) → se pueden cortar varias de golpe, con sus etiquetas seguidas
-                      const gr = {}; r.filas.forEach((x) => { if (est && est[x.id] && est[x.id].cortada) return; const k = String(Math.round((Number(x.lCorte) || 0) * 10)); (gr[k] = gr[k] || []).push(x); });
+                      const gr = {}; r.filas.forEach((x) => { if (est && est[x.id] && est[x.id].cortada) return; const k = `${Math.round((Number(x.lCorte) || 0) * 10)}|${x.angulo || ""}`; (gr[k] = gr[k] || []).push(x); });
                       const L = Object.values(gr).filter((xs) => xs.length >= 2).sort((a2, b2) => b2.length - a2.length || (Number(b2[0].lCorte) || 0) - (Number(a2[0].lCorte) || 0));
                       if (!L.length) return null;
                       return (
                         <details open className="mt-1 mb-2 rounded-lg border border-indigo-300 bg-indigo-50/60 px-2 py-1">
                           <summary className="cursor-pointer text-sm font-extrabold text-indigo-900">📋 Resumen de piezas iguales ({L.reduce((t, xs) => t + xs.length, 0)} piezas en {L.length} medida{L.length === 1 ? "" : "s"}): córtalas juntas</summary>
                           <div className="mt-1 space-y-1">
-                            {L.map((xs) => { const kk = `${r.k}|${xs[0].lCorte}`; return (
+                            {L.map((xs) => { const kk = `${r.k}|${xs[0].lCorte}|${xs[0].angulo || ""}`; return (
                               <div key={kk} className="flex flex-wrap items-center gap-2 bg-white rounded border border-indigo-200 px-2 py-1 text-sm">
-                                <b className="text-lg">{xs.length} ×</b><b className="text-lg">{auxMed(xs[0].lCorte)} mm</b>
+                                <b className="text-lg">{xs.length} ×</b><b className="text-lg">{auxMed(xs[0].lCorte)} mm</b>{xs[0].angulo ? <b className="text-sm text-sky-900 bg-sky-50 border-2 border-sky-400 rounded px-1.5">∠ {xs[0].angulo}</b> : null}
                                 <span className="text-xs text-slate-500">{[...new Set(xs.map((x) => pptoBonito(x.ppto)))].slice(0, 6).join(", ")}{new Set(xs.map((x) => x.ppto)).size > 6 ? "…" : ""}</span>
                                 <span className="ml-auto flex items-center gap-1">
                                   <span className="text-xs text-slate-600">de</span><input id={`nv-${kk}`} type="number" min="1" max={xs.length} defaultValue={Math.min(4, xs.length)} className="w-14 border border-slate-300 rounded px-1 py-0.5 text-sm text-right" />
