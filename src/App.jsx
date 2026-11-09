@@ -51399,6 +51399,45 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
   const [albLeyendo, setAlbLeyendo] = useState(false); const [albRes, setAlbRes] = useState(null); const [albSel, setAlbSel] = useState({}); const [albMsg, setAlbMsg] = useState("");
   const albRef = useRef(null);
+  const [sinPedidoUlt, setSinPedidoUlt] = useState(null);
+  const [meterSinPedido, setMeterSinPedido] = useState(true); // los cristales que llegan sin pedido también entran en el almacén (pendientes de ubicar), marcados // lo que no casó en el último albarán confirmado (para imprimirlo después)
+  // LO QUE NO CASA, AGRUPADO POR OBRA y por qué: sin pedido de esa obra / pedido ya recibido / medidas distintas / sin nº de presupuesto
+  const gruposSinPedido = (sobran) => {
+    const numsTxt = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{4}$/.test(d)) out.add(d); }); return out; };
+    const grupos = new Map(); toArray(sobran).forEach((a) => { const k = String(a.expediente || "sin referencia").trim(); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(a); });
+    const pptoDigs = (p) => new Set(uxDesglosaExp(p, expsUx).ppto.map((x) => String(x).split("-")[0].replace(/\D/g, "")));
+    const todos = toArray(pedidos).filter(Boolean);
+    return [...grupos.entries()].sort((x, y) => y[1].length - x[1].length).map(([k, xs]) => {
+      const nums = [...numsTxt(k)];
+      const deObra = nums.length ? todos.filter((p) => { const d = pptoDigs(p); return nums.some((n) => d.has(n)); }) : [];
+      const pend = deObra.filter((p) => !p.recibido), rec = deObra.filter((p) => p.recibido);
+      const pptoTxt = nums.map((x) => x.replace(/^(\d)(\d{3})$/, "$1.$2")).join(" / ");
+      const tipo = !nums.length ? "sinppto" : !deObra.length ? "sinpedido" : !pend.length ? "recibido" : "medidas";
+      const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa ventana y medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
+      return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo };
+    });
+  };
+  const imprimirSinPedido = (info) => {
+    const gs = toArray(info && info.grupos); if (!gs.length) return;
+    const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const tot = gs.reduce((t, g) => t + g.n, 0);
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Cristales llegados sin pedido</title><style>
+      body{font-family:Arial,sans-serif;color:#111;margin:16mm} h1{font-size:20px;margin:0 0 4px} .sub{color:#555;font-size:12px;margin-bottom:12px}
+      .g{border:1px solid #999;border-radius:6px;margin:10px 0;page-break-inside:avoid} .gh{background:#eee;padding:6px 8px;font-weight:bold;font-size:13px}
+      .mot{padding:4px 8px;font-size:12px;color:#b00} table{width:100%;border-collapse:collapse;font-size:12px} td,th{border-top:1px solid #ddd;padding:3px 8px;text-align:left}
+      .resp{padding:6px 8px;font-size:12px;color:#333} .linea{border-bottom:1px solid #999;display:inline-block;width:70%;height:14px}
+    </style></head><body>
+      <h1>Cristales llegados SIN PEDIDO pendiente</h1>
+      <div class="sub">Albarán / packing: ${esc(info.archivo || "")} · ${esc(info.proveedor || "")} · ${esc(info.fecha || "")} · Revisado por: ${esc(info.quien || "")}<br>
+      <b>${tot} cristal(es) en ${gs.length} obra(s).</b> Han llegado a fábrica pero no encuentro su pedido pendiente en el CRM. Oficina: comprobad por qué y decidnos qué hacer.</div>
+      ${gs.map((g) => `<div class="g"><div class="gh">${g.n} × ${esc(g.ref)}</div><div class="mot">⚠ ${esc(g.motivo)}</div>
+        <table><tr><th>Ventana</th><th>Medida</th><th>Uds</th><th>Caballete</th></tr>${g.xs.map((a) => `<tr><td>${esc(a.ventana || a.codigo || "")}</td><td>${esc(a.ancho)} × ${esc(a.alto)}</td><td>${esc(a.q || a.cantidad || 1)}</td><td>${esc(a.caballete || "")}</td></tr>`).join("")}</table>
+        <div class="resp">Respuesta de oficina: <span class="linea"></span></div></div>`).join("")}
+    </body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
+    try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `cristales_sin_pedido_${uxHoy()}.html`; a.click(); } catch (e) { alert("No se pudo abrir el documento para imprimir."); }
+  };
   // anadir = true: la foto es OTRA PÁGINA del mismo albarán → se suma a lo ya leído y se vuelve a repartir todo junto
   const leerAlbaranLista = async (fileList, anadir = false) => {
     const files = Array.from(fileList || []); if (!files.length) return;
@@ -51428,10 +51467,50 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
   };
+  // CABALLETES DEL PACKING COMPLETOS: cada caballete entra con TODOS sus cristales (los que tienen pedido y los que no), en «Pendientes de ubicar»
+  // y con la fecha de llegada. Los que no tienen pedido van marcados «⚠ SIN PEDIDO» (y salen en el papel para oficina).
+  // Se hace ANTES de la entrada de cada pedido: así esa entrada ve que el caballete ya está y no lo duplica.
+  const meterCaballetesPacking = (lineas, sobran, archivo, proveedor) => {
+    const guardar = ctxUxAlb.guardarPackingCaballetes; if (!guardar) return 0;
+    const conCab = toArray(lineas).filter((a) => a && a.caballete && a.ancho && a.alto); if (!conCab.length) return 0;
+    const clave = (a) => `${a.caballete}|${a.ventana || a.codigo || ""}|${a.ancho}x${a.alto}|${a.expediente || ""}`;
+    const sinPed = new Map(); toArray(sobran).forEach((a) => { if (a && a.caballete) sinPed.set(clave(a), (sinPed.get(clave(a)) || 0) + (a.q || 0)); });
+    const pptoDe = (t) => { const m = String(t || "").match(/(\d)\.(\d{3})[.\-](\d{1,2})/) || String(t || "").match(/(\d)\.(\d{3})/); return m ? `${m[1]}.${m[2]}${m[3] ? `-${m[3]}` : ""}` : ""; };
+    const existentes = toArray(ctxUxAlb.cristalesCaballetes).filter(Boolean);
+    const normLote = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
+    const porCab = new Map(); conCab.forEach((a) => { if (!porCab.has(a.caballete)) porCab.set(a.caballete, []); porCab.get(a.caballete).push(a); });
+    const nuevos = [], fusiones = {}; let nSin = 0;
+    porCab.forEach((ls, cab) => {
+      const piezas = [];
+      ls.forEach((a) => {
+        const k = clave(a); const sinN = Math.min(sinPed.get(k) || 0, a.cantidad || 1); if (sinN) sinPed.set(k, (sinPed.get(k) || 0) - sinN);
+        const base = { ancho: a.ancho, alto: a.alto, ref: a.ventana || a.codigo || "", pedido: a.pedidoProv || "", expediente: a.expediente || "", presupuesto: pptoDe(a.expediente) };
+        const conN = (a.cantidad || 1) - sinN;
+        if (conN > 0) piezas.push({ ...base, cantidad: conN, descripcion: `${a.ventana || ""}`.trim() });
+        if (sinN > 0) { nSin += sinN; piezas.push({ ...base, cantidad: sinN, sinPedido: true, descripcion: `⚠ SIN PEDIDO (reclamado a oficina)${a.ventana ? ` · ${a.ventana}` : ""}` }); }
+      });
+      const ya = existentes.find((c) => normLote(c.lote) === normLote(cab));
+      if (ya) {
+        // el caballete ya estaba (otro albarán o el packing de Cristales): solo se añaden los cristales SIN PEDIDO que no tuviera
+        const tiene = toArray(ya.piezas);
+        const add = piezas.filter((pz) => pz.sinPedido && !tiene.some((t) => t && t.sinPedido && Number(t.ancho) === pz.ancho && Number(t.alto) === pz.alto && String(t.ref || "") === pz.ref));
+        if (add.length) fusiones[ya.id] = { piezas: [...tiene, ...add], cantidad: (parseFloat(ya.cantidad) || 0) + add.reduce((t, x) => t + x.cantidad, 0), sinPedido: true };
+        return;
+      }
+      const cantidad = piezas.reduce((t, x) => t + (x.cantidad || 0), 0);
+      const exps = [...new Set(ls.map((a) => a.expediente).filter(Boolean))];
+      const pres = [...new Set(piezas.map((x) => x.presupuesto).filter(Boolean))];
+      nuevos.push({ lote: cab, secuencia: [...new Set(ls.map((a) => a.pedidoProv).filter(Boolean))].join(", "), proveedor: proveedor || "", cliente: "Construcciones Uxcar 97", expediente: exps.join(" · ").slice(0, 300), presupuesto: pres.join(", "), medida: `${cantidad} cristales`, cantidad, piezas, albaran: archivo || "", ...(piezas.some((x) => x.sinPedido) ? { sinPedido: true } : {}) });
+    });
+    if (nuevos.length || Object.keys(fusiones).length) guardar(nuevos, fusiones, []);
+    return { nuevos: nuevos.length, fusionados: Object.keys(fusiones).length, nSin };
+  };
   const confirmarAlbaranLista = async () => {
-    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); if (!elegidos.length) return;
+    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); if (!elegidos.length && !(meterSinPedido && toArray(albRes.sobran).length)) return;
     setAlbLeyendo(true);
     try {
+      const archivoTxt = toArray(albRes.docs).map((d) => d.name).join(", ");
+      const rCab = toArray(albRes.lineas).some((a) => a && a.caballete) ? meterCaballetesPacking(albRes.lineas, meterSinPedido ? albRes.sobran : [], archivoTxt, albRes.proveedor) : 0;
       const subidos = []; for (const f of albRes.docs) subidos.push({ nombre: f.name, url: await subirArchivoAStorage(f, "uxcar-albaranes") });
       let ok = 0;
       for (const x of elegidos) {
@@ -51439,7 +51518,9 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         const recepcion = JSON.parse(JSON.stringify({ fecha: uxHoy(), por: quien || "", documentos: [...toArray(previa.documentos), ...subidos], lineas, caballetes: { ...((previa && previa.caballetes) || {}), ...(x.cab || {}) }, extras: toArray(previa.extras), completo: x.completo, comentario: previa.comentario || "", historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: quien || "", completo: x.completo, desde: "albarán por foto (lista)" }] }));
         const r = await onGuardarRecepcion(x.p, recepcion); if (r !== false) ok++;
       }
-      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"}: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.`);
+      if (toArray(albRes.sobran).length) setSinPedidoUlt({ grupos: gruposSinPedido(albRes.sobran), archivo: archivoTxt, proveedor: albRes.proveedor, fecha: uxHoy(), quien });
+      const txtCab = rCab ? ` · Almacén de cristales: ${rCab.nuevos} caballete${rCab.nuevos === 1 ? "" : "s"} nuevo${rCab.nuevos === 1 ? "" : "s"} en «Pendientes de ubicar»${rCab.fusionados ? ` y ${rCab.fusionados} que ya estaban completados` : ""}${rCab.nSin ? ` (${rCab.nSin} cristal${rCab.nSin === 1 ? "" : "es"} marcados ⚠ SIN PEDIDO)` : ""}.` : "";
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"}: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${txtCab}`);
       setAlbRes(null);
     } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
@@ -51491,7 +51572,8 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
           <input ref={albRef} type="file" multiple accept="application/pdf,image/*" className="hidden" onChange={(e) => { leerAlbaranLista(e.target.files, albRef.current && albRef.current.dataset.anadir === "1"); e.target.value = ""; }} />
           <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo… (un packing list largo puede tardar 1-2 min)</> : "📷 Subir foto del albarán"}</button>
         </div>
-        {albMsg && <div className="mt-2 text-sm font-semibold text-slate-800">{albMsg}</div>}
+        {albMsg && <div className="mt-2 flex items-start gap-2 text-sm font-semibold text-slate-800"><span className="flex-1">{albMsg}</span><button type="button" onClick={() => setAlbMsg("")} title="Quitar este mensaje" className="shrink-0 px-2 rounded border border-slate-300 bg-white text-slate-500 hover:text-slate-800">✕</button></div>}
+        {!albRes && sinPedidoUlt && <div className="mt-2 flex flex-wrap items-center gap-2 rounded border-2 border-rose-300 bg-rose-50 px-2 py-1.5 text-sm text-rose-900"><b>⚠ {sinPedidoUlt.grupos.reduce((t, g) => t + g.n, 0)} cristal(es) de ese albarán llegaron sin pedido pendiente ({sinPedidoUlt.grupos.length} obra{sinPedidoUlt.grupos.length === 1 ? "" : "s"}).</b><button type="button" onClick={() => imprimirSinPedido(sinPedidoUlt)} className="text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button><button type="button" onClick={() => setSinPedidoUlt(null)} className="text-xs text-slate-500 underline">quitar aviso</button></div>}
         {albRes && albRes.lineas.length > 0 && (
           <div className="mt-2 space-y-1">
             <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}{albRes.paginasTotal ? ` · páginas ${albRes.paginas.join(", ") || "?"} de ${albRes.paginasTotal}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
@@ -51510,12 +51592,27 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {albRes.lineas.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="pr-2 font-bold whitespace-nowrap">{a.ancho && a.alto ? `${a.ancho}×${a.alto}` : "sin medida"}</td><td className="pr-2 whitespace-nowrap">× {a.cantidad || 1}</td><td className="pr-2">{a.expediente || ""}</td><td className="pr-2 text-slate-500">{a.caballete ? `cab. ${a.caballete}` : ""}</td><td className="text-slate-500">{String(a.descripcion || a.codigo || "").slice(0, 40)}</td></tr>)}
               </tbody></table>
             </details>
-            {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: <b>{a.parecida.p.numero}</b>{uxDesglosaExp(a.parecida.p, expsUx).ppto.length ? <b className="text-slate-900"> · Ppto {uxDesglosaExp(a.parecida.p, expsUx).ppto.join(", ")}</b> : null} ({a.parecida.p.proveedorNombre || ""}) pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
+            {albRes.sobran.length > 0 && (() => {
+              const gs = gruposSinPedido(albRes.sobran);
+              return (
+                <div className="rounded border-2 border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-900">
+                  <div className="flex flex-wrap items-center gap-2"><b>⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} cristal(es) del albarán no casan con ningún pedido pendiente. Por obra:</b>
+                    <button type="button" onClick={() => imprimirSinPedido({ grupos: gs, archivo: toArray(albRes.docs).map((d) => d.name).join(", "), proveedor: albRes.proveedor, fecha: uxHoy(), quien })} className="ml-auto text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button></div>
+                  {gs.map((g) => (
+                    <details key={g.ref} className="mt-1 bg-white rounded border border-rose-200 px-2 py-1">
+                      <summary className="cursor-pointer"><b>{g.n} × {g.ref}</b>{" — "}<span className={`font-bold ${g.tipo === "sinpedido" ? "text-rose-700" : g.tipo === "recibido" ? "text-amber-700" : "text-slate-700"}`}>{g.motivo}</span></summary>
+                      <div className="mt-1 space-y-0.5">{g.xs.map((a, i) => <div key={i}>· {a.ventana ? <b>{a.ventana} </b> : null}{a.ancho}×{a.alto}{a.q > 1 ? ` (×${a.q})` : ""}{a.caballete ? <span className="text-slate-500"> · cab. {a.caballete}</span> : null}{a.parecida ? <span className="text-slate-500"> — lo más parecido pendiente: {a.parecida.p.numero} pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : null}</div>)}</div>
+                    </details>
+                  ))}
+                </div>
+              );
+            })()}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
-              <button type="button" disabled={albLeyendo || !albRes.reparto.some((x) => albSel[x.p.id])} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              {toArray(albRes.sobran).some((a) => a && a.caballete) && <label className="basis-full flex items-center gap-2 text-sm font-semibold text-slate-800"><input type="checkbox" checked={meterSinPedido} onChange={(e) => setMeterSinPedido(e.target.checked)} className="w-4 h-4" /> Meter también en el almacén (pendientes de ubicar, en su caballete) los {albRes.sobran.reduce((t, a) => t + (a.caballete ? a.q : 0), 0)} cristales SIN PEDIDO, marcados «⚠ SIN PEDIDO»</label>}
+              <button type="button" disabled={albLeyendo || !(albRes.reparto.some((x) => albSel[x.p.id]) || (meterSinPedido && toArray(albRes.sobran).length))} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
               <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = "1"; albRef.current.click(); }} className="text-sm font-bold px-3 py-2 rounded-md border-2 border-emerald-600 text-emerald-800 bg-white disabled:opacity-60">➕ Añadir otra página</button>
-              <button type="button" onClick={() => setAlbRes(null)} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
+              <button type="button" onClick={() => { setAlbRes(null); setAlbMsg(""); }} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
             </div>
           </div>
         )}
