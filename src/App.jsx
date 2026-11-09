@@ -59441,29 +59441,46 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const planHoy = Object.keys((asignTodas && asignTodas[f]) || {});
               const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy.includes(k));
               const ya = new Set([...planHoy, ...atrasadas]);
-              const otras = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
+              const otras0 = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
               const est = (k) => (hechaHasta(k, f) ? "Terminada" : "Pendiente");
+              // VENTANAS HECHAS ESE DÍA (marcadas como hechas ese día y que antes no lo estaban), por obra
+              const valorAntes = (k, i) => { let v; for (const d of diasMarcas) { if (d >= f) break; const m = ((marcasTodas[d] || {})[k] || {})[i]; if (m !== undefined) v = m; } return v; };
+              const idsK = (k) => { const ob = obraPorClave.get(k); return ob ? idsDe(ob) : []; };
+              const hoyDe = (k) => { const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {}; return idsK(k).filter((i) => mk[i] === 1 && valorAntes(k, i) !== 1).length; };
+              const hechasTot = (k) => idsK(k).filter((i) => valorHasta(k, i, f) === 1).length;
+              // ADELANTADAS: obras planificadas para días SIGUIENTES (hasta 3 semanas) con ventanas hechas hoy
+              const diaDe = {}; Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k]) diaDe[k] = d; }));
+              const adelantadas = Object.keys(diaDe).filter((k) => !planHoy.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0);
+              const otras = otras0.filter((k) => !adelantadas.includes(k));
+              const sumHoy = (ks) => ks.reduce((t, k) => t + hoyDe(k), 0);
+              const vPlan = sumHoy(planHoy), vAtr = sumHoy(atrasadas), vAde = sumHoy(adelantadas), vOtr = sumHoy(otras);
+              const vTotal = vPlan + vAtr + vAde + vOtr;
+              const vAtrTot = atrasadas.reduce((t, k) => t + idsK(k).length, 0), vAtrHechas = atrasadas.reduce((t, k) => t + hechasTot(k), 0);
               const nAt = atrasadas.filter((k) => est(k) === "Terminada").length, nPl = planHoy.filter((k) => est(k) === "Terminada").length;
-              const total = nAt + nPl + otras.length;
+              const total = nAt + nPl + otras.length + adelantadas.filter((k) => hechaHasta(k, f)).length;
               const pend = [...atrasadas, ...planHoy].filter((k) => est(k) !== "Terminada");
               const fechaTxt = (d) => { const t = new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); return t.charAt(0).toUpperCase() + t.slice(1); };
               const nomAnt = new Date(ant + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long" });
-              const tabla = (ks, estado) => ks.length ? `<table><tr><th class="n">Nº</th><th>Obra / cliente</th><th>Referencia</th><th>Estado</th></tr>${ks.map((k, i) => { const e = estado ? estado(k) : est(k); return `<tr><td class="n">${i + 1}</td><td>${esc(nom(k))}</td><td>${esc(ref(k))}</td><td class="${e === "Pendiente" ? "pend" : ""}">${esc(e)}</td></tr>`; }).join("")}</table>` : `<div class="vacio">Ninguna</div>`;
+              const tabla = (ks, estado, extra) => ks.length ? `<table><tr><th class="n">Nº</th><th>Obra / cliente</th><th>Referencia</th><th class="v">Ventanas hoy</th><th class="v">Hechas / total</th><th>Estado</th></tr>${ks.map((k, i) => { const e = estado ? estado(k) : est(k); return `<tr><td class="n">${i + 1}</td><td>${esc(nom(k))}${extra ? `<div class="sub2">${esc(extra(k))}</div>` : ""}</td><td>${esc(ref(k))}</td><td class="v"><b>${hoyDe(k)}</b></td><td class="v">${hechasTot(k)} / ${idsK(k).length}</td><td class="${e === "Pendiente" ? "pend" : ""}">${esc(e)}</td></tr>`; }).join("")}<tr class="tot"><td></td><td><b>Total</b></td><td></td><td class="v"><b>${sumHoy(ks)}</b></td><td class="v">${ks.reduce((t, k) => t + hechasTot(k), 0)} / ${ks.reduce((t, k) => t + idsK(k).length, 0)}</td><td></td></tr></table>` : `<div class="vacio">Ninguna</div>`;
               const html = `<!doctype html><html><head><meta charset="utf-8"><title>Informe de ventanas salidas ${esc(f)}</title><style>
                 body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:14mm 16mm} h1{text-align:center;font-size:26px;margin:0} .fecha{text-align:center;color:#777;font-size:13px;margin:4px 0 22px}
                 h2{font-size:19px;margin:18px 0 8px} p{font-size:13px;line-height:1.4;margin:0 0 10px}
                 .kpi{width:100%;border-collapse:collapse;margin-top:6px} .kpi td{border:1px solid #999;text-align:center;padding:8px} .kpi .t{font-size:13px;font-weight:bold} .kpi .v{font-size:22px}
-                table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed} th{background:#1f3a5f;color:#fff;text-align:left;padding:8px} th:nth-child(2){width:38%} th:nth-child(3){width:24%} td{border:1px solid #ccc;padding:8px} tr:nth-child(odd) td{background:#f4f6fa}
-                .n{width:40px} .pend{color:#b00;font-weight:bold} .vacio{font-size:13px;color:#777} .pie{margin-top:18px;font-size:11px;color:#888;font-style:italic}
+                table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed} th{background:#1f3a5f;color:#fff;text-align:left;padding:8px} th:nth-child(1){width:34px} th:nth-child(2){width:31%} th:nth-child(3){width:14%} th:nth-child(4){width:11%} th:nth-child(5){width:12%} td{border:1px solid #ccc;padding:8px} tr:nth-child(odd) td{background:#f4f6fa}
+                .n{width:40px} .v{text-align:center} th.v{text-align:center} .sub2{font-size:11px;color:#666} tr.tot td{background:#e8edf5;border-top:2px solid #1f3a5f} .pend{color:#b00;font-weight:bold} .vacio{font-size:13px;color:#777} .pie{margin-top:18px;font-size:11px;color:#888;font-style:italic}
                 @page{size:A4;margin:10mm}
               </style></head><body>
                 <h1>Informe de ventanas salidas</h1><div class="fecha">${esc(fechaTxt(f))}</div>
                 <h2>Resumen</h2>
                 <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? `las ${nAt}` : `${nAt} de las ${atrasadas.length}`} atrasadas del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
+                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}. Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.</p>
                 <table class="kpi"><tr><td class="t">Atrasadas ${esc(nomAnt)}</td><td class="t">Planificadas hoy</td><td class="t">Otras cerradas</td><td class="t">Total cerradas</td></tr>
                 <tr><td class="v">${nAt} / ${atrasadas.length}</td><td class="v">${nPl} / ${planHoy.length}</td><td class="v">${otras.length}</td><td class="v">${total}</td></tr></table>
+                <table class="kpi"><tr><td class="t">Ventanas hoy (planificadas)</td><td class="t">Ventanas del ${esc(nomAnt)}</td><td class="t">Ventanas adelantadas</td><td class="t">Total ventanas hoy</td></tr>
+                <tr><td class="v">${vPlan}</td><td class="v">${vAtr}</td><td class="v">${vAde}</td><td class="v">${vTotal}</td></tr></table>
                 <h2>Retraso del ${esc(nomAnt)}</h2>${tabla(atrasadas)}
                 <h2>Planificadas para hoy</h2>${tabla(planHoy)}
+                <h2>Adelantadas (de días siguientes)</h2>${tabla(adelantadas, (k) => (hechaHasta(k, f) ? "Terminada" : "Adelantada (sigue)"), (k) => `planificada para el ${new Date(diaDe[k] + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}`)}
                 <h2>Otras cerradas hoy (no planificadas)</h2>${tabla(otras, () => "Cerrada")}
                 <div class="pie">Sacado del Control del día del CRM el ${new Date().toLocaleString("es-ES")}. Una obra cuenta como cerrada cuando todas sus ventanas están marcadas como hechas. Las atrasadas son las del ${esc(nomAnt)} que no se terminaron ese día.</div>
               </body></html>`;
