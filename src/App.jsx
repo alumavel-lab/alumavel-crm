@@ -16247,6 +16247,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   };
   const [verUltimos, setVerUltimos] = useState(false);
   const [abiertosPend, setAbiertosPend] = useState(() => new Set()); // caballetes pendientes con el detalle de cristales desplegado
+  const [soloUltimaEnt, setSoloUltimaEnt] = useState(false); // «Pendientes de ubicar»: ver solo los del último packing metido
   const alternarPend = (id) => setAbiertosPend((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
   const [filtros, setFiltros] = useState(() => {
@@ -16753,8 +16754,20 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         </button>
       </div>
 
-      {subTab === "pendientes" && (
+      {subTab === "pendientes" && (() => {
+        // EL ÚLTIMO PACKING METIDO: cada importación marca sus caballetes con un código de entrada; los nuevos se guardan los primeros
+        const ultimaEnt = (pendientes.find((c) => c.entradaId) || {}).entradaId || "";
+        const nUlt = ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt).length : 0;
+        const pendVista = soloUltimaEnt && ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt) : pendientes;
+        return (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {nUlt > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mx-4 mt-3 rounded-lg border-2 border-sky-400 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+              <b>🆕 Último packing metido: {nUlt} caballete{nUlt === 1 ? "" : "s"}</b>
+              <span className="text-xs">({[...new Set(pendientes.filter((c) => c.entradaId === ultimaEnt).map((c) => fmtDate(c.fechaLlegada)).filter(Boolean))].join(", ")}) · van marcados en la lista con «🆕 ÚLTIMO»</span>
+              <button type="button" onClick={() => setSoloUltimaEnt((v) => !v)} className={`ml-auto text-xs font-bold px-3 py-1.5 rounded-md border-2 ${soloUltimaEnt ? "bg-sky-600 border-sky-700 text-white" : "bg-white border-sky-500 text-sky-800"}`}>{soloUltimaEnt ? `✕ Ver todos (${pendientes.length})` : `Ver solo esos ${nUlt}`}</button>
+            </div>
+          )}
           {pendientes.length > 0 && (
             <div className="flex justify-end px-4 pt-3">
               <button
@@ -16782,16 +16795,17 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
               </tr>
             </thead>
             <tbody>
-              {pendientes.map((c) => {
+              {pendVista.map((c) => {
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
+                const esUlt = !!ultimaEnt && c.entradaId === ultimaEnt;
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
                 const plantasC = ubicacionesCab(c);
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
-                <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
+                <tr className={`border-b border-slate-100 last:border-0 ${esUlt ? "bg-sky-50 hover:bg-sky-100" : "hover:bg-slate-50"}`}>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{esUlt && <span className="mr-1 inline-block text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-sky-600 text-white align-middle">🆕 ÚLTIMO</span>}{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
                     {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
                     {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
@@ -16860,7 +16874,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
 
       {subTab === "mapa" && !verReorganizar && (
         <div className="flex flex-wrap justify-end gap-2 mb-3">
@@ -51516,7 +51531,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     const existentes = toArray(ctxUxAlb.cristalesCaballetes).filter(Boolean);
     const normLote = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
     const porCab = new Map(); conCab.forEach((a) => { if (!porCab.has(a.caballete)) porCab.set(a.caballete, []); porCab.get(a.caballete).push(a); });
-    const nuevos = [], fusiones = {}; let nSin = 0;
+    const nuevos = [], fusiones = {}; let nSin = 0; const entradaId = uid(); // marca de esta entrada (para ver «el último packing» en Pendientes de ubicar)
     porCab.forEach((ls, cab) => {
       const piezas = [];
       ls.forEach((a) => {
@@ -51544,7 +51559,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const cantidad = piezas.reduce((t, x) => t + (x.cantidad || 0), 0);
       const exps = [...new Set(ls.map((a) => a.expediente).filter(Boolean))];
       const pres = [...new Set(piezas.map((x) => x.presupuesto).filter(Boolean))];
-      nuevos.push({ lote: cab, secuencia: [...new Set(ls.map((a) => a.pedidoProv).filter(Boolean))].join(", "), proveedor: proveedor || "", cliente: "Construcciones Uxcar 97", expediente: exps.join(" · ").slice(0, 300), presupuesto: pres.join(", "), medida: `${cantidad} cristales`, cantidad, piezas, albaran: archivo || "", ...(piezas.some((x) => x.sinPedido) ? { sinPedido: true } : {}) });
+      nuevos.push({ lote: cab, secuencia: [...new Set(ls.map((a) => a.pedidoProv).filter(Boolean))].join(", "), proveedor: proveedor || "", cliente: "Construcciones Uxcar 97", expediente: exps.join(" · ").slice(0, 300), presupuesto: pres.join(", "), medida: `${cantidad} cristales`, cantidad, piezas, albaran: archivo || "", entradaId, ...(piezas.some((x) => x.sinPedido) ? { sinPedido: true } : {}) });
     });
     if (nuevos.length || Object.keys(fusiones).length) guardar(nuevos, fusiones, []);
     return { nuevos: nuevos.length, fusionados: Object.keys(fusiones).length, nSin };
