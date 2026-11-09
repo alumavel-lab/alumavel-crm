@@ -7255,6 +7255,7 @@ export default function App() {
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            abrirProyecto: (id) => { if (!id) return; setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); },
             encolarEntradaCrm: (items) => { toArray(items).forEach((x) => colaUxStock.current.push(x)); setTickColaUx((t) => t + 1); },
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
@@ -51419,6 +51420,26 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const ctxUxAlb = React.useContext(IncidenciasCristalCtx) || {};
   const expsUx = toArray(ctxUxAlb.uxExpedientes);
+  // la OBRA (proyecto del CRM) de un pedido de Uxcar: por su expediente de Uxcar o por el nº de presupuesto
+  const proyectoDePedidoUx = (p) => {
+    const proys = toArray(ctxUxAlb.proyectos).filter(Boolean);
+    for (const x of toArray(p && p.expedientes)) {
+      const e = expsUx.find((y) => y && y.id === x.expedienteId);
+      const pr = (e && e.proyectoId && proys.find((q) => q.id === e.proyectoId)) || (e && proys.find((q) => q.uxcarExpedienteId === e.id));
+      if (pr) return pr;
+    }
+    const pp = uxDesglosaExp(p, expsUx).ppto.map((x) => String(x).split("-")[0].replace(/\D/g, "")).filter(Boolean);
+    return pp.length ? proys.find((q) => pp.includes(String(presupuestoDeObra(q) || q.presupuestoNumero || "").split("-")[0].replace(/\D/g, ""))) || null : null;
+  };
+  const botonesPedidoUx = (p) => {
+    const pr = proyectoDePedidoUx(p);
+    return (
+      <span className="flex items-center gap-1" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setAbiertoId(p.id); }} title="Abrir el pedido: lo pedido, lo que ha llegado y lo que falta (al volver sigue aquí el reparto)" className="text-[11px] font-bold px-2 py-0.5 rounded border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🔎 Ver pedido</button>
+        {pr && ctxUxAlb.abrirProyecto && <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (albRes && !window.confirm(`Vas a ir a la obra #${pr.numero}. El reparto de este albarán sin confirmar se pierde (tendrías que volver a subirlo). ¿Seguir?`)) return; ctxUxAlb.abrirProyecto(pr.id); }} title={`Ir a la obra #${pr.numero} ${pr.nombre || ""}`} className="text-[11px] font-bold px-2 py-0.5 rounded border border-indigo-400 bg-white text-indigo-800 hover:bg-indigo-50">🏠 Obra #{pr.numero}</button>}
+      </span>
+    );
+  };
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
@@ -51620,9 +51641,10 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   if (abierto) {
     return (
       <div className="space-y-3 max-w-4xl">
-        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> {albRes ? "Volver al reparto del albarán" : "Volver"}</button>
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-extrabold text-slate-900">Pedido {abierto.numero} de Uxcar</h2>
+          {(() => { const pr = proyectoDePedidoUx(abierto); return pr && ctxUxAlb.abrirProyecto ? <button type="button" onClick={() => { if (albRes && !window.confirm(`Vas a ir a la obra #${pr.numero}. El reparto del albarán sin confirmar se pierde. ¿Seguir?`)) return; ctxUxAlb.abrirProyecto(pr.id); }} className="text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-500 text-indigo-800 bg-white">🏠 Ir a la obra #{pr.numero}</button> : null; })()}
           <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${uxEstadoPedido(abierto).cls}`}>{uxEstadoPedido(abierto).label}</span>
         </div>
         <div className="text-sm text-slate-600">{abierto.tipo} · {abierto.proveedorNombre} · {uxFecha(abierto.fecha)} · Exp. {uxTextoExp(uxDesglosaExp(abierto, expsUx))} · Ppto {uxDesglosaExp(abierto, expsUx).ppto.join(", ") || "—"}</div>
@@ -51652,7 +51674,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
             {albRes.reparto.map((x) => (
               <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
-                <b>{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))}</span>
+                <b>{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))}</span>{botonesPedidoUx(x.p)}
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
