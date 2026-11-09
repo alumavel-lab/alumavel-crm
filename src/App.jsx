@@ -58481,7 +58481,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
       <div className="flex items-center gap-4 mb-3">
         <b className="text-3xl">Carga de material · {lista.length} obras · {nVerdes} terminadas</b>
         <span className="text-sm text-slate-300">Toca una ventana para marcarla (gris → verde → naranja → gris). Toca el NOMBRE de una obra para verla en toda la pantalla (otra vez, vuelven todas). «✓ Toda» pone la obra entera en verde.</span>
-        <button type="button" onClick={() => setVerFolio((x) => !x)} className="ml-auto px-4 py-3 rounded-lg bg-slate-700 text-white font-bold">{verFolio ? "Ver como lista" : "Ver el folio"}</button>
+        {tvGrande && <button type="button" onClick={() => setTvGrande(null)} className="ml-auto px-5 py-3 rounded-lg bg-amber-400 text-slate-900 font-extrabold text-lg">← Ver todas las obras</button>}
+        <button type="button" onClick={() => setVerFolio((x) => !x)} className={`${tvGrande ? "" : "ml-auto "}px-4 py-3 rounded-lg bg-slate-700 text-white font-bold`}>{verFolio ? "Ver como lista" : "Ver el folio"}</button>
         <button type="button" onClick={() => setTv(false)} className="px-5 py-3 rounded-lg bg-white text-slate-900 font-bold text-lg">Salir</button>
       </div>
       {pistolaCD(true)}
@@ -58781,9 +58782,11 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 {ks.map((k) => { const ob = obraPorClave.get(k); const nom = ob ? ob.d.nombre : k; const elegida = pinSel && pinSel.k === k && pinSel.de === f;
                   const idsC = ob ? idsDe(ob) : []; const mkC = ((marcasTodas && marcasTodas[f]) || {})[k] || {};
                   const hecha = idsC.length > 0 && idsC.every((i) => mkC[i] === 1); const prob = idsC.some((i) => mkC[i] === 2); return (
-                  <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ver dónde está su material (arrástrala para moverla de día)`}
+                  <button key={k} id={`pin-${k}-${f}`} type="button" draggable title={`${nom}${ob && [...presCrmDe(ob)].length ? " · Ppto " + [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : " · sin nº de presupuesto"} — toca para ENTRAR en la obra (marcar, incidencia, quitar) y ver su material (arrástrala para moverla de día)`}
                     onDragStart={() => setPinSel({ k, de: f })}
-                    onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; } setObraInfo(obraInfo === k ? null : k); }}
+                    onClick={(e) => { e.stopPropagation(); if (pinSel) { moverObraDia(pinSel.k, pinSel.de, f); return; }
+                      // ENTRAR EN LA OBRA: se va a su día, se abre su tarjeta (incidencia, quitar, marcar…) y se baja hasta ella; y sale dónde está su material
+                      const ob2 = obraPorClave.get(k); setDia(f); setMesVer(f.slice(0, 7)); if (ob2) setCerradas((c) => ({ ...c, [ob2.d.key]: false })); setObraInfo(k); setTimeout(() => setIrObra(k), 250); }}
                     className={`mt-0.5 w-full text-left truncate rounded px-1 py-0.5 text-[10px] font-semibold leading-tight border ${elegida ? "bg-amber-400 border-amber-600 text-slate-900" : papel && papel[k] ? "bg-purple-600 border-purple-800 text-white" : obraInfo === k ? "bg-sky-600 border-sky-800 text-white" : hecha ? "bg-emerald-500 border-emerald-700 text-white" : prob ? "bg-orange-300 border-orange-500 text-slate-900" : "bg-sky-100 border-sky-300 text-sky-900"} ${qBusqPl.trim() && ob && (() => { const nz2 = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[.#\-_/]/g, ""); const ws = nz2(qBusqPl).split(/\s+/).filter(Boolean); const h2 = nz2(`${ob.d.nombre} ${[...presCrmDe(ob)].join(" ")} ${ob.d.numero || ""}`); return ws.length && ws.every((w) => h2.includes(w)); })() ? "ring-2 ring-fuchsia-600" : ""}`}>{hecha ? "✓" : "📌"} {(() => { const ps = ob ? [...presCrmDe(ob)] : []; if (!ps.length) return nom; const f1 = (c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? `-${v}` : ""); }; return ps.slice(0, 1).map(f1).join("") + (ps.length > 1 ? ` +${ps.length - 1}` : ""); })()}</button>
                 ); })}
               </div>
