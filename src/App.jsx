@@ -3072,7 +3072,7 @@ export default function App() {
   // un pedido de Uxcar, la entrada también se guarda en su portal.
   // desdeFabrica: la entrada la da fábrica. Fábrica NO cierra el pedido en oficina: las líneas quedan confirmadas por fábrica
   // (la obra sigue su camino) pero el pedido y las líneas siguen abiertos en oficina hasta que oficina los cierre ella misma.
-  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica }) => {
+  const recibirPedidoConAlbaran = (pedidoId, { filas, archivo, numeroAlbaran, numeroPedidoProveedor, cerrarConfirmadas, desdeFabrica, sinUbicar }) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
     const hoy = new Date().toISOString().slice(0, 10);
@@ -3158,7 +3158,7 @@ export default function App() {
         const datos = { lote: cab || `ALB ${numeroAlbaran || pedido.numero}`, secuencia: numeroPedidoProveedor || pedido.numero, cliente, proveedor: proveedorNombre, expediente, presupuesto: info.ppto || "", obraTexto: info.obra || "", referencia: info.ref || "", medida: `${cantidad} cristales`, cantidad, piezas, albaran: numeroAlbaran || "", pedidoId: pedido.id, pedidoNumero: pedido.numero };
         const reservado = propios.find((h) => !estaOcupado(h.zona, h.fila, h.hueco));
         if (reservado) propios.splice(propios.indexOf(reservado), 1);
-        const ub = reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado);
+        const ub = sinUbicar ? null : (reservado || huecoJuntoAExpediente(expedientesDeCaballete(datos), ocupados) || huecoExpedienteNuevo(esUxcar ? "arriba" : "abajo", estaOcupado)); // entrada de Uxcar: a «Pendientes de ubicar»
         if (ub) ocupados.push({ ...ub, expediente, exps: expedientesDeCaballete(datos) });
         nuevosCab.push({ id: uid(), estado: ub ? "Colocado" : "Pendiente", ubicacion: ub || null, fechaColocado: ub ? hoy : "", fechaLlegada: hoy, ...datos });
       });
@@ -5491,10 +5491,32 @@ export default function App() {
   }, [uxPedidos, pedidos, currentUser?.id, loading]);
 
   // Entrada de material de un pedido de Uxcar hecha desde Fábrica
+  // ENTRADA DE UXCAR → ALMACENES: lo que llega (cristales y persianas) se crea en su almacén, en «Pendientes de ubicar» y con fecha de llegada.
+  // Se hace con la recepción de siempre del pedido del CRM (el que lleva este pedido de Uxcar), de UNO EN UNO (cola) para no pisarse.
+  const colaUxStock = useRef([]); const bloqueoSyncUx = useRef(new Set()); const [tickColaUx, setTickColaUx] = useState(0);
+  useEffect(() => {
+    if (!colaUxStock.current.length) return;
+    const it = colaUxStock.current.shift();
+    try {
+      const pd = pedidos.find((x) => x.id === it.crmId);
+      if (pd) {
+        const grupos = toArray(it.expedientes); let gi = grupos.findIndex((e) => (e.expedienteId || "") === (pd.uxcarExpedienteId || "")); if (gi < 0) gi = 0;
+        const esperado = grupos[gi] ? Math.max(1, toArray(grupos[gi].lineas).length) : 1;
+        const ids = new Set(toArray(pd.lineas).filter((l, li) => li < esperado && (parseFloat(it.lineas[`${gi}-${li}`]) || 0) >= (parseFloat(l.cantidad) || 1)).map((l) => l.id));
+        const filas = filasLlegadaManual(pd).filter((f) => ids.has(f.lineaId));
+        if (filas.length) recibirPedidoConAlbaran(pd.id, { filas, archivo: it.archivo || "(albarán Uxcar)", numeroAlbaran: it.numeroAlbaran || "", numeroPedidoProveedor: "", desdeFabrica: true, sinUbicar: true });
+      }
+    } catch (e) { console.error("Entrada Uxcar → almacén", e); }
+    bloqueoSyncUx.current.delete(it.crmId);
+    if (colaUxStock.current.length) setTimeout(() => setTickColaUx((t) => t + 1), 400);
+  }, [tickColaUx, pedidos]);
   const uxGuardarRecepcion = async (pedidoUx, recepcion0) => {
-    const recepcion = { ...recepcion0, origen: "fabrica" }; // «fabrica» = la entrada la ha hecho Ecowin PVC desde el CRM; solo esa confirma las líneas (la albarán que da Uxcar en su portal no)
+    const recepcion = { ...recepcion0, origen: "fabrica" };
+    // los pedidos del CRM de este pedido de Uxcar: primero se crea su material en los almacenes (y la sincronización espera)
+    pedidos.filter((pd) => pd.uxcarPedidoId === pedidoUx.id && pd.estado !== "Cancelado").forEach((pd) => { bloqueoSyncUx.current.add(pd.id); colaUxStock.current.push({ crmId: pd.id, lineas: { ...(recepcion.lineas || {}) }, expedientes: toArray(pedidoUx.expedientes), archivo: (toArray(recepcion.documentos).slice(-1)[0] || {}).nombre || "", numeroAlbaran: recepcion.numeroAlbaran || "" }); }); // «fabrica» = la entrada la ha hecho Ecowin PVC desde el CRM; solo esa confirma las líneas (la albarán que da Uxcar en su portal no)
     try { await fbUpdate(ref(fbDb, "portalUxcar"), uxPatchRecepcion(pedidoUx, recepcion, uxExpedientes)); }
-    catch (e) { showToast("No se pudo guardar: " + e.message, "error"); return false; }
+    catch (e) { colaUxStock.current = colaUxStock.current.filter((x) => !pedidos.some((pd) => pd.id === x.crmId && pd.uxcarPedidoId === pedidoUx.id)); showToast("No se pudo guardar: " + e.message, "error"); return false; }
+    setTickColaUx((t) => t + 1);
     showToast(recepcion.completo ? `Pedido ${pedidoUx.numero} de Uxcar: ha llegado todo` : `Pedido ${pedidoUx.numero} de Uxcar: entrada guardada, falta material`);
     return true;
   };
@@ -5542,6 +5564,7 @@ export default function App() {
     let cambio = false;
     const next = pedidos.map((pd) => {
       if (!pd.uxcarPedidoId || pd.estado === "Cancelado") return pd;
+      if (bloqueoSyncUx.current.has(pd.id)) return pd; // su material se está creando en los almacenes (cola de entradas)
       const p = uxPedidos.find((x) => x.id === pd.uxcarPedidoId);
       if (!p || !p.recepcion) return pd;
       // Si Uxcar da la llegada en su portal, NO se confirma en fábrica: el pedido queda en Materiales pendientes hasta que fábrica lo reciba (cristales a su sitio, persianas a su carro)
