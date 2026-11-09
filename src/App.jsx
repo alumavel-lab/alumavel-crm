@@ -5510,7 +5510,10 @@ export default function App() {
     const it = colaUxStock.current.shift();
     try {
       const pd = pedidos.find((x) => x.id === it.crmId);
-      if (pd) {
+      if (pd && it.filasDirectas) {
+        // pedido del CRM (Entradas Ecowin) dado de entrada desde el albarán de Entradas Uxcar: sus líneas ya vienen casadas
+        recibirPedidoConAlbaran(pd.id, { filas: it.filasDirectas, archivo: it.archivo || "(albarán)", numeroAlbaran: it.numeroAlbaran || "", numeroPedidoProveedor: "", cerrarConfirmadas: true, desdeFabrica: true, sinUbicar: true });
+      } else if (pd) {
         const grupos = toArray(it.expedientes); let gi = grupos.findIndex((e) => (e.expedienteId || "") === (pd.uxcarExpedienteId || "")); if (gi < 0) gi = 0;
         const esperado = grupos[gi] ? Math.max(1, toArray(grupos[gi].lineas).length) : 1;
         const ids = new Set(toArray(pd.lineas).filter((l, li) => li < esperado && (parseFloat(it.lineas[`${gi}-${li}`]) || 0) >= (parseFloat(l.cantidad) || 1)).map((l) => l.id));
@@ -7252,6 +7255,7 @@ export default function App() {
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            encolarEntradaCrm: (items) => { toArray(items).forEach((x) => colaUxStock.current.push(x)); setTickColaUx((t) => t + 1); },
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
               const altas = (nuevos || []).map((data) => ({ id: uid(), estado: "Pendiente", ubicacion: null, fechaColocado: "", fechaLlegada: hoy, ...data }));
@@ -16243,6 +16247,7 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
   };
   const [verUltimos, setVerUltimos] = useState(false);
   const [abiertosPend, setAbiertosPend] = useState(() => new Set()); // caballetes pendientes con el detalle de cristales desplegado
+  const [soloUltimaEnt, setSoloUltimaEnt] = useState(false); // «Pendientes de ubicar»: ver solo los del último packing metido
   const alternarPend = (id) => setAbiertosPend((prev) => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
   const ctxAlmacen = React.useContext(IncidenciasCristalCtx);
   const [filtros, setFiltros] = useState(() => {
@@ -16749,8 +16754,23 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         </button>
       </div>
 
-      {subTab === "pendientes" && (
+      {subTab === "pendientes" && (() => {
+        // EL ÚLTIMO PACKING METIDO: cada importación marca sus caballetes con un código de entrada; los nuevos se guardan los primeros
+        const ultimaEnt = (pendientes.find((c) => c.entradaId) || {}).entradaId || "";
+        const nUlt = ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt).length : 0;
+        // POR FECHA DE LLEGADA: la más reciente arriba (dentro de cada día, en el orden en que entraron)
+        const pendVista = (soloUltimaEnt && ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt) : pendientes).map((c, i) => ({ c, i })).sort((a, b) => String(b.c.fechaLlegada || "").localeCompare(String(a.c.fechaLlegada || "")) || a.i - b.i).map((x) => x.c);
+        const diaDeCab = (c) => String(c.fechaLlegada || "").slice(0, 10);
+        const resumenDia = {}; pendVista.forEach((c) => { const d = diaDeCab(c); resumenDia[d] = resumenDia[d] || { n: 0, cris: 0 }; resumenDia[d].n++; resumenDia[d].cris += parseFloat(c.cantidad) || toArray(c.piezas).reduce((t, p) => t + (parseFloat(p.cantidad) || 1), 0); });
+        return (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {nUlt > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mx-4 mt-3 rounded-lg border-2 border-sky-400 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+              <b>🆕 Último packing metido: {nUlt} caballete{nUlt === 1 ? "" : "s"}</b>
+              <span className="text-xs">({[...new Set(pendientes.filter((c) => c.entradaId === ultimaEnt).map((c) => fmtDate(c.fechaLlegada)).filter(Boolean))].join(", ")}) · van marcados en la lista con «🆕 ÚLTIMO»</span>
+              <button type="button" onClick={() => setSoloUltimaEnt((v) => !v)} className={`ml-auto text-xs font-bold px-3 py-1.5 rounded-md border-2 ${soloUltimaEnt ? "bg-sky-600 border-sky-700 text-white" : "bg-white border-sky-500 text-sky-800"}`}>{soloUltimaEnt ? `✕ Ver todos (${pendientes.length})` : `Ver solo esos ${nUlt}`}</button>
+            </div>
+          )}
           {pendientes.length > 0 && (
             <div className="flex justify-end px-4 pt-3">
               <button
@@ -16778,16 +16798,19 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
               </tr>
             </thead>
             <tbody>
-              {pendientes.map((c) => {
+              {pendVista.map((c, ic) => {
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
+                const esUlt = !!ultimaEnt && c.entradaId === ultimaEnt;
+                const dia = diaDeCab(c); const nuevoDia = ic === 0 || diaDeCab(pendVista[ic - 1]) !== dia;
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
                 const plantasC = ubicacionesCab(c);
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
-                <tr className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
+                {nuevoDia && <tr className="bg-slate-800 text-white"><td colSpan={7} className="px-4 py-1.5 text-sm font-bold capitalize">📅 {dia ? new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "Sin fecha de llegada"} <span className="font-normal normal-case text-slate-300">· {resumenDia[dia].n} caballete{resumenDia[dia].n === 1 ? "" : "s"} · {Math.round(resumenDia[dia].cris)} cristales</span></td></tr>}
+                <tr className={`border-b border-slate-100 last:border-0 ${esUlt ? "bg-sky-50 hover:bg-sky-100" : "hover:bg-slate-50"}`}>
+                  <td className="px-4 py-2.5 font-medium text-slate-800">{esUlt && <span className="mr-1 inline-block text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-sky-600 text-white align-middle">🆕 ÚLTIMO</span>}{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
                     {presu ? <span className="inline-block font-mono-num font-bold text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-0.5">{presu}</span> : <span className="text-slate-400">—</span>}
                     {c.obra ? <div className="text-[11px] text-slate-500 mt-0.5">{c.obra}</div> : null}
@@ -16856,7 +16879,8 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
 
       {subTab === "mapa" && !verReorganizar && (
         <div className="flex flex-wrap justify-end gap-2 mb-3">
@@ -51459,13 +51483,46 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
-      const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
-      const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
+      const r0 = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
+      const rc = repartirEnPedidosCrm(r0.sobran);
+      const r = { ...r0, sobran: rc.sobran, crm: rc.crm };
+      const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; }); toArray(r.crm).forEach((x) => { sel[`crm:${x.p.id}`] = true; });
       setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
       if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
-      if (!r.reparto.length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
+      if (!r.reparto.length && !toArray(r.crm).length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
+  };
+  // LO QUE NO CASA CON PEDIDOS DE UXCAR se busca en los PEDIDOS DEL CRM (Entradas Ecowin PVC): muchas obras de Uxcar tienen el pedido de
+  // cristales hecho desde el CRM. Misma obra (presupuesto / expediente) y misma medida (±3 mm; ±15 si coincide la ventana); sin nº de obra, solo por ventana + medida.
+  const repartirEnPedidosCrm = (sobran) => {
+    const numsObra = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split(/[-.]/)[0]; if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
+    const proys = toArray(ctxUxAlb.proyectos);
+    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && !p.uxcarPedidoId && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
+    const cands = peds.map((p) => {
+      const pr = p.proyectoId ? proys.find((x) => x && x.id === p.proyectoId) : null;
+      const d = datosObraPedido(p, pr, expsUx);
+      const nums = numsObra([d.ppto, d.ref, pr && pr.presupuestoNumero, pr && pr.expediente, pr && pr.referencia, pptoObraAmplio(pr, expsUx)].filter(Boolean).join(" "));
+      const ls = toArray(p.lineas).filter((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica).map((l) => ({ l, pend: Math.max(0, (parseFloat(l.cantidad) || 0) - (parseFloat(l.recibidoBien) || 0)), toma: [] }));
+      return { p, pr, d, nums, ls };
+    });
+    const resto = toArray(sobran).map((a) => ({ ...a }));
+    const med = (a, l, tol) => { const A = a.ancho, H = a.alto, x = parseFloat(l.ancho), y = parseFloat(l.alto); return (Math.abs(A - x) <= tol && Math.abs(H - y) <= tol) || (Math.abs(A - y) <= tol && Math.abs(H - x) <= tol); };
+    const vent = (a, l) => { if (!a.ventana) return false; const t = `${l.referencia || ""} ${l.descripcion || ""} ${l.codigoListado || ""}`.toUpperCase(); const m = String(a.ventana).toUpperCase().match(/^([A-Z]\d{1,2})((?:\.\d{3})+)$/); if (!m) return t.includes(String(a.ventana).toUpperCase()); return m[2].split(".").filter(Boolean).some((n) => new RegExp(`(^|[^A-Z0-9.])${m[1]}\\.${n}([^0-9]|$)`).test(t)); };
+    const pasar = (cond) => resto.forEach((a) => { if (!(a.q > 0)) return; const na = numsObra(a.expediente);
+      cands.forEach((c) => { if (!(a.q > 0)) return; const mismaObra = na.size > 0 && [...na].some((n) => c.nums.has(n));
+        c.ls.forEach((x) => { if (!(a.q > 0) || x.pend <= 0) return; if (!cond(a, x.l, mismaObra, na.size > 0)) return; const t = Math.min(a.q, x.pend); a.q -= t; x.pend -= t; x.toma.push({ a, t }); }); }); });
+    pasar((a, l, mo) => mo && vent(a, l) && med(a, l, 15)); // misma obra y misma ventana
+    pasar((a, l, mo) => mo && med(a, l, 3)); // misma obra y misma medida
+    pasar((a, l, mo, tieneObra) => !tieneObra && vent(a, l) && med(a, l, 3)); // sin nº de obra: ventana + medida exacta
+    pasar((a, l, mo) => mo && med(a, l, 15)); // misma obra, medida parecida
+    const crm = cands.map((c) => {
+      const filas = c.ls.filter((x) => x.toma.length).map((x) => { const llega = x.toma.reduce((t, y) => t + y.t, 0); const a0 = x.toma[0].a; return { lineaId: x.l.id, nombre: x.l.referencia || x.l.descripcion || "", tipo: "cristal", ancho: x.l.ancho, alto: x.l.alto, pedida: parseFloat(x.l.cantidad) || 0, ya: parseFloat(x.l.recibidoBien) || 0, pend: llega, llega, rotos: 0, precioRef: 0, precioAlb: 0, caballete: a0.caballete || "", ref: a0.ventana || "", refObra: a0.expediente || "", pedidoProv: a0.pedidoProv || "" }; });
+      const n = filas.reduce((t, f) => t + f.llega, 0);
+      const faltan = c.ls.filter((x) => x.pend > 0);
+      return { p: c.p, d: c.d, filas, n, completo: faltan.length === 0, faltan: faltan.length, faltanTxt: faltan.map((x) => `${x.l.ancho}×${x.l.alto}`) };
+    }).filter((x) => x.n > 0);
+    return { crm, sobran: resto.filter((a) => a.q > 0) };
   };
   // CABALLETES DEL PACKING COMPLETOS: cada caballete entra con TODOS sus cristales (los que tienen pedido y los que no), en «Pendientes de ubicar»
   // y con la fecha de llegada. Los que no tienen pedido van marcados «⚠ SIN PEDIDO» (y salen en el papel para oficina).
@@ -51479,7 +51536,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     const existentes = toArray(ctxUxAlb.cristalesCaballetes).filter(Boolean);
     const normLote = (t) => String(t || "").replace(/\s+/g, "").toLowerCase();
     const porCab = new Map(); conCab.forEach((a) => { if (!porCab.has(a.caballete)) porCab.set(a.caballete, []); porCab.get(a.caballete).push(a); });
-    const nuevos = [], fusiones = {}; let nSin = 0;
+    const nuevos = [], fusiones = {}; let nSin = 0; const entradaId = uid(); // marca de esta entrada (para ver «el último packing» en Pendientes de ubicar)
     porCab.forEach((ls, cab) => {
       const piezas = [];
       ls.forEach((a) => {
@@ -51491,22 +51548,30 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       });
       const ya = existentes.find((c) => normLote(c.lote) === normLote(cab));
       if (ya) {
-        // el caballete ya estaba (otro albarán o el packing de Cristales): solo se añaden los cristales SIN PEDIDO que no tuviera
-        const tiene = toArray(ya.piezas);
-        const add = piezas.filter((pz) => pz.sinPedido && !tiene.some((t) => t && t.sinPedido && Number(t.ancho) === pz.ancho && Number(t.alto) === pz.alto && String(t.ref || "") === pz.ref));
-        if (add.length) fusiones[ya.id] = { piezas: [...tiene, ...add], cantidad: (parseFloat(ya.cantidad) || 0) + add.reduce((t, x) => t + x.cantidad, 0), sinPedido: true };
+        // El caballete YA ESTABA (importado en Cristales o por otro albarán): NO se añaden cristales (estarían repetidos).
+        // Solo se MARCAN como «⚠ SIN PEDIDO» los que ya tiene con esa medida; si alguno no está, ese sí se añade.
+        const tiene = toArray(ya.piezas).map((t) => ({ ...t })); const add = []; let marcados = 0;
+        const casa = (t, pz) => t && Math.abs(Number(t.ancho) - pz.ancho) <= 2 && Math.abs(Number(t.alto) - pz.alto) <= 2 && (!t.ref || !pz.ref || String(t.ref).toUpperCase() === String(pz.ref).toUpperCase());
+        piezas.filter((pz) => pz.sinPedido).forEach((pz) => {
+          const t = tiene.find((x) => casa(x, pz) && !x._marcada);
+          if (t) { t._marcada = true; if (!t.sinPedido) { t.sinPedido = true; t.descripcion = `⚠ SIN PEDIDO (reclamado a oficina)${pz.ref ? ` · ${pz.ref}` : ""}${t.descripcion ? ` · ${t.descripcion}` : ""}`; marcados++; } }
+          else add.push(pz);
+        });
+        tiene.forEach((t) => { delete t._marcada; });
+        if (marcados || add.length) fusiones[ya.id] = { piezas: [...tiene, ...add], cantidad: (parseFloat(ya.cantidad) || 0) + add.reduce((t, x) => t + x.cantidad, 0), sinPedido: true };
         return;
       }
       const cantidad = piezas.reduce((t, x) => t + (x.cantidad || 0), 0);
       const exps = [...new Set(ls.map((a) => a.expediente).filter(Boolean))];
       const pres = [...new Set(piezas.map((x) => x.presupuesto).filter(Boolean))];
-      nuevos.push({ lote: cab, secuencia: [...new Set(ls.map((a) => a.pedidoProv).filter(Boolean))].join(", "), proveedor: proveedor || "", cliente: "Construcciones Uxcar 97", expediente: exps.join(" · ").slice(0, 300), presupuesto: pres.join(", "), medida: `${cantidad} cristales`, cantidad, piezas, albaran: archivo || "", ...(piezas.some((x) => x.sinPedido) ? { sinPedido: true } : {}) });
+      nuevos.push({ lote: cab, secuencia: [...new Set(ls.map((a) => a.pedidoProv).filter(Boolean))].join(", "), proveedor: proveedor || "", cliente: "Construcciones Uxcar 97", expediente: exps.join(" · ").slice(0, 300), presupuesto: pres.join(", "), medida: `${cantidad} cristales`, cantidad, piezas, albaran: archivo || "", entradaId, ...(piezas.some((x) => x.sinPedido) ? { sinPedido: true } : {}) });
     });
     if (nuevos.length || Object.keys(fusiones).length) guardar(nuevos, fusiones, []);
     return { nuevos: nuevos.length, fusionados: Object.keys(fusiones).length, nSin };
   };
   const confirmarAlbaranLista = async () => {
-    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); if (!elegidos.length && !(meterSinPedido && toArray(albRes.sobran).length)) return;
+    if (!albRes) return; const elegidos = albRes.reparto.filter((x) => albSel[x.p.id]); const elegidosCrm = toArray(albRes.crm).filter((x) => albSel[`crm:${x.p.id}`]);
+    if (!elegidos.length && !elegidosCrm.length && !(meterSinPedido && toArray(albRes.sobran).length)) return;
     setAlbLeyendo(true);
     try {
       const archivoTxt = toArray(albRes.docs).map((d) => d.name).join(", ");
@@ -51518,9 +51583,10 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         const recepcion = JSON.parse(JSON.stringify({ fecha: uxHoy(), por: quien || "", documentos: [...toArray(previa.documentos), ...subidos], lineas, caballetes: { ...((previa && previa.caballetes) || {}), ...(x.cab || {}) }, extras: toArray(previa.extras), completo: x.completo, comentario: previa.comentario || "", historial: [...toArray(previa.historial), { fecha: new Date().toISOString(), por: quien || "", completo: x.completo, desde: "albarán por foto (lista)" }] }));
         const r = await onGuardarRecepcion(x.p, recepcion); if (r !== false) ok++;
       }
+      if (elegidosCrm.length && ctxUxAlb.encolarEntradaCrm) ctxUxAlb.encolarEntradaCrm(elegidosCrm.map((x) => ({ crmId: x.p.id, filasDirectas: x.filas, archivo: archivoTxt })));
       if (toArray(albRes.sobran).length) setSinPedidoUlt({ grupos: gruposSinPedido(albRes.sobran), archivo: archivoTxt, proveedor: albRes.proveedor, fecha: uxHoy(), quien });
       const txtCab = rCab ? ` · Almacén de cristales: ${rCab.nuevos} caballete${rCab.nuevos === 1 ? "" : "s"} nuevo${rCab.nuevos === 1 ? "" : "s"} en «Pendientes de ubicar»${rCab.fusionados ? ` y ${rCab.fusionados} que ya estaban completados` : ""}${rCab.nSin ? ` (${rCab.nSin} cristal${rCab.nSin === 1 ? "" : "es"} marcados ⚠ SIN PEDIDO)` : ""}.` : "";
-      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"}: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${txtCab}`);
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"} de Uxcar: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${elegidosCrm.length ? ` · ${elegidosCrm.length} pedido${elegidosCrm.length === 1 ? "" : "s"} del CRM (Entradas Ecowin) con entrada: ${elegidosCrm.filter((x) => x.completo).length} completo${elegidosCrm.filter((x) => x.completo).length === 1 ? "" : "s"}.` : ""}${txtCab}`);
       setAlbRes(null);
     } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
@@ -51586,6 +51652,15 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
+            {toArray(albRes.crm).length > 0 && <div className="text-xs font-bold text-slate-700 pt-1">Pedidos del CRM (Entradas Ecowin PVC) con cristales de este albarán:</div>}
+            {toArray(albRes.crm).map((x) => (
+              <label key={`crm-${x.p.id}`} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
+                <input type="checkbox" checked={!!albSel[`crm:${x.p.id}`]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [`crm:${x.p.id}`]: e.target.checked }))} />
+                <b>#{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {x.d.ppto || "—"}</b><span>{x.p.proveedorExterno || "Pedido CRM"}</span><span className="text-slate-600">{x.d.ref || x.d.obra}</span>
+                <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
+                {!x.completo && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
+              </label>
+            ))}
             <details className="rounded border border-slate-300 bg-white px-2 py-1 text-xs">
               <summary className="cursor-pointer font-bold text-slate-700">🔎 Ver lo que he leído del albarán ({albRes.lineas.length} líneas · {albRes.lineas.reduce((t, a) => t + (parseFloat(a.cantidad) || 1), 0)} unidades) — compáralo con el papel</summary>
               <table className="mt-1 w-full"><tbody>
@@ -51610,7 +51685,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
               {toArray(albRes.sobran).some((a) => a && a.caballete) && <label className="basis-full flex items-center gap-2 text-sm font-semibold text-slate-800"><input type="checkbox" checked={meterSinPedido} onChange={(e) => setMeterSinPedido(e.target.checked)} className="w-4 h-4" /> Meter también en el almacén (pendientes de ubicar, en su caballete) los {albRes.sobran.reduce((t, a) => t + (a.caballete ? a.q : 0), 0)} cristales SIN PEDIDO, marcados «⚠ SIN PEDIDO»</label>}
-              <button type="button" disabled={albLeyendo || !(albRes.reparto.some((x) => albSel[x.p.id]) || (meterSinPedido && toArray(albRes.sobran).length))} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length} pedido(s)</button>
+              <button type="button" disabled={albLeyendo || !(albRes.reparto.some((x) => albSel[x.p.id]) || toArray(albRes.crm).some((x) => albSel[`crm:${x.p.id}`]) || (meterSinPedido && toArray(albRes.sobran).length))} onClick={confirmarAlbaranLista} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">✓ Confirmar entrada en {albRes.reparto.filter((x) => albSel[x.p.id]).length + toArray(albRes.crm).filter((x) => albSel[`crm:${x.p.id}`]).length} pedido(s)</button>
               <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = "1"; albRef.current.click(); }} className="text-sm font-bold px-3 py-2 rounded-md border-2 border-emerald-600 text-emerald-800 bg-white disabled:opacity-60">➕ Añadir otra página</button>
               <button type="button" onClick={() => { setAlbRes(null); setAlbMsg(""); }} className="text-sm px-3 py-2 rounded-md border border-slate-300 bg-white">Cancelar</button>
             </div>
