@@ -4338,6 +4338,17 @@ export default function App() {
     saveIngresos(ingresos.map((i) => (i.id === ingresoId ? { ...i, proyectoId, vinculado: true } : i)));
     showToast("Entrada vinculada al proyecto (no se ha generado factura)");
   };
+  // ENTRADAS ASIGNADAS A UN PRESUPUESTO (aún sin proyecto): en cuanto ese presupuesto tiene su proyecto (a mano o al firmarse), la entrada pasa sola a él
+  useEffect(() => {
+    const pend = toArray(ingresos).filter((i) => i && i.presupuestoId && !i.proyectoId);
+    if (!pend.length) return;
+    const proyDe = (pid) => { const pre = toArray(presupuestos).find((x) => x && x.id === pid); const id = (pre && pre.proyectoCreadoId) || ((toArray(proyectos).find((x) => x && x.presupuestoId === pid) || {}).id) || ""; return id && toArray(proyectos).some((x) => x && x.id === id) ? id : ""; };
+    const cambios = pend.map((i) => [i.id, proyDe(i.presupuestoId)]).filter(([, pid]) => pid);
+    if (!cambios.length) return;
+    const m = new Map(cambios);
+    saveIngresos(ingresos.map((i) => (m.has(i.id) ? { ...i, proyectoId: m.get(i.id), vinculado: true } : i)));
+    showToast(`${cambios.length} entrada${cambios.length === 1 ? "" : "s"} de dinero pasada${cambios.length === 1 ? "" : "s"} a su proyecto recién creado`);
+  }, [ingresos, presupuestos, proyectos]);
 
   const saveSolicitudesPedido = (next) => { setSolicitudesPedido(next); persist("solicitudes_pedido", next); };
 
@@ -7194,6 +7205,7 @@ export default function App() {
             ingresos={ingresos}
             clientes={clientes}
             proyectos={proyectos}
+            presupuestos={presupuestos}
             view={ingresoView}
             setView={setIngresoView}
             editId={ingresoEditId}
@@ -36657,7 +36669,7 @@ function PresupuestosPresentacion({ presupuestos }) {
   );
 }
 
-function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
+function IngresosModulo({ ingresos, clientes, proyectos, presupuestos = [], view, setView, editId, setEditId, onUpsert, onDelete, onVincular, onJustificantes, onRegistrarIngreso, prefill, onClearPrefill, isAdmin }) {
   const [q, setQ] = useState("");
   const [asignando, setAsignando] = useState(false);
   const sinProyecto = ingresos.filter((i) => !i.proyectoId);
@@ -36690,6 +36702,7 @@ function IngresosModulo({ ingresos, clientes, proyectos, view, setView, editId, 
         initial={editing || prefill}
         clientes={clientes}
         proyectos={proyectos}
+        presupuestos={presupuestos}
         onCancel={() => { setView("list"); onClearPrefill && onClearPrefill(); }}
         onSave={(data) => { onUpsert(data); onClearPrefill && onClearPrefill(); }}
       />
@@ -36970,7 +36983,7 @@ function JustificantesIngreso({ justificantes, onChange, compacto = false }) {
   );
 }
 
-function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
+function IngresoForm({ initial, clientes, proyectos, presupuestos = [], onCancel, onSave }) {
   const [f, setF] = useState(
     initial || {
       id: null, fecha: new Date().toISOString().slice(0, 10), clienteNombre: "", importe: "",
@@ -36987,7 +37000,7 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
     if (!f.importe || parseFloat(f.importe) <= 0) { setErrorMsg("El importe tiene que ser mayor que 0."); return; }
     if (!f.fecha) { setErrorMsg("Falta la fecha (es obligatoria)."); return; }
     setErrorMsg("");
-    onSave({ ...f, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null });
+    onSave({ ...f, importe: parseFloat(f.importe) || 0, proyectoId: f.proyectoId || null, presupuestoId: f.proyectoId ? null : (f.presupuestoId || null) });
   };
 
   return (
@@ -37035,12 +37048,13 @@ function IngresoForm({ initial, clientes, proyectos, onCancel, onSave }) {
 
         <JustificantesIngreso justificantes={f.justificantes} onChange={(next) => setF((prev) => ({ ...prev, justificantes: next }))} />
 
-        <Field label="Proyecto (déjalo en blanco si todavía no existe)">
-          <Select value={f.proyectoId || ""} onChange={set("proyectoId")}>
-            <option value="">Sin proyecto todavía</option>
+        <Field label="Proyecto o presupuesto (si aún no hay proyecto, elige su presupuesto)">
+          <Select value={f.proyectoId ? f.proyectoId : f.presupuestoId ? `pre:${f.presupuestoId}` : ""} onChange={(e) => { const v = e.target.value; if (v.startsWith("pre:")) setF({ ...f, proyectoId: "", presupuestoId: v.slice(4) }); else setF({ ...f, proyectoId: v, presupuestoId: "" }); }}>
+            <option value="">Sin proyecto ni presupuesto todavía</option>
+            {toArray(presupuestos).filter((pr) => pr && !pr.proyectoCreadoId && pr.estado !== "Rechazado").sort((a, b) => String(b.numero || "").localeCompare(String(a.numero || ""), "es", { numeric: true })).map((pr) => <option key={`pre-${pr.id}`} value={`pre:${pr.id}`} data-buscar={`${pr.numero || ""} ${String(pr.numero || "").replace(/\./g, "")} ${pr.descripcion || ""} ${pr.clienteNombre || ""}`}>📄 Presupuesto {pr.numero}{pr.descripcion ? ` — ${pr.descripcion}` : ""}{pr.clienteNombre ? ` · ${pr.clienteNombre}` : ""} (sin proyecto){pr.importe ? ` · ${money(pr.importe)}` : ""}</option>)}
             {proyectos.map((p) => <option key={p.id} value={p.id} data-buscar={textoBuscaProyecto(p)}>#{p.numero} — {p.nombre}{clienteDeProyecto(p) ? ` · ${clienteDeProyecto(p)}` : ""}</option>)}
           </Select>
-          <p className="text-xs text-slate-400 mt-1">Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura.</p>
+          <p className="text-xs text-slate-400 mt-1">{f.presupuestoId && !f.proyectoId ? "📄 Queda apuntada a ese presupuesto. Cuando se cree su proyecto, pasa sola a él y se resta de lo pendiente de cobrar." : "Se resta de lo pendiente de cobrar de ese proyecto. No se genera ninguna factura."} Escribe el nº de presupuesto o el cliente para buscar.</p>
         </Field>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2">
@@ -38764,6 +38778,8 @@ function PasarAProformaModal({ presupuesto, clientes, onCerrar, onCrear }) {
 function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, onLeerDatos, onRellenarDesdeDocumento, clientes, onPasarAProforma, presupuesto, onBack, onEdit, onDelete, onAddLlamada, onDeleteLlamada, onMarcarEnviado, onGuardarTelefono, onCrearProyecto, onDuplicar, replicas, onAbrirReplica, isAdmin, proyectos, onEnviarFirma, onGenerarPedido, onAdjuntarDocumento, onCancelarFirma, onComprobarFirma, onConfirmarFirmaManual, usuarios, onAnadirMasPersianas }) {
   const estadoActual = presupuesto.estado || "Pendiente";
   const [verProforma, setVerProforma] = useState(false);
+  // PASAR A PROYECTO: obligatorio comprobar el importe con la hoja del presupuesto FIRMADO (si no cuadra, no pasa)
+  const [confImp, setConfImp] = useState(null); // { valor, visto }
   const dias = diasSinRespuestaDe(presupuesto);
   // La próxima llamada se lleva desde el registro de llamadas (la más reciente que
   // tenga fecha puesta) y deja de mostrarse en cuanto el presupuesto queda resuelto
@@ -39123,13 +39139,41 @@ function PresupuestoDetail({ puedeEliminar, onRecrearProyecto, onAbrirProyecto, 
 
       {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado === "firmado" && (
         <button
-          onClick={onCrearProyecto}
+          onClick={() => setConfImp({ valor: "", visto: false })}
           style={{ backgroundColor: "#2E8B57", color: "#ffffff" }}
           className="w-full flex items-center justify-center gap-2 hover:opacity-90 text-base font-bold py-4 rounded-lg mb-6 shadow-md cursor-pointer select-none"
         >
           <Briefcase size={20} /> CREAR PROYECTO DESDE ESTE PRESUPUESTO
         </button>
       )}
+      {confImp && (() => {
+        const imp = parseFloat(presupuesto.importe) || 0;
+        const escrito = parseFloat(String(confImp.valor || "").replace(/\s|€/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")) || 0;
+        // la hoja firmada puede traer el total CON IVA: vale si coincide con el importe o con el importe + 21 % / 10 %
+        const casa = escrito > 0 && [imp, imp * 1.21, imp * 1.1].some((v) => Math.abs(v - escrito) <= 0.05);
+        const pdfFirmado = (presupuesto.firma && presupuesto.firma.pdfUrl) || (toArray(presupuesto.documentos).find((d) => d && /firmad/i.test(d.nombre || "")) || {}).url || "";
+        return (
+          <div className="fixed inset-0 z-[130] bg-black/40 flex items-center justify-center p-3" onClick={() => setConfImp(null)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+              <div className="text-lg font-extrabold text-slate-900">💶 ¿El importe es el correcto?</div>
+              <p className="text-sm text-slate-600">Antes de pasar el presupuesto <b>{presupuesto.numero}</b> a proyecto, mira el importe en la <b>hoja del presupuesto firmado</b> y escríbelo aquí.</p>
+              <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">Importe en el CRM: <b className="text-lg text-slate-900">{money(imp)}</b>{imp ? <span className="text-xs text-slate-500"> (con IVA 21 %: {money(imp * 1.21)})</span> : null}</div>
+              {pdfFirmado ? <a href={pdfFirmado} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-bold text-sky-700 underline">📄 Abrir la hoja del presupuesto firmado</a> : <div className="text-sm font-bold text-amber-800">⚠ No encuentro el PDF firmado en este presupuesto: búscalo en Documentos guardados.</div>}
+              <label className="block text-sm font-semibold text-slate-700">Importe que pone en la hoja firmada
+                <input autoFocus inputMode="decimal" value={confImp.valor} onChange={(e) => setConfImp({ ...confImp, valor: e.target.value })} placeholder="Ej: 4.250,30" className="mt-1 w-full border-2 border-slate-300 rounded-md px-3 py-2 text-lg font-bold" />
+              </label>
+              {escrito > 0 && (casa
+                ? <div className="text-sm font-bold text-emerald-700">✓ Coincide con el importe del CRM.</div>
+                : <div className="text-sm font-bold text-rose-700">✕ No coincide ({money(escrito)} en la hoja y {money(imp)} en el CRM). Corrige el importe del presupuesto («Editar») antes de pasarlo a proyecto.</div>)}
+              <label className="flex items-start gap-2 text-sm text-slate-700"><input type="checkbox" checked={confImp.visto} onChange={(e) => setConfImp({ ...confImp, visto: e.target.checked })} className="mt-0.5 w-4 h-4" /> He comprobado el importe en la hoja del presupuesto firmado</label>
+              <div className="flex gap-2 pt-1">
+                <button type="button" disabled={!casa || !confImp.visto} onClick={() => { setConfImp(null); onCrearProyecto(); }} style={{ backgroundColor: "#2E8B57", color: "#ffffff" }} className="flex-1 text-sm font-bold py-2.5 rounded-md disabled:opacity-40">Sí, es correcto: crear el proyecto</button>
+                <button type="button" onClick={() => setConfImp(null)} className="px-4 text-sm font-semibold rounded-md border border-slate-300">Cancelar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {estadoActual === "Aceptado" && !presupuesto.proyectoCreadoId && presupuesto.firma?.estado !== "firmado" && (
         <div className="mb-6 px-4 py-3 rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
           ⚠ Aceptado, pero todavía no hay firma confirmada — hasta que no esté firmado (arriba, en "Enviar a firmar") no se puede crear el proyecto.
@@ -41332,7 +41376,56 @@ const uxPatchRecepcion = (pedido, recepcion, expedientes) => {
   return patch;
 };
 
+// PACKING LIST DE TVITEC (PDF con texto): se lee línea a línea SIN IA, no se salta nada. Formato:
+//   Caballete / Pedido / 2002400436 / Pos. Cant. Ancho x Alto Referencia /
+//   1126356 2 2 665 x 427 V07.228, Ref. Cte. Ped.: SN-EXP 823_JOAN M PARETS PORTAL 12 ESC 10 1B, Ref. Cte. Pos.: V07.228, Compra: AENA
+//   … Total Caballete: 24 … / Total: 194 (después vienen los albaranes de cada pedido, que repiten lo mismo: no se leen)
+function uxParsearPackingTexto(txt) {
+  const filas = []; let prevPed = false;
+  for (const raw of String(txt || "").replace(/\r/g, "").split("\n")) {
+    const l = raw.trim(); if (!l) continue;
+    if (/^Total:\s*\d+/i.test(l)) { filas.push({ total: parseInt(l.match(/\d+/)[0], 10) }); break; }
+    if (/^Pedido$/i.test(l)) { prevPed = true; continue; }
+    if (prevPed && /^\d{5,12}$/.test(l)) { prevPed = false; filas.push({ cab: l }); continue; }
+    prevPed = false;
+    const mt = l.match(/^Total Caballete:\s*(\d+)/i); if (mt) { filas.push({ totCab: parseInt(mt[1], 10) }); continue; }
+    if (/^(?:\d{6,8}\s+)?\d{1,3}\s+\d{1,3}\s+\d{2,4}\s*x\s*\d{2,4}\b/.test(l)) { filas.push({ row: l }); continue; }
+    const last = filas[filas.length - 1]; if (last && last.row) last.row += " " + l;
+  }
+  const lineas = []; let cab = "", ped = "", total = 0; const sumaCab = {}, totCab = {};
+  filas.forEach((f) => {
+    if (f.cab) { cab = f.cab; return; }
+    if (f.totCab != null) { totCab[cab] = f.totCab; return; }
+    if (f.total != null) { total = f.total; return; }
+    const m = f.row.match(/^(?:(\d{6,8})\s+)?(\d{1,3})\s+(\d{1,3})\s+(\d{2,4})\s*x\s*(\d{2,4})\s+(.*)$/); if (!m) return;
+    if (m[1]) ped = m[1];
+    const resto = m[6]; const ventana = (resto.match(/^([A-Z]\d{1,2}(?:\.\d{3})*)\s*,/) || [])[1] || ""; // «V06.244.245» = dos ventanas (V06.244 y V06.245)
+    const refObra = ((resto.match(/Ref\.\s*Cte\.\s*Ped\.:\s*(.*?),\s*Ref\.\s*Cte\.\s*Pos/i) || [])[1] || "").trim();
+    const cant = parseInt(m[3], 10) || 1;
+    sumaCab[cab] = (sumaCab[cab] || 0) + cant;
+    lineas.push({ codigo: ventana, ventana, descripcion: `${ventana}${ped ? ` · pedido Tvitec ${ped}` : ""}`, ancho: parseInt(m[4], 10), alto: parseInt(m[5], 10), cantidad: cant, expediente: refObra, caballete: cab, pedidoProv: ped });
+  });
+  const descuadres = Object.keys(totCab).filter((c) => sumaCab[c] !== totCab[c]);
+  const unidades = lineas.reduce((a, x) => a + x.cantidad, 0);
+  return { lineas, total, unidades, descuadres, caballetes: Object.keys(totCab).length };
+}
+async function uxLeerPackingPdfSinIA(file) {
+  try {
+    const lib = await cargarPdfJs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    let txt = "";
+    for (let n = 1; n <= doc.numPages; n++) { txt += (await (await doc.getPage(n)).getTextContent()).items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("") + "\n"; if (/^\s*Total:\s*\d+/m.test(txt)) break; }
+    if (!/Packing List/i.test(txt) || !/Ref\.\s*Cte\.\s*Ped/i.test(txt)) return null;
+    const r = uxParsearPackingTexto(txt);
+    if (!r.lineas.length) return null;
+    const proveedor = /TVITEC/i.test(txt) ? "TVITEC SYSTEM GLASS" : "Tvitec";
+    const aviso = (r.total && r.total !== r.unidades) || r.descuadres.length ? `⚠ Ojo: he leído ${r.unidades} unidades y el packing dice ${r.total || "?"}${r.descuadres.length ? ` (caballetes que no cuadran: ${r.descuadres.join(", ")})` : ""}. Revísalo.` : "";
+    return { proveedor, numeroAlbaran: "", pagina: 0, paginasTotal: 0, lineas: r.lineas, sinIA: true, aviso, resumen: `${r.lineas.length} líneas · ${r.unidades} cristales · ${r.caballetes} caballetes${r.total === r.unidades && !r.descuadres.length ? " · ✓ cuadra con el total del packing" : ""}` };
+  } catch (e) { return null; }
+}
 async function uxLeerAlbaranConClaude(dataUrl, mediaType, file = null) {
+  // 0º: si es un PACKING LIST de Tvitec en PDF con texto, se lee exacto sin IA
+  if (file && mediaType === "application/pdf") { const pk = await uxLeerPackingPdfSinIA(file); if (pk) return pk; }
   const base64 = String(dataUrl).split(",")[1];
   const contentBlock = mediaType === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
@@ -51222,7 +51315,7 @@ function PrepararMaterial({ proyectos, uxExpedientes, materiales, proveedores, o
 
 // Un albarán (foto) que trae material de VARIOS pedidos de Uxcar: se reparten sus líneas entre los pedidos pendientes por medida
 // (o código), cada unidad del albarán cuenta una sola vez; primero los pedidos con más coincidencias y del mismo proveedor.
-function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
+function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proyectos = []) {
   const resto = lineasAlb.map((a) => ({ ...a, q: parseFloat(a.cantidad) || 1 }));
   const cerca = (x, y) => Math.abs(x - y) <= 3;
   const medidaOk = (a, l) => (a.ancho && a.alto && l.ancho && l.alto) ? ((cerca(a.ancho, l.ancho) && cerca(a.alto, l.alto)) || (cerca(a.ancho, l.alto) && cerca(a.alto, l.ancho))) : (!!a.codigo && String(a.codigo).replace(/\s/g, "").toUpperCase() === String(l.codigo || "").replace(/\s/g, "").toUpperCase());
@@ -51232,13 +51325,28 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
   // OBRA de cada línea: los números de expediente y presupuesto. El albarán trae «SN-EXPEDIENTE 741_6.833.3» o «SN-EXP 823_JOAN M PARETS…»;
   // el pedido está unido a su expediente de Uxcar, que tiene su nº de expediente y su presupuesto (6.833-3 → 6833)
   const numsDe = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split("-")[0].replace(/\./g, ""); if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
-  const numsPedidoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const s0 = new Set(); [x.numero, x.presupuesto, e.numero, e.expediente, e.presupuesto, e.presupuestoNumero, e.referencia].forEach((v) => numsDe(v).forEach((n) => s0.add(n))); return s0; };
+  // TEXTO DE LA OBRA de cada grupo del pedido: expediente de Uxcar + su obra en el CRM (referencia «EXP 823 JOAN M PARETS PORTAL 12 ESC 10 1K», nombre…)
+  const textoGrupo = (p, gi) => { const x = toArray(p && p.expedientes)[gi] || {}; const e = toArray(exps).find((y) => y && y.id === x.expedienteId) || {}; const pr = toArray(proyectos).find((y) => y && (y.id === e.proyectoId || y.id === p.proyectoId)) || {};
+    return [x.numero, x.presupuesto, x.vivienda, x.referencia, e.numero, e.expediente, e.presupuesto, e.presupuestoNumero, e.referencia, e.descripcion, e.nombre, e.obra, e.vivienda, pr.referencia, pr.nombre, pr.descripcion, pr.expediente, pr.presupuestoNumero, p.referencia, p.obra].filter((v) => typeof v === "string" || typeof v === "number").join(" · "); };
+  const numsPedidoGrupo = (p, gi) => numsDe(textoGrupo(p, gi));
+  // palabras que distinguen la obra (PARETS, MONTSERRAT…): no cuentan las genéricas
+  const GEN = new Set(["EXPEDIENTE", "PORTAL", "ESCALERA", "CALLE", "PLANTA", "BAJO", "BLOQUE", "VIVIENDA", "VIVIENDAS", "OBRA", "AENA", "UXCAR", "CONSTRUCCIONES", "AVENIDA", "PASEO", "PLAZA", "CRISTAL", "CRISTALES"]);
+  const palabras = (t) => new Set(String(t || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]+/g, " ").split(" ").filter((w) => w.length >= 4 && /^[A-Z]+$/.test(w) && !GEN.has(w)));
+  // vivienda al final de la referencia: «… ESC 10 1K» → 1K · «BAJO 14-C» → 14C
+  const vivDe = (t) => { const m = String(t || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim().match(/(?:^|\s)(\d{1,2})\s?([A-Z])$/); return m ? m[1] + m[2] : ""; };
+  const cacheTxt = new Map();
+  const txtLinea = (l, p) => { const gi = parseInt(String(l.key).split("-")[0], 10) || 0; const k = `${p && p.id}|${gi}`; if (!cacheTxt.has(k)) { const t = textoGrupo(p, gi); cacheTxt.set(k, { t, pal: palabras(t), viv: vivDe(t) }); } return cacheTxt.get(k); };
   const cacheNums = new Map();
   const numsLinea = (l, p) => { const gi = parseInt(String(l.key).split("-")[0], 10) || 0; const k = `${p && p.id}|${gi}`; if (!cacheNums.has(k)) cacheNums.set(k, numsPedidoGrupo(p, gi)); return cacheNums.get(k); };
-  const obraOk = (a, l, p) => { const na = numsDe(a.expediente); if (!na.size) return false; const nl = numsLinea(l, p); return [...na].some((n) => nl.has(n)); };
+  const obraOk = (a, l, p) => { const na = numsDe(a.expediente); const nl = numsLinea(l, p); if (na.size && [...na].some((n) => nl.has(n))) return true; const pa2 = palabras(a.expediente); if (pa2.size < 2) return false; const pl = txtLinea(l, p).pal; return [...pa2].filter((w) => pl.has(w)).length >= 2; };
+  // misma VENTANA (V07.228) en la misma obra: lo más seguro. «V06.244.245» vale para V06.244 y V06.245
+  const ventanasDe = (t) => { const m = String(t || "").toUpperCase().match(/^([A-Z])(\d{1,2})((?:\.\d{3})*)$/); if (!m) return []; const ns = m[3].split(".").filter(Boolean); return ns.length ? ns.map((n) => `${m[1]}${m[2].padStart(2, "0")}.${n}`) : [`${m[1]}${m[2]}`]; };
+  const mismaVentanaTxt = (a, l) => { if (!a.ventana) return false; const vs = ventanasDe(a.ventana); if (!vs.length) return false; const tl = `${l.modelo || ""} ${l.codigo || ""} ${l.descripcion || ""}`.toUpperCase(); return vs.some((v) => new RegExp(`(^|[^A-Z0-9.])${v.replace(".", "\\.")}([^0-9]|$)`).test(tl)); };
+  const ventOk = (a, l, p) => mismaVentanaTxt(a, l) && obraOk(a, l, p);
+  const vivOk = (a, l, p) => { const va = vivDe(a.expediente); if (!va) return false; const tl = txtLinea(l, p); const vl = tl.viv || vivDe(`${l.modelo || ""}`) || vivDe(`${l.descripcion || ""}`); return !!vl && vl === va && obraOk(a, l, p); };
   const expOk = (a, l, p) => expOkViv(a, l, p) || obraOk(a, l, p);
   // si la línea del albarán dice su obra y ESA obra tiene pedido pendiente, no se reparte a pedidos de otras obras aunque la medida coincida
-  const obraConPedido = (a) => { const na = numsDe(a.expediente); if (!na.size) return false; return pedidosPend.some((p) => toArray(p.expedientes).some((x, gi) => [...na].some((n) => numsPedidoGrupo(p, gi).has(n)))); };
+  const obraConPedido = (a) => { if (!String(a.expediente || "").trim()) return false; return pedidosPend.some((p) => toArray(p.expedientes).some((x, gi) => obraOk(a, { key: `${gi}-0` }, p))); };
   // tolerancia amplia (±15 mm) SOLO si además coincide la vivienda/expediente: el proveedor a veces redondea la medida
   const medidaAmplia = (a, l) => a.ancho && a.alto && l.ancho && l.alto && ((Math.abs(a.ancho - l.ancho) <= 15 && Math.abs(a.alto - l.alto) <= 15) || (Math.abs(a.ancho - l.alto) <= 15 && Math.abs(a.alto - l.ancho) <= 15));
   // si el lector puso como proveedor al CLIENTE (Uxcar / Alumavel), no vale: se deduce por las medidas
@@ -51256,14 +51364,19 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
     for (let i = cands.length - 1; i >= 0; i--) if (kp(cands[i]) !== gana) cands.splice(i, 1);
   }
   cands.sort((x, y) => (y.potExp - x.potExp) || (y.prov - x.prov) || (y.pot - x.pot));
-  const asignar = (estricto, amplia) => cands.forEach((c) => c.ls.forEach((l) => {
+  const asignar = (estricto, amplia, viv, vent) => cands.forEach((c) => c.ls.forEach((l) => {
     let falta = l.pedido - (parseFloat(c.llegado[l.key]) || 0); if (falta <= 0) return;
-    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
+    resto.forEach((a) => { if (falta <= 0 || a.q <= 0 || !(amplia ? medidaAmplia(a, l) : medidaOk(a, l)) || (viv && !vivOk(a, l, c.p)) || (vent === true && !ventOk(a, l, c.p)) || (vent === "solo" && !mismaVentanaTxt(a, l)) || (estricto && !expOk(a, l, c.p)) || (!estricto && a._obraPed && !expOk(a, l, c.p))) return; const pon = Math.min(falta, a.q); a.q -= pon; falta -= pon; c.llegado[l.key] = (parseFloat(c.llegado[l.key]) || 0) + pon; c.n += pon; if (a.caballete && !c.cab[l.key]) c.cab[l.key] = a.caballete; });
   }));
   resto.forEach((a) => { a._obraPed = obraConPedido(a); });
-  asignar(true); // 1º: misma medida Y mismo expediente/vivienda
-  asignar(false); // 2º: lo que quede, solo por medida
-  asignar(true, true); // 3º: misma vivienda y medida parecida (±15 mm)
+  asignar(true, true, false, true); // 0º: misma obra Y misma ventana (V07.228), medida parecida (±15 mm)
+  asignar(true, true, true); // 1º: misma obra Y misma vivienda (1K, 1B…), medida parecida
+  asignar(true); // 2º: misma medida (±3) Y misma obra
+  // 3º: MISMA VENTANA (V07.228 en el packing y «V07.228 · …» en el pedido) y la MISMA medida (±3 mm), aunque el texto de la obra no se parezca
+  // (el packing dice «823 JOAN M PARETS 1B» y el pedido «6.891-1»). Va ANTES que «solo por medida» para que no se lo quede otra obra.
+  asignar(false, false, false, "solo");
+  asignar(false); // 4º: lo que quede, solo por medida (±3)
+  asignar(true, true); // 5º: misma obra y medida parecida (±15 mm)
   const out = cands.filter((c) => c.n > 0).map((c) => { const faltan = c.ls.filter((l) => (parseFloat(c.llegado[l.key]) || 0) < l.pedido); return { p: c.p, llegado: c.llegado, cab: c.cab, n: c.n, completo: c.ls.length > 0 && faltan.length === 0, faltan: faltan.length, faltanTxt: faltan.map((l) => (l.ancho && l.alto ? `${l.ancho}×${l.alto}` : l.descripcion || l.codigo || "?")), total: c.ls.length }; });
   // Lo que no casa: los motores/accesorios sin medida no son un error (van con su persiana). Al resto se le busca la línea pendiente más parecida.
   const quedan = resto.filter((a) => a.q > 0);
@@ -51279,7 +51392,8 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = []) {
 }
 // Lista de pedidos de Uxcar pendientes de entrada, para Fábrica
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
-  const expsUx = toArray((React.useContext(IncidenciasCristalCtx) || {}).uxExpedientes);
+  const ctxUxAlb = React.useContext(IncidenciasCristalCtx) || {};
+  const expsUx = toArray(ctxUxAlb.uxExpedientes);
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
@@ -51292,12 +51406,13 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     setAlbLeyendo(true); setAlbMsg(""); if (!prev) setAlbRes(null);
     try {
       let lineas = prev ? [...prev.lineas] : []; let proveedor = prev ? prev.proveedor : ""; const docs = prev ? [...prev.docs] : [];
-      const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0;
+      const paginas = prev ? [...(prev.paginas || [])] : []; let paginasTotal = prev ? prev.paginasTotal || 0 : 0; const avisosLect = [];
       for (const file of files) {
         const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "");
         if (mediaType !== "application/pdf" && !mediaType.startsWith("image/")) continue;
         const info = await uxLeerAlbaranConClaude(await uxLeerComoDataUrl(file), mediaType, file);
         lineas = lineas.concat(toArray(info.lineas)); proveedor = proveedor || info.proveedor || ""; docs.push(file);
+        if (info.sinIA) avisosLect.push(`📄 ${file.name}: leído exacto, sin IA — ${info.resumen}${info.aviso ? ` ${info.aviso}` : ""}`);
         // un PDF se lee entero (todas sus páginas de una vez); solo en fotos sueltas se cuentan las páginas que faltan
         if (mediaType === "application/pdf" && info.paginasTotal) { for (let pg = 1; pg <= info.paginasTotal; pg++) paginas.push(pg); }
         else if (info.pagina) paginas.push(info.pagina);
@@ -51305,10 +51420,11 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       }
       if (!lineas.length) throw new Error("no he encontrado líneas de material (prueba con una foto más clara y recta)");
       const pend = toArray(pedidos).filter((p) => p && !p.recibido);
-      const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx);
+      const r = uxRepartirAlbaran(pend, lineas, proveedor, expsUx, toArray((ctxUxAlb || {}).proyectos));
       const sel = {}; r.reparto.forEach((x) => { sel[x.p.id] = true; });
       setAlbSel(sel); setAlbRes({ ...r, lineas, proveedor, docs, paginas: [...new Set(paginas)].sort((a, b) => a - b), paginasTotal });
-      if (!r.reparto.length) setAlbMsg(`He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
+      if (avisosLect.length) setAlbMsg(avisosLect.join(" · "));
+      if (!r.reparto.length) setAlbMsg(`${avisosLect.length ? avisosLect.join(" · ") + " — " : ""}He leído ${lineas.length} línea${lineas.length === 1 ? "" : "s"}${proveedor ? ` de ${proveedor}` : ""}, pero no casan con ningún pedido pendiente de Uxcar (por medida). Ábrelo a mano.`);
     } catch (e) { setAlbMsg("No se pudo leer el albarán: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
   };
@@ -51388,6 +51504,12 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
+            <details className="rounded border border-slate-300 bg-white px-2 py-1 text-xs">
+              <summary className="cursor-pointer font-bold text-slate-700">🔎 Ver lo que he leído del albarán ({albRes.lineas.length} líneas · {albRes.lineas.reduce((t, a) => t + (parseFloat(a.cantidad) || 1), 0)} unidades) — compáralo con el papel</summary>
+              <table className="mt-1 w-full"><tbody>
+                {albRes.lineas.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="pr-2 font-bold whitespace-nowrap">{a.ancho && a.alto ? `${a.ancho}×${a.alto}` : "sin medida"}</td><td className="pr-2 whitespace-nowrap">× {a.cantidad || 1}</td><td className="pr-2">{a.expediente || ""}</td><td className="pr-2 text-slate-500">{a.caballete ? `cab. ${a.caballete}` : ""}</td><td className="text-slate-500">{String(a.descripcion || a.codigo || "").slice(0, 40)}</td></tr>)}
+              </tbody></table>
+            </details>
             {albRes.sobran.length > 0 && <div className="text-xs font-semibold text-rose-700">⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} unidad(es) del albarán no casan con ningún pedido pendiente:{albRes.sobran.slice(0, 8).map((a, i) => <div key={i} className="ml-3">· {a.ancho}×{a.alto}{a.expediente ? ` (${a.expediente})` : ""}{a.parecida ? <span className="text-slate-600 font-normal"> — lo más parecido: <b>{a.parecida.p.numero}</b>{uxDesglosaExp(a.parecida.p, expsUx).ppto.length ? <b className="text-slate-900"> · Ppto {uxDesglosaExp(a.parecida.p, expsUx).ppto.join(", ")}</b> : null} ({a.parecida.p.proveedorNombre || ""}) pide {a.parecida.l.ancho}×{a.parecida.l.alto}</span> : <span className="text-slate-600 font-normal"> — no hay ninguna pendiente parecida (¿ya recibida o pedido no subido?)</span>}</div>)}</div>}
             {toArray(albRes.accesorios).length > 0 && <div className="text-xs text-slate-500">{albRes.accesorios.length} línea(s) sin medida (motores, accesorios: {[...new Set(albRes.accesorios.map((a) => String(a.descripcion || a.codigo || "").slice(0, 30)))].slice(0, 3).join(" · ")}) — van con su persiana, no se comprueban.</div>}
             <div className="flex flex-wrap gap-2 pt-1">
