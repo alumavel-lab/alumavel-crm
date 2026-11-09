@@ -59427,6 +59427,50 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
               try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `control_del_dia_${dias[0]}.html`; a.click(); } catch (e) { alert("No se pudo abrir para imprimir."); }
             };
+            // INFORME DE VENTANAS SALIDAS del día: obras cerradas (todas sus ventanas hechas ese día), separadas en atrasadas del día anterior,
+            // planificadas para hoy y otras no planificadas; y lo que queda pendiente
+            const informeSalidas = (f) => {
+              const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+              const diasMarcas = Object.keys(marcasTodas || {}).sort();
+              const valorHasta = (k, i, hasta) => { let v; for (const d of diasMarcas) { if (d > hasta) break; const m = ((marcasTodas[d] || {})[k] || {})[i]; if (m !== undefined) v = m; } return v; };
+              const hechaHasta = (k, hasta) => { const ob = obraPorClave.get(k); const ids = ob ? idsDe(ob) : []; return ids.length > 0 && ids.every((i) => valorHasta(k, i, hasta) === 1); };
+              const diaAntes = (d0) => { const d = new Date(d0 + "T12:00:00"); for (let n = 0; n < 7; n++) { d.setDate(d.getDate() - 1); const x = d.toLocaleDateString("sv-SE"); const dow = d.getDay(); if (Object.keys((asignTodas && asignTodas[x]) || {}).length || (dow >= 1 && dow <= 5)) return x; } return d.toLocaleDateString("sv-SE"); };
+              const ant = diaAntes(f);
+              const ref = (k) => { const ob = obraPorClave.get(k); return ob ? [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : ""; };
+              const nom = (k) => { const ob = obraPorClave.get(k); return ob ? ob.d.nombre : k; };
+              const planHoy = Object.keys((asignTodas && asignTodas[f]) || {});
+              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy.includes(k));
+              const ya = new Set([...planHoy, ...atrasadas]);
+              const otras = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
+              const est = (k) => (hechaHasta(k, f) ? "Terminada" : "Pendiente");
+              const nAt = atrasadas.filter((k) => est(k) === "Terminada").length, nPl = planHoy.filter((k) => est(k) === "Terminada").length;
+              const total = nAt + nPl + otras.length;
+              const pend = [...atrasadas, ...planHoy].filter((k) => est(k) !== "Terminada");
+              const fechaTxt = (d) => { const t = new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); return t.charAt(0).toUpperCase() + t.slice(1); };
+              const nomAnt = new Date(ant + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long" });
+              const tabla = (ks, estado) => ks.length ? `<table><tr><th class="n">Nº</th><th>Obra / cliente</th><th>Referencia</th><th>Estado</th></tr>${ks.map((k, i) => { const e = estado ? estado(k) : est(k); return `<tr><td class="n">${i + 1}</td><td>${esc(nom(k))}</td><td>${esc(ref(k))}</td><td class="${e === "Pendiente" ? "pend" : ""}">${esc(e)}</td></tr>`; }).join("")}</table>` : `<div class="vacio">Ninguna</div>`;
+              const html = `<!doctype html><html><head><meta charset="utf-8"><title>Informe de ventanas salidas ${esc(f)}</title><style>
+                body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:14mm 16mm} h1{text-align:center;font-size:26px;margin:0} .fecha{text-align:center;color:#777;font-size:13px;margin:4px 0 22px}
+                h2{font-size:19px;margin:18px 0 8px} p{font-size:13px;line-height:1.4;margin:0 0 10px}
+                .kpi{width:100%;border-collapse:collapse;margin-top:6px} .kpi td{border:1px solid #999;text-align:center;padding:8px} .kpi .t{font-size:13px;font-weight:bold} .kpi .v{font-size:22px}
+                table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed} th{background:#1f3a5f;color:#fff;text-align:left;padding:8px} th:nth-child(2){width:38%} th:nth-child(3){width:24%} td{border:1px solid #ccc;padding:8px} tr:nth-child(odd) td{background:#f4f6fa}
+                .n{width:40px} .pend{color:#b00;font-weight:bold} .vacio{font-size:13px;color:#777} .pie{margin-top:18px;font-size:11px;color:#888;font-style:italic}
+                @page{size:A4;margin:10mm}
+              </style></head><body>
+                <h1>Informe de ventanas salidas</h1><div class="fecha">${esc(fechaTxt(f))}</div>
+                <h2>Resumen</h2>
+                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? `las ${nAt}` : `${nAt} de las ${atrasadas.length}`} atrasadas del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
+                <table class="kpi"><tr><td class="t">Atrasadas ${esc(nomAnt)}</td><td class="t">Planificadas hoy</td><td class="t">Otras cerradas</td><td class="t">Total cerradas</td></tr>
+                <tr><td class="v">${nAt} / ${atrasadas.length}</td><td class="v">${nPl} / ${planHoy.length}</td><td class="v">${otras.length}</td><td class="v">${total}</td></tr></table>
+                <h2>Retraso del ${esc(nomAnt)}</h2>${tabla(atrasadas)}
+                <h2>Planificadas para hoy</h2>${tabla(planHoy)}
+                <h2>Otras cerradas hoy (no planificadas)</h2>${tabla(otras, () => "Cerrada")}
+                <div class="pie">Sacado del Control del día del CRM el ${new Date().toLocaleString("es-ES")}. Una obra cuenta como cerrada cuando todas sus ventanas están marcadas como hechas. Las atrasadas son las del ${esc(nomAnt)} que no se terminaron ese día.</div>
+              </body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.open(); w.document.write(html); w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* nada */ } }, 400); return; }
+              try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = `informe_ventanas_${f}.html`; a.click(); } catch (e) { alert("No se pudo abrir para imprimir."); }
+            };
             const lunes = (() => { const d = new Date(dia + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; })();
             const semana = Array.from({ length: 7 }, (_, i) => { const d = new Date(lunes); d.setDate(lunes.getDate() + i); return d.toLocaleDateString("sv-SE"); }).filter((f, i) => i < 5 || Object.keys((asignTodas && asignTodas[f]) || {}).length);
             const tSem = `semana del ${new Date(semana[0] + "T12:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" })}`;
@@ -59434,6 +59478,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
                 <button type="button" onClick={() => imprimirDias(semana, tSem)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-slate-700 bg-white text-slate-900"><Printer size={13} /> Imprimir semana</button>
                 <button type="button" onClick={() => imprimirDias([dia], new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }))} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border border-slate-400 bg-white text-slate-700"><Printer size={13} /> Imprimir el día elegido</button>
+                <button type="button" onClick={() => informeSalidas(dia)} className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-600 bg-white text-indigo-800">📄 Informe de ventanas salidas del día</button>
                 <span className="text-[11px] text-slate-500">para comprobarlo en fábrica con el papel</span>
               </div>
             );
