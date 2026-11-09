@@ -16758,7 +16758,10 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
         // EL ÚLTIMO PACKING METIDO: cada importación marca sus caballetes con un código de entrada; los nuevos se guardan los primeros
         const ultimaEnt = (pendientes.find((c) => c.entradaId) || {}).entradaId || "";
         const nUlt = ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt).length : 0;
-        const pendVista = soloUltimaEnt && ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt) : pendientes;
+        // POR FECHA DE LLEGADA: la más reciente arriba (dentro de cada día, en el orden en que entraron)
+        const pendVista = (soloUltimaEnt && ultimaEnt ? pendientes.filter((c) => c.entradaId === ultimaEnt) : pendientes).map((c, i) => ({ c, i })).sort((a, b) => String(b.c.fechaLlegada || "").localeCompare(String(a.c.fechaLlegada || "")) || a.i - b.i).map((x) => x.c);
+        const diaDeCab = (c) => String(c.fechaLlegada || "").slice(0, 10);
+        const resumenDia = {}; pendVista.forEach((c) => { const d = diaDeCab(c); resumenDia[d] = resumenDia[d] || { n: 0, cris: 0 }; resumenDia[d].n++; resumenDia[d].cris += parseFloat(c.cantidad) || toArray(c.piezas).reduce((t, p) => t + (parseFloat(p.cantidad) || 1), 0); });
         return (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           {nUlt > 0 && (
@@ -16795,15 +16798,17 @@ function CristalesModulo({ cristales, proyectos, proveedores, clientes, onAdd, o
               </tr>
             </thead>
             <tbody>
-              {pendVista.map((c) => {
+              {pendVista.map((c, ic) => {
                 const presu = presupuestoCab(c);
                 const piezasC = toArray(c.piezas);
                 const esUlt = !!ultimaEnt && c.entradaId === ultimaEnt;
+                const dia = diaDeCab(c); const nuevoDia = ic === 0 || diaDeCab(pendVista[ic - 1]) !== dia;
                 const viviendas = [...new Set(piezasC.map((p) => String(p.ref || "").trim()).filter(Boolean))];
                 const plantasC = ubicacionesCab(c);
                 const abierto = abiertosPend.has(c.id);
                 return (
                 <React.Fragment key={c.id}>
+                {nuevoDia && <tr className="bg-slate-800 text-white"><td colSpan={7} className="px-4 py-1.5 text-sm font-bold capitalize">📅 {dia ? new Date(dia + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "Sin fecha de llegada"} <span className="font-normal normal-case text-slate-300">· {resumenDia[dia].n} caballete{resumenDia[dia].n === 1 ? "" : "s"} · {Math.round(resumenDia[dia].cris)} cristales</span></td></tr>}
                 <tr className={`border-b border-slate-100 last:border-0 ${esUlt ? "bg-sky-50 hover:bg-sky-100" : "hover:bg-slate-50"}`}>
                   <td className="px-4 py-2.5 font-medium text-slate-800">{esUlt && <span className="mr-1 inline-block text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-sky-600 text-white align-middle">🆕 ÚLTIMO</span>}{c.lote || "—"} <button onClick={() => cambiarNumeroCaballete(c, cristales, onUpdate, guardarFusion)} className="text-[11px] font-semibold text-[#2E8B57] underline" title="Cambiar el número de caballete">cambiar nº</button>{c.secuencia ? <div className="text-[11px] font-normal text-slate-400">Pedido {c.secuencia}</div> : null}{c.documento ? <div className="text-[11px] font-semibold text-amber-700">{c.documento}</div> : null}</td>
                   <td className="px-4 py-2.5">
