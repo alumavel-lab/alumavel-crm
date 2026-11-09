@@ -39785,7 +39785,23 @@ const uxFecha = (f) => (f ? f.split("-").reverse().join("/") : "—");
 const uxNum = (v) => parseInt(v, 10) || 0;
 // Medida de una línea de pedido en mm. Algunos pedidos traen la medida con el decimal pegado («379,50» guardado como 37950,
 // «784,50» como 78450): ninguna ventana/cristal pasa de 3,3 m, así que se le van quitando cifras hasta que sea posible (37950 → 379,5)
-const uxMedidaMm = (v) => { let n = uxNum(v); let i = 0; while (n > 3300 && i < 2) { n = n / 10; i++; } return Math.round(n * 10) / 10; };
+// Formatos que llegan: 1967 · "1.967" · "1.967,00mm" · "379,50" · "379.50mm" · 37950 (decimal pegado). Siempre se REDONDEA HACIA ABAJO al mm
+// (379,50 → 379), como lo pone el proveedor en el albarán: así 379,50 del pedido casa con 379 del packing.
+const uxMedidaMm = (v) => {
+  if (v == null || v === "") return 0;
+  let n;
+  if (typeof v === "number") n = v;
+  else {
+    let t = String(v).toLowerCase().replace(/mm|\s/g, "");
+    if (t.includes(".") && t.includes(",")) t = t.replace(/\./g, "").replace(",", "."); // 1.967,00 → 1967.00
+    else if (t.includes(",")) t = t.replace(",", "."); // 379,50 → 379.50
+    else if (/^\d{1,2}\.\d{3}(?:\D|$)/.test(t)) t = t.replace(".", ""); // 1.967 → 1967 (punto de miles)
+    n = parseFloat(t);
+  }
+  if (!Number.isFinite(n)) return 0;
+  let i = 0; while (n > 3300 && i < 2) { n = n / 10; i++; }
+  return Math.floor(n + 1e-9);
+};
 // Lo que se controla de cada expediente: las ventanas (recuento) y el material que hay
 // que pedir para ellas: persianas (se guarda en "compactos") y cristales ("vidrios").
 const UX_CONTROL = [["compactos", "Persianas", "Persianas"], ["vidrios", "Cristales", "Cristales"]];
@@ -45071,9 +45087,11 @@ function AlmacenVentanas({ onGuardarEtiquetasObra, etiquetasSinObra = [], onGuar
     const presConEtiq = new Set();
     [...toArray(proyectos).flatMap((pr) => toArray(pr.etiquetasFab)), ...toArray(uxExpedientes).flatMap((e) => toArray(e.etiquetasFab)), ...toArray(etiquetasSinObra)].forEach((l) => l && toArray(l.ventanas).forEach((v) => { const b = basePresuDia(v && v.num); if (b.length >= 3) presConEtiq.add(b); }));
     const tieneEtiq = (o) => toArray(lotesDe(o.key)).length > 0 || toArray(o.codigos).some((c) => presConEtiq.has(basePresuDia(c)));
+    // UNA OBRA = UN DÍA: si el planning la pone en varios días, aquí sale solo en el primero (igual que en Control del día)
+    const primerDiaPlan = (() => { const m = {}; Object.keys(planDias || {}).sort().forEach((d) => Object.keys(planDias[d] || {}).forEach((k) => { if (!m[k]) m[k] = d; })); return m; })();
     const itemsDia = (f) => {
       const out = []; const vistas = new Set();
-      Object.keys(planDias[f] || {}).forEach((k) => {
+      Object.keys(planDias[f] || {}).filter((k) => !primerDiaPlan[k] || primerDiaPlan[k] === f).forEach((k) => {
         const o = obrasAD.find((x) => x.clavePlan === k);
         if (o) { if (!vistas.has(o.key)) { vistas.add(o.key); out.push({ o }); } }
         else out.push({ sinEtiquetas: String((planObras[k] && planObras[k].nombre) || (planDias[f][k] && planDias[f][k].nombre) || k).replace(/ · en fabricación$/, "") });
@@ -51547,7 +51565,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       return { p, pr, d, nums, ls };
     });
     const resto = toArray(sobran).map((a) => ({ ...a }));
-    const med = (a, l, tol) => { const A = a.ancho, H = a.alto, x = parseFloat(l.ancho), y = parseFloat(l.alto); return (Math.abs(A - x) <= tol && Math.abs(H - y) <= tol) || (Math.abs(A - y) <= tol && Math.abs(H - x) <= tol); };
+    const med = (a, l, tol) => { const A = a.ancho, H = a.alto, x = uxMedidaMm(l.ancho), y = uxMedidaMm(l.alto); return (Math.abs(A - x) <= tol && Math.abs(H - y) <= tol) || (Math.abs(A - y) <= tol && Math.abs(H - x) <= tol); };
     const vent = (a, l) => { if (!a.ventana) return false; const t = `${l.referencia || ""} ${l.descripcion || ""} ${l.codigoListado || ""}`.toUpperCase(); const m = String(a.ventana).toUpperCase().match(/^([A-Z]\d{1,2})((?:\.\d{3})+)$/); if (!m) return t.includes(String(a.ventana).toUpperCase()); return m[2].split(".").filter(Boolean).some((n) => new RegExp(`(^|[^A-Z0-9.])${m[1]}\\.${n}([^0-9]|$)`).test(t)); };
     const pasar = (cond) => resto.forEach((a) => { if (!(a.q > 0)) return; const na = numsObra(a.expediente);
       cands.forEach((c) => { if (!(a.q > 0)) return; const mismaObra = na.size > 0 && [...na].some((n) => c.nums.has(n));
@@ -56695,6 +56713,8 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
     set.forEach((b) => { if (b && !diaFab[b] && (!diaManual[b] || f < diaManual[b])) diaManual[b] = f; }); }); });
   Object.keys(diaManual).forEach((b) => { diaPlan[b] = diaManual[b]; });
   const diaDe = (pp) => diaPlan[digitosPresu(String(pp).split("-")[0])] || "";
+  // LO YA CORTADO de un día (para revisar): piezas de las obras de ese día marcadas como cortadas
+  const cortadasDelDia = (d) => piezas.filter((p) => diaDe(p.ppto) === d && est && est[p.id] && est[p.id].cortada);
   // Lo que falta por cortar, por OBRA y en el orden del planning (las que no están en el planning, al final)
   const obrasAux = [];
   pendientes.forEach((p) => { let g = obrasAux.find((x) => x.ppto === p.ppto); if (!g) { g = { ppto: p.ppto, obra: p.obra, cliente: p.cliente, dia: diaDe(p.ppto), piezas: [] }; obrasAux.push(g); } g.piezas.push(p); });
@@ -57003,7 +57023,7 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                 </details>
                 {refs.map((r) => (
                   <details key={r.k} open={refs.length === 1} className="rounded-xl border-2 border-indigo-200 bg-white p-3 group">
-                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"}</span><span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
+                    <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2"><span className="text-indigo-700 font-extrabold group-open:rotate-90 transition-transform">▶</span><span className="text-lg font-extrabold text-indigo-900">{r.p.nombre}</span><span className="text-sm font-bold text-slate-600">Ref. {r.p.ref}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="ml-auto text-base font-extrabold text-slate-800">{r.filas.length} por cortar</span>{(() => { const n = piezas.filter((p) => `${p.ref}|${p.nombre}|${p.color || ""}` === r.k && dias.includes(diaDe(p.ppto)) && est && est[p.id] && est[p.id].cortada).length; return n ? <span className="text-sm font-bold text-emerald-700">✂ {n} cortadas</span> : null; })()}<span className="text-sm font-bold text-emerald-800">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"}</span></summary>
                     <div className="flex flex-wrap items-center gap-2 mb-1 mt-2"><span className="text-base font-extrabold text-indigo-900">Ref. {r.p.ref} — {r.p.nombre}{r.p.color ? ` · ${r.p.color}` : ""}</span><span className="text-sm font-bold text-slate-600">{r.filas.length} pieza{r.filas.length === 1 ? "" : "s"} · {new Set(r.filas.map((x) => x.ppto)).size} obra{new Set(r.filas.map((x) => x.ppto)).size === 1 ? "" : "s"}</span>
                       <span className="text-sm font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5">🪚 {r.emp.barras.length} barra{r.emp.barras.length === 1 ? "" : "s"} de {BL / 1000} m{r.emp.barras.length ? ` · ${Math.round((r.emp.barras.reduce((a, b) => a + b.util, 0) / (r.emp.barras.length * BL)) * 100)}% aprovechado` : ""}</span>
                       <label className="flex items-center gap-1 text-xs font-semibold text-indigo-900 bg-indigo-50 border border-indigo-300 rounded px-2 py-0.5" title="Dónde están las barras enteras de este perfil">📍 barras en <input key={`ub${r.k}${ubicRefs[kRefMin(r.p.ref)] || ""}`} type="text" placeholder="estantería…" defaultValue={ubicRefs[kRefMin(r.p.ref)] || ""} onBlur={(e) => setUbic(r.p.ref, e.target.value)} className="w-28 border border-slate-300 rounded px-1 py-0.5 bg-white" /></label>
@@ -57117,8 +57137,29 @@ function AuxiliaresLinea({ proyectos, uxExpedientes, sinObra, quien = "", admin 
                   </div>
                   {sem.dias.map((d) => { const gs = obrasAux.filter((g) => g.dia === d); const sel = diasSel.includes(d); const dOpen = diasAbiertos.includes(d); const porObra = diasPorObra.includes(d); const nRojas = faltanObras.filter((o) => o.dia === d).length; return (
                     <details key={d} open={dOpen} onToggle={(e) => { const o = e.currentTarget.open; if (o !== dOpen) setDiasAbiertos((x) => (o ? [...new Set([...toArray(x), d])] : toArray(x).filter((y) => y !== d))); }} className={`rounded-lg border ${sel ? "ring-2 ring-indigo-300 border-indigo-300" : "border-slate-200"} group/dia`}>
-                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
+                      <summary className="cursor-pointer list-none flex flex-wrap items-center gap-2 px-2 py-1.5"><span className="font-extrabold text-slate-500 group-open/dia:rotate-90 transition-transform">▶</span><span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span><span className="text-sm font-semibold text-slate-500">· {gs.length ? `${gs.length} obra${gs.length === 1 ? "" : "s"} · ${gs.reduce((a, g) => a + g.piezas.length, 0)} piezas` : "sin obras por cortar"}</span>{cortadasDelDia(d).length > 0 && <span className="text-sm font-bold text-emerald-700">· ✂ {cortadasDelDia(d).length} cortadas</span>}{nRojas > 0 && <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white">⚠ {nRojas} sin hoja/ppto</span>}</summary>
                       {dOpen && <div className="p-1">
+                      {(() => {
+                        // RESUMEN PARA REVISAR: por obra, lo cortado (por perfil) y lo que falta
+                        const pps = [...new Set([...gs.map((g) => String(g.ppto)), ...piezas.filter((p) => diaDe(p.ppto) === d).map((p) => String(p.ppto))])];
+                        if (!pps.length) return null;
+                        const filas = pps.map((pp) => { const todas = piezas.filter((p) => String(p.ppto) === pp); const cort = todas.filter((p) => est && est[p.id] && est[p.id].cortada); const porNom = {}; cort.forEach((p) => { porNom[p.nombre] = (porNom[p.nombre] || 0) + 1; }); const faltaNom = {}; todas.filter((p) => !(est && est[p.id] && est[p.id].cortada)).forEach((p) => { faltaNom[p.nombre] = (faltaNom[p.nombre] || 0) + 1; }); return { pp, total: todas.length, cort: cort.length, porNom, faltaNom }; });
+                        const tc = filas.reduce((t, x) => t + x.cort, 0), tt = filas.reduce((t, x) => t + x.total, 0);
+                        return (
+                          <details className="mb-2 rounded-lg border-2 border-emerald-300 bg-emerald-50/50 px-2 py-1">
+                            <summary className="cursor-pointer text-sm font-extrabold text-emerald-900">✂ Revisar lo cortado este día: {tc} de {tt} piezas cortadas · faltan {tt - tc} (por obra)</summary>
+                            <div className="mt-1 space-y-1">
+                              {filas.map((x) => (
+                                <div key={x.pp} className={`rounded border px-2 py-1 text-sm ${x.cort === x.total ? "border-emerald-300 bg-white" : "border-amber-300 bg-amber-50"}`}>
+                                  <div className="flex flex-wrap items-center gap-2"><b>Ppto {pptoBonito(x.pp)}</b><span className={`text-xs font-bold ${x.cort === x.total ? "text-emerald-700" : "text-amber-800"}`}>{x.cort === x.total ? `✓ todo cortado (${x.total})` : `✂ ${x.cort} de ${x.total} cortadas · faltan ${x.total - x.cort}`}</span></div>
+                                  {x.cort > 0 && <div className="text-xs text-emerald-800">Cortadas: {Object.entries(x.porNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
+                                  {x.cort < x.total && <div className="text-xs text-amber-900">Faltan: {Object.entries(x.faltaNom).map(([n, c]) => `${n} ×${c}`).join(" · ")}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        );
+                      })()}
                       <div className="flex flex-wrap items-center gap-1 mb-2">
                         <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={sel} onChange={() => togDia(d)} className="w-5 h-5 accent-indigo-600" />
                           <span className="text-base font-extrabold text-slate-800 capitalize">📅 {new Date(d + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })}</span></label>
@@ -58308,6 +58349,19 @@ function ControlDelDia({ proyectos, uxExpedientes, sinObra, pedidos = [], admin 
   const asignTodas = {};
   Object.entries(asignTodasCD || {}).forEach(([f, d]) => Object.entries(d || {}).forEach(([ko, v]) => { if (v && !enFabrica.has(ko)) (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
   Object.entries(asignFab).forEach(([f, d]) => Object.keys(d).forEach((ko) => { (asignTodas[f] = asignTodas[f] || {})[ko] = true; }));
+  // UNA OBRA = UN DÍA: si sale en varios días (el planning la reparte en 2, o se metió en otro día sin quitarla del suyo), se queda en UNO:
+  // el último día en que se le han marcado ventanas (donde de verdad se ha hecho) o, si aún no tiene nada marcado, el primero.
+  // Los otros días se recuerdan (asignOtrosDias) para que el informe sepa que estaba planificada para otro día (adelantada).
+  const asignOtrosDias = {};
+  (() => {
+    const diasDe = {}; Object.keys(asignTodas).sort().forEach((f) => Object.keys(asignTodas[f] || {}).forEach((ko) => { (diasDe[ko] = diasDe[ko] || []).push(f); }));
+    Object.entries(diasDe).forEach(([ko, ds]) => {
+      if (ds.length < 2) return;
+      const conMarcas = ds.filter((f) => { const m = ((marcasTodas && marcasTodas[f]) || {})[ko]; return m && Object.values(m).some((v) => v === 1 || v === 2); });
+      const queda = conMarcas.length ? conMarcas[conMarcas.length - 1] : ds[0];
+      ds.forEach((f) => { if (f !== queda) { delete asignTodas[f][ko]; (asignOtrosDias[ko] = asignOtrosDias[ko] || []).push(f); } });
+    });
+  })();
   // REGISTRO del planning: cada presupuesto del PLANING (y cada obra que pasa por Control del día) se apunta aquí y NO se borra nunca
   // (ni con «Borrar datos del PLANING» ni con «Vaciar»). Sirve para la lista «Todo lo planificado» y saber al final de la semana qué se ha hecho.
   const registro = useObjetoFb("controlDiaRegistro"); // { clave: { pres, nombre, ventanas, obraKey, alta, hechoEn } }
@@ -59438,9 +59492,9 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const ant = diaAntes(f);
               const ref = (k) => { const ob = obraPorClave.get(k); return ob ? [...presCrmDe(ob)].map((c) => { const [b, v] = String(c).split("-"); return pptoBonito(b) + (v ? "-" + v : ""); }).join(" / ") : ""; };
               const nom = (k) => { const ob = obraPorClave.get(k); return ob ? ob.d.nombre : k; };
-              const planHoy = Object.keys((asignTodas && asignTodas[f]) || {});
-              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy.includes(k));
-              const ya = new Set([...planHoy, ...atrasadas]);
+              const planHoy0 = Object.keys((asignTodas && asignTodas[f]) || {});
+              const atrasadas = Object.keys((asignTodas && asignTodas[ant]) || {}).filter((k) => !hechaHasta(k, ant) && !planHoy0.includes(k));
+              const ya = new Set([...planHoy0, ...atrasadas]);
               const otras0 = [...new Set(Object.keys((marcasTodas && marcasTodas[f]) || {}))].filter((k) => !ya.has(k) && hechaHasta(k, f) && !hechaHasta(k, ant));
               const est = (k) => (hechaHasta(k, f) ? "Terminada" : "Pendiente");
               // VENTANAS HECHAS ESE DÍA (marcadas como hechas ese día y que antes no lo estaban), por obra
@@ -59449,8 +59503,16 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               const hoyDe = (k) => { const mk = ((marcasTodas && marcasTodas[f]) || {})[k] || {}; return idsK(k).filter((i) => mk[i] === 1 && valorAntes(k, i) !== 1).length; };
               const hechasTot = (k) => idsK(k).filter((i) => valorHasta(k, i, f) === 1).length;
               // ADELANTADAS: obras planificadas para días SIGUIENTES (hasta 3 semanas) con ventanas hechas hoy
-              const diaDe = {}; Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k]) diaDe[k] = d; }));
-              const adelantadas = Object.keys(diaDe).filter((k) => !planHoy.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0);
+              const diaDe = {}; Object.entries(asignOtrosDias).forEach(([k, ds]) => { const sig = toArray(ds).filter((d) => d > f).sort()[0]; if (sig) diaDe[k] = sig; }); Object.keys(asignTodas || {}).filter((d) => d > f && d <= (() => { const x = new Date(f + "T12:00:00"); x.setDate(x.getDate() + 21); return x.toLocaleDateString("sv-SE"); })()).sort().forEach((d) => Object.keys(asignTodas[d] || {}).forEach((k) => { if (!diaDe[k] || d < diaDe[k]) diaDe[k] = d; }));
+              // Una obra puede estar HOY y también en un día SIGUIENTE (el planning la tenía para después y se ha metido hoy):
+              //  · si se ha hecho hoy (ventanas marcadas hoy) y está terminada → es ADELANTADA (de su día del planning)
+              //  · si ya estaba terminada ANTES de hoy → no es de hoy: sale aparte («ya hechas antes»)
+              //  · si sigue a medias → cuenta como planificada para hoy (pendiente)
+              const todaAntes = (k) => idsK(k).length > 0 && idsK(k).every((i) => valorAntes(k, i) === 1);
+              const yaAntes = planHoy0.filter((k) => todaAntes(k));
+              const adelDeHoy = planHoy0.filter((k) => !todaAntes(k) && diaDe[k] && hechaHasta(k, f) && hoyDe(k) > 0);
+              const planHoy = planHoy0.filter((k) => !yaAntes.includes(k) && !adelDeHoy.includes(k));
+              const adelantadas = [...adelDeHoy, ...Object.keys(diaDe).filter((k) => !planHoy0.includes(k) && !atrasadas.includes(k) && hoyDe(k) > 0)];
               const otras = otras0.filter((k) => !adelantadas.includes(k));
               const sumHoy = (ks) => ks.reduce((t, k) => t + hoyDe(k), 0);
               const vPlan = sumHoy(planHoy), vAtr = sumHoy(atrasadas), vAde = sumHoy(adelantadas), vOtr = sumHoy(otras);
@@ -59472,8 +59534,8 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
               </style></head><body>
                 <h1>Informe de ventanas salidas</h1><div class="fecha">${esc(fechaTxt(f))}</div>
                 <h2>Resumen</h2>
-                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? `las ${nAt}` : `${nAt} de las ${atrasadas.length}`} atrasadas del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
-                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}. Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.</p>
+                <p>Se han cerrado <b>${total} obra${total === 1 ? "" : "s"}</b>: ${atrasadas.length ? `${nAt === atrasadas.length ? (nAt === 1 ? "la atrasada" : `las ${nAt} atrasadas`) : `${nAt} de las ${atrasadas.length} atrasadas`} del ${esc(nomAnt)}, ` : ""}${nPl} de las ${planHoy.length} planificadas para hoy, ${adelantadas.filter((k) => hechaHasta(k, f)).length} adelantada${adelantadas.filter((k) => hechaHasta(k, f)).length === 1 ? "" : "s"} de días siguientes y ${otras.length} no planificada${otras.length === 1 ? "" : "s"}${otras.length ? ` (${otras.map((k) => esc(`${nom(k)} ${ref(k)}`)).join(", ")})` : ""}.${pend.length ? ` Quedan <b>${pend.length} pendiente${pend.length === 1 ? "" : "s"}</b>: ${pend.map((k) => esc(ref(k) || nom(k))).join(", ")}.` : " No queda nada pendiente."}</p>
+                <p><b>Ventanas hechas hoy: ${vTotal}</b> — ${vPlan} de las planificadas para hoy, ${vAtr} de las atrasadas del ${esc(nomAnt)}${vAde ? `, <b>${vAde} adelantadas</b> de días siguientes` : ""}${vOtr ? ` y ${vOtr} de otras obras` : ""}.${vAtrTot ? ` Del ${esc(nomAnt)} quedan hechas ${vAtrHechas} de ${vAtrTot} ventanas.` : ""}</p>
                 <table class="kpi"><tr><td class="t">Atrasadas ${esc(nomAnt)}</td><td class="t">Planificadas hoy</td><td class="t">Otras cerradas</td><td class="t">Total cerradas</td></tr>
                 <tr><td class="v">${nAt} / ${atrasadas.length}</td><td class="v">${nPl} / ${planHoy.length}</td><td class="v">${otras.length}</td><td class="v">${total}</td></tr></table>
                 <table class="kpi"><tr><td class="t">Ventanas hoy (planificadas)</td><td class="t">Ventanas del ${esc(nomAnt)}</td><td class="t">Ventanas adelantadas</td><td class="t">Total ventanas hoy</td></tr>
@@ -59482,6 +59544,7 @@ Reglas: un elemento por día con trabajo. En un calendario, el número pequeño 
                 <h2>Planificadas para hoy</h2>${tabla(planHoy)}
                 <h2>Adelantadas (de días siguientes)</h2>${tabla(adelantadas, (k) => (hechaHasta(k, f) ? "Terminada" : "Adelantada (sigue)"), (k) => `planificada para el ${new Date(diaDe[k] + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}`)}
                 <h2>Otras cerradas hoy (no planificadas)</h2>${tabla(otras, () => "Cerrada")}
+                ${yaAntes.length ? `<h2>En el calendario de hoy pero ya hechas antes</h2>${tabla(yaAntes, () => "Ya estaba hecha")}` : ""}
                 <div class="pie">Sacado del Control del día del CRM el ${new Date().toLocaleString("es-ES")}. Una obra cuenta como cerrada cuando todas sus ventanas están marcadas como hechas. Las atrasadas son las del ${esc(nomAnt)} que no se terminaron ese día.</div>
               </body></html>`;
               const w = window.open("", "_blank");
