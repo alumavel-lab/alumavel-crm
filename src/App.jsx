@@ -7255,6 +7255,7 @@ export default function App() {
             confirmaciones: confirmacionesCristal, saveConfirmaciones: saveConfirmacionesCristal,
             pedirReposicion: (lineas, comentario) => enviarAPedido(null, lineas, "", comentario, []),
             pedidosCrm: pedidos, uxPedidosCtx: uxPedidos, cristalesCaballetes: cristales, carrosPersianas, saveCarrosPersianas, moverPersianasACarro, persianasAlmacen, savePersianasAlmacen, almacenesPersianas, saveAlmacenesPersianas, pedidosPersianas, savePedidosPersianas,
+            abrirProyecto: (id) => { if (!id) return; setModulo("proyectos"); setProyectoDetailId(id); setProyectoView("detail"); },
             encolarEntradaCrm: (items) => { toArray(items).forEach((x) => colaUxStock.current.push(x)); setTickColaUx((t) => t + 1); },
             guardarPackingCaballetes: (nuevos, fusiones, eliminar) => {
               const hoy = new Date().toISOString().slice(0, 10);
@@ -22922,7 +22923,8 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   // Pendientes de recibir en fábrica: de momento solo cristales y compactos
   // Solo los que ya se han pedido de verdad al proveedor (un pedido sin hacer todavía no puede "llegar")
   const yaPedido = (p) => !!p.envioConfirmado || ["Realizado", "Reclamado", "Recibido"].includes(p.estado);
-  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
+  // ENTRADAS ECOWIN = solo los pedidos PROPIOS. Las copias «(de Uxcar)» no salen aquí: los pedidos de Uxcar van en «Entradas Uxcar» (no se mezclan)
+  const pedidosEnCurso = pedidos.filter((p) => p.estado !== "Cancelado" && !p.uxcarPedidoId && esPedidoCristalOCompacto(p) && yaPedido(p) && (p.lineas || []).some((l) => !l.confirmadoFabrica));
   const [provFiltroFab, setProvFiltroFab] = useState("");
   const [qPpto, setQPpto] = useState(""); // buscador 1: nº de presupuesto
   const [qRefFab, setQRefFab] = useState(""); // buscador 2: referencia / expediente / obra
@@ -22966,7 +22968,7 @@ function FabricaModulo({ albaranesEl, proyectos, pedidos, proveedores, materiale
   const ecoAbierto = abiertoEcoId && filtered.some((p) => p.id === abiertoEcoId) ? abiertoEcoId : null; // si el pedido ya no está pendiente (se dio por llegado), vuelve a la lista
   const nEntUx = toArray(uxPedidos).filter((p) => !p.recibido && (p.enviadoEmail || p.enviadoWhatsapp || p.enviadoManual)).length;
   const bloqueAlbaran = onRecibirConAlbaran && (
-            <AlbaranFabrica pedidos={pedidos} materiales={materiales} proveedores={proveedores}
+            <AlbaranFabrica pedidos={pedidos.filter((p) => !p.uxcarPedidoId)} materiales={materiales} proveedores={proveedores}
               nombreLinea={(l) => (l.modo === "libre" ? (l.referencia || "Sin referencia") : ((materialInfo(l.materialId) || {}).descripcion || "Material eliminado"))}
               onRecibirConAlbaran={onRecibirConAlbaran} onCrearPedidoFaltante={onCrearPedidoFaltante} onCerrarPedido={onConfirmarPedidoEntero} />
           );
@@ -51418,12 +51420,42 @@ function uxRepartirAlbaran(pedidosPend, lineasAlb, proveedorAlb, exps = [], proy
 function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const ctxUxAlb = React.useContext(IncidenciasCristalCtx) || {};
   const expsUx = toArray(ctxUxAlb.uxExpedientes);
+  // la OBRA (proyecto del CRM) de un pedido de Uxcar: por su expediente de Uxcar o por el nº de presupuesto
+  const proyectoDePedidoUx = (p) => {
+    const proys = toArray(ctxUxAlb.proyectos).filter(Boolean);
+    for (const x of toArray(p && p.expedientes)) {
+      const e = expsUx.find((y) => y && y.id === x.expedienteId);
+      const pr = (e && e.proyectoId && proys.find((q) => q.id === e.proyectoId)) || (e && proys.find((q) => q.uxcarExpedienteId === e.id));
+      if (pr) return pr;
+    }
+    const pp = uxDesglosaExp(p, expsUx).ppto.map((x) => String(x).split("-")[0].replace(/\D/g, "")).filter(Boolean);
+    return pp.length ? proys.find((q) => pp.includes(String(presupuestoDeObra(q) || q.presupuestoNumero || "").split("-")[0].replace(/\D/g, ""))) || null : null;
+  };
+  const botonesPedidoUx = (p) => {
+    const pr = proyectoDePedidoUx(p);
+    return (
+      <span className="flex items-center gap-1" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+        <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setAbiertoId(p.id); }} title="Abrir el pedido: lo pedido, lo que ha llegado y lo que falta (al volver sigue aquí el reparto)" className="text-[11px] font-bold px-2 py-0.5 rounded border border-slate-400 bg-white text-slate-700 hover:bg-slate-50">🔎 Ver pedido</button>
+        {pr && ctxUxAlb.abrirProyecto && <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (albRes && !window.confirm(`Vas a ir a la obra #${pr.numero}. El reparto de este albarán sin confirmar se pierde (tendrías que volver a subirlo). ¿Seguir?`)) return; ctxUxAlb.abrirProyecto(pr.id); }} title={`Ir a la obra #${pr.numero} ${pr.nombre || ""}`} className="text-[11px] font-bold px-2 py-0.5 rounded border border-indigo-400 bg-white text-indigo-800 hover:bg-indigo-50">🏠 Obra #{pr.numero}</button>}
+      </span>
+    );
+  };
   const [abiertoId, setAbiertoId] = useState(null);
   const [verTodos, setVerTodos] = useState(false);
   // ALBARÁN POR FOTO desde la lista: se lee, se reparte entre los pedidos pendientes y, al confirmar, se dan de baja (entrada en cada pedido)
   const [albLeyendo, setAlbLeyendo] = useState(false); const [albRes, setAlbRes] = useState(null); const [albSel, setAlbSel] = useState({}); const [albMsg, setAlbMsg] = useState("");
   const albRef = useRef(null);
   const [sinPedidoUlt, setSinPedidoUlt] = useState(null);
+  // QUÉ MATERIAL TRAE EL ALBARÁN: por los pedidos que casan (Persianas / Cristales) o, si no casa ninguno, por lo leído (caballetes = cristales; persiana, cajón, lama… = persianas)
+  const materialAlb = (r) => {
+    if (!r) return { uno: "unidad", varios: "unidades", Varios: "Material" };
+    const tipos = [...toArray(r.reparto), ...toArray(r.crm)].map((x) => String((x.p && (x.p.tipo || x.p.tipoUxcar)) || "")).filter(Boolean);
+    const per = tipos.filter((t) => /persian/i.test(t)).length, cri = tipos.filter((t) => /cristal/i.test(t)).length;
+    const txt = toArray(r.lineas).map((a) => `${a.descripcion || ""}`).join(" ");
+    const esPer = per > cri || (!tipos.length && /persian|caj[oó]n|compacto|lama|aisla|block|motor/i.test(txt));
+    const esCri = !esPer && (cri > 0 || toArray(r.lineas).some((a) => a && a.caballete) || /vidrio|cristal|\d+\s*\/\s*\d+\s*\/\s*\d+/i.test(txt));
+    return esPer ? { uno: "persiana", varios: "persianas", Varios: "Persianas" } : esCri ? { uno: "cristal", varios: "cristales", Varios: "Cristales" } : { uno: "unidad", varios: "unidades", Varios: "Material" };
+  };
   const [meterSinPedido, setMeterSinPedido] = useState(true); // los cristales que llegan sin pedido también entran en el almacén (pendientes de ubicar), marcados // lo que no casó en el último albarán confirmado (para imprimirlo después)
   // LO QUE NO CASA, AGRUPADO POR OBRA y por qué: sin pedido de esa obra / pedido ya recibido / medidas distintas / sin nº de presupuesto
   const gruposSinPedido = (sobran) => {
@@ -51437,7 +51469,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
       const pend = deObra.filter((p) => !p.recibido), rec = deObra.filter((p) => p.recibido);
       const pptoTxt = nums.map((x) => x.replace(/^(\d)(\d{3})$/, "$1.$2")).join(" / ");
       const tipo = !nums.length ? "sinppto" : !deObra.length ? "sinpedido" : !pend.length ? "recibido" : "medidas";
-      const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa ventana y medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
+      const motivo = tipo === "sinppto" ? "La referencia no trae nº de presupuesto y no encuentro ningún pedido pendiente con esa medida" : tipo === "sinpedido" ? `NO hay ningún pedido de Uxcar con el presupuesto ${pptoTxt}` : tipo === "recibido" ? `Su pedido ${rec.map((p) => p.numero).join(", ")} ya estaba RECIBIDO` : `Tiene pedido pendiente (${pend.map((p) => p.numero).join(", ")}) pero las medidas no coinciden`;
       return { ref: k, xs, n: xs.reduce((t, a) => t + (a.q || parseFloat(a.cantidad) || 1), 0), tipo, motivo };
     });
   };
@@ -51445,17 +51477,18 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
     const gs = toArray(info && info.grupos); if (!gs.length) return;
     const esc = (t) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const tot = gs.reduce((t, g) => t + g.n, 0);
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Cristales llegados sin pedido</title><style>
+    const M = info.material || { varios: "cristales", Varios: "Cristales" };
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${M.Varios} llegados sin pedido</title><style>
       body{font-family:Arial,sans-serif;color:#111;margin:16mm} h1{font-size:20px;margin:0 0 4px} .sub{color:#555;font-size:12px;margin-bottom:12px}
       .g{border:1px solid #999;border-radius:6px;margin:10px 0;page-break-inside:avoid} .gh{background:#eee;padding:6px 8px;font-weight:bold;font-size:13px}
       .mot{padding:4px 8px;font-size:12px;color:#b00} table{width:100%;border-collapse:collapse;font-size:12px} td,th{border-top:1px solid #ddd;padding:3px 8px;text-align:left}
       .resp{padding:6px 8px;font-size:12px;color:#333} .linea{border-bottom:1px solid #999;display:inline-block;width:70%;height:14px}
     </style></head><body>
-      <h1>Cristales llegados SIN PEDIDO pendiente</h1>
+      <h1>${M.Varios} llegados SIN PEDIDO pendiente</h1>
       <div class="sub">Albarán / packing: ${esc(info.archivo || "")} · ${esc(info.proveedor || "")} · ${esc(info.fecha || "")} · Revisado por: ${esc(info.quien || "")}<br>
-      <b>${tot} cristal(es) en ${gs.length} obra(s).</b> Han llegado a fábrica pero no encuentro su pedido pendiente en el CRM. Oficina: comprobad por qué y decidnos qué hacer.</div>
+      <b>${tot} ${M.varios} en ${gs.length} obra(s).</b> Han llegado a fábrica pero no encuentro su pedido pendiente en el CRM. Oficina: comprobad por qué y decidnos qué hacer.</div>
       ${gs.map((g) => `<div class="g"><div class="gh">${g.n} × ${esc(g.ref)}</div><div class="mot">⚠ ${esc(g.motivo)}</div>
-        <table><tr><th>Ventana</th><th>Medida</th><th>Uds</th><th>Caballete</th></tr>${g.xs.map((a) => `<tr><td>${esc(a.ventana || a.codigo || "")}</td><td>${esc(a.ancho)} × ${esc(a.alto)}</td><td>${esc(a.q || a.cantidad || 1)}</td><td>${esc(a.caballete || "")}</td></tr>`).join("")}</table>
+        <table><tr><th>Ventana / ref.</th><th>Medida</th><th>Uds</th><th>${M.varios === "cristales" ? "Caballete" : ""}</th></tr>${g.xs.map((a) => `<tr><td>${esc(a.ventana || a.codigo || "")}</td><td>${esc(a.ancho)} × ${esc(a.alto)}</td><td>${esc(a.q || a.cantidad || 1)}</td><td>${esc(a.caballete || "")}</td></tr>`).join("")}</table>
         <div class="resp">Respuesta de oficina: <span class="linea"></span></div></div>`).join("")}
     </body></html>`;
     const w = window.open("", "_blank");
@@ -51498,7 +51531,11 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   const repartirEnPedidosCrm = (sobran) => {
     const numsObra = (t) => { const out = new Set(); String(t || "").replace(/_/g, " ").split(/[^\d.\-]+/).forEach((tok) => { const x = tok.replace(/^[.\-]+|[.\-]+$/g, ""); if (!x) return; const m = x.match(/^(\d{1,2})\.(\d{3})(?:[.\-]\d{1,2})?$/); const d = m ? m[1] + m[2] : x.split(/[-.]/)[0]; if (/^\d{3,6}$/.test(d)) out.add(d); }); return out; };
     const proys = toArray(ctxUxAlb.proyectos);
-    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && !p.uxcarPedidoId && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
+    // También los «(de Uxcar)»: copias en el CRM de pedidos de Uxcar. Solo se dejan fuera las que tienen su pedido de Uxcar PENDIENTE en la lista
+    // de Entradas Uxcar (esas ya se han mirado arriba). Si su pedido de Uxcar ya no está pendiente o no existe, el que manda es el del CRM.
+    const uxPendIds = new Set(toArray(pedidos).filter((p) => p && !p.recibido).map((p) => p.id));
+    // NUNCA los pedidos propios (Entradas Ecowin): solo las copias de pedidos de Uxcar, para no mezclar
+    const peds = toArray(ctxUxAlb.pedidosCrm).filter((p) => p && p.estado !== "Cancelado" && p.estado !== "Recibido" && p.uxcarPedidoId && !uxPendIds.has(p.uxcarPedidoId) && toArray(p.lineas).some((l) => l && parseFloat(l.ancho) > 0 && parseFloat(l.alto) > 0 && !l.confirmadoFabrica));
     const cands = peds.map((p) => {
       const pr = p.proyectoId ? proys.find((x) => x && x.id === p.proyectoId) : null;
       const d = datosObraPedido(p, pr, expsUx);
@@ -51584,9 +51621,9 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
         const r = await onGuardarRecepcion(x.p, recepcion); if (r !== false) ok++;
       }
       if (elegidosCrm.length && ctxUxAlb.encolarEntradaCrm) ctxUxAlb.encolarEntradaCrm(elegidosCrm.map((x) => ({ crmId: x.p.id, filasDirectas: x.filas, archivo: archivoTxt })));
-      if (toArray(albRes.sobran).length) setSinPedidoUlt({ grupos: gruposSinPedido(albRes.sobran), archivo: archivoTxt, proveedor: albRes.proveedor, fecha: uxHoy(), quien });
+      if (toArray(albRes.sobran).length) setSinPedidoUlt({ grupos: gruposSinPedido(albRes.sobran), archivo: archivoTxt, proveedor: albRes.proveedor, fecha: uxHoy(), quien, material: materialAlb(albRes) });
       const txtCab = rCab ? ` · Almacén de cristales: ${rCab.nuevos} caballete${rCab.nuevos === 1 ? "" : "s"} nuevo${rCab.nuevos === 1 ? "" : "s"} en «Pendientes de ubicar»${rCab.fusionados ? ` y ${rCab.fusionados} que ya estaban completados` : ""}${rCab.nSin ? ` (${rCab.nSin} cristal${rCab.nSin === 1 ? "" : "es"} marcados ⚠ SIN PEDIDO)` : ""}.` : "";
-      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"} de Uxcar: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${elegidosCrm.length ? ` · ${elegidosCrm.length} pedido${elegidosCrm.length === 1 ? "" : "s"} del CRM (Entradas Ecowin) con entrada: ${elegidosCrm.filter((x) => x.completo).length} completo${elegidosCrm.filter((x) => x.completo).length === 1 ? "" : "s"}.` : ""}${txtCab}`);
+      setAlbMsg(`✓ Albarán guardado en ${ok} pedido${ok === 1 ? "" : "s"} de Uxcar: ${elegidos.filter((x) => x.completo).length} completo${elegidos.filter((x) => x.completo).length === 1 ? "" : "s"} (dados de baja) y ${elegidos.filter((x) => !x.completo).length} a medias.${elegidosCrm.length ? ` · ${elegidosCrm.length} pedido${elegidosCrm.length === 1 ? "" : "s"} de Uxcar (copia en el CRM) con entrada: ${elegidosCrm.filter((x) => x.completo).length} completo${elegidosCrm.filter((x) => x.completo).length === 1 ? "" : "s"}.` : ""}${txtCab}`);
       setAlbRes(null);
     } catch (e) { setAlbMsg("No se pudo guardar: " + ((e && e.message) || e)); }
     finally { setAlbLeyendo(false); }
@@ -51615,9 +51652,10 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
   if (abierto) {
     return (
       <div className="space-y-3 max-w-4xl">
-        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> Volver</button>
+        <button onClick={() => setAbiertoId(null)} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"><ChevronLeft size={16} /> {albRes ? "Volver al reparto del albarán" : "Volver"}</button>
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-extrabold text-slate-900">Pedido {abierto.numero} de Uxcar</h2>
+          {(() => { const pr = proyectoDePedidoUx(abierto); return pr && ctxUxAlb.abrirProyecto ? <button type="button" onClick={() => { if (albRes && !window.confirm(`Vas a ir a la obra #${pr.numero}. El reparto del albarán sin confirmar se pierde. ¿Seguir?`)) return; ctxUxAlb.abrirProyecto(pr.id); }} className="text-xs font-bold px-2.5 py-1 rounded-md border-2 border-indigo-500 text-indigo-800 bg-white">🏠 Ir a la obra #{pr.numero}</button> : null; })()}
           <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded border ${uxEstadoPedido(abierto).cls}`}>{uxEstadoPedido(abierto).label}</span>
         </div>
         <div className="text-sm text-slate-600">{abierto.tipo} · {abierto.proveedorNombre} · {uxFecha(abierto.fecha)} · Exp. {uxTextoExp(uxDesglosaExp(abierto, expsUx))} · Ppto {uxDesglosaExp(abierto, expsUx).ppto.join(", ") || "—"}</div>
@@ -51639,7 +51677,7 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
           <button type="button" disabled={albLeyendo} onClick={() => { if (!albRef.current) return; albRef.current.dataset.anadir = ""; albRef.current.click(); }} style={{ backgroundColor: "#2E8B57", color: "#fff" }} className="flex items-center gap-1.5 text-sm font-bold px-4 py-2 rounded-md disabled:opacity-60">{albLeyendo ? <><Loader2 size={14} className="animate-spin" /> Leyendo… (un packing list largo puede tardar 1-2 min)</> : "📷 Subir foto del albarán"}</button>
         </div>
         {albMsg && <div className="mt-2 flex items-start gap-2 text-sm font-semibold text-slate-800"><span className="flex-1">{albMsg}</span><button type="button" onClick={() => setAlbMsg("")} title="Quitar este mensaje" className="shrink-0 px-2 rounded border border-slate-300 bg-white text-slate-500 hover:text-slate-800">✕</button></div>}
-        {!albRes && sinPedidoUlt && <div className="mt-2 flex flex-wrap items-center gap-2 rounded border-2 border-rose-300 bg-rose-50 px-2 py-1.5 text-sm text-rose-900"><b>⚠ {sinPedidoUlt.grupos.reduce((t, g) => t + g.n, 0)} cristal(es) de ese albarán llegaron sin pedido pendiente ({sinPedidoUlt.grupos.length} obra{sinPedidoUlt.grupos.length === 1 ? "" : "s"}).</b><button type="button" onClick={() => imprimirSinPedido(sinPedidoUlt)} className="text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button><button type="button" onClick={() => setSinPedidoUlt(null)} className="text-xs text-slate-500 underline">quitar aviso</button></div>}
+        {!albRes && sinPedidoUlt && <div className="mt-2 flex flex-wrap items-center gap-2 rounded border-2 border-rose-300 bg-rose-50 px-2 py-1.5 text-sm text-rose-900"><b>⚠ {sinPedidoUlt.grupos.reduce((t, g) => t + g.n, 0)} {(sinPedidoUlt.material || { varios: "cristales" }).varios} de ese albarán llegaron sin pedido pendiente ({sinPedidoUlt.grupos.length} obra{sinPedidoUlt.grupos.length === 1 ? "" : "s"}).</b><button type="button" onClick={() => imprimirSinPedido(sinPedidoUlt)} className="text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button><button type="button" onClick={() => setSinPedidoUlt(null)} className="text-xs text-slate-500 underline">quitar aviso</button></div>}
         {albRes && albRes.lineas.length > 0 && (
           <div className="mt-2 space-y-1">
             <div className="text-xs text-slate-600">Leídas {albRes.lineas.length} líneas{albRes.proveedor ? ` · ${albRes.proveedor}` : ""}{albRes.paginasTotal ? ` · páginas ${albRes.paginas.join(", ") || "?"} de ${albRes.paginasTotal}` : ""}. Así lo reparto (quita la marca de lo que no sea):</div>
@@ -51647,16 +51685,16 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
             {albRes.reparto.map((x) => (
               <label key={x.p.id} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[x.p.id]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [x.p.id]: e.target.checked }))} />
-                <b>{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))}</span>
+                <b>{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {uxDesglosaExp(x.p, expsUx).ppto.join(", ") || "—"}</b><span>{x.p.tipo} · {x.p.proveedorNombre}</span><span className="text-slate-600">{uxTextoExp(uxDesglosaExp(x.p, expsUx))}</span>{botonesPedidoUx(x.p)}
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
                 {!x.completo && x.faltanTxt && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
             ))}
-            {toArray(albRes.crm).length > 0 && <div className="text-xs font-bold text-slate-700 pt-1">Pedidos del CRM (Entradas Ecowin PVC) con cristales de este albarán:</div>}
+            {toArray(albRes.crm).length > 0 && <div className="text-xs font-bold text-slate-700 pt-1">Pedidos de Uxcar que ya no estaban en la lista de arriba (copia en el CRM, todavía pendiente) con cristales de este albarán:</div>}
             {toArray(albRes.crm).map((x) => (
               <label key={`crm-${x.p.id}`} className={`flex flex-wrap items-center gap-2 rounded border px-2 py-1 text-sm cursor-pointer ${x.completo ? "bg-white border-emerald-300" : "bg-amber-50 border-amber-300"}`}>
                 <input type="checkbox" checked={!!albSel[`crm:${x.p.id}`]} onChange={(e) => setAlbSel((s0) => ({ ...s0, [`crm:${x.p.id}`]: e.target.checked }))} />
-                <b>#{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {x.d.ppto || "—"}</b><span>{x.p.proveedorExterno || "Pedido CRM"}</span><span className="text-slate-600">{x.d.ref || x.d.obra}</span>
+                <b>#{x.p.numero}</b><b className="text-slate-900 bg-amber-100 border border-amber-300 rounded px-1.5">Ppto {x.d.ppto || "—"}</b><span>{x.p.proveedorExterno || "Pedido CRM"}{x.p.uxcarPedidoId ? " (de Uxcar)" : ""}</span><span className="text-slate-600">{x.d.ref || x.d.obra}</span>
                 <span className={`ml-auto text-xs font-bold ${x.completo ? "text-emerald-700" : "text-amber-800"}`}>{x.completo ? "✓ llega todo → se da de baja" : `llegan ${x.n} · faltan ${x.faltan} línea${x.faltan === 1 ? "" : "s"}`}</span>
                 {!x.completo && x.faltanTxt.length > 0 && <span className="basis-full text-xs text-amber-900">Faltan: {x.faltanTxt.slice(0, 8).join(", ")}{x.faltanTxt.length > 8 ? "…" : ""}</span>}
               </label>
@@ -51671,8 +51709,8 @@ function UxEntradasFabrica({ pedidos, onGuardarRecepcion, quien }) {
               const gs = gruposSinPedido(albRes.sobran);
               return (
                 <div className="rounded border-2 border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-900">
-                  <div className="flex flex-wrap items-center gap-2"><b>⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} cristal(es) del albarán no casan con ningún pedido pendiente. Por obra:</b>
-                    <button type="button" onClick={() => imprimirSinPedido({ grupos: gs, archivo: toArray(albRes.docs).map((d) => d.name).join(", "), proveedor: albRes.proveedor, fecha: uxHoy(), quien })} className="ml-auto text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button></div>
+                  <div className="flex flex-wrap items-center gap-2"><b>⚠ {albRes.sobran.reduce((t, a) => t + a.q, 0)} {materialAlb(albRes).varios} del albarán no casan con ningún pedido pendiente. Por obra:</b>
+                    <button type="button" onClick={() => imprimirSinPedido({ grupos: gs, archivo: toArray(albRes.docs).map((d) => d.name).join(", "), proveedor: albRes.proveedor, fecha: uxHoy(), quien, material: materialAlb(albRes) })} className="ml-auto text-xs font-bold px-2 py-1 rounded border-2 border-slate-700 bg-white text-slate-900">🖨 Imprimir para oficina</button></div>
                   {gs.map((g) => (
                     <details key={g.ref} className="mt-1 bg-white rounded border border-rose-200 px-2 py-1">
                       <summary className="cursor-pointer"><b>{g.n} × {g.ref}</b>{" — "}<span className={`font-bold ${g.tipo === "sinpedido" ? "text-rose-700" : g.tipo === "recibido" ? "text-amber-700" : "text-slate-700"}`}>{g.motivo}</span></summary>
